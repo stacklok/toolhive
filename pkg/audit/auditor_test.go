@@ -5,6 +5,7 @@ package audit
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -1000,5 +1001,42 @@ func TestMiddlewareDetectsJSONRPCErrors(t *testing.T) {
 
 		logOutput := logBuf.String()
 		assert.NotContains(t, logOutput, OutcomeApplicationError)
+	})
+}
+
+func TestAuditLoggerLevelFormat(t *testing.T) {
+	t.Parallel()
+
+	t.Run("renders audit level as AUDIT not INFO+2", func(t *testing.T) {
+		t.Parallel()
+		var logBuf bytes.Buffer
+		logger := NewAuditLogger(&logBuf)
+
+		// Log an audit event
+		logger.Log(context.TODO(), LevelAudit, "test audit event",
+			"audit_id", "test-123",
+			"type", "test_event")
+
+		logOutput := logBuf.String()
+		// Should contain "AUDIT" not "INFO+2"
+		assert.Contains(t, logOutput, `"level":"AUDIT"`)
+		assert.NotContains(t, logOutput, "INFO+2")
+		assert.NotContains(t, logOutput, "INFO+")
+	})
+
+	t.Run("preserves standard log levels", func(t *testing.T) {
+		t.Parallel()
+		var logBuf bytes.Buffer
+		logger := NewAuditLogger(&logBuf)
+
+		// NewAuditLogger sets Level: LevelAudit (= slog.Level(2)), so INFO
+		// (slog.Level(0)) is filtered out before ReplaceAttr runs and can't
+		// be exercised through the production logger. WARN (slog.Level(4))
+		// is above LevelAudit and passes through, so we use it to confirm
+		// the production ReplaceAttr path doesn't mis-label non-audit events.
+		logger.Warn("warn message")
+		logOutput := logBuf.String()
+		assert.Contains(t, logOutput, `"level":"WARN"`)
+		assert.NotContains(t, logOutput, `"level":"AUDIT"`)
 	})
 }

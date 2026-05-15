@@ -328,3 +328,91 @@ func TestIdentityRoundTripper_FallbackIdentity_InjectionClonesRequest(t *testing
 	require.NotNil(t, base.received)
 	assert.NotSame(t, orig, base.received, "fallback injection should clone the request")
 }
+
+// ---------------------------------------------------------------------------
+// claimInjectionRoundTripper
+// ---------------------------------------------------------------------------
+
+func TestClaimInjectionRoundTripper_AllFields_InjectsHeaders(t *testing.T) {
+	t.Parallel()
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "108352771234567890",
+		Email:   "user@example.com",
+		Name:    "Test User",
+	}}
+	base := &okTransport{}
+	rt := &claimInjectionRoundTripper{base: base, identity: identity}
+
+	orig := newTestRequest(context.Background(), t)
+	resp, err := rt.RoundTrip(orig)
+
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+
+	require.NotNil(t, base.received)
+	assert.Equal(t, "108352771234567890", base.received.Header.Get("X-User-Sub"))
+	assert.Equal(t, "user@example.com", base.received.Header.Get("X-User-Email"))
+	assert.Equal(t, "Test User", base.received.Header.Get("X-User-Name"))
+}
+
+func TestClaimInjectionRoundTripper_EmptyEmail_DoesNotInjectEmailHeader(t *testing.T) {
+	t.Parallel()
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "sub-only",
+		// Email and Name intentionally omitted.
+	}}
+	base := &okTransport{}
+	rt := &claimInjectionRoundTripper{base: base, identity: identity}
+
+	orig := newTestRequest(context.Background(), t)
+	_, err := rt.RoundTrip(orig)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.received)
+	assert.Equal(t, "sub-only", base.received.Header.Get("X-User-Sub"), "X-User-Sub must be set")
+	assert.Empty(t, base.received.Header.Get("X-User-Email"), "X-User-Email must not be set when empty")
+	assert.Empty(t, base.received.Header.Get("X-User-Name"), "X-User-Name must not be set when empty")
+}
+
+func TestClaimInjectionRoundTripper_EmptySubject_DoesNotInjectSubHeader(t *testing.T) {
+	t.Parallel()
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		// Subject intentionally omitted.
+		Email: "user@example.com",
+	}}
+	base := &okTransport{}
+	rt := &claimInjectionRoundTripper{base: base, identity: identity}
+
+	orig := newTestRequest(context.Background(), t)
+	_, err := rt.RoundTrip(orig)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.received)
+	assert.Empty(t, base.received.Header.Get("X-User-Sub"), "X-User-Sub must not be set when subject is empty")
+	assert.Equal(t, "user@example.com", base.received.Header.Get("X-User-Email"))
+}
+
+func TestClaimInjectionRoundTripper_ClonesRequest_OriginalUnmodified(t *testing.T) {
+	t.Parallel()
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "clone-test",
+		Email:   "clone@example.com",
+	}}
+	base := &okTransport{}
+	rt := &claimInjectionRoundTripper{base: base, identity: identity}
+
+	orig := newTestRequest(context.Background(), t)
+	_, err := rt.RoundTrip(orig)
+	require.NoError(t, err)
+
+	// The forwarded request must be a distinct clone, not the original.
+	require.NotNil(t, base.received)
+	assert.NotSame(t, orig, base.received, "claimInjectionRoundTripper must clone the request")
+
+	// The original request must not be mutated.
+	assert.Empty(t, orig.Header.Get("X-User-Sub"), "original request header must not be mutated")
+}

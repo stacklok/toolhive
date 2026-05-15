@@ -95,6 +95,32 @@ func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 	return i.base.RoundTrip(req)
 }
 
+// claimInjectionRoundTripper injects authenticated user identity claims as HTTP headers
+// so backend MCP servers can identify the user without OAuth token introspection.
+//
+// Headers injected when identity is present:
+//   - X-User-Sub:   the authenticated user's subject claim (Google/OIDC sub)
+//   - X-User-Email: the user's email address (if present in token)
+//   - X-User-Name:  the user's display name (if present in token)
+type claimInjectionRoundTripper struct {
+	base     http.RoundTripper
+	identity *auth.Identity
+}
+
+func (c *claimInjectionRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	cloned := req.Clone(req.Context())
+	if c.identity.Subject != "" {
+		cloned.Header.Set("X-User-Sub", c.identity.Subject)
+	}
+	if c.identity.Email != "" {
+		cloned.Header.Set("X-User-Email", c.identity.Email)
+	}
+	if c.identity.Name != "" {
+		cloned.Header.Set("X-User-Name", c.identity.Name)
+	}
+	return c.base.RoundTrip(cloned)
+}
+
 // Compile-time assertion: mcpSession must implement Session.
 var _ Session = (*mcpSession)(nil)
 
@@ -296,7 +322,7 @@ func createMCPClient(
 	slog.Debug("Applied authentication strategy", "strategy", strategy.Name(), "backendID", target.WorkloadID)
 
 	// Build shared transport chain (innermost first → outermost):
-	//   http.DefaultTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
+	//   http.DefaultTransport → authRoundTripper → identityRoundTripper → claimInjectionRoundTripper → headerForwardRoundTripper
 	// On an outbound request, the outermost stage runs first: header-forward
 	// injects its headers onto a request that does not yet carry auth/identity
 	// headers, then inner stages run and call Set() unconditionally so any
@@ -318,6 +344,11 @@ func createMCPClient(
 	// refreshed identity placed on the request context by
 	// auth.TokenValidator.Middleware (see issue #5323).
 	base = &identityRoundTripper{base: base, fallbackIdentity: identity}
+	// Inject user identity as HTTP headers so backend MCP servers can read
+	// X-User-Sub / X-User-Email without needing their own /introspect calls.
+	if identity != nil {
+		base = &claimInjectionRoundTripper{base: base, identity: identity}
+	}
 	base, err = headerforward.BuildHeaderForwardTripper(ctx, base, target.HeaderForward, provider, target.WorkloadID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build header-forward transport for backend %s: %w", target.WorkloadID, err)

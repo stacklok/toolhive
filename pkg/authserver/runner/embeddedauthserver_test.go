@@ -623,6 +623,73 @@ func TestBuildPureOAuth2ConfigWithEnvVar(t *testing.T) {
 	})
 }
 
+func TestBuildPureOAuth2ConfigIdentityFromToken(t *testing.T) {
+	t.Parallel()
+
+	baseRC := func() *authserver.UpstreamRunConfig {
+		return &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				ClientID:              "my-client-id",
+				RedirectURI:           "https://my-app.com/callback",
+			},
+		}
+	}
+
+	t.Run("nil IdentityFromToken produces nil in runtime config", func(t *testing.T) {
+		t.Parallel()
+
+		rc := baseRC()
+		// IdentityFromToken is not set
+
+		cfg, err := buildPureOAuth2Config(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.Nil(t, cfg.IdentityFromToken, "IdentityFromToken must be nil when not configured")
+	})
+
+	t.Run("all three paths round-trip correctly", func(t *testing.T) {
+		t.Parallel()
+
+		rc := baseRC()
+		rc.OAuth2Config.IdentityFromToken = &authserver.IdentityFromTokenRunConfig{
+			SubjectPath: "username",
+			NamePath:    "display_name",
+			EmailPath:   "email",
+		}
+
+		cfg, err := buildPureOAuth2Config(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		require.NotNil(t, cfg.IdentityFromToken)
+		assert.Equal(t, "username", cfg.IdentityFromToken.SubjectPath)
+		assert.Equal(t, "display_name", cfg.IdentityFromToken.NamePath)
+		assert.Equal(t, "email", cfg.IdentityFromToken.EmailPath)
+	})
+
+	t.Run("only SubjectPath set, name and email empty", func(t *testing.T) {
+		t.Parallel()
+
+		rc := baseRC()
+		rc.OAuth2Config.IdentityFromToken = &authserver.IdentityFromTokenRunConfig{
+			SubjectPath: "authed_user.id",
+		}
+
+		cfg, err := buildPureOAuth2Config(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		require.NotNil(t, cfg.IdentityFromToken)
+		assert.Equal(t, "authed_user.id", cfg.IdentityFromToken.SubjectPath)
+		assert.Empty(t, cfg.IdentityFromToken.NamePath)
+		assert.Empty(t, cfg.IdentityFromToken.EmailPath)
+	})
+}
+
 func TestNewHMACSecrets(t *testing.T) {
 	t.Parallel()
 

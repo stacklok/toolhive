@@ -280,6 +280,14 @@ type OAuth2UpstreamRunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	TokenResponseMapping *TokenResponseMappingRunConfig `json:"token_response_mapping,omitempty" yaml:"token_response_mapping,omitempty"`
 
+	// IdentityFromToken extracts user identity (subject, name, email) directly from the
+	// OAuth2 token-endpoint response body using gjson dot-notation paths. When set, the
+	// embedded auth server skips the userinfo HTTP call entirely. Mirrors the CRD type
+	// (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative
+	// trust-model and uniqueness documentation lives there.
+	//nolint:lll // field tags require full JSON+YAML names
+	IdentityFromToken *IdentityFromTokenRunConfig `json:"identity_from_token,omitempty" yaml:"identity_from_token,omitempty"`
+
 	// AdditionalAuthorizationParams are extra query parameters to include in
 	// authorization requests. Useful for provider-specific parameters like
 	// Google's access_type=offline.
@@ -381,6 +389,22 @@ type TokenResponseMappingRunConfig struct {
 
 	// ExpiresInPath is the dot-notation path to the expires_in value. Defaults to "expires_in".
 	ExpiresInPath string `json:"expires_in_path,omitempty" yaml:"expires_in_path,omitempty"`
+}
+
+// IdentityFromTokenRunConfig configures extracting user identity claims directly from
+// the token-endpoint response body. Mirrors the CRD type
+// (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative
+// trust-model and uniqueness documentation lives there.
+type IdentityFromTokenRunConfig struct {
+	// SubjectPath is the dot-notation path to the subject (user ID) field.
+	// Required when IdentityFromToken is set.
+	SubjectPath string `json:"subject_path" yaml:"subject_path"`
+
+	// NamePath is the dot-notation path to the display name field.
+	NamePath string `json:"name_path,omitempty" yaml:"name_path,omitempty"`
+
+	// EmailPath is the dot-notation path to the email address field.
+	EmailPath string `json:"email_path,omitempty" yaml:"email_path,omitempty"`
 }
 
 // UserInfoRunConfig contains UserInfo endpoint configuration.
@@ -616,6 +640,10 @@ func (c *OAuth2UpstreamRunConfig) Validate() error {
 						"when dcr_config.registration_endpoint is set (no discovery to populate them)")
 			}
 		}
+	}
+
+	if c.IdentityFromToken != nil && c.IdentityFromToken.SubjectPath == "" {
+		return fmt.Errorf("oauth2 upstream: identity_from_token.subject_path must not be empty when identity_from_token is configured")
 	}
 
 	return nil

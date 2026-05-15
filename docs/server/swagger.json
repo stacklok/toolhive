@@ -368,6 +368,24 @@
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig": {
+                "description": "IdentityFromToken extracts user identity (subject, name, email) directly from the\nOAuth2 token-endpoint response body using gjson dot-notation paths. When set, the\nembedded auth server skips the userinfo HTTP call entirely. Mirrors the CRD type\n(cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative\ntrust-model and uniqueness documentation lives there.",
+                "properties": {
+                    "email_path": {
+                        "description": "EmailPath is the dot-notation path to the email address field.",
+                        "type": "string"
+                    },
+                    "name_path": {
+                        "description": "NamePath is the dot-notation path to the display name field.",
+                        "type": "string"
+                    },
+                    "subject_path": {
+                        "description": "SubjectPath is the dot-notation path to the subject (user ID) field.\nRequired when IdentityFromToken is set.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig": {
                 "description": "OAuth2Config contains OAuth 2.0-specific configuration.\nRequired when Type is \"oauth2\", must be nil when Type is \"oidc\".",
                 "properties": {
@@ -396,6 +414,9 @@
                     },
                     "dcr_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig"
+                    },
+                    "identity_from_token": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig"
                     },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nWhen not specified, defaults to `{issuer}/oauth/callback`.",
@@ -831,7 +852,8 @@
                     "mistral-vibe",
                     "codex",
                     "kimi-cli",
-                    "factory"
+                    "factory",
+                    "copilot-cli"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -861,7 +883,8 @@
                     "MistralVibe",
                     "Codex",
                     "KimiCli",
-                    "Factory"
+                    "Factory",
+                    "CopilotCli"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {

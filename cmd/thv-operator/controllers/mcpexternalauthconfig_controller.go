@@ -216,6 +216,7 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 	}
 	ctrlutil.SortWorkloadRefs(refs)
 	externalAuthConfig.Status.ReferencingWorkloads = refs
+	externalAuthConfig.Status.ReferenceCount = workloadReferenceCount(refs)
 
 	// Update the MCPExternalAuthConfig status
 	if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
@@ -271,6 +272,7 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 				ObservedGeneration: externalAuthConfig.Generation,
 			})
 			externalAuthConfig.Status.ReferencingWorkloads = referencingWorkloads
+			externalAuthConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
 			if updateErr := r.Status().Update(ctx, externalAuthConfig); updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
 			}
@@ -559,8 +561,10 @@ func (r *MCPExternalAuthConfigReconciler) updateReferencingWorkloads(
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing workloads: %w", err)
 	}
 
-	if !ctrlutil.WorkloadRefsEqual(externalAuthConfig.Status.ReferencingWorkloads, refs) {
+	if !ctrlutil.WorkloadRefsEqual(externalAuthConfig.Status.ReferencingWorkloads, refs) ||
+		externalAuthConfig.Status.ReferenceCount != workloadReferenceCount(refs) {
 		externalAuthConfig.Status.ReferencingWorkloads = refs
+		externalAuthConfig.Status.ReferenceCount = workloadReferenceCount(refs)
 		if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
 			logger := log.FromContext(ctx)
 			logger.Error(err, "Failed to update MCPExternalAuthConfig status")

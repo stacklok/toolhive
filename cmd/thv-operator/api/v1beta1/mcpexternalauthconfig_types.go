@@ -1036,6 +1036,10 @@ type MCPExternalAuthConfigStatus struct {
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
 
+	// ReferenceCount is the number of workloads referencing this config.
+	// +optional
+	ReferenceCount int32 `json:"referenceCount,omitempty"`
+
 	// ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
 	// Each entry identifies the workload by kind and name.
 	// +listType=map
@@ -1050,7 +1054,7 @@ type MCPExternalAuthConfigStatus struct {
 // +kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+// +kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.

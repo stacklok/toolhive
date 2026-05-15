@@ -26,9 +26,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Valid
       type: string
-    - jsonPath: .status.referencingWorkloads
+    - jsonPath: .status.referenceCount
       name: References
-      type: string
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -1221,6 +1221,11 @@ spec:
                   It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server.
                 format: int64
                 type: integer
+              referenceCount:
+                description: ReferenceCount is the number of workloads referencing
+                  this config.
+                format: int32
+                type: integer
               referencingWorkloads:
                 description: |-
                   ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
@@ -1262,9 +1267,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Valid
       type: string
-    - jsonPath: .status.referencingWorkloads
+    - jsonPath: .status.referenceCount
       name: References
-      type: string
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -2457,6 +2462,11 @@ spec:
                   ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.
                   It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server.
                 format: int64
+                type: integer
+              referenceCount:
+                description: ReferenceCount is the number of workloads referencing
+                  this config.
+                format: int32
                 type: integer
               referencingWorkloads:
                 description: |-

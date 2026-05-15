@@ -4171,3 +4171,64 @@ func TestVirtualMCPServerReconciler_IdentitySynthesizedTransitionsOnValidationFa
 	assert.NotContains(t, cond.Message, "atlassian",
 		"stale message naming the now-removed upstream must not survive the broken edit")
 }
+
+func TestVirtualMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) {
+	t.Parallel()
+
+	existingRef := mcpv1beta1.WorkloadReference{
+		Kind: mcpv1beta1.WorkloadKindVirtualMCPServer,
+		Name: "existing",
+	}
+	newRef := mcpv1beta1.WorkloadReference{
+		Kind: mcpv1beta1.WorkloadKindVirtualMCPServer,
+		Name: "new",
+	}
+
+	tests := []struct {
+		name          string
+		vmcpName      string
+		expectedRefs  []mcpv1beta1.WorkloadReference
+		expectedCount int32
+	}{
+		{
+			name:          "adds new virtual server reference",
+			vmcpName:      "new",
+			expectedRefs:  []mcpv1beta1.WorkloadReference{existingRef, newRef},
+			expectedCount: 2,
+		},
+		{
+			name:          "does not duplicate existing reference",
+			vmcpName:      "existing",
+			expectedRefs:  []mcpv1beta1.WorkloadReference{existingRef},
+			expectedCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+
+			oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
+				Status: mcpv1beta1.MCPOIDCConfigStatus{
+					ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
+					ReferenceCount:       1,
+				},
+			}
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(oidcConfig).
+				WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
+				Build()
+			reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: scheme}
+
+			require.NoError(t, reconciler.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, tt.vmcpName))
+			assert.ElementsMatch(t, tt.expectedRefs, oidcConfig.Status.ReferencingWorkloads)
+			assert.Equal(t, tt.expectedCount, oidcConfig.Status.ReferenceCount)
+		})
+	}
+}

@@ -504,7 +504,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpWindsurf:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpWindsurf config should contain mcpServers key")
-			case LMStudio, Trae, Kiro, Antigravity, GeminiCli, KimiCli, Factory:
+			case LMStudio, Trae, Kiro, Antigravity, GeminiCli, KimiCli, Factory, CopilotCli:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"Config should contain mcpServers key")
 			case VSCodeServer:
@@ -563,7 +563,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
 				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
-				MistralVibe, Codex, KimiCli, Factory:
+				MistralVibe, Codex, KimiCli, Factory, CopilotCli:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -1292,8 +1292,8 @@ func TestGetAllClients(t *testing.T) {
 
 	clients := GetAllClients()
 
-	// Should return all 27 supported clients
-	assert.Len(t, clients, 27, "Expected 27 supported clients")
+	// Should return all 28 supported clients
+	assert.Len(t, clients, 28, "Expected 28 supported clients")
 
 	// Verify the list is sorted alphabetically
 	for i := 1; i < len(clients); i++ {
@@ -1507,7 +1507,7 @@ func TestGetClientListCSV(t *testing.T) {
 			clientNames[i-1], clientNames[i])
 	}
 
-	// Count the number of clients (should be 25)
+	// Count the number of clients (should be 28)
 	clients := strings.Split(csv, ", ")
-	assert.Len(t, clients, 27, "Expected 27 clients in CSV list")
+	assert.Len(t, clients, 28, "Expected 28 clients in CSV list")
 }

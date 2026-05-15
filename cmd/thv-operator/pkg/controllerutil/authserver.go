@@ -834,6 +834,14 @@ func buildOAuth2UpstreamRunConfig(
 			ExpiresInPath:    m.ExpiresInPath,
 		}
 	}
+	if cfg.IdentityFromToken != nil {
+		ift := cfg.IdentityFromToken
+		runConfig.IdentityFromToken = &authserver.IdentityFromTokenRunConfig{
+			SubjectPath: ift.SubjectPath,
+			NamePath:    ift.NamePath,
+			EmailPath:   ift.EmailPath,
+		}
+	}
 	if cfg.DCRConfig != nil {
 		runConfig.DCRConfig = buildDCRUpstreamRunConfig(cfg.DCRConfig, initialAccessTokenEnvVar)
 	}

@@ -62,6 +62,10 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		return nil, fmt.Errorf("config is required")
 	}
 
+	// Register gjson modifiers used by IdentityFromToken configs (e.g. @upstreamjwt).
+	// Without this, modifier-bearing paths silently fail to resolve.
+	upstream.RegisterModifiers()
+
 	// Fail loudly on operator-supplied misconfiguration (e.g. a baseline
 	// scope absent from scopes_supported) BEFORE touching storage or any
 	// other side-effecting work, so a bad config never reaches the network
@@ -566,6 +570,14 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 			ScopePath:        oauth2.TokenResponseMapping.ScopePath,
 			RefreshTokenPath: oauth2.TokenResponseMapping.RefreshTokenPath,
 			ExpiresInPath:    oauth2.TokenResponseMapping.ExpiresInPath,
+		}
+	}
+
+	if oauth2.IdentityFromToken != nil {
+		cfg.IdentityFromToken = &upstream.IdentityFromTokenConfig{
+			SubjectPath: oauth2.IdentityFromToken.SubjectPath,
+			NamePath:    oauth2.IdentityFromToken.NamePath,
+			EmailPath:   oauth2.IdentityFromToken.EmailPath,
 		}
 	}
 

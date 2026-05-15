@@ -21,10 +21,10 @@ on:
     paths:
       - 'cmd/thv-operator/api/**'
       # files/crds is the source of truth — controller-gen emits here, and
-      # crd-helm-wrapper copies from here into templates/. Any drift in
+      # helm-crd-wrapper copies from here into templates/. Any drift in
       # templates/ is caught by operator-ci.yml's generate-crds job, so
       # watching templates/ would be redundant. values.yaml and the
-      # crd-helm-wrapper only affect Helm conditionals and annotations the
+      # helm-crd-wrapper only affect Helm conditionals and annotations the
       # checker ignores, so they can't change what we compare.
       - 'deploy/charts/operator-crds/files/crds/**'
       # Self-exercise when either workflow file (real or no-op companion)

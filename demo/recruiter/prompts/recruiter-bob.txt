@@ -1,0 +1,5 @@
+Just wrapped a screen with Bob Martinez. US citizen, no visa issues. 5 years Go, mostly microservices work. His ask is $145K which seems fine. Technically though he struggled — I asked him to walk me through how Raft works and he couldn't get through it. Felt like he was below bar for senior level.
+
+I'm going to archive him. Can you log that and update the pipeline?
+
+Also, this is the second screen in a row where something obvious knocked the candidate out early — visa with Alice, distributed systems fundamentals with Bob. I feel like we could save everyone time if we checked those things right at the start of each call. Worth noting that pattern somewhere so I don't forget it.

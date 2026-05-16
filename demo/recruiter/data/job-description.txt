@@ -1,0 +1,88 @@
+Senior Software Engineer, Platform (Go)
+Stacklok · Remote (US only)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ABOUT STACKLOK
+
+Stacklok is an open-source security company building tools that help development
+teams trust their software supply chain. We build ToolHive — a lightweight,
+secure manager for Model Context Protocol (MCP) servers — and Minder, an
+open-source policy engine for your software supply chain.
+
+We are a small, fully remote team. Everyone ships production code. We have a
+strong bias toward async communication and written clarity over meetings.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+COMPENSATION
+
+Base salary: $100,000 – $150,000 USD (depending on experience and location)
+Total comp includes meaningful equity at an early-stage company.
+
+We do NOT sponsor US work visas. Candidates must be authorized to work in
+the United States without sponsorship now or in the future.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+THE ROLE
+
+We are looking for a Senior Software Engineer to join our platform team. You
+will work on the core infrastructure powering ToolHive and contribute to our
+Kubernetes operator (thv-operator).
+
+WHAT YOU WILL DO
+
+• Design and implement distributed systems components for MCP server management
+• Contribute to the Kubernetes operator using controller-runtime and CRDs
+• Build and maintain the MCP proxy runner and authentication middleware
+• Work across pkg/runner, pkg/auth, and cmd/thv layers of the codebase
+• Write clean, well-tested Go with a focus on operational simplicity
+• Review code, mentor peers, and raise the engineering bar across the team
+
+WHAT WE ARE LOOKING FOR
+
+• 5+ years of Go experience in production environments
+• Strong distributed systems fundamentals (consensus, failure modes, back-pressure)
+• Hands-on experience with Kubernetes and controller-runtime
+• Familiarity with container runtimes (Docker, containerd)
+• Strong written communication — we are async-first and documentation matters
+• Comfort with open-source development and working in public
+
+NICE TO HAVE
+
+• Experience with MCP (Model Context Protocol) or similar tool-use protocols
+• Contributions to open-source Go projects
+• Experience with OCI registries and artifact management
+• Familiarity with OIDC, OAuth 2.0, and modern auth patterns
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+WHAT WE OFFER
+
+• Fully remote (US only, EST/PST timezone preferred)
+• $100,000–$150,000 base salary + equity
+• Comprehensive health, dental, and vision insurance
+• $3,000 annual learning & development stipend
+• 4 weeks PTO + company holidays
+• Home office stipend
+• Async-first culture — no mandatory meetings before 9am your local time
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+HIRING PROCESS
+
+1. Recruiter phone screen (30 min) — role alignment, logistics, expectations
+2. Technical screen with Go exercises (90 min)
+3. System design interview (60 min)
+4. Final loop: hiring manager + team lead (90 min)
+5. Reference checks → offer
+
+We move quickly. Most candidates complete the process in 2–3 weeks.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+TO APPLY
+
+Apply via our careers page or reach out directly at careers@stacklok.com.
+Please include a link to a Go project you are proud of — open source preferred.

@@ -1,0 +1,1 @@
+We've wrapped up the first week of screens for the Senior Go Engineer role. I want to turn what we learned into something the whole recruiting team can reuse — a proper runbook for future phone screens so we're not reinventing this every time. Can you put that together based on what we've figured out?

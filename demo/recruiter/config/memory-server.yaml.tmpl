@@ -1,0 +1,15 @@
+storage:
+  provider: sqlite
+  dsn: DEMO_DB_PATH
+
+embedder:
+  provider: ollama
+  url: http://localhost:11434
+  model: nomic-embed-text
+
+server:
+  name: "ToolHive Memory Demo"
+  version: "0.1.0"
+  host: "127.0.0.1"
+  port: 8765
+  lifecycle_hours: 720

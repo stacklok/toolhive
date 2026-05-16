@@ -22,6 +22,7 @@ import (
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcpruntimeconfig "github.com/stacklok/toolhive/pkg/vmcp/config/runtime"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -84,7 +85,14 @@ func (r *VirtualMCPServerReconciler) ensureVmcpConfigConfigMap(
 	// Marshal the serializable Config to YAML for storage in ConfigMap.
 	// Note: gopkg.in/yaml.v3 produces deterministic output by sorting map keys alphabetically.
 	// This ensures stable checksums for triggering pod rollouts only when content actually changes.
-	vmcpConfigYAML, err := yaml.Marshal(config)
+	//
+	// Wrap in runtime.Config so future operator-resolved fields can be
+	// added to the ConfigMap without leaking into the public
+	// vmcpconfig.Config (and therefore the CRD schema). Today runtime.Config
+	// embeds vmcpconfig.Config inline and adds no extra keys, so the
+	// marshalled YAML is byte-identical.
+	runtimeCfg := vmcpruntimeconfig.Config{Config: *config}
+	vmcpConfigYAML, err := yaml.Marshal(runtimeCfg)
 	if err != nil {
 		return fmt.Errorf("failed to marshal vmcp config: %w", err)
 	}

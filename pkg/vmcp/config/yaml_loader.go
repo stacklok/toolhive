@@ -32,6 +32,13 @@ func NewYAMLLoader(filePath string, envReader env.Reader) *YAMLLoader {
 
 // Load reads and parses the YAML configuration file.
 // Uses strict unmarshalling to reject unknown fields.
+//
+// Note: when the operator writes the vMCP ConfigMap it wraps Config in
+// runtime.RuntimeConfig (see pkg/vmcp/config/runtime). Today the wrapper
+// adds no extra keys, so parsing into Config directly succeeds. When a
+// future operator-resolved sidecar field lands on RuntimeConfig, callers
+// that need it should use runtime.Load instead, which parses into the
+// wrapper.
 func (l *YAMLLoader) Load() (*Config, error) {
 	data, err := os.ReadFile(l.filePath)
 	if err != nil {

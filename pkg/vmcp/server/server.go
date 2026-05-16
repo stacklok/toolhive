@@ -181,6 +181,14 @@ type Config struct {
 	// session persistence; the Redis password is read from the
 	// THV_SESSION_REDIS_PASSWORD environment variable.
 	SessionStorage *vmcpconfig.SessionStorageConfig
+
+	// RequestTimeout overrides the inbound http.Server's ReadTimeout and
+	// WriteTimeout (defaults: 30s). When 0, the defaults are used.
+	// Applies to non-SSE routes; SSE GETs clear their per-request write
+	// deadline via transportmiddleware.WriteTimeout. Plumb the same value
+	// you pass to session.WithBackendRequestTimeout so a tool call that
+	// takes longer than 30s upstream can still complete its inbound POST.
+	RequestTimeout time.Duration
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
@@ -689,12 +697,18 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Create HTTP server
 	addr := fmt.Sprintf("%s:%d", s.config.Host, s.config.Port)
+	readTimeout := defaultReadTimeout
+	writeTimeout := defaultWriteTimeout
+	if s.config.RequestTimeout > 0 {
+		readTimeout = s.config.RequestTimeout
+		writeTimeout = s.config.RequestTimeout
+	}
 	s.httpServer = &http.Server{
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: defaultReadHeaderTimeout,
-		ReadTimeout:       defaultReadTimeout,
-		WriteTimeout:      defaultWriteTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
 		IdleTimeout:       defaultIdleTimeout,
 		MaxHeaderBytes:    defaultMaxHeaderBytes,
 	}

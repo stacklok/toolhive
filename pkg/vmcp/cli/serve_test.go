@@ -168,7 +168,7 @@ func newSessionFactoryMocks(t *testing.T) (*clientmocks.MockOutgoingAuthRegistry
 func TestCreateSessionFactory_WithHMACSecret(t *testing.T) {
 	t.Parallel()
 	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("a-sufficiently-long-hmac-secret-value-32b", false, registry, agg)
+	factory, err := createSessionFactory("a-sufficiently-long-hmac-secret-value-32b", false, registry, agg, 0)
 	require.NoError(t, err)
 	require.NotNil(t, factory)
 }
@@ -176,7 +176,7 @@ func TestCreateSessionFactory_WithHMACSecret(t *testing.T) {
 func TestCreateSessionFactory_HMACSecretExactly32Bytes(t *testing.T) {
 	t.Parallel()
 	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("12345678901234567890123456789012", false, registry, agg)
+	factory, err := createSessionFactory("12345678901234567890123456789012", false, registry, agg, 0)
 	require.NoError(t, err)
 	require.NotNil(t, factory)
 }
@@ -184,7 +184,7 @@ func TestCreateSessionFactory_HMACSecretExactly32Bytes(t *testing.T) {
 func TestCreateSessionFactory_ShortHMACSecret(t *testing.T) {
 	t.Parallel()
 	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("short", false, registry, agg)
+	factory, err := createSessionFactory("short", false, registry, agg, 0)
 	require.NoError(t, err)
 	require.NotNil(t, factory)
 }
@@ -192,7 +192,7 @@ func TestCreateSessionFactory_ShortHMACSecret(t *testing.T) {
 func TestCreateSessionFactory_NoSecretNonKubernetes(t *testing.T) {
 	t.Parallel()
 	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("", false, registry, agg)
+	factory, err := createSessionFactory("", false, registry, agg, 0)
 	require.NoError(t, err)
 	require.NotNil(t, factory)
 }
@@ -200,7 +200,7 @@ func TestCreateSessionFactory_NoSecretNonKubernetes(t *testing.T) {
 func TestCreateSessionFactory_NoSecretKubernetes(t *testing.T) {
 	t.Parallel()
 	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("", true, registry, agg)
+	factory, err := createSessionFactory("", true, registry, agg, 0)
 	require.Error(t, err)
 	require.ErrorContains(t, err, "an HMAC secret is required when running in Kubernetes")
 	require.Nil(t, factory)

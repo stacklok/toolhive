@@ -30,9 +30,12 @@ const (
 	// see createMCPClient for the rationale.
 	maxBackendResponseSize = 100 * 1024 * 1024 // 100 MB
 
-	// defaultBackendRequestTimeout is the wall-clock deadline for individual
-	// streamable-HTTP requests. Applied at both the http.Client and SDK layers
-	// (defense-in-depth). Not used for SSE, whose stream lifetime is unbounded.
+	// defaultBackendRequestTimeout is the fallback wall-clock deadline for
+	// individual streamable-HTTP requests when the caller passes 0. Applied at
+	// both the http.Client and SDK layers (defense-in-depth). Not used for SSE,
+	// whose stream lifetime is unbounded. Override via NewHTTPConnector's
+	// requestTimeout argument, which is plumbed from the
+	// VirtualMCPServer.spec.config.operational.timeouts.default CRD field.
 	defaultBackendRequestTimeout = 30 * time.Second
 )
 
@@ -196,7 +199,12 @@ func (c *mcpSession) GetPrompt(
 //
 // registry provides the authentication strategy for outgoing backend requests.
 // Pass a registry configured with the "unauthenticated" strategy to disable auth.
-func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
+//
+// requestTimeout sets the per-tool-call wall-clock deadline applied to the
+// streamable-HTTP http.Client and the mark3labs SDK. Pass 0 to use the
+// upstream default (defaultBackendRequestTimeout, 30s). SSE backends ignore
+// this argument because their stream lifetime is unbounded by design.
+func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry, requestTimeout time.Duration) func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
@@ -208,7 +216,7 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 		identity *auth.Identity,
 		sessionHint string,
 	) (Session, *vmcp.CapabilityList, error) {
-		c, err := createMCPClient(target, identity, registry, sessionHint)
+		c, err := createMCPClient(target, identity, registry, sessionHint, requestTimeout)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
 		}
@@ -243,7 +251,11 @@ func createMCPClient(
 	identity *auth.Identity,
 	registry vmcpauth.OutgoingAuthRegistry,
 	sessionHint string,
+	requestTimeout time.Duration,
 ) (*mcpclient.Client, error) {
+	if requestTimeout <= 0 {
+		requestTimeout = defaultBackendRequestTimeout
+	}
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
 	if target.AuthConfig != nil {
@@ -298,10 +310,10 @@ func createMCPClient(
 		})
 		httpClient := &http.Client{
 			Transport: sizeLimited,
-			Timeout:   defaultBackendRequestTimeout,
+			Timeout:   requestTimeout,
 		}
 		streamableOpts := []mcptransport.StreamableHTTPCOption{
-			mcptransport.WithHTTPTimeout(defaultBackendRequestTimeout),
+			mcptransport.WithHTTPTimeout(requestTimeout),
 			mcptransport.WithHTTPBasicClient(httpClient),
 		}
 		if sessionHint != "" {

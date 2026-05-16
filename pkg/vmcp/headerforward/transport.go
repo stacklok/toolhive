@@ -35,9 +35,13 @@ type headerForwardRoundTripper struct {
 }
 
 // RoundTrip injects the pre-resolved headers onto a clone of the request and
-// delegates to the wrapped transport. Headers already present on the request
-// are left untouched so inner transports (auth, identity, trace) can always
-// override user-supplied values for the same name.
+// delegates to the wrapped transport. Names already present on the inbound
+// request are skipped — this preserves any header the *caller* set on the
+// request before invoking the round-tripper chain. Inner (closer to the wire)
+// transports run AFTER this one and use Set() unconditionally, so on any
+// overlapping name those stages still win on the wire. Restricted names are
+// blocked at resolve time, so user-supplied config cannot reach this point
+// for Host, hop-by-hop, or X-Forwarded-* anyway.
 func (h *headerForwardRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if len(h.headers) == 0 {
 		return h.base.RoundTrip(req)

@@ -273,10 +273,15 @@ func createMCPClient(
 
 	slog.Debug("Applied authentication strategy", "strategy", strategy.Name(), "backendID", target.WorkloadID)
 
-	// Build shared transport chain: auth → identity propagation → header forward.
-	// HeaderForward is the outermost stage so inner stages (auth, identity) win
-	// on any overlapping header name — matching the ordering in
-	// headerForwardRoundTripper.RoundTrip, which skips names already set.
+	// Build shared transport chain (innermost first → outermost):
+	//   http.DefaultTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
+	// On an outbound request, the outermost stage runs first: header-forward
+	// injects its headers onto a request that does not yet carry auth/identity
+	// headers, then inner stages run and call Set() unconditionally so any
+	// overlapping name they care about (Authorization, identity headers) wins on
+	// the wire. Restricted header names (Host, hop-by-hop, X-Forwarded-*) are
+	// rejected at resolve time by resolveHeaderForward, so user-supplied
+	// HeaderForward cannot inject them in the first place.
 	// The per-transport sections below may add a size-limiting wrapper on top.
 	base := http.RoundTripper(http.DefaultTransport)
 	base = &authRoundTripper{

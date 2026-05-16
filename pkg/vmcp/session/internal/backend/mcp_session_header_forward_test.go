@@ -5,11 +5,7 @@ package backend
 
 import (
 	"context"
-	"encoding/json"
-	"io"
 	"net/http"
-	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -17,174 +13,235 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
-// headerCapturingBackend is a minimal streamable-HTTP MCP fake that records
-// inbound request headers keyed by JSON-RPC method. The test asserts that a
-// user-configured HeaderForward header reaches the backend on POST-INITIALIZE
-// traffic — see issue #5289. The startup capability-discovery path was fixed
-// in PR #5239; per-session HTTP traffic is still missing the wrap.
-type headerCapturingBackend struct {
-	t *testing.T
-
-	mu              sync.Mutex
-	headersByMethod map[string]http.Header
-}
-
-func newHeaderCapturingBackend(t *testing.T) (*headerCapturingBackend, string) {
-	t.Helper()
-	fb := &headerCapturingBackend{
-		t:               t,
-		headersByMethod: make(map[string]http.Header),
-	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/mcp", fb.handle)
-	ts := httptest.NewServer(mux)
-	t.Cleanup(ts.Close)
-	return fb, ts.URL + "/mcp"
-}
-
-func (f *headerCapturingBackend) headersFor(method string) http.Header {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.headersByMethod[method]
-}
-
-func (f *headerCapturingBackend) handle(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		// Streamable-HTTP transports may open a GET for server-pushed
-		// notifications; rejecting it cleanly is fine for this test.
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		f.t.Errorf("headerCapturingBackend: read body: %v", err)
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-	defer func() { _ = r.Body.Close() }()
-
-	var msg struct {
-		JSONRPC string          `json:"jsonrpc"`
-		ID      json.RawMessage `json:"id"`
-		Method  string          `json:"method"`
-	}
-	if err := json.Unmarshal(body, &msg); err != nil {
-		f.t.Errorf("headerCapturingBackend: decode: %v body=%s", err, string(body))
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
-
-	f.mu.Lock()
-	f.headersByMethod[msg.Method] = r.Header.Clone()
-	f.mu.Unlock()
-
-	// Notifications (no id, e.g. notifications/initialized) get an empty 202.
-	if len(msg.ID) == 0 || string(msg.ID) == "null" {
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-
-	switch msg.Method {
-	case string(mcp.MethodInitialize):
-		w.Header().Set("Mcp-Session-Id", "header-forward-test-session")
-		f.writeResult(w, msg.ID, map[string]any{
-			"protocolVersion": mcp.LATEST_PROTOCOL_VERSION,
-			"capabilities": map[string]any{
-				"tools": map[string]any{},
-			},
-			"serverInfo": map[string]any{"name": "header-forward-fake", "version": "0.0.0"},
-		})
-	case string(mcp.MethodToolsList):
-		f.writeResult(w, msg.ID, map[string]any{
-			"tools": []mcp.Tool{{Name: "echo", Description: "echo tool"}},
-		})
-	case string(mcp.MethodToolsCall):
-		f.writeResult(w, msg.ID, map[string]any{
-			"content": []map[string]any{
-				{"type": "text", "text": "ok"},
-			},
-			"isError": false,
-		})
-	default:
-		f.writeResult(w, msg.ID, map[string]any{})
-	}
-}
-
-func (f *headerCapturingBackend) writeResult(w http.ResponseWriter, id json.RawMessage, result any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusOK)
-	if err := json.NewEncoder(w).Encode(map[string]any{
-		"jsonrpc": "2.0",
-		"id":      json.RawMessage(id),
-		"result":  result,
-	}); err != nil {
-		f.t.Errorf("headerCapturingBackend: encode result: %v", err)
-	}
-}
-
-// TestHTTPSession_AppliesHeaderForwardToPostInitializeRequests is the red-phase
-// regression test for issue #5289. PR #5239 fixed HeaderForward for the vMCP
-// backend client (used for startup capability discovery) but did not extend the
-// fix to the session-side connector at pkg/vmcp/session/internal/backend.
-// As a result, user-configured headers (e.g. X-MCP-Toolsets for GitHub MCP)
-// never reach the backend on per-session requests like tools/call.
+// TestHTTPSession_AppliesHeaderForwardToPostInitializeRequests asserts the
+// invariants of the HeaderForward transport stage on the session-side
+// connector (pkg/vmcp/session/internal/backend). Fixes #5289.
 //
-// The test asserts that, after the connector completes Initialize, a
-// subsequent CallTool carries the configured plaintext header on the wire.
-// On main today it fails because the connector's transport chain does not
-// include a header-forward round-tripper — see createMCPClient in
-// mcp_session.go (the chain is http.DefaultTransport → authRoundTripper →
-// identityRoundTripper, with no HeaderForward stage).
+// The three subtests cover, in order:
+//   - plaintext: a user-configured AddPlaintextHeaders entry reaches the
+//     backend on post-initialize traffic (tools/call).
+//   - overlap precedence: when an inner auth stage writes the same header
+//     name that HeaderForward configures, the inner stage's value lands on
+//     the wire — proving the chain ordering documented on
+//     headerForwardRoundTripper.RoundTrip.
+//   - restricted-name rejection: NewHTTPConnector fails fast when
+//     HeaderForward names a restricted header, proving the
+//     resolveHeaderForward guard is wired into the session-side connector.
+//
+// Secret resolution requires t.Setenv and lives in its own non-parallel test
+// below (TestHTTPSession_HeaderForward_ResolvesSecretsFromEnv).
 func TestHTTPSession_AppliesHeaderForwardToPostInitializeRequests(t *testing.T) {
 	t.Parallel()
 
-	const (
-		headerName  = "X-MCP-Toolsets"
-		headerValue = "projects,issues,pull_requests,users,repos"
-	)
+	t.Run("plaintext header reaches backend on tools/call", func(t *testing.T) {
+		t.Parallel()
 
-	fb, url := newHeaderCapturingBackend(t)
+		const (
+			headerName  = "X-MCP-Toolsets"
+			headerValue = "projects,issues,pull_requests,users,repos"
+		)
+
+		fb := &fakeBackend{advertiseTools: true, tools: []mcp.Tool{{Name: "echo"}}}
+		url := newFakeBackend(t, fb)
+
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "header-forward-backend",
+			WorkloadName:  "header-forward-backend",
+			BaseURL:       url,
+			TransportType: "streamable-http",
+			HeaderForward: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					headerName: headerValue,
+				},
+			},
+		}
+
+		sess := connectAndCallEcho(t, target)
+		t.Cleanup(func() { _ = sess.Close() })
+
+		got := fb.headersFor(string(mcp.MethodToolsCall))
+		require.NotNil(t, got, "backend never received a tools/call request")
+		assert.Equal(t, headerValue, got.Get(headerName),
+			"HeaderForward.AddPlaintextHeaders must reach the backend on post-initialize requests")
+	})
+
+	t.Run("inner auth stage wins on overlapping header name", func(t *testing.T) {
+		t.Parallel()
+
+		// The chain runs outer→inner on the outbound request:
+		//   headerForwardRoundTripper → identityRoundTripper → authRoundTripper → http.DefaultTransport
+		// headerForwardRoundTripper sets X-Test-Identity first (request didn't
+		// have it). The inner authRoundTripper's Authenticate() then runs and
+		// calls Set() unconditionally, overwriting. We assert the auth value
+		// is the one on the wire.
+		const (
+			headerName        = "X-Test-Identity"
+			headerForwardVal  = "from-header-forward"
+			authStrategyValue = "from-auth"
+		)
+
+		fb := &fakeBackend{advertiseTools: true, tools: []mcp.Tool{{Name: "echo"}}}
+		url := newFakeBackend(t, fb)
+
+		registry := vmcpauth.NewDefaultOutgoingAuthRegistry()
+		require.NoError(t, registry.RegisterStrategy(
+			"test-header-setter",
+			&testHeaderSettingStrategy{name: "test-header-setter", header: headerName, value: authStrategyValue},
+		))
+
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "overlap-backend",
+			WorkloadName:  "overlap-backend",
+			BaseURL:       url,
+			TransportType: "streamable-http",
+			AuthConfig:    &authtypes.BackendAuthStrategy{Type: "test-header-setter"},
+			HeaderForward: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					headerName: headerForwardVal,
+				},
+			},
+		}
+
+		connector := NewHTTPConnector(registry)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		sess, _, err := connector(ctx, target, nil, "")
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = sess.Close() })
+
+		_, err = sess.CallTool(ctx, "echo", map[string]any{}, nil)
+		require.NoError(t, err)
+
+		got := fb.headersFor(string(mcp.MethodToolsCall))
+		require.NotNil(t, got, "backend never received a tools/call request")
+		assert.Equal(t, authStrategyValue, got.Get(headerName),
+			"inner auth stage must overwrite HeaderForward on overlapping header names")
+	})
+
+	t.Run("restricted header in HeaderForward fails connector at startup", func(t *testing.T) {
+		t.Parallel()
+
+		// resolveHeaderForward rejects names in middleware.RestrictedHeaders.
+		// Asserts the guard is reachable from the session-side connector — a
+		// misconfigured backend surfaces at session creation, not silently as
+		// a missing header on every request.
+		fb := &fakeBackend{advertiseTools: true, tools: []mcp.Tool{{Name: "echo"}}}
+		url := newFakeBackend(t, fb)
+
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "restricted-header-backend",
+			WorkloadName:  "restricted-header-backend",
+			BaseURL:       url,
+			TransportType: "streamable-http",
+			HeaderForward: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					// X-Forwarded-For is in middleware.RestrictedHeaders — letting
+					// user config inject it would enable identity-spoofing of the
+					// caller's IP to the backend.
+					"X-Forwarded-For": "1.2.3.4",
+				},
+			},
+		}
+
+		registry := newTestRegistry(t)
+		connector := NewHTTPConnector(registry)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		_, _, err := connector(ctx, target, nil, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "restricted",
+			"connector must reject restricted header names in HeaderForward config")
+	})
+}
+
+// TestHTTPSession_HeaderForward_ResolvesSecretsFromEnv asserts that an
+// AddHeadersFromSecret entry is resolved via the EnvironmentProvider that
+// NewHTTPConnector constructs internally and reaches the backend on
+// post-initialize traffic.
+//
+// Lives in its own non-parallel top-level test because t.Setenv (the only
+// way to inject a value into the connector's env-backed secrets.Provider
+// without changing production APIs) cannot be used inside a parallel test
+// tree.
+func TestHTTPSession_HeaderForward_ResolvesSecretsFromEnv(t *testing.T) {
+	const (
+		headerName    = "X-GitHub-Auth"
+		secretID      = "GITHUB_PAT"
+		secretEnvName = secrets.EnvVarPrefix + secretID
+		secretValue   = "ghp_test_value_12345"
+	)
+	t.Setenv(secretEnvName, secretValue)
+
+	fb := &fakeBackend{advertiseTools: true, tools: []mcp.Tool{{Name: "echo"}}}
+	url := newFakeBackend(t, fb)
 
 	target := &vmcp.BackendTarget{
-		WorkloadID:    "header-forward-backend",
-		WorkloadName:  "header-forward-backend",
+		WorkloadID:    "secret-header-backend",
+		WorkloadName:  "secret-header-backend",
 		BaseURL:       url,
 		TransportType: "streamable-http",
 		HeaderForward: &vmcp.HeaderForwardConfig{
-			AddPlaintextHeaders: map[string]string{
-				headerName: headerValue,
+			AddHeadersFromSecret: map[string]string{
+				headerName: secretID,
 			},
 		},
 	}
+
+	sess := connectAndCallEcho(t, target)
+	t.Cleanup(func() { _ = sess.Close() })
+
+	got := fb.headersFor(string(mcp.MethodToolsCall))
+	require.NotNil(t, got, "backend never received a tools/call request")
+	assert.Equal(t, secretValue, got.Get(headerName),
+		"HeaderForward.AddHeadersFromSecret must be resolved via the env provider and reach the backend")
+}
+
+// connectAndCallEcho builds an HTTP session for target via the default test
+// registry, makes a single tools/call("echo"), and returns the open session.
+// The caller is responsible for closing the session (typically via t.Cleanup).
+func connectAndCallEcho(t *testing.T, target *vmcp.BackendTarget) Session {
+	t.Helper()
 
 	registry := newTestRegistry(t)
 	connector := NewHTTPConnector(registry)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
+	t.Cleanup(cancel)
 
 	sess, caps, err := connector(ctx, target, nil, "")
 	require.NoError(t, err, "connector must initialise the backend successfully")
 	require.NotNil(t, sess, "connector returned nil session")
 	require.NotNil(t, caps, "connector returned nil capability list")
-	t.Cleanup(func() { _ = sess.Close() })
 
-	// Make a single MCP call AFTER initialize completes. tools/call exercises
-	// the same transport chain as initialize but is unambiguously a
-	// post-handshake request — which is exactly where the regression lives.
 	_, err = sess.CallTool(ctx, "echo", map[string]any{}, nil)
 	require.NoError(t, err, "post-initialize CallTool must succeed")
 
-	// The recorded inbound headers for the tools/call request must include the
-	// user-configured forward header. This is the single assertion target:
-	// the test fails for exactly one reason — header missing on the recorded
-	// post-initialize request.
-	gotHeaders := fb.headersFor(string(mcp.MethodToolsCall))
-	require.NotNil(t, gotHeaders, "backend never received a tools/call request")
-	assert.Equal(t, headerValue, gotHeaders.Get(headerName),
-		"HeaderForward.AddPlaintextHeaders must reach the backend on post-initialize requests")
+	return sess
 }
+
+// testHeaderSettingStrategy is a vmcpauth.Strategy stand-in that unconditionally
+// writes a single header onto every outbound request. Used to drive the
+// overlap-precedence assertion: when HeaderForward configures the same name,
+// this strategy (called from the inner authRoundTripper) must win on the wire.
+type testHeaderSettingStrategy struct {
+	name   string
+	header string
+	value  string
+}
+
+func (s *testHeaderSettingStrategy) Name() string { return s.name }
+
+func (s *testHeaderSettingStrategy) Authenticate(_ context.Context, req *http.Request, _ *authtypes.BackendAuthStrategy) error {
+	req.Header.Set(s.header, s.value)
+	return nil
+}
+
+func (*testHeaderSettingStrategy) Validate(_ *authtypes.BackendAuthStrategy) error { return nil }

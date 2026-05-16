@@ -1035,14 +1035,18 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	return ctrl.Result{}, nil
 }
 
-// ensureAuthSecretsValid validates secret references and sets the AuthConfigured condition.
+// ensureAuthSecretsValid validates secret references and the authz ConfigMap reference
+// (when configured), and sets the AuthConfigured condition. Catches configuration errors
+// early so the user gets a status-level diagnostic instead of an opaque conversion error
+// or, worse, a silently degraded runtime.
 func (r *VirtualMCPServerReconciler) ensureAuthSecretsValid(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
+	ctxLogger := log.FromContext(ctx)
+
 	if err := r.validateSecretReferences(ctx, vmcp); err != nil {
-		ctxLogger := log.FromContext(ctx)
 		ctxLogger.Error(err, "Secret validation failed")
 		statusManager.SetAuthConfiguredCondition(
 			mcpv1beta1.ConditionReasonAuthInvalid,
@@ -1053,6 +1057,27 @@ func (r *VirtualMCPServerReconciler) ensureAuthSecretsValid(
 		if r.Recorder != nil {
 			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "SecretValidationFailed", "ValidateSecrets",
 				"Secret validation failed: %v", err)
+		}
+		return err
+	}
+
+	if err := r.validateAuthzConfigMapRef(ctx, vmcp); err != nil {
+		ctxLogger.Error(err, "Authz ConfigMap validation failed")
+		reason := mcpv1beta1.ConditionReasonAuthzConfigMapInvalid
+		eventReason := "AuthzConfigMapInvalid"
+		if errors.IsNotFound(err) {
+			reason = mcpv1beta1.ConditionReasonAuthzConfigMapNotFound
+			eventReason = "AuthzConfigMapNotFound"
+		}
+		statusManager.SetAuthConfiguredCondition(
+			reason,
+			fmt.Sprintf("Authorization ConfigMap is invalid: %v", err),
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, eventReason, "ValidateAuthzConfigMap",
+				"Authz ConfigMap validation failed: %v", err)
 		}
 		return err
 	}

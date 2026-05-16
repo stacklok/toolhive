@@ -114,16 +114,29 @@ func newCedarAuthzMiddleware(
 
 	slog.Info("creating Cedar authorization middleware", "policies", len(authzCfg.Policies))
 
+	// Default EntitiesJSON to "[]" when the operator/CLI did not set it. Cedar
+	// requires a valid JSON array; an empty string would fail to parse.
+	entitiesJSON := authzCfg.EntitiesJSON
+	if entitiesJSON == "" {
+		entitiesJSON = "[]"
+	}
+
 	// Build the Cedar config structure expected by the authorizer factory.
 	// PrimaryUpstreamProvider is forwarded so Cedar evaluates claims from the
 	// upstream IDP token when the embedded auth server is active.
+	// GroupClaimName, RoleClaimName, and GroupEntityType plumb the enterprise
+	// JWT-to-entity mapping (groups/roles claims → Cedar parent UIDs) through
+	// to the authorizer.
 	cedarConfig := cedar.Config{
 		Version: "1.0",
 		Type:    cedar.ConfigType,
 		Options: &cedar.ConfigOptions{
 			Policies:                authzCfg.Policies,
-			EntitiesJSON:            "[]",
+			EntitiesJSON:            entitiesJSON,
 			PrimaryUpstreamProvider: authzCfg.PrimaryUpstreamProvider,
+			GroupClaimName:          authzCfg.GroupClaimName,
+			RoleClaimName:           authzCfg.RoleClaimName,
+			GroupEntityType:         authzCfg.GroupEntityType,
 		},
 	}
 

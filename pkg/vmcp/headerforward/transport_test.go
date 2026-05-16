@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package client
+package headerforward
 
 import (
 	"context"
@@ -237,7 +237,7 @@ func TestResolveHeaderForward_NilCfgReturnsNil(t *testing.T) {
 func TestBuildHeaderForwardTripper_NilCfgReturnsBase(t *testing.T) {
 	t.Parallel()
 	base := &captureTripper{}
-	got, err := buildHeaderForwardTripper(t.Context(), base, nil, nil, "x")
+	got, err := BuildHeaderForwardTripper(t.Context(), base, nil, nil, "x")
 	require.NoError(t, err)
 	assert.Same(t, base, got, "nil cfg must pass base through untouched")
 }

@@ -64,6 +64,11 @@ func (h *headerForwardRoundTripper) RoundTrip(req *http.Request) (*http.Response
 // backend's pre-resolved HeaderForwardConfig. Returns base unchanged when no
 // header injection is configured or the effective header set is empty.
 //
+// Used by both the vMCP backend client (startup capability discovery) and the
+// per-session backend connector (long-lived MCP traffic). Exported so the
+// session backend in pkg/vmcp/session/internal/backend can share the same
+// transport-chain wiring.
+//
 // Fails loudly (constructor validation, per go-style.md) when a secret identifier
 // cannot be resolved through the provider, so a misconfigured backend surfaces
 // at pod startup — not as a silent missing-header on every request.

@@ -725,6 +725,75 @@ func TestRemoveRegistry_BlockedByPolicyGate(t *testing.T) {
 	assert.Contains(t, w.Body.String(), "organization policy")
 }
 
+//nolint:paralleltest // Mutates global registry auth defaulter singleton
+func TestUpdateRegistry_AuthDefaulterFillsMissingAuth(t *testing.T) {
+	originalGate := registry.ActivePolicyGate()
+	originalDefaulter := registry.ActiveAuthDefaulter()
+	t.Cleanup(func() {
+		registry.RegisterPolicyGate(originalGate)
+		registry.RegisterAuthDefaulter(originalDefaulter)
+	})
+	registry.RegisterPolicyGate(registry.NoopPolicyGate{})
+
+	// Mock an OIDC discovery server so SetOAuthAuth's discovery succeeds.
+	var oidcSrv *httptest.Server
+	oidcSrv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/.well-known/openid-configuration" &&
+			r.URL.Path != "/.well-known/oauth-authorization-server" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":                 oidcSrv.URL,
+			"authorization_endpoint": oidcSrv.URL + "/authorize",
+			"token_endpoint":         oidcSrv.URL + "/token",
+		})
+	}))
+	t.Cleanup(oidcSrv.Close)
+
+	const discoveredClientID = "disco-client"
+	registry.RegisterAuthDefaulter(func(_ context.Context) (string, string, error) {
+		return oidcSrv.URL, discoveredClientID, nil
+	})
+
+	validRegistryServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"$schema": "https://example.com/schema.json",
+			"version": "1.0.0",
+			"meta":    map[string]interface{}{"last_updated": "2025-01-01T00:00:00Z"},
+			"data": map[string]interface{}{
+				"servers": []interface{}{
+					map[string]interface{}{"name": "io.example.test-server"},
+				},
+			},
+		})
+	}))
+	t.Cleanup(validRegistryServer.Close)
+
+	provider, cleanup := CreateTestConfigProvider(t, nil)
+	defer cleanup()
+	routes := NewRegistryRoutesWithProvider(provider)
+
+	body := `{"url":"` + validRegistryServer.URL + `","allow_private_ip":true}`
+	req := httptest.NewRequest(http.MethodPut, "/default", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("name", "default")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+
+	w := httptest.NewRecorder()
+	routes.updateRegistry(w, req)
+
+	require.Equal(t, http.StatusOK, w.Code, "expected success: %s", w.Body.String())
+
+	cfg := provider.GetConfig()
+	require.NotNil(t, cfg.RegistryAuth.OAuth, "defaulter should have populated OAuth config")
+	assert.Equal(t, oidcSrv.URL, cfg.RegistryAuth.OAuth.Issuer)
+	assert.Equal(t, discoveredClientID, cfg.RegistryAuth.OAuth.ClientID)
+}
+
 //nolint:paralleltest // Mutates global registry policy gate singleton
 func TestUpdateRegistry_AllowedByDefaultGate(t *testing.T) {
 	original := registry.ActivePolicyGate()

@@ -627,20 +627,9 @@ func (rr *RegistryRoutes) updateRegistry(w http.ResponseWriter, r *http.Request)
 	}
 	responseType = registryType
 
-	// Always overwrite auth: if auth is provided, set it; if not, clear it.
-	// This prevents stale tokens from being sent to the wrong registry server.
-	if req.Auth != nil {
-		if err := rr.processAuthUpdate(r.Context(), req.Auth); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-	} else {
-		authMgr := regpkg.NewAuthManager(rr.configProvider)
-		if err := authMgr.UnsetAuth(); err != nil {
-			slog.Error("failed to clear registry auth", "error", err)
-			http.Error(w, "Failed to clear registry auth", http.StatusInternalServerError)
-			return
-		}
+	if err := rr.applyRegistryAuth(r.Context(), req.Auth); err != nil {
+		writeRegistryAuthError(w, err)
+		return
 	}
 
 	// Reset the registry provider cache to pick up configuration changes
@@ -694,6 +683,51 @@ func updateRegistryConfigFromRequest(req *UpdateRegistryRequest) *regpkg.UpdateR
 		cfg.AllowPrivateIP = *req.AllowPrivateIP
 	}
 	return cfg
+}
+
+// authClearError signals that clearing the registry auth (the no-auth path)
+// failed. updateRegistry maps it to a 500; the explicit-auth path returns 400.
+type authClearError struct{ err error }
+
+func (e *authClearError) Error() string { return e.err.Error() }
+func (e *authClearError) Unwrap() error { return e.err }
+
+// writeRegistryAuthError translates an applyRegistryAuth error into the
+// appropriate HTTP status. Clearing failures are 500 (internal); validation
+// or OIDC discovery failures from processAuthUpdate are 400 (client input).
+func writeRegistryAuthError(w http.ResponseWriter, err error) {
+	var clearErr *authClearError
+	if errors.As(err, &clearErr) {
+		slog.Error("failed to clear registry auth", "error", clearErr.err)
+		http.Error(w, "Failed to clear registry auth", http.StatusInternalServerError)
+		return
+	}
+	http.Error(w, err.Error(), http.StatusBadRequest)
+}
+
+// applyRegistryAuth overwrites the registry auth config to match the incoming
+// request. If the caller supplied auth it is applied verbatim. If not, an
+// enterprise-registered AuthDefaulter gets a chance to supply issuer/client_id
+// from /.well-known discovery before falling back to clearing the auth — this
+// lets Studio and `thv config set-registry` work without distributing OAuth
+// params out of band. Always overwrites to prevent stale tokens from being
+// sent to a different registry server.
+func (rr *RegistryRoutes) applyRegistryAuth(ctx context.Context, authReq *UpdateRegistryAuthRequest) error {
+	if authReq == nil {
+		if issuer, clientID := regpkg.ResolveAuthDefaults(
+			ctx, "", "", regpkg.ActiveAuthDefaulter(),
+		); issuer != "" && clientID != "" {
+			authReq = &UpdateRegistryAuthRequest{Issuer: issuer, ClientID: clientID}
+		}
+	}
+	if authReq != nil {
+		return rr.processAuthUpdate(ctx, authReq)
+	}
+	authMgr := regpkg.NewAuthManager(rr.configProvider)
+	if err := authMgr.UnsetAuth(); err != nil {
+		return &authClearError{err: err}
+	}
+	return nil
 }
 
 // processAuthUpdate validates and applies OAuth configuration for registry auth.

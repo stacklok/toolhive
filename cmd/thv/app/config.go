@@ -181,9 +181,13 @@ func unsetCACertCmdFunc(_ *cobra.Command, _ []string) error {
 func setRegistryCmdFunc(cmd *cobra.Command, args []string) error {
 	input := args[0]
 
+	issuer, clientID := registry.ResolveAuthDefaults(
+		cmd.Context(), registryAuthIssuer, registryAuthClientID, registry.ActiveAuthDefaulter(),
+	)
+
 	cfg := &registry.UpdateRegistryConfig{
 		AllowPrivateIP: allowPrivateRegistryIp,
-		HasAuth:        registryAuthIssuer != "" && registryAuthClientID != "",
+		HasAuth:        issuer != "" && clientID != "",
 	}
 	if strings.HasPrefix(input, "http://") || strings.HasPrefix(input, "https://") {
 		cfg.URL = input
@@ -209,9 +213,9 @@ func setRegistryCmdFunc(cmd *cobra.Command, args []string) error {
 		return enhanceRegistryError(err, input, registryType)
 	}
 
-	// If auth flags were provided, configure the new auth
-	if registryAuthIssuer != "" && registryAuthClientID != "" {
-		if err := authManager.SetOAuthAuth(cmd.Context(), registryAuthIssuer, registryAuthClientID, registryAuthAudience,
+	// If auth was provided (via flags or discovered from the platform), configure it.
+	if issuer != "" && clientID != "" {
+		if err := authManager.SetOAuthAuth(cmd.Context(), issuer, clientID, registryAuthAudience,
 			registryAuthScopes); err != nil {
 			return fmt.Errorf("failed to configure registry auth: %w", err)
 		}

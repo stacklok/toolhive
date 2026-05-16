@@ -341,6 +341,12 @@ func (*StdioTransport) SetOnHealthCheckFailed(_ types.HealthCheckFailedCallback)
 	// No-op: stdio transport doesn't support health checks
 }
 
+// SetOnHealthCheckRecovered sets the callback for health check recovery.
+// This is a no-op for stdio transport as it doesn't support health checks.
+func (*StdioTransport) SetOnHealthCheckRecovered(_ types.HealthCheckRecoveredCallback) {
+	// No-op: stdio transport doesn't support health checks
+}
+
 // SetOnUnauthorizedResponse sets the callback for 401 Unauthorized responses.
 // This is a no-op for stdio transport as it doesn't handle HTTP responses.
 func (*StdioTransport) SetOnUnauthorizedResponse(_ types.UnauthorizedResponseCallback) {

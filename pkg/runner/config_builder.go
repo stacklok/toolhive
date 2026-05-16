@@ -338,6 +338,18 @@ func WithAllowDockerGateway(allow bool) RunConfigBuilderOption {
 	}
 }
 
+// WithAllowedOrigins sets the HTTP Origin-header allowlist used for
+// DNS-rebinding protection (MCP 2025-11-25 §"Security Warning").
+// An empty slice defers the choice to middleware wiring, which derives a
+// loopback-only default when the bind host is loopback and otherwise leaves
+// the middleware disabled.
+func WithAllowedOrigins(origins []string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.AllowedOrigins = origins
+		return nil
+	}
+}
+
 // WithTrustProxyHeaders sets whether to trust X-Forwarded-* headers from reverse proxies
 func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

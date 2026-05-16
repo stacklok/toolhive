@@ -5,6 +5,7 @@ package runner
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -20,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
+	"github.com/stacklok/toolhive/pkg/transport/middleware/origin"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/usagemetrics"
 	"github.com/stacklok/toolhive/pkg/webhook/mutating"
@@ -43,6 +45,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		audit.MiddlewareType:                  audit.CreateMiddleware,
 		recovery.MiddlewareType:               recovery.CreateMiddleware,
 		headerfwd.HeaderForwardMiddlewareName: headerfwd.CreateMiddleware,
+		origin.MiddlewareType:                 origin.CreateMiddleware,
 		validating.MiddlewareType:             validating.CreateMiddleware,
 		mutating.MiddlewareType:               mutating.CreateMiddleware,
 	}
@@ -56,13 +59,21 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	var middlewareConfigs []types.MiddlewareConfig
 	// TODO: Consider extracting other middleware setup into helper functions like addUsageMetricsMiddleware
 
+	// Origin-validation middleware (DNS-rebinding protection per MCP 2025-11-25).
+	// Positioned first in the slice so it runs earliest in the chain — disallowed
+	// Origin values are rejected before any authentication or business logic.
+	middlewareConfigs, err := addOriginMiddleware(middlewareConfigs, config)
+	if err != nil {
+		return err
+	}
+
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
 		OIDCConfig: config.OIDCConfig,
 	}
-	authConfig, err := types.NewMiddlewareConfig(auth.MiddlewareType, authParams)
-	if err != nil {
-		return fmt.Errorf("failed to create auth middleware config: %w", err)
+	authConfig, authErr := types.NewMiddlewareConfig(auth.MiddlewareType, authParams)
+	if authErr != nil {
+		return fmt.Errorf("failed to create auth middleware config: %w", authErr)
 	}
 	middlewareConfigs = append(middlewareConfigs, *authConfig)
 
@@ -417,6 +428,35 @@ func addAWSStsMiddleware(middlewares []types.MiddlewareConfig, config *RunConfig
 		return nil, fmt.Errorf("failed to create AWS STS middleware config: %w", err)
 	}
 	return append(middlewares, *awsStsMwConfig), nil
+}
+
+// addOriginMiddleware adds Origin-header validation middleware for DNS-rebind
+// protection per MCP 2025-11-25 §"Security Warning". Default-derivation logic
+// lives in origin.ResolveAllowedOrigins so the standalone `thv proxy` command
+// and the runner path agree on behavior.
+//
+// When the effective allowlist is empty — which happens when the operator
+// binds to a non-loopback host without supplying --allowed-origins — the
+// middleware is skipped entirely and a WARN is logged so the security-disabled
+// state is visible in operator logs. A follow-up PR hardens the non-loopback
+// path by requiring an explicit opt-in flag (see audit row 22).
+func addOriginMiddleware(middlewares []types.MiddlewareConfig, config *RunConfig) ([]types.MiddlewareConfig, error) {
+	allowed := origin.ResolveAllowedOrigins(config.Host, config.Port, config.AllowedOrigins)
+	if len(allowed) == 0 {
+		slog.Warn("Origin validation disabled — no allowlist configured for non-loopback bind",
+			"host", config.Host,
+			"port", config.Port,
+			"hint", "pass --allowed-origins=https://your-client.example to enable DNS-rebind protection",
+		)
+		return middlewares, nil
+	}
+
+	params := origin.MiddlewareParams{AllowedOrigins: allowed}
+	mwCfg, err := types.NewMiddlewareConfig(origin.MiddlewareType, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create origin middleware config: %w", err)
+	}
+	return append(middlewares, *mwCfg), nil
 }
 
 // addRateLimitMiddleware adds rate limit middleware if configured.

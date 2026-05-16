@@ -355,7 +355,10 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// CORS headers deliberately omitted: the origin middleware
+	// (pkg/transport/middleware/origin) enforces Origin validation per
+	// MCP 2025-11-25 §"Security Warning". Reflecting Origin or emitting
+	// `*` here would bypass that protection.
 
 	// Create a unique client ID
 	clientID := uuid.New().String()

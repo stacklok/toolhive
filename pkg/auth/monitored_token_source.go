@@ -139,28 +139,16 @@ type transientRefresher struct {
 	upstream string
 	clientID string
 
-	// newBackOff is a factory for the backoff used during retries.
-	// Nil in production; overridable in tests for fast execution.
+	// newBackOff constructs the exponential backoff applied during transient-error
+	// retries. Always non-nil; set by the constructor.
 	newBackOff func() backoff.BackOff
-
-	// beforeEntry and afterEntry are nil in production. Tests set them to
-	// synchronise goroutines so that the singleflight group is fully formed
-	// before the leader's retry returns.
-	beforeEntry func()
-	afterEntry  func()
 }
 
 // Refresh deduplicates concurrent callers via singleflight and retries the
 // underlying token source with exponential backoff until the context is
 // cancelled or a non-transient error is returned.
 func (r *transientRefresher) Refresh(ctx context.Context, origErr error) (*oauth2.Token, error) {
-	if r.beforeEntry != nil {
-		r.beforeEntry()
-	}
 	v, err, _ := r.group.Do("token-refresh", func() (interface{}, error) {
-		if r.afterEntry != nil {
-			r.afterEntry()
-		}
 		return r.retry(ctx, origErr)
 	})
 	if err != nil {
@@ -169,13 +157,33 @@ func (r *transientRefresher) Refresh(ctx context.Context, origErr error) (*oauth
 	return v.(*oauth2.Token), nil
 }
 
+func newTransientRefresher(
+	source oauth2.TokenSource,
+	workload, upstream, clientID string,
+	newBackOff func() backoff.BackOff,
+) *transientRefresher {
+	return &transientRefresher{
+		source:     source,
+		workload:   workload,
+		upstream:   upstream,
+		clientID:   clientID,
+		newBackOff: newBackOff,
+	}
+}
+
+func defaultBackOff() backoff.BackOff {
+	eb := backoff.NewExponentialBackOff()
+	eb.InitialInterval = resolveTokenRefreshInitialRetryInterval()
+	eb.MaxInterval = resolveTokenRefreshMaxRetryInterval()
+	eb.Reset()
+	return eb
+}
+
 func (r *transientRefresher) retry(ctx context.Context, origErr error) (*oauth2.Token, error) {
 	slog.Warn("token refresh failed due to transient network error, retrying with backoff",
 		"workload", r.workload,
 		"error", origErr,
 	)
-
-	b := r.getBackOff()
 
 	return backoff.Retry(ctx, func() (*oauth2.Token, error) {
 		t, tokenErr := r.source.Token()
@@ -187,7 +195,7 @@ func (r *transientRefresher) retry(ctx context.Context, origErr error) (*oauth2.
 		}
 		return nil, tokenErr
 	},
-		backoff.WithBackOff(b),
+		backoff.WithBackOff(r.newBackOff()),
 		backoff.WithNotify(func(retryErr error, d time.Duration) {
 			slog.Warn("token refresh retry failed",
 				"workload", r.workload,
@@ -198,17 +206,6 @@ func (r *transientRefresher) retry(ctx context.Context, origErr error) (*oauth2.
 		backoff.WithMaxTries(resolveTokenRefreshMaxTries()),
 		backoff.WithMaxElapsedTime(resolveTokenRefreshMaxElapsedTime()),
 	)
-}
-
-func (r *transientRefresher) getBackOff() backoff.BackOff {
-	if r.newBackOff != nil {
-		return r.newBackOff()
-	}
-	eb := backoff.NewExponentialBackOff()
-	eb.InitialInterval = resolveTokenRefreshInitialRetryInterval()
-	eb.MaxInterval = resolveTokenRefreshMaxRetryInterval()
-	eb.Reset()
-	return eb
 }
 
 // MonitoredTokenSource is a wrapper around an oauth2.TokenSource that monitors authentication
@@ -259,6 +256,18 @@ func NewMonitoredTokenSource(
 	clientID string,
 	statusUpdater StatusUpdater,
 ) *MonitoredTokenSource {
+	return newMonitoredTokenSourceWithBackOff(ctx, tokenSource, workloadName, upstream, clientID, statusUpdater, defaultBackOff)
+}
+
+func newMonitoredTokenSourceWithBackOff(
+	ctx context.Context,
+	tokenSource oauth2.TokenSource,
+	workloadName string,
+	upstream string,
+	clientID string,
+	statusUpdater StatusUpdater,
+	newBackOff func() backoff.BackOff,
+) *MonitoredTokenSource {
 	return &MonitoredTokenSource{
 		tokenSource:    tokenSource,
 		workloadName:   workloadName,
@@ -268,12 +277,7 @@ func NewMonitoredTokenSource(
 		monitoringCtx:  ctx,
 		stopMonitoring: make(chan struct{}),
 		stopped:        make(chan struct{}),
-		refresher: &transientRefresher{
-			source:   tokenSource,
-			workload: workloadName,
-			upstream: upstream,
-			clientID: clientID,
-		},
+		refresher:      newTransientRefresher(tokenSource, workloadName, upstream, clientID, newBackOff),
 	}
 }
 

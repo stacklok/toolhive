@@ -187,35 +187,42 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 		var written bool
 		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
 			message, err := jsonrpc2.DecodeMessage(data)
-			if err != nil {
-				rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-				_, err := rfw.ResponseWriter.Write(rawResponse)
-				return err
-			}
+			switch {
+			case err != nil:
+				// Pass this line through unfiltered. Earlier revisions wrote
+				// rawResponse and returned here, which leaked every subsequent
+				// data line on the stream past the filter (issue #5257).
+				if rfw.method == string(mcp.MethodToolsList) {
+					slog.Warn("SSE data line could not be decoded as JSON-RPC; passing through unfiltered",
+						"method", rfw.method, "error", err)
+				}
+			default:
+				if response, ok := message.(*jsonrpc2.Response); ok {
+					filteredResponse, err := rfw.filterListResponse(response)
+					if err != nil {
+						return rfw.writeErrorResponse(response.ID, err)
+					}
 
-			response, ok := message.(*jsonrpc2.Response)
-			if !ok {
-				rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-				_, err := rfw.ResponseWriter.Write(rawResponse)
-				return err
-			}
+					filteredData, err := jsonrpc2.EncodeMessage(filteredResponse)
+					if err != nil {
+						return rfw.writeErrorResponse(response.ID, err)
+					}
 
-			filteredResponse, err := rfw.filterListResponse(response)
-			if err != nil {
-				return rfw.writeErrorResponse(response.ID, err)
-			}
+					_, err = rfw.ResponseWriter.Write([]byte("data: " + string(filteredData) + "\n"))
+					if err != nil {
+						return fmt.Errorf("%w: %w", errBug, err)
+					}
 
-			filteredData, err := jsonrpc2.EncodeMessage(filteredResponse)
-			if err != nil {
-				return rfw.writeErrorResponse(response.ID, err)
+					written = true
+				} else if rfw.method == string(mcp.MethodToolsList) {
+					// Non-Response message (e.g. a notifications/* frame
+					// interleaved on the stream). Pass through unfiltered for
+					// this line only; the next data line may still be the real
+					// tools/list response and must reach the filter.
+					slog.Warn("SSE data line was not a JSON-RPC Response; passing through unfiltered",
+						"method", rfw.method)
+				}
 			}
-
-			_, err = rfw.ResponseWriter.Write([]byte("data: " + string(filteredData) + "\n"))
-			if err != nil {
-				return fmt.Errorf("%w: %w", errBug, err)
-			}
-
-			written = true
 		}
 
 		if !written {

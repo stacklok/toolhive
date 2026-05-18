@@ -380,25 +380,27 @@ func TestMCPWebhookConfigReconciler_mapMCPServerToWebhookConfig(t *testing.T) {
 	t.Run("current WebhookConfigRef returns one request", func(t *testing.T) {
 		t.Parallel()
 
+		serverCopy := server.DeepCopy()
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithObjects(server).
+			WithObjects(serverCopy).
 			Build()
 		r := &MCPWebhookConfigReconciler{Client: fakeClient, Scheme: scheme}
 
 		require.ElementsMatch(t, []reconcile.Request{{
 			NamespacedName: types.NamespacedName{Name: "current-config", Namespace: "default"},
-		}}, r.mapMCPServerToWebhookConfig(ctx, server))
+		}}, r.mapMCPServerToWebhookConfig(ctx, serverCopy))
 	})
 
 	t.Run("stale ReferencingWorkloads returns owning config request", func(t *testing.T) {
 		t.Parallel()
 
+		staleConfigCopy := staleConfig.DeepCopy()
 		serverWithoutRef := server.DeepCopy()
 		serverWithoutRef.Spec.WebhookConfigRef = nil
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithObjects(serverWithoutRef, staleConfig).
+			WithObjects(serverWithoutRef, staleConfigCopy).
 			Build()
 		r := &MCPWebhookConfigReconciler{Client: fakeClient, Scheme: scheme}
 
@@ -410,16 +412,19 @@ func TestMCPWebhookConfigReconciler_mapMCPServerToWebhookConfig(t *testing.T) {
 	t.Run("current and stale references are returned without duplicates", func(t *testing.T) {
 		t.Parallel()
 
+		serverCopy := server.DeepCopy()
+		currentConfigCopy := currentConfig.DeepCopy()
+		staleConfigCopy := staleConfig.DeepCopy()
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithObjects(server, currentConfig, staleConfig).
+			WithObjects(serverCopy, currentConfigCopy, staleConfigCopy).
 			Build()
 		r := &MCPWebhookConfigReconciler{Client: fakeClient, Scheme: scheme}
 
 		require.ElementsMatch(t, []reconcile.Request{
 			{NamespacedName: types.NamespacedName{Name: "current-config", Namespace: "default"}},
 			{NamespacedName: types.NamespacedName{Name: "stale-config", Namespace: "default"}},
-		}, r.mapMCPServerToWebhookConfig(ctx, server))
+		}, r.mapMCPServerToWebhookConfig(ctx, serverCopy))
 	})
 
 	t.Run("wrong object type returns nil", func(t *testing.T) {
@@ -435,10 +440,11 @@ func TestMCPWebhookConfigReconciler_mapMCPServerToWebhookConfig(t *testing.T) {
 	t.Run("list failure returns partial current-ref request", func(t *testing.T) {
 		t.Parallel()
 
+		serverCopy := server.DeepCopy()
 		listErr := errors.New("simulated list failure")
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
-			WithObjects(server).
+			WithObjects(serverCopy).
 			WithInterceptorFuncs(interceptor.Funcs{
 				List: func(
 					ctx context.Context,
@@ -457,7 +463,7 @@ func TestMCPWebhookConfigReconciler_mapMCPServerToWebhookConfig(t *testing.T) {
 
 		require.ElementsMatch(t, []reconcile.Request{{
 			NamespacedName: types.NamespacedName{Name: "current-config", Namespace: "default"},
-		}}, r.mapMCPServerToWebhookConfig(ctx, server))
+		}}, r.mapMCPServerToWebhookConfig(ctx, serverCopy))
 	})
 }
 

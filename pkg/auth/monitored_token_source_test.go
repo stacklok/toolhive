@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"os"
 	"strings"
@@ -86,7 +87,10 @@ func (m *mockTokenSource) Token() (*oauth2.Token, error) {
 	return tok, err
 }
 
-// createRetrieveError creates an error for testing token failures
+// createRetrieveError creates an error for testing token failures. ErrorCode
+// is left unset, mirroring what golang.org/x/oauth2 produces when the response
+// body is not a parseable RFC 6749 error response (e.g. an HTML page from a
+// WAF or load balancer).
 func createRetrieveError(statusCode int, body string) *oauth2.RetrieveError {
 	response := &http.Response{
 		StatusCode: statusCode,
@@ -96,6 +100,16 @@ func createRetrieveError(statusCode int, body string) *oauth2.RetrieveError {
 		Response: response,
 		Body:     []byte(body),
 	}
+}
+
+// createRetrieveErrorWithCode is like createRetrieveError but also sets the
+// ErrorCode field, mirroring what golang.org/x/oauth2 populates when the
+// server responds with a parseable JSON error body containing an "error"
+// field.
+func createRetrieveErrorWithCode(statusCode int, errorCode, body string) *oauth2.RetrieveError {
+	err := createRetrieveError(statusCode, body)
+	err.ErrorCode = errorCode
+	return err
 }
 
 func TestMonitoredTokenSource_SuccessfulTokenRetrieval(t *testing.T) {
@@ -118,7 +132,7 @@ func TestMonitoredTokenSource_SuccessfulTokenRetrieval(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Test successful token retrieval
 	token, err := ats.Token()
@@ -143,7 +157,7 @@ func TestMonitoredTokenSource_AuthenticationErrorMarksUnauthenticated(t *testing
 	tokenSource := newMockTokenSource()
 
 	// Create an error that simulates token retrieval failure
-	retrieveErr := createRetrieveError(http.StatusBadRequest, `{"error":"invalid_grant","error_description":"refresh token expired"}`)
+	retrieveErr := createRetrieveErrorWithCode(http.StatusBadRequest, "invalid_grant", `{"error":"invalid_grant","error_description":"refresh token expired"}`)
 	tokenSource.setTokenFn(func() (*oauth2.Token, error) {
 		return nil, retrieveErr
 	})
@@ -151,7 +165,7 @@ func TestMonitoredTokenSource_AuthenticationErrorMarksUnauthenticated(t *testing
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Expect SetWorkloadStatus to be called with unauthenticated status
 	statusManager.EXPECT().
@@ -195,7 +209,7 @@ func TestMonitoredTokenSource_ErrorMarksUnauthenticated(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Expect SetWorkloadStatus to be called for any error
 	statusManager.EXPECT().
@@ -238,14 +252,14 @@ func TestMonitoredTokenSource_BackgroundMonitoring(t *testing.T) {
 			}, nil
 		}
 		// Subsequent calls: return authentication error
-		retrieveErr := createRetrieveError(http.StatusUnauthorized, `{"error":"invalid_token"}`)
+		retrieveErr := createRetrieveErrorWithCode(http.StatusUnauthorized, "invalid_token", `{"error":"invalid_token"}`)
 		return nil, retrieveErr
 	})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Expect SetWorkloadStatus to be called when auth error occurs
 	statusManager.EXPECT().
@@ -297,7 +311,7 @@ func TestMonitoredTokenSource_BackgroundMonitoringStopsOnAnyError(t *testing.T) 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Expect SetWorkloadStatus to be called when any error occurs
 	statusManager.EXPECT().
@@ -341,7 +355,7 @@ func TestMonitoredTokenSource_ExpiredTokenHandling(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	// Should not mark as unauthenticated just for expired token
 	// (oauth2 library should handle refresh; we only mark on actual auth errors)
@@ -374,7 +388,7 @@ func TestMonitoredTokenSource_StopMonitoring(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 	ats.StartBackgroundMonitoring()
 
 	// Wait a bit to ensure monitoring started
@@ -399,7 +413,7 @@ func TestMonitoredTokenSource_MultipleCallsToToken(t *testing.T) {
 	statusUpdater, statusManager := newMockStatusUpdater(ctrl)
 	tokenSource := newMockTokenSource()
 
-	retrieveErr := createRetrieveError(http.StatusUnauthorized, `{"error":"invalid_token"}`)
+	retrieveErr := createRetrieveErrorWithCode(http.StatusUnauthorized, "invalid_token", `{"error":"invalid_token"}`)
 	tokenSource.setTokenFn(func() (*oauth2.Token, error) {
 		return nil, retrieveErr
 	})
@@ -407,7 +421,7 @@ func TestMonitoredTokenSource_MultipleCallsToToken(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 
 	statusManager.EXPECT().
 		SetWorkloadStatus(
@@ -578,12 +592,14 @@ func TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification(t *testing.T
 		err         error
 		isTransient bool // true → monitor retries; false → monitor marks unauthenticated
 	}{
-		// Non-transient: plain and auth-level errors must fail fast.
+		// Non-transient: plain errors and OAuth protocol failures (4xx with a
+		// populated RFC 6749 error code) must fail fast.
 		{name: "plain error", err: errors.New("some error"), isTransient: false},
 		{name: "context.Canceled", err: context.Canceled, isTransient: false},
 		{name: "context.DeadlineExceeded", err: context.DeadlineExceeded, isTransient: false},
-		{name: "oauth2.RetrieveError 401", err: createRetrieveError(http.StatusUnauthorized, "unauthorized"), isTransient: false},
-		{name: "oauth2.RetrieveError 400 invalid_grant", err: createRetrieveError(http.StatusBadRequest, "invalid_grant"), isTransient: false},
+		{name: "oauth2.RetrieveError 400 invalid_grant", err: createRetrieveErrorWithCode(http.StatusBadRequest, "invalid_grant", `{"error":"invalid_grant"}`), isTransient: false},
+		{name: "oauth2.RetrieveError 401 invalid_client", err: createRetrieveErrorWithCode(http.StatusUnauthorized, "invalid_client", `{"error":"invalid_client"}`), isTransient: false},
+		{name: "oauth2.RetrieveError 403 unauthorized_client", err: createRetrieveErrorWithCode(http.StatusForbidden, "unauthorized_client", `{"error":"unauthorized_client"}`), isTransient: false},
 		{name: "oauth2.RetrieveError nil response", err: &oauth2.RetrieveError{}, isTransient: false},
 		// Transient: network-level errors must be retried.
 		{name: "*net.DNSError timeout", err: &net.DNSError{Err: "i/o timeout", Name: "example.com", IsTimeout: true}, isTransient: true},
@@ -595,6 +611,17 @@ func TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification(t *testing.T
 		{name: "oauth2.RetrieveError 502", err: createRetrieveError(http.StatusBadGateway, "Bad Gateway"), isTransient: true},
 		{name: "oauth2.RetrieveError 503", err: createRetrieveError(http.StatusServiceUnavailable, "Service Unavailable"), isTransient: true},
 		{name: "oauth2.RetrieveError 504", err: createRetrieveError(http.StatusGatewayTimeout, "Gateway Timeout"), isTransient: true},
+		// Transient: 4xx without an RFC 6749 error code in the body.
+		// These are infrastructure-level errors (WAF, CDN, proxy) that
+		// commonly resolve on their own, not OAuth protocol failures.
+		{name: "oauth2.RetrieveError 401 with HTML body", err: createRetrieveError(http.StatusUnauthorized, "<html><body>Unauthorized</body></html>"), isTransient: true},
+		{name: "oauth2.RetrieveError 403 WAF block", err: createRetrieveError(http.StatusForbidden, "<html><body>Cloudflare Firewall Block</body></html>"), isTransient: true},
+		{name: "oauth2.RetrieveError 400 with empty body", err: createRetrieveError(http.StatusBadRequest, ""), isTransient: true},
+		{name: "oauth2.RetrieveError 408 request timeout", err: createRetrieveError(http.StatusRequestTimeout, ""), isTransient: true},
+		// Transient: 429 Too Many Requests is retryable per HTTP standard
+		// regardless of body content.
+		{name: "oauth2.RetrieveError 429 empty body", err: createRetrieveError(http.StatusTooManyRequests, ""), isTransient: true},
+		{name: "oauth2.RetrieveError 429 with rate-limit error code", err: createRetrieveErrorWithCode(http.StatusTooManyRequests, "rate_limit_exceeded", `{"error":"rate_limit_exceeded"}`), isTransient: true},
 		// Transient: unparsable OAuth responses (HTML from load balancer on 200).
 		{name: "oauth2 cannot parse json", err: fmt.Errorf("oauth2: cannot parse json: invalid character '<'"), isTransient: true},
 		{name: "wrapped oauth2 parse error", err: fmt.Errorf("refresh failed: %w", fmt.Errorf("oauth2: cannot parse json: invalid character '<'")), isTransient: true},
@@ -627,7 +654,7 @@ func TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification(t *testing.T
 				statusUpdater, _ := newMockStatusUpdater(ctrl)
 				retrying := tokenSource.notifyOnCall(2)
 
-				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 				ats.refresher.newBackOff = fastBackOff
 				ats.StartBackgroundMonitoring()
 
@@ -647,11 +674,150 @@ func TestMonitoredTokenSource_BackgroundMonitor_ErrorClassification(t *testing.T
 					Return(nil).
 					Times(1)
 
-				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+				ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 				ats.refresher.newBackOff = fastBackOff
 				ats.StartBackgroundMonitoring()
 
 				<-ats.Stopped() // Monitor stops itself after marking unauthenticated.
+			}
+		})
+	}
+}
+
+// TestIsPermanentTokenEndpointError verifies that isPermanentTokenEndpointError
+// is the strict inverse of classifyOAuthRetrieveError on the
+// *oauth2.RetrieveError branch (with a non-nil Response). The DCR/CIMD
+// remediation Warn fires only when the OAuth server returned a structured
+// RFC 6749 error code; non-spec-compliant responses (HTML pages from a WAF,
+// CDN, or reverse proxy) should not trigger that Warn because they carry no
+// OAuth-protocol verdict.
+//
+// Existing Token() / markAsUnauthenticated tests reach this function through
+// indirect call paths and yield 100% line coverage, but none of them assert
+// on the boolean it returns. This test pins the behavioral contract directly.
+func TestIsPermanentTokenEndpointError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		err         error
+		isPermanent bool
+	}{
+		// Not an *oauth2.RetrieveError at all — no OAuth verdict to act on.
+		{name: "plain error", err: errors.New("some error"), isPermanent: false},
+		{name: "*oauth2.RetrieveError with nil Response", err: &oauth2.RetrieveError{}, isPermanent: false},
+		// Transient HTTP-level conditions — never permanent.
+		{name: "5xx server error", err: createRetrieveError(http.StatusInternalServerError, "Internal Server Error"), isPermanent: false},
+		{name: "429 Too Many Requests", err: createRetrieveError(http.StatusTooManyRequests, ""), isPermanent: false},
+		{name: "408 Request Timeout", err: createRetrieveError(http.StatusRequestTimeout, ""), isPermanent: false},
+		// 4xx without an RFC 6749 error code — infrastructure response, no OAuth verdict.
+		{name: "401 with HTML body (WAF)", err: createRetrieveError(http.StatusUnauthorized, "<html><body>Unauthorized</body></html>"), isPermanent: false},
+		{name: "403 with HTML body (Cloudflare)", err: createRetrieveError(http.StatusForbidden, "<html><body>Firewall Block</body></html>"), isPermanent: false},
+		// 4xx with an RFC 6749 error code — OAuth server rendered a verdict.
+		{name: "400 invalid_grant", err: createRetrieveErrorWithCode(http.StatusBadRequest, "invalid_grant", `{"error":"invalid_grant"}`), isPermanent: true},
+		{name: "401 invalid_client", err: createRetrieveErrorWithCode(http.StatusUnauthorized, "invalid_client", `{"error":"invalid_client"}`), isPermanent: true},
+		{name: "403 unauthorized_client", err: createRetrieveErrorWithCode(http.StatusForbidden, "unauthorized_client", `{"error":"unauthorized_client"}`), isPermanent: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := isPermanentTokenEndpointError(tt.err)
+			if got != tt.isPermanent {
+				t.Errorf("isPermanentTokenEndpointError(%v) = %v, want %v",
+					tt.err, got, tt.isPermanent)
+			}
+		})
+	}
+}
+
+// TestIsTransientNetworkError_AgainstRealOAuth2Library is a contract test,
+// not a unit test of the package's own logic. It pins the assumption that
+// isTransientRetrieveError relies on: that golang.org/x/oauth2 populates
+// RetrieveError.ErrorCode iff the response carries a parseable RFC 6749
+// 'error' field (whether JSON or form-encoded), and leaves ErrorCode empty
+// for non-spec-compliant response shapes (HTML pages from a WAF, CDN, or
+// reverse proxy).
+//
+// Cases here are deliberately limited to response shapes where the
+// synthetic test helpers (createRetrieveError, createRetrieveErrorWithCode)
+// could plausibly diverge from reality. Cases unambiguously covered by the
+// synthetic table (clearly populated ErrorCode JSON, status-code-only
+// branches like 5xx and 429) are intentionally not duplicated here.
+func TestIsTransientNetworkError_AgainstRealOAuth2Library(t *testing.T) {
+	t.Parallel()
+
+	const refreshToken = "test-refresh-token"
+
+	tests := []struct {
+		name        string
+		handler     http.HandlerFunc
+		isTransient bool
+	}{
+		{
+			// HTML 4xx is the canonical WAF/CDN block shape. Pinning that
+			// the library leaves ErrorCode empty here is what underpins the
+			// "infrastructure error" branch of isTransientRetrieveError.
+			name: "403 with HTML body (Cloudflare WAF)",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusForbidden)
+				_, _ = w.Write([]byte("<html><body>Cloudflare Firewall Block</body></html>"))
+			},
+			isTransient: true,
+		},
+		{
+			name: "401 with HTML body",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "text/html")
+				w.WriteHeader(http.StatusUnauthorized)
+				_, _ = w.Write([]byte("<html><body>Unauthorized</body></html>"))
+			},
+			isTransient: true,
+		},
+		{
+			// Form-encoded error responses are non-spec but supported by
+			// the library. Pinning that the library DOES populate ErrorCode
+			// from form-encoded bodies — a synthetic helper used naively
+			// (createRetrieveError without WithCode) would lie about this.
+			name: "400 with form-encoded invalid_grant",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/x-www-form-urlencoded")
+				w.WriteHeader(http.StatusBadRequest)
+				_, _ = w.Write([]byte("error=invalid_grant&error_description=refresh+token+expired"))
+			},
+			isTransient: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(tt.handler)
+			t.Cleanup(server.Close)
+
+			cfg := &oauth2.Config{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				Endpoint:     oauth2.Endpoint{TokenURL: server.URL},
+			}
+
+			expired := &oauth2.Token{
+				AccessToken:  "expired-access-token",
+				RefreshToken: refreshToken,
+				Expiry:       time.Now().Add(-time.Hour),
+			}
+
+			_, err := cfg.TokenSource(context.Background(), expired).Token()
+			if err == nil {
+				t.Fatalf("expected refresh to fail, got nil error")
+			}
+
+			got := isTransientNetworkError(err)
+			if got != tt.isTransient {
+				t.Errorf("isTransientNetworkError(%v) = %v, want %v",
+					err, got, tt.isTransient)
 			}
 		})
 	}
@@ -698,7 +864,7 @@ func TestMonitoredTokenSource_TransientErrorRetriesAndSucceeds(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 	ats.refresher.newBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 
@@ -738,7 +904,7 @@ func TestMonitoredTokenSource_TransientErrorContextCancellation(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 	ats.refresher.newBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 
@@ -771,7 +937,7 @@ func TestMonitoredTokenSource_TransientThenNonTransientMarksUnauthenticated(t *t
 		Times(1)
 
 	transientErr := &net.OpError{Op: "dial", Net: "tcp", Err: &os.SyscallError{Syscall: "connect", Err: syscall.ECONNREFUSED}}
-	nonTransientErr := createRetrieveError(http.StatusUnauthorized, `{"error":"invalid_token"}`)
+	nonTransientErr := createRetrieveErrorWithCode(http.StatusUnauthorized, "invalid_token", `{"error":"invalid_token"}`)
 
 	tokenSource.setTokenFn(func() (*oauth2.Token, error) {
 		switch tokenSource.callCount {
@@ -793,7 +959,7 @@ func TestMonitoredTokenSource_TransientThenNonTransientMarksUnauthenticated(t *t
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", statusUpdater)
+	ats := NewMonitoredTokenSource(ctx, tokenSource, "test-workload", "", "", statusUpdater)
 	ats.refresher.newBackOff = fastBackOff
 	ats.StartBackgroundMonitoring()
 

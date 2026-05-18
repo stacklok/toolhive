@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -88,9 +89,16 @@ func createMutatingHandler(executors []clientExecutor, serverName, transport str
 				return
 			}
 
-			// Read the request body to get the raw MCP request.
+			// Read the request body to get the raw MCP request, capped at MaxRequestSize
+			// to prevent unbounded memory consumption from oversized inbound requests.
+			r.Body = http.MaxBytesReader(w, r.Body, webhook.MaxRequestSize)
 			bodyBytes, err := io.ReadAll(r.Body)
 			if err != nil {
+				var maxErr *http.MaxBytesError
+				if errors.As(err, &maxErr) {
+					sendErrorResponse(w, http.StatusRequestEntityTooLarge, "Request body exceeds maximum size", parsedMCP.ID)
+					return
+				}
 				sendErrorResponse(w, http.StatusInternalServerError, "Failed to read request body", parsedMCP.ID)
 				return
 			}

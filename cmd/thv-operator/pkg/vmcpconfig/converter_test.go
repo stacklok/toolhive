@@ -1601,6 +1601,51 @@ func TestConverter_SessionStorage(t *testing.T) {
 	}
 }
 
+func TestConverter_RateLimitingPassThrough(t *testing.T) {
+	t.Parallel()
+
+	vmcpServer := &mcpv1beta1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			Config: vmcpconfig.Config{
+				RateLimiting: &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
+						MaxTokens:    2,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+					Tools: []mcpv1beta1.ToolRateLimitConfig{
+						{
+							Name: "backend_a_echo",
+							Shared: &mcpv1beta1.RateLimitBucket{
+								MaxTokens:    5,
+								RefillPeriod: metav1.Duration{Duration: 30 * time.Second},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	converter := newTestConverter(t, newNoOpMockResolver(t))
+	ctx := log.IntoContext(context.Background(), logr.Discard())
+
+	config, _, err := converter.Convert(ctx, vmcpServer, nil)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	require.NotNil(t, config.RateLimiting)
+
+	assert.EqualValues(t, 2, config.RateLimiting.PerUser.MaxTokens)
+	require.Len(t, config.RateLimiting.Tools, 1)
+	assert.Equal(t, "backend_a_echo", config.RateLimiting.Tools[0].Name)
+	require.NotNil(t, config.RateLimiting.Tools[0].Shared)
+	assert.EqualValues(t, 5, config.RateLimiting.Tools[0].Shared.MaxTokens)
+}
+
 func TestDeriveAllowedAudiences(t *testing.T) {
 	t.Parallel()
 
@@ -1898,16 +1943,22 @@ func TestConverter_TelemetryConfigRef(t *testing.T) {
 // propagates the first configured upstream provider name into AuthzConfig so Cedar
 // evaluates claims from the upstream IDP token rather than the ToolHive-issued
 // AS token. Without this, policies referencing upstream claims (e.g. "department")
-// fail at runtime because Cedar reads the wrong token.
+// fail at runtime because Cedar reads the wrong token. Also verifies that the
+// user-supplied spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
+// overrides the auto-selected first upstream when set.
 func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 	t.Parallel()
 
-	inlineAuthzRef := &mcpv1beta1.AuthzConfigRef{
-		Type: "inline",
-		Inline: &mcpv1beta1.InlineAuthzConfig{
-			Policies: []string{`permit(principal, action, resource);`},
-		},
+	authzWith := func(primary string) *mcpv1beta1.AuthzConfigRef {
+		return &mcpv1beta1.AuthzConfigRef{
+			Type: "inline",
+			Inline: &mcpv1beta1.InlineAuthzConfig{
+				Policies:                []string{`permit(principal, action, resource);`},
+				PrimaryUpstreamProvider: primary,
+			},
+		}
 	}
+	inlineAuthzRef := authzWith("")
 
 	tests := []struct {
 		name             string
@@ -1915,6 +1966,7 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 		authzConfig      *mcpv1beta1.AuthzConfigRef
 		expectAuthzNil   bool
 		expectedProvider string
+		expectError      bool
 	}{
 		{
 			name:             "no auth server leaves provider unset",
@@ -1986,6 +2038,74 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			authzConfig:      nil,
 			expectAuthzNil:   true,
 		},
+		{
+			// Explicit primaryUpstreamProvider with a single upstream is honored
+			// (and matches it). Validates the explicit branch is taken at all.
+			name: "explicit primary provider with single upstream is honored",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			authzConfig:      authzWith("okta"),
+			expectedProvider: "okta",
+		},
+		{
+			// Explicit primaryUpstreamProvider overrides the auto-selected first
+			// upstream when multiple are configured. This is the core feature.
+			name: "explicit primary provider overrides first of multiple upstreams",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "github", Type: mcpv1beta1.UpstreamProviderTypeOAuth2},
+					{Name: "google", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			authzConfig:      authzWith("github"),
+			expectedProvider: "github",
+		},
+		{
+			// Exercises the actual normalization step inside ResolveUpstreamName:
+			// the upstream is declared with Name:"" (which resolves to "default")
+			// and the user pins primaryUpstreamProvider to "default". The explicit
+			// branch must forward "default" — exercising both the explicit path
+			// and the resolver's empty-input handling. The previous "okta -> okta"
+			// case did not exercise normalization because ResolveUpstreamName is
+			// the identity function for non-empty input.
+			name: "explicit primary provider 'default' resolves to default upstream",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			authzConfig:      authzWith("default"),
+			expectedProvider: "default",
+		},
+		{
+			// Defense in depth: even if invoked outside the reconcile flow
+			// (CLI dry-run, webhook, test harness), Convert refuses to produce
+			// an unresolvable PrimaryUpstreamProvider. The validator rejection
+			// is the primary user-facing fail-loud point; this case locks the
+			// converter-side defense in.
+			name:             "explicit primary provider without auth server is rejected",
+			authServerConfig: nil,
+			authzConfig:      authzWith("okta"),
+			expectError:      true,
+		},
+		{
+			name: "explicit primary provider that doesn't match any upstream is rejected",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			authzConfig: authzWith("ping"),
+			expectError: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2008,6 +2128,10 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 
 			ctx := log.IntoContext(t.Context(), logr.Discard())
 			incoming, err := converter.convertIncomingAuth(ctx, vmcp)
+			if tt.expectError {
+				require.Error(t, err)
+				return
+			}
 			require.NoError(t, err)
 			require.NotNil(t, incoming)
 

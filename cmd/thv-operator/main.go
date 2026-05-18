@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strconv"
 	"strings"
 
 	"github.com/go-logr/logr"
@@ -41,18 +40,6 @@ var (
 	scheme   = runtime.NewScheme()
 	setupLog = log.Log.WithName("setup")
 )
-
-// Feature flags for controller groups
-const (
-	featureServer   = "ENABLE_SERVER"
-	featureRegistry = "ENABLE_REGISTRY"
-	featureVMCP     = "ENABLE_VMCP"
-)
-
-// controllerDependencies maps each controller group to its required dependencies
-var controllerDependencies = map[string][]string{
-	featureVMCP: {featureServer}, // Virtual MCP requires server controllers
-}
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -152,63 +139,15 @@ func main() {
 // The imagePullSecretsDefaults are propagated to controllers that construct
 // workloads so that chart-level defaults are applied alongside per-CR overrides.
 func setupControllersAndWebhooks(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
-	// Check feature flags
-	enableServer := isFeatureEnabled(featureServer, true)
-	enableRegistry := isFeatureEnabled(featureRegistry, true)
-	enableVMCP := isFeatureEnabled(featureVMCP, true)
-
-	// Track enabled features for dependency checking
-	enabledFeatures := map[string]bool{
-		featureServer:   enableServer,
-		featureRegistry: enableRegistry,
-		featureVMCP:     enableVMCP,
+	if err := setupServerControllers(mgr, imagePullSecretsDefaults); err != nil {
+		return err
 	}
-
-	// Check dependencies and log warnings for missing dependencies
-	for feature, deps := range controllerDependencies {
-		if !enabledFeatures[feature] {
-			continue // Skip if feature itself is disabled
-		}
-		for _, dep := range deps {
-			if !enabledFeatures[dep] {
-				setupLog.Info(
-					fmt.Sprintf("%s requires %s to be enabled, skipping %s controllers", feature, dep, feature),
-					"feature", feature,
-					"required_dependency", dep,
-				)
-				enabledFeatures[feature] = false // Mark as effectively disabled
-				break
-			}
-		}
+	if err := setupRegistryController(mgr, imagePullSecretsDefaults); err != nil {
+		return err
 	}
-
-	// Set up server-related controllers
-	if enabledFeatures[featureServer] {
-		if err := setupServerControllers(mgr, imagePullSecretsDefaults); err != nil {
-			return err
-		}
-	} else {
-		setupLog.Info("ENABLE_SERVER is disabled, skipping server-related controllers")
+	if err := setupAggregationControllers(mgr, imagePullSecretsDefaults); err != nil {
+		return err
 	}
-
-	// Set up registry controller
-	if enabledFeatures[featureRegistry] {
-		if err := setupRegistryController(mgr, imagePullSecretsDefaults); err != nil {
-			return err
-		}
-	} else {
-		setupLog.Info("ENABLE_REGISTRY is disabled, skipping MCPRegistry controller")
-	}
-
-	// Set up Virtual MCP controllers and webhooks
-	if enabledFeatures[featureVMCP] {
-		if err := setupAggregationControllers(mgr, imagePullSecretsDefaults); err != nil {
-			return err
-		}
-	} else {
-		setupLog.Info("ENABLE_VMCP is disabled, skipping Virtual MCP controllers and webhooks")
-	}
-
 	//+kubebuilder:scaffold:builder
 	return nil
 }
@@ -375,9 +314,9 @@ func setupRegistryController(mgr ctrl.Manager, imagePullSecretsDefaults imagepul
 }
 
 // setupAggregationControllers sets up Virtual MCP-related controllers and webhooks
-// (MCPGroup, VirtualMCPServer, and their webhooks).
-// Note: This function assumes server controllers are enabled (enforced by dependency check).
-// The field index for MCPServer.Spec.GroupRef is created in setupServerControllers.
+// (MCPGroup, VirtualMCPServer, and their webhooks). Must run after
+// setupServerControllers, which creates the MCPServer.Spec.GroupRef field index
+// these controllers depend on.
 // imagePullSecretsDefaults are merged with vmcp.Spec.ImagePullSecrets when the
 // VirtualMCPServer Deployment is constructed.
 func setupAggregationControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
@@ -400,29 +339,6 @@ func setupAggregationControllers(mgr ctrl.Manager, imagePullSecretsDefaults imag
 	}
 
 	return nil
-}
-
-// isFeatureEnabled checks if a feature flag environment variable is enabled.
-// If the environment variable is not set, it returns the default value.
-// The environment variable is considered enabled if it's set to "true", "1", or "t" (case-insensitive).
-// Invalid values (e.g., "yes", "enabled") will log a warning and return the default value.
-func isFeatureEnabled(envVar string, defaultValue bool) bool {
-	value, found := os.LookupEnv(envVar)
-	if !found {
-		return defaultValue
-	}
-	enabled, err := strconv.ParseBool(value)
-	if err != nil {
-		setupLog.Info(
-			"Invalid boolean value for feature flag, using default",
-			"envVar", envVar,
-			"value", value,
-			"default", defaultValue,
-			"validValues", "true, false, 1, 0, t, f",
-		)
-		return defaultValue
-	}
-	return enabled
 }
 
 // getDefaultNamespaces returns a map of namespaces to cache.Config for the operator to watch.

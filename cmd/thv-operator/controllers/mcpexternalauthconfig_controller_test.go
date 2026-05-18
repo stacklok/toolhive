@@ -756,6 +756,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashC
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
 	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads, "No workloads should be referencing yet")
+	assert.EqualValues(t, 0, updatedConfig.Status.ReferenceCount)
 
 	// Now add an MCPServer that references this config (without changing the config spec)
 	mcpServer := &mcpv1beta1.MCPServer{
@@ -781,6 +782,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashC
 	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
 		mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "new-server"},
 		"ReferencingWorkloads should be updated even without hash change")
+	assert.EqualValues(t, 1, updatedConfig.Status.ReferenceCount)
 }
 
 func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *testing.T) {
@@ -857,6 +859,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDele
 	require.NoError(t, err)
 	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
 		mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server-to-delete"})
+	assert.EqualValues(t, 1, updatedConfig.Status.ReferenceCount)
 
 	// Delete the MCPServer
 	require.NoError(t, fakeClient.Delete(ctx, mcpServer))
@@ -869,6 +872,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDele
 	require.NoError(t, err)
 	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads,
 		"ReferencingWorkloads should be empty after server deletion")
+	assert.EqualValues(t, 0, updatedConfig.Status.ReferenceCount)
 }
 
 func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(t *testing.T) {

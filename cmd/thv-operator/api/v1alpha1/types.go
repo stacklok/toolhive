@@ -47,7 +47,7 @@ type EmbeddingServerList struct {
 //+kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 //+kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 //+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-//+kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+//+kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPExternalAuthConfig is the deprecated v1alpha1 version of the MCPExternalAuthConfig resource.
@@ -76,7 +76,7 @@ type MCPExternalAuthConfigList struct {
 //+kubebuilder:resource:shortName=mcpg;mcpgroup,categories=toolhive
 //+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
+//+kubebuilder:printcolumn:name="Checked",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // MCPGroup is the deprecated v1alpha1 version of the MCPGroup resource.
@@ -105,7 +105,7 @@ type MCPGroupList struct {
 //+kubebuilder:resource:shortName=mcpoidc,categories=toolhive
 //+kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.type`
 //+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-//+kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+//+kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPOIDCConfig is the deprecated v1alpha1 version of the MCPOIDCConfig resource.
@@ -311,7 +311,7 @@ type MCPWebhookConfigList struct {
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=tc;toolconfig,categories=toolhive
 //+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-//+kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+//+kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPToolConfig is the deprecated v1alpha1 version of the MCPToolConfig resource.

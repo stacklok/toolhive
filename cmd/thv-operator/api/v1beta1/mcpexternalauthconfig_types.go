@@ -97,7 +97,7 @@ type MCPExternalAuthConfigSpec struct {
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
 // This configuration is used to exchange incoming authentication tokens for tokens
 // that can be used with external services.
-// The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
+// The structure matches the tokenexchange.Config from pkg/oauthproto/tokenexchange/middleware.go
 type TokenExchangeConfig struct {
 	// TokenURL is the OAuth 2.0 token endpoint URL for token exchange
 	// +kubebuilder:validation:Required
@@ -230,11 +230,26 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	Storage *AuthServerStorageConfig `json:"storage,omitempty"`
 
-	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
-	// For an embedded auth server, this can be determined by the servers (MCP or vMCP) it serves.
-
-	// ScopesSupported is the list of OAuth 2.0 scopes that this authorization server supports.
-	// For an embedded auth server, this can be derived from the server's (MCP or vMCP) OIDC configuration.
+	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+	// included in every client registration. The embedded auth server unions these
+	// scopes into the registered set returned by RFC 7591 Dynamic Client
+	// Registration, so a client that narrows the `scope` field at /oauth/register
+	// can still request the baseline scopes at /oauth/authorize. All values must
+	// be present in the upstream-derived scopesSupported set; the auth server
+	// fails to start if any value is missing.
+	//
+	// Security: every client registered via /oauth/register will gain the
+	// ability to request these scopes at /oauth/authorize, regardless of what
+	// the client itself requested. Keep the baseline narrow (typically
+	// "openid" and "offline_access"). Adding a privileged scope here — e.g.
+	// "admin:read" — would grant it to every DCR-registered client, including
+	// public clients like Claude Code, Cursor, and VS Code.
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:Pattern=`^[\x21\x23-\x5B\x5D-\x7E]+$`
+	// +listType=atomic
+	// +optional
+	BaselineClientScopes []string `json:"baselineClientScopes,omitempty"`
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.
@@ -273,6 +288,21 @@ const (
 )
 
 // UpstreamProviderConfig defines configuration for an upstream Identity Provider.
+//
+// Exactly one of OIDCConfig or OAuth2Config must be set and must match the
+// declared Type: oidc-typed providers set OIDCConfig, oauth2-typed providers
+// set OAuth2Config. The CEL rule below enforces the pairing at admission; the
+// matching Go-level check in validateUpstreamProvider provides defense-in-depth
+// for stored objects.
+//
+// The rule is structured as a chain of equality checks ending in an explicit
+// `false`, so adding a new UpstreamProviderType value without extending this
+// rule fails admission instead of silently demanding the OAuth2 shape. When
+// adding a new type, extend both this rule and validateUpstreamProvider.
+//
+// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? (has(self.oidcConfig) && !has(self.oauth2Config)) : self.type == 'oauth2' ? (has(self.oauth2Config) && !has(self.oidcConfig)) : false",message="type must be 'oidc' or 'oauth2'; oidcConfig must be set when type is 'oidc' and oauth2Config must be set when type is 'oauth2' (and the other must not be set)"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type UpstreamProviderConfig struct {
 	// Name uniquely identifies this upstream provider.
 	// Used for routing decisions and session binding in multi-upstream scenarios.
@@ -354,6 +384,32 @@ type OIDCUpstreamConfig struct {
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
 // OAuth 2.0 providers require explicit endpoint configuration.
+//
+// Exactly one of ClientID or DCRConfig must be set: ClientID is used when the
+// client is pre-provisioned out of band, DCRConfig enables RFC 7591 Dynamic
+// Client Registration at runtime.
+//
+// ClientSecretRef is mutually exclusive with DCRConfig: when DCRConfig is set,
+// the client_secret is obtained from the registration response (RFC 7591
+// §3.2.1) and any static ClientSecretRef would be either dead config or a
+// competing source of truth. The XValidation rule below rejects the
+// combination at admission; ValidateOAuth2DCRConfig is the matching
+// reconcile-time backstop.
+//
+// Layered XOR behavior: the ClientID/DCRConfig rule treats `clientId: ""` as
+// absent (size>0) but treats `dcrConfig: {}` as present (has() is true for an
+// empty object). For input `{ clientId: "", dcrConfig: {} }` the outer rule
+// passes and the inner DCRUpstreamConfig XOR fires with "exactly one of
+// discoveryUrl or registrationEndpoint must be set". This is intentional —
+// adding a non-empty subfield check (e.g.,
+// `has(self.dcrConfig.discoveryUrl) || has(self.dcrConfig.registrationEndpoint)`)
+// would inflate CEL cost on an already-budget-bound rule, and the inner
+// message is still actionable.
+//
+// +kubebuilder:validation:XValidation:rule="(has(self.clientId) && size(self.clientId) > 0) ? !has(self.dcrConfig) : has(self.dcrConfig)",message="exactly one of clientId or dcrConfig must be set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.dcrConfig) && has(self.clientSecretRef))",message="clientSecretRef must not be set when dcrConfig is set; the client_secret is obtained at runtime via Dynamic Client Registration"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type OAuth2UpstreamConfig struct {
 	// AuthorizationEndpoint is the URL for the OAuth authorization endpoint.
 	// +kubebuilder:validation:Required
@@ -366,16 +422,21 @@ type OAuth2UpstreamConfig struct {
 	TokenEndpoint string `json:"tokenEndpoint"`
 
 	// UserInfo contains configuration for fetching user information from the upstream provider.
-	// When omitted, the embedded auth server runs in synthesis mode for this
-	// upstream: a non-PII subject derived from the access token, no Name/Email.
-	// Use this shape for upstreams with no userinfo surface (e.g., MCP
-	// authorization servers per the MCP spec).
+	// When omitted and IdentityFromToken is also unset, the embedded auth server runs in
+	// synthesis mode for this upstream: a non-PII subject derived from the access token, no
+	// Name/Email. Use this shape for upstreams with no userinfo surface and no identity in
+	// the token response (e.g., MCP authorization servers per the MCP spec). When
+	// IdentityFromToken is set instead, identity is resolved from the token response body
+	// (e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call
+	// is skipped entirely.
 	// +optional
 	UserInfo *UserInfoConfig `json:"userInfo,omitempty"`
 
 	// ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
-	// +kubebuilder:validation:Required
-	ClientID string `json:"clientId"`
+	// Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained
+	// at runtime via RFC 7591 Dynamic Client Registration and must be left empty.
+	// +optional
+	ClientID string `json:"clientId,omitempty"`
 
 	// ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.
 	// Optional for public clients using PKCE instead of client secret.
@@ -398,8 +459,17 @@ type OAuth2UpstreamConfig struct {
 	// instead of returning them at the top level. When set, ToolHive performs the token
 	// exchange HTTP call directly and extracts fields using the configured dot-notation paths.
 	// If nil, standard OAuth 2.0 token response parsing is used.
+	// For extracting user identity from the token response, see IdentityFromToken.
 	// +optional
 	TokenResponseMapping *TokenResponseMapping `json:"tokenResponseMapping,omitempty"`
+
+	// IdentityFromToken extracts user identity (subject, name, email) directly
+	// from the OAuth2 token-endpoint response body using gjson dot-notation paths.
+	// When set, the embedded auth server skips the userinfo HTTP call entirely
+	// and resolves identity from the token response. See IdentityFromTokenConfig
+	// for trust-model and uniqueness considerations.
+	// +optional
+	IdentityFromToken *IdentityFromTokenConfig `json:"identityFromToken,omitempty"`
 
 	// AdditionalAuthorizationParams are extra query parameters to include in
 	// authorization requests sent to the upstream provider.
@@ -410,11 +480,150 @@ type OAuth2UpstreamConfig struct {
 	// +kubebuilder:validation:MaxProperties=16
 	// +optional
 	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
+
+	// DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream
+	// authorization server. When set, the client credentials are obtained at
+	// runtime rather than being pre-provisioned, and ClientID must be left empty.
+	// Mutually exclusive with ClientID.
+	// +optional
+	DCRConfig *DCRUpstreamConfig `json:"dcrConfig,omitempty"`
+}
+
+// DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
+// OAuth 2.0 upstream. When present on an OAuth2 upstream, the authserver
+// performs registration at runtime to obtain client credentials, replacing
+// the need to pre-provision a ClientID.
+//
+// Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
+// points at an RFC 8414 / OIDC Discovery document from which the registration
+// endpoint is resolved; RegistrationEndpoint is used directly when the upstream
+// does not publish discovery metadata.
+//
+// The XOR rule uses has() alone (not has() + size() > 0) to keep the rule's
+// estimated CEL cost under the apiserver's per-rule static budget. With
+// `omitempty` on both fields, an unset field is absent on the wire and has()
+// returns false; the explicit-empty-string edge case is rejected at reconcile
+// time by ValidateOAuth2DCRConfig.
+//
+// +kubebuilder:validation:XValidation:rule="has(self.discoveryUrl) != has(self.registrationEndpoint)",message="exactly one of discoveryUrl or registrationEndpoint must be set"
+//
+//nolint:lll // CEL validation rules exceed line length limit
+type DCRUpstreamConfig struct {
+	// DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver
+	// issues a single GET against this URL (no well-known-path fallback) and
+	// reads registration_endpoint, authorization_endpoint, token_endpoint,
+	// token_endpoint_auth_methods_supported, and scopes_supported from the
+	// response.
+	// Mutually exclusive with RegistrationEndpoint.
+	// HTTPS is required because the registration endpoint resolved from this
+	// document carries the initial access token and the issued client_secret
+	// (RFC 7591 §3, RFC 8414 §3). MaxLength is a defensive size cap (etcd
+	// object budget, regex evaluation cost) and matches the conventional URL
+	// length cap.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^https://[^\s?#]+[^/\s?#]$`
+	// +kubebuilder:validation:MaxLength=2048
+	DiscoveryURL string `json:"discoveryUrl,omitempty"`
+
+	// RegistrationEndpoint is the RFC 7591 registration endpoint URL used
+	// directly, bypassing discovery. When using this field, the caller is
+	// expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
+	// explicit Scopes list on the parent OAuth2UpstreamConfig.
+	// Mutually exclusive with DiscoveryURL.
+	// HTTPS is required because the registration endpoint carries the initial
+	// access token and the issued client_secret (RFC 7591 §3, RFC 8414 §3).
+	// MaxLength is a defensive size cap (etcd object budget, regex evaluation
+	// cost) and matches the conventional URL length cap.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^https://[^\s?#]+[^/\s?#]$`
+	// +kubebuilder:validation:MaxLength=2048
+	RegistrationEndpoint string `json:"registrationEndpoint,omitempty"`
+
+	// InitialAccessTokenRef is an optional reference to a Kubernetes Secret
+	// carrying an RFC 7591 §3 initial access token. When set, the resolver
+	// presents the token value as a Bearer credential on the registration
+	// request. Mirrors the ClientSecretRef pattern.
+	// +optional
+	InitialAccessTokenRef *SecretKeyRef `json:"initialAccessTokenRef,omitempty"`
+
+	// SoftwareID is the RFC 7591 "software_id" registration metadata value,
+	// identifying the client software independent of any particular
+	// registration instance. Typically a UUID or short identifier.
+	// +optional
+	// +kubebuilder:validation:MaxLength=255
+	SoftwareID string `json:"softwareId,omitempty"`
+
+	// SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
+	// metadata about the client software, signed by a party the authorization
+	// server trusts.
+	//
+	// Stored inline on the CR. The JWT is signed but not encrypted, so its
+	// contents are visible to anyone with get/list/watch on this resource and
+	// appear in etcd backups in plaintext. Treat the value as non-confidential
+	// (signed attestation, not a secret). Operators that rotate software
+	// statements like bearer credentials should keep them at the authorization
+	// server side and rely on the registration endpoint's initial access
+	// token (see InitialAccessTokenRef) instead of placing them on the CR.
+	//
+	// Bounded to 16384 characters as a defensive size cap (etcd object
+	// budget, regex evaluation cost). Real-world signed statements with
+	// embedded x5c certificate chains, JWKS keys, or OIDC-Federation
+	// trust-framework metadata routinely exceed 4 KB.
+	// +optional
+	// +kubebuilder:validation:MaxLength=16384
+	SoftwareStatement string `json:"softwareStatement,omitempty"`
+}
+
+// IdentityFromTokenConfig extracts user identity (subject, name, email) directly from the
+// OAuth2 token-endpoint response body using gjson dot-notation paths. When configured on an
+// OAuth2UpstreamConfig, the embedded auth server skips the userinfo HTTP call entirely and
+// resolves identity from the token response.
+//
+// Paths use gjson dot-notation, where each segment is a JSON object key. For example,
+// "username" extracts a top-level field, and "authed_user.id" extracts a nested field.
+//
+// Trust-model warning: Identity claims extracted via this block are not cryptographically
+// verified — they are trusted only via the TLS connection to the token endpoint. Prefer
+// OIDC + ID token validation when verifiable claims are required.
+//
+// Subject uniqueness is scoped to the upstream provider entry. To keep identity namespaces
+// separate across multiple instances of the same provider (e.g., two Snowflake accounts),
+// use distinct upstream provider entries.
+type IdentityFromTokenConfig struct {
+	// SubjectPath is the dot-notation path to the subject (user ID) field in the token response.
+	// Warning: claims read from the token response are trusted only via TLS, not
+	// cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.
+	// Example: "authed_user.id" for Slack (top-level token-response field). For providers
+	// whose token response embeds the access token as a JWT (e.g. Snowflake), use the
+	// "@upstreamjwt" modifier to decode the payload, e.g. "access_token|@upstreamjwt|sub".
+	// The "@upstreamjwt" modifier performs no signature verification either.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	SubjectPath string `json:"subjectPath"`
+
+	// NamePath is the dot-notation path to the display name field in the token response.
+	// If not specified or if the path does not resolve to a string, the display name is omitted.
+	// Omit the field entirely rather than setting it to an empty string.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	NamePath string `json:"namePath,omitempty"`
+
+	// EmailPath is the dot-notation path to the email address field in the token response.
+	// If not specified or if the path does not resolve to a string, the email is omitted.
+	// Omit the field entirely rather than setting it to an empty string.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	EmailPath string `json:"emailPath,omitempty"`
 }
 
 // TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
 // using dot-notation JSON paths. This supports upstream providers like GovSlack that nest
 // the access token under paths like "authed_user.access_token".
+//
+// For extracting user identity from the token response, see IdentityFromToken.
 type TokenResponseMapping struct {
 	// AccessTokenPath is the dot-notation path to the access token in the response.
 	// Example: "authed_user.access_token"
@@ -440,7 +649,9 @@ type TokenResponseMapping struct {
 
 // UserInfoConfig contains configuration for fetching user information from an upstream provider.
 // This supports both standard OIDC UserInfo endpoints and custom provider-specific endpoints
-// like GitHub's /user API.
+// like GitHub's /user API. For providers that do not expose a usable userinfo endpoint but
+// include identity in the OAuth2 token response, use IdentityFromToken on OAuth2UpstreamConfig
+// instead.
 type UserInfoConfig struct {
 	// EndpointURL is the URL of the userinfo endpoint.
 	// +kubebuilder:validation:Required
@@ -525,17 +736,27 @@ type AuthServerStorageConfig struct {
 }
 
 // RedisStorageConfig configures Redis connection for auth server storage.
-// Exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set.
+// Exactly one of addr or sentinelConfig must be set. Set clusterMode to true when
+// addr points to a Redis Cluster discovery endpoint (GCP Memorystore Cluster,
+// AWS ElastiCache cluster mode enabled).
 //
-// +kubebuilder:validation:XValidation:rule="(self.addr.size() > 0) != has(self.sentinelConfig)",message="exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set"
+// +kubebuilder:validation:XValidation:rule="(has(self.addr) && self.addr.size() > 0) != has(self.sentinelConfig)",message="exactly one of addr or sentinelConfig must be set"
+// +kubebuilder:validation:XValidation:rule="!(has(self.clusterMode) && self.clusterMode) || (has(self.addr) && self.addr.size() > 0)",message="clusterMode requires addr to be set"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type RedisStorageConfig struct {
-	// Addr is the Redis server address for standalone mode (e.g., "host:port").
-	// Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present
-	// a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig.
+	// Addr is the Redis server address (host:port). Required for standalone and cluster modes.
+	// Use for managed Redis services that expose a single endpoint (GCP Memorystore basic tier,
+	// AWS ElastiCache without cluster mode, or cluster-mode services when clusterMode is true).
+	// Mutually exclusive with sentinelConfig.
 	// +optional
 	Addr string `json:"addr,omitempty"`
+
+	// ClusterMode enables the Redis Cluster protocol. Set to true when addr points to a
+	// Redis Cluster discovery endpoint (e.g., GCP Memorystore Cluster, AWS ElastiCache
+	// cluster mode enabled). Requires addr to be set.
+	// +optional
+	ClusterMode bool `json:"clusterMode,omitempty"`
 
 	// SentinelConfig holds Redis Sentinel configuration.
 	// Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr.
@@ -776,10 +997,11 @@ type UpstreamInjectSpec struct {
 // auth server config it shares with VirtualMCPServer.
 const (
 	// ConditionTypeIdentitySynthesized is an advisory set to True when at
-	// least one OAuth2 upstream has no userInfo endpoint configured (the
-	// embedded auth server synthesizes its subject from the access token,
-	// no Name/Email claims). Surfaces on resources that own the upstream
-	// declaration so a missing userInfo block is visible in
+	// least one OAuth2 upstream has no real-identity source configured
+	// (neither userInfo nor identityFromToken). The embedded auth server
+	// then synthesizes its subject from the access token, with no
+	// Name/Email claims. Surfaces on resources that own the upstream
+	// declaration so a missing identity source is visible in
 	// `kubectl describe` instead of only in proxyrunner logs.
 	ConditionTypeIdentitySynthesized = "IdentitySynthesized"
 )
@@ -787,11 +1009,13 @@ const (
 // Condition reasons for ConditionTypeIdentitySynthesized.
 const (
 	// ConditionReasonIdentitySynthesizedActive: one or more OAuth2 upstreams
-	// have nil userInfo. The condition message names the affected upstream(s).
+	// have neither userInfo nor identityFromToken configured. The condition
+	// message names the affected upstream(s).
 	ConditionReasonIdentitySynthesizedActive = "OAuth2UpstreamWithoutUserInfo"
 
-	// ConditionReasonIdentitySynthesizedInactive: every upstream has userInfo;
-	// real identity is being resolved.
+	// ConditionReasonIdentitySynthesizedInactive: every OAuth2 upstream has
+	// a real-identity source (userInfo or identityFromToken); real identity
+	// is being resolved.
 	ConditionReasonIdentitySynthesizedInactive = "AllUpstreamsHaveUserInfo"
 )
 
@@ -812,6 +1036,10 @@ type MCPExternalAuthConfigStatus struct {
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
 
+	// ReferenceCount is the number of workloads referencing this config.
+	// +optional
+	ReferenceCount int32 `json:"referenceCount,omitempty"`
+
 	// ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
 	// Each entry identifies the workload by kind and name.
 	// +listType=map
@@ -826,7 +1054,7 @@ type MCPExternalAuthConfigStatus struct {
 // +kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+// +kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.
@@ -956,22 +1184,115 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	return nil
 }
 
-// validateUpstreamProvider validates a single upstream provider configuration
+// validateUpstreamProvider validates a single upstream provider configuration.
+// The discriminator check mirrors the combined CEL XValidation rule on
+// UpstreamProviderConfig: a single boolean test produces a single message that
+// matches what admission emits, so reconcile-time and admission-time errors
+// stay aligned.
 func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *UpstreamProviderConfig) error {
 	prefix := fmt.Sprintf("upstreamProviders[%d]", index)
 
-	if (provider.OIDCConfig == nil) == (provider.Type == UpstreamProviderTypeOIDC) {
-		return fmt.Errorf("%s: oidcConfig must be set when type is 'oidc' and must not be set otherwise", prefix)
+	typeOK := provider.Type == UpstreamProviderTypeOIDC || provider.Type == UpstreamProviderTypeOAuth2
+	configOK := (provider.Type == UpstreamProviderTypeOIDC && provider.OIDCConfig != nil && provider.OAuth2Config == nil) ||
+		(provider.Type == UpstreamProviderTypeOAuth2 && provider.OAuth2Config != nil && provider.OIDCConfig == nil)
+	if !typeOK || !configOK {
+		return fmt.Errorf("%s: type must be 'oidc' or 'oauth2'; oidcConfig must be set when type is 'oidc' "+
+			"and oauth2Config must be set when type is 'oauth2' (and the other must not be set)", prefix)
 	}
-	if (provider.OAuth2Config == nil) == (provider.Type == UpstreamProviderTypeOAuth2) {
-		return fmt.Errorf("%s: oauth2Config must be set when type is 'oauth2' and must not be set otherwise", prefix)
-	}
-	if provider.Type != UpstreamProviderTypeOIDC && provider.Type != UpstreamProviderTypeOAuth2 {
-		return fmt.Errorf("%s: unsupported provider type: %s", prefix, provider.Type)
+
+	// Validate OAuth2-specific constraints (defense-in-depth with CEL).
+	// The discriminator above guarantees OAuth2Config != nil when type is oauth2.
+	if provider.Type == UpstreamProviderTypeOAuth2 {
+		if err := ValidateOAuth2DCRConfig(provider.OAuth2Config); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+		if err := validateOAuth2UpstreamConfig(provider.OAuth2Config); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
 	}
 
 	// Validate additionalAuthorizationParams does not contain reserved keys
 	return ValidateAdditionalAuthorizationParams(prefix, provider.AdditionalAuthorizationParams())
+}
+
+// Length caps for DCR-related string fields. Mirror the
+// +kubebuilder:validation:MaxLength markers on DCRUpstreamConfig so that
+// ValidateOAuth2DCRConfig is a true reconcile-time backstop for length
+// constraints, not just for the XOR rules.
+const (
+	// MaxDCRURLLength matches the MaxLength marker on
+	// DCRUpstreamConfig.DiscoveryURL and DCRUpstreamConfig.RegistrationEndpoint.
+	MaxDCRURLLength = 2048
+
+	// MaxSoftwareStatementLength matches the MaxLength marker on
+	// DCRUpstreamConfig.SoftwareStatement.
+	MaxSoftwareStatementLength = 16384
+)
+
+// ValidateOAuth2DCRConfig enforces the mutual exclusivity between ClientID and
+// DCRConfig, between ClientSecretRef and DCRConfig, and (when DCRConfig is
+// present) between DiscoveryURL and RegistrationEndpoint. It also enforces the
+// MaxLength caps declared on DCRUpstreamConfig so reconcile-time matches
+// admission-time. These rules mirror the CEL validation on OAuth2UpstreamConfig
+// and DCRUpstreamConfig and provide defense-in-depth for stored objects (e.g.,
+// objects stored before CEL rules were added or validated through code paths
+// that bypass admission).
+//
+// Errors are scoped to "oauth2Config[.dcrConfig[.field]]" so callers can wrap
+// with their own outer scope (e.g. "upstreamProviders[i]: %w" or
+// "upstream %q: %w") without duplicating the field name.
+//
+// Exported so the controllerutil conversion layer can reuse the same
+// invariants when building runtime configs, rejecting malformed objects at
+// reconcile time rather than waiting until the authserver process parses them.
+func ValidateOAuth2DCRConfig(cfg *OAuth2UpstreamConfig) error {
+	hasClientID := cfg.ClientID != ""
+	hasDCR := cfg.DCRConfig != nil
+
+	if hasClientID == hasDCR {
+		return fmt.Errorf("oauth2Config: exactly one of clientId or dcrConfig must be set")
+	}
+
+	if !hasDCR {
+		return nil
+	}
+
+	if cfg.ClientSecretRef != nil {
+		return fmt.Errorf(
+			"oauth2Config: clientSecretRef must not be set when dcrConfig is set; " +
+				"the client_secret is obtained at runtime via Dynamic Client Registration")
+	}
+
+	hasDiscoveryURL := cfg.DCRConfig.DiscoveryURL != ""
+	hasRegistrationEndpoint := cfg.DCRConfig.RegistrationEndpoint != ""
+	if hasDiscoveryURL == hasRegistrationEndpoint {
+		return fmt.Errorf("oauth2Config.dcrConfig: exactly one of discoveryUrl or registrationEndpoint must be set")
+	}
+
+	if l := len(cfg.DCRConfig.DiscoveryURL); l > MaxDCRURLLength {
+		return fmt.Errorf("oauth2Config.dcrConfig.discoveryUrl: length %d exceeds maximum %d", l, MaxDCRURLLength)
+	}
+	if l := len(cfg.DCRConfig.RegistrationEndpoint); l > MaxDCRURLLength {
+		return fmt.Errorf("oauth2Config.dcrConfig.registrationEndpoint: length %d exceeds maximum %d", l, MaxDCRURLLength)
+	}
+	if l := len(cfg.DCRConfig.SoftwareStatement); l > MaxSoftwareStatementLength {
+		return fmt.Errorf(
+			"oauth2Config.dcrConfig.softwareStatement: length %d exceeds maximum %d",
+			l, MaxSoftwareStatementLength)
+	}
+	return nil
+}
+
+// validateOAuth2UpstreamConfig validates OAuth2-specific upstream provider configuration
+// beyond the DCR / ClientID constraints handled by ValidateOAuth2DCRConfig. Errors are
+// scoped to "oauth2Config[.field]" so callers can wrap with their own outer scope (e.g.
+// "upstreamProviders[i]: %w") without duplicating the field name, matching the contract
+// of ValidateOAuth2DCRConfig.
+func validateOAuth2UpstreamConfig(cfg *OAuth2UpstreamConfig) error {
+	if cfg.IdentityFromToken != nil && cfg.IdentityFromToken.SubjectPath == "" {
+		return fmt.Errorf("oauth2Config.identityFromToken.subjectPath must not be empty when identityFromToken is set")
+	}
+	return nil
 }
 
 // AdditionalAuthorizationParams returns the additional authorization parameters
@@ -987,9 +1308,11 @@ func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]stri
 }
 
 // SyntheticIdentityUpstreams returns the names of OAuth2 upstreams running
-// in synthesis mode (no userInfo configured), sorted lexically for
-// deterministic condition messages. OIDC upstreams are skipped — they always
-// have an ID-token-derived subject. Source of truth for the
+// in synthesis mode (neither userInfo nor identityFromToken configured),
+// sorted lexically for deterministic condition messages. OIDC upstreams are
+// skipped — they always have an ID-token-derived subject. Upstreams with
+// identityFromToken are also skipped — the subject is extracted from the
+// token response, not synthesized. Source of truth for the
 // ConditionTypeIdentitySynthesized advisory.
 func (c *EmbeddedAuthServerConfig) SyntheticIdentityUpstreams() []string {
 	if c == nil {
@@ -1001,7 +1324,7 @@ func (c *EmbeddedAuthServerConfig) SyntheticIdentityUpstreams() []string {
 		if p.Type != UpstreamProviderTypeOAuth2 || p.OAuth2Config == nil {
 			continue
 		}
-		if p.OAuth2Config.UserInfo == nil {
+		if p.OAuth2Config.UserInfo == nil && p.OAuth2Config.IdentityFromToken == nil {
 			names = append(names, p.Name)
 		}
 	}

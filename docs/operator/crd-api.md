@@ -4,6 +4,7 @@
 - [toolhive.stacklok.dev/audit](#toolhivestacklokdevaudit)
 - [toolhive.stacklok.dev/authtypes](#toolhivestacklokdevauthtypes)
 - [toolhive.stacklok.dev/config](#toolhivestacklokdevconfig)
+- [toolhive.stacklok.dev/ratelimit](#toolhivestacklokdevratelimit)
 - [toolhive.stacklok.dev/telemetry](#toolhivestacklokdevtelemetry)
 - [toolhive.stacklok.dev/v1alpha1](#toolhivestacklokdevv1alpha1)
 - [toolhive.stacklok.dev/v1beta1](#toolhivestacklokdevv1beta1)
@@ -323,6 +324,7 @@ _Appears in:_
 | `audit` _[pkg.audit.Config](#pkgauditconfig)_ | Audit configures audit logging for the Virtual MCP server.<br />When present, audit logs include MCP protocol operations.<br />See audit.Config for available configuration options. |  | Optional: \{\} <br /> |
 | `optimizer` _[vmcp.config.OptimizerConfig](#vmcpconfigoptimizerconfig)_ | Optimizer configures the MCP optimizer for context optimization on large toolsets.<br />When enabled, vMCP exposes only find_tool and call_tool operations to clients<br />instead of all backend tools directly. This reduces token usage by allowing<br />LLMs to discover relevant tools on demand rather than receiving all tool definitions. |  | Optional: \{\} <br /> |
 | `sessionStorage` _[vmcp.config.SessionStorageConfig](#vmcpconfigsessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When provider is "redis", the operator injects Redis connection parameters<br />(address, db, keyPrefix) here. The Redis password is provided separately via<br />the THV_SESSION_REDIS_PASSWORD environment variable. |  | Optional: \{\} <br /> |
+| `rateLimiting` _[ratelimit.types.RateLimitConfig](#ratelimittypesratelimitconfig)_ | RateLimiting defines rate limiting configuration for the Virtual MCP server.<br />Requires Redis session storage to be configured for distributed rate limiting. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.ConflictResolutionConfig
@@ -736,6 +738,68 @@ _Appears in:_
 
 
 
+## toolhive.stacklok.dev/ratelimit
+
+
+#### ratelimit.types.RateLimitBucket
+
+
+
+RateLimitBucket defines a token bucket configuration with a maximum capacity
+and a refill period. Used by both shared and per-user rate limits.
+
+
+
+_Appears in:_
+- [ratelimit.types.RateLimitConfig](#ratelimittypesratelimitconfig)
+- [ratelimit.types.ToolRateLimitConfig](#ratelimittypestoolratelimitconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `maxTokens` _integer_ | MaxTokens is the maximum number of tokens (bucket capacity).<br />This is also the burst size: the maximum number of requests that can be served<br />instantaneously before the bucket is depleted. |  | Minimum: 1 <br />Required: \{\} <br /> |
+| `refillPeriod` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.<br />The effective refill rate is maxTokens / refillPeriod tokens per second.<br />Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s"). |  | Required: \{\} <br /> |
+
+
+#### ratelimit.types.RateLimitConfig
+
+
+
+RateLimitConfig defines rate limiting configuration for an MCP server.
+At least one of shared, perUser, or tools must be configured.
+
+
+
+_Appears in:_
+- [vmcp.config.Config](#vmcpconfigconfig)
+- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `shared` _[ratelimit.types.RateLimitBucket](#ratelimittypesratelimitbucket)_ | Shared is a token bucket shared across all users for the entire server. |  | Optional: \{\} <br /> |
+| `perUser` _[ratelimit.types.RateLimitBucket](#ratelimittypesratelimitbucket)_ | PerUser is a token bucket applied independently to each authenticated user<br />at the server level. Requires authentication to be enabled.<br />Each unique userID creates Redis keys that expire after 2x refillPeriod.<br />Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys. |  | Optional: \{\} <br /> |
+| `tools` _[ratelimit.types.ToolRateLimitConfig](#ratelimittypestoolratelimitconfig) array_ | Tools defines per-tool rate limit overrides.<br />Each entry applies additional rate limits to calls targeting a specific tool name.<br />A request must pass both the server-level limit and the per-tool limit. |  | Optional: \{\} <br /> |
+
+
+#### ratelimit.types.ToolRateLimitConfig
+
+
+
+ToolRateLimitConfig defines rate limits for a specific tool.
+At least one of shared or perUser must be configured.
+
+
+
+_Appears in:_
+- [ratelimit.types.RateLimitConfig](#ratelimittypesratelimitconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the MCP tool name this limit applies to. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `shared` _[ratelimit.types.RateLimitBucket](#ratelimittypesratelimitbucket)_ | Shared token bucket for this specific tool. |  | Optional: \{\} <br /> |
+| `perUser` _[ratelimit.types.RateLimitBucket](#ratelimittypesratelimitbucket)_ | PerUser token bucket configuration for this tool. |  | Optional: \{\} <br /> |
+
+
+
 ## toolhive.stacklok.dev/telemetry
 
 
@@ -1077,6 +1141,40 @@ _Appears in:_
 | `key` _string_ | Key is the key in the ConfigMap that contains the authorization configuration | authz.json | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.DCRUpstreamConfig
+
+
+
+DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an
+OAuth 2.0 upstream. When present on an OAuth2 upstream, the authserver
+performs registration at runtime to obtain client credentials, replacing
+the need to pre-provision a ClientID.
+
+Exactly one of DiscoveryURL or RegistrationEndpoint must be set. DiscoveryURL
+points at an RFC 8414 / OIDC Discovery document from which the registration
+endpoint is resolved; RegistrationEndpoint is used directly when the upstream
+does not publish discovery metadata.
+
+The XOR rule uses has() alone (not has() + size() > 0) to keep the rule's
+estimated CEL cost under the apiserver's per-rule static budget. With
+`omitempty` on both fields, an unset field is absent on the wire and has()
+returns false; the explicit-empty-string edge case is rejected at reconcile
+time by ValidateOAuth2DCRConfig.
+
+
+
+_Appears in:_
+- [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `discoveryUrl` _string_ | DiscoveryURL is the RFC 8414 / OIDC Discovery document URL. The resolver<br />issues a single GET against this URL (no well-known-path fallback) and<br />reads registration_endpoint, authorization_endpoint, token_endpoint,<br />token_endpoint_auth_methods_supported, and scopes_supported from the<br />response.<br />Mutually exclusive with RegistrationEndpoint.<br />HTTPS is required because the registration endpoint resolved from this<br />document carries the initial access token and the issued client_secret<br />(RFC 7591 §3, RFC 8414 §3). MaxLength is a defensive size cap (etcd<br />object budget, regex evaluation cost) and matches the conventional URL<br />length cap. |  | MaxLength: 2048 <br />Pattern: `^https://[^\s?#]+[^/\s?#]$` <br />Optional: \{\} <br /> |
+| `registrationEndpoint` _string_ | RegistrationEndpoint is the RFC 7591 registration endpoint URL used<br />directly, bypassing discovery. When using this field, the caller is<br />expected to also supply AuthorizationEndpoint, TokenEndpoint, and an<br />explicit Scopes list on the parent OAuth2UpstreamConfig.<br />Mutually exclusive with DiscoveryURL.<br />HTTPS is required because the registration endpoint carries the initial<br />access token and the issued client_secret (RFC 7591 §3, RFC 8414 §3).<br />MaxLength is a defensive size cap (etcd object budget, regex evaluation<br />cost) and matches the conventional URL length cap. |  | MaxLength: 2048 <br />Pattern: `^https://[^\s?#]+[^/\s?#]$` <br />Optional: \{\} <br /> |
+| `initialAccessTokenRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | InitialAccessTokenRef is an optional reference to a Kubernetes Secret<br />carrying an RFC 7591 §3 initial access token. When set, the resolver<br />presents the token value as a Bearer credential on the registration<br />request. Mirrors the ClientSecretRef pattern. |  | Optional: \{\} <br /> |
+| `softwareId` _string_ | SoftwareID is the RFC 7591 "software_id" registration metadata value,<br />identifying the client software independent of any particular<br />registration instance. Typically a UUID or short identifier. |  | MaxLength: 255 <br />Optional: \{\} <br /> |
+| `softwareStatement` _string_ | SoftwareStatement is the RFC 7591 "software_statement" JWT asserting<br />metadata about the client software, signed by a party the authorization<br />server trusts.<br />Stored inline on the CR. The JWT is signed but not encrypted, so its<br />contents are visible to anyone with get/list/watch on this resource and<br />appear in etcd backups in plaintext. Treat the value as non-confidential<br />(signed attestation, not a secret). Operators that rotate software<br />statements like bearer credentials should keep them at the authorization<br />server side and rely on the registration endpoint's initial access<br />token (see InitialAccessTokenRef) instead of placing them on the CR.<br />Bounded to 16384 characters as a defensive size cap (etcd object<br />budget, regex evaluation cost). Real-world signed statements with<br />embedded x5c certificate chains, JWKS keys, or OIDC-Federation<br />trust-framework metadata routinely exceed 4 KB. |  | MaxLength: 16384 <br />Optional: \{\} <br /> |
+
+
 
 
 #### api.v1beta1.EmbeddedAuthServerConfig
@@ -1101,6 +1199,7 @@ _Appears in:_
 | `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
 | `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />The embedded auth server delegates authentication to these providers.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
+| `baselineClientScopes` _string array_ | BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be<br />included in every client registration. The embedded auth server unions these<br />scopes into the registered set returned by RFC 7591 Dynamic Client<br />Registration, so a client that narrows the `scope` field at /oauth/register<br />can still request the baseline scopes at /oauth/authorize. All values must<br />be present in the upstream-derived scopesSupported set; the auth server<br />fails to start if any value is missing.<br />Security: every client registered via /oauth/register will gain the<br />ability to request these scopes at /oauth/authorize, regardless of what<br />the client itself requested. Keep the baseline narrow (typically<br />"openid" and "offline_access"). Adding a privileged scope here — e.g.<br />"admin:read" — would grant it to every DCR-registered client, including<br />public clients like Claude Code, Cursor, and VS Code. |  | MaxItems: 10 <br />items:MinLength: 1 <br />items:Pattern: `^[\x21\x23-\x5B\x5D-\x7E]+$` <br />Optional: \{\} <br /> |
 
 
 #### api.v1beta1.EmbeddingResourceOverrides
@@ -1217,7 +1316,7 @@ _Appears in:_
 | `model` _string_ | Model is the HuggingFace embedding model to use (e.g., "sentence-transformers/all-MiniLM-L6-v2") | BAAI/bge-small-en-v1.5 | Optional: \{\} <br /> |
 | `hfTokenSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | HFTokenSecretRef is a reference to a Kubernetes Secret containing the huggingface token.<br />If provided, the secret value will be provided to the embedding server for authentication with huggingface. |  | Optional: \{\} <br /> |
 | `image` _string_ | Image is the container image for the embedding inference server.<br />Images must be from HuggingFace Text Embeddings Inference (https://github.com/huggingface/text-embeddings-inference). | ghcr.io/huggingface/text-embeddings-inference:cpu-latest | Optional: \{\} <br /> |
-| `imagePullPolicy` _string_ | ImagePullPolicy defines the pull policy for the container image | IfNotPresent | Enum: [Always Never IfNotPresent] <br />Optional: \{\} <br /> |
+| `imagePullPolicy` _[PullPolicy](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#pullpolicy-v1-core)_ | ImagePullPolicy defines the pull policy for the container image | IfNotPresent | Enum: [Always Never IfNotPresent] <br />Optional: \{\} <br /> |
 | `port` _integer_ | Port is the port to expose the embedding service on | 8080 | Maximum: 65535 <br />Minimum: 1 <br /> |
 | `args` _string array_ | Args are additional arguments to pass to the embedding inference server |  | Optional: \{\} <br /> |
 | `env` _[api.v1beta1.EnvVar](#apiv1beta1envvar) array_ | Env are environment variables to set in the container |  | Optional: \{\} <br /> |
@@ -1382,6 +1481,38 @@ _Appears in:_
 | `valueSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ValueSecretRef references a Kubernetes Secret containing the header value |  | Required: \{\} <br /> |
 
 
+#### api.v1beta1.IdentityFromTokenConfig
+
+
+
+IdentityFromTokenConfig extracts user identity (subject, name, email) directly from the
+OAuth2 token-endpoint response body using gjson dot-notation paths. When configured on an
+OAuth2UpstreamConfig, the embedded auth server skips the userinfo HTTP call entirely and
+resolves identity from the token response.
+
+Paths use gjson dot-notation, where each segment is a JSON object key. For example,
+"username" extracts a top-level field, and "authed_user.id" extracts a nested field.
+
+Trust-model warning: Identity claims extracted via this block are not cryptographically
+verified — they are trusted only via the TLS connection to the token endpoint. Prefer
+OIDC + ID token validation when verifiable claims are required.
+
+Subject uniqueness is scoped to the upstream provider entry. To keep identity namespaces
+separate across multiple instances of the same provider (e.g., two Snowflake accounts),
+use distinct upstream provider entries.
+
+
+
+_Appears in:_
+- [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `subjectPath` _string_ | SubjectPath is the dot-notation path to the subject (user ID) field in the token response.<br />Warning: claims read from the token response are trusted only via TLS, not<br />cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.<br />Example: "authed_user.id" for Slack (top-level token-response field). For providers<br />whose token response embeds the access token as a JWT (e.g. Snowflake), use the<br />"@upstreamjwt" modifier to decode the payload, e.g. "access_token\|@upstreamjwt\|sub".<br />The "@upstreamjwt" modifier performs no signature verification either. |  | MaxLength: 256 <br />MinLength: 1 <br />Required: \{\} <br /> |
+| `namePath` _string_ | NamePath is the dot-notation path to the display name field in the token response.<br />If not specified or if the path does not resolve to a string, the display name is omitted.<br />Omit the field entirely rather than setting it to an empty string. |  | MaxLength: 256 <br />MinLength: 1 <br />Optional: \{\} <br /> |
+| `emailPath` _string_ | EmailPath is the dot-notation path to the email address field in the token response.<br />If not specified or if the path does not resolve to a string, the email is omitted.<br />Omit the field entirely rather than setting it to an empty string. |  | MaxLength: 256 <br />MinLength: 1 <br />Optional: \{\} <br /> |
+
+
 #### api.v1beta1.IncomingAuthConfig
 
 
@@ -1415,6 +1546,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `policies` _string array_ | Policies is a list of Cedar policy strings |  | MinItems: 1 <br />Required: \{\} <br /> |
 | `entitiesJson` _string_ | EntitiesJSON is a JSON string representing Cedar entities | [] | Optional: \{\} <br /> |
+| `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token's claims<br />Cedar should evaluate. Currently honored only when the parent<br />AuthzConfigRef.Type is "inline"; configMap-sourced policies will support<br />this in a future release (see #5208). Only meaningful for VirtualMCPServer<br />with an embedded auth server. When empty and an embedded auth server has<br />upstreams configured, the controller defaults to the first upstream<br />provider. The name must match one of the upstreams declared on<br />spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is<br />rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy<br />have no embedded auth server; setting this field on those CRs surfaces an<br />AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 
 
 #### api.v1beta1.InlineOIDCSharedConfig
@@ -1551,6 +1683,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPExternalAuthConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.<br />It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
+| `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
 | `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
@@ -1795,6 +1928,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPOIDCConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPOIDCConfig. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
+| `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
 | `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
@@ -2234,7 +2368,7 @@ _Appears in:_
 | `replicas` _integer_ | Replicas is the desired number of proxy runner (thv run) pod replicas.<br />MCPServer creates two separate Deployments: one for the proxy runner and one<br />for the MCP server backend. This field controls the proxy runner Deployment.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `backendReplicas` _integer_ | BackendReplicas is the desired number of MCP server backend pod replicas.<br />This controls the backend Deployment (the MCP server container itself),<br />independent of the proxy runner controlled by Replicas.<br />When nil, the operator does not set Deployment.Spec.Replicas, leaving replica<br />management to an HPA or other external controller. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `sessionStorage` _[api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
-| `rateLimiting` _[api.v1beta1.RateLimitConfig](#apiv1beta1ratelimitconfig)_ | RateLimiting defines rate limiting configuration for the MCP server.<br />Requires Redis session storage to be configured for distributed rate limiting. |  | Optional: \{\} <br /> |
+| `rateLimiting` _[ratelimit.types.RateLimitConfig](#ratelimittypesratelimitconfig)_ | RateLimiting defines rate limiting configuration for the MCP server.<br />Requires Redis session storage to be configured for distributed rate limiting. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPServerStatus
@@ -2478,6 +2612,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPToolConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPToolConfig.<br />It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
+| `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
 | `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
@@ -2558,6 +2693,27 @@ _Appears in:_
 OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
 OAuth 2.0 providers require explicit endpoint configuration.
 
+Exactly one of ClientID or DCRConfig must be set: ClientID is used when the
+client is pre-provisioned out of band, DCRConfig enables RFC 7591 Dynamic
+Client Registration at runtime.
+
+ClientSecretRef is mutually exclusive with DCRConfig: when DCRConfig is set,
+the client_secret is obtained from the registration response (RFC 7591
+§3.2.1) and any static ClientSecretRef would be either dead config or a
+competing source of truth. The XValidation rule below rejects the
+combination at admission; ValidateOAuth2DCRConfig is the matching
+reconcile-time backstop.
+
+Layered XOR behavior: the ClientID/DCRConfig rule treats `clientId: ""` as
+absent (size>0) but treats `dcrConfig: {}` as present (has() is true for an
+empty object). For input `{ clientId: "", dcrConfig: {} }` the outer rule
+passes and the inner DCRUpstreamConfig XOR fires with "exactly one of
+discoveryUrl or registrationEndpoint must be set". This is intentional —
+adding a non-empty subfield check (e.g.,
+`has(self.dcrConfig.discoveryUrl) || has(self.dcrConfig.registrationEndpoint)`)
+would inflate CEL cost on an already-budget-bound rule, and the inner
+message is still actionable.
+
 
 
 _Appears in:_
@@ -2567,13 +2723,15 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `authorizationEndpoint` _string_ | AuthorizationEndpoint is the URL for the OAuth authorization endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
 | `tokenEndpoint` _string_ | TokenEndpoint is the URL for the OAuth token endpoint. |  | Pattern: `^https?://.*$` <br />Required: \{\} <br /> |
-| `userInfo` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />When omitted, the embedded auth server runs in synthesis mode for this<br />upstream: a non-PII subject derived from the access token, no Name/Email.<br />Use this shape for upstreams with no userinfo surface (e.g., MCP<br />authorization servers per the MCP spec). |  | Optional: \{\} <br /> |
-| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP. |  | Required: \{\} <br /> |
+| `userInfo` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />When omitted and IdentityFromToken is also unset, the embedded auth server runs in<br />synthesis mode for this upstream: a non-PII subject derived from the access token, no<br />Name/Email. Use this shape for upstreams with no userinfo surface and no identity in<br />the token response (e.g., MCP authorization servers per the MCP spec). When<br />IdentityFromToken is set instead, identity is resolved from the token response body<br />(e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call<br />is skipped entirely. |  | Optional: \{\} <br /> |
+| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.<br />Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained<br />at runtime via RFC 7591 Dynamic Client Registration and must be left empty. |  | Optional: \{\} <br /> |
 | `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
 | `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
 | `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP. |  | Optional: \{\} <br /> |
-| `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used. |  | Optional: \{\} <br /> |
+| `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used.<br />For extracting user identity from the token response, see IdentityFromToken. |  | Optional: \{\} <br /> |
+| `identityFromToken` _[api.v1beta1.IdentityFromTokenConfig](#apiv1beta1identityfromtokenconfig)_ | IdentityFromToken extracts user identity (subject, name, email) directly<br />from the OAuth2 token-endpoint response body using gjson dot-notation paths.<br />When set, the embedded auth server skips the userinfo HTTP call entirely<br />and resolves identity from the token response. See IdentityFromTokenConfig<br />for trust-model and uniqueness considerations. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
+| `dcrConfig` _[api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)_ | DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream<br />authorization server. When set, the client credentials are obtained at<br />runtime rather than being pre-provisioned, and ClientID must be left empty.<br />Mutually exclusive with ClientID. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.OIDCUpstreamConfig
@@ -2724,42 +2882,8 @@ _Appears in:_
 | `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the proxy runner<br />These are applied to both the Deployment and the ServiceAccount |  | Optional: \{\} <br /> |
 
 
-#### api.v1beta1.RateLimitBucket
 
 
-
-RateLimitBucket defines a token bucket configuration with a maximum capacity
-and a refill period. Used by both shared (global) and per-user rate limits.
-
-
-
-_Appears in:_
-- [api.v1beta1.RateLimitConfig](#apiv1beta1ratelimitconfig)
-- [api.v1beta1.ToolRateLimitConfig](#apiv1beta1toolratelimitconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `maxTokens` _integer_ | MaxTokens is the maximum number of tokens (bucket capacity).<br />This is also the burst size: the maximum number of requests that can be served<br />instantaneously before the bucket is depleted. |  | Minimum: 1 <br />Required: \{\} <br /> |
-| `refillPeriod` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.<br />The effective refill rate is maxTokens / refillPeriod tokens per second.<br />Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s"). |  | Required: \{\} <br /> |
-
-
-#### api.v1beta1.RateLimitConfig
-
-
-
-RateLimitConfig defines rate limiting configuration for an MCP server.
-At least one of shared, perUser, or tools must be configured.
-
-
-
-_Appears in:_
-- [api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared is a token bucket shared across all users for the entire server. |  | Optional: \{\} <br /> |
-| `perUser` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | PerUser is a token bucket applied independently to each authenticated user<br />at the server level. Requires authentication to be enabled.<br />Each unique userID creates Redis keys that expire after 2x refillPeriod.<br />Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys. |  | Optional: \{\} <br /> |
-| `tools` _[api.v1beta1.ToolRateLimitConfig](#apiv1beta1toolratelimitconfig) array_ | Tools defines per-tool rate limit overrides.<br />Each entry applies additional rate limits to calls targeting a specific tool name.<br />A request must pass both the server-level limit and the per-tool limit. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.RedisACLUserConfig
@@ -2803,7 +2927,9 @@ _Appears in:_
 
 
 RedisStorageConfig configures Redis connection for auth server storage.
-Exactly one of addr (standalone) or sentinelConfig (Sentinel) must be set.
+Exactly one of addr or sentinelConfig must be set. Set clusterMode to true when
+addr points to a Redis Cluster discovery endpoint (GCP Memorystore Cluster,
+AWS ElastiCache cluster mode enabled).
 
 
 
@@ -2812,7 +2938,8 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `addr` _string_ | Addr is the Redis server address for standalone mode (e.g., "host:port").<br />Use for managed Redis services (GCP Memorystore, AWS ElastiCache) that present<br />a single endpoint and manage HA internally. Mutually exclusive with sentinelConfig. |  | Optional: \{\} <br /> |
+| `addr` _string_ | Addr is the Redis server address (host:port). Required for standalone and cluster modes.<br />Use for managed Redis services that expose a single endpoint (GCP Memorystore basic tier,<br />AWS ElastiCache without cluster mode, or cluster-mode services when clusterMode is true).<br />Mutually exclusive with sentinelConfig. |  | Optional: \{\} <br /> |
+| `clusterMode` _boolean_ | ClusterMode enables the Redis Cluster protocol. Set to true when addr points to a<br />Redis Cluster discovery endpoint (e.g., GCP Memorystore Cluster, AWS ElastiCache<br />cluster mode enabled). Requires addr to be set. |  | Optional: \{\} <br /> |
 | `sentinelConfig` _[api.v1beta1.RedisSentinelConfig](#apiv1beta1redissentinelconfig)_ | SentinelConfig holds Redis Sentinel configuration.<br />Use for self-managed Redis with Sentinel-based HA. Mutually exclusive with addr. |  | Optional: \{\} <br /> |
 | `aclUserConfig` _[api.v1beta1.RedisACLUserConfig](#apiv1beta1redisacluserconfig)_ | ACLUserConfig configures Redis ACL user authentication. |  | Required: \{\} <br /> |
 | `dialTimeout` _string_ | DialTimeout is the timeout for establishing connections.<br />Format: Go duration string (e.g., "5s", "1m"). | 5s | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Optional: \{\} <br /> |
@@ -2946,6 +3073,7 @@ SecretKeyRef is a reference to a key within a Secret
 
 _Appears in:_
 - [api.v1beta1.BearerTokenConfig](#apiv1beta1bearertokenconfig)
+- [api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)
 - [api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)
 - [api.v1beta1.EmbeddingServerSpec](#apiv1beta1embeddingserverspec)
 - [api.v1beta1.HeaderFromSecret](#apiv1beta1headerfromsecret)
@@ -3051,7 +3179,7 @@ _Appears in:_
 TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
 This configuration is used to exchange incoming authentication tokens for tokens
 that can be used with external services.
-The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
+The structure matches the tokenexchange.Config from pkg/oauthproto/tokenexchange/middleware.go
 
 
 
@@ -3095,6 +3223,8 @@ _Appears in:_
 TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
 using dot-notation JSON paths. This supports upstream providers like GovSlack that nest
 the access token under paths like "authed_user.access_token".
+
+For extracting user identity from the token response, see IdentityFromToken.
 
 
 
@@ -3169,23 +3299,6 @@ _Appears in:_
 | `annotations` _[api.v1beta1.ToolAnnotationsOverride](#apiv1beta1toolannotationsoverride)_ | Annotations overrides specific tool annotation fields.<br />Only specified fields are overridden; others pass through from the backend. |  | Optional: \{\} <br /> |
 
 
-#### api.v1beta1.ToolRateLimitConfig
-
-
-
-ToolRateLimitConfig defines rate limits for a specific tool.
-At least one of shared or perUser must be configured.
-
-
-
-_Appears in:_
-- [api.v1beta1.RateLimitConfig](#apiv1beta1ratelimitconfig)
-
-| Field | Description | Default | Validation |
-| --- | --- | --- | --- |
-| `name` _string_ | Name is the MCP tool name this limit applies to. |  | MinLength: 1 <br />Required: \{\} <br /> |
-| `shared` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | Shared token bucket for this specific tool. |  | Optional: \{\} <br /> |
-| `perUser` _[api.v1beta1.RateLimitBucket](#apiv1beta1ratelimitbucket)_ | PerUser token bucket configuration for this tool. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.UpstreamInjectSpec
@@ -3211,6 +3324,17 @@ _Appears in:_
 
 
 UpstreamProviderConfig defines configuration for an upstream Identity Provider.
+
+Exactly one of OIDCConfig or OAuth2Config must be set and must match the
+declared Type: oidc-typed providers set OIDCConfig, oauth2-typed providers
+set OAuth2Config. The CEL rule below enforces the pairing at admission; the
+matching Go-level check in validateUpstreamProvider provides defense-in-depth
+for stored objects.
+
+The rule is structured as a chain of equality checks ending in an explicit
+`false`, so adding a new UpstreamProviderType value without extending this
+rule fails admission instead of silently demanding the OAuth2 shape. When
+adding a new type, extend both this rule and validateUpstreamProvider.
 
 
 
@@ -3248,7 +3372,9 @@ _Appears in:_
 
 UserInfoConfig contains configuration for fetching user information from an upstream provider.
 This supports both standard OIDC UserInfo endpoints and custom provider-specific endpoints
-like GitHub's /user API.
+like GitHub's /user API. For providers that do not expose a usable userinfo endpoint but
+include identity in the OAuth2 token response, use IdentityFromToken on OAuth2UpstreamConfig
+instead.
 
 
 

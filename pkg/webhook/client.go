@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -173,16 +174,32 @@ func (c *Client) doHTTPCall(ctx context.Context, body []byte) ([]byte, error) {
 
 	// 5xx errors indicate webhook operational failures.
 	if resp.StatusCode >= http.StatusInternalServerError {
+		// Body preview is logged at debug level so operators can troubleshoot,
+		// but is kept out of the returned error chain to avoid surfacing
+		// potentially sensitive bytes (e.g. from an internal service reached
+		// via a misconfigured URL) into higher-level error logs.
+		slog.Debug("webhook returned server error",
+			"webhook", c.config.Name,
+			"url", c.config.URL,
+			"status_code", resp.StatusCode,
+			"body_preview", truncateBody(respBody),
+		)
 		return nil, NewNetworkError(c.config.Name,
-			fmt.Errorf("webhook returned HTTP %d: %s", resp.StatusCode, truncateBody(respBody)))
+			fmt.Errorf("webhook returned HTTP %d", resp.StatusCode))
 	}
 
 	// Non-200 responses (excluding 5xx handled above) are treated as invalid.
 	// The StatusCode is surfaced so callers can distinguish HTTP 422 (RFC always-deny)
 	// from other non-2xx codes that may follow the failure policy.
 	if resp.StatusCode != http.StatusOK {
+		slog.Debug("webhook returned non-2xx response",
+			"webhook", c.config.Name,
+			"url", c.config.URL,
+			"status_code", resp.StatusCode,
+			"body_preview", truncateBody(respBody),
+		)
 		return nil, NewInvalidResponseError(c.config.Name,
-			fmt.Errorf("webhook returned HTTP %d: %s", resp.StatusCode, truncateBody(respBody)),
+			fmt.Errorf("webhook returned HTTP %d", resp.StatusCode),
 			resp.StatusCode)
 	}
 

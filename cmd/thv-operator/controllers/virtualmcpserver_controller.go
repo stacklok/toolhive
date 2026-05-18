@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -26,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
@@ -123,7 +125,7 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=create;get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
@@ -552,6 +554,32 @@ func (*VirtualMCPServerReconciler) applyAuthServerIdentitySynthesizedCondition(
 	)
 }
 
+// rejectAuthzAdmission centralizes the boilerplate shared by every
+// authz-spec rejection branch in validateAuthzUpstreamAvailable: clear any
+// stale advisory, log the rejection, set Phase=Failed plus the
+// AuthServerConfigValidated=False condition, and return a *SpecValidationError
+// the reconciler converts into a non-requeueing outcome.
+func rejectAuthzAdmission(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+	logMsg, reason, userMessage, errSummary string,
+	extraLogFields ...any,
+) *SpecValidationError {
+	statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
+	logFields := append([]any{
+		"name", vmcp.Name,
+		"namespace", vmcp.Namespace,
+		"reason", reason,
+	}, extraLogFields...)
+	log.FromContext(ctx).Info(logMsg, logFields...)
+	statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+	statusManager.SetMessage(userMessage)
+	statusManager.SetAuthServerConfigValidatedCondition(reason, userMessage, metav1.ConditionFalse)
+	statusManager.SetObservedGeneration(vmcp.Generation)
+	return &SpecValidationError{Message: errSummary}
+}
+
 // validateAuthzUpstreamAvailable ensures that when authorization policies are
 // configured via IncomingAuth.AuthzConfig AND an embedded AuthServer is in use,
 // at least one upstream IDP is declared so Cedar evaluates claim references
@@ -567,6 +595,11 @@ func (*VirtualMCPServerReconciler) applyAuthServerIdentitySynthesizedCondition(
 // first one is authoritative for Cedar. Surface an advisory
 // AuthzUpstreamSelectionWarning condition naming the selected provider so the
 // operator can reorder or prune the list if the auto-selection is wrong.
+//
+// When spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider is set
+// explicitly, the validator additionally rejects (a) the direct-IdP case (no
+// embedded AS) because the field is meaningless without an AS, and (b) any
+// name that does not resolve to one of spec.authServerConfig.upstreamProviders.
 func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -583,7 +616,31 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	// Direct-IdP flow: no embedded AS. Cedar evaluates against identity.Claims
 	// populated by incoming OIDC middleware from the IdP token. No upstream
 	// needed; nothing to warn about. Remove any stale condition.
+	//
+	// However, an explicit primaryUpstreamProvider is meaningless in this mode
+	// — there is no upstream-token table for Cedar to look it up in — so the
+	// converter would forward a name that cannot resolve at runtime. Reject at
+	// admission for the same "fail loudly instead of denying every request"
+	// reason as the configured-AS mismatch path below.
 	if vmcp.Spec.AuthServerConfig == nil {
+		explicitProvider := vmcp.Spec.IncomingAuth.AuthzConfig.ExplicitPrimaryUpstreamProvider()
+		if explicitProvider != "" {
+			message := fmt.Sprintf(
+				"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider=%q is set but "+
+					"spec.authServerConfig is not configured. The field names an upstream IDP "+
+					"on the embedded auth server, which is required for it to take effect. "+
+					"Remove primaryUpstreamProvider, or configure spec.authServerConfig with "+
+					"an upstream of that name.",
+				explicitProvider,
+			)
+			return rejectAuthzAdmission(ctx, vmcp, statusManager,
+				"authz primaryUpstreamProvider set without an embedded auth server; rejecting VirtualMCPServer",
+				mcpv1beta1.ConditionReasonAuthzPrimaryProviderRequiresAuthServer,
+				message,
+				fmt.Sprintf("authz primaryUpstreamProvider %q set without an embedded auth server", explicitProvider),
+				"primaryUpstreamProvider", explicitProvider,
+			)
+		}
 		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
 		return nil
 	}
@@ -591,8 +648,6 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	// Embedded AS configured but no upstreams: this is the misconfiguration
 	// that silently evaluates policies against the AS-issued token.
 	if len(vmcp.Spec.AuthServerConfig.UpstreamProviders) == 0 {
-		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning, []string{})
-
 		// User-facing message includes full remediation guidance and ends with
 		// a period, matching other validator messages. The returned error uses
 		// a trimmed form without trailing punctuation to satisfy staticcheck.
@@ -602,29 +657,51 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 			"Configure spec.authServerConfig.upstreamProviders with at least one " +
 			"upstream IDP, or remove authServerConfig if clients will present IdP " +
 			"tokens directly."
-
-		ctxLogger := log.FromContext(ctx)
-		ctxLogger.Info("authz configured without an upstream IDP; rejecting VirtualMCPServer",
-			"name", vmcp.Name,
-			"namespace", vmcp.Namespace,
-			"reason", mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
-		)
-
-		statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
-		statusManager.SetMessage(message)
-		statusManager.SetAuthServerConfigValidatedCondition(
+		return rejectAuthzAdmission(ctx, vmcp, statusManager,
+			"authz configured without an upstream IDP; rejecting VirtualMCPServer",
 			mcpv1beta1.ConditionReasonAuthzRequiresUpstream,
 			message,
-			metav1.ConditionFalse,
+			"authz configured without an upstream IDP",
 		)
-		statusManager.SetObservedGeneration(vmcp.Generation)
-		return stderrors.New("authz configured without an upstream IDP")
 	}
 
-	// Valid configuration. When multiple upstreams are declared, surface an
-	// advisory naming the auto-selected upstream; otherwise ensure any stale
-	// warning is cleared.
-	if len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 1 {
+	// If the user has set spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
+	// explicitly, the name must resolve to one of the declared upstreams after
+	// normalization on both sides. A mismatch would cause Cedar to deny every
+	// request at runtime — fail loudly at admission instead.
+	explicitProvider := vmcp.Spec.IncomingAuth.AuthzConfig.ExplicitPrimaryUpstreamProvider()
+	if explicitProvider != "" {
+		resolved := authserver.ResolveUpstreamName(explicitProvider)
+		matched := slices.ContainsFunc(
+			vmcp.Spec.AuthServerConfig.UpstreamProviders,
+			func(up mcpv1beta1.UpstreamProviderConfig) bool {
+				return authserver.ResolveUpstreamName(up.Name) == resolved
+			},
+		)
+		if !matched {
+			message := fmt.Sprintf(
+				"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider=%q does not "+
+					"match any upstream declared on spec.authServerConfig.upstreamProviders. "+
+					"Set primaryUpstreamProvider to one of the configured upstream names, or "+
+					"leave it empty to default to the first upstream.",
+				explicitProvider,
+			)
+			return rejectAuthzAdmission(ctx, vmcp, statusManager,
+				"authz primaryUpstreamProvider does not match any upstream; rejecting VirtualMCPServer",
+				mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
+				message,
+				fmt.Sprintf("authz primaryUpstreamProvider %q does not match any configured upstream", explicitProvider),
+				"primaryUpstreamProvider", explicitProvider,
+			)
+		}
+	}
+
+	// Valid configuration. When multiple upstreams are declared AND the user has
+	// not pinned a choice via primaryUpstreamProvider, surface an advisory naming
+	// the auto-selected upstream so the operator can reorder or set the explicit
+	// field. Otherwise — single upstream, or an explicit choice that disambiguates
+	// the multi-upstream case — ensure any stale warning is cleared.
+	if len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 1 && explicitProvider == "" {
 		selected := vmcp.Spec.AuthServerConfig.UpstreamProviders[0].Name
 		statusManager.SetCondition(
 			mcpv1beta1.ConditionTypeAuthzUpstreamSelectionWarning,
@@ -632,7 +709,8 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 			fmt.Sprintf(
 				"multiple upstreamProviders configured; Cedar policies will evaluate "+
 					"claims from the first upstream (%q). If another upstream should be "+
-					"authoritative, remove or reorder the list.",
+					"authoritative, set spec.incomingAuth.authzConfig.inline."+
+					"primaryUpstreamProvider explicitly, or remove or reorder the list.",
 				selected,
 			),
 			metav1.ConditionTrue,
@@ -2517,6 +2595,15 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&mcpv1beta1.MCPTelemetryConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToVirtualMCPServer),
 		).
+		// Watch ConfigMaps referenced via spec.incomingAuth.authzConfig.configMap so that
+		// policy changes trigger reconciliation. The predicate filters out metadata-only
+		// updates; the mapper narrows to VirtualMCPServers that actually reference the
+		// changed ConfigMap. See #5270.
+		Watches(
+			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthzConfigMapToVirtualMCPServer),
+			builder.WithPredicates(configMapDataChangedPredicate()),
+		).
 		Complete(r)
 }
 
@@ -3284,6 +3371,7 @@ func (r *VirtualMCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 
 	// Add the workload reference
 	oidcConfig.Status.ReferencingWorkloads = append(oidcConfig.Status.ReferencingWorkloads, ref)
+	oidcConfig.Status.ReferenceCount = workloadReferenceCount(oidcConfig.Status.ReferencingWorkloads)
 	if err := r.Status().Update(ctx, oidcConfig); err != nil {
 		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingWorkloads: %w", err)
 	}

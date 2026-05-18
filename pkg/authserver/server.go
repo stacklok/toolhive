@@ -36,6 +36,23 @@ type Server interface {
 	// Returns nil if no upstream IDP is configured.
 	UpstreamTokenRefresher() storage.UpstreamTokenRefresher
 
+	// DCRStore returns the persistent DCR credential store the server is wired
+	// against. This is the same DCRCredentialStore used by the upstream-DCR
+	// resolver at boot, so callers can read RFC 7591 client registrations
+	// without bypassing the storage backend the server itself reads from.
+	//
+	// SECURITY: the returned interface surfaces raw `client_secret` and
+	// `registration_access_token` values. Callers MUST NOT log or render the
+	// returned values; treat the handle the same way you would treat a
+	// secrets manager client. Intended for admin / diagnostic code paths and
+	// integration tests, not for general consumers.
+	//
+	// Lifecycle: the returned handle's lifetime is bound to Server.Close —
+	// methods invoked after Close have backend-specific behavior (a
+	// MemoryStorage continues to serve reads; a RedisStorage will error on
+	// its closed connection pool).
+	DCRStore() storage.DCRCredentialStore
+
 	// Close releases resources held by the server.
 	Close() error
 }

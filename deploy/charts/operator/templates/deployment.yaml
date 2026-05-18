@@ -1,17 +1,17 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: {{ include "operator.fullname" . }}
+  name: {{ include "toolhive-operator.fullname" . }}
   namespace: {{ .Release.Namespace }}
   labels:
-    {{- include "operator.labels" . | nindent 4 }}
+    {{- include "toolhive-operator.labels" . | nindent 4 }}
 spec:
   {{- if not .Values.operator.autoscaling.enabled }}
   replicas: {{ .Values.operator.replicaCount }}
   {{- end }}
   selector:
     matchLabels:
-      {{- include "operator.selectorLabels" . | nindent 6 }}
+      {{- include "toolhive-operator.selectorLabels" . | nindent 6 }}
   template:
     metadata:
       {{- with .Values.operator.podAnnotations }}
@@ -19,7 +19,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       labels:
-        {{- include "operator.labels" . | nindent 8 }}
+        {{- include "toolhive-operator.labels" . | nindent 8 }}
         {{- with .Values.operator.podLabels }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
@@ -28,7 +28,7 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      serviceAccountName: {{ include "operator.serviceAccountName" . }}
+      serviceAccountName: {{ include "toolhive-operator.serviceAccountName" . }}
       securityContext:
         {{- toYaml .Values.operator.podSecurityContext | nindent 8 }}
       terminationGracePeriodSeconds: 10
@@ -68,12 +68,6 @@ spec:
             value: "true"
           - name: ENABLE_EXPERIMENTAL_FEATURES
             value: {{ .Values.operator.features.experimental | quote }}
-          - name: ENABLE_SERVER
-            value: {{ .Values.operator.features.server | quote }}
-          - name: ENABLE_REGISTRY
-            value: {{ .Values.operator.features.registry | quote }}
-          - name: ENABLE_VMCP
-            value: {{ .Values.operator.features.virtualMCP | quote }}
           {{- if eq .Values.operator.rbac.scope "namespace" }}
           - name: WATCH_NAMESPACE
             value: "{{ .Values.operator.rbac.allowedNamespaces | join "," }}"

@@ -59,7 +59,7 @@ type MCPRemoteProxyReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
@@ -123,6 +123,9 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 
 	// Validate the GroupRef if specified
 	r.validateGroupRef(ctx, proxy)
+
+	// Surface advisory condition when primaryUpstreamProvider is set but ignored
+	r.validateAuthzPrimaryUpstreamProviderIgnored(proxy)
 
 	// Handle MCPToolConfig
 	if err := r.handleToolConfig(ctx, proxy); err != nil {
@@ -1027,6 +1030,7 @@ func (r *MCPRemoteProxyReconciler) updateOIDCConfigReferencingWorkloads(
 
 	// Add the workload reference
 	oidcConfig.Status.ReferencingWorkloads = append(oidcConfig.Status.ReferencingWorkloads, ref)
+	oidcConfig.Status.ReferenceCount = workloadReferenceCount(oidcConfig.Status.ReferencingWorkloads)
 	if err := r.Status().Update(ctx, oidcConfig); err != nil {
 		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingWorkloads: %w", err)
 	}
@@ -1076,6 +1080,31 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 			ObservedGeneration: proxy.Generation,
 		})
 	}
+}
+
+// validateAuthzPrimaryUpstreamProviderIgnored surfaces an advisory condition
+// when spec.authzConfig.inline.primaryUpstreamProvider is set on an
+// MCPRemoteProxy. The proxy has no embedded auth server, so the field has no
+// runtime effect — the condition gives operators a kubectl-visible signal
+// that a configured value is being silently ignored.
+//
+// Mirrors the validateGroupRef convention: this only sets/removes the
+// condition; the caller is responsible for persisting status.
+func (*MCPRemoteProxyReconciler) validateAuthzPrimaryUpstreamProviderIgnored(proxy *mcpv1beta1.MCPRemoteProxy) {
+	provider := proxy.Spec.AuthzConfig.ExplicitPrimaryUpstreamProvider()
+	conditionType := mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored
+	if provider == "" {
+		meta.RemoveStatusCondition(&proxy.Status.Conditions, conditionType)
+		return
+	}
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:   conditionType,
+		Status: metav1.ConditionTrue,
+		Reason: mcpv1beta1.ConditionReasonAuthzPrimaryUpstreamProviderIgnored,
+		Message: fmt.Sprintf("spec.authzConfig.inline.primaryUpstreamProvider=%q has no effect on MCPRemoteProxy; "+
+			"the field only takes effect on VirtualMCPServer with an embedded auth server", provider),
+		ObservedGeneration: proxy.Generation,
+	})
 }
 
 // ensureRBACResources ensures that the RBAC resources are in place for the remote proxy.

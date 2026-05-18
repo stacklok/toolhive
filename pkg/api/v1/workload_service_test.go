@@ -210,6 +210,110 @@ func TestBuildFullRunConfig_ThreadsImageVerification(t *testing.T) {
 		"imageRetriever must receive s.imageVerification verbatim")
 }
 
+// TestBuildFullRunConfig_AppliesOtelFromConfig verifies that workloads created
+// via the API inherit OpenTelemetry settings from the application config (i.e.
+// from "thv config set-otel-endpoint" or an enterprise config server). Without
+// this, telemetry silently doesn't work for any workload created via
+// POST /api/v1/workloads — only CLI-created workloads would have telemetry.
+// See issue #5253.
+func TestBuildFullRunConfig_AppliesOtelFromConfig(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+	const (
+		testImage    = "test-image"
+		otelEndpoint = "http://collector:4318"
+	)
+
+	mockRetriever := func(
+		_ context.Context,
+		_ string, _ string, _ string, _ string,
+		_ *templates.RuntimeConfig,
+	) (string, regtypes.ServerMetadata, error) {
+		return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
+	}
+
+	configPath := t.TempDir() + "/config.yaml"
+	provider := config.NewPathProvider(configPath)
+	require.NoError(t, provider.UpdateConfig(func(c *config.Config) error {
+		c.OTEL = config.OpenTelemetryConfig{
+			Endpoint:     otelEndpoint,
+			SamplingRate: 0.1,
+		}
+		return nil
+	}))
+
+	service := &WorkloadService{
+		groupManager:      mockGroupManager,
+		imageRetriever:    mockRetriever,
+		imagePuller:       func(_ context.Context, _ string) error { return nil },
+		configProvider:    provider,
+		imageVerification: retriever.VerifyImageWarn,
+	}
+
+	req := &createRequest{
+		Name:          "testserver",
+		updateRequest: updateRequest{Image: testImage},
+	}
+
+	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0)
+	require.NoError(t, err)
+	require.NotNil(t, runConfig.TelemetryConfig,
+		"TelemetryConfig must be populated from config.OTEL when set — workloads created via the API would otherwise drop the endpoint")
+	assert.Equal(t, otelEndpoint, runConfig.TelemetryConfig.Endpoint,
+		"endpoint must be carried over from config.OTEL.Endpoint")
+	assert.True(t, runConfig.TelemetryConfig.TracingEnabled,
+		"TracingEnabled must default to true when config does not set it, matching CLI behavior")
+	assert.True(t, runConfig.TelemetryConfig.MetricsEnabled,
+		"MetricsEnabled must default to true when config does not set it, matching CLI behavior")
+}
+
+// TestBuildFullRunConfig_NoOtelConfigLeavesTelemetryNil verifies that when no
+// OpenTelemetry config is set, the RunConfig's TelemetryConfig remains nil —
+// the API path does not invent an endpoint.
+func TestBuildFullRunConfig_NoOtelConfigLeavesTelemetryNil(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+	const testImage = "test-image"
+
+	mockRetriever := func(
+		_ context.Context,
+		_ string, _ string, _ string, _ string,
+		_ *templates.RuntimeConfig,
+	) (string, regtypes.ServerMetadata, error) {
+		return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
+	}
+
+	service := &WorkloadService{
+		groupManager:      mockGroupManager,
+		imageRetriever:    mockRetriever,
+		imagePuller:       func(_ context.Context, _ string) error { return nil },
+		configProvider:    config.NewPathProvider(t.TempDir() + "/empty.yaml"),
+		imageVerification: retriever.VerifyImageWarn,
+	}
+
+	req := &createRequest{
+		Name:          "testserver",
+		updateRequest: updateRequest{Image: testImage},
+	}
+
+	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0)
+	require.NoError(t, err)
+	assert.Nil(t, runConfig.TelemetryConfig,
+		"TelemetryConfig must remain nil when config.OTEL has no endpoint or prometheus path")
+}
+
 // writeFactorySentinelConfig writes a YAML config file with DisableUsageMetrics: true
 // as a sentinel value and returns its path.
 func writeFactorySentinelConfig(t *testing.T, dir string) string {
@@ -753,7 +857,7 @@ func TestBuildRemoteAuthConfigFromMetadata(t *testing.T) {
 		assert.Equal(t, "https://resource.example.com", cfg.Resource)
 	})
 
-	t.Run("resource derived from URL when both user and metadata unset", func(t *testing.T) {
+	t.Run("resource empty when both user and metadata unset", func(t *testing.T) {
 		t.Parallel()
 
 		md := baseMetadata()
@@ -762,7 +866,7 @@ func TestBuildRemoteAuthConfigFromMetadata(t *testing.T) {
 		cfg := buildRemoteAuthConfigFromMetadata(&createRequest{}, md)
 
 		require.NotNil(t, cfg)
-		assert.NotEmpty(t, cfg.Resource, "resource should be derived from md.URL")
+		assert.Empty(t, cfg.Resource, "resource should not be auto-derived from URL")
 	})
 
 	t.Run("user ClientSecret is applied in CLI string format", func(t *testing.T) {

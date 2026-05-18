@@ -69,6 +69,9 @@ const (
 const (
 	// GrantTypeTokenExchange is the OAuth 2.0 Token Exchange grant type (RFC 8693).
 	GrantTypeTokenExchange = "urn:ietf:params:oauth:grant-type:token-exchange"
+
+	// GrantTypeJWTBearer is the JWT Bearer grant type (RFC 7523).
+	GrantTypeJWTBearer = "urn:ietf:params:oauth:grant-type:jwt-bearer"
 )
 
 // HTTP client constants.

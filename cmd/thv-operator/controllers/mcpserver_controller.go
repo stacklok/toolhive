@@ -157,7 +157,7 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=pods,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
@@ -228,6 +228,9 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 
 	// Validate CABundleRef if specified
 	r.validateCABundleRef(ctx, mcpServer)
+
+	// Surface advisory condition when primaryUpstreamProvider is set but ignored
+	r.validateAuthzPrimaryUpstreamProviderIgnored(mcpServer)
 
 	// Validate stdio replica cap, session storage, and rate limit config
 	r.validateStdioReplicaCap(ctx, mcpServer)
@@ -642,6 +645,31 @@ func (r *MCPServerReconciler) updateCABundleStatus(ctx context.Context, mcpServe
 	if err := r.Status().Update(ctx, mcpServer); err != nil {
 		ctxLogger.Error(err, "Failed to update MCPServer status after CABundleRef validation")
 	}
+}
+
+// validateAuthzPrimaryUpstreamProviderIgnored surfaces an advisory condition
+// when spec.authzConfig.inline.primaryUpstreamProvider is set on an MCPServer.
+// MCPServer has no embedded auth server, so the field has no runtime effect —
+// the condition gives operators a kubectl-visible signal that a configured
+// value is being silently ignored.
+//
+// Mirrors the validateGroupRef convention: this only sets/removes the
+// condition; the caller is responsible for persisting status.
+func (*MCPServerReconciler) validateAuthzPrimaryUpstreamProviderIgnored(mcpServer *mcpv1beta1.MCPServer) {
+	provider := mcpServer.Spec.AuthzConfig.ExplicitPrimaryUpstreamProvider()
+	conditionType := mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored
+	if provider == "" {
+		meta.RemoveStatusCondition(&mcpServer.Status.Conditions, conditionType)
+		return
+	}
+	meta.SetStatusCondition(&mcpServer.Status.Conditions, metav1.Condition{
+		Type:   conditionType,
+		Status: metav1.ConditionTrue,
+		Reason: mcpv1beta1.ConditionReasonAuthzPrimaryUpstreamProviderIgnored,
+		Message: fmt.Sprintf("spec.authzConfig.inline.primaryUpstreamProvider=%q has no effect on MCPServer; "+
+			"the field only takes effect on VirtualMCPServer with an embedded auth server", provider),
+		ObservedGeneration: mcpServer.Generation,
+	})
 }
 
 // setReadyCondition sets the top-level Ready status condition.
@@ -2276,6 +2304,7 @@ func (r *MCPServerReconciler) updateOIDCConfigReferencingWorkloads(
 
 	// Add the workload reference
 	oidcConfig.Status.ReferencingWorkloads = append(oidcConfig.Status.ReferencingWorkloads, ref)
+	oidcConfig.Status.ReferenceCount = workloadReferenceCount(oidcConfig.Status.ReferencingWorkloads)
 	if err := r.Status().Update(ctx, oidcConfig); err != nil {
 		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingWorkloads: %w", err)
 	}

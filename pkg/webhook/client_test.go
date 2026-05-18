@@ -853,6 +853,69 @@ func TestDoHTTPCallReadError(t *testing.T) {
 	assert.Contains(t, err.Error(), "forced read error")
 }
 
+// TestClientErrorDoesNotLeakResponseBody verifies that when the webhook returns
+// a non-2xx response, the response body bytes are not embedded in the returned
+// error chain. This prevents an SSRF-adjacent information-exfiltration path
+// where bytes from an internal service reached via a misconfigured webhook URL
+// would otherwise be surfaced into higher-level error logs.
+func TestClientErrorDoesNotLeakResponseBody(t *testing.T) {
+	t.Parallel()
+
+	const sentinel = "INTERNAL_LEAK_TOKEN"
+
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{name: "500 Internal Server Error", statusCode: http.StatusInternalServerError},
+		{name: "503 Service Unavailable", statusCode: http.StatusServiceUnavailable},
+		{name: "422 Unprocessable Entity", statusCode: http.StatusUnprocessableEntity},
+		{name: "418 I'm a teapot", statusCode: http.StatusTeapot},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(tt.statusCode)
+				_, _ = w.Write([]byte("response containing " + sentinel + " somewhere in the body"))
+			}))
+			defer server.Close()
+
+			cfg := Config{
+				Name:          "leak-test",
+				URL:           server.URL,
+				Timeout:       5 * time.Second,
+				FailurePolicy: FailurePolicyFail,
+			}
+
+			client := newTestClient(cfg, TypeValidating, nil)
+
+			req := &Request{
+				Version:   APIVersion,
+				UID:       "test-uid",
+				Timestamp: time.Now(),
+				Principal: &auth.PrincipalInfo{Subject: "user1"},
+				Context: &RequestContext{
+					ServerName: "test-server",
+					SourceIP:   "127.0.0.1",
+					Transport:  "sse",
+				},
+			}
+
+			_, err := client.Call(t.Context(), req)
+			require.Error(t, err)
+
+			errMsg := err.Error()
+			assert.Contains(t, errMsg, strconv.Itoa(tt.statusCode),
+				"error should surface the HTTP status code so callers can distinguish failure modes")
+			assert.NotContains(t, errMsg, sentinel,
+				"error must not embed response body bytes — they may come from an internal service reached via a misconfigured URL")
+		})
+	}
+}
+
 type mockRoundTripper struct {
 	resp *http.Response
 	err  error

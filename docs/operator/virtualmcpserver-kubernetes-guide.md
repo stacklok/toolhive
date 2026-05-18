@@ -625,6 +625,20 @@ Then gradually add restrictions. Common Cedar policy issues:
 - Verify attribute names match token claims
 - Test policies with different user roles
 
+**Multiple upstream IDPs**: when `spec.authServerConfig` declares more than
+one `upstreamProviders` entry, Cedar evaluates claims from the first one by
+default. Pin a specific provider explicitly via
+`authzConfig.inline.primaryUpstreamProvider`:
+
+```yaml
+authzConfig:
+  type: inline
+  inline:
+    primaryUpstreamProvider: okta   # must match one of the configured upstreams
+    policies:
+      - 'permit(principal, action, resource);'
+```
+
 ### Backend Discovery Issues
 
 #### Backends Not Discovered

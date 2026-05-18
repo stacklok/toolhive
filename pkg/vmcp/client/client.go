@@ -27,6 +27,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -64,6 +65,11 @@ type httpBackendClient struct {
 	// registry manages authentication strategies for outgoing requests to backend MCP servers.
 	// Must not be nil - use UnauthenticatedStrategy for no authentication.
 	registry vmcpauth.OutgoingAuthRegistry
+
+	// secretsProvider resolves TOOLHIVE_SECRET_<ident> env vars at client-creation
+	// time for per-backend header-forward injection. Nil when no backends declare
+	// headerForward.AddHeadersFromSecret — plaintext-only backends do not require it.
+	secretsProvider secrets.Provider
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -80,7 +86,8 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 	}
 
 	c := &httpBackendClient{
-		registry: registry,
+		registry:        registry,
+		secretsProvider: secrets.NewEnvironmentProvider(),
 	}
 	c.clientFactory = c.defaultClientFactory
 	return c, nil
@@ -296,6 +303,14 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		target:       target,
 	}
 
+	// Inject per-backend HTTP headers from MCPServerEntry.spec.headerForward.
+	// Resolves plaintext + secret-backed headers once here; auth (inner) always
+	// wins over user-supplied headers because it runs after this tripper.
+	baseTransport, err = buildHeaderForwardTripper(ctx, baseTransport, target.HeaderForward, h.secretsProvider, target.WorkloadID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build header-forward transport: %w", err)
+	}
+
 	// Extract identity and health-check marker from context and propagate them to backend
 	// requests. The health-check marker must be carried through to the DELETE request that
 	// mcp-go emits when closing a streamable-HTTP session: mcp-go creates that request with
@@ -426,6 +441,17 @@ func wrapBackendError(err error, backendID string, operation string) error {
 	// 4. mcp-go transport sentinel errors: check before string-based fallbacks
 	// to ensure accurate classification of protocol-level errors.
 	if errors.Is(err, transport.ErrUnauthorized) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+	// transport.ErrAuthorizationRequired is returned (wrapped in *transport.Error
+	// and *transport.AuthorizationRequiredError) for 401 responses with a
+	// WWW-Authenticate header. transport.ErrOAuthAuthorizationRequired is the
+	// companion sentinel from the OAuth-handler path. Both must map to
+	// ErrAuthenticationFailed so health monitoring engages the auth-aware
+	// branch (#4935) instead of treating the probe as unhealthy (#5223).
+	if errors.Is(err, transport.ErrAuthorizationRequired) ||
+		errors.Is(err, transport.ErrOAuthAuthorizationRequired) {
 		return fmt.Errorf("%w: failed to %s for backend %s: %v",
 			vmcp.ErrAuthenticationFailed, operation, backendID, err)
 	}

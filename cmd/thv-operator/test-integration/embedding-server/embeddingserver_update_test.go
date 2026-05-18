@@ -373,14 +373,14 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 				Spec: mcpv1beta1.EmbeddingServerSpec{
 					Model:           "sentence-transformers/all-MiniLM-L6-v2",
 					Image:           "ghcr.io/huggingface/text-embeddings-inference:latest",
-					ImagePullPolicy: "IfNotPresent",
+					ImagePullPolicy: corev1.PullIfNotPresent,
 				},
 			},
 			Updates: []UpdateStep{
 				{
 					Name: "Should update StatefulSet when ImagePullPolicy changes",
 					ApplyUpdate: func(es *mcpv1beta1.EmbeddingServer) {
-						es.Spec.ImagePullPolicy = "Always"
+						es.Spec.ImagePullPolicy = corev1.PullAlways
 					},
 					ExpectedStatefulSet: &appsv1.StatefulSet{
 						Spec: appsv1.StatefulSetSpec{
@@ -466,6 +466,7 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 				Expect(k8sClient.Create(ctx, embeddingServer)).To(Succeed())
 				Eventually(func(g Gomega) {
 					g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(embeddingServer), &appsv1.StatefulSet{})).To(Succeed())
+					g.Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(embeddingServer), &corev1.Service{})).To(Succeed())
 				}, timeout, interval).Should(Succeed())
 			})
 

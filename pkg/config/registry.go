@@ -178,7 +178,7 @@ func isValidRegistryJSON(client *http.Client, url string) error {
 	if err := json.Unmarshal(data, &upstream); err != nil {
 		return fmt.Errorf("%w: invalid upstream JSON format: %v", ErrRegistryValidationFailed, err)
 	}
-	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Groups) == 0 {
+	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Skills) == 0 {
 		return fmt.Errorf("%w: upstream registry contains no servers", ErrRegistryValidationFailed)
 	}
 	return nil
@@ -341,8 +341,8 @@ func validateRegistryFileStructure(path string) error {
 	if err := json.Unmarshal(data, &upstream); err != nil {
 		return fmt.Errorf("invalid upstream registry format: %w", err)
 	}
-	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Groups) == 0 {
-		return fmt.Errorf("upstream registry contains no servers or groups")
+	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Skills) == 0 {
+		return fmt.Errorf("upstream registry contains no servers or skills")
 	}
 	return nil
 }

@@ -35,9 +35,13 @@ type headerForwardRoundTripper struct {
 }
 
 // RoundTrip injects the pre-resolved headers onto a clone of the request and
-// delegates to the wrapped transport. Headers already present on the request
-// are left untouched so inner transports (auth, identity, trace) can always
-// override user-supplied values for the same name.
+// delegates to the wrapped transport. Names already present on the inbound
+// request are skipped — this preserves any header the *caller* set on the
+// request before invoking the round-tripper chain. Inner (closer to the wire)
+// transports run AFTER this one and use Set() unconditionally, so on any
+// overlapping name those stages still win on the wire. Restricted names are
+// blocked at resolve time, so user-supplied config cannot reach this point
+// for Host, hop-by-hop, or X-Forwarded-* anyway.
 func (h *headerForwardRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	if len(h.headers) == 0 {
 		return h.base.RoundTrip(req)
@@ -63,6 +67,11 @@ func (h *headerForwardRoundTripper) RoundTrip(req *http.Request) (*http.Response
 // BuildHeaderForwardTripper constructs a headerForwardRoundTripper for the
 // backend's pre-resolved HeaderForwardConfig. Returns base unchanged when no
 // header injection is configured or the effective header set is empty.
+//
+// Used by both the vMCP backend client (startup capability discovery) and the
+// per-session backend connector (long-lived MCP traffic). Exported so the
+// session backend in pkg/vmcp/session/internal/backend can share the same
+// transport-chain wiring.
 //
 // Fails loudly (constructor validation, per go-style.md) when a secret identifier
 // cannot be resolved through the provider, so a misconfigured backend surfaces

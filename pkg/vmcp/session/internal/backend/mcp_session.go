@@ -17,11 +17,13 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 )
 
 const (
@@ -196,19 +198,25 @@ func (c *mcpSession) GetPrompt(
 //
 // registry provides the authentication strategy for outgoing backend requests.
 // Pass a registry configured with the "unauthenticated" strategy to disable auth.
+//
+// A single secrets.EnvironmentProvider is constructed once per connector and
+// shared across every session it creates; its lifetime matches the connector's.
+// It is consumed by BuildHeaderForwardTripper to resolve secret-backed entries
+// in target.HeaderForward.
 func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
 	sessionHint string,
 ) (Session, *vmcp.CapabilityList, error) {
+	provider := secrets.NewEnvironmentProvider()
 	return func(
 		ctx context.Context,
 		target *vmcp.BackendTarget,
 		identity *auth.Identity,
 		sessionHint string,
 	) (Session, *vmcp.CapabilityList, error) {
-		c, err := createMCPClient(target, identity, registry, sessionHint)
+		c, err := createMCPClient(ctx, target, identity, registry, sessionHint, provider)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
 		}
@@ -238,11 +246,17 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 // to client.Close(), not to any caller-supplied init context.
 // sessionHint, when non-empty, is passed as the initial Mcp-Session-Id for
 // streamable-HTTP transports so the backend can resume an existing session.
+//
+// ctx is used only to resolve secret-backed entries in target.HeaderForward at
+// client-creation time; the transport itself is started with context.Background()
+// as described above. provider supplies values for those secret-backed headers.
 func createMCPClient(
+	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
 	registry vmcpauth.OutgoingAuthRegistry,
 	sessionHint string,
+	provider secrets.Provider,
 ) (*mcpclient.Client, error) {
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
@@ -259,7 +273,15 @@ func createMCPClient(
 
 	slog.Debug("Applied authentication strategy", "strategy", strategy.Name(), "backendID", target.WorkloadID)
 
-	// Build shared transport chain: auth → identity propagation.
+	// Build shared transport chain (innermost first → outermost):
+	//   http.DefaultTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
+	// On an outbound request, the outermost stage runs first: header-forward
+	// injects its headers onto a request that does not yet carry auth/identity
+	// headers, then inner stages run and call Set() unconditionally so any
+	// overlapping name they care about (Authorization, identity headers) wins on
+	// the wire. Restricted header names (Host, hop-by-hop, X-Forwarded-*) are
+	// rejected at resolve time by resolveHeaderForward, so user-supplied
+	// HeaderForward cannot inject them in the first place.
 	// The per-transport sections below may add a size-limiting wrapper on top.
 	base := http.RoundTripper(http.DefaultTransport)
 	base = &authRoundTripper{
@@ -269,6 +291,10 @@ func createMCPClient(
 		target:       target,
 	}
 	base = &identityRoundTripper{base: base, identity: identity}
+	base, err = headerforward.BuildHeaderForwardTripper(ctx, base, target.HeaderForward, provider, target.WorkloadID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build header-forward transport for backend %s: %w", target.WorkloadID, err)
+	}
 
 	var c *mcpclient.Client
 	switch target.TransportType {

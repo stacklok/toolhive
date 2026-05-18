@@ -54,6 +54,11 @@ type fakeBackend struct {
 	// resources/list failure.
 	mu          sync.Mutex
 	methodCalls map[string]int
+
+	// headersByMethod records the inbound request headers keyed by JSON-RPC
+	// method name. Tests asserting transport-chain behavior (e.g. HeaderForward)
+	// use headersFor(method) to inspect the headers a backend actually saw.
+	headersByMethod map[string]http.Header
 }
 
 type jsonRPCError struct {
@@ -68,6 +73,7 @@ func newFakeBackend(t *testing.T, fb *fakeBackend) string {
 	t.Helper()
 	fb.t = t
 	fb.methodCalls = make(map[string]int)
+	fb.headersByMethod = make(map[string]http.Header)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/mcp", fb.handle)
@@ -81,6 +87,19 @@ func (f *fakeBackend) callCount(method string) int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.methodCalls[method]
+}
+
+// headersFor returns a clone of the inbound HTTP headers recorded for the most
+// recent JSON-RPC request with the given method, or nil if no such request was
+// seen. Cloning under the mutex keeps the caller safe from concurrent writes.
+func (f *fakeBackend) headersFor(method string) http.Header {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	h := f.headersByMethod[method]
+	if h == nil {
+		return nil
+	}
+	return h.Clone()
 }
 
 // handle implements the JSON-RPC subset needed for backend init. The
@@ -117,6 +136,7 @@ func (f *fakeBackend) handle(w http.ResponseWriter, r *http.Request) {
 
 	f.mu.Lock()
 	f.methodCalls[msg.Method]++
+	f.headersByMethod[msg.Method] = r.Header.Clone()
 	f.mu.Unlock()
 
 	// Notifications (no id, e.g. notifications/initialized) get an empty 202.
@@ -148,6 +168,16 @@ func (f *fakeBackend) handle(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.writeResult(w, msg.ID, map[string]any{"prompts": f.prompts})
+	case string(mcp.MethodToolsCall):
+		// Minimal CallToolResult with a single text content. Tests that exercise
+		// the post-initialize transport chain (e.g. HeaderForward) need a method
+		// they can invoke after Initialize completes; tools/call is the cheapest.
+		f.writeResult(w, msg.ID, map[string]any{
+			"content": []map[string]any{
+				{"type": "text", "text": "ok"},
+			},
+			"isError": false,
+		})
 	default:
 		f.writeError(w, msg.ID, &jsonRPCError{code: mcp.METHOD_NOT_FOUND, message: "Method not found"})
 	}

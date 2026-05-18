@@ -33,6 +33,7 @@ import (
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
@@ -306,7 +307,9 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	// Inject per-backend HTTP headers from MCPServerEntry.spec.headerForward.
 	// Resolves plaintext + secret-backed headers once here; auth (inner) always
 	// wins over user-supplied headers because it runs after this tripper.
-	baseTransport, err = buildHeaderForwardTripper(ctx, baseTransport, target.HeaderForward, h.secretsProvider, target.WorkloadID)
+	baseTransport, err = headerforward.BuildHeaderForwardTripper(
+		ctx, baseTransport, target.HeaderForward, h.secretsProvider, target.WorkloadID,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build header-forward transport: %w", err)
 	}

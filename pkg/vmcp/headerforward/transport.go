@@ -1,7 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package client
+// Package headerforward provides the HTTP round-tripper that injects
+// per-backend forwarded headers (plaintext + secret-resolved) onto outbound
+// requests. It is consumed by both the capability-discovery HTTP client
+// (pkg/vmcp/client) and the per-session HTTP client
+// (pkg/vmcp/session/internal/backend).
+package headerforward
 
 import (
 	"context"
@@ -55,7 +60,7 @@ func (h *headerForwardRoundTripper) RoundTrip(req *http.Request) (*http.Response
 	return h.base.RoundTrip(reqCopy)
 }
 
-// buildHeaderForwardTripper constructs a headerForwardRoundTripper for the
+// BuildHeaderForwardTripper constructs a headerForwardRoundTripper for the
 // backend's pre-resolved HeaderForwardConfig. Returns base unchanged when no
 // header injection is configured or the effective header set is empty.
 //
@@ -66,7 +71,7 @@ func (h *headerForwardRoundTripper) RoundTrip(req *http.Request) (*http.Response
 // Restricted header names (matching pkg/transport/middleware.RestrictedHeaders)
 // are rejected to prevent Host, Content-Length, Authorization, hop-by-hop, and
 // X-Forwarded-* spoofing via user-supplied config.
-func buildHeaderForwardTripper(
+func BuildHeaderForwardTripper(
 	ctx context.Context,
 	base http.RoundTripper,
 	cfg *vmcp.HeaderForwardConfig,

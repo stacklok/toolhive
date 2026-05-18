@@ -1390,6 +1390,11 @@
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "session_ttl": {
+                        "description": "SessionTTL is the inactivity timeout for proxy sessions, expressed as a Go\nduration string (e.g. \"30m\", \"2h\", \"168h\"). Empty uses the transport\ndefault (2h). Negative durations and values that fail time.ParseDuration\nare rejected at runtime.\nString (not time.Duration) keeps the wire format unit-explicit: a\ntime.Duration field serializes as nanoseconds in JSON.",
+                        "example": "2h",
+                        "type": "string"
+                    },
                     "stateless": {
                         "description": "Stateless indicates the server only supports POST (no SSE/GET).\nWhen true, the proxy returns 405 for incoming GET requests and uses a\nPOST-based health check instead of the default GET probe.\nApplies to both remote URLs and local container workloads.",
                         "type": "boolean"

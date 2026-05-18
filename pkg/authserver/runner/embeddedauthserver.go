@@ -15,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
@@ -643,55 +644,47 @@ func createStorage(ctx context.Context, cfg *storage.RunConfig) (storage.Storage
 		if err != nil {
 			return nil, fmt.Errorf("invalid Redis config: %w", err)
 		}
-		return storage.NewRedisStorage(ctx, *redisCfg)
+		return storage.NewRedisStorage(ctx, redisCfg, cfg.RedisConfig.KeyPrefix)
 	}
 	return nil, fmt.Errorf("unsupported storage type: %s", cfg.Type)
 }
 
-// convertRedisRunConfig converts a serializable RedisRunConfig to the runtime RedisConfig.
-// It resolves credentials from environment variables and parses duration strings.
-func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, error) {
+// convertRedisRunConfig converts a serializable RedisRunConfig to a runtime
+// tcredis.Config. It resolves ACL credentials from environment variables and
+// parses duration strings. Connection-mode topology and defaulting are handled
+// by the shared toolhive-core redis package when the client is constructed.
+func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 	if rc == nil {
-		return nil, fmt.Errorf("redis config is required when storage type is redis")
+		return tcredis.Config{}, fmt.Errorf("redis config is required when storage type is redis")
 	}
 
-	if rc.Addr != "" && rc.SentinelConfig != nil {
-		return nil, fmt.Errorf("addr and sentinel_config are mutually exclusive; exactly one must be set")
-	}
-	if rc.Addr == "" && rc.SentinelConfig == nil {
-		return nil, fmt.Errorf("one of addr (standalone or cluster) or sentinel_config (sentinel) is required")
-	}
-	if rc.ClusterMode && rc.SentinelConfig != nil {
-		return nil, fmt.Errorf("cluster mode cannot be used with sentinel configuration")
-	}
-
-	cfg := &storage.RedisConfig{
+	cfg := tcredis.Config{
 		Addr:        rc.Addr,
 		ClusterMode: rc.ClusterMode,
-		KeyPrefix:   rc.KeyPrefix,
 	}
 
 	if rc.SentinelConfig != nil {
-		cfg.SentinelConfig = &storage.SentinelConfig{
+		cfg.SentinelConfig = &tcredis.SentinelConfig{
 			MasterName:    rc.SentinelConfig.MasterName,
 			SentinelAddrs: rc.SentinelConfig.SentinelAddrs,
-			DB:            rc.SentinelConfig.DB,
 		}
+		cfg.DB = rc.SentinelConfig.DB
 	}
 
-	aclCfg, err := convertRedisACLConfig(rc.ACLUserConfig)
+	username, password, err := convertRedisACLConfig(rc.ACLUserConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to convert ACL config: %w", err)
+		return tcredis.Config{}, fmt.Errorf("failed to convert ACL config: %w", err)
 	}
-	cfg.ACLUserConfig = aclCfg
+	cfg.Username = username
+	cfg.Password = password
 
-	if err := applyRedisTimeouts(rc, cfg); err != nil {
-		return nil, fmt.Errorf("failed to apply redis timeouts: %w", err)
+	if err := applyRedisTimeouts(rc, &cfg); err != nil {
+		return tcredis.Config{}, fmt.Errorf("failed to apply redis timeouts: %w", err)
 	}
 
 	tlsCfg, err := convertRedisTLSRunConfig(rc.TLS)
 	if err != nil {
-		return nil, fmt.Errorf("master TLS config: %w", err)
+		return tcredis.Config{}, fmt.Errorf("master TLS config: %w", err)
 	}
 	cfg.TLS = tlsCfg
 
@@ -699,7 +692,7 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, er
 	if rc.SentinelConfig != nil {
 		sentinelTLSCfg, err := convertRedisTLSRunConfig(rc.SentinelTLS)
 		if err != nil {
-			return nil, fmt.Errorf("sentinel TLS config: %w", err)
+			return tcredis.Config{}, fmt.Errorf("sentinel TLS config: %w", err)
 		}
 		cfg.SentinelTLS = sentinelTLSCfg
 	}
@@ -713,30 +706,27 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, er
 // for servers that do not support HELLO). This is required for managed Redis
 // tiers without ACL users (e.g. GCP Memorystore Basic/Standard HA, Azure Cache
 // for Redis).
-func convertRedisACLConfig(rc *storage.ACLUserRunConfig) (*storage.ACLUserConfig, error) {
+func convertRedisACLConfig(rc *storage.ACLUserRunConfig) (string, string, error) {
 	if rc == nil {
-		return nil, fmt.Errorf("acl user config is required")
+		return "", "", fmt.Errorf("acl user config is required")
 	}
 	var username string
 	if rc.UsernameEnvVar != "" {
 		var err error
 		username, err = resolveEnvVar(rc.UsernameEnvVar)
 		if err != nil {
-			return nil, fmt.Errorf("failed to resolve Redis username: %w", err)
+			return "", "", fmt.Errorf("failed to resolve Redis username: %w", err)
 		}
 	}
 	password, err := resolveEnvVar(rc.PasswordEnvVar)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve Redis password: %w", err)
+		return "", "", fmt.Errorf("failed to resolve Redis password: %w", err)
 	}
-	return &storage.ACLUserConfig{
-		Username: username,
-		Password: password,
-	}, nil
+	return username, password, nil
 }
 
 // applyRedisTimeouts parses and applies optional timeout duration strings to cfg.
-func applyRedisTimeouts(rc *storage.RedisRunConfig, cfg *storage.RedisConfig) error {
+func applyRedisTimeouts(rc *storage.RedisRunConfig, cfg *tcredis.Config) error {
 	if rc.DialTimeout != "" {
 		d, err := time.ParseDuration(rc.DialTimeout)
 		if err != nil {
@@ -761,15 +751,16 @@ func applyRedisTimeouts(rc *storage.RedisRunConfig, cfg *storage.RedisConfig) er
 	return nil
 }
 
-// convertRedisTLSRunConfig converts a RedisTLSRunConfig to runtime RedisTLSConfig.
-// Returns an error if a CA cert file is configured but cannot be read — this is
-// treated as a hard error because silently falling back to system CAs could mask
-// a misconfiguration and cause confusing TLS failures downstream.
-func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*storage.RedisTLSConfig, error) {
+// convertRedisTLSRunConfig converts a RedisTLSRunConfig to a runtime
+// tcredis.TLSConfig. Returns an error if a CA cert file is configured but
+// cannot be read — this is treated as a hard error because silently falling
+// back to system CAs could mask a misconfiguration and cause confusing TLS
+// failures downstream.
+func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*tcredis.TLSConfig, error) {
 	if rc == nil {
 		return nil, nil
 	}
-	cfg := &storage.RedisTLSConfig{
+	cfg := &tcredis.TLSConfig{
 		InsecureSkipVerify: rc.InsecureSkipVerify,
 	}
 	if rc.CACertFile != "" {

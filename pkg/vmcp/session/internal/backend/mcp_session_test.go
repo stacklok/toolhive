@@ -4,11 +4,13 @@
 package backend
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
@@ -40,7 +42,7 @@ func TestCreateMCPClient_UnsupportedTransport(t *testing.T) {
 				TransportType: transport,
 			}
 
-			_, err := createMCPClient(target, nil, newTestRegistry(t), "")
+			_, err := createMCPClient(context.Background(), target, nil, newTestRegistry(t), "", secrets.NewEnvironmentProvider())
 			require.Error(t, err)
 			assert.ErrorIs(t, err, vmcp.ErrUnsupportedTransport,
 				"transport %q should return ErrUnsupportedTransport", transport)

@@ -659,7 +659,12 @@ func (p *HTTPProxy) ensureSession(id string) error {
 func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Request) (string, error) {
 	sessID := r.Header.Get("Mcp-Session-Id")
 	if sessID == "" {
-		return uuid.New().String(), nil
+		token, err := uuid.NewRandom()
+		if err != nil {
+			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate routing token: %v", err))
+			return "", fmt.Errorf("generate routing token: %w", err)
+		}
+		return token.String(), nil
 	}
 	if _, ok := p.sessionManager.Get(sessID); !ok {
 		session.WriteNotFound(w, nil)
@@ -692,7 +697,12 @@ func (p *HTTPProxy) resolveSessionForRequest(
 
 	if req.Method == "initialize" {
 		if sessID == "" {
-			sessID = uuid.New().String()
+			newID, err := uuid.NewRandom()
+			if err != nil {
+				writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate session ID: %v", err))
+				return "", false, fmt.Errorf("generate session ID: %w", err)
+			}
+			sessID = newID.String()
 			setSessionHeader = true
 		}
 		if err := p.ensureSession(sessID); err != nil {
@@ -706,7 +716,12 @@ func (p *HTTPProxy) resolveSessionForRequest(
 	// setSessionHeader stays false so the client never sees this UUID and the
 	// next request remains sessionless.
 	if sessID == "" {
-		return uuid.New().String(), false, nil
+		token, err := uuid.NewRandom()
+		if err != nil {
+			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate routing token: %v", err))
+			return "", false, fmt.Errorf("generate routing token: %w", err)
+		}
+		return token.String(), false, nil
 	}
 
 	// Session ID provided but not found: reject with 404.

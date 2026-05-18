@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"time"
 
 	"github.com/stacklok/toolhive-core/permissions"
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -204,9 +203,13 @@ type RunConfig struct {
 	// Applies to both remote URLs and local container workloads.
 	Stateless bool `json:"stateless,omitempty" yaml:"stateless,omitempty"`
 
-	// SessionTTL is the inactivity timeout for proxy sessions.
-	// Zero uses the transport default (2h). Negative values are rejected by the builder.
-	SessionTTL time.Duration `json:"session_ttl,omitempty" yaml:"session_ttl,omitempty" swaggertype:"primitive,integer"`
+	// SessionTTL is the inactivity timeout for proxy sessions, expressed as a Go
+	// duration string (e.g. "30m", "2h", "168h"). Empty uses the transport
+	// default (2h). Negative durations and values that fail time.ParseDuration
+	// are rejected at runtime.
+	// String (not time.Duration) keeps the wire format unit-explicit: a
+	// time.Duration field serializes as nanoseconds in JSON.
+	SessionTTL string `json:"session_ttl,omitempty" yaml:"session_ttl,omitempty" example:"2h"`
 
 	// ProxyMode is the effective HTTP protocol the proxy uses.
 	// For stdio transports, this is the configured mode (sse or streamable-http).

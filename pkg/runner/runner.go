@@ -168,10 +168,20 @@ func (c *RunConfig) GetPort() int {
 func (r *Runner) Run(ctx context.Context) error {
 	// Resolve session TTL once so both the transport proxy and Redis storage use
 	// the same effective value, rather than each applying their own zero-fallback
-	// independently.
-	effectiveSessionTTL := r.Config.SessionTTL
-	if effectiveSessionTTL <= 0 {
-		effectiveSessionTTL = session.DefaultSessionTTL
+	// independently. SessionTTL is stored as a Go duration string so the
+	// runconfig wire format does not depend on nanosecond integers.
+	effectiveSessionTTL := session.DefaultSessionTTL
+	if r.Config.SessionTTL != "" {
+		parsed, err := time.ParseDuration(r.Config.SessionTTL)
+		if err != nil {
+			return fmt.Errorf("invalid session_ttl %q: %w", r.Config.SessionTTL, err)
+		}
+		if parsed < 0 {
+			return fmt.Errorf("session_ttl must be non-negative, got %s", parsed)
+		}
+		if parsed > 0 {
+			effectiveSessionTTL = parsed
+		}
 	}
 
 	// Create transport with runtime

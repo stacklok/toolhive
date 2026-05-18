@@ -1396,9 +1396,14 @@ components:
           uniqueItems: false
         session_ttl:
           description: |-
-            SessionTTL is the inactivity timeout for proxy sessions.
-            Zero uses the transport default (2h). Negative values are rejected by the builder.
-          type: integer
+            SessionTTL is the inactivity timeout for proxy sessions, expressed as a Go
+            duration string (e.g. "30m", "2h", "168h"). Empty uses the transport
+            default (2h). Negative durations and values that fail time.ParseDuration
+            are rejected at runtime.
+            String (not time.Duration) keeps the wire format unit-explicit: a
+            time.Duration field serializes as nanoseconds in JSON.
+          example: 2h
+          type: string
         stateless:
           description: |-
             Stateless indicates the server only supports POST (no SSE/GET).

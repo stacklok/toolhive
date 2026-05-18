@@ -1496,25 +1496,25 @@ func TestWithSessionTTL(t *testing.T) {
 		name        string
 		ttl         time.Duration
 		expectErr   bool
-		expectedTTL time.Duration
+		expectedTTL string
 	}{
 		{
-			name:        "zero is accepted and means use default",
+			name:        "zero is accepted and serialized as empty (use transport default)",
 			ttl:         0,
 			expectErr:   false,
-			expectedTTL: 0,
+			expectedTTL: "",
 		},
 		{
-			name:        "positive duration is accepted",
+			name:        "positive duration is stored as Go duration string",
 			ttl:         45 * time.Minute,
 			expectErr:   false,
-			expectedTTL: 45 * time.Minute,
+			expectedTTL: "45m0s",
 		},
 		{
-			name:        "large positive duration is accepted",
+			name:        "large positive duration is stored as Go duration string",
 			ttl:         24 * time.Hour,
 			expectErr:   false,
-			expectedTTL: 24 * time.Hour,
+			expectedTTL: "24h0m0s",
 		},
 		{
 			name:      "negative duration returns an error",

@@ -366,12 +366,20 @@ func WithEndpointPrefix(prefix string) RunConfigBuilderOption {
 // WithSessionTTL sets the inactivity timeout for proxy sessions.
 // Zero is valid and means "use the transport default" (2h).
 // Negative values return an error.
+//
+// The value is stored as a Go duration string on RunConfig so it survives a
+// JSON/YAML round-trip in the runconfig API contract; a time.Duration field
+// would serialize as nanoseconds.
 func WithSessionTTL(ttl time.Duration) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		if ttl < 0 {
 			return fmt.Errorf("session-ttl must be non-negative, got %s", ttl)
 		}
-		b.config.SessionTTL = ttl
+		if ttl == 0 {
+			b.config.SessionTTL = ""
+			return nil
+		}
+		b.config.SessionTTL = ttl.String()
 		return nil
 	}
 }

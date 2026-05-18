@@ -1,0 +1,30 @@
+# Build toolhive vmcp with our ClaimInjectionMiddleware patch
+# Context: ~/github/toolhive (must be built from toolhive root)
+#
+# Build command:
+#   docker build -f poc/toolhive-poc/Dockerfile.vmcp -t vmcp-poc:latest ~/github/toolhive
+
+FROM golang:1.26-alpine AS builder
+RUN apk add --no-cache git ca-certificates
+
+WORKDIR /build
+# Copy entire toolhive repo (including our ClaimInjectionMiddleware)
+COPY . .
+
+# Build vmcp binary
+RUN CGO_ENABLED=0 GOOS=linux go build \
+    -ldflags="-s -w -X main.version=poc-dev" \
+    -o /vmcp ./cmd/vmcp
+
+# ---- Runtime image ----
+FROM alpine:3.20
+RUN apk add --no-cache ca-certificates tzdata
+
+COPY --from=builder /vmcp /usr/local/bin/vmcp
+
+# Cloud Run / Docker: accept PORT env var
+EXPOSE 4483
+ENV PORT=4483
+
+ENTRYPOINT ["vmcp"]
+CMD ["serve", "--host", "0.0.0.0", "--port", "4483"]

@@ -35,8 +35,11 @@ const HttpsScheme = "https"
 // HttpScheme is the HTTP scheme
 const HttpScheme = "http"
 
-// Dialer control function for validating addresses prior to connection
-func protectedDialerControl(_, address string, _ syscall.RawConn) error {
+// ProtectedDialerControl is a Dialer control function for validating addresses
+// prior to connection. It returns an error if the resolved address points at a
+// private, loopback, or link-local IP, providing an SSRF guard at dial time.
+// Pass it to (&net.Dialer{Control: ...}).DialContext on outbound HTTP transports.
+func ProtectedDialerControl(_, address string, _ syscall.RawConn) error {
 	err := AddressReferencesPrivateIp(address)
 	if err != nil {
 		return err
@@ -154,7 +157,7 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 
 	if !b.allowPrivate {
 		transport.DialContext = (&net.Dialer{
-			Control: protectedDialerControl,
+			Control: ProtectedDialerControl,
 		}).DialContext
 	}
 

@@ -12,10 +12,12 @@ package types
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/binding"
 )
 
 // Caller represents the ability to invoke MCP protocol operations against a
@@ -139,37 +141,76 @@ type MultiSession interface {
 }
 
 const (
-	// MetadataKeyTokenHash is the session metadata key that holds the HMAC-SHA256
-	// hash of the bearer token used to create the session. For authenticated sessions
-	// this is hex(HMAC-SHA256(bearerToken)). For anonymous sessions this is the empty
-	// string sentinel. The raw token is never stored — only the hash.
+	// MetadataKeyTokenHash held hex(HMAC-SHA256(bearerToken)) for authenticated
+	// sessions and "" for anonymous sessions.
 	//
-	// This constant is the single source of truth used by the session factory and
-	// security layer to store and validate token binding metadata.
+	// Legacy: superseded by MetadataKeyIdentityBinding (#5306); sessions written
+	// under this key are invalidated on read. Constant removed in the follow-up PR.
 	MetadataKeyTokenHash = "vmcp.token.hash" //nolint:gosec // This is a metadata key name, not a credential.
 
-	// MetadataKeyTokenSalt is the session metadata key that holds the hex-encoded
-	// random salt used for HMAC-SHA256 token hashing. Each authenticated session has a
-	// unique salt to prevent attacks across multiple sessions. Anonymous sessions do not
-	// generate a salt and this key is omitted from their metadata.
+	// MetadataKeyTokenSalt held the hex-encoded per-session salt used for
+	// HMAC-SHA256 token hashing.
 	//
-	// This constant is the single source of truth used by the session factory and
-	// security layer to store and validate token binding metadata.
+	// Legacy: superseded by MetadataKeyIdentityBinding (#5306); removed in the follow-up PR.
 	MetadataKeyTokenSalt = "vmcp.token.salt" //nolint:gosec // This is a metadata key name, not a credential.
+
+	// MetadataKeyIdentityBinding is the session metadata key that holds the
+	// identity-binding string in the format defined by
+	// [pkg/vmcp/session/binding]. Bound sessions store binding.Format(iss, sub);
+	// unauthenticated sessions store binding.UnauthenticatedSentinel.
+	//
+	// Storage is plaintext PII — the Redis/Valkey instance must be access-controlled.
+	MetadataKeyIdentityBinding = "vmcp.identity.binding"
 )
 
-// ShouldAllowAnonymous determines if a session should allow anonymous access
-// based on the creator's identity. Sessions without an identity (nil) or with
-// an empty token are treated as anonymous.
+// ShouldAllowAnonymous reports whether a session has no per-user binding and
+// should be treated as anonymous. The identity is bound when Token is set, or
+// when Claims yields a (iss, sub) pair accepted by binding.Format.
+//
+// Fail-closed: a Claims["iss"] or Claims["sub"] that is present but not a
+// string (a misbehaving validator) is treated as bound, with a WARN logged.
 func ShouldAllowAnonymous(identity *auth.Identity) bool {
-	return identity == nil || identity.Token == ""
+	if identity == nil {
+		return true
+	}
+	if identity.Token != "" {
+		return false
+	}
+	iss, issOK := claimString(identity.Claims, "iss")
+	sub, subOK := claimString(identity.Claims, "sub")
+	if !issOK || !subOK {
+		slog.Warn("auth identity has present-but-non-string iss/sub claim; treating as bound")
+		return false
+	}
+	if _, err := binding.Format(iss, sub); err == nil {
+		return false
+	}
+	return true
 }
 
-// Token binding errors returned by Caller methods when caller identity
+// claimString returns (value, ok) for a string claim. ok is true when the
+// claim is missing entirely (absence is benign — the caller proceeds to
+// binding.Format which rejects empty halves) or when the claim is present
+// and a string (including the empty string). ok is false only when the
+// claim is present but not a string — the caller must treat that as a
+// misconfigured validator and fail closed.
+func claimString(claims map[string]any, key string) (string, bool) {
+	v, present := claims[key]
+	if !present {
+		return "", true
+	}
+	s, isString := v.(string)
+	if !isString {
+		return "", false
+	}
+	return s, true
+}
+
+// Identity binding errors returned by Caller methods when caller identity
 // validation fails.
 var (
 	// ErrUnauthorizedCaller is returned when the caller identity does not
-	// match the session owner's identity (token hash mismatch).
+	// match the session owner's identity (identity binding mismatch).
 	ErrUnauthorizedCaller = errors.New("caller identity does not match session owner")
 
 	// ErrNilCaller is returned when a bound session receives a nil caller.

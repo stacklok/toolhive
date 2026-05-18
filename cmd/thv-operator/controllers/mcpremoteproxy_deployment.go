@@ -82,6 +82,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 						VolumeMounts:    volumeMounts,
 						Resources:       resources,
 						Ports:           r.buildContainerPorts(proxy),
+						StartupProbe:    ctrlutil.BuildHealthProbe("/health", "http", 0, 5, 3, 18),
 						LivenessProbe:   ctrlutil.BuildHealthProbe("/health", "http", 30, 10, 5, 3),
 						ReadinessProbe:  ctrlutil.BuildHealthProbe("/health", "http", 15, 5, 3, 3),
 						SecurityContext: containerSecurityContext,

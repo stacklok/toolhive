@@ -1333,6 +1333,17 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 							Name:          "http",
 							Protocol:      corev1.ProtocolTCP,
 						}},
+						StartupProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{
+									Path: "/health",
+									Port: intstr.FromString("http"),
+								},
+							},
+							PeriodSeconds:    5,
+							TimeoutSeconds:   3,
+							FailureThreshold: 18,
+						},
 						LivenessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
 								HTTPGet: &corev1.HTTPGetAction{

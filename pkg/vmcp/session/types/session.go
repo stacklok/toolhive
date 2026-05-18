@@ -169,6 +169,16 @@ const (
 //
 // Fail-closed: a Claims["iss"] or Claims["sub"] that is present but not a
 // string (a misbehaving validator) is treated as bound, with a WARN logged.
+//
+// Contract note: this function answers "should this session be CREATED as
+// anonymous?" using Token presence as a fast path. It does NOT guarantee that
+// a non-anonymous identity will produce a successful binding: an identity with
+// Token != "" but missing iss/sub claims passes this check as bound, then
+// fails in BindSession with an extraction error. In practice this is
+// pathological — all shipping middlewares (JWT validator, LocalUserMiddleware,
+// AnonymousMiddleware) populate Claims. Callers who need "will this identity
+// actually produce a binding?" must use extractBindingID directly, which is
+// deliberately kept internal to the security decorator.
 func ShouldAllowAnonymous(identity *auth.Identity) bool {
 	if identity == nil {
 		return true

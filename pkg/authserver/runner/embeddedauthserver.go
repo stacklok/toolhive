@@ -671,12 +671,12 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 		cfg.DB = rc.SentinelConfig.DB
 	}
 
-	username, password, err := convertRedisACLConfig(rc.ACLUserConfig)
+	acl, err := convertRedisACLConfig(rc.ACLUserConfig)
 	if err != nil {
 		return tcredis.Config{}, fmt.Errorf("failed to convert ACL config: %w", err)
 	}
-	cfg.Username = username
-	cfg.Password = password
+	cfg.Username = acl.username
+	cfg.Password = acl.password
 
 	if err := applyRedisTimeouts(rc, &cfg); err != nil {
 		return tcredis.Config{}, fmt.Errorf("failed to apply redis timeouts: %w", err)
@@ -700,29 +700,37 @@ func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 	return cfg, nil
 }
 
+// redisACLCredentials carries resolved Redis ACL credentials between
+// convertRedisACLConfig and its caller. Named fields prevent positional
+// swaps of two same-typed strings at the call site.
+type redisACLCredentials struct {
+	username string
+	password string
+}
+
 // convertRedisACLConfig resolves ACL user credentials from environment variables.
 // When UsernameEnvVar is empty, no username is resolved; go-redis then sends
 // HELLO with "default" as the username (or falls back to legacy AUTH <password>
 // for servers that do not support HELLO). This is required for managed Redis
 // tiers without ACL users (e.g. GCP Memorystore Basic/Standard HA, Azure Cache
 // for Redis).
-func convertRedisACLConfig(rc *storage.ACLUserRunConfig) (string, string, error) {
+func convertRedisACLConfig(rc *storage.ACLUserRunConfig) (redisACLCredentials, error) {
 	if rc == nil {
-		return "", "", fmt.Errorf("acl user config is required")
+		return redisACLCredentials{}, fmt.Errorf("acl user config is required")
 	}
 	var username string
 	if rc.UsernameEnvVar != "" {
 		var err error
 		username, err = resolveEnvVar(rc.UsernameEnvVar)
 		if err != nil {
-			return "", "", fmt.Errorf("failed to resolve Redis username: %w", err)
+			return redisACLCredentials{}, fmt.Errorf("failed to resolve Redis username: %w", err)
 		}
 	}
 	password, err := resolveEnvVar(rc.PasswordEnvVar)
 	if err != nil {
-		return "", "", fmt.Errorf("failed to resolve Redis password: %w", err)
+		return redisACLCredentials{}, fmt.Errorf("failed to resolve Redis password: %w", err)
 	}
-	return username, password, nil
+	return redisACLCredentials{username: username, password: password}, nil
 }
 
 // applyRedisTimeouts parses and applies optional timeout duration strings to cfg.

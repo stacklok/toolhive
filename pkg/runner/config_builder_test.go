@@ -1489,6 +1489,57 @@ func TestWithRegistryServerName(t *testing.T) {
 	}
 }
 
+func TestWithSessionTTL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		ttl         time.Duration
+		expectErr   bool
+		expectedTTL string
+	}{
+		{
+			name:        "zero is accepted and serialized as empty (use transport default)",
+			ttl:         0,
+			expectErr:   false,
+			expectedTTL: "",
+		},
+		{
+			name:        "positive duration is stored as Go duration string",
+			ttl:         45 * time.Minute,
+			expectErr:   false,
+			expectedTTL: "45m0s",
+		},
+		{
+			name:        "large positive duration is stored as Go duration string",
+			ttl:         24 * time.Hour,
+			expectErr:   false,
+			expectedTTL: "24h0m0s",
+		},
+		{
+			name:      "negative duration returns an error",
+			ttl:       -1 * time.Second,
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := WithSessionTTL(tt.ttl)(builder)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedTTL, builder.config.SessionTTL)
+		})
+	}
+}
+
 func TestResolveRegistryServerName(t *testing.T) {
 	t.Parallel()
 

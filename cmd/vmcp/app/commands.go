@@ -7,6 +7,7 @@ package app
 import (
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -96,12 +97,14 @@ from all configured backend MCP servers.`,
 			host, _ := cmd.Flags().GetString("host")
 			port, _ := cmd.Flags().GetInt("port")
 			enableAudit, _ := cmd.Flags().GetBool("enable-audit")
+			sessionTTL, _ := cmd.Flags().GetDuration("session-ttl")
 
 			return vmcpcli.Serve(cmd.Context(), vmcpcli.ServeConfig{
 				ConfigPath:  configPath,
 				Host:        host,
 				Port:        port,
 				EnableAudit: enableAudit,
+				SessionTTL:  sessionTTL,
 			})
 		},
 	}
@@ -110,6 +113,8 @@ from all configured backend MCP servers.`,
 	cmd.Flags().String("host", "127.0.0.1", "Host address to bind to")
 	cmd.Flags().Int("port", 4483, "Port to listen on")
 	cmd.Flags().Bool("enable-audit", false, "Enable audit logging with default configuration")
+	cmd.Flags().Duration("session-ttl", time.Duration(0),
+		"Session inactivity timeout (e.g., 30m, 2h); zero uses the default (30m)")
 
 	return cmd
 }

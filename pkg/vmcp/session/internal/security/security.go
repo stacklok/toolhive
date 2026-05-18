@@ -69,6 +69,10 @@ type sessionBindingDecorator struct {
 //
 // Callers MUST treat a non-nil error as "no identifying claims available"
 // and fail closed (do not silently fall through to anonymous).
+//
+// TODO(#5306-followup): if/when RFC 7662 introspection becomes a top-level
+// incoming-auth type, add a startup probe that verifies the IdP emits iss
+// and sub in introspection responses (extractBindingID requires both).
 func extractBindingID(identity *auth.Identity) (string, error) {
 	if identity == nil {
 		return "", fmt.Errorf("auth identity is nil")

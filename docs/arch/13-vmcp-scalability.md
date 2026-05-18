@@ -83,6 +83,30 @@ resets the key's TTL atomically (see `pkg/transport/session/storage_redis.go`,
 | Inactivity beyond TTL | Redis TTL expiry (automatic, no application-side action needed) |
 | Pod-local cache eviction (LRU) | `onEvict` callback closes backend connections only; the Redis metadata key is **not** deleted and expires via TTL |
 
+### Identity-binding storage and Redis access control
+
+Each vMCP session carries an identity binding stored in session metadata under the
+key `vmcp.identity.binding`. The canonical format is defined in
+`pkg/vmcp/session/binding/binding.go`: a NUL-separated `iss + "\x00" + sub` for
+authenticated sessions, and the literal string `"unauthenticated"` for sessions
+without an auth identity.
+
+The binding is stored as **plaintext** in the session store (Redis/Valkey). It is
+not a credential — it identifies but does not authenticate a principal — but it is
+personally-identifying information (a combination of issuer URL and user subject).
+
+Operators are responsible for access-controlling the Redis/Valkey instance
+equivalently to any other identity store. Concretely: enable Redis ACLs (Redis 6+)
+or `requirepass`, restrict network reach with a Kubernetes `NetworkPolicy`, and
+avoid sharing the cluster with untrusted workloads.
+
+The session store prior to issue #5306 held an HMAC of the bearer token rather than
+the raw `(iss, sub)` pair. That scheme reduced the value of a Redis dump at the cost
+of breaking on every legitimate OAuth token refresh. The current scheme accepts
+plaintext PII at rest as the price of correctness; operators who require additional
+protection against a Redis compromise must layer Redis-side access controls as
+described above.
+
 ## File descriptor limits
 
 Each open backend connection consumes one file descriptor on the vMCP pod. A

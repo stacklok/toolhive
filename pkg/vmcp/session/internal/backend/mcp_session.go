@@ -75,6 +75,14 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 // context other than the per-request handler context (e.g. streamable-HTTP
 // Close() uses context.Background()). The fallback may itself be stale; that
 // is acceptable for the teardown DELETE since the request is best-effort.
+//
+// No health-check marker is re-injected here. Health probes do not flow through
+// session-backed clients — they go through the per-call client in
+// pkg/vmcp/client (whose identityPropagatingRoundTripper IS health-check aware).
+// If a future change routes health probes through this connector, the
+// isHealthCheck propagation pattern from pkg/vmcp/client/client.go must be
+// mirrored here so the Close() DELETE built from context.Background() retains
+// the marker.
 type identityRoundTripper struct {
 	base http.RoundTripper
 	// fallbackIdentity is injected only when req.Context() carries no identity.

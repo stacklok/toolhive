@@ -1054,18 +1054,42 @@ func TestWrapBackendError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // identityPropagatingRoundTripper
 // ---------------------------------------------------------------------------
+//
+// Design invariant (see issue #5323): the per-request identity placed on
+// req.Context() by auth.TokenValidator.Middleware is THE canonical source of
+// identity for outgoing backend requests. It carries upstream tokens that the
+// middleware transparently refreshes per request. The captured fallback
+// identity is a teardown-DELETE escape hatch only — it covers the case where
+// mcp-go's Close() builds its DELETE from context.Background() and loses the
+// per-request identity. The fallback MUST NEVER override a non-nil identity
+// already present on req.Context(); doing so silently re-injects stale tokens
+// and is the bug fixed by #5323.
+//
+// Tests below are grouped to reflect this hierarchy:
+//   1. Per-request identity (normal path)            — *_PerRequestIdentity_*
+//   2. Fallback identity (no-identity-on-context)    — *_FallbackIdentity_*
+//   3. Health-check marker propagation               — *_HealthCheck*
 
-// TestIdentityPropagatingRoundTripper_FallbackIdentity_InjectedWhenContextLacksIdentity
-// verifies that the fallback identity is injected when req.Context() carries no
-// identity (e.g. mcp-go's Close() DELETE built from context.Background()).
-func TestIdentityPropagatingRoundTripper_FallbackIdentity_InjectedWhenContextLacksIdentity(t *testing.T) {
+// --- Per-request identity (normal path) -----------------------------------
+
+// TestIdentityPropagatingRoundTripper_PerRequestIdentity_FlowsThroughUnchanged
+// verifies the normal per-request flow: identity is on req.Context() (placed by
+// TokenValidator.Middleware), no fallback is configured, and the transport leaves
+// the identity untouched so the freshly refreshed upstream tokens reach the
+// downstream auth strategies. This is the path taken on every authenticated
+// tool call.
+func TestIdentityPropagatingRoundTripper_PerRequestIdentity_FlowsThroughUnchanged(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	fallback := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "fallback-user"}}
-	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: fallback}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil}
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
+	fresh := &pkgauth.Identity{
+		PrincipalInfo:  pkgauth.PrincipalInfo{Subject: "fresh-user"},
+		UpstreamTokens: map[string]string{"provider": "fresh-token"},
+	}
+	ctx := pkgauth.WithIdentity(context.Background(), fresh)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
 
 	_, err = rt.RoundTrip(req)
@@ -1073,16 +1097,18 @@ func TestIdentityPropagatingRoundTripper_FallbackIdentity_InjectedWhenContextLac
 
 	require.NotNil(t, base.capturedReq)
 	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
-	require.True(t, ok, "fallback identity should be in downstream request context")
-	assert.Equal(t, "fallback-user", got.Subject)
+	require.True(t, ok)
+	assert.Equal(t, "fresh-user", got.Subject)
+	assert.Equal(t, "fresh-token", got.UpstreamTokens["provider"])
 }
 
-// TestIdentityPropagatingRoundTripper_RequestContextIdentity_NotOverridden is the
-// regression test for issue #5323: a fresh identity already on req.Context() (placed
-// there by TokenValidator.Middleware on every incoming request) must survive the
-// transport untouched. Overriding it with a captured fallback would silently
-// re-inject stale upstream tokens on every backend call.
-func TestIdentityPropagatingRoundTripper_RequestContextIdentity_NotOverridden(t *testing.T) {
+// TestIdentityPropagatingRoundTripper_PerRequestIdentity_NotOverriddenByFallback
+// is the regression test for issue #5323: a fresh identity already on
+// req.Context() (placed there by TokenValidator.Middleware on every incoming
+// request) must survive the transport untouched, even when a stale fallback
+// identity is captured. Overriding it would silently re-inject stale upstream
+// tokens on every backend call and is exactly the bug this PR fixes.
+func TestIdentityPropagatingRoundTripper_PerRequestIdentity_NotOverriddenByFallback(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
@@ -1116,23 +1142,19 @@ func TestIdentityPropagatingRoundTripper_RequestContextIdentity_NotOverridden(t 
 		"fresh upstream tokens must reach auth strategies unchanged (#5323)")
 }
 
-// TestIdentityPropagatingRoundTripper_NoFallback_RequestContextIdentityPreserved
-// verifies the normal per-request flow: identity is on req.Context() (placed by
-// TokenValidator.Middleware), no fallback is configured, and the transport leaves
-// the identity untouched so the freshly refreshed upstream tokens reach the
-// downstream auth strategies.
-func TestIdentityPropagatingRoundTripper_NoFallback_RequestContextIdentityPreserved(t *testing.T) {
+// --- Fallback identity (teardown / no-identity-on-context path) ------------
+
+// TestIdentityPropagatingRoundTripper_FallbackIdentity_InjectedWhenContextLacksIdentity
+// verifies that the fallback identity is injected when req.Context() carries no
+// identity (e.g. mcp-go's Close() DELETE built from context.Background()).
+func TestIdentityPropagatingRoundTripper_FallbackIdentity_InjectedWhenContextLacksIdentity(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil}
+	fallback := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "fallback-user"}}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: fallback}
 
-	fresh := &pkgauth.Identity{
-		PrincipalInfo:  pkgauth.PrincipalInfo{Subject: "fresh-user"},
-		UpstreamTokens: map[string]string{"provider": "fresh-token"},
-	}
-	ctx := pkgauth.WithIdentity(context.Background(), fresh)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://backend.example.com/mcp", nil)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
 
 	_, err = rt.RoundTrip(req)
@@ -1140,12 +1162,11 @@ func TestIdentityPropagatingRoundTripper_NoFallback_RequestContextIdentityPreser
 
 	require.NotNil(t, base.capturedReq)
 	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
-	require.True(t, ok)
-	assert.Equal(t, "fresh-user", got.Subject)
-	assert.Equal(t, "fresh-token", got.UpstreamTokens["provider"])
+	require.True(t, ok, "fallback identity should be in downstream request context")
+	assert.Equal(t, "fallback-user", got.Subject)
 }
 
-func TestIdentityPropagatingRoundTripper_NilFallback_NoIdentityInContext(t *testing.T) {
+func TestIdentityPropagatingRoundTripper_FallbackIdentity_NilFallback_NoIdentityInContext(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
@@ -1161,6 +1182,8 @@ func TestIdentityPropagatingRoundTripper_NilFallback_NoIdentityInContext(t *test
 	_, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
 	assert.False(t, ok, "no identity should be in downstream context when no fallback and no req-ctx identity")
 }
+
+// --- Health-check marker propagation ---------------------------------------
 
 func TestIdentityPropagatingRoundTripper_HealthCheck_PropagatesMarker(t *testing.T) {
 	t.Parallel()

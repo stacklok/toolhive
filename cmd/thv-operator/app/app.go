@@ -49,14 +49,7 @@ func init() {
 	//+kubebuilder:scaffold:scheme
 }
 
-// Run is the operator's entry point. It registers schemes, parses flags,
-// initializes logging, wires the signal-aware context, constructs the
-// controller manager, and blocks on mgr.Start until the signal context
-// is cancelled.
-//
-// Run is intended to be called from func main() with no other setup so
-// that out-of-tree wrappers can be a literal `func main() { app.Run() }`.
-// Run never returns; it calls os.Exit on fatal errors.
+// Run is the operator entry point. It blocks until the signal context is cancelled; on fatal setup errors it calls os.Exit(1).
 func Run() {
 	var metricsAddr string
 	var enableLeaderElection bool

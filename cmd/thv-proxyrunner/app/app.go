@@ -15,14 +15,7 @@ import (
 	"github.com/stacklok/toolhive-core/logging"
 )
 
-// Run is the proxyrunner's entry point. It binds TOOLHIVE_DEBUG from the
-// environment, initializes the slog default logger, constructs a
-// signal-aware context honoring SIGINT/SIGTERM/SIGQUIT, and executes the
-// root cobra command.
-//
-// Run is intended to be called from func main() with no other setup so
-// that out-of-tree wrappers can be a literal `func main() { app.Run() }`.
-// Run never returns; it calls os.Exit(1) on failure.
+// Run is the proxyrunner entry point. It blocks until the root cobra command exits; on a non-nil return it calls os.Exit(1).
 func Run() {
 	// Bind TOOLHIVE_DEBUG env var early, before logger initialization.
 	// This must happen before viper.GetBool("debug") so the env var

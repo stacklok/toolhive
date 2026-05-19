@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -65,6 +66,8 @@ func init() {
 		"192.0.2.0/24",    // RFC5737 documentation (TEST-NET-1)
 		"198.51.100.0/24", // RFC5737 documentation (TEST-NET-2)
 		"203.0.113.0/24",  // RFC5737 documentation (TEST-NET-3)
+		"224.0.0.0/4",     // IPv4 multicast
+		"ff00::/8",        // IPv6 multicast
 	} {
 		_, block, err := net.ParseCIDR(cidr)
 		if err != nil {
@@ -91,13 +94,45 @@ func isPrivateForCIMD(ip net.IP) bool {
 // Any HTTPS URL is treated as a CIMD client_id; DCR-issued IDs are always
 // opaque strings that never begin with "https://". Do not tighten this to an
 // exact match against ToolHiveClientMetadataDocumentURL — the embedded AS
-// (Phase 2) must accept CIMD URLs from third-party clients too.
-//
-// TODO(phase2): tighten per draft-ietf-oauth-client-id-metadata-document §3
-// (require host+path, reject fragment/userinfo/dot-segments) before wiring
-// into the AS GetClient decorator.
+// must accept CIMD URLs from third-party clients too.
 func IsClientIDMetadataDocumentURL(clientID string) bool {
 	return strings.HasPrefix(clientID, "https://")
+}
+
+// validateCIMDClientURL enforces the client_id URL requirements from
+// draft-ietf-oauth-client-id-metadata-document §3:
+//   - MUST use https scheme (http://localhost permitted for development only)
+//   - MUST contain a non-empty path component (not just "/")
+//   - MUST NOT contain a fragment component
+//   - MUST NOT contain userinfo (username or password)
+//   - MUST NOT contain single-dot or double-dot path segments
+func validateCIMDClientURL(rawURL string) error {
+	isLoopback := isLoopbackHTTP(rawURL)
+	if !strings.HasPrefix(rawURL, "https://") && !isLoopback {
+		return fmt.Errorf("client_id URL must use the https scheme: %s", rawURL)
+	}
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("client_id URL is not a valid URL: %w", err)
+	}
+	if parsed.Host == "" {
+		return fmt.Errorf("client_id URL must contain a host")
+	}
+	if parsed.Fragment != "" {
+		return fmt.Errorf("client_id URL must not contain a fragment component")
+	}
+	if parsed.User != nil {
+		return fmt.Errorf("client_id URL must not contain userinfo (username or password)")
+	}
+	if parsed.Path == "" || parsed.Path == "/" {
+		return fmt.Errorf("client_id URL must contain a non-empty path component")
+	}
+	for _, segment := range strings.Split(parsed.Path, "/") {
+		if segment == "." || segment == ".." {
+			return fmt.Errorf("client_id URL must not contain dot-segment path components")
+		}
+	}
+	return nil
 }
 
 // isLoopbackHTTP reports whether rawURL is an HTTP URL targeting a loopback
@@ -116,8 +151,8 @@ func isLoopbackHTTP(rawURL string) bool {
 // check. After fetching, ValidateClientMetadataDocument is called and any
 // validation error is returned.
 func FetchClientMetadataDocument(ctx context.Context, rawURL string) (*ClientMetadataDocument, error) {
-	if !strings.HasPrefix(rawURL, "https://") && !isLoopbackHTTP(rawURL) {
-		return nil, fmt.Errorf("client metadata document URL must use HTTPS: %s", rawURL)
+	if err := validateCIMDClientURL(rawURL); err != nil {
+		return nil, err
 	}
 
 	httpClient := newCIMDHTTPClient()
@@ -219,6 +254,15 @@ func isJSONSubtype(mediaType string) bool {
 	return strings.HasPrefix(mediaType, "application/") && strings.HasSuffix(mediaType, "+json")
 }
 
+// forbiddenAuthMethods lists token_endpoint_auth_method values that MUST NOT
+// appear in a CIMD document. Per the spec, CIMD clients may not use symmetric
+// shared-secret methods because no pre-shared secret is ever established.
+var forbiddenAuthMethods = []string{
+	"client_secret_post",
+	"client_secret_basic",
+	"client_secret_jwt",
+}
+
 // ValidateClientMetadataDocument validates a parsed ClientMetadataDocument
 // against the URL it was fetched from. Per the CIMD draft spec, the
 // client_id field must exactly equal the URL — no normalization is applied,
@@ -240,6 +284,15 @@ func ValidateClientMetadataDocument(doc *ClientMetadataDocument, fetchedFrom str
 	for _, uri := range doc.RedirectURIs {
 		if err := validateRedirectURI(uri); err != nil {
 			return err
+		}
+	}
+
+	if doc.TokenEndpointAuthMethod != "" {
+		for _, forbidden := range forbiddenAuthMethods {
+			if doc.TokenEndpointAuthMethod == forbidden {
+				return fmt.Errorf("token_endpoint_auth_method %q is not permitted in a CIMD document: "+
+					"symmetric shared-secret methods cannot be used without pre-registration", forbidden)
+			}
 		}
 	}
 

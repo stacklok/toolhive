@@ -33,6 +33,8 @@ func init() {
 		"192.0.2.0/24",    // RFC5737 documentation (TEST-NET-1)
 		"198.51.100.0/24", // RFC5737 documentation (TEST-NET-2)
 		"203.0.113.0/24",  // RFC5737 documentation (TEST-NET-3)
+		"224.0.0.0/4",     // IPv4 multicast
+		"ff00::/8",        // IPv6 multicast
 	} {
 		_, block, err := net.ParseCIDR(cidr)
 		if err != nil {

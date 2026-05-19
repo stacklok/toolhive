@@ -77,7 +77,7 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		serverURL := server.URL + "/"
+		serverURL := server.URL + "/metadata.json"
 		// Patch the handler so the doc client_id matches the URL we will request.
 		server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			doc := validDoc(serverURL)
@@ -97,7 +97,7 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 
 		_, err := FetchClientMetadataDocument(context.Background(), "http://example.com/metadata.json")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "must use HTTPS")
+		assert.Contains(t, err.Error(), "https scheme")
 	})
 
 	t.Run("HTTP non-200 status returns error", func(t *testing.T) {
@@ -108,7 +108,7 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		_, err := FetchClientMetadataDocument(context.Background(), server.URL+"/")
+		_, err := FetchClientMetadataDocument(context.Background(), server.URL+"/metadata.json")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "404")
 	})
@@ -128,7 +128,7 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		_, err := FetchClientMetadataDocument(context.Background(), server.URL+"/")
+		_, err := FetchClientMetadataDocument(context.Background(), server.URL+"/metadata.json")
 		require.Error(t, err)
 	})
 
@@ -142,7 +142,7 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		_, err := FetchClientMetadataDocument(context.Background(), server.URL+"/")
+		_, err := FetchClientMetadataDocument(context.Background(), server.URL+"/metadata.json")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "Content-Type")
 	})
@@ -151,14 +151,14 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 		t.Parallel()
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			serverURL := "http://" + r.Host + "/"
+			serverURL := "http://" + r.Host + "/metadata.json"
 			doc := validDoc(serverURL)
 			w.Header().Set("Content-Type", "application/ld+json")
 			json.NewEncoder(w).Encode(doc) //nolint:errcheck
 		}))
 		t.Cleanup(server.Close)
 
-		serverURL := server.URL + "/"
+		serverURL := server.URL + "/metadata.json"
 		server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			doc := validDoc(serverURL)
 			w.Header().Set("Content-Type", "application/ld+json")
@@ -182,7 +182,7 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		_, err := FetchClientMetadataDocument(context.Background(), server.URL+"/")
+		_, err := FetchClientMetadataDocument(context.Background(), server.URL+"/metadata.json")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "client_id")
 	})
@@ -191,7 +191,7 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 		t.Parallel()
 
 		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			serverURL := "http://" + r.Host + "/"
+			serverURL := "http://" + r.Host + "/metadata.json"
 			doc := ClientMetadataDocument{
 				ClientID:     serverURL,
 				RedirectURIs: nil,
@@ -201,7 +201,7 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		serverURL := server.URL + "/"
+		serverURL := server.URL + "/metadata.json"
 		server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			doc := ClientMetadataDocument{
 				ClientID:     serverURL,

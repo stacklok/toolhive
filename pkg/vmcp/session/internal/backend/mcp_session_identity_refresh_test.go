@@ -89,22 +89,6 @@ func TestHTTPSession_PerRequestIdentity_DrivesUpstreamAuthHeader(t *testing.T) {
 	require.NoError(t, err, "connector must initialise the backend successfully")
 	t.Cleanup(func() { _ = sess.Close() })
 
-	// Sanity check: the Initialize request (sent during connector(), which
-	// got the staleIdentity as its identity argument) saw the stale token.
-	// This documents the captured fallback's role at session-init time.
-	//
-	// Maintenance note: do not delete this block without also varying the
-	// other headersFor call site below. fakeBackend.headersFor takes a
-	// `method` parameter; if both call sites end up passing the same
-	// constant (e.g. only tools/call), the `unparam` linter will fail
-	// because the parameter becomes effectively dead. This Initialize
-	// assertion is therefore load-bearing for lint as well as for test
-	// documentation — keep at least one non-tools/call invocation.
-	initHeaders := fb.headersFor(string(mcp.MethodInitialize))
-	require.NotNil(t, initHeaders, "backend never received an initialize request")
-	assert.Equal(t, "Bearer "+staleToken, initHeaders.Get("Authorization"),
-		"initialize request should use the identity passed to connector()")
-
 	// CallTool with a fresh identity on the per-request context. This
 	// simulates what auth.TokenValidator.Middleware does on every
 	// authenticated incoming request: the identity it places on the

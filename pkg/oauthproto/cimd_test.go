@@ -100,6 +100,15 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 		assert.Contains(t, err.Error(), "https scheme")
 	})
 
+	t.Run("localhost subdomain bypass is rejected", func(t *testing.T) {
+		t.Parallel()
+
+		// http://localhost.evil.com/ must NOT be treated as loopback.
+		_, err := FetchClientMetadataDocument(context.Background(), "http://localhost.evil.com/metadata.json")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "https scheme")
+	})
+
 	t.Run("HTTP non-200 status returns error", func(t *testing.T) {
 		t.Parallel()
 
@@ -216,13 +225,29 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 		assert.Contains(t, err.Error(), "redirect_uris")
 	})
 
-	t.Run("SSRF: private non-loopback IP is blocked", func(t *testing.T) {
+	t.Run("SSRF: URL scheme check rejects non-loopback HTTP", func(t *testing.T) {
 		t.Parallel()
 
-		// 10.0.0.1 is a private RFC1918 address; the SSRF dial guard must
-		// reject it before a connection is established.
+		// This exercises validateCIMDClientURL, not the dial-guard.
 		_, err := FetchClientMetadataDocument(context.Background(), "http://10.0.0.1/metadata.json")
 		require.Error(t, err)
+		assert.Contains(t, err.Error(), "https scheme")
+	})
+
+	t.Run("SSRF: dial-guard blocks private IP served via HTTPS hostname", func(t *testing.T) {
+		t.Parallel()
+
+		// Spin up a real server on loopback so we have a valid port, then
+		// attempt to reach a private non-loopback IP over HTTPS — the DialContext
+		// SSRF guard must reject it at dial time. We use the HTTPS scheme so the
+		// URL passes validateCIMDClientURL and reaches the transport layer.
+		//
+		// 192.0.2.1 is a TEST-NET-1 documentation address (RFC5737): it is
+		// guaranteed to be unreachable and is in our SSRF block list.
+		_, err := FetchClientMetadataDocument(context.Background(), "https://192.0.2.1/metadata.json")
+		require.Error(t, err)
+		// The error must come from the dial guard, not a network timeout.
+		assert.Contains(t, err.Error(), "private address")
 	})
 }
 

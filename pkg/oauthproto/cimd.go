@@ -136,12 +136,19 @@ func validateCIMDClientURL(rawURL string) error {
 }
 
 // isLoopbackHTTP reports whether rawURL is an HTTP URL targeting a loopback
-// address (localhost, 127.x.x.x, or [::1]). Allowing loopback HTTP makes
-// local development and testing practical without weakening production security.
+// address. The host is parsed from the URL (not matched as a prefix) to
+// prevent bypasses via hosts like "http://localhost.evil.com/".
 func isLoopbackHTTP(rawURL string) bool {
-	return strings.HasPrefix(rawURL, "http://localhost") ||
-		strings.HasPrefix(rawURL, "http://127.") ||
-		strings.HasPrefix(rawURL, "http://[::1]")
+	parsed, err := url.Parse(rawURL)
+	if err != nil || parsed.Scheme != "http" {
+		return false
+	}
+	host := parsed.Hostname() // strips port
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // FetchClientMetadataDocument fetches and validates a Client ID Metadata Document
@@ -166,10 +173,8 @@ func FetchClientMetadataDocument(ctx context.Context, rawURL string) (*ClientMet
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch client metadata document: %w", err)
 	}
-	defer func() {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
+	// Keep-alive connections are disabled so no drain is needed to allow connection reuse.
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("client metadata document fetch returned HTTP %d", resp.StatusCode)
@@ -196,18 +201,17 @@ func FetchClientMetadataDocument(ctx context.Context, rawURL string) (*ClientMet
 }
 
 // newCIMDHTTPClient builds an *http.Client with the SSRF and redirect guards
-// required for fetching client metadata documents. Keep-alive connections are disabled so
-// the per-dial SSRF check fires on every request rather than being bypassed by
-// a reused connection.
+// required for fetching client metadata documents. Keep-alive connections are
+// disabled so the per-dial SSRF check fires on every request rather than being
+// bypassed by a reused connection.
 func newCIMDHTTPClient() *http.Client {
-	dialer := &net.Dialer{
-		Timeout: 5 * time.Second,
-	}
-
 	transport := &http.Transport{
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,
 		DisableKeepAlives:     true,
+		// DialContext resolves the hostname, validates every resolved IP against
+		// the SSRF block list, then dials by IP literal to prevent DNS-rebinding
+		// attacks (TOCTOU between resolution and dial).
 		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
 			host, port, err := net.SplitHostPort(address)
 			if err != nil {
@@ -217,30 +221,36 @@ func newCIMDHTTPClient() *http.Client {
 			if err != nil {
 				return nil, fmt.Errorf("cimd: failed to resolve %q: %w", host, err)
 			}
+			// Pick the first IP that passes SSRF validation and dial it directly
+			// by literal to eliminate the TOCTOU window between resolution and dial.
 			for _, ipStr := range ips {
 				ip := net.ParseIP(ipStr)
 				if ip == nil {
 					continue
 				}
-				// Loopback is allowed — it is already gated by the URL scheme check
-				// (HTTP to loopback is explicitly permitted for development). All other
-				// private ranges are rejected to prevent SSRF.
+				// Loopback is allowed — gated by the URL scheme check above.
+				// All other private/special-use ranges are rejected.
 				if !ip.IsLoopback() && isPrivateForCIMD(ip) {
 					return nil, fmt.Errorf("cimd: refusing connection to private address %s", ipStr)
 				}
+				dialer := &net.Dialer{Timeout: 5 * time.Second}
+				return dialer.DialContext(ctx, network, net.JoinHostPort(ipStr, port))
 			}
-			return dialer.DialContext(ctx, network, net.JoinHostPort(host, port))
+			return nil, fmt.Errorf("cimd: no valid address found for %q", host)
 		},
 	}
 
-	redirectCount := 0
 	client := &http.Client{
 		Timeout:   5 * time.Second,
 		Transport: transport,
-		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
-			redirectCount++
-			if redirectCount > 1 {
+		// Validate each redirect target before following it. A HTTPS URL could
+		// redirect to HTTP or to a private IP that bypasses the URL-level checks.
+		CheckRedirect: func(req *http.Request, via []*http.Request) error {
+			if len(via) >= 1 {
 				return http.ErrUseLastResponse
+			}
+			if err := validateCIMDClientURL(req.URL.String()); err != nil {
+				return fmt.Errorf("cimd: redirect target rejected: %w", err)
 			}
 			return nil
 		},
@@ -287,6 +297,8 @@ func ValidateClientMetadataDocument(doc *ClientMetadataDocument, fetchedFrom str
 		}
 	}
 
+	// Only symmetric shared-secret auth methods are forbidden; asymmetric methods
+	// (e.g. private_key_jwt, tls_client_auth, none) are permitted by the spec.
 	if doc.TokenEndpointAuthMethod != "" {
 		for _, forbidden := range forbiddenAuthMethods {
 			if doc.TokenEndpointAuthMethod == forbidden {

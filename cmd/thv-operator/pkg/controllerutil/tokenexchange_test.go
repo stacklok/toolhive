@@ -20,19 +20,34 @@ import (
 
 // withDefaultOBOHandler captures the package-level OBO handler and restores it
 // on cleanup so that tests which call RegisterOBOHandler do not leak state to
-// other tests in the package.
+// other tests in the package. The capture and restore both pass through
+// oboMu so they participate in the same synchronization contract as
+// production reads/writes.
 func withDefaultOBOHandler(t *testing.T) {
 	t.Helper()
+	oboMu.RLock()
 	original := oboHandler
-	t.Cleanup(func() { oboHandler = original })
+	oboMu.RUnlock()
+	t.Cleanup(func() {
+		oboMu.Lock()
+		oboHandler = original
+		oboMu.Unlock()
+	})
 }
 
 func TestDefaultOBOHandler_ReturnsEnterpriseRequired(t *testing.T) {
 	t.Parallel()
 
+	// Read the default handler under the read lock so this test does not
+	// data-race other tests that may run sequentially and write through
+	// RegisterOBOHandler. The subtests below dispatch through this snapshot
+	// rather than through the public wrappers so the assertion targets the
+	// default OBOHandler value specifically.
+	defaults := currentOBOHandler()
+
 	t.Run("Validate", func(t *testing.T) {
 		t.Parallel()
-		err := oboHandler.Validate(nil)
+		err := defaults.Validate(nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 	})
@@ -40,7 +55,7 @@ func TestDefaultOBOHandler_ReturnsEnterpriseRequired(t *testing.T) {
 	t.Run("ApplyRunConfig", func(t *testing.T) {
 		t.Parallel()
 		var opts []runner.RunConfigBuilderOption
-		err := oboHandler.ApplyRunConfig(context.Background(), nil, "ns", nil, &opts)
+		err := defaults.ApplyRunConfig(context.Background(), nil, "ns", nil, &opts)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 		assert.Empty(t, opts, "default handler must not mutate the options slice")
@@ -48,7 +63,7 @@ func TestDefaultOBOHandler_ReturnsEnterpriseRequired(t *testing.T) {
 
 	t.Run("SecretEnvVars", func(t *testing.T) {
 		t.Parallel()
-		envVars, err := oboHandler.SecretEnvVars(nil)
+		envVars, err := defaults.SecretEnvVars(nil)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 		assert.Nil(t, envVars, "default handler must return nil envVars on the error path")
@@ -183,7 +198,39 @@ func TestRegisterOBOHandler_LastWriteWins(t *testing.T) {
 	_, err := OBOSecretEnvVars(nil)
 	assert.ErrorIs(t, err, second)
 	assert.ErrorIs(t,
-		oboHandler.ApplyRunConfig(context.Background(), nil, "ns", nil, nil),
+		OBOApplyRunConfig(context.Background(), nil, "ns", nil, nil),
 		second,
 	)
+}
+
+//nolint:paralleltest // Mutates package-level oboHandler; must not race other tests.
+func TestRegisterOBOHandler_PanicsOnNilField(t *testing.T) {
+	withDefaultOBOHandler(t)
+
+	validate := func(*mcpv1beta1.MCPExternalAuthConfig) error { return nil }
+	applyRunConfig := func(
+		context.Context, client.Client, string,
+		*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption,
+	) error {
+		return nil
+	}
+	secretEnvVars := func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+		return nil, nil
+	}
+
+	tests := []struct {
+		name    string
+		handler OBOHandler
+	}{
+		{name: "Validate nil", handler: OBOHandler{ApplyRunConfig: applyRunConfig, SecretEnvVars: secretEnvVars}},
+		{name: "ApplyRunConfig nil", handler: OBOHandler{Validate: validate, SecretEnvVars: secretEnvVars}},
+		{name: "SecretEnvVars nil", handler: OBOHandler{Validate: validate, ApplyRunConfig: applyRunConfig}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Panics(t, func() { RegisterOBOHandler(tt.handler) },
+				"RegisterOBOHandler must panic when any function field is nil")
+		})
+	}
 }

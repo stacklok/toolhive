@@ -9,6 +9,7 @@ package obo
 
 import (
 	"net/http"
+	"sync"
 
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -44,20 +45,52 @@ func (*stub) Handler() types.MiddlewareFunction {
 // Close is a no-op for the stub middleware.
 func (*stub) Close() error { return nil }
 
-// CreateMiddleware is the package-level middleware factory. By default it
-// adds a stub middleware whose handler returns 503 on every request. An
-// out-of-tree build replaces it by calling RegisterFactory once during
-// init(); the literal map in pkg/runner/middleware.go captures this
-// variable's current value at runner-construction time, so all
-// RegisterFactory calls must complete before the first runner is
-// constructed (this is satisfied in practice because runner construction
-// happens inside app.Run() after all init() functions have fired).
-var CreateMiddleware types.MiddlewareFactory = func(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
+// factoryMu guards reads and writes of currentFactory. Each call to
+// CreateMiddleware takes the read lock; RegisterFactory takes the write lock.
+// The mutex makes hot-reload / re-registration safe in case a future caller
+// (e.g. an admission webhook) wires it up, even though production today only
+// ever writes during init().
+var factoryMu sync.RWMutex
+
+// currentFactory holds the actual middleware factory dispatched to by
+// CreateMiddleware. The default returns a 503 stub; an out-of-tree build
+// replaces it via RegisterFactory.
+var currentFactory types.MiddlewareFactory = DefaultFactory
+
+// DefaultFactory adds a stub middleware whose handler responds 503 to every
+// request. Exposed primarily so external test code (e.g. pkg/runner) can pass
+// it to RegisterFactory in a t.Cleanup to restore the package's default
+// behavior after a test mutates currentFactory.
+func DefaultFactory(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
 	runner.AddMiddleware(config.Type, &stub{})
 	return nil
 }
 
-// RegisterFactory replaces the package-level CreateMiddleware. Calling it
+// CreateMiddleware is the package-level middleware factory. It is a stable
+// indirection over currentFactory: each call dispatches to whatever factory
+// is registered at call time, so out-of-tree builds replacing the factory
+// via RegisterFactory take effect on subsequent calls even if a caller has
+// already captured CreateMiddleware itself (e.g. pkg/runner builds its
+// factory map once and reuses it across runner instances). The default
+// produces a 503 stub.
+var CreateMiddleware types.MiddlewareFactory = func(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
+	factoryMu.RLock()
+	f := currentFactory
+	factoryMu.RUnlock()
+	return f(config, runner)
+}
+
+// RegisterFactory replaces the underlying middleware factory. Calling it
 // more than once is allowed and last-write-wins, matching the existing
-// pkg/config.RegisterProviderFactory precedent.
-func RegisterFactory(f types.MiddlewareFactory) { CreateMiddleware = f }
+// pkg/config.RegisterProviderFactory precedent. Panics if f is nil — a nil
+// factory would dispatch into a nil function on the next CreateMiddleware
+// call, far from the registration site; surface the problem at init() time
+// instead.
+func RegisterFactory(f types.MiddlewareFactory) {
+	if f == nil {
+		panic("obo.RegisterFactory: factory is nil")
+	}
+	factoryMu.Lock()
+	defer factoryMu.Unlock()
+	currentFactory = f
+}

@@ -17,13 +17,21 @@ import (
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 )
 
-// withDefaultFactory swaps the package-level CreateMiddleware for the duration
-// of a test, restoring the original on cleanup so tests that mutate the global
-// state do not leak into each other.
+// withDefaultFactory captures the underlying middleware factory and restores
+// it on cleanup so tests that call RegisterFactory do not leak state to
+// other tests in the package. Capture and restore both pass through
+// factoryMu so they participate in the same synchronization contract as
+// production reads/writes.
 func withDefaultFactory(t *testing.T) {
 	t.Helper()
-	original := CreateMiddleware
-	t.Cleanup(func() { CreateMiddleware = original })
+	factoryMu.RLock()
+	original := currentFactory
+	factoryMu.RUnlock()
+	t.Cleanup(func() {
+		factoryMu.Lock()
+		currentFactory = original
+		factoryMu.Unlock()
+	})
 }
 
 func TestMiddlewareType(t *testing.T) {
@@ -106,7 +114,7 @@ func TestStub_Close(t *testing.T) {
 	assert.NoError(t, (&stub{}).Close(), "stub Close must be a no-op")
 }
 
-//nolint:paralleltest // Mutates package-level CreateMiddleware; must not race other tests.
+//nolint:paralleltest // Mutates package-level currentFactory; must not race other tests.
 func TestRegisterFactory_ReplacesDefault(t *testing.T) {
 	withDefaultFactory(t)
 
@@ -120,10 +128,10 @@ func TestRegisterFactory_ReplacesDefault(t *testing.T) {
 	// Calling through CreateMiddleware after RegisterFactory must dispatch to
 	// the replacement.
 	require.NoError(t, CreateMiddleware(&types.MiddlewareConfig{Type: MiddlewareType}, nil))
-	assert.True(t, called, "RegisterFactory must replace CreateMiddleware")
+	assert.True(t, called, "RegisterFactory must replace the underlying factory")
 }
 
-//nolint:paralleltest // Mutates package-level CreateMiddleware; must not race other tests.
+//nolint:paralleltest // Mutates package-level currentFactory; must not race other tests.
 func TestRegisterFactory_LastWriteWins(t *testing.T) {
 	withDefaultFactory(t)
 
@@ -137,4 +145,11 @@ func TestRegisterFactory_LastWriteWins(t *testing.T) {
 
 	err := CreateMiddleware(&types.MiddlewareConfig{Type: MiddlewareType}, nil)
 	require.ErrorIs(t, err, sentinel, "second RegisterFactory must overwrite the first")
+}
+
+func TestRegisterFactory_PanicsOnNil(t *testing.T) {
+	t.Parallel()
+
+	assert.Panics(t, func() { RegisterFactory(nil) },
+		"RegisterFactory must panic when the supplied factory is nil")
 }

@@ -225,37 +225,39 @@ func TestGetSupportedMiddlewareFactories(t *testing.T) {
 	}
 }
 
-// TestGetSupportedMiddlewareFactories_OBORegisterBeforeConstruction locks the
-// "register before construction" contract for obo.CreateMiddleware. Because
-// CreateMiddleware is a package-level `var`, the literal map in
-// GetSupportedMiddlewareFactories captures the current function value at the
-// moment the map is built. A test (or any other caller) that swaps the factory
-// before constructing the map gets the new factory; a caller that swaps after
-// the map is already built will silently retain the old factory through the
-// runner's supportedMiddleware lookup. This test documents and exercises the
-// expected pre-construction path so a future refactor does not break it.
+// TestGetSupportedMiddlewareFactories_OBODispatchesToCurrentFactory locks the
+// contract that obo.CreateMiddleware is a stable redirector: the literal map
+// in GetSupportedMiddlewareFactories captures CreateMiddleware once, but each
+// invocation reads obo's currentFactory under the package-level RWMutex, so
+// registrations that happen AFTER the map is built still take effect. The
+// register-then-call ordering exercises the production hot path; the
+// call-after-register ordering exercises hot-reload / re-registration.
 //
-//nolint:paralleltest // Mutates package-level obo.CreateMiddleware; must not race other tests.
-func TestGetSupportedMiddlewareFactories_OBORegisterBeforeConstruction(t *testing.T) {
-	original := obo.CreateMiddleware
-	t.Cleanup(func() { obo.RegisterFactory(original) })
+//nolint:paralleltest // Mutates package-level obo currentFactory; must not race other tests.
+func TestGetSupportedMiddlewareFactories_OBODispatchesToCurrentFactory(t *testing.T) {
+	// Build the factory map first so we capture the redirector before any
+	// out-of-test registration happens.
+	factories := GetSupportedMiddlewareFactories()
+	factory, ok := factories[obo.MiddlewareType]
+	require.True(t, ok, "obo factory should be present in the map")
 
 	sentinel := []byte("custom-obo-factory")
 	var observed []byte
-	obo.RegisterFactory(func(cfg *types.MiddlewareConfig, _ types.MiddlewareRunner) error {
+	replacement := func(cfg *types.MiddlewareConfig, _ types.MiddlewareRunner) error {
 		// Capture the marker the caller passes to prove which factory ran.
 		observed = cfg.Parameters
 		return nil
-	})
+	}
 
-	factories := GetSupportedMiddlewareFactories()
-	factory, ok := factories[obo.MiddlewareType]
-	require.True(t, ok, "obo factory should be present in the map after registration")
+	// Register AFTER the map was built. Because CreateMiddleware is a stable
+	// redirector, dispatching through the map must still hit the replacement.
+	obo.RegisterFactory(replacement)
+	t.Cleanup(func() { obo.RegisterFactory(obo.DefaultFactory) })
 
 	cfg := &types.MiddlewareConfig{Type: obo.MiddlewareType, Parameters: sentinel}
 	require.NoError(t, factory(cfg, nil))
 	assert.Equal(t, sentinel, observed,
-		"a factory registered before GetSupportedMiddlewareFactories must be the one captured in the map")
+		"obo.CreateMiddleware must redirect through the current factory, including after the runner map is built")
 }
 
 func TestWithHeaderForwardSecretsBuilderOption(t *testing.T) {

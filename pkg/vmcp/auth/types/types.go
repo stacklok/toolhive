@@ -43,6 +43,11 @@ const (
 	// This strategy exchanges incoming tokens for AWS STS temporary credentials
 	// and signs requests using SigV4.
 	StrategyTypeAwsSts = "aws_sts"
+
+	// StrategyTypeOBO identifies the on-behalf-of (OBO) authentication strategy.
+	// The default upstream implementation returns ErrEnterpriseRequired from
+	// every method; an out-of-tree build registers a real converter.
+	StrategyTypeOBO = "obo"
 )
 
 // BackendAuthStrategy defines how to authenticate to a specific backend.

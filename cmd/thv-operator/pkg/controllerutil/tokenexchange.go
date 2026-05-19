@@ -5,6 +5,7 @@ package controllerutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -18,6 +19,70 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
+
+// ErrEnterpriseRequired is returned by the default OBO handler when no
+// out-of-tree handler has been registered via RegisterOBOHandler. Callers
+// must use errors.Is to compare; the error wraps cleanly through
+// fmt.Errorf("...: %w", ...).
+var ErrEnterpriseRequired = errors.New(
+	"this MCPExternalAuthConfig type requires a build with an OBO handler registered via controllerutil.RegisterOBOHandler")
+
+// OBOHandler bundles the three operator-time dispatch points for OBO-typed
+// MCPExternalAuthConfig resources. An out-of-tree build replaces the default
+// instance (which returns ErrEnterpriseRequired from every method) by calling
+// RegisterOBOHandler once during init().
+type OBOHandler struct {
+	// Validate is called from MCPExternalAuthConfig validation to verify the
+	// resource's obo-typed config is well-formed.
+	Validate func(*mcpv1beta1.MCPExternalAuthConfig) error
+
+	// ApplyRunConfig is called from AddExternalAuthConfigOptions to apply
+	// OBO-specific runner configuration options for consuming MCPServer/
+	// MCPRemoteProxy resources.
+	ApplyRunConfig func(
+		ctx context.Context, c client.Client, namespace string,
+		cfg *mcpv1beta1.MCPExternalAuthConfig,
+		opts *[]runner.RunConfigBuilderOption,
+	) error
+
+	// SecretEnvVars is called when computing the consuming resource's pod
+	// environment, to inject any secrets the OBO flow needs at runtime.
+	SecretEnvVars func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error)
+}
+
+// oboHandler holds the package-level OBO handler. The default implementation
+// returns ErrEnterpriseRequired from each method; an out-of-tree build
+// replaces it via RegisterOBOHandler.
+var oboHandler = OBOHandler{
+	Validate: func(*mcpv1beta1.MCPExternalAuthConfig) error { return ErrEnterpriseRequired },
+	ApplyRunConfig: func(context.Context, client.Client, string,
+		*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption) error {
+		return ErrEnterpriseRequired
+	},
+	SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+		return nil, ErrEnterpriseRequired
+	},
+}
+
+// RegisterOBOHandler replaces the package-level OBO handler. It is intended
+// to be called exactly once during init() in an out-of-tree package that
+// blank-imports controllerutil. Calling it more than once is allowed and
+// last-write-wins; no panic on double-register, matching the existing
+// pkg/config.RegisterProviderFactory precedent.
+func RegisterOBOHandler(h OBOHandler) { oboHandler = h }
+
+// OBOValidate runs the registered OBO handler's Validate function on the
+// supplied MCPExternalAuthConfig. With the default handler it returns
+// ErrEnterpriseRequired.
+func OBOValidate(cfg *mcpv1beta1.MCPExternalAuthConfig) error {
+	return oboHandler.Validate(cfg)
+}
+
+// OBOSecretEnvVars runs the registered OBO handler's SecretEnvVars function.
+// With the default handler it returns (nil, ErrEnterpriseRequired).
+func OBOSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+	return oboHandler.SecretEnvVars(cfg)
+}
 
 // GenerateTokenExchangeEnvVars generates environment variables for token exchange
 func GenerateTokenExchangeEnvVars(
@@ -115,6 +180,12 @@ func AddExternalAuthConfigOptions(
 	case mcpv1beta1.ExternalAuthTypeUpstreamInject:
 		// Upstream inject is handled by the vMCP converter at runtime
 		return nil
+	case mcpv1beta1.ExternalAuthTypeOBO:
+		// OBO handler dispatch is wired in a follow-up task; the CRD enum
+		// currently rejects "obo" at the apiserver layer, so this arm is
+		// unreachable in upstream-only builds. The follow-up task will
+		// replace this body with a call into oboHandler.ApplyRunConfig.
+		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}

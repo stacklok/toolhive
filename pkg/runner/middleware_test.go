@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -217,6 +218,7 @@ func TestGetSupportedMiddlewareFactories(t *testing.T) {
 		headerfwd.HeaderForwardMiddlewareName,
 		upstreamswap.MiddlewareType,
 		awssts.MiddlewareType,
+		obo.MiddlewareType,
 	} {
 		_, ok := factories[key]
 		assert.True(t, ok, "factory map should contain %q", key)

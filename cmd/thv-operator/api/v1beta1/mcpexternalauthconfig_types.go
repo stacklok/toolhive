@@ -39,6 +39,13 @@ const (
 	// ExternalAuthTypeUpstreamInject is the type for upstream token injection
 	// This injects an upstream IDP access token as the Authorization: Bearer header
 	ExternalAuthTypeUpstreamInject ExternalAuthType = "upstreamInject"
+
+	// ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.
+	// This type requires a build with an OBO handler registered via
+	// controllerutil.RegisterOBOHandler; an upstream-only build surfaces
+	// status.conditions[Valid] = False with Reason: EnterpriseRequired
+	// when an obo-typed MCPExternalAuthConfig is applied.
+	ExternalAuthTypeOBO ExternalAuthType = "obo"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -1106,6 +1113,14 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		ExternalAuthTypeBearerToken,
 		ExternalAuthTypeUnauthenticated:
 		// No complex validation needed for these types
+		return nil
+	case ExternalAuthTypeOBO:
+		// OBO validation is delegated to the registered OBO handler at the
+		// controllerutil layer; the CRD-level Validate() is intentionally a
+		// no-op so that an upstream-only build still rejects obo-typed configs
+		// later via controllerutil.OBOValidate -> ErrEnterpriseRequired (wired
+		// in a follow-up task). The CRD enum currently rejects "obo" at the
+		// apiserver layer, so this arm is unreachable in upstream-only builds.
 		return nil
 	default:
 		// Unknown type - should be caught by enum validation, but handle defensively

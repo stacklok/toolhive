@@ -9,6 +9,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -33,6 +34,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		tokenexchange.MiddlewareType:          tokenexchange.CreateMiddleware,
 		upstreamswap.MiddlewareType:           upstreamswap.CreateMiddleware,
 		awssts.MiddlewareType:                 awssts.CreateMiddleware,
+		obo.MiddlewareType:                    obo.CreateMiddleware,
 		mcp.ParserMiddlewareType:              mcp.CreateParserMiddleware,
 		mcp.ToolFilterMiddlewareType:          mcp.CreateToolFilterMiddleware,
 		mcp.ToolCallFilterMiddlewareType:      mcp.CreateToolCallFilterMiddleware,

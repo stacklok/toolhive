@@ -204,10 +204,21 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 // re-injected into every outgoing request — including the Close() DELETE — so
 // that auth strategies correctly skip authentication for health probes even
 // when the request context has been replaced with context.Background().
+//
+// This is the canonical location for the #5323 fallback-only identity
+// invariant. A near-clone exists at identityRoundTripper in
+// pkg/vmcp/session/internal/backend/mcp_session.go (without isHealthCheck
+// support, since health probes do not flow through the session-backed
+// connector). Keep the invariant in sync across both implementations until
+// #5333 lands a shared transport.
 type identityPropagatingRoundTripper struct {
 	base http.RoundTripper
 	// fallbackIdentity is injected only when req.Context() carries no identity.
 	// It must never override a non-nil identity present on the request context.
+	//
+	// Shared across all concurrent RoundTrip invocations on this transport; the
+	// pointed-to *auth.Identity (including UpstreamTokens) MUST be treated as
+	// immutable — see pkg/auth/identity.go.
 	fallbackIdentity *auth.Identity
 	isHealthCheck    bool
 }

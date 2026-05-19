@@ -189,24 +189,15 @@ func TestAuthRoundTripper_AuthStrategyReceivesClonedRequest(t *testing.T) {
 // identityRoundTripper
 // ---------------------------------------------------------------------------
 //
-// Design invariant (see issue #5323): the per-request identity placed on
-// req.Context() by auth.TokenValidator.Middleware is THE canonical source of
-// identity for outgoing backend requests. It carries upstream tokens that the
-// middleware transparently refreshes per request. The captured fallback
-// identity is a teardown-DELETE escape hatch only — it covers the case where
-// mcp-go's Close() builds its DELETE from context.Background() and loses the
-// per-request identity. The fallback MUST NEVER override a non-nil identity
-// already present on req.Context(); doing so silently re-injects stale tokens
-// and is the bug fixed by #5323.
+// See identityPropagatingRoundTripper in pkg/vmcp/client/client.go for the
+// canonical description of the #5323 fallback-only identity invariant. The
+// session-backed twin in mcp_session.go omits health-check propagation
+// because health probes do not flow through this connector; if that ever
+// changes, mirror the health-check test set from client_test.go here.
 //
 // Tests below are grouped to reflect this hierarchy:
 //   1. Per-request identity (normal path)            — *_PerRequestIdentity_*
 //   2. Fallback identity (no-identity-on-context)    — *_FallbackIdentity_*
-//
-// The session-backed connector does not propagate a health-check marker
-// because health probes do not flow through it (see identityRoundTripper
-// doc comment in mcp_session.go). If that changes, mirror the health-check
-// test set from pkg/vmcp/client/client_test.go here.
 
 // --- Per-request identity (normal path) -----------------------------------
 

@@ -59,34 +59,29 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	return a.base.RoundTrip(reqClone)
 }
 
-// identityRoundTripper propagates a fallback identity to outgoing backend requests
-// when the request context carries none.
+// identityRoundTripper propagates a fallback identity to outgoing backend
+// requests when the request context carries none. It is the session-backed
+// twin of identityPropagatingRoundTripper in pkg/vmcp/client/client.go, which
+// holds the canonical description of the #5323 fallback-only identity
+// invariant.
 //
-// Identity invariant: an identity already present on req.Context() is NEVER
-// overridden. The per-request identity placed on the request context by
-// auth.TokenValidator.Middleware carries the freshest upstream tokens
-// (transparently refreshed by upstreamtoken.InProcessService.GetAllValidTokens).
-// Overriding it with a snapshot captured at session-init time would silently
-// re-inject stale upstream access tokens on every backend call, forcing users
-// to re-auth once the captured access token expired (see issue #5323).
+// Differences from the canonical twin:
+//   - No isHealthCheck propagation. Health probes do not flow through
+//     session-backed clients — they go through the per-call client in
+//     pkg/vmcp/client. If a future change routes health probes through this
+//     connector, mirror the isHealthCheck pattern from client.go so the
+//     Close() DELETE built from context.Background() retains the marker.
 //
-// The fallback identity is used only when req.Context() carries no identity at
-// all. This covers paths where the mcp-go transport constructs requests from a
-// context other than the per-request handler context (e.g. streamable-HTTP
-// Close() uses context.Background()). The fallback may itself be stale; that
-// is acceptable for the teardown DELETE since the request is best-effort.
-//
-// No health-check marker is re-injected here. Health probes do not flow through
-// session-backed clients — they go through the per-call client in
-// pkg/vmcp/client (whose identityPropagatingRoundTripper IS health-check aware).
-// If a future change routes health probes through this connector, the
-// isHealthCheck propagation pattern from pkg/vmcp/client/client.go must be
-// mirrored here so the Close() DELETE built from context.Background() retains
-// the marker.
+// Consolidation is tracked by #5333; until then, keep the fallback-only
+// invariant in sync across both implementations.
 type identityRoundTripper struct {
 	base http.RoundTripper
 	// fallbackIdentity is injected only when req.Context() carries no identity.
 	// It must never override a non-nil identity present on the request context.
+	//
+	// Shared across all concurrent RoundTrip invocations on this transport; the
+	// pointed-to *auth.Identity (including UpstreamTokens) MUST be treated as
+	// immutable — see pkg/auth/identity.go.
 	fallbackIdentity *auth.Identity
 }
 

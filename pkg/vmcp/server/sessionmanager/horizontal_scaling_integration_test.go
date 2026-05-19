@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -50,10 +51,10 @@ func newSharedRedisStorage(t *testing.T, mr *miniredis.Miniredis) transportsessi
 	t.Helper()
 	storage, err := transportsession.NewRedisSessionDataStorage(
 		context.Background(),
-		transportsession.RedisConfig{
-			Addr:      mr.Addr(),
-			KeyPrefix: "test:vmcp:session:",
+		tcredis.Config{
+			Addr: mr.Addr(),
 		},
+		"test:vmcp:session:",
 		time.Hour,
 	)
 	require.NoError(t, err)

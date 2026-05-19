@@ -1166,24 +1166,11 @@ func TestCreateStorage(t *testing.T) {
 		assert.Contains(t, err.Error(), "redis config is required")
 	})
 
-	t.Run("redis type with missing sentinel config returns error", func(t *testing.T) {
-		t.Parallel()
-
-		_, err := createStorage(ctx, &storage.RunConfig{
-			Type: string(storage.TypeRedis),
-			RedisConfig: &storage.RedisRunConfig{
-				KeyPrefix: "test:",
-				ACLUserConfig: &storage.ACLUserRunConfig{
-					UsernameEnvVar: "REDIS_USER",
-					PasswordEnvVar: "REDIS_PASS",
-				},
-			},
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "one of addr (standalone or cluster) or sentinel_config (sentinel) is required")
-	})
 }
 
+// TestConvertRedisRunConfig covers the runner-owned conversion steps: nil
+// guard and ACL credential resolution. Connection-mode topology validation is
+// owned by the shared toolhive-core redis package and exercised in its tests.
 func TestConvertRedisRunConfig(t *testing.T) {
 	t.Parallel()
 
@@ -1192,19 +1179,6 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		_, err := convertRedisRunConfig(nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "redis config is required")
-	})
-
-	t.Run("missing sentinel config returns error", func(t *testing.T) {
-		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
-			KeyPrefix: "test:",
-			ACLUserConfig: &storage.ACLUserRunConfig{
-				UsernameEnvVar: "USER",
-				PasswordEnvVar: "PASS",
-			},
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "one of addr (standalone or cluster) or sentinel_config (sentinel) is required")
 	})
 
 	t.Run("missing ACL user config returns error", func(t *testing.T) {
@@ -1236,54 +1210,6 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to resolve Redis username")
 	})
-
-	t.Run("addr and sentinel config both set returns error", func(t *testing.T) {
-		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
-			Addr: "redis.example.com:6379",
-			SentinelConfig: &storage.SentinelRunConfig{
-				MasterName:    "mymaster",
-				SentinelAddrs: []string{"sentinel:26379"},
-			},
-			ACLUserConfig: &storage.ACLUserRunConfig{
-				UsernameEnvVar: "USER",
-				PasswordEnvVar: "PASS",
-			},
-			KeyPrefix: "thv:",
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "mutually exclusive")
-	})
-
-	t.Run("neither addr nor sentinel config returns error", func(t *testing.T) {
-		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
-			ACLUserConfig: &storage.ACLUserRunConfig{
-				UsernameEnvVar: "USER",
-				PasswordEnvVar: "PASS",
-			},
-			KeyPrefix: "thv:",
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "one of addr")
-	})
-
-	t.Run("cluster mode with sentinel also set returns error", func(t *testing.T) {
-		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
-			ClusterMode: true,
-			SentinelConfig: &storage.SentinelRunConfig{
-				MasterName:    "mymaster",
-				SentinelAddrs: []string{"sentinel:26379"},
-			},
-			ACLUserConfig: &storage.ACLUserRunConfig{
-				PasswordEnvVar: "PASS",
-			},
-			KeyPrefix: "thv:",
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "cluster mode cannot be used with sentinel")
-	})
 }
 
 // TestConvertRedisRunConfig_WithEnvVars tests convertRedisRunConfig with environment variables.
@@ -1309,16 +1235,13 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 			WriteTimeout: "3s",
 		})
 		require.NoError(t, err)
-		require.NotNil(t, cfg)
 
-		assert.Equal(t, "thv:auth:ns:name:", cfg.KeyPrefix)
 		require.NotNil(t, cfg.SentinelConfig)
 		assert.Equal(t, "mymaster", cfg.SentinelConfig.MasterName)
 		assert.Equal(t, []string{"10.0.0.1:26379", "10.0.0.2:26379"}, cfg.SentinelConfig.SentinelAddrs)
-		assert.Equal(t, 3, cfg.SentinelConfig.DB)
-		require.NotNil(t, cfg.ACLUserConfig)
-		assert.Equal(t, "myuser", cfg.ACLUserConfig.Username)
-		assert.Equal(t, "mypass", cfg.ACLUserConfig.Password)
+		assert.Equal(t, 3, cfg.DB)
+		assert.Equal(t, "myuser", cfg.Username)
+		assert.Equal(t, "mypass", cfg.Password)
 		assert.Equal(t, 10*time.Second, cfg.DialTimeout)
 		assert.Equal(t, 5*time.Second, cfg.ReadTimeout)
 		assert.Equal(t, 3*time.Second, cfg.WriteTimeout)
@@ -1394,9 +1317,8 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 			},
 		})
 		require.NoError(t, err)
-		require.NotNil(t, cfg.ACLUserConfig)
-		assert.Empty(t, cfg.ACLUserConfig.Username)
-		assert.Equal(t, "mypass", cfg.ACLUserConfig.Password)
+		assert.Empty(t, cfg.Username)
+		assert.Equal(t, "mypass", cfg.Password)
 	})
 
 	t.Run("cluster mode resolves correctly", func(t *testing.T) {
@@ -1413,14 +1335,11 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 			KeyPrefix: "thv:auth:ns:name:",
 		})
 		require.NoError(t, err)
-		require.NotNil(t, cfg)
 		assert.Equal(t, "discovery.example.com:6379", cfg.Addr)
 		assert.True(t, cfg.ClusterMode)
 		assert.Nil(t, cfg.SentinelConfig)
-		require.NotNil(t, cfg.ACLUserConfig)
-		assert.Equal(t, "clusteruser", cfg.ACLUserConfig.Username)
-		assert.Equal(t, "clusterpass", cfg.ACLUserConfig.Password)
-		assert.Equal(t, "thv:auth:ns:name:", cfg.KeyPrefix)
+		assert.Equal(t, "clusteruser", cfg.Username)
+		assert.Equal(t, "clusterpass", cfg.Password)
 	})
 }
 

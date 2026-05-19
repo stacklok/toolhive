@@ -832,11 +832,11 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		return nil, nil
 
 	case mcpv1beta1.ExternalAuthTypeOBO:
-		// Minimal no-op arm added to satisfy the `exhaustive` linter; dispatch
-		// wiring lands in follow-up task #5328 and will replace this body with
-		// a call into controllerutil.OBOSecretEnvVars. The CRD enum currently
-		// rejects "obo" at the apiserver layer, so this arm is unreachable in
-		// upstream-only builds.
+		// TODO(#5328): replace this body with a call into
+		// controllerutil.OBOSecretEnvVars as part of the dispatch-wiring task.
+		// The arm exists today to satisfy the `exhaustive` linter. The CRD
+		// enum currently rejects "obo" at the apiserver layer, so this arm is
+		// unreachable in upstream-only builds.
 		return nil, nil
 
 	default:

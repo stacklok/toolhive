@@ -17,8 +17,10 @@ import (
 // OBO middleware. Matches the ExternalAuthType constant value "obo".
 const MiddlewareType = "obo"
 
-// stubMessage is the body returned by the default 503 handler. It is exported
-// at package scope so tests can match on it without duplicating the literal.
+// stubMessage is the body returned by the default 503 handler. It is shared
+// between the default handler and tests in this package so the exact literal
+// is only spelled once. Unexported because no caller outside this package has
+// a use for it — tests reference it directly.
 const stubMessage = "obo requires a build with a registered OBO middleware factory"
 
 // stub is the default Middleware implementation. Its handler responds 503

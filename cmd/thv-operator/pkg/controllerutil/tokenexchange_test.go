@@ -6,7 +6,6 @@ package controllerutil
 import (
 	"context"
 	"errors"
-	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,6 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -27,15 +27,6 @@ func withDefaultOBOHandler(t *testing.T) {
 	t.Cleanup(func() { oboHandler = original })
 }
 
-func TestErrEnterpriseRequired_IsSentinel(t *testing.T) {
-	t.Parallel()
-
-	// Wrapping the sentinel and unwrapping with errors.Is must work both
-	// directly and through fmt.Errorf("...: %w", ...).
-	wrapped := fmt.Errorf("outer wrap: %w", ErrEnterpriseRequired)
-	assert.ErrorIs(t, wrapped, ErrEnterpriseRequired)
-}
-
 func TestDefaultOBOHandler_ReturnsEnterpriseRequired(t *testing.T) {
 	t.Parallel()
 
@@ -43,7 +34,7 @@ func TestDefaultOBOHandler_ReturnsEnterpriseRequired(t *testing.T) {
 		t.Parallel()
 		err := oboHandler.Validate(nil)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrEnterpriseRequired)
+		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 	})
 
 	t.Run("ApplyRunConfig", func(t *testing.T) {
@@ -51,7 +42,7 @@ func TestDefaultOBOHandler_ReturnsEnterpriseRequired(t *testing.T) {
 		var opts []runner.RunConfigBuilderOption
 		err := oboHandler.ApplyRunConfig(context.Background(), nil, "ns", nil, &opts)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrEnterpriseRequired)
+		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 		assert.Empty(t, opts, "default handler must not mutate the options slice")
 	})
 
@@ -59,7 +50,7 @@ func TestDefaultOBOHandler_ReturnsEnterpriseRequired(t *testing.T) {
 		t.Parallel()
 		envVars, err := oboHandler.SecretEnvVars(nil)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, ErrEnterpriseRequired)
+		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 		assert.Nil(t, envVars, "default handler must return nil envVars on the error path")
 	})
 }
@@ -68,10 +59,10 @@ func TestDefaultOBOHandler_ReturnsEnterpriseRequired(t *testing.T) {
 func TestOBOValidate_DispatchesThroughRegisteredHandler(t *testing.T) {
 	withDefaultOBOHandler(t)
 
-	// With the default handler, OBOValidate returns ErrEnterpriseRequired.
+	// With the default handler, OBOValidate returns obo.ErrEnterpriseRequired.
 	err := OBOValidate(nil)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrEnterpriseRequired)
+	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 
 	// After registering a replacement, OBOValidate must dispatch through it.
 	sentinel := errors.New("custom validate failure")
@@ -97,10 +88,10 @@ func TestOBOValidate_DispatchesThroughRegisteredHandler(t *testing.T) {
 func TestOBOSecretEnvVars_DispatchesThroughRegisteredHandler(t *testing.T) {
 	withDefaultOBOHandler(t)
 
-	// With the default handler, OBOSecretEnvVars returns ErrEnterpriseRequired.
+	// With the default handler, OBOSecretEnvVars returns obo.ErrEnterpriseRequired.
 	envVars, err := OBOSecretEnvVars(nil)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrEnterpriseRequired)
+	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 	assert.Nil(t, envVars)
 
 	// After registering a replacement, OBOSecretEnvVars must dispatch through it.
@@ -127,12 +118,12 @@ func TestOBOSecretEnvVars_DispatchesThroughRegisteredHandler(t *testing.T) {
 func TestOBOApplyRunConfig_DispatchesThroughRegisteredHandler(t *testing.T) {
 	withDefaultOBOHandler(t)
 
-	// With the default handler, OBOApplyRunConfig returns ErrEnterpriseRequired
+	// With the default handler, OBOApplyRunConfig returns obo.ErrEnterpriseRequired
 	// without mutating the options slice.
 	var opts []runner.RunConfigBuilderOption
 	err := OBOApplyRunConfig(context.Background(), nil, "ns", nil, &opts)
 	require.Error(t, err)
-	assert.ErrorIs(t, err, ErrEnterpriseRequired)
+	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 	assert.Empty(t, opts, "default handler must not mutate the options slice")
 
 	// After registering a replacement, OBOApplyRunConfig must dispatch through it.

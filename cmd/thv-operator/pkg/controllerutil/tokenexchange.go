@@ -5,7 +5,6 @@ package controllerutil
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
@@ -15,22 +14,16 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
-// ErrEnterpriseRequired is returned by the default OBO handler when no
-// out-of-tree handler has been registered via RegisterOBOHandler. Callers
-// must use errors.Is to compare; the error wraps cleanly through
-// fmt.Errorf("...: %w", ...).
-var ErrEnterpriseRequired = errors.New(
-	"this MCPExternalAuthConfig type requires a build with an OBO handler registered via controllerutil.RegisterOBOHandler")
-
 // OBOHandler bundles the three operator-time dispatch points for OBO-typed
 // MCPExternalAuthConfig resources. An out-of-tree build replaces the default
-// instance (which returns ErrEnterpriseRequired from every method) by calling
-// RegisterOBOHandler once during init().
+// instance (which returns obo.ErrEnterpriseRequired from every method) by
+// calling RegisterOBOHandler once during init().
 type OBOHandler struct {
 	// Validate is called from MCPExternalAuthConfig validation to verify the
 	// resource's obo-typed config is well-formed.
@@ -51,16 +44,16 @@ type OBOHandler struct {
 }
 
 // oboHandler holds the package-level OBO handler. The default implementation
-// returns ErrEnterpriseRequired from each method; an out-of-tree build
+// returns obo.ErrEnterpriseRequired from each method; an out-of-tree build
 // replaces it via RegisterOBOHandler.
 var oboHandler = OBOHandler{
-	Validate: func(*mcpv1beta1.MCPExternalAuthConfig) error { return ErrEnterpriseRequired },
+	Validate: func(*mcpv1beta1.MCPExternalAuthConfig) error { return obo.ErrEnterpriseRequired },
 	ApplyRunConfig: func(context.Context, client.Client, string,
 		*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption) error {
-		return ErrEnterpriseRequired
+		return obo.ErrEnterpriseRequired
 	},
 	SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
-		return nil, ErrEnterpriseRequired
+		return nil, obo.ErrEnterpriseRequired
 	},
 }
 
@@ -73,22 +66,22 @@ func RegisterOBOHandler(h OBOHandler) { oboHandler = h }
 
 // OBOValidate runs the registered OBO handler's Validate function on the
 // supplied MCPExternalAuthConfig. With the default handler it returns
-// ErrEnterpriseRequired.
+// obo.ErrEnterpriseRequired.
 func OBOValidate(cfg *mcpv1beta1.MCPExternalAuthConfig) error {
 	return oboHandler.Validate(cfg)
 }
 
 // OBOSecretEnvVars runs the registered OBO handler's SecretEnvVars function.
-// With the default handler it returns (nil, ErrEnterpriseRequired).
+// With the default handler it returns (nil, obo.ErrEnterpriseRequired).
 func OBOSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
 	return oboHandler.SecretEnvVars(cfg)
 }
 
 // OBOApplyRunConfig runs the registered OBO handler's ApplyRunConfig function.
-// With the default handler it returns ErrEnterpriseRequired without mutating
-// the supplied options slice. The follow-up dispatch-wiring task (#5328) is
-// the first caller of this wrapper; exporting it now keeps the three-method
-// surface symmetric with OBOValidate / OBOSecretEnvVars.
+// With the default handler it returns obo.ErrEnterpriseRequired without
+// mutating the supplied options slice. The follow-up dispatch-wiring task
+// (#5328) is the first caller of this wrapper; exporting it now keeps the
+// three-method surface symmetric with OBOValidate / OBOSecretEnvVars.
 func OBOApplyRunConfig(
 	ctx context.Context,
 	c client.Client,
@@ -196,14 +189,14 @@ func AddExternalAuthConfigOptions(
 		// Upstream inject is handled by the vMCP converter at runtime
 		return nil
 	case mcpv1beta1.ExternalAuthTypeOBO:
-		// Minimal no-op arm added to satisfy the `exhaustive` linter; dispatch
-		// wiring lands in follow-up task #5328 and will replace this body with
-		// a call into oboHandler.ApplyRunConfig. Until then we surface
-		// ErrEnterpriseRequired so callers can use errors.Is to distinguish
-		// "type known but not wired" from a genuinely unknown type. The CRD
-		// enum currently rejects "obo" at the apiserver layer, so this arm is
-		// unreachable in upstream-only builds.
-		return fmt.Errorf("obo dispatch not yet wired: %w", ErrEnterpriseRequired)
+		// TODO(#5328): replace this body with a call into
+		// oboHandler.ApplyRunConfig as part of the dispatch-wiring task. The
+		// arm exists today to satisfy the `exhaustive` linter; until #5328
+		// lands we surface obo.ErrEnterpriseRequired so callers can use
+		// errors.Is to distinguish "type known but not wired" from a genuinely
+		// unknown type. The CRD enum currently rejects "obo" at the apiserver
+		// layer, so this arm is unreachable in upstream-only builds.
+		return fmt.Errorf("obo dispatch not yet wired: %w", obo.ErrEnterpriseRequired)
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}

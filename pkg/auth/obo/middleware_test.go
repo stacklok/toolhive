@@ -7,7 +7,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -91,10 +90,12 @@ func TestStubHandler_Returns503(t *testing.T) {
 
 			assert.Equal(t, http.StatusServiceUnavailable, rec.Code,
 				"stub handler must respond 503, not call downstream")
-			assert.True(t, strings.Contains(rec.Body.String(), "OBO middleware factory") ||
-				strings.Contains(rec.Body.String(), "registered OBO middleware factory"),
-				"response body should mention OBO middleware factory registration; got: %s",
-				rec.Body.String())
+			// http.Error appends a newline to the supplied message; assert on
+			// the exact body so the cross-file contract with stubMessage stays
+			// pinned (any change to stubMessage that wasn't intentional
+			// breaks this test loudly).
+			assert.Equal(t, stubMessage+"\n", rec.Body.String(),
+				"stub handler must echo the package stubMessage constant")
 		})
 	}
 }

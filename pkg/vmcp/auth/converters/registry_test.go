@@ -106,7 +106,7 @@ func TestDefaultRegistry(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, oboConverter)
 		assert.Equal(t, "obo", oboConverter.StrategyType())
-		assert.IsType(t, &OBOConverterStub{}, oboConverter)
+		assert.IsType(t, &OBOConverter{}, oboConverter)
 	})
 }
 

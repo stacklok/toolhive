@@ -10,33 +10,33 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
-// OBOConverterStub is the default StrategyConverter for ExternalAuthTypeOBO.
-// Every method returns an error wrapping controllerutil.ErrEnterpriseRequired.
-// An out-of-tree build replaces it by calling DefaultRegistry().Register(...)
+// OBOConverter is the default StrategyConverter for ExternalAuthTypeOBO.
+// Every method returns an error wrapping obo.ErrEnterpriseRequired. An
+// out-of-tree build replaces it by calling DefaultRegistry().Register(...)
 // once during init().
-type OBOConverterStub struct{}
+type OBOConverter struct{}
 
 // StrategyType returns the vMCP strategy identifier for OBO.
-func (*OBOConverterStub) StrategyType() string { return authtypes.StrategyTypeOBO }
+func (*OBOConverter) StrategyType() string { return authtypes.StrategyTypeOBO }
 
-// ConvertToStrategy returns an error wrapping ErrEnterpriseRequired.
-func (*OBOConverterStub) ConvertToStrategy(
+// ConvertToStrategy returns an error wrapping obo.ErrEnterpriseRequired.
+func (*OBOConverter) ConvertToStrategy(
 	_ *mcpv1beta1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
-	return nil, fmt.Errorf("vMCP OBO converter: %w", controllerutil.ErrEnterpriseRequired)
+	return nil, fmt.Errorf("vMCP OBO converter: %w", obo.ErrEnterpriseRequired)
 }
 
-// ResolveSecrets returns an error wrapping ErrEnterpriseRequired.
-func (*OBOConverterStub) ResolveSecrets(
+// ResolveSecrets returns an error wrapping obo.ErrEnterpriseRequired.
+func (*OBOConverter) ResolveSecrets(
 	_ context.Context,
 	_ *mcpv1beta1.MCPExternalAuthConfig,
 	_ client.Client,
 	_ string,
 	_ *authtypes.BackendAuthStrategy,
 ) (*authtypes.BackendAuthStrategy, error) {
-	return nil, fmt.Errorf("vMCP OBO converter: %w", controllerutil.ErrEnterpriseRequired)
+	return nil, fmt.Errorf("vMCP OBO converter: %w", obo.ErrEnterpriseRequired)
 }

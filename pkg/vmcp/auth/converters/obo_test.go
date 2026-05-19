@@ -11,17 +11,17 @@ import (
 	"github.com/stretchr/testify/require"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
-func TestOBOConverterStub_StrategyType(t *testing.T) {
+func TestOBOConverter_StrategyType(t *testing.T) {
 	t.Parallel()
 
-	assert.Equal(t, authtypes.StrategyTypeOBO, (&OBOConverterStub{}).StrategyType())
+	assert.Equal(t, authtypes.StrategyTypeOBO, (&OBOConverter{}).StrategyType())
 }
 
-func TestOBOConverterStub_ConvertToStrategy(t *testing.T) {
+func TestOBOConverter_ConvertToStrategy(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -43,15 +43,15 @@ func TestOBOConverterStub_ConvertToStrategy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			strategy, err := (&OBOConverterStub{}).ConvertToStrategy(tt.externalCfg)
+			strategy, err := (&OBOConverter{}).ConvertToStrategy(tt.externalCfg)
 			require.Error(t, err)
 			assert.Nil(t, strategy, "stub must not return a strategy on the error path")
-			assert.ErrorIs(t, err, controllerutil.ErrEnterpriseRequired)
+			assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 		})
 	}
 }
 
-func TestOBOConverterStub_ResolveSecrets(t *testing.T) {
+func TestOBOConverter_ResolveSecrets(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -75,26 +75,26 @@ func TestOBOConverterStub_ResolveSecrets(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			resolved, err := (&OBOConverterStub{}).ResolveSecrets(
+			resolved, err := (&OBOConverter{}).ResolveSecrets(
 				context.Background(), tt.externalCfg, nil, "default", tt.strategy,
 			)
 			require.Error(t, err)
 			assert.Nil(t, resolved, "stub must not return a strategy on the error path")
-			assert.ErrorIs(t, err, controllerutil.ErrEnterpriseRequired)
+			assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 		})
 	}
 }
 
-func TestOBOConverterStub_RegisteredInDefaultRegistry(t *testing.T) {
+func TestOBOConverter_RegisteredInDefaultRegistry(t *testing.T) {
 	t.Parallel()
 
 	converter, err := NewRegistry().GetConverter(mcpv1beta1.ExternalAuthTypeOBO)
 	require.NoError(t, err)
 	require.NotNil(t, converter)
-	assert.IsType(t, &OBOConverterStub{}, converter)
+	assert.IsType(t, &OBOConverter{}, converter)
 
 	// DefaultRegistry should also have it.
 	converter, err = DefaultRegistry().GetConverter(mcpv1beta1.ExternalAuthTypeOBO)
 	require.NoError(t, err)
-	assert.IsType(t, &OBOConverterStub{}, converter)
+	assert.IsType(t, &OBOConverter{}, converter)
 }

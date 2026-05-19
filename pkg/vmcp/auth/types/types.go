@@ -57,7 +57,7 @@ const (
 // +kubebuilder:object:generate=true
 // +gendoc
 type BackendAuthStrategy struct {
-	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts"
+	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts", "obo"
 	Type string `json:"type" yaml:"type"`
 
 	// HeaderInjection contains configuration for header injection auth strategy.

@@ -368,13 +368,20 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	// Scope note: httpBackendClient calls this factory on every CallTool /
 	// ReadResource / GetPrompt / ListCapabilities with the per-call context, so
 	// the captured "fallback" is per-call, not per-session, in this path. The
-	// fallback is therefore functionally only required to keep mcp-go's
-	// Close() DELETE — which is built from context.Background() and loses any
-	// identity attached to the original call context — authenticated. The
-	// always-stale capture-at-session-init behavior that caused #5323 lives
-	// in the persistent-session path (pkg/vmcp/session/internal/backend); this
+	// always-stale capture-at-session-init behavior that caused #5323 lives in
+	// the persistent-session path (pkg/vmcp/session/internal/backend); this
 	// transport uses the same RoundTripper out of consistency, not because it
 	// suffered the same bug.
+	//
+	// Fallback injection scope: the round-tripper injects the captured fallback
+	// identity on ANY outgoing request whose context lacks an identity — not
+	// only the teardown DELETE. In the current code paths the only known caller
+	// that drops the per-request identity is mcp-go's streamable-HTTP Close()
+	// (which builds its DELETE from context.Background()), so in practice the
+	// fallback only fires for teardown. If a future code path wraps the client
+	// with a context that doesn't carry identity (audit, telemetry, background
+	// reconciliation), it will be silently authenticated using the captured
+	// snapshot. Add an explicit method/URL gate if that becomes undesirable.
 	//
 	//   - Normal backend requests inherit the fresh, per-request identity placed on
 	//     the request context by auth.TokenValidator.Middleware. The transport

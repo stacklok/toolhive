@@ -124,6 +124,38 @@ func TestOBOSecretEnvVars_DispatchesThroughRegisteredHandler(t *testing.T) {
 }
 
 //nolint:paralleltest // Mutates package-level oboHandler; must not race other tests.
+func TestOBOApplyRunConfig_DispatchesThroughRegisteredHandler(t *testing.T) {
+	withDefaultOBOHandler(t)
+
+	// With the default handler, OBOApplyRunConfig returns ErrEnterpriseRequired
+	// without mutating the options slice.
+	var opts []runner.RunConfigBuilderOption
+	err := OBOApplyRunConfig(context.Background(), nil, "ns", nil, &opts)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrEnterpriseRequired)
+	assert.Empty(t, opts, "default handler must not mutate the options slice")
+
+	// After registering a replacement, OBOApplyRunConfig must dispatch through it.
+	sentinel := errors.New("custom apply failure")
+	RegisterOBOHandler(OBOHandler{
+		Validate: func(*mcpv1beta1.MCPExternalAuthConfig) error { return nil },
+		ApplyRunConfig: func(
+			context.Context, client.Client, string,
+			*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption,
+		) error {
+			return sentinel
+		},
+		SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+			return nil, nil
+		},
+	})
+
+	err = OBOApplyRunConfig(context.Background(), nil, "ns", nil, &opts)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sentinel, "OBOApplyRunConfig must dispatch through the registered handler")
+}
+
+//nolint:paralleltest // Mutates package-level oboHandler; must not race other tests.
 func TestRegisterOBOHandler_LastWriteWins(t *testing.T) {
 	withDefaultOBOHandler(t)
 

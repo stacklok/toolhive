@@ -1115,12 +1115,13 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		// No complex validation needed for these types
 		return nil
 	case ExternalAuthTypeOBO:
-		// OBO validation is delegated to the registered OBO handler at the
-		// controllerutil layer; the CRD-level Validate() is intentionally a
-		// no-op so that an upstream-only build still rejects obo-typed configs
-		// later via controllerutil.OBOValidate -> ErrEnterpriseRequired (wired
-		// in a follow-up task). The CRD enum currently rejects "obo" at the
-		// apiserver layer, so this arm is unreachable in upstream-only builds.
+		// Minimal no-op arm added to satisfy the `exhaustive` linter; dispatch
+		// wiring lands in follow-up task #5328. OBO validation is delegated to
+		// the registered OBO handler at the controllerutil layer (via
+		// controllerutil.OBOValidate -> ErrEnterpriseRequired in upstream-only
+		// builds); the CRD-level Validate() stays a no-op. The CRD enum
+		// currently rejects "obo" at the apiserver layer, so this arm is
+		// unreachable in upstream-only builds.
 		return nil
 	default:
 		// Unknown type - should be caught by enum validation, but handle defensively
@@ -1130,6 +1131,13 @@ func (r *MCPExternalAuthConfig) Validate() error {
 
 // validateTypeConfigConsistency validates that the correct config is set for the selected type.
 // This mirrors the CEL validation rules but provides defense-in-depth for stored objects.
+//
+// TODO(#5329): when OBOConfig is introduced in the CRD admission task, add a
+// matching biconditional row here:
+//
+//	(r.Spec.OBO == nil) == (r.Spec.Type == ExternalAuthTypeOBO)
+//
+// and update the unauthenticated check below to also assert !has(self.obo).
 func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	// Check that each type has its corresponding config
 	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {

@@ -84,6 +84,21 @@ func OBOSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, e
 	return oboHandler.SecretEnvVars(cfg)
 }
 
+// OBOApplyRunConfig runs the registered OBO handler's ApplyRunConfig function.
+// With the default handler it returns ErrEnterpriseRequired without mutating
+// the supplied options slice. The follow-up dispatch-wiring task (#5328) is
+// the first caller of this wrapper; exporting it now keeps the three-method
+// surface symmetric with OBOValidate / OBOSecretEnvVars.
+func OBOApplyRunConfig(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	cfg *mcpv1beta1.MCPExternalAuthConfig,
+	opts *[]runner.RunConfigBuilderOption,
+) error {
+	return oboHandler.ApplyRunConfig(ctx, c, namespace, cfg, opts)
+}
+
 // GenerateTokenExchangeEnvVars generates environment variables for token exchange
 func GenerateTokenExchangeEnvVars(
 	ctx context.Context,
@@ -181,11 +196,14 @@ func AddExternalAuthConfigOptions(
 		// Upstream inject is handled by the vMCP converter at runtime
 		return nil
 	case mcpv1beta1.ExternalAuthTypeOBO:
-		// OBO handler dispatch is wired in a follow-up task; the CRD enum
-		// currently rejects "obo" at the apiserver layer, so this arm is
-		// unreachable in upstream-only builds. The follow-up task will
-		// replace this body with a call into oboHandler.ApplyRunConfig.
-		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
+		// Minimal no-op arm added to satisfy the `exhaustive` linter; dispatch
+		// wiring lands in follow-up task #5328 and will replace this body with
+		// a call into oboHandler.ApplyRunConfig. Until then we surface
+		// ErrEnterpriseRequired so callers can use errors.Is to distinguish
+		// "type known but not wired" from a genuinely unknown type. The CRD
+		// enum currently rejects "obo" at the apiserver layer, so this arm is
+		// unreachable in upstream-only builds.
+		return fmt.Errorf("obo dispatch not yet wired: %w", ErrEnterpriseRequired)
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}

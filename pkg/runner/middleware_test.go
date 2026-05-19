@@ -225,6 +225,39 @@ func TestGetSupportedMiddlewareFactories(t *testing.T) {
 	}
 }
 
+// TestGetSupportedMiddlewareFactories_OBORegisterBeforeConstruction locks the
+// "register before construction" contract for obo.CreateMiddleware. Because
+// CreateMiddleware is a package-level `var`, the literal map in
+// GetSupportedMiddlewareFactories captures the current function value at the
+// moment the map is built. A test (or any other caller) that swaps the factory
+// before constructing the map gets the new factory; a caller that swaps after
+// the map is already built will silently retain the old factory through the
+// runner's supportedMiddleware lookup. This test documents and exercises the
+// expected pre-construction path so a future refactor does not break it.
+//
+//nolint:paralleltest // Mutates package-level obo.CreateMiddleware; must not race other tests.
+func TestGetSupportedMiddlewareFactories_OBORegisterBeforeConstruction(t *testing.T) {
+	original := obo.CreateMiddleware
+	t.Cleanup(func() { obo.RegisterFactory(original) })
+
+	sentinel := []byte("custom-obo-factory")
+	var observed []byte
+	obo.RegisterFactory(func(cfg *types.MiddlewareConfig, _ types.MiddlewareRunner) error {
+		// Capture the marker the caller passes to prove which factory ran.
+		observed = cfg.Parameters
+		return nil
+	})
+
+	factories := GetSupportedMiddlewareFactories()
+	factory, ok := factories[obo.MiddlewareType]
+	require.True(t, ok, "obo factory should be present in the map after registration")
+
+	cfg := &types.MiddlewareConfig{Type: obo.MiddlewareType, Parameters: sentinel}
+	require.NoError(t, factory(cfg, nil))
+	assert.Equal(t, sentinel, observed,
+		"a factory registered before GetSupportedMiddlewareFactories must be the one captured in the map")
+}
+
 func TestWithHeaderForwardSecretsBuilderOption(t *testing.T) {
 	t.Parallel()
 

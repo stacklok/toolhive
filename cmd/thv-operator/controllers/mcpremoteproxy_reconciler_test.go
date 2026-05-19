@@ -981,3 +981,103 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 		})
 	}
 }
+
+// TestMCPRemoteProxy_ValidateAuthzPrimaryUpstreamProviderIgnored locks the
+// advisory condition behaviour on MCPRemoteProxy: the deprecated
+// spec.authzConfig.inline.primaryUpstreamProvider field continues to fire
+// AuthzPrimaryUpstreamProviderIgnored=True after the relocation of the field
+// onto EmbeddedAuthServerConfig, because MCPRemoteProxy has no embedded auth
+// server to act on the value regardless of where it lives. Clearing the field
+// removes the condition.
+func TestMCPRemoteProxy_ValidateAuthzPrimaryUpstreamProviderIgnored(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		authzConfig       *mcpv1beta1.AuthzConfigRef
+		preexisting       *metav1.Condition
+		wantPresent       bool
+		wantReason        string
+		wantMessageSubstr string
+	}{
+		{
+			name:        "nil AuthzConfig leaves no advisory",
+			authzConfig: nil,
+			wantPresent: false,
+		},
+		{
+			name: "deprecated inline primary set fires the advisory",
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies:                []string{`permit(principal, action, resource);`},
+					PrimaryUpstreamProvider: "okta",
+				},
+			},
+			wantPresent:       true,
+			wantReason:        mcpv1beta1.ConditionReasonAuthzPrimaryUpstreamProviderIgnored,
+			wantMessageSubstr: `primaryUpstreamProvider="okta"`,
+		},
+		{
+			name: "inline without primary leaves no advisory",
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies: []string{`permit(principal, action, resource);`},
+				},
+			},
+			wantPresent: false,
+		},
+		{
+			name: "configMap authz with no inline leaves no advisory",
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
+				ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{Name: "authz-cm"},
+			},
+			wantPresent: false,
+		},
+		{
+			name: "pre-existing advisory is cleared when field is unset",
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies: []string{`permit(principal, action, resource);`},
+				},
+			},
+			preexisting: &metav1.Condition{
+				Type:   mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored,
+				Status: metav1.ConditionTrue,
+				Reason: mcpv1beta1.ConditionReasonAuthzPrimaryUpstreamProviderIgnored,
+			},
+			wantPresent: false,
+		},
+	}
+
+	r := &MCPRemoteProxyReconciler{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			proxy := &mcpv1beta1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default", Generation: 7},
+				Spec:       mcpv1beta1.MCPRemoteProxySpec{AuthzConfig: tt.authzConfig},
+			}
+			if tt.preexisting != nil {
+				proxy.Status.Conditions = []metav1.Condition{*tt.preexisting}
+			}
+			r.validateAuthzPrimaryUpstreamProviderIgnored(proxy)
+
+			cond := meta.FindStatusCondition(proxy.Status.Conditions, mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored)
+			if !tt.wantPresent {
+				assert.Nil(t, cond, "advisory should be absent")
+				return
+			}
+			require.NotNil(t, cond, "advisory should be set")
+			assert.Equal(t, metav1.ConditionTrue, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			assert.Equal(t, int64(7), cond.ObservedGeneration)
+			if tt.wantMessageSubstr != "" {
+				assert.Contains(t, cond.Message, tt.wantMessageSubstr)
+			}
+		})
+	}
+}

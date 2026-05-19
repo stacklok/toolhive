@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -3801,6 +3802,122 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			assert.Equal(t, tt.expectedWarning.reason, warning.Reason)
 			if tt.expectedWarning.messageSubstr != "" {
 				assert.Contains(t, warning.Message, tt.expectedWarning.messageSubstr)
+			}
+		})
+	}
+}
+
+// TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent confirms
+// that when validateAuthzUpstreamAvailable resolves the primary upstream from
+// the deprecated spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
+// location, a Warning event is recorded with reason
+// AuthzPrimaryUpstreamProviderDeprecated. The canonical location does not emit
+// the event. The event is the only user-visible signal that the deprecated
+// field is being read, so its emission must remain test-locked.
+func TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent(t *testing.T) {
+	t.Parallel()
+
+	inlineAuthzRefWithDeprecatedPrimary := &mcpv1beta1.AuthzConfigRef{
+		Type: "inline",
+		Inline: &mcpv1beta1.InlineAuthzConfig{
+			Policies:                []string{`permit(principal, action, resource);`},
+			PrimaryUpstreamProvider: "okta",
+		},
+	}
+	inlineAuthzRef := &mcpv1beta1.AuthzConfigRef{
+		Type: "inline",
+		Inline: &mcpv1beta1.InlineAuthzConfig{
+			Policies: []string{`permit(principal, action, resource);`},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		incomingAuth     *mcpv1beta1.IncomingAuthConfig
+		authServerConfig *mcpv1beta1.EmbeddedAuthServerConfig
+		wantEvent        bool
+	}{
+		{
+			name: "deprecated inline primary emits the deprecation event",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRefWithDeprecatedPrimary,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			wantEvent: true,
+		},
+		{
+			name: "canonical authServerConfig primary does not emit the event",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+				PrimaryUpstreamProvider: "okta",
+			},
+			wantEvent: false,
+		},
+		{
+			name: "no explicit primary does not emit the event",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			wantEvent: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testVmcpName,
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:         &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					IncomingAuth:     tt.incomingAuth,
+					AuthServerConfig: tt.authServerConfig,
+				},
+			}
+
+			recorder := events.NewFakeRecorder(10)
+			r := &VirtualMCPServerReconciler{Recorder: recorder}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			require.NoError(t, r.validateAuthzUpstreamAvailable(t.Context(), vmcp, statusManager))
+
+			select {
+			case event := <-recorder.Events:
+				if !tt.wantEvent {
+					t.Errorf("expected no event, got %q", event)
+					return
+				}
+				assert.Contains(t, event, "Warning")
+				assert.Contains(t, event, "AuthzPrimaryUpstreamProviderDeprecated")
+				assert.Contains(t, event,
+					"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider is deprecated")
+			case <-time.After(50 * time.Millisecond):
+				if tt.wantEvent {
+					t.Errorf("expected AuthzPrimaryUpstreamProviderDeprecated event, none recorded")
+				}
 			}
 		})
 	}

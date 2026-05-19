@@ -24,6 +24,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
@@ -277,18 +278,17 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 	if keyPrefix == "" {
 		keyPrefix = "thv:vmcp:session:"
 	}
-	redisCfg := transportsession.RedisConfig{
-		Addr:      cfg.SessionStorage.Address,
-		Password:  os.Getenv(vmcpconfig.RedisPasswordEnvVar),
-		DB:        int(cfg.SessionStorage.DB),
-		KeyPrefix: keyPrefix,
+	redisCfg := tcredis.Config{
+		Addr:     cfg.SessionStorage.Address,
+		Password: os.Getenv(vmcpconfig.RedisPasswordEnvVar),
+		DB:       int(cfg.SessionStorage.DB),
 	}
 	slog.Info("using Redis session storage",
 		"address", cfg.SessionStorage.Address,
 		"db", cfg.SessionStorage.DB,
 		"key_prefix", keyPrefix,
 	)
-	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, cfg.SessionTTL)
+	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, keyPrefix, cfg.SessionTTL)
 }
 
 // New creates a new Virtual MCP Server instance.

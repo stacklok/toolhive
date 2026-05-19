@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	tcredis "github.com/stacklok/toolhive-core/redis"
 )
 
 // RedisSessionDataStorage implements DataStorage backed by Redis/Valkey.
@@ -27,23 +29,31 @@ type RedisSessionDataStorage struct {
 	ttl       time.Duration
 }
 
-// NewRedisSessionDataStorage constructs a RedisSessionDataStorage.
-// cfg provides connection parameters; ttl is the sliding-window expiry applied
-// on every Create/Update and Load. The caller must call Close when done.
-func NewRedisSessionDataStorage(ctx context.Context, cfg RedisConfig, ttl time.Duration) (*RedisSessionDataStorage, error) {
-	if err := validateRedisConfig(&cfg); err != nil {
-		return nil, fmt.Errorf("invalid redis configuration: %w", err)
+// NewRedisSessionDataStorage constructs a RedisSessionDataStorage. Connection-mode
+// topology, timeouts, TLS, and credentials are configured through cfg; keyPrefix
+// is the per-tenant key prefix (e.g. "thv:vmcp:session:") and must end with ':'
+// to avoid key collisions. ttl is the sliding-window expiry applied on every
+// Create/Update and Load. The caller must call Close when done.
+//
+// Connection-mode validation, timeout defaults, client construction (standalone,
+// cluster, or sentinel), TLS plumbing, and connectivity verification are
+// delegated to the shared toolhive-core redis package.
+func NewRedisSessionDataStorage(
+	ctx context.Context,
+	cfg tcredis.Config,
+	keyPrefix string,
+	ttl time.Duration,
+) (*RedisSessionDataStorage, error) {
+	if err := validateSessionInvariants(keyPrefix, ttl); err != nil {
+		return nil, err
 	}
-	if ttl <= 0 {
-		return nil, fmt.Errorf("ttl must be a positive duration")
-	}
-	client, err := buildRedisClient(ctx, &cfg)
+	client, err := tcredis.NewClient(ctx, &cfg)
 	if err != nil {
 		return nil, err
 	}
 	return &RedisSessionDataStorage{
 		client:    client,
-		keyPrefix: cfg.KeyPrefix,
+		keyPrefix: keyPrefix,
 		ttl:       ttl,
 	}, nil
 }

@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime"
 	"net/http"
 	"net/url"
 	"strings"
@@ -49,17 +50,19 @@ type FetchOption func(*fetchOptions)
 
 // fetchOptions holds the configuration for a fetch request.
 type fetchOptions struct {
-	method       string
-	headers      http.Header
-	body         io.Reader
-	errorHandler func(*http.Response, []byte) error
+	method          string
+	headers         http.Header
+	body            io.Reader
+	errorHandler    func(*http.Response, []byte) error
+	maxResponseSize int64
 }
 
 // newFetchOptions creates default fetch options.
 func newFetchOptions() *fetchOptions {
 	return &fetchOptions{
-		method:  http.MethodGet,
-		headers: make(http.Header),
+		method:          http.MethodGet,
+		headers:         make(http.Header),
+		maxResponseSize: maxResponseSize,
 	}
 }
 
@@ -81,6 +84,15 @@ func WithHeader(key, value string) FetchOption {
 func WithBody(body io.Reader) FetchOption {
 	return func(opts *fetchOptions) {
 		opts.body = body
+	}
+}
+
+// WithMaxResponseSize sets a custom maximum response body size in bytes.
+// The default is 1 MB. Use this to enforce tighter limits for endpoints that
+// are expected to return small documents (e.g. OAuth metadata, CIMD documents).
+func WithMaxResponseSize(size int64) FetchOption {
+	return func(opts *fetchOptions) {
+		opts.maxResponseSize = size
 	}
 }
 
@@ -132,7 +144,7 @@ func FetchJSON[T any](
 	defer func() { _ = resp.Body.Close() }()
 
 	// Read body with size limit
-	body, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseSize))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, options.maxResponseSize))
 	if err != nil {
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
@@ -150,9 +162,12 @@ func FetchJSON[T any](
 		return nil, NewHTTPError(resp.StatusCode, requestURL, resp.Status)
 	}
 
-	// Validate Content-Type for successful responses
+	// Validate Content-Type for successful responses. Accept application/json
+	// and application/*+json subtypes (RFC 6839) — the old strings.Contains check
+	// incorrectly rejected valid subtypes like application/ld+json.
 	contentType := resp.Header.Get("Content-Type")
-	if !strings.Contains(strings.ToLower(contentType), contentTypeJSON) {
+	mediaType, _, _ := mime.ParseMediaType(contentType)
+	if mediaType != contentTypeJSON && (!strings.HasPrefix(mediaType, "application/") || !strings.HasSuffix(mediaType, "+json")) {
 		return nil, fmt.Errorf("unexpected content type: %s", contentType)
 	}
 

@@ -1054,13 +1054,98 @@ func TestWrapBackendError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // identityPropagatingRoundTripper
 // ---------------------------------------------------------------------------
+//
+// See identityPropagatingRoundTripper in pkg/vmcp/client/client.go for the
+// canonical description of the #5323 fallback-only identity invariant.
+//
+// Tests below are grouped to reflect this hierarchy:
+//   1. Per-request identity (normal path)            — *_PerRequestIdentity_*
+//   2. Fallback identity (no-identity-on-context)    — *_FallbackIdentity_*
+//   3. Health-check marker propagation               — *_HealthCheck*
 
-func TestIdentityPropagatingRoundTripper_WithIdentity_PropagatesIdentityInContext(t *testing.T) {
+// --- Per-request identity (normal path) -----------------------------------
+
+// TestIdentityPropagatingRoundTripper_PerRequestIdentity_FlowsThroughUnchanged
+// verifies the normal per-request flow: identity is on req.Context() (placed by
+// TokenValidator.Middleware), no fallback is configured, and the transport leaves
+// the identity untouched so the freshly refreshed upstream tokens reach the
+// downstream auth strategies. This is the path taken on every authenticated
+// tool call.
+func TestIdentityPropagatingRoundTripper_PerRequestIdentity_FlowsThroughUnchanged(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	identity := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "user-1"}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: identity}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil}
+
+	fresh := &pkgauth.Identity{
+		PrincipalInfo:  pkgauth.PrincipalInfo{Subject: "fresh-user"},
+		UpstreamTokens: map[string]string{"provider": "fresh-token"},
+	}
+	ctx := pkgauth.WithIdentity(context.Background(), fresh)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	require.True(t, ok)
+	assert.Equal(t, "fresh-user", got.Subject)
+	assert.Equal(t, "fresh-token", got.UpstreamTokens["provider"])
+}
+
+// TestIdentityPropagatingRoundTripper_PerRequestIdentity_NotOverriddenByFallback
+// is the regression test for issue #5323: a fresh identity already on
+// req.Context() (placed there by TokenValidator.Middleware on every incoming
+// request) must survive the transport untouched, even when a stale fallback
+// identity is captured. Overriding it would silently re-inject stale upstream
+// tokens on every backend call and is exactly the bug this PR fixes.
+func TestIdentityPropagatingRoundTripper_PerRequestIdentity_NotOverriddenByFallback(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	stale := &pkgauth.Identity{
+		PrincipalInfo: pkgauth.PrincipalInfo{Subject: "stale-user"},
+		UpstreamTokens: map[string]string{
+			"provider": "stale-token",
+		},
+	}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: stale}
+
+	fresh := &pkgauth.Identity{
+		PrincipalInfo: pkgauth.PrincipalInfo{Subject: "fresh-user"},
+		UpstreamTokens: map[string]string{
+			"provider": "fresh-token",
+		},
+	}
+	ctx := pkgauth.WithIdentity(context.Background(), fresh)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	require.True(t, ok, "identity from req.Context() must be present downstream")
+	assert.Equal(t, "fresh-user", got.Subject,
+		"identity on req.Context() must not be overridden by the captured fallback (#5323)")
+	assert.Equal(t, "fresh-token", got.UpstreamTokens["provider"],
+		"fresh upstream tokens must reach auth strategies unchanged (#5323)")
+}
+
+// --- Fallback identity (teardown / no-identity-on-context path) ------------
+
+// TestIdentityPropagatingRoundTripper_FallbackIdentity_InjectedWhenContextLacksIdentity
+// verifies that the fallback identity is injected when req.Context() carries no
+// identity (e.g. mcp-go's Close() DELETE built from context.Background()).
+func TestIdentityPropagatingRoundTripper_FallbackIdentity_InjectedWhenContextLacksIdentity(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	fallback := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "fallback-user"}}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: fallback}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1070,15 +1155,15 @@ func TestIdentityPropagatingRoundTripper_WithIdentity_PropagatesIdentityInContex
 
 	require.NotNil(t, base.capturedReq)
 	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
-	require.True(t, ok, "identity should be in downstream request context")
-	assert.Equal(t, "user-1", got.Subject)
+	require.True(t, ok, "fallback identity should be in downstream request context")
+	assert.Equal(t, "fallback-user", got.Subject)
 }
 
-func TestIdentityPropagatingRoundTripper_NilIdentity_NoIdentityInContext(t *testing.T) {
+func TestIdentityPropagatingRoundTripper_FallbackIdentity_NilFallback_NoIdentityInContext(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1088,14 +1173,16 @@ func TestIdentityPropagatingRoundTripper_NilIdentity_NoIdentityInContext(t *test
 
 	require.NotNil(t, base.capturedReq)
 	_, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
-	assert.False(t, ok, "no identity should be in downstream context when nil identity configured")
+	assert.False(t, ok, "no identity should be in downstream context when no fallback and no req-ctx identity")
 }
+
+// --- Health-check marker propagation ---------------------------------------
 
 func TestIdentityPropagatingRoundTripper_HealthCheck_PropagatesMarker(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: true}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil, isHealthCheck: true}
 
 	// Simulate mcp-go Close(): request created with context.Background(), no health check marker.
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, "http://backend.example.com/mcp", nil)
@@ -1113,7 +1200,7 @@ func TestIdentityPropagatingRoundTripper_NonHealthCheck_NoMarkerAdded(t *testing
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: false}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil, isHealthCheck: false}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1126,12 +1213,12 @@ func TestIdentityPropagatingRoundTripper_NonHealthCheck_NoMarkerAdded(t *testing
 		"health check marker should not be injected for non-health-check transports")
 }
 
-func TestIdentityPropagatingRoundTripper_HealthCheckWithIdentity_PropagatesBoth(t *testing.T) {
+func TestIdentityPropagatingRoundTripper_HealthCheckWithFallbackIdentity_PropagatesBoth(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
 	identity := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "svc-account"}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: identity, isHealthCheck: true}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: identity, isHealthCheck: true}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1155,7 +1242,7 @@ func TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContext
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: true}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil, isHealthCheck: true}
 
 	originalCtx := context.Background() // no health check marker — simulates mcp-go Close()
 	req, err := http.NewRequestWithContext(originalCtx, http.MethodDelete, "http://backend.example.com/mcp", nil)

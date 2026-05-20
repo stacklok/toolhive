@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
@@ -166,6 +167,24 @@ func (c *RunConfig) GetPort() int {
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
+	// Resolve session TTL once so both the transport proxy and Redis storage use
+	// the same effective value, rather than each applying their own zero-fallback
+	// independently. SessionTTL is stored as a Go duration string so the
+	// runconfig wire format does not depend on nanosecond integers.
+	effectiveSessionTTL := session.DefaultSessionTTL
+	if r.Config.SessionTTL != "" {
+		parsed, err := time.ParseDuration(r.Config.SessionTTL)
+		if err != nil {
+			return fmt.Errorf("invalid session_ttl %q: %w", r.Config.SessionTTL, err)
+		}
+		if parsed < 0 {
+			return fmt.Errorf("session_ttl must be non-negative, got %s", parsed)
+		}
+		if parsed > 0 {
+			effectiveSessionTTL = parsed
+		}
+	}
+
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:              r.Config.Transport,
@@ -177,6 +196,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Debug:             r.Config.Debug,
 		TrustProxyHeaders: r.Config.TrustProxyHeaders,
 		EndpointPrefix:    r.Config.EndpointPrefix,
+		SessionTTL:        effectiveSessionTTL,
 	}
 
 	// Set proxy mode for stdio transport
@@ -363,12 +383,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		if keyPrefix == "" {
 			keyPrefix = "thv:proxy:session:"
 		}
-		storage, err := session.NewRedisStorage(ctx, session.RedisConfig{
-			Addr:      redisCfg.Address,
-			Password:  os.Getenv(session.RedisPasswordEnvVar),
-			DB:        int(redisCfg.DB),
-			KeyPrefix: keyPrefix,
-		}, session.DefaultSessionTTL)
+		storage, err := session.NewRedisStorage(ctx, tcredis.Config{
+			Addr:     redisCfg.Address,
+			Password: os.Getenv(session.RedisPasswordEnvVar),
+			DB:       int(redisCfg.DB),
+		}, keyPrefix, effectiveSessionTTL)
 		if err != nil {
 			return fmt.Errorf("failed to create Redis session storage: %w", err)
 		}

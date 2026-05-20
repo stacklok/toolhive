@@ -55,7 +55,7 @@ var registryAPIRBACRules = []rbacv1.PolicyRule{
 	},
 	// Event creation for leader election status
 	{
-		APIGroups: []string{""},
+		APIGroups: []string{"events.k8s.io"},
 		Resources: []string{"events"},
 		Verbs:     []string{"create", "patch"},
 	},

@@ -16,6 +16,11 @@
       "schedule": ["at any time"]
     },
     {
+      "description": "Update toolhive-core dependency daily",
+      "matchPackageNames": ["github.com/stacklok/toolhive-core"],
+      "schedule": ["at any time"]
+    },
+    {
       "groupName": "toolhive images",
       "matchDatasources": ["docker"],
       "matchPackageNames": [

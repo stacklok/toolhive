@@ -223,7 +223,7 @@ func TestRegistryAPIRBACRules(t *testing.T) {
 	assert.ElementsMatch(t, []string{"get", "list", "watch", "create", "update", "patch", "delete"}, registryAPIRBACRules[4].Verbs)
 
 	// Leader election - Events
-	assert.ElementsMatch(t, []string{""}, registryAPIRBACRules[5].APIGroups)
+	assert.ElementsMatch(t, []string{"events.k8s.io"}, registryAPIRBACRules[5].APIGroups)
 	assert.ElementsMatch(t, []string{"events"}, registryAPIRBACRules[5].Resources)
 	assert.ElementsMatch(t, []string{"create", "patch"}, registryAPIRBACRules[5].Verbs)
 }

@@ -1149,15 +1149,6 @@ func (cm *ClientManager) FindClientConfig(clientType ClientApp) (*ConfigFile, er
 	return configFile, nil
 }
 
-// FindRegisteredClientConfigs finds all registered client configs and creates them if they don't exist.
-func FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
-	manager, err := NewClientManager()
-	if err != nil {
-		return nil, err
-	}
-	return manager.FindRegisteredClientConfigs(ctx)
-}
-
 // FindRegisteredClientConfigs finds all registered client configs using this manager's dependencies
 func (cm *ClientManager) FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
 	clientStatuses, err := cm.GetClientStatus(ctx)

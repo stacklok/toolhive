@@ -175,7 +175,3 @@ func (c *OAuthClient) RegisterClient(clientMetadata map[string]interface{}) (map
 	return result, resp.StatusCode, nil
 }
 
-// Get performs a GET request to the specified path.
-func (c *OAuthClient) Get(path string) (*http.Response, error) {
-	return c.httpClient.Get(c.baseURL + path)
-}

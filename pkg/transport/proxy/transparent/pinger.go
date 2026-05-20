@@ -26,11 +26,6 @@ const (
 	DefaultPingerTimeout = 5 * time.Second
 )
 
-// NewMCPPinger creates a new MCP pinger for transparent proxies
-func NewMCPPinger(targetURL string) healthcheck.MCPPinger {
-	return NewMCPPingerWithTimeout(targetURL, DefaultPingerTimeout)
-}
-
 // NewMCPPingerWithTimeout creates a new MCP pinger with a custom timeout
 func NewMCPPingerWithTimeout(targetURL string, timeout time.Duration) healthcheck.MCPPinger {
 	if timeout <= 0 {

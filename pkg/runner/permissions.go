@@ -4,51 +4,15 @@
 package runner
 
 import (
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
-
-	"github.com/stacklok/toolhive-core/permissions"
 )
 
 // This was moved from the CLI to allow it to be shared with the lifecycle manager.
 // It will likely be moved elsewhere in a future PR.
-
-// CreatePermissionProfileFile creates a temporary file with the permission profile
-func CreatePermissionProfileFile(serverName string, permProfile *permissions.Profile) (string, error) {
-	tempFile, err := os.CreateTemp("", fmt.Sprintf("toolhive-%s-permissions-*.json", serverName))
-	if err != nil {
-		return "", fmt.Errorf("failed to create temporary file: %w", err)
-	}
-	defer func() {
-		if err := tempFile.Close(); err != nil {
-			// Non-fatal: temp file cleanup failure
-			slog.Warn("Failed to close temp file", "error", err)
-		}
-	}()
-
-	// Get the temporary file path
-	permProfilePath := tempFile.Name()
-
-	// Serialize the permission profile to JSON
-	permProfileJSON, err := json.Marshal(permProfile)
-	if err != nil {
-		return "", fmt.Errorf("failed to serialize permission profile: %w", err)
-	}
-
-	// Write the permission profile to the temporary file
-	if _, err := tempFile.Write(permProfileJSON); err != nil {
-		return "", fmt.Errorf("failed to write permission profile to file: %w", err)
-	}
-
-	//nolint:gosec // G706: path is a temp file created by us
-	slog.Debug("Wrote permission profile to temporary file", "path", permProfilePath)
-
-	return permProfilePath, nil
-}
 
 // CleanupTempPermissionProfile removes a temporary permission profile file if it was created by toolhive
 func CleanupTempPermissionProfile(permissionProfilePath string) error {

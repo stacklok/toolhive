@@ -7,7 +7,6 @@ package e2e
 import (
 	"context"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/exec"
@@ -196,20 +195,6 @@ func (s *Server) Get(path string) (*http.Response, error) {
 	return s.httpClient.Do(req) // #nosec G704 -- baseURL is the local test server URL
 }
 
-// GetWithHeaders performs a GET request with custom headers.
-func (s *Server) GetWithHeaders(path string, headers map[string]string) (*http.Response, error) {
-	req, err := http.NewRequestWithContext(s.ctx, http.MethodGet, s.baseURL+path, nil)
-	if err != nil {
-		return nil, err
-	}
-
-	for key, value := range headers {
-		req.Header.Set(key, value)
-	}
-
-	return s.httpClient.Do(req) // #nosec G704 -- baseURL is the local test server URL
-}
-
 // BaseURL returns the base URL of the API server.
 func (s *Server) BaseURL() string {
 	return s.baseURL
@@ -243,13 +228,3 @@ func StartServer(config *ServerConfig) *Server {
 	return server
 }
 
-// ExpectStatus reads the response body and asserts the status code,
-// including the response body in the failure message for debugging.
-// The response body is consumed and closed; callers must not read it again.
-func ExpectStatus(resp *http.Response, expected int) {
-	body, _ := io.ReadAll(resp.Body)
-	//nolint:errcheck,gosec // This is just a test
-	resp.Body.Close()
-	ExpectWithOffset(1, resp.StatusCode).To(Equal(expected),
-		fmt.Sprintf("Response body: %s", string(body)))
-}

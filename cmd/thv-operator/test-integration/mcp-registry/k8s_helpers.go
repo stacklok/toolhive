@@ -48,16 +48,6 @@ func (h *K8sResourceTestHelper) GetService(name string) (*corev1.Service, error)
 	return service, err
 }
 
-// GetConfigMap retrieves a configmap by name
-func (h *K8sResourceTestHelper) GetConfigMap(name string) (*corev1.ConfigMap, error) {
-	configMap := &corev1.ConfigMap{}
-	err := h.k8sClient.Get(h.ctx, types.NamespacedName{
-		Namespace: h.namespace,
-		Name:      name,
-	}, configMap)
-	return configMap, err
-}
-
 // DeploymentExists checks if a deployment exists
 func (h *K8sResourceTestHelper) DeploymentExists(name string) bool {
 	_, err := h.GetDeployment(name)
@@ -68,19 +58,4 @@ func (h *K8sResourceTestHelper) DeploymentExists(name string) bool {
 func (h *K8sResourceTestHelper) ServiceExists(name string) bool {
 	_, err := h.GetService(name)
 	return err == nil
-}
-
-// IsDeploymentReady checks if a deployment is ready (all replicas available)
-func (h *K8sResourceTestHelper) IsDeploymentReady(name string) bool {
-	deployment, err := h.GetDeployment(name)
-	if err != nil {
-		return false
-	}
-
-	// Check if deployment has at least one replica and all are available
-	if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas == 0 {
-		return false
-	}
-
-	return deployment.Status.ReadyReplicas == *deployment.Spec.Replicas
 }

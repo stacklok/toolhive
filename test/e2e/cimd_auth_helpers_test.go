@@ -82,11 +82,6 @@ func (s *cimdMockAuthServer) IssuerURL() string {
 	return s.server.URL
 }
 
-// ResourceMetadataURL returns the RFC 9728 resource metadata URL for this server.
-func (s *cimdMockAuthServer) ResourceMetadataURL() string {
-	return fmt.Sprintf("%s/.well-known/mcp-resource", s.server.URL)
-}
-
 // WaitForAuthRequest blocks until an authorization request arrives or the timeout
 // elapses.
 func (s *cimdMockAuthServer) WaitForAuthRequest(timeout time.Duration) (cimdAuthRequest, error) {
@@ -103,13 +98,6 @@ func (s *cimdMockAuthServer) DcrWasCalled() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.dcrCalled
-}
-
-// LastClientID returns the most recent client_id seen in /oauth/authorize.
-func (s *cimdMockAuthServer) LastClientID() string {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.lastClientID
 }
 
 // handleDiscovery serves the OIDC discovery document. It sets

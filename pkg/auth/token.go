@@ -491,21 +491,6 @@ func discoverOIDCConfiguration(
 	return &doc, nil
 }
 
-// NewTokenValidatorConfig creates a new TokenValidatorConfig with the provided parameters
-func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string, clientSecret string) *TokenValidatorConfig {
-	// Only create a config if at least one parameter is provided
-	if issuer == "" && audience == "" && jwksURL == "" && clientID == "" && clientSecret == "" {
-		return nil
-	}
-
-	return &TokenValidatorConfig{
-		Issuer:       issuer,
-		Audience:     audience,
-		JWKSURL:      jwksURL,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-	}
-}
 
 // registerIntrospectionProviders creates and configures the provider registry
 // for token introspection based on the configuration.

@@ -258,6 +258,3 @@ func (m *statelessMockMCPServer) GetCount() int32 {
 	return m.postHits.Load()
 }
 
-func (m *statelessMockMCPServer) GotGET() bool {
-	return m.gotGET.Load()
-}

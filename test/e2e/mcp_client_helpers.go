@@ -242,4 +242,3 @@ func extractServerNameFromURL(serverURL string) string {
 	}
 	return "unknown"
 }
-

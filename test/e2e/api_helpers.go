@@ -227,4 +227,3 @@ func StartServer(config *ServerConfig) *Server {
 
 	return server
 }
-

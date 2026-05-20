@@ -174,4 +174,3 @@ func (c *OAuthClient) RegisterClient(clientMetadata map[string]interface{}) (map
 
 	return result, resp.StatusCode, nil
 }
-

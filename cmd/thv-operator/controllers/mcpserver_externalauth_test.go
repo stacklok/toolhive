@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -462,4 +463,126 @@ func TestMCPServerReconciler_handleExternalAuthConfig_NoHashInConfig(t *testing.
 	assert.NoError(t, err)
 	assert.Empty(t, mcpServer.Status.ExternalAuthConfigHash,
 		"Hash should be empty when external auth config has no hash")
+}
+
+// TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition verifies
+// the Status Condition Parity mirror added for #5347: when the referenced
+// MCPExternalAuthConfig has Status.Conditions[Valid]=False (e.g. an obo-typed
+// config that the default OBO handler rejected with Reason=EnterpriseRequired
+// in upstream-only builds), the MCPServer reconciler must surface a parallel
+// ExternalAuthConfigValidated=False condition that carries the same reason and
+// message — instead of silently propagating the dispatch error through the
+// generic phase-Failed path.
+func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	const (
+		authName  = "obo-config"
+		namespace = "default"
+		reason    = mcpv1beta1.ConditionReasonEnterpriseRequired
+		message   = "on-behalf-of (OBO) external auth type requires an enterprise build"
+	)
+
+	tests := []struct {
+		name         string
+		sourceValid  *metav1.Condition
+		wantMirrored bool
+		wantReason   string
+		wantMessage  string
+	}{
+		{
+			name: "source Valid=False/EnterpriseRequired is mirrored",
+			sourceValid: &metav1.Condition{
+				Type:    mcpv1beta1.ConditionTypeValid,
+				Status:  metav1.ConditionFalse,
+				Reason:  reason,
+				Message: message,
+			},
+			wantMirrored: true,
+			wantReason:   reason,
+			wantMessage:  message,
+		},
+		{
+			name: "source Valid=False/InvalidConfig is mirrored verbatim",
+			sourceValid: &metav1.Condition{
+				Type:    mcpv1beta1.ConditionTypeValid,
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonInvalidConfig,
+				Message: "custom OBO handler rejected the spec",
+			},
+			wantMirrored: true,
+			wantReason:   mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage:  "custom OBO handler rejected the spec",
+		},
+		{
+			name: "source Valid=True does not produce a mirror",
+			sourceValid: &metav1.Condition{
+				Type:   mcpv1beta1.ConditionTypeValid,
+				Status: metav1.ConditionTrue,
+				Reason: "ValidationSucceeded",
+			},
+			wantMirrored: false,
+		},
+		{
+			name:         "source with no Valid condition does not produce a mirror",
+			sourceValid:  nil,
+			wantMirrored: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: authName, Namespace: namespace},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+				},
+			}
+			if tt.sourceValid != nil {
+				externalAuthConfig.Status.Conditions = []metav1.Condition{*tt.sourceValid}
+			}
+
+			mcpServer := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: namespace},
+				Spec: mcpv1beta1.MCPServerSpec{
+					Image:                 "test-image",
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: authName},
+				},
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithRuntimeObjects(externalAuthConfig, mcpServer).
+				WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+				Build()
+
+			reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+			err := reconciler.handleExternalAuthConfig(ctx, mcpServer)
+
+			cond := meta.FindStatusCondition(
+				mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+
+			if !tt.wantMirrored {
+				assert.NoError(t, err, "no error expected when source is valid")
+				assert.Nil(t, cond, "no mirror condition expected when source is valid")
+				return
+			}
+
+			require.Error(t, err, "handler must surface the mirrored failure so callers mark Phase=Failed")
+			require.NotNil(t, cond, "mirror condition must be set on MCPServer.Status.Conditions")
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			assert.Equal(t, tt.wantMessage, cond.Message)
+		})
+	}
 }

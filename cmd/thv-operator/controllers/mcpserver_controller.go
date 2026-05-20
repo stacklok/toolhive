@@ -2036,6 +2036,14 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 		return fmt.Errorf("MCPExternalAuthConfig %s not found", m.Spec.ExternalAuthConfigRef.Name)
 	}
 
+	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
+	// the MCPServer so the failure is visible on the consumer CR (e.g. obo-typed
+	// configs surface Valid=False/EnterpriseRequired here without the user
+	// having to inspect the referenced MCPExternalAuthConfig).
+	if mirrored, err := r.mirrorExternalAuthConfigInvalid(m, externalAuthConfig); mirrored {
+		return err
+	}
+
 	// MCPServer supports only single-upstream embedded auth server configs.
 	// Multi-upstream requires VirtualMCPServer.
 	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
@@ -2074,6 +2082,35 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	}
 
 	return nil
+}
+
+// mirrorExternalAuthConfigInvalid inspects the referenced MCPExternalAuthConfig's
+// Valid condition and, when it is False, mirrors the reason+message onto the
+// MCPServer's ExternalAuthConfigValidated condition. Returns (true, err) when a
+// mirror was written so callers can short-circuit; (false, nil) otherwise.
+//
+// This propagates failures like Reason=EnterpriseRequired (set by the
+// MCPExternalAuthConfig reconciler for obo-typed configs in upstream-only
+// builds) onto the consumer CR so users see the failure on the resource they
+// applied, not buried in the referenced config's status.
+func (*MCPServerReconciler) mirrorExternalAuthConfigInvalid(
+	m *mcpv1beta1.MCPServer,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) (bool, error) {
+	validCond := meta.FindStatusCondition(externalAuthConfig.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	if validCond == nil || validCond.Status != metav1.ConditionFalse {
+		return false, nil
+	}
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+		Status:             metav1.ConditionFalse,
+		Reason:             validCond.Reason,
+		Message:            validCond.Message,
+		ObservedGeneration: m.Generation,
+	})
+	return true, fmt.Errorf(
+		"referenced MCPExternalAuthConfig %s/%s is invalid (%s): %s",
+		m.Namespace, externalAuthConfig.Name, validCond.Reason, validCond.Message)
 }
 
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.

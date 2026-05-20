@@ -735,6 +735,14 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 		return fmt.Errorf("failed to fetch MCPExternalAuthConfig: %w", err)
 	}
 
+	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
+	// the MCPRemoteProxy so the failure is visible on the consumer CR (e.g.
+	// obo-typed configs surface Valid=False/EnterpriseRequired here without the
+	// user having to inspect the referenced MCPExternalAuthConfig).
+	if mirrored, err := mirrorExternalAuthConfigInvalidForRemoteProxy(proxy, externalAuthConfig); mirrored {
+		return err
+	}
+
 	// MCPRemoteProxy supports only single-upstream embedded auth server configs.
 	// Multi-upstream requires VirtualMCPServer.
 	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
@@ -775,6 +783,32 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 	}
 
 	return nil
+}
+
+// mirrorExternalAuthConfigInvalidForRemoteProxy inspects the referenced
+// MCPExternalAuthConfig's Valid condition and, when it is False, mirrors the
+// reason+message onto the MCPRemoteProxy's ExternalAuthConfigValidated
+// condition. Returns (true, err) when a mirror was written so callers can
+// short-circuit; (false, nil) otherwise. See the equivalent helper on
+// MCPServerReconciler for the propagation rationale.
+func mirrorExternalAuthConfigInvalidForRemoteProxy(
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) (bool, error) {
+	validCond := meta.FindStatusCondition(externalAuthConfig.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	if validCond == nil || validCond.Status != metav1.ConditionFalse {
+		return false, nil
+	}
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+		Status:             metav1.ConditionFalse,
+		Reason:             validCond.Reason,
+		Message:            validCond.Message,
+		ObservedGeneration: proxy.Generation,
+	})
+	return true, fmt.Errorf(
+		"referenced MCPExternalAuthConfig %s/%s is invalid (%s): %s",
+		proxy.Namespace, externalAuthConfig.Name, validCond.Reason, validCond.Message)
 }
 
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.

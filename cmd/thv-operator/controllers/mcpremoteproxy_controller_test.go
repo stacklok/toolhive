@@ -672,6 +672,49 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 			expectedCondReason: mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
 		},
 		{
+			// Mirror added for #5347: when the referenced MCPExternalAuthConfig
+			// has Status.Conditions[Valid]=False (e.g. obo-typed configs that
+			// the default OBO handler rejected with Reason=EnterpriseRequired
+			// in upstream-only builds), the proxy reconciler must surface a
+			// parallel ExternalAuthConfigValidated=False with the same reason
+			// and message.
+			name: "referenced config Valid=False is mirrored onto the proxy",
+			proxy: &mcpv1beta1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "obo-mirror-proxy",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+						Name: "obo-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "obo-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+				},
+				Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+					Conditions: []metav1.Condition{{
+						Type:    mcpv1beta1.ConditionTypeValid,
+						Status:  metav1.ConditionFalse,
+						Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+						Message: "on-behalf-of (OBO) external auth type requires an enterprise build",
+					}},
+				},
+			},
+			expectError:        true,
+			errContains:        "EnterpriseRequired",
+			expectCondition:    true,
+			expectedCondStatus: metav1.ConditionFalse,
+			expectedCondReason: mcpv1beta1.ConditionReasonEnterpriseRequired,
+		},
+		{
 			name: "embedded auth server with multiple upstreams rejected",
 			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{

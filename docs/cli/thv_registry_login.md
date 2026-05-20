@@ -32,6 +32,7 @@ thv registry login [flags]
 ### Options
 
 ```
+  -p, --allow-private-ip   Allow --registry to reference a private IP address (default false). Mirrors the flag on 'thv config set-registry'.
       --audience string    OAuth audience parameter for registry authentication (optional)
       --client-id string   OAuth client ID for registry authentication
   -h, --help               help for login

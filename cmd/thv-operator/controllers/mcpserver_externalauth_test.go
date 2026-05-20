@@ -487,11 +487,13 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 	)
 
 	tests := []struct {
-		name         string
-		sourceValid  *metav1.Condition
-		wantMirrored bool
-		wantReason   string
-		wantMessage  string
+		name                   string
+		sourceValid            *metav1.Condition
+		preexisting            []metav1.Condition
+		wantMirrored           bool
+		wantReason             string
+		wantMessage            string
+		wantPreexistingCleared bool
 	}{
 		{
 			name: "source Valid=False/EnterpriseRequired is mirrored",
@@ -531,6 +533,26 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 			sourceValid:  nil,
 			wantMirrored: false,
 		},
+		{
+			// Regression guard: once the source heals, a stale mirror left from
+			// a previous reconcile must be cleared so the condition does not
+			// outlive its cause. Without the heal path, the False sticks
+			// forever even after the user fixes the spec.
+			name: "stale mirror is cleared when source has healed",
+			sourceValid: &metav1.Condition{
+				Type:   mcpv1beta1.ConditionTypeValid,
+				Status: metav1.ConditionTrue,
+				Reason: "ValidationSucceeded",
+			},
+			preexisting: []metav1.Condition{{
+				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+				Message: "stale mirror from a previous reconcile",
+			}},
+			wantMirrored:           false,
+			wantPreexistingCleared: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -557,6 +579,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 					Image:                 "test-image",
 					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: authName},
 				},
+				Status: mcpv1beta1.MCPServerStatus{Conditions: tt.preexisting},
 			}
 
 			fakeClient := fake.NewClientBuilder().
@@ -574,7 +597,11 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 
 			if !tt.wantMirrored {
 				assert.NoError(t, err, "no error expected when source is valid")
-				assert.Nil(t, cond, "no mirror condition expected when source is valid")
+				if tt.wantPreexistingCleared {
+					assert.Nil(t, cond, "stale mirror condition must be cleared once source has healed")
+				} else {
+					assert.Nil(t, cond, "no mirror condition expected when source is valid")
+				}
 				return
 			}
 

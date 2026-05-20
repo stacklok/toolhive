@@ -8,6 +8,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"os"
@@ -2086,8 +2087,11 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 
 // mirrorExternalAuthConfigInvalid inspects the referenced MCPExternalAuthConfig's
 // Valid condition and, when it is False, mirrors the reason+message onto the
-// MCPServer's ExternalAuthConfigValidated condition. Returns (true, err) when a
-// mirror was written so callers can short-circuit; (false, nil) otherwise.
+// MCPServer's ExternalAuthConfigValidated condition. When the source is
+// Valid=True (i.e. has healed since a previous False), the helper clears any
+// stale mirror it previously wrote so the condition doesn't outlive the cause.
+// Returns (true, err) when a mirror was written so callers can short-circuit;
+// (false, nil) otherwise.
 //
 // This propagates failures like Reason=EnterpriseRequired (set by the
 // MCPExternalAuthConfig reconciler for obo-typed configs in upstream-only
@@ -2097,20 +2101,27 @@ func (*MCPServerReconciler) mirrorExternalAuthConfigInvalid(
 	m *mcpv1beta1.MCPServer,
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (bool, error) {
-	validCond := meta.FindStatusCondition(externalAuthConfig.Status.Conditions, mcpv1beta1.ConditionTypeValid)
-	if validCond == nil || validCond.Status != metav1.ConditionFalse {
+	reason, mirrorErr := mirroredExternalAuthConfigInvalid(externalAuthConfig)
+	if mirrorErr == nil {
+		// Source healed (Valid=True or absent). Clear any stale mirror so it
+		// doesn't persist after the cause is gone. Downstream branches in
+		// handleExternalAuthConfig (e.g. multi-upstream) re-set False if they
+		// still apply on this reconcile.
+		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
 		return false, nil
 	}
+	var mirrored *mirroredInvalidExternalAuthConfigError
+	stderrors.As(mirrorErr, &mirrored)
 	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 		Status:             metav1.ConditionFalse,
-		Reason:             validCond.Reason,
-		Message:            validCond.Message,
+		Reason:             reason,
+		Message:            mirrored.Message,
 		ObservedGeneration: m.Generation,
 	})
 	return true, fmt.Errorf(
-		"referenced MCPExternalAuthConfig %s/%s is invalid (%s): %s",
-		m.Namespace, externalAuthConfig.Name, validCond.Reason, validCond.Message)
+		"referenced MCPExternalAuthConfig %s/%s is invalid: %w",
+		m.Namespace, externalAuthConfig.Name, mirrorErr)
 }
 
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.

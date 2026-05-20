@@ -789,26 +789,31 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 // MCPExternalAuthConfig's Valid condition and, when it is False, mirrors the
 // reason+message onto the MCPRemoteProxy's ExternalAuthConfigValidated
 // condition. Returns (true, err) when a mirror was written so callers can
-// short-circuit; (false, nil) otherwise. See the equivalent helper on
-// MCPServerReconciler for the propagation rationale.
+// short-circuit; (false, nil) otherwise. The healed path is not handled here
+// because handleExternalAuthConfig sets ExternalAuthConfigValidated=True
+// downstream, which overwrites any stale False this helper previously wrote.
+// See the equivalent helper on MCPServerReconciler for the propagation
+// rationale.
 func mirrorExternalAuthConfigInvalidForRemoteProxy(
 	proxy *mcpv1beta1.MCPRemoteProxy,
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (bool, error) {
-	validCond := meta.FindStatusCondition(externalAuthConfig.Status.Conditions, mcpv1beta1.ConditionTypeValid)
-	if validCond == nil || validCond.Status != metav1.ConditionFalse {
+	reason, mirrorErr := mirroredExternalAuthConfigInvalid(externalAuthConfig)
+	if mirrorErr == nil {
 		return false, nil
 	}
+	var mirrored *mirroredInvalidExternalAuthConfigError
+	stderrors.As(mirrorErr, &mirrored)
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
 		Status:             metav1.ConditionFalse,
-		Reason:             validCond.Reason,
-		Message:            validCond.Message,
+		Reason:             reason,
+		Message:            mirrored.Message,
 		ObservedGeneration: proxy.Generation,
 	})
 	return true, fmt.Errorf(
-		"referenced MCPExternalAuthConfig %s/%s is invalid (%s): %s",
-		proxy.Namespace, externalAuthConfig.Name, validCond.Reason, validCond.Message)
+		"referenced MCPExternalAuthConfig %s/%s is invalid: %w",
+		proxy.Namespace, externalAuthConfig.Name, mirrorErr)
 }
 
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.

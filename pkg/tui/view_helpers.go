@@ -177,7 +177,8 @@ func truncateSidebar(s string, n int) string {
 func countStatuses(list []core.Workload) (running, stopped int) {
 	for _, w := range list {
 		switch w.Status {
-		case rt.WorkloadStatusRunning, rt.WorkloadStatusUnauthenticated, rt.WorkloadStatusUnhealthy:
+		case rt.WorkloadStatusRunning, rt.WorkloadStatusUnauthenticated, rt.WorkloadStatusUnhealthy,
+			rt.WorkloadStatusAuthRetrying:
 			running++
 		case rt.WorkloadStatusStopped, rt.WorkloadStatusError, rt.WorkloadStatusStarting,
 			rt.WorkloadStatusStopping, rt.WorkloadStatusRemoving, rt.WorkloadStatusUnknown,

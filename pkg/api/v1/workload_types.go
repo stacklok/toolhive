@@ -33,7 +33,7 @@ type workloadListResponse struct {
 type workloadStatusResponse struct {
 	// Current status of the workload
 	//nolint:lll // enums tag needed for swagger generation with --parseDependencyLevel
-	Status runtime.WorkloadStatus `json:"status" enums:"running,stopped,error,starting,stopping,unhealthy,removing,unknown,unauthenticated,policy_stopped"`
+	Status runtime.WorkloadStatus `json:"status" enums:"running,stopped,error,starting,stopping,unhealthy,removing,unknown,unauthenticated,auth_retrying,policy_stopped"`
 }
 
 // updateRequest represents the request to update an existing workload

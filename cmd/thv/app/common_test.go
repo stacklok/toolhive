@@ -4,9 +4,12 @@
 package app
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
+
+	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
 
 func TestAddFormatFlag(t *testing.T) {
@@ -262,6 +265,41 @@ func TestIsOIDCEnabled(t *testing.T) {
 
 			if result != tt.expectedEnabled {
 				t.Errorf("IsOIDCEnabled() = %v, want %v", result, tt.expectedEnabled)
+			}
+		})
+	}
+}
+
+func TestWorkloadStatusIndicator(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		status    runtime.WorkloadStatus
+		wantHas   string // substring that must appear
+		wantExact string // if non-empty, must match exactly
+	}{
+		{"unauthenticated has ⚠️ prefix", runtime.WorkloadStatusUnauthenticated, "⚠️", ""},
+		{"auth_retrying has 🔄 prefix", runtime.WorkloadStatusAuthRetrying, "🔄", ""},
+		{"policy_stopped has 🚫 prefix", runtime.WorkloadStatusPolicyStopped, "🚫", ""},
+		{"running passes through plain", runtime.WorkloadStatusRunning, "", "running"},
+		{"stopped passes through plain", runtime.WorkloadStatusStopped, "", "stopped"},
+		{"unhealthy passes through plain", runtime.WorkloadStatusUnhealthy, "", "unhealthy"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := workloadStatusIndicator(tc.status)
+			if tc.wantExact != "" && got != tc.wantExact {
+				t.Errorf("workloadStatusIndicator(%q) = %q, want exact %q",
+					tc.status, got, tc.wantExact)
+			}
+			if tc.wantHas != "" && !strings.Contains(got, tc.wantHas) {
+				t.Errorf("workloadStatusIndicator(%q) = %q, want substring %q",
+					tc.status, got, tc.wantHas)
+			}
+			if !strings.Contains(got, string(tc.status)) {
+				t.Errorf("workloadStatusIndicator(%q) = %q, must include status name",
+					tc.status, got)
 			}
 		})
 	}

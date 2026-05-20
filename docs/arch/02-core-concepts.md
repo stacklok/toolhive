@@ -38,6 +38,7 @@ A **workload** is the fundamental deployment unit in ToolHive. It represents eve
 - `error` - Workload encountered an error
 - `unhealthy` - Workload is running but unhealthy
 - `unauthenticated` - Remote workload cannot authenticate (expired tokens)
+- `auth_retrying` - Remote workload's token refresh is failing transiently; monitor is still retrying until success (-> `running`), a permanent error is observed (-> `unauthenticated`), or the configured ceiling is exceeded (-> `unauthenticated`)
 - `unknown` - Workload status cannot be determined
 - `policy_stopped` - Workload was stopped by policy enforcement
 

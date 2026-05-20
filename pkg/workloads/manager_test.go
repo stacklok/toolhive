@@ -1639,6 +1639,70 @@ func TestDefaultManager_RunWorkloadDetached_PIDManagement(t *testing.T) {
 	assert.NotNil(t, runWorkloadDetachedFunc, "RunWorkloadDetached method should exist")
 }
 
+// TestDefaultManager_RunWorkloadDetached_SpawnerSuccess verifies that the
+// injected spawner is invoked exactly once and that the PID it returns is
+// forwarded to SetWorkloadPID unchanged.
+func TestDefaultManager_RunWorkloadDetached_SpawnerSuccess(t *testing.T) {
+	t.Parallel()
+
+	const wantPID = 98765
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+	mockConfigProvider := configMocks.NewMockProvider(ctrl)
+	// Forwarded PID is the contract under test.
+	mockStatusMgr.EXPECT().SetWorkloadPID(gomock.Any(), "test-workload", wantPID).Return(nil)
+
+	var callCount int
+	spawner := func(_ context.Context, rc *runner.RunConfig) (int, error) {
+		callCount++
+		assert.Equal(t, "test-workload", rc.BaseName)
+		return wantPID, nil
+	}
+
+	manager := &DefaultManager{
+		statuses:       mockStatusMgr,
+		configProvider: mockConfigProvider,
+	}
+	withDetachedSpawner(spawner)(manager)
+
+	err := manager.RunWorkloadDetached(context.Background(), &runner.RunConfig{BaseName: "test-workload"})
+	require.NoError(t, err)
+	assert.Equal(t, 1, callCount, "spawner should be invoked exactly once")
+}
+
+// TestDefaultManager_RunWorkloadDetached_SpawnerError verifies that a spawner
+// failure is wrapped as "failed to start detached process" and that no PID
+// is recorded. Status rollback is the responsibility of the spawner itself,
+// so RunWorkloadDetached should not emit any extra SetWorkloadStatus calls.
+func TestDefaultManager_RunWorkloadDetached_SpawnerError(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+	mockConfigProvider := configMocks.NewMockProvider(ctrl)
+	// No SetWorkloadPID expectation: a failed spawn must not record a PID.
+
+	spawnErr := errors.New("boom")
+	spawner := func(_ context.Context, _ *runner.RunConfig) (int, error) {
+		return 0, spawnErr
+	}
+
+	manager := &DefaultManager{
+		statuses:       mockStatusMgr,
+		configProvider: mockConfigProvider,
+	}
+	withDetachedSpawner(spawner)(manager)
+
+	err := manager.RunWorkloadDetached(context.Background(), &runner.RunConfig{BaseName: "test-workload"})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to start detached process")
+	assert.ErrorIs(t, err, spawnErr)
+}
+
 func TestAsyncOperationTimeout(t *testing.T) {
 	t.Parallel()
 
@@ -1849,8 +1913,18 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 	// fakeSpawnerPID is the fake PID returned by the test-injected spawner.
 	// It must be > 0 so SetWorkloadPID treats it as a real PID.
 	const fakeSpawnerPID = 12345
-	noopSpawner := func(_ context.Context, _ *runner.RunConfig) (int, error) {
-		return fakeSpawnerPID, nil
+	// noopSpawnerFor returns a spawner that replicates the production
+	// spawner's WorkloadStatus(Starting) side effect against the supplied
+	// mock, then returns fakeSpawnerPID without re-execing the test binary.
+	// The Starting transition is part of the spawner contract; mirroring it
+	// here keeps mock expectations consistent with production behavior.
+	noopSpawnerFor := func(sm *statusMocks.MockStatusManager) detachedProcessSpawner {
+		return func(ctx context.Context, rc *runner.RunConfig) (int, error) {
+			if err := sm.SetWorkloadStatus(ctx, rc.BaseName, runtime.WorkloadStatusStarting, ""); err != nil {
+				return 0, err
+			}
+			return fakeSpawnerPID, nil
+		}
 	}
 
 	tests := []struct {
@@ -1983,7 +2057,7 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 			// Inject a no-op spawner so RunWorkloadDetached does not re-exec the
 			// test binary. Without this, the real spawn would orphan a child
 			// process that recursively reruns the entire test suite. See #5344.
-			withDetachedSpawner(noopSpawner)(manager)
+			withDetachedSpawner(noopSpawnerFor(mockStatusManager))(manager)
 
 			err := manager.updateSingleWorkload(ctx, tt.workloadName, tt.runConfig)
 

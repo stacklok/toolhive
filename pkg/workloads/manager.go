@@ -115,9 +115,12 @@ type mcpRunnerFactory func(*runner.RunConfig, statuses.StatusManager) mcpRunner
 
 // detachedProcessSpawner starts the detached process that backs
 // RunWorkloadDetached and returns its PID. In production it re-execs the
-// current binary (os.Executable) with `start <basename> --foreground`. Tests
-// override this with a no-op so the test binary does not re-exec itself and
-// spawn orphan workloads.test processes.
+// current binary (os.Executable) with `start <basename> --foreground` and
+// detaches the child via getSysProcAttr (setsid on Unix, a detached process
+// group on Windows) — that detachment is what makes orphaned children
+// possible under `go test`, which is the bug this seam exists to defuse.
+// Tests override this with a no-op so the test binary does not re-exec
+// itself.
 type detachedProcessSpawner func(ctx context.Context, runConfig *runner.RunConfig) (pid int, err error)
 
 // retryConfig bundles the RunWorkload retry loop's tunable parameters.
@@ -644,19 +647,14 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 		return fmt.Errorf("failed to validate workload parameters: %w", err)
 	}
 
-	// Ensure that the workload has a status entry before starting the process.
-	if err := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusStarting, ""); err != nil {
-		// Failure to create the initial state is a fatal error.
-		return fmt.Errorf("failed to create workload status: %w", err)
-	}
-
-	// Start the detached process via the spawner seam. In production this
-	// re-execs the current binary; tests inject a no-op spawner.
+	// Start the detached process via the spawner seam. The spawner owns the
+	// commit point: it sets WorkloadStatus to Starting immediately before
+	// actually spawning, and rolls it back to Error if the spawn fails. Errors
+	// returned here mean the spawn was attempted and failed (or could not be
+	// set up); callers should not observe a status change for pre-spawn
+	// failures such as os.Executable() returning an error.
 	pid, err := d.detachedSpawnerOrDefault()(ctx, runConfig)
 	if err != nil {
-		if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, ""); statusErr != nil {
-			slog.Warn("Failed to set workload status to error", "workload", runConfig.BaseName, "error", statusErr)
-		}
 		return fmt.Errorf("failed to start detached process: %w", err)
 	}
 
@@ -673,8 +671,16 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 // spawnDetached is the production implementation of detachedProcessSpawner.
 // It re-execs the current binary with `start <basename> --foreground` and
 // detaches it from the calling process via setsid (Unix) or a detached
-// process group (Windows).
-func (d *DefaultManager) spawnDetached(_ context.Context, runConfig *runner.RunConfig) (int, error) {
+// process group (Windows). It also owns the WorkloadStatus transitions:
+// Starting is set just before the actual exec, and Error is set if that
+// exec fails — failures during pre-exec setup return without any status
+// change, matching the original behavior of RunWorkloadDetached.
+//
+// ctx is intentionally not propagated to exec.Command: the spawned process
+// must outlive the parent (that is the point of "detached"), so using
+// exec.CommandContext here would kill the child on parent cancellation.
+// ctx is still used for status manager calls.
+func (d *DefaultManager) spawnDetached(ctx context.Context, runConfig *runner.RunConfig) (int, error) {
 	// Get the current executable path
 	execPath, err := os.Executable()
 	if err != nil {
@@ -743,7 +749,17 @@ func (d *DefaultManager) spawnDetached(_ context.Context, runConfig *runner.RunC
 	detachedCmd.Stdin = nil
 	detachedCmd.SysProcAttr = getSysProcAttr()
 
+	// Commit point: signal Starting only when we are about to actually spawn.
+	// Failures above this line return without changing workload status.
+	if err := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusStarting, ""); err != nil {
+		// Failure to create the initial state is a fatal error.
+		return 0, fmt.Errorf("failed to create workload status: %w", err)
+	}
+
 	if err := detachedCmd.Start(); err != nil {
+		if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, ""); statusErr != nil {
+			slog.Warn("Failed to set workload status to error", "workload", runConfig.BaseName, "error", statusErr)
+		}
 		return 0, err
 	}
 

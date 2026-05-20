@@ -128,14 +128,12 @@ func newCIMDHTTPClient() *http.Client {
 	client := &http.Client{
 		Timeout:   5 * time.Second,
 		Transport: transport,
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			if len(via) >= 1 {
-				return http.ErrUseLastResponse
-			}
-			if err := validateCIMDClientURL(req.URL.String()); err != nil {
-				return fmt.Errorf("cimd: redirect target rejected: %w", err)
-			}
-			return nil
+		// CIMD §4: "The authorization server MUST NOT automatically follow
+		// HTTP redirects when retrieving the client registration information."
+		// Return the redirect response unchanged; FetchJSON will surface it
+		// as a non-200 error.
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
 		},
 	}
 
@@ -155,7 +153,7 @@ func validateCIMDClientURL(rawURL string) error {
 		return fmt.Errorf("client_id URL is not a valid URL: %w", err)
 	}
 	isLoopback := parsed.Scheme == "http" && oauthproto.IsLoopbackHost(parsed.Hostname())
-	if !strings.HasPrefix(rawURL, "https://") && !isLoopback {
+	if parsed.Scheme != "https" && !isLoopback {
 		return fmt.Errorf("client_id URL must use the https scheme: %s", rawURL)
 	}
 	if parsed.Host == "" {

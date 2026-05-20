@@ -866,17 +866,22 @@ func TestOptimizerPassThroughToolsInResponseFilter(t *testing.T) {
 
 // TestResponseFilteringWriter_SSE_PerLineFallthrough is a regression test for
 // issue #5257: when an SSE upstream interleaves a non-Response data line (e.g.
-// an MCP notification) or an undecodable data line with a real tools/list
-// response, the filter previously wrote the entire raw upstream payload and
-// returned, leaking the unfiltered tools/list past Cedar. It must instead pass
-// only the offending line through and continue filtering the rest of the
-// stream.
+// an MCP notification) or an undecodable data line with a real list response,
+// the filter previously wrote the entire raw upstream payload and returned,
+// leaking the unfiltered list past Cedar. It must instead pass only the
+// offending line through and continue filtering the rest of the stream.
+//
+// The same code path runs for every method covered by
+// requiresResponseFiltering, so each of tools/list, prompts/list, and
+// resources/list is exercised below.
 func TestResponseFilteringWriter_SSE_PerLineFallthrough(t *testing.T) {
 	t.Parallel()
 
 	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
 		Policies: []string{
 			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+			`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
+			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
 		},
 		EntitiesJSON: `[]`,
 	}, "")
@@ -887,102 +892,171 @@ func TestResponseFilteringWriter_SSE_PerLineFallthrough(t *testing.T) {
 		Claims:  map[string]interface{}{"sub": "user1"},
 	}}
 
-	// Real tools/list response. The caller is only authorized for "weather",
-	// so a working filter must drop "admin_tool" from the response.
-	toolsResult := mcp.ListToolsResult{
-		Tools: []mcp.Tool{
-			{Name: "weather", Description: "Get weather information"},
-			{Name: "admin_tool", Description: "Sensitive admin operations"},
+	// encodeListResponse marshals a list result type into a JSON-RPC Response
+	// data line.
+	encodeListResponse := func(t *testing.T, result interface{}) string {
+		t.Helper()
+		resultJSON, err := json.Marshal(result)
+		require.NoError(t, err)
+		encoded, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+			ID:     jsonrpc2.Int64ID(1),
+			Result: json.RawMessage(resultJSON),
+		})
+		require.NoError(t, err)
+		return "data: " + string(encoded)
+	}
+
+	// methodCase describes how to build a filterable response for one MCP
+	// list method and how to read the filtered names out of the wire output.
+	type methodCase struct {
+		name             string
+		method           string
+		respLine         string
+		authorizedName   string
+		unauthorizedName string
+		extractNames     func(t *testing.T, result json.RawMessage) []string
+	}
+
+	methodCases := []methodCase{
+		{
+			name:   "tools/list",
+			method: string(mcp.MethodToolsList),
+			respLine: encodeListResponse(t, mcp.ListToolsResult{
+				Tools: []mcp.Tool{
+					{Name: "weather", Description: "Get weather information"},
+					{Name: "admin_tool", Description: "Sensitive admin operations"},
+				},
+			}),
+			authorizedName:   "weather",
+			unauthorizedName: "admin_tool",
+			extractNames: func(t *testing.T, result json.RawMessage) []string {
+				t.Helper()
+				var r mcp.ListToolsResult
+				require.NoError(t, json.Unmarshal(result, &r))
+				names := make([]string, len(r.Tools))
+				for i, tool := range r.Tools {
+					names[i] = tool.Name
+				}
+				return names
+			},
+		},
+		{
+			name:   "prompts/list",
+			method: string(mcp.MethodPromptsList),
+			respLine: encodeListResponse(t, mcp.ListPromptsResult{
+				Prompts: []mcp.Prompt{
+					{Name: "greeting", Description: "Generate greetings"},
+					{Name: "admin_prompt", Description: "Sensitive admin prompt"},
+				},
+			}),
+			authorizedName:   "greeting",
+			unauthorizedName: "admin_prompt",
+			extractNames: func(t *testing.T, result json.RawMessage) []string {
+				t.Helper()
+				var r mcp.ListPromptsResult
+				require.NoError(t, json.Unmarshal(result, &r))
+				names := make([]string, len(r.Prompts))
+				for i, p := range r.Prompts {
+					names[i] = p.Name
+				}
+				return names
+			},
+		},
+		{
+			name:   "resources/list",
+			method: string(mcp.MethodResourcesList),
+			respLine: encodeListResponse(t, mcp.ListResourcesResult{
+				Resources: []mcp.Resource{
+					{URI: "data", Name: "Data Resource"},
+					{URI: "secret", Name: "Sensitive Resource"},
+				},
+			}),
+			authorizedName:   "data",
+			unauthorizedName: "secret",
+			extractNames: func(t *testing.T, result json.RawMessage) []string {
+				t.Helper()
+				var r mcp.ListResourcesResult
+				require.NoError(t, json.Unmarshal(result, &r))
+				names := make([]string, len(r.Resources))
+				for i, res := range r.Resources {
+					names[i] = res.URI
+				}
+				return names
+			},
 		},
 	}
-	resultJSON, err := json.Marshal(toolsResult)
-	require.NoError(t, err)
-	encodedResp, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
-		ID:     jsonrpc2.Int64ID(1),
-		Result: json.RawMessage(resultJSON),
-	})
-	require.NoError(t, err)
-	respLine := "data: " + string(encodedResp)
 
-	testCases := []struct {
-		name           string
-		precedingLines []string
+	precedingLineCases := []struct {
+		name string
+		line string
 	}{
 		{
-			name: "non-response data line before tools/list",
-			precedingLines: []string{
-				// A notifications/* frame is a valid JSON-RPC notification
-				// (no id), so jsonrpc2.DecodeMessage returns a non-Response
-				// message. The buggy path treated this as a signal to dump
-				// rawResponse and return.
-				`data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"warming up"}}`,
-			},
+			name: "non-response data line",
+			// A notifications/* frame is a valid JSON-RPC notification
+			// (no id), so jsonrpc2.DecodeMessage returns a non-Response
+			// message. The buggy path treated this as a signal to dump
+			// rawResponse and return.
+			line: `data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"warming up"}}`,
 		},
 		{
-			name: "undecodable data line before tools/list",
-			precedingLines: []string{
-				`data: this is not json at all`,
-			},
+			name: "undecodable data line",
+			line: `data: this is not json at all`,
 		},
 	}
 
-	for _, tc := range testCases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
+	for _, mc := range methodCases {
+		for _, plc := range precedingLineCases {
+			mc, plc := mc, plc
+			t.Run(mc.name+"/"+plc.name, func(t *testing.T) {
+				t.Parallel()
 
-			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-			require.NoError(t, err)
-			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+				req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+				require.NoError(t, err)
+				req = req.WithContext(auth.WithIdentity(req.Context(), identity))
 
-			rr := httptest.NewRecorder()
-			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
-			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+				rr := httptest.NewRecorder()
+				rfw := NewResponseFilteringWriter(rr, authorizer, req, mc.method, nil, nil)
+				rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
 
-			body := strings.Join(append(tc.precedingLines, respLine, ""), "\n")
-			_, err = rfw.Write([]byte(body))
-			require.NoError(t, err)
+				body := strings.Join([]string{plc.line, mc.respLine, ""}, "\n")
+				_, err = rfw.Write([]byte(body))
+				require.NoError(t, err)
 
-			require.NoError(t, rfw.FlushAndFilter())
+				require.NoError(t, rfw.FlushAndFilter())
 
-			out := rr.Body.String()
+				out := rr.Body.String()
 
-			// Each preceding line must still appear verbatim; pass-through
-			// is the whole point of the fix.
-			for _, pl := range tc.precedingLines {
-				assert.Contains(t, out, pl, "non-response/undecodable preceding line must pass through unchanged")
-			}
+				// The preceding line must still appear verbatim; pass-through
+				// is the whole point of the fix.
+				assert.Contains(t, out, plc.line,
+					"non-response/undecodable preceding line must pass through unchanged")
 
-			// The real tools/list response must have been filtered. Pull the
-			// last data line out and decode it.
-			var filteredLine string
-			for _, line := range strings.Split(out, "\n") {
-				if strings.HasPrefix(line, "data: {\"jsonrpc\"") && strings.Contains(line, `"result"`) {
-					filteredLine = line
+				// The real list response must have been filtered. Pull the
+				// last JSON-RPC Response data line out and decode it.
+				var filteredLine string
+				for _, line := range strings.Split(out, "\n") {
+					if strings.HasPrefix(line, "data: {\"jsonrpc\"") && strings.Contains(line, `"result"`) {
+						filteredLine = line
+					}
 				}
-			}
-			require.NotEmpty(t, filteredLine, "no JSON-RPC Response data line found in output")
+				require.NotEmpty(t, filteredLine, "no JSON-RPC Response data line found in output")
 
-			payload := strings.TrimPrefix(filteredLine, "data: ")
-			msg, err := jsonrpc2.DecodeMessage([]byte(payload))
-			require.NoError(t, err)
-			resp, ok := msg.(*jsonrpc2.Response)
-			require.True(t, ok)
+				payload := strings.TrimPrefix(filteredLine, "data: ")
+				msg, err := jsonrpc2.DecodeMessage([]byte(payload))
+				require.NoError(t, err)
+				resp, ok := msg.(*jsonrpc2.Response)
+				require.True(t, ok)
 
-			var filtered mcp.ListToolsResult
-			require.NoError(t, json.Unmarshal(resp.Result, &filtered))
+				names := mc.extractNames(t, resp.Result)
+				assert.Contains(t, names, mc.authorizedName, "authorized entry must be retained")
+				assert.NotContains(t, names, mc.unauthorizedName,
+					"unauthorized entry must be filtered; presence indicates the cedar bypass from #5257 is back")
 
-			names := make([]string, len(filtered.Tools))
-			for i, tool := range filtered.Tools {
-				names[i] = tool.Name
-			}
-			assert.Contains(t, names, "weather", "authorized tool must be retained")
-			assert.NotContains(t, names, "admin_tool",
-				"unauthorized tool must be filtered; presence indicates the cedar bypass from #5257 is back")
-
-			// And the raw unfiltered payload (the bug used to dump it)
-			// must not appear in the wire output.
-			assert.NotContains(t, out, `"admin_tool"`,
-				"unfiltered tools/list payload leaked into SSE output")
-		})
+				// And the raw unfiltered payload (the bug used to dump it)
+				// must not appear in the wire output.
+				assert.NotContains(t, out, `"`+mc.unauthorizedName+`"`,
+					"unfiltered list payload leaked into SSE output")
+			})
+		}
 	}
 }

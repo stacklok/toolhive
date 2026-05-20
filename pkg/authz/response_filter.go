@@ -191,11 +191,12 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 			case err != nil:
 				// Pass this line through unfiltered. Earlier revisions wrote
 				// rawResponse and returned here, which leaked every subsequent
-				// data line on the stream past the filter (issue #5257).
-				if rfw.method == string(mcp.MethodToolsList) {
-					slog.Warn("SSE data line could not be decoded as JSON-RPC; passing through unfiltered",
-						"method", rfw.method, "error", err)
-				}
+				// data line on the stream past the filter (issue #5257). The
+				// WARN fires for every filtered method (tools/list,
+				// prompts/list, resources/list, find_tool) because the bypass
+				// applies equally to all of them.
+				slog.Warn("SSE data line could not be decoded as JSON-RPC; passing through unfiltered",
+					"method", rfw.method, "error", err)
 			default:
 				if response, ok := message.(*jsonrpc2.Response); ok {
 					filteredResponse, err := rfw.filterListResponse(response)
@@ -214,11 +215,12 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 					}
 
 					written = true
-				} else if rfw.method == string(mcp.MethodToolsList) {
+				} else {
 					// Non-Response message (e.g. a notifications/* frame
 					// interleaved on the stream). Pass through unfiltered for
 					// this line only; the next data line may still be the real
-					// tools/list response and must reach the filter.
+					// response and must reach the filter. Logs at WARN for
+					// every filtered method, not just tools/list.
 					slog.Warn("SSE data line was not a JSON-RPC Response; passing through unfiltered",
 						"method", rfw.method)
 				}

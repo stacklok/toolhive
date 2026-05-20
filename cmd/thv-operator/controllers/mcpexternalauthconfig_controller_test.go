@@ -1529,7 +1529,7 @@ func TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequir
 	validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
 	require.NotNil(t, validCond, "Valid condition must be set for OBO-typed config")
 	assert.Equal(t, metav1.ConditionFalse, validCond.Status)
-	assert.Equal(t, "EnterpriseRequired", validCond.Reason,
+	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, validCond.Reason,
 		"the exact reason string is part of the user-facing contract — external consumers pattern-match on it")
 
 	// Generic-error guard: the dispatch path must NOT leak a generic
@@ -1606,7 +1606,7 @@ func TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized(t *t
 	validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
 	require.NotNil(t, validCond)
 	assert.Equal(t, metav1.ConditionFalse, validCond.Status)
-	assert.Equal(t, "EnterpriseRequired", validCond.Reason)
+	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, validCond.Reason)
 }
 
 // TestMCPExternalAuthConfigReconciler_setInvalid_ReasonSelection asserts the
@@ -1624,17 +1624,17 @@ func TestMCPExternalAuthConfigReconciler_setInvalid_ReasonSelection(t *testing.T
 		{
 			name:       "bare sentinel produces EnterpriseRequired",
 			inputErr:   obo.ErrEnterpriseRequired,
-			wantReason: "EnterpriseRequired",
+			wantReason: mcpv1beta1.ConditionReasonEnterpriseRequired,
 		},
 		{
 			name:       "wrapped sentinel still produces EnterpriseRequired via errors.Is",
 			inputErr:   fmt.Errorf("outer: %w", obo.ErrEnterpriseRequired),
-			wantReason: "EnterpriseRequired",
+			wantReason: mcpv1beta1.ConditionReasonEnterpriseRequired,
 		},
 		{
 			name:       "non-sentinel error produces InvalidConfig",
 			inputErr:   stderrors.New("some other validation failure"),
-			wantReason: "InvalidConfig",
+			wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
 		},
 	}
 
@@ -1663,9 +1663,9 @@ func TestMCPExternalAuthConfigReconciler_setInvalid_ReasonSelection(t *testing.T
 
 			r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
 
-			reason := "InvalidConfig"
+			reason := mcpv1beta1.ConditionReasonInvalidConfig
 			if stderrors.Is(tt.inputErr, obo.ErrEnterpriseRequired) {
-				reason = "EnterpriseRequired"
+				reason = mcpv1beta1.ConditionReasonEnterpriseRequired
 			}
 			_, err := r.setInvalid(t.Context(), cfg, tt.inputErr, reason)
 			require.NoError(t, err)

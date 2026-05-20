@@ -92,6 +92,14 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 	// it before validation ensures the advisory tracks the current spec on
 	// every reconcile — including the validation-failure path — so a broken
 	// edit cannot leave a stale True/upstream-name dangling.
+	//
+	// Note: the OBO failure path routes through setInvalid, which discards
+	// this in-memory mutation (its MutateAndPatchStatus call re-fetches and
+	// re-applies the advisory inside its patch closure). The in-memory
+	// mutation here is therefore load-bearing only on the validation-failure
+	// path (line 110) and the Valid=True path (line 139). The function is
+	// idempotent on the same spec, so the double computation on the OBO
+	// path is benign.
 	syntheticChanged := r.applyIdentitySynthesizedCondition(externalAuthConfig)
 
 	// Validate spec configuration early
@@ -119,9 +127,9 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 	// inside a consumer reconciler with a generic "unsupported" error.
 	if externalAuthConfig.Spec.Type == mcpv1beta1.ExternalAuthTypeOBO {
 		if err := ctrlutil.OBOValidate(externalAuthConfig); err != nil {
-			reason := "InvalidConfig"
+			reason := mcpv1beta1.ConditionReasonInvalidConfig
 			if stderrors.Is(err, obo.ErrEnterpriseRequired) {
-				reason = "EnterpriseRequired"
+				reason = mcpv1beta1.ConditionReasonEnterpriseRequired
 			}
 			return r.setInvalid(ctx, externalAuthConfig, err, reason)
 		}
@@ -227,6 +235,12 @@ func (r *MCPExternalAuthConfigReconciler) setInvalid(
 ) (ctrl.Result, error) {
 	fresh := &mcpv1beta1.MCPExternalAuthConfig{}
 	if getErr := r.Get(ctx, client.ObjectKeyFromObject(cfg), fresh); getErr != nil {
+		if errors.IsNotFound(getErr) {
+			// Deleted between the reconciler's initial Get and this re-fetch;
+			// nothing to patch, and the reconciler's own NotFound handling
+			// already returned cleanly the next time around.
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, getErr
 	}
 	if patchErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, fresh, func(c *mcpv1beta1.MCPExternalAuthConfig) {

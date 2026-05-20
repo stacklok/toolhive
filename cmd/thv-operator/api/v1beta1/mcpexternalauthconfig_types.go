@@ -1026,6 +1026,23 @@ const (
 	ConditionReasonIdentitySynthesizedInactive = "AllUpstreamsHaveUserInfo"
 )
 
+// Condition reasons for ConditionTypeValid on OBO-typed configs. These
+// literals are part of the user-facing contract — external consumers and
+// downstream tooling pattern-match on them.
+const (
+	// ConditionReasonEnterpriseRequired: an obo-typed MCPExternalAuthConfig
+	// requires an enterprise build that has registered an OBO handler via
+	// controllerutil.RegisterOBOHandler. Upstream-only builds surface this
+	// reason for every obo-typed config.
+	ConditionReasonEnterpriseRequired = "EnterpriseRequired"
+
+	// ConditionReasonInvalidConfig: an obo-typed MCPExternalAuthConfig is
+	// well-formed at the CRD level but fails the registered OBO handler's
+	// Validate() with an error other than the enterprise-required sentinel.
+	// Used by out-of-tree handlers; unreachable in upstream-only builds.
+	ConditionReasonInvalidConfig = "InvalidConfig"
+)
+
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 type MCPExternalAuthConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPExternalAuthConfig's state

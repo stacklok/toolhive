@@ -9,6 +9,10 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
@@ -97,4 +101,53 @@ func TestOBOConverter_RegisteredInDefaultRegistry(t *testing.T) {
 	converter, err = DefaultRegistry().GetConverter(mcpv1beta1.ExternalAuthTypeOBO)
 	require.NoError(t, err)
 	assert.IsType(t, &OBOConverter{}, converter)
+}
+
+// TestDiscoverAndResolveAuth_OBO_SentinelSurvivesWrap proves that the
+// OBO sentinel propagates through DiscoverAndResolveAuth's
+// `"failed to convert to strategy: %w"` wrap at interface.go:191 and
+// remains recognizable via errors.Is. The vMCP integration path is
+// structurally fragile: matching by the wrap-prefix string would silently
+// degrade if the message ever changed. This test is the regression guard.
+func TestDiscoverAndResolveAuth_OBO_SentinelSurvivesWrap(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "obo-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cfg).
+		Build()
+
+	strategy, err := DiscoverAndResolveAuth(
+		t.Context(),
+		&mcpv1beta1.ExternalAuthConfigRef{Name: cfg.Name},
+		cfg.Namespace,
+		fakeClient,
+	)
+
+	require.Error(t, err)
+	assert.Nil(t, strategy)
+	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired,
+		"errors.Is must match the sentinel through the convert-to-strategy wrap")
+
+	// Sanity: the wrap prefix is present, but recognition above is via
+	// errors.Is, not by string matching.
+	assert.Contains(t, err.Error(), "failed to convert to strategy")
+
+	// Generic-error guards: the dispatch path must not leak generic strings.
+	assert.NotContains(t, err.Error(), "unsupported external auth type")
+	assert.NotContains(t, err.Error(), "unknown middleware type")
 }

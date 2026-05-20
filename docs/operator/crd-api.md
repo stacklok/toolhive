@@ -97,7 +97,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts" |  |  |
+| `type` _string_ | Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts", "obo" |  |  |
 | `headerInjection` _[auth.types.HeaderInjectionConfig](#authtypesheaderinjectionconfig)_ | HeaderInjection contains configuration for header injection auth strategy.<br />Used when Type = "header_injection". |  |  |
 | `tokenExchange` _[auth.types.TokenExchangeConfig](#authtypestokenexchangeconfig)_ | TokenExchange contains configuration for token exchange auth strategy.<br />Used when Type = "token_exchange". |  |  |
 | `upstreamInject` _[auth.types.UpstreamInjectConfig](#authtypesupstreaminjectconfig)_ | UpstreamInject contains configuration for upstream inject auth strategy.<br />Used when Type = "upstream_inject". |  |  |
@@ -1425,6 +1425,7 @@ _Appears in:_
 | `embeddedAuthServer` | ExternalAuthTypeEmbeddedAuthServer is the type for embedded OAuth2/OIDC authorization server<br />This enables running an embedded auth server that delegates to upstream IDPs<br /> |
 | `awsSts` | ExternalAuthTypeAWSSts is the type for AWS STS authentication<br /> |
 | `upstreamInject` | ExternalAuthTypeUpstreamInject is the type for upstream token injection<br />This injects an upstream IDP access token as the Authorization: Bearer header<br /> |
+| `obo` | ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.<br />This type requires a build with an OBO handler registered via<br />controllerutil.RegisterOBOHandler; an upstream-only build surfaces<br />status.conditions[Valid] = False with Reason: EnterpriseRequired<br />when an obo-typed MCPExternalAuthConfig is applied.<br /> |
 
 
 #### api.v1beta1.HeaderForwardConfig

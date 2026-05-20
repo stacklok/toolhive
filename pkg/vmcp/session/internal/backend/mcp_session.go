@@ -59,15 +59,37 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	return a.base.RoundTrip(reqClone)
 }
 
-// identityRoundTripper propagates the caller's identity to outgoing backend requests.
+// identityRoundTripper propagates a fallback identity to outgoing backend
+// requests when the request context carries none. It is the session-backed
+// twin of identityPropagatingRoundTripper in pkg/vmcp/client/client.go, which
+// holds the canonical description of the #5323 fallback-only identity
+// invariant.
+//
+// Differences from the canonical twin:
+//   - No isHealthCheck propagation. Health probes do not flow through
+//     session-backed clients — they go through the per-call client in
+//     pkg/vmcp/client. If a future change routes health probes through this
+//     connector, mirror the isHealthCheck pattern from client.go so the
+//     Close() DELETE built from context.Background() retains the marker.
+//
+// Consolidation is tracked by #5333; until then, keep the fallback-only
+// invariant in sync across both implementations.
 type identityRoundTripper struct {
-	base     http.RoundTripper
-	identity *auth.Identity
+	base http.RoundTripper
+	// fallbackIdentity is injected only when req.Context() carries no identity.
+	// It must never override a non-nil identity present on the request context.
+	//
+	// Shared across all concurrent RoundTrip invocations on this transport; the
+	// pointed-to *auth.Identity (including UpstreamTokens) MUST be treated as
+	// immutable — see pkg/auth/identity.go.
+	fallbackIdentity *auth.Identity
 }
 
+// RoundTrip preserves any identity already on req.Context() and only injects
+// the captured fallback when the request context carries no identity.
 func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if i.identity != nil {
-		ctx := auth.WithIdentity(req.Context(), i.identity)
+	if _, hasIdentity := auth.IdentityFromContext(req.Context()); !hasIdentity && i.fallbackIdentity != nil {
+		ctx := auth.WithIdentity(req.Context(), i.fallbackIdentity)
 		req = req.Clone(ctx)
 	}
 	return i.base.RoundTrip(req)
@@ -290,7 +312,12 @@ func createMCPClient(
 		authConfig:   target.AuthConfig,
 		target:       target,
 	}
-	base = &identityRoundTripper{base: base, identity: identity}
+	// The identity captured here is a fallback used only when the per-request
+	// context carries no identity (e.g. mcp-go's Close() DELETE built from
+	// context.Background()). Normal backend requests preserve the freshly
+	// refreshed identity placed on the request context by
+	// auth.TokenValidator.Middleware (see issue #5323).
+	base = &identityRoundTripper{base: base, fallbackIdentity: identity}
 	base, err = headerforward.BuildHeaderForwardTripper(ctx, base, target.HeaderForward, provider, target.WorkloadID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build header-forward transport for backend %s: %w", target.WorkloadID, err)

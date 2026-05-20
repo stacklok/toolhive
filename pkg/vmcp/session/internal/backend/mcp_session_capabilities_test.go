@@ -92,6 +92,12 @@ func (f *fakeBackend) callCount(method string) int {
 // headersFor returns a clone of the inbound HTTP headers recorded for the most
 // recent JSON-RPC request with the given method, or nil if no such request was
 // seen. Cloning under the mutex keeps the caller safe from concurrent writes.
+//
+// The helper accepts any MCP method name; in-tree callers currently converge
+// on tools/call, which trips unparam — but the helper must stay
+// method-agnostic so future tests can inspect headers for Initialize, etc.
+//
+//nolint:unparam // method-agnostic test helper; see doc comment above.
 func (f *fakeBackend) headersFor(method string) http.Header {
 	f.mu.Lock()
 	defer f.mu.Unlock()

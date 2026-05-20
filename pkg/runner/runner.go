@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
@@ -382,12 +383,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		if keyPrefix == "" {
 			keyPrefix = "thv:proxy:session:"
 		}
-		storage, err := session.NewRedisStorage(ctx, session.RedisConfig{
-			Addr:      redisCfg.Address,
-			Password:  os.Getenv(session.RedisPasswordEnvVar),
-			DB:        int(redisCfg.DB),
-			KeyPrefix: keyPrefix,
-		}, effectiveSessionTTL)
+		storage, err := session.NewRedisStorage(ctx, tcredis.Config{
+			Addr:     redisCfg.Address,
+			Password: os.Getenv(session.RedisPasswordEnvVar),
+			DB:       int(redisCfg.DB),
+		}, keyPrefix, effectiveSessionTTL)
 		if err != nil {
 			return fmt.Errorf("failed to create Redis session storage: %w", err)
 		}

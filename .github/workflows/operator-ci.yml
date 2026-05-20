@@ -182,9 +182,9 @@ jobs:
         go install github.com/stackloklabs/yardstick/cmd/yardstick-client@v0.0.2
         
     - name: Install Chainsaw
-      uses: kyverno/action-install-chainsaw@06560d18422209e9c1e08e931d477d04bf2674c1 # v0.2.14
+      uses: kyverno/action-install-chainsaw@1223ef75bedeb59c4e7b5455463d4316e76dff01 # v0.2.15
       with:
-        release: v0.2.14 # chainsaw
+        release: v0.2.15 # chainsaw
 
     - name: Disable containerd image store
       # Workaround for https://github.com/kubernetes-sigs/kind/issues/3795

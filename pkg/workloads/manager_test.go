@@ -1846,6 +1846,13 @@ func TestDefaultManager_UpdateWorkload(t *testing.T) {
 func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 	t.Parallel()
 
+	// fakeSpawnerPID is the fake PID returned by the test-injected spawner.
+	// It must be > 0 so SetWorkloadPID treats it as a real PID.
+	const fakeSpawnerPID = 12345
+	noopSpawner := func(_ context.Context, _ *runner.RunConfig) (int, error) {
+		return fakeSpawnerPID, nil
+	}
+
 	tests := []struct {
 		name         string
 		workloadName string
@@ -1908,9 +1915,10 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusRemoving, "").Return(nil)
 				sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), "test-workload").Return(nil)
 
-				// Mock RunWorkloadDetached calls - expect the ones that will be called
+				// Mock RunWorkloadDetached calls - expect the ones that will be called.
+				// The actual spawn is replaced by noopSpawner so SetWorkloadPID receives fakeSpawnerPID.
 				sm.EXPECT().SetWorkloadStatus(gomock.Any(), "test-workload", runtime.WorkloadStatusStarting, "").Return(nil)
-				sm.EXPECT().SetWorkloadPID(gomock.Any(), "test-workload", gomock.Any()).Return(nil)
+				sm.EXPECT().SetWorkloadPID(gomock.Any(), "test-workload", fakeSpawnerPID).Return(nil)
 			},
 			expectError: false, // Test passes - update process completes successfully
 		},
@@ -1972,6 +1980,10 @@ func TestDefaultManager_updateSingleWorkload(t *testing.T) {
 				statuses:       mockStatusManager,
 				configProvider: mockConfigProvider,
 			}
+			// Inject a no-op spawner so RunWorkloadDetached does not re-exec the
+			// test binary. Without this, the real spawn would orphan a child
+			// process that recursively reruns the entire test suite. See #5344.
+			withDetachedSpawner(noopSpawner)(manager)
 
 			err := manager.updateSingleWorkload(ctx, tt.workloadName, tt.runConfig)
 

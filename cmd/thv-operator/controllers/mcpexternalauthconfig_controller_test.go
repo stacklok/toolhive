@@ -1538,6 +1538,77 @@ func TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequir
 	assert.NotContains(t, validCond.Message, "unknown middleware type")
 }
 
+// TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized
+// proves that when a user switches an existing config from embeddedAuthServer
+// (which set IdentitySynthesized=True) to obo, the stale IdentitySynthesized
+// condition is removed alongside the new Valid=False/EnterpriseRequired
+// condition. Regression for the bug where setInvalid's MutateAndPatchStatus
+// diffed against an already-mutated snapshot and silently dropped the
+// IdentitySynthesized removal.
+func TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Construct a config that is already in the obo type but has a stale
+	// IdentitySynthesized condition left over from a prior embeddedAuthServer
+	// configuration. The reconciler must remove that condition on its next
+	// pass even though the failure path now routes through MutateAndPatchStatus.
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "obo-config",
+			Namespace:  "default",
+			Finalizers: []string{ExternalAuthConfigFinalizerName},
+			Generation: 2,
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+		},
+		Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               mcpv1beta1.ConditionTypeIdentitySynthesized,
+					Status:             metav1.ConditionTrue,
+					Reason:             mcpv1beta1.ConditionReasonIdentitySynthesizedActive,
+					Message:            "stale message from the embeddedAuthServer days",
+					ObservedGeneration: 1,
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cfg).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{
+		Name:      cfg.Name,
+		Namespace: cfg.Namespace,
+	}}
+
+	_, err := r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+
+	var updated mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &updated))
+
+	// IdentitySynthesized must be removed (the spec is no longer embeddedAuthServer).
+	assert.Nil(t, findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized),
+		"stale IdentitySynthesized condition must be removed once the spec leaves embeddedAuthServer")
+
+	// Valid=False/EnterpriseRequired must be set in the same reconcile pass.
+	validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, validCond)
+	assert.Equal(t, metav1.ConditionFalse, validCond.Status)
+	assert.Equal(t, "EnterpriseRequired", validCond.Reason)
+}
+
 // TestMCPExternalAuthConfigReconciler_setInvalid_ReasonSelection asserts the
 // reason-string selection in setInvalid handles the sentinel directly, the
 // sentinel through an fmt.Errorf wrap, and any other error. The exact reason

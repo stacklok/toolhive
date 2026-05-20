@@ -208,13 +208,32 @@ func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
 // message. Returns an empty result with no requeue: the spec must change (or
 // an out-of-tree handler must be registered) for this branch to clear, so
 // requeuing buys nothing.
+//
+// Callers in Reconcile() may have already mutated cfg.Status.Conditions in
+// memory (notably applyIdentitySynthesizedCondition). MutateAndPatchStatus
+// diffs the post-mutate object against the snapshot it takes at the start of
+// the call, so any mutation present in cfg before the helper runs lands in
+// both halves of the diff and silently disappears from the merge patch. To
+// avoid losing the IdentitySynthesized advisory transition (e.g., when a user
+// switches a config from embeddedAuthServer to obo), this helper re-fetches
+// the object from the apiserver and re-applies the synthesized-condition
+// computation inside the patch closure so both the advisory transition and
+// the Valid=False condition land in the same patch.
 func (r *MCPExternalAuthConfigReconciler) setInvalid(
 	ctx context.Context,
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
 	err error,
 	reason string,
 ) (ctrl.Result, error) {
-	if patchErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, cfg, func(c *mcpv1beta1.MCPExternalAuthConfig) {
+	fresh := &mcpv1beta1.MCPExternalAuthConfig{}
+	if getErr := r.Get(ctx, client.ObjectKeyFromObject(cfg), fresh); getErr != nil {
+		return ctrl.Result{}, getErr
+	}
+	if patchErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, fresh, func(c *mcpv1beta1.MCPExternalAuthConfig) {
+		// applyIdentitySynthesizedCondition is idempotent on the same spec;
+		// re-applying it inside the closure folds the advisory transition
+		// into the same patch as the Valid=False write below.
+		r.applyIdentitySynthesizedCondition(c)
 		meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeValid,
 			Status:             metav1.ConditionFalse,

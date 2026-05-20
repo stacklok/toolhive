@@ -8,7 +8,6 @@ package controllers
 import (
 	"context"
 	"encoding/json"
-	stderrors "errors"
 	"fmt"
 	"maps"
 	"os"
@@ -2101,8 +2100,8 @@ func (*MCPServerReconciler) mirrorExternalAuthConfigInvalid(
 	m *mcpv1beta1.MCPServer,
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (bool, error) {
-	reason, mirrorErr := mirroredExternalAuthConfigInvalid(externalAuthConfig)
-	if mirrorErr == nil {
+	mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig)
+	if mirrored == nil {
 		// Source healed (Valid=True or absent). Clear any stale mirror so it
 		// doesn't persist after the cause is gone. Downstream branches in
 		// handleExternalAuthConfig (e.g. multi-upstream) re-set False if they
@@ -2110,18 +2109,14 @@ func (*MCPServerReconciler) mirrorExternalAuthConfigInvalid(
 		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
 		return false, nil
 	}
-	var mirrored *mirroredInvalidExternalAuthConfigError
-	stderrors.As(mirrorErr, &mirrored)
 	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 		Status:             metav1.ConditionFalse,
-		Reason:             reason,
+		Reason:             mirrored.Reason,
 		Message:            mirrored.Message,
 		ObservedGeneration: m.Generation,
 	})
-	return true, fmt.Errorf(
-		"referenced MCPExternalAuthConfig %s/%s is invalid: %w",
-		m.Namespace, externalAuthConfig.Name, mirrorErr)
+	return true, fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", m.Namespace, externalAuthConfig.Name, mirrored)
 }
 
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.

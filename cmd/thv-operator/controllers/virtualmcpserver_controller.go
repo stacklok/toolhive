@@ -2154,8 +2154,8 @@ func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 
 		// Mirror the source's Valid=False condition before attempting conversion
 		// so the per-backend condition surfaces with the same reason taxonomy.
-		if _, mirrorErr := mirroredExternalAuthConfigInvalid(externalAuthConfig); mirrorErr != nil {
-			return nil, mirrorErr
+		if mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig); mirrored != nil {
+			return nil, mirrored
 		}
 
 		// Convert the external auth config to strategy
@@ -2276,12 +2276,12 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 		// Mirror the source's Valid=False condition (e.g. EnterpriseRequired for
 		// obo-typed configs in upstream-only builds) onto the per-backend
 		// condition so the failure surfaces with the same reason taxonomy.
-		if mirrorReason, mirrorErr := mirroredExternalAuthConfigInvalid(externalAuthConfig); mirrorErr != nil {
+		if mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig); mirrored != nil {
 			authErrors = append(authErrors, AuthConfigError{
 				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
 				BackendName: workloadInfo.Name,
-				Error:       mirrorErr,
-				Reason:      mirrorReason,
+				Error:       mirrored,
+				Reason:      mirrored.Reason,
 			})
 			continue
 		}

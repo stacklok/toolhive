@@ -901,30 +901,33 @@ func TestConvertBackendAuthConfigToVMCP_MirrorsInvalidExternalAuthConfig(t *test
 }
 
 // TestMirroredExternalAuthConfigInvalid verifies the source-condition probe
-// returns the typed error + reason exactly when Status.Conditions[Valid] is
-// False, and ("", nil) otherwise.
+// returns the typed pointer exactly when Status.Conditions[Valid] is False,
+// and nil otherwise. Also asserts that the typed value satisfies the error
+// interface so callers can pass it through error-returning APIs (notably
+// convertBackendAuthConfigToVMCP -> buildOutgoingAuthConfig) and recover the
+// reason via mirroredReasonFromError.
 func TestMirroredExternalAuthConfigInvalid(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		conditions []metav1.Condition
-		wantReason string
-		wantErr    bool
+		name        string
+		conditions  []metav1.Condition
+		wantReason  string
+		wantMessage string
 	}{
 		{
-			name: "Valid=False/EnterpriseRequired returns mirrored error and reason",
+			name: "Valid=False/EnterpriseRequired returns mirrored pointer",
 			conditions: []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeValid,
 				Status:  metav1.ConditionFalse,
 				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
 				Message: "obo enterprise required",
 			}},
-			wantReason: mcpv1beta1.ConditionReasonEnterpriseRequired,
-			wantErr:    true,
+			wantReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+			wantMessage: "obo enterprise required",
 		},
 		{
-			name: "Valid=True returns no mirror",
+			name: "Valid=True returns nil",
 			conditions: []metav1.Condition{{
 				Type:   mcpv1beta1.ConditionTypeValid,
 				Status: metav1.ConditionTrue,
@@ -932,7 +935,7 @@ func TestMirroredExternalAuthConfigInvalid(t *testing.T) {
 			}},
 		},
 		{
-			name:       "no Valid condition returns no mirror",
+			name:       "no Valid condition returns nil",
 			conditions: nil,
 		},
 	}
@@ -944,15 +947,16 @@ func TestMirroredExternalAuthConfigInvalid(t *testing.T) {
 			cfg := &mcpv1beta1.MCPExternalAuthConfig{
 				Status: mcpv1beta1.MCPExternalAuthConfigStatus{Conditions: tt.conditions},
 			}
-			reason, err := mirroredExternalAuthConfigInvalid(cfg)
-			assert.Equal(t, tt.wantReason, reason)
-			if tt.wantErr {
-				require.Error(t, err)
-				assert.Equal(t, tt.wantReason, mirroredReasonFromError(err))
-			} else {
-				assert.NoError(t, err)
-				assert.Empty(t, mirroredReasonFromError(err))
+			mirrored := mirroredExternalAuthConfigInvalid(cfg)
+			if tt.wantReason == "" {
+				assert.Nil(t, mirrored)
+				return
 			}
+			require.NotNil(t, mirrored)
+			assert.Equal(t, tt.wantReason, mirrored.Reason)
+			assert.Equal(t, tt.wantMessage, mirrored.Message)
+			// Round-trips through error-typed APIs.
+			assert.Equal(t, tt.wantReason, mirroredReasonFromError(mirrored))
 		})
 	}
 }

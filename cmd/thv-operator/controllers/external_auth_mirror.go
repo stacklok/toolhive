@@ -29,11 +29,17 @@ func (e *mirroredInvalidExternalAuthConfigError) Error() string {
 }
 
 // mirroredExternalAuthConfigInvalid inspects a fetched MCPExternalAuthConfig
-// and returns (reason, error) when its Valid condition is False, or ("", nil)
-// when Valid is True/absent. The returned error is a
-// *mirroredInvalidExternalAuthConfigError that carries the source's reason and
-// message so callers can surface them on the consumer's status without
-// re-fetching the object.
+// and returns a non-nil *mirroredInvalidExternalAuthConfigError when its Valid
+// condition is False, or nil when Valid is True/absent. The returned value
+// implements error and carries the source's reason and message so callers can
+// surface them on the consumer's status without re-fetching the object.
+//
+// Returning the concrete pointer (rather than an (error, string) tuple) keeps
+// callers from needing errors.As to recover the reason/message fields when
+// they have the value in hand. The error path still satisfies the standard
+// error interface, so callers that propagate it through layers that only
+// carry error (notably convertBackendAuthConfigToVMCP -> buildOutgoingAuthConfig)
+// can recover the same pointer via mirroredReasonFromError below.
 //
 // Consumer reconcilers (MCPServer, MCPRemoteProxy, VirtualMCPServer) use this
 // probe to mirror the source's Valid=False condition onto the consumer CR,
@@ -43,12 +49,12 @@ func (e *mirroredInvalidExternalAuthConfigError) Error() string {
 // consumer's status to report only the generic dispatch failure.
 func mirroredExternalAuthConfigInvalid(
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
-) (string, error) {
+) *mirroredInvalidExternalAuthConfigError {
 	validCond := meta.FindStatusCondition(externalAuthConfig.Status.Conditions, mcpv1beta1.ConditionTypeValid)
 	if validCond == nil || validCond.Status != metav1.ConditionFalse {
-		return "", nil
+		return nil
 	}
-	return validCond.Reason, &mirroredInvalidExternalAuthConfigError{
+	return &mirroredInvalidExternalAuthConfigError{
 		Reason:  validCond.Reason,
 		Message: validCond.Message,
 	}

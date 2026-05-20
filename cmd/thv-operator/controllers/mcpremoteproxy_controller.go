@@ -798,22 +798,18 @@ func mirrorExternalAuthConfigInvalidForRemoteProxy(
 	proxy *mcpv1beta1.MCPRemoteProxy,
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (bool, error) {
-	reason, mirrorErr := mirroredExternalAuthConfigInvalid(externalAuthConfig)
-	if mirrorErr == nil {
+	mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig)
+	if mirrored == nil {
 		return false, nil
 	}
-	var mirrored *mirroredInvalidExternalAuthConfigError
-	stderrors.As(mirrorErr, &mirrored)
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
 		Status:             metav1.ConditionFalse,
-		Reason:             reason,
+		Reason:             mirrored.Reason,
 		Message:            mirrored.Message,
 		ObservedGeneration: proxy.Generation,
 	})
-	return true, fmt.Errorf(
-		"referenced MCPExternalAuthConfig %s/%s is invalid: %w",
-		proxy.Namespace, externalAuthConfig.Name, mirrorErr)
+	return true, fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", proxy.Namespace, externalAuthConfig.Name, mirrored)
 }
 
 // handleAuthServerRef validates and tracks the hash of the referenced authServerRef config.

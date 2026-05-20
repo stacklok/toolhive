@@ -117,7 +117,7 @@ func TestFetchClientMetadataDocument(t *testing.T) {
 
 		_, err := FetchClientMetadataDocument(context.Background(), server.URL+"/metadata.json")
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "Content-Type")
+		assert.Contains(t, err.Error(), "content type")
 	})
 
 	t.Run("application/json subtype accepted", func(t *testing.T) {

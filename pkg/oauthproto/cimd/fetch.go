@@ -11,10 +11,7 @@ package cimd
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"io"
-	"mime"
 	"net"
 	"net/http"
 	"net/url"
@@ -68,42 +65,22 @@ func FetchClientMetadataDocument(ctx context.Context, rawURL string) (*ClientMet
 		return nil, err
 	}
 
-	httpClient := newCIMDHTTPClient()
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create request: %w", err)
-	}
-
-	resp, err := httpClient.Do(req)
+	result, err := networking.FetchJSON[ClientMetadataDocument](
+		ctx,
+		newCIMDHTTPClient(),
+		rawURL,
+		networking.WithMaxResponseSize(10*1024),
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch client metadata document: %w", err)
 	}
-	// Keep-alive connections are disabled so no drain is needed to allow connection reuse.
-	defer func() { _ = resp.Body.Close() }()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("client metadata document fetch returned HTTP %d", resp.StatusCode)
-	}
-
-	ct := resp.Header.Get("Content-Type")
-	mediaType, _, parseErr := mime.ParseMediaType(ct)
-	if parseErr != nil || (mediaType != "application/json" && !isJSONSubtype(mediaType)) {
-		return nil, fmt.Errorf("client metadata document has unexpected Content-Type: %q", ct)
-	}
-
-	const maxBodyBytes = 10 * 1024
-	limited := io.LimitReader(resp.Body, maxBodyBytes)
-	var doc ClientMetadataDocument
-	if err := json.NewDecoder(limited).Decode(&doc); err != nil {
-		return nil, fmt.Errorf("failed to decode client metadata document: %w", err)
-	}
-
-	if err := ValidateClientMetadataDocument(&doc, rawURL); err != nil {
+	doc := &result.Data
+	if err := ValidateClientMetadataDocument(doc, rawURL); err != nil {
 		return nil, err
 	}
 
-	return &doc, nil
+	return doc, nil
 }
 
 // newCIMDHTTPClient builds an *http.Client for fetching CIMD documents.
@@ -237,9 +214,4 @@ func ValidateClientMetadataDocument(doc *ClientMetadataDocument, fetchedFrom str
 	}
 
 	return nil
-}
-
-// isJSONSubtype reports whether mediaType is an application/*+json subtype.
-func isJSONSubtype(mediaType string) bool {
-	return strings.HasPrefix(mediaType, "application/") && strings.HasSuffix(mediaType, "+json")
 }

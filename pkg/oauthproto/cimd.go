@@ -16,11 +16,7 @@ const ToolHiveClientMetadataDocumentURL = "https://toolhive.dev/oauth/client-met
 // Any HTTPS URL is treated as a CIMD client_id; DCR-issued IDs are always
 // opaque strings that never begin with "https://". Do not tighten this to an
 // exact match against ToolHiveClientMetadataDocumentURL — the embedded AS
-// (Phase 2) must accept CIMD URLs from third-party clients too.
-//
-// TODO(phase2): tighten per draft-ietf-oauth-client-id-metadata-document §3
-// (require host+path, reject fragment/userinfo/dot-segments) before wiring
-// into the AS GetClient decorator.
+// must accept CIMD URLs from third-party clients too.
 func IsClientIDMetadataDocumentURL(clientID string) bool {
 	return strings.HasPrefix(clientID, "https://")
 }

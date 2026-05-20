@@ -4,9 +4,11 @@
 package networking
 
 import (
+	"net"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestIsURL(t *testing.T) {
@@ -293,6 +295,33 @@ func TestIsLocalhost(t *testing.T) {
 			t.Parallel()
 			result := IsLocalhost(tt.input)
 			assert.Equal(t, tt.expected, result, "Input: %s", tt.input)
+		})
+	}
+}
+
+func TestIsPrivateIP(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ip   string
+		want bool
+	}{
+		{"CGN 100.64.0.1", "100.64.0.1", true},
+		{"CGN 100.127.255.255", "100.127.255.255", true},
+		{"documentation TEST-NET-1", "192.0.2.1", true},
+		{"documentation TEST-NET-2", "198.51.100.1", true},
+		{"documentation TEST-NET-3", "203.0.113.1", true},
+		{"public IPv4", "8.8.8.8", false},
+		{"public IPv6", "2001:db8::1", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ip := net.ParseIP(tt.ip)
+			require.NotNil(t, ip, "failed to parse test IP %s", tt.ip)
+			assert.Equal(t, tt.want, IsPrivateIP(ip))
 		})
 	}
 }

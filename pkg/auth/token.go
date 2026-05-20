@@ -491,7 +491,6 @@ func discoverOIDCConfiguration(
 	return &doc, nil
 }
 
-
 // registerIntrospectionProviders creates and configures the provider registry
 // for token introspection based on the configuration.
 func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret string) (*Registry, error) {

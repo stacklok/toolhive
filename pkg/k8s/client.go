@@ -76,4 +76,3 @@ func newControllerRuntimeClientWithConfig(config *rest.Config, scheme *runtime.S
 
 	return k8sClient, nil
 }
-

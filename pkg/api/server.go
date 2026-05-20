@@ -778,4 +778,3 @@ func GenerateNonce() (string, error) {
 	}
 	return hex.EncodeToString(b), nil
 }
-

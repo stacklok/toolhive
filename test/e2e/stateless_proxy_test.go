@@ -257,4 +257,3 @@ func (m *statelessMockMCPServer) Stop() {
 func (m *statelessMockMCPServer) GetCount() int32 {
 	return m.postHits.Load()
 }
-

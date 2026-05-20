@@ -50,4 +50,3 @@ func (h *StatusTestHelper) WaitForPhaseAny(registryName string,
 	}, timeout, time.Second).Should(gomega.BeElementOf(expectedPhases),
 		"MCPRegistry %s should reach one of phases %v", registryName, expectedPhases)
 }
-

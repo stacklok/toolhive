@@ -4,6 +4,7 @@
 package controllers
 
 import (
+	"context"
 	stderrors "errors"
 	"fmt"
 	"testing"
@@ -20,7 +21,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -1536,6 +1539,12 @@ func TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequir
 	// "unsupported external auth type" or "unknown middleware type" message.
 	assert.NotContains(t, validCond.Message, "unsupported external auth type")
 	assert.NotContains(t, validCond.Message, "unknown middleware type")
+
+	// Positive assertion: condition.Message must surface the sentinel's
+	// user-facing text. Without this check a refactor that emptied or
+	// rewrote the message would still pass the reason-string assertion.
+	assert.Equal(t, obo.ErrEnterpriseRequired.Error(), validCond.Message,
+		"condition.Message must surface the sentinel's user-facing text")
 }
 
 // TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized
@@ -1609,41 +1618,76 @@ func TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized(t *t
 	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, validCond.Reason)
 }
 
-// TestMCPExternalAuthConfigReconciler_setInvalid_ReasonSelection asserts the
-// reason-string selection in setInvalid handles the sentinel directly, the
-// sentinel through an fmt.Errorf wrap, and any other error. The exact reason
-// strings are part of the user-facing contract.
-func TestMCPExternalAuthConfigReconciler_setInvalid_ReasonSelection(t *testing.T) {
-	t.Parallel()
+// defaultOBOHandlerStub returns a handler whose every method returns
+// obo.ErrEnterpriseRequired — the same shape as the package default. Used to
+// restore the registered handler after a test that overrode it.
+func defaultOBOHandlerStub() ctrlutil.OBOHandler {
+	return ctrlutil.OBOHandler{
+		Validate: func(*mcpv1beta1.MCPExternalAuthConfig) error { return obo.ErrEnterpriseRequired },
+		ApplyRunConfig: func(
+			context.Context, client.Client, string,
+			*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption,
+		) error {
+			return obo.ErrEnterpriseRequired
+		},
+		SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+			return nil, obo.ErrEnterpriseRequired
+		},
+	}
+}
 
+// TestMCPExternalAuthConfigReconciler_OBO_ReasonSelectionInReconcile drives
+// the production reason-selection branch by registering a stub OBO handler
+// whose Validate returns each test's error, then calling Reconcile and
+// asserting on the resulting condition. Unlike a direct setInvalid call,
+// this test exercises the production errors.Is decision at the OBO branch
+// in Reconcile — so a regression that swaps stderrors.Is for == (which would
+// break the vMCP "failed to convert to strategy: %w" wrap path) would be
+// caught here.
+//
+//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
+func TestMCPExternalAuthConfigReconciler_OBO_ReasonSelectionInReconcile(t *testing.T) {
 	tests := []struct {
-		name       string
-		inputErr   error
-		wantReason string
+		name        string
+		validateErr error
+		wantReason  string
+		wantMessage string
 	}{
 		{
-			name:       "bare sentinel produces EnterpriseRequired",
-			inputErr:   obo.ErrEnterpriseRequired,
-			wantReason: mcpv1beta1.ConditionReasonEnterpriseRequired,
+			name:        "bare sentinel produces EnterpriseRequired",
+			validateErr: obo.ErrEnterpriseRequired,
+			wantReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+			wantMessage: obo.ErrEnterpriseRequired.Error(),
 		},
 		{
-			name:       "wrapped sentinel still produces EnterpriseRequired via errors.Is",
-			inputErr:   fmt.Errorf("outer: %w", obo.ErrEnterpriseRequired),
-			wantReason: mcpv1beta1.ConditionReasonEnterpriseRequired,
+			name:        "wrapped sentinel still produces EnterpriseRequired via errors.Is",
+			validateErr: fmt.Errorf("outer: %w", obo.ErrEnterpriseRequired),
+			wantReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+			wantMessage: "outer: " + obo.ErrEnterpriseRequired.Error(),
 		},
 		{
-			name:       "non-sentinel error produces InvalidConfig",
-			inputErr:   stderrors.New("some other validation failure"),
-			wantReason: mcpv1beta1.ConditionReasonInvalidConfig,
+			name:        "non-sentinel error produces InvalidConfig",
+			validateErr: stderrors.New("some other validation failure"),
+			wantReason:  mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "some other validation failure",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+			// Always restore the default after the subtest so we don't leak
+			// the stub into other tests that share this package.
+			t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
+
+			// Install the per-case stub: Validate returns tt.validateErr;
+			// the other two methods keep the default behavior.
+			stub := defaultOBOHandlerStub()
+			stub.Validate = func(*mcpv1beta1.MCPExternalAuthConfig) error { return tt.validateErr }
+			ctrlutil.RegisterOBOHandler(stub)
 
 			scheme := runtime.NewScheme()
 			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
 
 			cfg := &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1662,23 +1706,26 @@ func TestMCPExternalAuthConfigReconciler_setInvalid_ReasonSelection(t *testing.T
 				Build()
 
 			r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{
+				Name:      cfg.Name,
+				Namespace: cfg.Namespace,
+			}}
 
-			reason := mcpv1beta1.ConditionReasonInvalidConfig
-			if stderrors.Is(tt.inputErr, obo.ErrEnterpriseRequired) {
-				reason = mcpv1beta1.ConditionReasonEnterpriseRequired
-			}
-			_, err := r.setInvalid(t.Context(), cfg, tt.inputErr, reason)
+			result, err := r.Reconcile(t.Context(), req)
 			require.NoError(t, err)
+			if result.RequeueAfter > 0 {
+				_, err = r.Reconcile(t.Context(), req)
+				require.NoError(t, err)
+			}
 
 			var updated mcpv1beta1.MCPExternalAuthConfig
-			require.NoError(t, fakeClient.Get(t.Context(),
-				types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}, &updated))
+			require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &updated))
 
 			cond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
 			require.NotNil(t, cond)
 			assert.Equal(t, metav1.ConditionFalse, cond.Status)
 			assert.Equal(t, tt.wantReason, cond.Reason)
-			assert.Equal(t, tt.inputErr.Error(), cond.Message)
+			assert.Equal(t, tt.wantMessage, cond.Message)
 		})
 	}
 }

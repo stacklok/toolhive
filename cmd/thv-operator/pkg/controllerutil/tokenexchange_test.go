@@ -282,7 +282,9 @@ func TestAddExternalAuthConfigOptions_OBO(t *testing.T) {
 		"the default OBO handler returns obo.ErrEnterpriseRequired; the dispatch arm must propagate it")
 
 	// Generic-error guard: the dispatch arm must short-circuit the default
-	// arm's "unsupported external auth type: ..." path.
+	// arm's "unsupported external auth type: ..." path and must not leak the
+	// middleware-map lookup's "unknown middleware type" path either.
 	assert.NotContains(t, err.Error(), "unsupported external auth type")
+	assert.NotContains(t, err.Error(), "unknown middleware type")
 	assert.Empty(t, options, "default OBO handler must not append to the options slice")
 }

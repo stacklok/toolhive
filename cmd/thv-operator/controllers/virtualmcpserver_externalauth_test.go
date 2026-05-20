@@ -1689,4 +1689,9 @@ func TestGetExternalAuthConfigSecretEnvVar_OBO(t *testing.T) {
 	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired,
 		"the default OBO handler returns obo.ErrEnterpriseRequired; the dispatch arm must propagate it")
 	assert.Nil(t, envVar, "no env var should be returned on the error path")
+
+	// Generic-error guard: per issue #5328 AC, neither generic substring may
+	// leak from any of the three consumer dispatch paths.
+	assert.NotContains(t, err.Error(), "unsupported external auth type")
+	assert.NotContains(t, err.Error(), "unknown middleware type")
 }

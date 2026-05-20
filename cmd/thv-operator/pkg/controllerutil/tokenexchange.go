@@ -115,9 +115,9 @@ func OBOSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, e
 
 // OBOApplyRunConfig runs the registered OBO handler's ApplyRunConfig function.
 // With the default handler it returns obo.ErrEnterpriseRequired without
-// mutating the supplied options slice. Called from the ExternalAuthTypeOBO
-// arm of AddExternalAuthConfigOptions; kept exported so that the three-method
-// surface stays symmetric with OBOValidate / OBOSecretEnvVars.
+// mutating the supplied options slice. Exported so that the three-method
+// surface stays symmetric with OBOValidate / OBOSecretEnvVars; routes through
+// the package-level OBO handler registered via RegisterOBOHandler.
 func OBOApplyRunConfig(
 	ctx context.Context,
 	c client.Client,

@@ -97,9 +97,10 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 	// this in-memory mutation (its MutateAndPatchStatus call re-fetches and
 	// re-applies the advisory inside its patch closure). The in-memory
 	// mutation here is therefore load-bearing only on the validation-failure
-	// path (line 110) and the Valid=True path (line 139). The function is
-	// idempotent on the same spec, so the double computation on the OBO
-	// path is benign.
+	// path (the r.Status().Update on the ValidationFailed return) and the
+	// Valid=True path (the r.Status().Update on the conditionChanged write).
+	// The function is idempotent on the same spec, so the double computation
+	// on the OBO path is benign.
 	syntheticChanged := r.applyIdentitySynthesizedCondition(externalAuthConfig)
 
 	// Validate spec configuration early
@@ -246,7 +247,13 @@ func (r *MCPExternalAuthConfigReconciler) setInvalid(
 	if patchErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, fresh, func(c *mcpv1beta1.MCPExternalAuthConfig) {
 		// applyIdentitySynthesizedCondition is idempotent on the same spec;
 		// re-applying it inside the closure folds the advisory transition
-		// into the same patch as the Valid=False write below.
+		// into the same patch as the Valid=False write below. This
+		// re-invocation is load-bearing: removing it would cause
+		// MutateAndPatchStatus to silently drop the IdentitySynthesized
+		// transition because the pre-mutate snapshot already contains the
+		// in-memory mutation from line 95. See
+		// TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized
+		// for the regression guard.
 		r.applyIdentitySynthesizedCondition(c)
 		meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeValid,

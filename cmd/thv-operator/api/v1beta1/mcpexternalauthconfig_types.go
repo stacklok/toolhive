@@ -1132,14 +1132,14 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		// No complex validation needed for these types
 		return nil
 	case ExternalAuthTypeOBO:
-		// TODO(#5328): no body change is planned here — OBO validation is
-		// delegated to the registered OBO handler at the controllerutil layer
-		// (via controllerutil.OBOValidate -> obo.ErrEnterpriseRequired in
-		// upstream-only builds), invoked from the reconcile loop. The
-		// CRD-level Validate() stays a no-op for OBO and exists only to keep
-		// the `exhaustive` linter happy now that ExternalAuthTypeOBO is
-		// defined. The CRD enum currently rejects "obo" at the apiserver
-		// layer, so this arm is unreachable in upstream-only builds.
+		// OBO validation is delegated to the registered OBO handler at the
+		// controllerutil layer (via controllerutil.OBOValidate ->
+		// obo.ErrEnterpriseRequired in upstream-only builds), invoked from
+		// the reconcile loop. The CRD-level Validate() stays a no-op for OBO
+		// and exists only to keep the `exhaustive` linter happy now that
+		// ExternalAuthTypeOBO is defined. The CRD enum currently rejects
+		// "obo" at the apiserver layer, so this arm is unreachable in
+		// upstream-only builds.
 		return nil
 	default:
 		// Unknown type - should be caught by enum validation, but handle defensively

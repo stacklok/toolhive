@@ -135,6 +135,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		BaselineClientScopes:         cfg.BaselineClientScopes,
 		AllowedAudiences:             cfg.AllowedAudiences,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                  cfg.CIMDEnabled,
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -146,10 +147,6 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		"refresh_token_lifespan", cfg.RefreshTokenLifespan,
 		"auth_code_lifespan", cfg.AuthCodeLifespan,
 	)
-
-	// Create fosite provider
-	slog.Debug("creating fosite OAuth2 provider")
-	fositeProvider := createProvider(authServerConfig, stor)
 
 	// Build ordered upstream provider list from all configured upstreams.
 	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
@@ -172,6 +169,20 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	if err := runLegacyMigration(ctx, stor, cfg.Upstreams); err != nil {
 		return nil, err
 	}
+
+	// Wrap storage with the CIMD decorator before constructing the fosite provider
+	// so that GetClient calls for HTTPS client_id values are intercepted at the
+	// fosite level (not just the handler level).
+	if cfg.CIMDEnabled {
+		stor, err = storage.NewCIMDStorageDecorator(stor, true, cfg.CIMDCacheMaxSize, cfg.CIMDCacheFallbackTTL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize CIMD storage decorator: %w", err)
+		}
+	}
+
+	// Create fosite provider with the (possibly decorated) storage.
+	slog.Debug("creating fosite OAuth2 provider")
+	fositeProvider := createProvider(authServerConfig, stor)
 
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams)
 	if err != nil {

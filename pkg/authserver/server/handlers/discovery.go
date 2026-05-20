@@ -114,6 +114,8 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		},
 		CodeChallengeMethodsSupported:     []string{crypto.PKCEChallengeMethodS256},
 		TokenEndpointAuthMethodsSupported: []string{sharedobauth.TokenEndpointAuthMethodNone},
+
+		ClientIDMetadataDocumentSupported: h.config.CIMDEnabled,
 	}
 }
 

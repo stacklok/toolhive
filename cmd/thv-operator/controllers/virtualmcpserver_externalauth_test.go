@@ -19,6 +19,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -1648,4 +1649,44 @@ func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testin
 	require.NotNil(t, config.Backends["inline-backend"].TokenExchange)
 	assert.Equal(t, "corporate-idp", config.Backends["inline-backend"].TokenExchange.SubjectProviderName,
 		"inline backend SubjectProviderName should be injected from first upstream")
+}
+
+// TestGetExternalAuthConfigSecretEnvVar_OBO proves the obo arm of the
+// getExternalAuthConfigSecretEnvVar switch dispatches through the registered
+// OBO handler. With the default handler the method must return an error
+// wrapping obo.ErrEnterpriseRequired AND must not silently fall through to
+// nil, nil — that would mask the wired-but-disabled state behind a no-op.
+func TestGetExternalAuthConfigSecretEnvVar_OBO(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	authCfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "obo-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authCfg).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	envVar, err := r.getExternalAuthConfigSecretEnvVar(t.Context(), "default", authCfg.Name)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired,
+		"the default OBO handler returns obo.ErrEnterpriseRequired; the dispatch arm must propagate it")
+	assert.Nil(t, envVar, "no env var should be returned on the error path")
 }

@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 )
 
 const (
@@ -111,6 +113,20 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 	}
 
+	// Dispatch OBO-typed configs through the registered handler. The default
+	// handler returns obo.ErrEnterpriseRequired so upstream-only builds surface
+	// Valid=False / Reason=EnterpriseRequired here rather than failing later
+	// inside a consumer reconciler with a generic "unsupported" error.
+	if externalAuthConfig.Spec.Type == mcpv1beta1.ExternalAuthTypeOBO {
+		if err := ctrlutil.OBOValidate(externalAuthConfig); err != nil {
+			reason := "InvalidConfig"
+			if stderrors.Is(err, obo.ErrEnterpriseRequired) {
+				reason = "EnterpriseRequired"
+			}
+			return r.setInvalid(ctx, externalAuthConfig, err, reason)
+		}
+	}
+
 	// Validation succeeded - set Valid=True condition
 	conditionChanged := meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
 		Type:               mcpv1beta1.ConditionTypeValid,
@@ -185,6 +201,31 @@ func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
 		),
 		ObservedGeneration: cfg.Generation,
 	})
+}
+
+// setInvalid writes a Valid=False condition through MutateAndPatchStatus,
+// using the supplied reason string and the error's message as the condition
+// message. Returns an empty result with no requeue: the spec must change (or
+// an out-of-tree handler must be registered) for this branch to clear, so
+// requeuing buys nothing.
+func (r *MCPExternalAuthConfigReconciler) setInvalid(
+	ctx context.Context,
+	cfg *mcpv1beta1.MCPExternalAuthConfig,
+	err error,
+	reason string,
+) (ctrl.Result, error) {
+	if patchErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, cfg, func(c *mcpv1beta1.MCPExternalAuthConfig) {
+		meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeValid,
+			Status:             metav1.ConditionFalse,
+			Reason:             reason,
+			Message:            err.Error(),
+			ObservedGeneration: c.Generation,
+		})
+	}); patchErr != nil {
+		return ctrl.Result{}, patchErr
+	}
+	return ctrl.Result{}, nil
 }
 
 // handleConfigHashChange handles the logic when the config hash changes

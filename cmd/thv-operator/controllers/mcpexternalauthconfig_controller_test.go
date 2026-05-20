@@ -4,6 +4,8 @@
 package controllers
 
 import (
+	stderrors "errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -18,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 )
 
 func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -1475,4 +1478,136 @@ func findCondition(conditions []metav1.Condition, t string) *metav1.Condition {
 		}
 	}
 	return nil
+}
+
+// TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequired
+// proves the dispatch wiring: with the default OBO handler installed (the
+// upstream-only state), reconciling an obo-typed MCPExternalAuthConfig surfaces
+// Valid=False / Reason=EnterpriseRequired rather than the generic "unsupported
+// external auth type" path. Drives the reconciler directly with a fake client
+// to bypass the CRD enum (which does not admit "obo" until #5329 lands).
+func TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequired(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "obo-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cfg).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{
+		Name:      cfg.Name,
+		Namespace: cfg.Namespace,
+	}}
+
+	// First reconcile adds the finalizer; the requeued reconcile runs the body.
+	result, err := r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	if result.RequeueAfter > 0 {
+		_, err = r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+	}
+
+	var updated mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &updated))
+
+	validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, validCond, "Valid condition must be set for OBO-typed config")
+	assert.Equal(t, metav1.ConditionFalse, validCond.Status)
+	assert.Equal(t, "EnterpriseRequired", validCond.Reason,
+		"the exact reason string is part of the user-facing contract — external consumers pattern-match on it")
+
+	// Generic-error guard: the dispatch path must NOT leak a generic
+	// "unsupported external auth type" or "unknown middleware type" message.
+	assert.NotContains(t, validCond.Message, "unsupported external auth type")
+	assert.NotContains(t, validCond.Message, "unknown middleware type")
+}
+
+// TestMCPExternalAuthConfigReconciler_setInvalid_ReasonSelection asserts the
+// reason-string selection in setInvalid handles the sentinel directly, the
+// sentinel through an fmt.Errorf wrap, and any other error. The exact reason
+// strings are part of the user-facing contract.
+func TestMCPExternalAuthConfigReconciler_setInvalid_ReasonSelection(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		inputErr   error
+		wantReason string
+	}{
+		{
+			name:       "bare sentinel produces EnterpriseRequired",
+			inputErr:   obo.ErrEnterpriseRequired,
+			wantReason: "EnterpriseRequired",
+		},
+		{
+			name:       "wrapped sentinel still produces EnterpriseRequired via errors.Is",
+			inputErr:   fmt.Errorf("outer: %w", obo.ErrEnterpriseRequired),
+			wantReason: "EnterpriseRequired",
+		},
+		{
+			name:       "non-sentinel error produces InvalidConfig",
+			inputErr:   stderrors.New("some other validation failure"),
+			wantReason: "InvalidConfig",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+
+			cfg := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "obo-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+				},
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(cfg).
+				WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+				Build()
+
+			r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+
+			reason := "InvalidConfig"
+			if stderrors.Is(tt.inputErr, obo.ErrEnterpriseRequired) {
+				reason = "EnterpriseRequired"
+			}
+			_, err := r.setInvalid(t.Context(), cfg, tt.inputErr, reason)
+			require.NoError(t, err)
+
+			var updated mcpv1beta1.MCPExternalAuthConfig
+			require.NoError(t, fakeClient.Get(t.Context(),
+				types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}, &updated))
+
+			cond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+			require.NotNil(t, cond)
+			assert.Equal(t, metav1.ConditionFalse, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			assert.Equal(t, tt.inputErr.Error(), cond.Message)
+		})
+	}
 }

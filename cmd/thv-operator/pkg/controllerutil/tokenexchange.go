@@ -115,9 +115,9 @@ func OBOSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, e
 
 // OBOApplyRunConfig runs the registered OBO handler's ApplyRunConfig function.
 // With the default handler it returns obo.ErrEnterpriseRequired without
-// mutating the supplied options slice. The follow-up dispatch-wiring task
-// (#5328) is the first caller of this wrapper; exporting it now keeps the
-// three-method surface symmetric with OBOValidate / OBOSecretEnvVars.
+// mutating the supplied options slice. Called from the ExternalAuthTypeOBO
+// arm of AddExternalAuthConfigOptions; kept exported so that the three-method
+// surface stays symmetric with OBOValidate / OBOSecretEnvVars.
 func OBOApplyRunConfig(
 	ctx context.Context,
 	c client.Client,
@@ -225,14 +225,12 @@ func AddExternalAuthConfigOptions(
 		// Upstream inject is handled by the vMCP converter at runtime
 		return nil
 	case mcpv1beta1.ExternalAuthTypeOBO:
-		// TODO(#5328): replace this body with a call into
-		// oboHandler.ApplyRunConfig as part of the dispatch-wiring task. The
-		// arm exists today to satisfy the `exhaustive` linter; until #5328
-		// lands we surface obo.ErrEnterpriseRequired so callers can use
-		// errors.Is to distinguish "type known but not wired" from a genuinely
-		// unknown type. The CRD enum currently rejects "obo" at the apiserver
-		// layer, so this arm is unreachable in upstream-only builds.
-		return fmt.Errorf("obo dispatch not yet wired: %w", obo.ErrEnterpriseRequired)
+		// Dispatch through the registered handler. In upstream-only builds the
+		// default handler returns obo.ErrEnterpriseRequired; an out-of-tree
+		// build registers a real handler via RegisterOBOHandler. Bypass the
+		// default's "unsupported external auth type" path so callers can
+		// distinguish via errors.Is(err, obo.ErrEnterpriseRequired).
+		return OBOApplyRunConfig(ctx, c, namespace, externalAuthConfig, options)
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}

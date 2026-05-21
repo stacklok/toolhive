@@ -284,6 +284,69 @@ func TestHandleDynamicRegistration_InheritsSingleflightDedup(t *testing.T) {
 		N, atomic.LoadInt32(&registrationHits))
 }
 
+// TestHandleDynamicRegistration_NonRootIssuerRFC8414PathInsertion is a
+// regression test for #5356. Authorization servers with a non-root issuer
+// path (e.g. https://example.com/oauth) may serve their RFC 8414 metadata
+// exclusively at the path-insertion URL
+// (scheme://host/.well-known/oauth-authorization-server/path), not at the
+// OIDC issuer-suffix URL ({issuer}/.well-known/openid-configuration).
+// Prior to the fix, resolveDCRCredentials only constructed the OIDC URL and
+// failed for those servers. The fix routes through
+// oauthproto.FetchAuthorizationServerMetadata which tries all well-known
+// URL forms in priority order.
+func TestHandleDynamicRegistration_NonRootIssuerRFC8414PathInsertion(t *testing.T) {
+	t.Parallel()
+
+	var registrationHits int32
+	var server *httptest.Server
+	mux := http.NewServeMux()
+
+	// Serve metadata ONLY at the RFC 8414 §3.1 path-insertion URL.
+	// The OIDC issuer-suffix URL (/oauth/.well-known/openid-configuration)
+	// is intentionally not mounted — it returns 404, simulating the Gleean
+	// AS behaviour that triggered #5356.
+	mux.HandleFunc("/.well-known/oauth-authorization-server/oauth", func(w http.ResponseWriter, _ *http.Request) {
+		// Issuer must carry the non-root path to pass RFC 8414 §3.3 validation.
+		md := oauthproto.AuthorizationServerMetadata{
+			Issuer:                            server.URL + "/oauth",
+			AuthorizationEndpoint:             server.URL + "/oauth/authorize",
+			TokenEndpoint:                     server.URL + "/oauth/token",
+			RegistrationEndpoint:              server.URL + "/oauth/register",
+			CodeChallengeMethodsSupported:     []string{"S256"},
+			TokenEndpointAuthMethodsSupported: []string{"none"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(md)
+	})
+
+	mux.HandleFunc("/oauth/register", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		atomic.AddInt32(&registrationHits, 1)
+		resp := oauthproto.DynamicClientRegistrationResponse{
+			ClientID:                "non-root-client",
+			TokenEndpointAuthMethod: "none",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	config := &OAuthFlowConfig{
+		Scopes:       []string{"openid", "profile"},
+		CallbackPort: 8765,
+	}
+
+	err := handleDynamicRegistration(context.Background(), server.URL+"/oauth", config)
+	require.NoError(t, err, "DCR must succeed when metadata is served only at RFC 8414 path-insertion URL")
+	assert.Equal(t, "non-root-client", config.ClientID)
+	assert.EqualValues(t, 1, atomic.LoadInt32(&registrationHits),
+		"expected exactly one /oauth/register call")
+}
+
 // TestHandleDynamicRegistration_PopulatesEndpoints verifies the contract
 // the rest of the CLI flow depends on: handleDynamicRegistration writes
 // the resolved AuthorizeURL / TokenURL onto OAuthFlowConfig so

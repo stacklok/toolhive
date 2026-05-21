@@ -881,7 +881,8 @@ func resolveDCREndpoints(
 			return nil, fmt.Errorf("dcr: %w", err)
 		}
 		return &dcrEndpoints{
-			registrationEndpoint: req.RegistrationEndpoint,
+			registrationEndpoint:          req.RegistrationEndpoint,
+			codeChallengeMethodsSupported: req.CodeChallengeMethodsSupported,
 		}, nil
 	}
 

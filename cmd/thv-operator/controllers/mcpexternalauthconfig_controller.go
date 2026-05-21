@@ -127,12 +127,8 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 	// Valid=False / Reason=EnterpriseRequired here rather than failing later
 	// inside a consumer reconciler with a generic "unsupported" error.
 	if externalAuthConfig.Spec.Type == mcpv1beta1.ExternalAuthTypeOBO {
-		if err := ctrlutil.OBOValidate(externalAuthConfig); err != nil {
-			reason := mcpv1beta1.ConditionReasonInvalidConfig
-			if stderrors.Is(err, obo.ErrEnterpriseRequired) {
-				reason = mcpv1beta1.ConditionReasonEnterpriseRequired
-			}
-			return r.setInvalid(ctx, externalAuthConfig, err, reason)
+		if handled, err := r.triageOBOValidation(ctx, externalAuthConfig); handled {
+			return ctrl.Result{}, err
 		}
 	}
 
@@ -212,6 +208,45 @@ func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
 	})
 }
 
+// triageOBOValidation runs the registered OBO handler's Validate and routes
+// the result through the three-bucket contract documented on OBOHandler:
+//
+//   - ErrEnterpriseRequired   → permanent, Reason=EnterpriseRequired
+//   - *obo.ValidationError    → permanent, Reason=InvalidConfig (the typed
+//     error's Message is written verbatim into condition.Message)
+//   - anything else           → transient; return the error wrapped so
+//     controller-runtime requeues with backoff and self-heals once the
+//     upstream dependency (Secret/JWKS/webhook) recovers
+//
+// Returns handled=true to signal the caller to return immediately (with a
+// zero ctrl.Result and the returned error). handled=false means Validate
+// succeeded and the reconciler should continue with the Valid=True path.
+//
+// Extracted from Reconcile so the parent stays under the gocyclo threshold.
+func (r *MCPExternalAuthConfigReconciler) triageOBOValidation(
+	ctx context.Context,
+	cfg *mcpv1beta1.MCPExternalAuthConfig,
+) (handled bool, err error) {
+	validateErr := ctrlutil.OBOValidate(cfg)
+	if validateErr == nil {
+		return false, nil
+	}
+	switch {
+	case stderrors.Is(validateErr, obo.ErrEnterpriseRequired):
+		return true, r.setInvalid(ctx, cfg, validateErr, mcpv1beta1.ConditionReasonEnterpriseRequired)
+	default:
+		var valErr *obo.ValidationError
+		if stderrors.As(validateErr, &valErr) {
+			return true, r.setInvalid(ctx, cfg, valErr, mcpv1beta1.ConditionReasonInvalidConfig)
+		}
+		// Transient: return the error so controller-runtime requeues with
+		// backoff. Locking the resource into a permanent InvalidConfig on a
+		// transient I/O blip would require the user to touch the spec for
+		// the failure to clear, defeating self-healing.
+		return true, fmt.Errorf("OBO handler validation failed: %w", validateErr)
+	}
+}
+
 // setInvalid writes a Valid=False condition through MutateAndPatchStatus,
 // using the supplied reason string and the error's message as the condition
 // message. Returns an empty result with no requeue: the spec must change (or
@@ -233,18 +268,18 @@ func (r *MCPExternalAuthConfigReconciler) setInvalid(
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
 	err error,
 	reason string,
-) (ctrl.Result, error) {
+) error {
 	fresh := &mcpv1beta1.MCPExternalAuthConfig{}
 	if getErr := r.Get(ctx, client.ObjectKeyFromObject(cfg), fresh); getErr != nil {
 		if errors.IsNotFound(getErr) {
 			// Deleted between the reconciler's initial Get and this re-fetch;
 			// nothing to patch, and the reconciler's own NotFound handling
 			// already returned cleanly the next time around.
-			return ctrl.Result{}, nil
+			return nil
 		}
-		return ctrl.Result{}, getErr
+		return getErr
 	}
-	if patchErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, fresh, func(c *mcpv1beta1.MCPExternalAuthConfig) {
+	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, fresh, func(c *mcpv1beta1.MCPExternalAuthConfig) {
 		// applyIdentitySynthesizedCondition is idempotent on the same spec;
 		// re-applying it inside the closure folds the advisory transition
 		// into the same patch as the Valid=False write below. This
@@ -262,10 +297,7 @@ func (r *MCPExternalAuthConfigReconciler) setInvalid(
 			Message:            err.Error(),
 			ObservedGeneration: c.Generation,
 		})
-	}); patchErr != nil {
-		return ctrl.Result{}, patchErr
-	}
-	return ctrl.Result{}, nil
+	})
 }
 
 // handleConfigHashChange handles the logic when the config hash changes

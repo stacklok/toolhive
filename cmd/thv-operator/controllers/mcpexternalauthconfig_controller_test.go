@@ -1636,25 +1636,37 @@ func defaultOBOHandlerStub() ctrlutil.OBOHandler {
 	}
 }
 
-// TestMCPExternalAuthConfigReconciler_OBO_ReasonSelectionInReconcile drives
-// the production reason-selection branch by registering a stub OBO handler
-// whose Validate returns each test's error, then calling Reconcile and
-// asserting on the resulting condition. Unlike a direct setInvalid call,
-// this test exercises the production errors.Is decision at the OBO branch
-// in Reconcile — so a regression that swaps stderrors.Is for == (which would
-// break the vMCP "failed to convert to strategy: %w" wrap path) would be
-// caught here.
+// TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile drives the
+// production three-way error triage in the OBO branch of Reconcile by
+// registering a stub OBO handler whose Validate returns each test's error,
+// then calling Reconcile and asserting on the resulting condition (or the
+// returned error, for the transient case). The three buckets are:
+//
+//   - errors.Is(err, ErrEnterpriseRequired) → permanent, EnterpriseRequired
+//   - errors.As(err, &*obo.ValidationError) → permanent, InvalidConfig
+//   - anything else                         → transient; Reconcile returns
+//     the error, no condition write
+//
+// This exercises the production errors.Is decision (so a regression that
+// swaps stderrors.Is for == would be caught — that would break the vMCP
+// "failed to convert to strategy: %w" wrap path) AND the new errors.As
+// decision for *obo.ValidationError.
 //
 //nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
-func TestMCPExternalAuthConfigReconciler_OBO_ReasonSelectionInReconcile(t *testing.T) {
+func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile(t *testing.T) {
 	tests := []struct {
 		name        string
 		validateErr error
-		wantReason  string
-		wantMessage string
+		// Exactly one of these two paths is exercised per test case:
+		// either the reconciler writes a permanent Valid=False condition with
+		// the expected reason/message, or it returns a transient error and
+		// writes no Valid condition.
+		wantTransient bool
+		wantReason    string
+		wantMessage   string
 	}{
 		{
-			name:        "bare sentinel produces EnterpriseRequired",
+			name:        "bare sentinel produces EnterpriseRequired (permanent)",
 			validateErr: obo.ErrEnterpriseRequired,
 			wantReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
 			wantMessage: obo.ErrEnterpriseRequired.Error(),
@@ -1666,10 +1678,24 @@ func TestMCPExternalAuthConfigReconciler_OBO_ReasonSelectionInReconcile(t *testi
 			wantMessage: "outer: " + obo.ErrEnterpriseRequired.Error(),
 		},
 		{
-			name:        "non-sentinel error produces InvalidConfig",
-			validateErr: stderrors.New("some other validation failure"),
+			name:        "ValidationError produces InvalidConfig (permanent)",
+			validateErr: &obo.ValidationError{Message: "audience must be a non-empty URL"},
 			wantReason:  mcpv1beta1.ConditionReasonInvalidConfig,
-			wantMessage: "some other validation failure",
+			wantMessage: "audience must be a non-empty URL",
+		},
+		{
+			name:        "wrapped ValidationError still produces InvalidConfig via errors.As",
+			validateErr: fmt.Errorf("validating obo spec: %w", &obo.ValidationError{Message: "missing tokenURL"}),
+			wantReason:  mcpv1beta1.ConditionReasonInvalidConfig,
+			// setInvalid is called with the unwrapped ValidationError, so its
+			// Message lands verbatim — the wrap prefix is discarded on purpose
+			// so handler-author-visible text controls what kubectl describe shows.
+			wantMessage: "missing tokenURL",
+		},
+		{
+			name:          "unclassified error is transient — Reconcile returns it, no condition write",
+			validateErr:   stderrors.New("transient JWKS fetch failed"),
+			wantTransient: true,
 		},
 	}
 
@@ -1711,21 +1737,36 @@ func TestMCPExternalAuthConfigReconciler_OBO_ReasonSelectionInReconcile(t *testi
 				Namespace: cfg.Namespace,
 			}}
 
+			// First reconcile may just add the finalizer; the requeued
+			// reconcile runs the body that exercises the triage.
 			result, err := r.Reconcile(t.Context(), req)
-			require.NoError(t, err)
 			if result.RequeueAfter > 0 {
-				_, err = r.Reconcile(t.Context(), req)
 				require.NoError(t, err)
+				result, err = r.Reconcile(t.Context(), req)
 			}
 
 			var updated mcpv1beta1.MCPExternalAuthConfig
 			require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &updated))
+			validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
 
-			cond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
-			require.NotNil(t, cond)
-			assert.Equal(t, metav1.ConditionFalse, cond.Status)
-			assert.Equal(t, tt.wantReason, cond.Reason)
-			assert.Equal(t, tt.wantMessage, cond.Message)
+			if tt.wantTransient {
+				// Transient path: Reconcile must return an error that
+				// preserves the underlying cause (errors.Is must still match
+				// it through the wrap), and no Valid condition is written.
+				require.Error(t, err, "transient errors must propagate so controller-runtime requeues")
+				assert.ErrorIs(t, err, tt.validateErr,
+					"the transient error must remain inspectable via errors.Is")
+				assert.Nil(t, validCond,
+					"transient errors must not write a Valid condition; "+
+						"locking the resource into a permanent state would block self-healing")
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, validCond)
+			assert.Equal(t, metav1.ConditionFalse, validCond.Status)
+			assert.Equal(t, tt.wantReason, validCond.Reason)
+			assert.Equal(t, tt.wantMessage, validCond.Message)
 		})
 	}
 }

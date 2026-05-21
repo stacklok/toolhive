@@ -25,14 +25,39 @@ import (
 // MCPExternalAuthConfig resources. An out-of-tree build replaces the default
 // instance (which returns obo.ErrEnterpriseRequired from every method) by
 // calling RegisterOBOHandler once during init().
+//
+// # Error contract
+//
+// Every method below must return one of three error categories so callers can
+// triage failures consistently:
+//
+//   - errors.Is(err, obo.ErrEnterpriseRequired) — the build is not licensed
+//     to run OBO. Callers treat this as permanent until an out-of-tree handler
+//     is registered.
+//   - errors.As(err, &*obo.ValidationError) — the user-supplied spec is
+//     malformed (missing field, schema violation, invalid URL). Callers treat
+//     this as permanent until the user edits the spec. The ValidationError's
+//     Message field is written verbatim into the surfaced condition, so
+//     handler authors must ensure it is safe to expose (no Secret names, no
+//     internal addressing, no credential fragments).
+//   - anything else — treated as a transient failure (Secret not yet
+//     available, JWKS unreachable, webhook 5xx). Callers requeue with backoff
+//     rather than locking the resource into a permanent state.
+//
+// Returning a non-ValidationError for what is genuinely a user-fix condition
+// causes the reconciler to spin on backoff. Returning a ValidationError for
+// what is genuinely transient locks the resource into InvalidConfig until the
+// user edits the spec. Handler authors are responsible for placing each
+// failure in the right bucket.
 type OBOHandler struct {
 	// Validate is called from MCPExternalAuthConfig validation to verify the
-	// resource's obo-typed config is well-formed.
+	// resource's obo-typed config is well-formed. See the type-level "Error
+	// contract" doc for the three-bucket triage callers apply to its return.
 	Validate func(*mcpv1beta1.MCPExternalAuthConfig) error
 
 	// ApplyRunConfig is called from AddExternalAuthConfigOptions to apply
 	// OBO-specific runner configuration options for consuming MCPServer/
-	// MCPRemoteProxy resources.
+	// MCPRemoteProxy resources. See the type-level "Error contract" doc.
 	ApplyRunConfig func(
 		ctx context.Context, c client.Client, namespace string,
 		cfg *mcpv1beta1.MCPExternalAuthConfig,
@@ -40,7 +65,8 @@ type OBOHandler struct {
 	) error
 
 	// SecretEnvVars is called when computing the consuming resource's pod
-	// environment, to inject any secrets the OBO flow needs at runtime.
+	// environment, to inject any secrets the OBO flow needs at runtime. See
+	// the type-level "Error contract" doc.
 	SecretEnvVars func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error)
 }
 

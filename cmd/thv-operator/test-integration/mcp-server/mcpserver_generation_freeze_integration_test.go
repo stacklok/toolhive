@@ -126,6 +126,61 @@ var _ = Describe("MCPServer generation freeze (#5360)", func() {
 		})
 	})
 
+	Context("After the initial reconcile settles", func() {
+		It("Does not flag spurious drift on a no-op reconcile (#5360 regression)", func() {
+			// Regression test for a defaulting trap: ObjectFieldSelector.APIVersion
+			// is defaulted to "v1" by the API server on persistence. If the
+			// drift-check code rebuilds the env var with an empty APIVersion,
+			// equality.Semantic.DeepEqual returns false on every reconcile and
+			// the controller perpetually re-applies the Deployment, defeating
+			// the rolling-update freeze the env var is supposed to provide.
+			name := "freeze-no-drift"
+			server := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: freezeNS},
+				Spec: mcpv1beta1.MCPServerSpec{
+					Image:     "example/mcp-server:v1.0.0",
+					Transport: "stdio",
+					ProxyMode: "sse",
+					ProxyPort: 8080,
+					MCPPort:   8081,
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+			key := types.NamespacedName{Name: name, Namespace: freezeNS}
+			DeferCleanup(func() { cleanupServer(key) })
+
+			deployment := &appsv1.Deployment{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, key, deployment)).To(Succeed())
+				g.Expect(deployment.Spec.Template.Annotations).To(HaveKey(annotation))
+			}, timeout, interval).Should(Succeed())
+
+			// Capture the post-reconcile resourceVersion.
+			settledRV := deployment.ResourceVersion
+
+			// Give the controller a few extra reconciles to run. If drift
+			// detection is broken, each reconcile would re-Update the
+			// Deployment and bump its resourceVersion.
+			Consistently(func(g Gomega) {
+				latest := &appsv1.Deployment{}
+				g.Expect(k8sClient.Get(ctx, key, latest)).To(Succeed())
+				g.Expect(latest.ResourceVersion).To(Equal(settledRV),
+					"Deployment must not be rewritten on no-op reconciles; "+
+						"check ObjectFieldSelector.APIVersion defaulting against the drift comparator")
+			}, time.Second*5, interval).Should(Succeed())
+
+			// Sanity-check that the persisted env var has the API-server-defaulted
+			// APIVersion. This is the value the drift comparator must match.
+			ev := findGenerationEnvVar(deployment)
+			Expect(ev).NotTo(BeNil())
+			Expect(ev.ValueFrom).NotTo(BeNil())
+			Expect(ev.ValueFrom.FieldRef).NotTo(BeNil())
+			Expect(ev.ValueFrom.FieldRef.APIVersion).To(Equal("v1"),
+				"API server defaults ObjectFieldSelector.APIVersion to v1; "+
+					"the operator must construct the env var with the same value to avoid false drift")
+		})
+	})
+
 	Context("When MCPServer.Spec.Image changes (rolling update path)", func() {
 		It("Bumps the pod-template annotation to the new MCPServer generation", func() {
 			name := "freeze-spec-bump"

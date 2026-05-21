@@ -1213,4 +1213,10 @@ func TestDeploymentForMCPServer_MCPServerGenerationDownwardAPI(t *testing.T) {
 		"metadata.annotations['"+kubernetes.RunConfigMCPServerGenerationAnnotation+"']",
 		got.ValueFrom.FieldRef.FieldPath,
 		"FieldRef must point at the mcpserver-generation pod annotation")
+	// APIVersion must be set explicitly so the drift comparator at
+	// deploymentNeedsUpdate matches the API-server-defaulted value. An empty
+	// APIVersion here results in equality.Semantic.DeepEqual returning false on
+	// every reconcile, causing perpetual Deployment rewrites. See #5360.
+	assert.Equal(t, "v1", got.ValueFrom.FieldRef.APIVersion,
+		"FieldRef.APIVersion must match the API server default of v1 to avoid false drift")
 }

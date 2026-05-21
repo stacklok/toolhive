@@ -1156,10 +1156,15 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	// proxyrunner container via the downward API. The proxyrunner uses this
 	// to override the value read from the live-mounted RunConfig ConfigMap,
 	// freezing it per pod at creation time. See #5360.
+	//
+	// APIVersion must be explicitly "v1" — the API server defaults it on
+	// persistence and equality.Semantic.DeepEqual treats "" != "v1" as drift,
+	// which would otherwise force a Deployment update on every reconcile.
 	env = append(env, corev1.EnvVar{
 		Name: kubernetes.EnvVarMCPServerGeneration,
 		ValueFrom: &corev1.EnvVarSource{
 			FieldRef: &corev1.ObjectFieldSelector{
+				APIVersion: "v1",
 				FieldPath: fmt.Sprintf("metadata.annotations['%s']",
 					kubernetes.RunConfigMCPServerGenerationAnnotation),
 			},
@@ -1784,11 +1789,16 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		// proxyrunner container via the downward API. Position must come
 		// before the embedded-auth env vars below so the slice order matches
 		// deploymentForMCPServer and equality.Semantic.DeepEqual against
-		// container.Env succeeds. See #5360.
+		// container.Env succeeds.
+		//
+		// APIVersion must mirror the construction site at "v1" — the API
+		// server defaults it on persistence and an empty string here would
+		// produce false drift on every reconcile. See #5360.
 		expectedProxyEnv = append(expectedProxyEnv, corev1.EnvVar{
 			Name: kubernetes.EnvVarMCPServerGeneration,
 			ValueFrom: &corev1.EnvVarSource{
 				FieldRef: &corev1.ObjectFieldSelector{
+					APIVersion: "v1",
 					FieldPath: fmt.Sprintf("metadata.annotations['%s']",
 						kubernetes.RunConfigMCPServerGenerationAnnotation),
 				},

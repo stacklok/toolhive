@@ -145,10 +145,17 @@ spec:
                       PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
                       should read claims from when authorising a request. Must match the name
                       of one of the entries in UpstreamProviders. When empty, the controller
-                      auto-selects the first entry of UpstreamProviders. Only meaningful when
-                      at least one upstream is configured; on MCPServer and MCPRemoteProxy
-                      (single-upstream consumers) the only validated values are empty or the
-                      name of the sole upstream.
+                      auto-selects the first entry of UpstreamProviders.
+
+                      Only meaningful on VirtualMCPServer, where multiple upstream providers
+                      can be configured and Cedar needs to pick which token's claims to
+                      evaluate. The VirtualMCPServer controller validates this field against
+                      UpstreamProviders at admission and rejects unresolvable values.
+
+                      On MCPServer and MCPRemoteProxy this field is structurally present (the
+                      EmbeddedAuthServerConfig struct is shared) but has no runtime effect:
+                      those CRDs are restricted to a single upstream so there is no choice to
+                      make. Setting it on those CRDs is silently ignored.
                     maxLength: 63
                     minLength: 1
                     pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
@@ -2475,16 +2482,17 @@ spec:
                               PrimaryUpstreamProvider names the upstream IDP whose access token's
                               claims Cedar should evaluate.
 
-                              Deprecated: this field has moved to
-                              spec.authServerConfig.primaryUpstreamProvider on VirtualMCPServer (or to
-                              the embeddedAuthServer.primaryUpstreamProvider field of a referenced
-                              MCPExternalAuthConfig for MCPServer and MCPRemoteProxy). The old
-                              location is read for one release for backward compatibility and a
-                              Warning event is emitted whenever it is consumed; planned removal in
-                              the release after the deprecation cycle. On MCPServer and MCPRemoteProxy
-                              the field remains structurally meaningless (no embedded auth server
-                              runtime) and continues to surface the AuthzPrimaryUpstreamProviderIgnored
-                              advisory.
+                              Deprecated: on VirtualMCPServer this field has moved to
+                              spec.authServerConfig.primaryUpstreamProvider. The old location is
+                              still read for one release for backward compatibility; the
+                              VirtualMCPServer controller emits an AuthzPrimaryUpstreamProviderDeprecated
+                              Warning event whenever it is consumed, and removal is planned for the
+                              release after the deprecation cycle.
+
+                              On MCPServer and MCPRemoteProxy this field has always been a structural
+                              no-op (those CRDs do not run an embedded auth server). Setting it
+                              continues to surface the AuthzPrimaryUpstreamProviderIgnored advisory
+                              condition; the deprecation does not change that behaviour.
                             maxLength: 63
                             minLength: 1
                             pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
@@ -3061,10 +3069,17 @@ spec:
                       PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
                       should read claims from when authorising a request. Must match the name
                       of one of the entries in UpstreamProviders. When empty, the controller
-                      auto-selects the first entry of UpstreamProviders. Only meaningful when
-                      at least one upstream is configured; on MCPServer and MCPRemoteProxy
-                      (single-upstream consumers) the only validated values are empty or the
-                      name of the sole upstream.
+                      auto-selects the first entry of UpstreamProviders.
+
+                      Only meaningful on VirtualMCPServer, where multiple upstream providers
+                      can be configured and Cedar needs to pick which token's claims to
+                      evaluate. The VirtualMCPServer controller validates this field against
+                      UpstreamProviders at admission and rejects unresolvable values.
+
+                      On MCPServer and MCPRemoteProxy this field is structurally present (the
+                      EmbeddedAuthServerConfig struct is shared) but has no runtime effect:
+                      those CRDs are restricted to a single upstream so there is no choice to
+                      make. Setting it on those CRDs is silently ignored.
                     maxLength: 63
                     minLength: 1
                     pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
@@ -5391,16 +5406,17 @@ spec:
                               PrimaryUpstreamProvider names the upstream IDP whose access token's
                               claims Cedar should evaluate.
 
-                              Deprecated: this field has moved to
-                              spec.authServerConfig.primaryUpstreamProvider on VirtualMCPServer (or to
-                              the embeddedAuthServer.primaryUpstreamProvider field of a referenced
-                              MCPExternalAuthConfig for MCPServer and MCPRemoteProxy). The old
-                              location is read for one release for backward compatibility and a
-                              Warning event is emitted whenever it is consumed; planned removal in
-                              the release after the deprecation cycle. On MCPServer and MCPRemoteProxy
-                              the field remains structurally meaningless (no embedded auth server
-                              runtime) and continues to surface the AuthzPrimaryUpstreamProviderIgnored
-                              advisory.
+                              Deprecated: on VirtualMCPServer this field has moved to
+                              spec.authServerConfig.primaryUpstreamProvider. The old location is
+                              still read for one release for backward compatibility; the
+                              VirtualMCPServer controller emits an AuthzPrimaryUpstreamProviderDeprecated
+                              Warning event whenever it is consumed, and removal is planned for the
+                              release after the deprecation cycle.
+
+                              On MCPServer and MCPRemoteProxy this field has always been a structural
+                              no-op (those CRDs do not run an embedded auth server). Setting it
+                              continues to surface the AuthzPrimaryUpstreamProviderIgnored advisory
+                              condition; the deprecation does not change that behaviour.
                             maxLength: 63
                             minLength: 1
                             pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$

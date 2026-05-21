@@ -788,16 +788,17 @@ type InlineAuthzConfig struct {
 	// PrimaryUpstreamProvider names the upstream IDP whose access token's
 	// claims Cedar should evaluate.
 	//
-	// Deprecated: this field has moved to
-	// spec.authServerConfig.primaryUpstreamProvider on VirtualMCPServer (or to
-	// the embeddedAuthServer.primaryUpstreamProvider field of a referenced
-	// MCPExternalAuthConfig for MCPServer and MCPRemoteProxy). The old
-	// location is read for one release for backward compatibility and a
-	// Warning event is emitted whenever it is consumed; planned removal in
-	// the release after the deprecation cycle. On MCPServer and MCPRemoteProxy
-	// the field remains structurally meaningless (no embedded auth server
-	// runtime) and continues to surface the AuthzPrimaryUpstreamProviderIgnored
-	// advisory.
+	// Deprecated: on VirtualMCPServer this field has moved to
+	// spec.authServerConfig.primaryUpstreamProvider. The old location is
+	// still read for one release for backward compatibility; the
+	// VirtualMCPServer controller emits an AuthzPrimaryUpstreamProviderDeprecated
+	// Warning event whenever it is consumed, and removal is planned for the
+	// release after the deprecation cycle.
+	//
+	// On MCPServer and MCPRemoteProxy this field has always been a structural
+	// no-op (those CRDs do not run an embedded auth server). Setting it
+	// continues to surface the AuthzPrimaryUpstreamProviderIgnored advisory
+	// condition; the deprecation does not change that behaviour.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63

@@ -235,10 +235,17 @@ type EmbeddedAuthServerConfig struct {
 	// PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
 	// should read claims from when authorising a request. Must match the name
 	// of one of the entries in UpstreamProviders. When empty, the controller
-	// auto-selects the first entry of UpstreamProviders. Only meaningful when
-	// at least one upstream is configured; on MCPServer and MCPRemoteProxy
-	// (single-upstream consumers) the only validated values are empty or the
-	// name of the sole upstream.
+	// auto-selects the first entry of UpstreamProviders.
+	//
+	// Only meaningful on VirtualMCPServer, where multiple upstream providers
+	// can be configured and Cedar needs to pick which token's claims to
+	// evaluate. The VirtualMCPServer controller validates this field against
+	// UpstreamProviders at admission and rejects unresolvable values.
+	//
+	// On MCPServer and MCPRemoteProxy this field is structurally present (the
+	// EmbeddedAuthServerConfig struct is shared) but has no runtime effect:
+	// those CRDs are restricted to a single upstream so there is no choice to
+	// make. Setting it on those CRDs is silently ignored.
 	// +optional
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=63

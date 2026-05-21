@@ -347,6 +347,134 @@ func TestHandleDynamicRegistration_NonRootIssuerRFC8414PathInsertion(t *testing.
 		"expected exactly one /oauth/register call")
 }
 
+// TestHandleDynamicRegistration_PreDiscoveredPathNonRootIssuer tests the path
+// where the CLI already has OAuth endpoints from a prior discovery
+// (config.RegistrationEndpoint/AuthorizeURL/TokenURL are all populated) and
+// the issuer has a non-root path. getDiscoveryDocument short-circuits on this
+// path and returns a synthesised document with empty
+// code_challenge_methods_supported; resolveDCRCredentials must then re-fetch
+// via multi-URL fallback to populate the S256 PKCE gate. This is the more
+// common production scenario vs the fresh-discovery path tested by
+// TestHandleDynamicRegistration_NonRootIssuerRFC8414PathInsertion.
+func TestHandleDynamicRegistration_PreDiscoveredPathNonRootIssuer(t *testing.T) {
+	t.Parallel()
+
+	var registrationHits int32
+	var server *httptest.Server
+	mux := http.NewServeMux()
+
+	mux.HandleFunc("/.well-known/oauth-authorization-server/oauth", func(w http.ResponseWriter, _ *http.Request) {
+		md := oauthproto.AuthorizationServerMetadata{
+			Issuer:                            server.URL + "/oauth",
+			AuthorizationEndpoint:             server.URL + "/oauth/authorize",
+			TokenEndpoint:                     server.URL + "/oauth/token",
+			RegistrationEndpoint:              server.URL + "/oauth/register",
+			CodeChallengeMethodsSupported:     []string{"S256"},
+			TokenEndpointAuthMethodsSupported: []string{"none"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(md)
+	})
+
+	mux.HandleFunc("/oauth/register", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		atomic.AddInt32(&registrationHits, 1)
+		resp := oauthproto.DynamicClientRegistrationResponse{
+			ClientID:                "pre-discovered-client",
+			TokenEndpointAuthMethod: "none",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	// Simulate the pre-discovered path: all three endpoints are already set so
+	// getDiscoveryDocument short-circuits without a network call and returns a
+	// synthesised document with empty code_challenge_methods_supported.
+	config := &OAuthFlowConfig{
+		Scopes:               []string{"openid", "profile"},
+		CallbackPort:         8765,
+		RegistrationEndpoint: server.URL + "/oauth/register",
+		AuthorizeURL:         server.URL + "/oauth/authorize",
+		TokenURL:             server.URL + "/oauth/token",
+	}
+
+	err := handleDynamicRegistration(context.Background(), server.URL+"/oauth", config)
+	require.NoError(t, err, "DCR must succeed on pre-discovered path with non-root issuer")
+	assert.Equal(t, "pre-discovered-client", config.ClientID)
+	assert.EqualValues(t, 1, atomic.LoadInt32(&registrationHits))
+}
+
+// TestHandleDynamicRegistration_SynthesisesEndpointWhenMetadataOmitsIt
+// verifies that when the re-discovery call inside resolveDCRCredentials returns
+// ErrRegistrationEndpointMissing (valid metadata but no registration_endpoint),
+// the endpoint is synthesised as {issuer}/register and the registration is
+// routed there — mirroring the nanobot/Hydra convention that the resolver's
+// DiscoveryURL branch applies. The pre-discovered path is used to bypass the
+// handleDynamicRegistration guard that otherwise exits early when
+// registration_endpoint is absent from the initial discovery document.
+func TestHandleDynamicRegistration_SynthesisesEndpointWhenMetadataOmitsIt(t *testing.T) {
+	t.Parallel()
+
+	var registrationHits int32
+	var server *httptest.Server
+	mux := http.NewServeMux()
+
+	// Metadata has all required fields but deliberately omits
+	// registration_endpoint, causing FetchAuthorizationServerMetadata to
+	// return (partialMeta, ErrRegistrationEndpointMissing).
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, _ *http.Request) {
+		md := oauthproto.AuthorizationServerMetadata{
+			Issuer:                            server.URL,
+			AuthorizationEndpoint:             server.URL + "/authorize",
+			TokenEndpoint:                     server.URL + "/token",
+			CodeChallengeMethodsSupported:     []string{"S256"},
+			TokenEndpointAuthMethodsSupported: []string{"none"},
+			// registration_endpoint intentionally absent
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(md)
+	})
+
+	// resolveDCRCredentials synthesises {issuer}/register for a root issuer.
+	mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+		_, _ = io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		atomic.AddInt32(&registrationHits, 1)
+		resp := oauthproto.DynamicClientRegistrationResponse{
+			ClientID:                "synthesised-client",
+			TokenEndpointAuthMethod: "none",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(resp)
+	})
+
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	// The pre-discovered path sets RegistrationEndpoint so
+	// handleDynamicRegistration's guard passes; resolveDCRCredentials then
+	// re-fetches and hits the ErrRegistrationEndpointMissing synthesis branch.
+	config := &OAuthFlowConfig{
+		Scopes:               []string{"openid", "profile"},
+		CallbackPort:         8765,
+		RegistrationEndpoint: server.URL + "/register",
+		AuthorizeURL:         server.URL + "/authorize",
+		TokenURL:             server.URL + "/token",
+	}
+
+	err := handleDynamicRegistration(context.Background(), server.URL, config)
+	require.NoError(t, err, "DCR must succeed when registration_endpoint is absent from re-fetched metadata")
+	assert.Equal(t, "synthesised-client", config.ClientID)
+	assert.EqualValues(t, 1, atomic.LoadInt32(&registrationHits),
+		"synthesised endpoint must be contacted exactly once")
+}
+
 // TestHandleDynamicRegistration_PopulatesEndpoints verifies the contract
 // the rest of the CLI flow depends on: handleDynamicRegistration writes
 // the resolved AuthorizeURL / TokenURL onto OAuthFlowConfig so

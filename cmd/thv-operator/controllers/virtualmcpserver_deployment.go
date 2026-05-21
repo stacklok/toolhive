@@ -832,12 +832,7 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		return nil, nil
 
 	case mcpv1beta1.ExternalAuthTypeOBO:
-		// TODO(#5328): replace this body with a call into
-		// controllerutil.OBOSecretEnvVars as part of the dispatch-wiring task.
-		// The arm exists today to satisfy the `exhaustive` linter. The CRD
-		// enum currently rejects "obo" at the apiserver layer, so this arm is
-		// unreachable in upstream-only builds.
-		return nil, nil
+		return firstOBOSecretEnvVar(externalAuthConfig)
 
 	default:
 		return nil, nil // Not applicable
@@ -854,6 +849,20 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 			},
 		},
 	}, nil
+}
+
+// firstOBOSecretEnvVar dispatches through the registered OBO handler and
+// returns the first env var (if any) or the dispatch error. In upstream-only
+// builds the default handler returns obo.ErrEnterpriseRequired; an out-of-tree
+// build registers a real handler via controllerutil.RegisterOBOHandler.
+// Extracted from getExternalAuthConfigSecretEnvVar to keep its cyclomatic
+// complexity below the project threshold.
+func firstOBOSecretEnvVar(cfg *mcpv1beta1.MCPExternalAuthConfig) (*corev1.EnvVar, error) {
+	envVars, err := ctrlutil.OBOSecretEnvVars(cfg)
+	if err != nil || len(envVars) == 0 {
+		return nil, err
+	}
+	return &envVars[0], nil
 }
 
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations

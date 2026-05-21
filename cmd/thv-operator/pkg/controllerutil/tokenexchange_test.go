@@ -11,7 +11,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
@@ -233,4 +236,55 @@ func TestRegisterOBOHandler_PanicsOnNilField(t *testing.T) {
 				"RegisterOBOHandler must panic when any function field is nil")
 		})
 	}
+}
+
+// TestAddExternalAuthConfigOptions_OBO proves the obo arm of the
+// AddExternalAuthConfigOptions switch dispatches through the registered OBO
+// handler. With the default handler the function must return an error wrapping
+// obo.ErrEnterpriseRequired AND must not fall through to the default arm's
+// "unsupported external auth type" message — external consumers pattern-match
+// on errors.Is, and the dispatch arm's purpose is to keep the wired-but-
+// disabled state distinguishable from a genuinely unknown type.
+func TestAddExternalAuthConfigOptions_OBO(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	authCfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "obo-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authCfg).
+		Build()
+
+	var options []runner.RunConfigBuilderOption
+	err := AddExternalAuthConfigOptions(
+		t.Context(),
+		fakeClient,
+		"default",
+		"server-name",
+		&mcpv1beta1.ExternalAuthConfigRef{Name: authCfg.Name},
+		nil, // oidcConfig — not required for OBO
+		&options,
+	)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired,
+		"the default OBO handler returns obo.ErrEnterpriseRequired; the dispatch arm must propagate it")
+
+	// Generic-error guard: the dispatch arm must short-circuit the default
+	// arm's "unsupported external auth type: ..." path and must not leak the
+	// middleware-map lookup's "unknown middleware type" path either.
+	assert.NotContains(t, err.Error(), "unsupported external auth type")
+	assert.NotContains(t, err.Error(), "unknown middleware type")
+	assert.Empty(t, options, "default OBO handler must not append to the options slice")
 }

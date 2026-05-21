@@ -25,14 +25,39 @@ import (
 // MCPExternalAuthConfig resources. An out-of-tree build replaces the default
 // instance (which returns obo.ErrEnterpriseRequired from every method) by
 // calling RegisterOBOHandler once during init().
+//
+// # Error contract
+//
+// Every method below must return one of three error categories so callers can
+// triage failures consistently:
+//
+//   - errors.Is(err, obo.ErrEnterpriseRequired) — the build is not licensed
+//     to run OBO. Callers treat this as permanent until an out-of-tree handler
+//     is registered.
+//   - errors.As(err, &*obo.ValidationError) — the user-supplied spec is
+//     malformed (missing field, schema violation, invalid URL). Callers treat
+//     this as permanent until the user edits the spec. The ValidationError's
+//     Message field is written verbatim into the surfaced condition, so
+//     handler authors must ensure it is safe to expose (no Secret names, no
+//     internal addressing, no credential fragments).
+//   - anything else — treated as a transient failure (Secret not yet
+//     available, JWKS unreachable, webhook 5xx). Callers requeue with backoff
+//     rather than locking the resource into a permanent state.
+//
+// Returning a non-ValidationError for what is genuinely a user-fix condition
+// causes the reconciler to spin on backoff. Returning a ValidationError for
+// what is genuinely transient locks the resource into InvalidConfig until the
+// user edits the spec. Handler authors are responsible for placing each
+// failure in the right bucket.
 type OBOHandler struct {
 	// Validate is called from MCPExternalAuthConfig validation to verify the
-	// resource's obo-typed config is well-formed.
+	// resource's obo-typed config is well-formed. See the type-level "Error
+	// contract" doc for the three-bucket triage callers apply to its return.
 	Validate func(*mcpv1beta1.MCPExternalAuthConfig) error
 
 	// ApplyRunConfig is called from AddExternalAuthConfigOptions to apply
 	// OBO-specific runner configuration options for consuming MCPServer/
-	// MCPRemoteProxy resources.
+	// MCPRemoteProxy resources. See the type-level "Error contract" doc.
 	ApplyRunConfig func(
 		ctx context.Context, c client.Client, namespace string,
 		cfg *mcpv1beta1.MCPExternalAuthConfig,
@@ -40,7 +65,8 @@ type OBOHandler struct {
 	) error
 
 	// SecretEnvVars is called when computing the consuming resource's pod
-	// environment, to inject any secrets the OBO flow needs at runtime.
+	// environment, to inject any secrets the OBO flow needs at runtime. See
+	// the type-level "Error contract" doc.
 	SecretEnvVars func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error)
 }
 
@@ -115,9 +141,9 @@ func OBOSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, e
 
 // OBOApplyRunConfig runs the registered OBO handler's ApplyRunConfig function.
 // With the default handler it returns obo.ErrEnterpriseRequired without
-// mutating the supplied options slice. The follow-up dispatch-wiring task
-// (#5328) is the first caller of this wrapper; exporting it now keeps the
-// three-method surface symmetric with OBOValidate / OBOSecretEnvVars.
+// mutating the supplied options slice. Exported so that the three-method
+// surface stays symmetric with OBOValidate / OBOSecretEnvVars; routes through
+// the package-level OBO handler registered via RegisterOBOHandler.
 func OBOApplyRunConfig(
 	ctx context.Context,
 	c client.Client,
@@ -225,14 +251,12 @@ func AddExternalAuthConfigOptions(
 		// Upstream inject is handled by the vMCP converter at runtime
 		return nil
 	case mcpv1beta1.ExternalAuthTypeOBO:
-		// TODO(#5328): replace this body with a call into
-		// oboHandler.ApplyRunConfig as part of the dispatch-wiring task. The
-		// arm exists today to satisfy the `exhaustive` linter; until #5328
-		// lands we surface obo.ErrEnterpriseRequired so callers can use
-		// errors.Is to distinguish "type known but not wired" from a genuinely
-		// unknown type. The CRD enum currently rejects "obo" at the apiserver
-		// layer, so this arm is unreachable in upstream-only builds.
-		return fmt.Errorf("obo dispatch not yet wired: %w", obo.ErrEnterpriseRequired)
+		// Dispatch through the registered handler. In upstream-only builds the
+		// default handler returns obo.ErrEnterpriseRequired; an out-of-tree
+		// build registers a real handler via RegisterOBOHandler. Bypass the
+		// default's "unsupported external auth type" path so callers can
+		// distinguish via errors.Is(err, obo.ErrEnterpriseRequired).
+		return OBOApplyRunConfig(ctx, c, namespace, externalAuthConfig, options)
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}

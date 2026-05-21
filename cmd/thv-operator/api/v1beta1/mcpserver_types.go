@@ -96,6 +96,12 @@ const (
 	// when spec.authzConfig.inline.primaryUpstreamProvider is non-empty on a CR type
 	// that has no embedded auth server (MCPServer / MCPRemoteProxy). The field has
 	// no effect on those resources and is documented as VirtualMCPServer-only.
+	//
+	// Tied to the deprecated InlineAuthzConfig.PrimaryUpstreamProvider field
+	// (see mcpserver_types.go). When that field is removed at end of the
+	// deprecation cycle, this condition and ConditionReasonAuthzPrimaryUpstreamProviderIgnored
+	// below should be removed in the same change: there is no other path that
+	// fires this advisory.
 	ConditionTypeAuthzPrimaryUpstreamProviderIgnored = "AuthzPrimaryUpstreamProviderIgnored"
 )
 

@@ -259,6 +259,7 @@ func TestAddExternalAuthConfigOptions_OBO(t *testing.T) {
 		},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
 		},
 	}
 

@@ -61,12 +61,13 @@ type ExternalAuthType string
 // +kubebuilder:validation:XValidation:rule="self.type == 'embeddedAuthServer' ? has(self.embeddedAuthServer) : !has(self.embeddedAuthServer)",message="embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'awsSts' ? has(self.awsSts) : !has(self.awsSts)",message="awsSts configuration must be set if and only if type is 'awsSts'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'upstreamInject' ? has(self.upstreamInject) : !has(self.upstreamInject)",message="upstreamInject configuration must be set if and only if type is 'upstreamInject'"
-// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts) && !has(self.upstreamInject)) : true",message="no configuration must be set when type is 'unauthenticated'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'obo' ? has(self.obo) : !has(self.obo)",message="obo configuration must be set if and only if type is 'obo'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo)) : true",message="no configuration must be set when type is 'unauthenticated'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
 	// Type is the type of external authentication to configure
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject;obo
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 
@@ -99,7 +100,23 @@ type MCPExternalAuthConfigSpec struct {
 	// Only used when Type is "upstreamInject".
 	// +optional
 	UpstreamInject *UpstreamInjectSpec `json:"upstreamInject,omitempty"`
+
+	// OBO configures On-Behalf-Of (OBO) authentication.
+	// Only used when Type is "obo". The inner schema is intentionally empty in
+	// this revision; sub-fields land in a follow-up. Setting this field on an
+	// upstream-only build will cause the MCPExternalAuthConfig to transition to
+	// status.conditions[Valid] = False with Reason: EnterpriseRequired.
+	// +optional
+	OBO *OBOConfig `json:"obo,omitempty"`
 }
+
+// OBOConfig is a placeholder for On-Behalf-Of (OBO) external auth configuration.
+// The inner schema is intentionally empty in this revision; sub-fields land in a
+// follow-up. The struct exists today so that the CRD schema admits `spec.obo: {}`
+// (matching the CEL rule "obo field must be set iff type is obo") and so that
+// downstream tools that introspect the API surface can see the placeholder
+// before the protocol-level fields land.
+type OBOConfig struct{}
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
 // This configuration is used to exchange incoming authentication tokens for tokens
@@ -1152,14 +1169,18 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		// No complex validation needed for these types
 		return nil
 	case ExternalAuthTypeOBO:
-		// OBO validation is delegated to the registered OBO handler at the
-		// controllerutil layer (via controllerutil.OBOValidate ->
-		// obo.ErrEnterpriseRequired in upstream-only builds), invoked from
-		// the reconcile loop. The CRD-level Validate() stays a no-op for OBO
-		// and exists only to keep the `exhaustive` linter happy now that
-		// ExternalAuthTypeOBO is defined. The CRD enum currently rejects
-		// "obo" at the apiserver layer, so this arm is unreachable in
-		// upstream-only builds.
+		// OBO uses a two-tier validation pattern. Structural validation
+		// (the OBO field is set iff Type is "obo") runs above in
+		// validateTypeConfigConsistency, mirrored by the CEL rule on the
+		// spec. Semantic validation (e.g., whether the cluster has an OBO
+		// handler registered) runs at reconcile time via the
+		// controllerutil.OBOValidate function-pointer hook: upstream-only
+		// builds return obo.ErrEnterpriseRequired, which the reconciler
+		// maps to status.conditions[Valid] = False / Reason:
+		// EnterpriseRequired. Out-of-tree builds that register a handler
+		// via controllerutil.RegisterOBOHandler short-circuit the sentinel
+		// and run their own protocol-level checks. Splitting the tiers
+		// this way keeps the upstream CRD schema stable across builds.
 		return nil
 	default:
 		// Unknown type - should be caught by enum validation, but handle defensively
@@ -1169,13 +1190,11 @@ func (r *MCPExternalAuthConfig) Validate() error {
 
 // validateTypeConfigConsistency validates that the correct config is set for the selected type.
 // This mirrors the CEL validation rules but provides defense-in-depth for stored objects.
+// The per-type `if` shape is intentional: each row reads one-to-one against
+// the corresponding CEL XValidation rule on the spec, so a reviewer can
+// audit the structural-validation contract by skimming this function.
 //
-// TODO(#5329): when OBOConfig is introduced in the CRD admission task, add a
-// matching biconditional row here:
-//
-//	(r.Spec.OBO == nil) == (r.Spec.Type == ExternalAuthTypeOBO)
-//
-// and update the unauthenticated check below to also assert !has(self.obo).
+//nolint:gocyclo // intentionally one if per ExternalAuthType (parallels CEL rules)
 func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	// Check that each type has its corresponding config
 	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {
@@ -1196,6 +1215,9 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	if (r.Spec.UpstreamInject == nil) == (r.Spec.Type == ExternalAuthTypeUpstreamInject) {
 		return fmt.Errorf("upstreamInject configuration must be set if and only if type is 'upstreamInject'")
 	}
+	if (r.Spec.OBO == nil) == (r.Spec.Type == ExternalAuthTypeOBO) {
+		return fmt.Errorf("obo configuration must be set if and only if type is 'obo'")
+	}
 
 	// Check that unauthenticated has no config
 	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
@@ -1204,7 +1226,8 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 			r.Spec.BearerToken != nil ||
 			r.Spec.EmbeddedAuthServer != nil ||
 			r.Spec.AWSSts != nil ||
-			r.Spec.UpstreamInject != nil {
+			r.Spec.UpstreamInject != nil ||
+			r.Spec.OBO != nil {
 			return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
 		}
 	}

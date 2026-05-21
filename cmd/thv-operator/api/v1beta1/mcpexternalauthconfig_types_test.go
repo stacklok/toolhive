@@ -304,6 +304,66 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			expectErr: true,
 			errMsg:    "oidcConfig must be set when type is 'oidc'",
 		},
+		{
+			name: "valid obo type with empty config",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeOBO,
+					OBO:  &OBOConfig{},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "invalid obo type with nil obo config",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-missing",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeOBO,
+					OBO:  nil,
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
+			name: "invalid obo config set on non-obo type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-on-tokenexchange",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:          ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{TokenURL: "https://example.com/token"},
+					OBO:           &OBOConfig{},
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
+			name: "invalid obo config set on unauthenticated type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-on-unauth",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeUnauthenticated,
+					OBO:  &OBOConfig{},
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
 	}
 
 	for _, tt := range tests {

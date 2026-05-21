@@ -717,7 +717,7 @@ func TestNewPodTemplateSpecBuilderFrom_MergeOnBuild(t *testing.T) {
 		assert.Equal(t, "default-value", result.Labels["default-label"])
 	})
 
-	t.Run("nil user template behaves like NewPodTemplateSpecBuilder", func(t *testing.T) {
+	t.Run("nil user template behaves like an empty builder", func(t *testing.T) {
 		t.Parallel()
 
 		builder := NewPodTemplateSpecBuilderFrom(nil)

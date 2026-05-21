@@ -181,14 +181,6 @@ func WithName(name string) RunConfigBuilderOption {
 	}
 }
 
-// WithMiddlewareConfig sets the middleware configuration
-func WithMiddlewareConfig(middlewareConfig []types.MiddlewareConfig) RunConfigBuilderOption {
-	return func(b *runConfigBuilder) error {
-		b.config.MiddlewareConfigs = middlewareConfig
-		return nil
-	}
-}
-
 // WithCmdArgs sets the command arguments
 func WithCmdArgs(args []string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {

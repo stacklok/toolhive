@@ -31,45 +31,10 @@ type authServerConfig struct {
 	baselineClientScopes []string
 }
 
-// WithIssuer sets the issuer URL.
-func WithIssuer(issuer string) AuthServerOption {
-	return func(c *authServerConfig) {
-		c.issuer = issuer
-	}
-}
-
-// WithUpstreams sets the upstream IDP configurations.
-func WithUpstreams(upstreams []authserver.UpstreamRunConfig) AuthServerOption {
-	return func(c *authServerConfig) {
-		c.upstreams = upstreams
-	}
-}
-
-// WithAllowedAudiences sets the allowed resource audiences.
-func WithAllowedAudiences(audiences []string) AuthServerOption {
-	return func(c *authServerConfig) {
-		c.allowedAudiences = audiences
-	}
-}
-
 // WithSigningKey sets the signing key configuration.
 func WithSigningKey(cfg *authserver.SigningKeyRunConfig) AuthServerOption {
 	return func(c *authServerConfig) {
 		c.signingKeyConfig = cfg
-	}
-}
-
-// WithHMACSecrets sets the HMAC secret file paths.
-func WithHMACSecrets(files []string) AuthServerOption {
-	return func(c *authServerConfig) {
-		c.hmacSecretFiles = files
-	}
-}
-
-// WithTokenLifespans sets the token lifespan configuration.
-func WithTokenLifespans(cfg *authserver.TokenLifespanRunConfig) AuthServerOption {
-	return func(c *authServerConfig) {
-		c.tokenLifespans = cfg
 	}
 }
 

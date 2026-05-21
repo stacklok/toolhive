@@ -5,7 +5,6 @@
 package virtualmcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -258,167 +257,6 @@ func WaitForCondition(
 
 // OIDC Testing Helpers
 
-// DeployMockOIDCServerHTTP deploys a mock OIDC server with HTTP (for testing)
-func DeployMockOIDCServerHTTP(ctx context.Context, c client.Client, namespace, serverName string) {
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serverName,
-			Namespace: namespace,
-			Labels:    map[string]string{"app": serverName},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: int32Ptr(1),
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"app": serverName},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"app": serverName},
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:    "mock-oidc",
-							Image:   images.PythonImage,
-							Command: []string{"sh", "-c"},
-							Args:    []string{MockOIDCServerHTTPScript},
-							Ports: []corev1.ContainerPort{
-								{ContainerPort: 80, Name: "http"},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	gomega.Expect(c.Create(ctx, deployment)).To(gomega.Succeed())
-
-	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serverName,
-			Namespace: namespace,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": serverName},
-			Ports: []corev1.ServicePort{
-				{
-					Port:     80,
-					Protocol: corev1.ProtocolTCP,
-				},
-			},
-		},
-	}
-	gomega.Expect(c.Create(ctx, service)).To(gomega.Succeed())
-
-	gomega.Eventually(func() bool {
-		dep := &appsv1.Deployment{}
-		err := c.Get(ctx, types.NamespacedName{Name: serverName, Namespace: namespace}, dep)
-		return err == nil && dep.Status.ReadyReplicas > 0
-	}, 3*time.Minute, 1*time.Second).Should(gomega.BeTrue(), "Mock OIDC server should be ready")
-}
-
-// DeployInstrumentedBackendServer deploys a backend server that logs all headers
-func DeployInstrumentedBackendServer(ctx context.Context, c client.Client, namespace, serverName string) {
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serverName,
-			Namespace: namespace,
-			Labels:    map[string]string{"app": serverName},
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: int32Ptr(1),
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"app": serverName},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: map[string]string{"app": serverName},
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:    "instrumented-backend",
-							Image:   images.PythonImage,
-							Command: []string{"sh", "-c"},
-							Args:    []string{InstrumentedBackendScript},
-							Ports: []corev1.ContainerPort{
-								{ContainerPort: 8080, Name: "http"},
-							},
-						},
-					},
-				},
-			},
-		},
-	}
-	gomega.Expect(c.Create(ctx, deployment)).To(gomega.Succeed())
-
-	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serverName,
-			Namespace: namespace,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: map[string]string{"app": serverName},
-			Ports: []corev1.ServicePort{
-				{
-					Port:     8080,
-					Protocol: corev1.ProtocolTCP,
-				},
-			},
-		},
-	}
-	gomega.Expect(c.Create(ctx, service)).To(gomega.Succeed())
-
-	gomega.Eventually(func() bool {
-		dep := &appsv1.Deployment{}
-		err := c.Get(ctx, types.NamespacedName{Name: serverName, Namespace: namespace}, dep)
-		return err == nil && dep.Status.ReadyReplicas > 0
-	}, 3*time.Minute, 1*time.Second).Should(gomega.BeTrue(), "Instrumented backend should be ready")
-}
-
-// CleanupMockServer cleans up a mock server deployment, service, and optionally its TLS secret
-func CleanupMockServer(ctx context.Context, c client.Client, namespace, serverName, tlsSecretName string) {
-	_ = c.Delete(ctx, &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
-	})
-	_ = c.Delete(ctx, &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: serverName, Namespace: namespace},
-	})
-	if tlsSecretName != "" {
-		_ = c.Delete(ctx, &corev1.Secret{
-			ObjectMeta: metav1.ObjectMeta{Name: tlsSecretName, Namespace: namespace},
-		})
-	}
-}
-
-// GetPodLogsForDeployment returns logs from pods for a deployment (for debugging)
-func GetPodLogsForDeployment(ctx context.Context, c client.Client, namespace, deploymentName string) string {
-	pods := &corev1.PodList{}
-	listOpts := []client.ListOption{
-		client.InNamespace(namespace),
-		client.MatchingLabels{"app": deploymentName},
-	}
-
-	err := c.List(ctx, pods, listOpts...)
-	if err != nil || len(pods.Items) == 0 {
-		return fmt.Sprintf("No pods found for deployment %s", deploymentName)
-	}
-
-	pod := pods.Items[0]
-	if len(pod.Spec.Containers) == 0 {
-		return fmt.Sprintf("No containers found in pod %s", pod.Name)
-	}
-
-	// Get logs from the first container
-	containerName := pod.Spec.Containers[0].Name
-	logs, err := getPodLogs(ctx, namespace, pod.Name, containerName, false)
-	if err != nil {
-		return fmt.Sprintf("Failed to get logs for pod %s: %v", pod.Name, err)
-	}
-
-	return logs
-}
-
 // GetPodLogs returns logs from a specific pod and container
 func GetPodLogs(ctx context.Context, podName, namespace, containerName string) (string, error) {
 	logs, err := getPodLogs(ctx, namespace, podName, containerName, false)
@@ -430,34 +268,6 @@ func GetPodLogs(ctx context.Context, podName, namespace, containerName string) (
 
 func int32Ptr(i int32) *int32 {
 	return &i
-}
-
-// GetMCPServerDeployment retrieves the deployment for an MCPServer by name.
-// MCPServer deployments use the same name as the MCPServer resource.
-func GetMCPServerDeployment(ctx context.Context, c client.Client, serverName, namespace string) *appsv1.Deployment {
-	deployment := &appsv1.Deployment{}
-	err := c.Get(ctx, types.NamespacedName{
-		Name:      serverName,
-		Namespace: namespace,
-	}, deployment)
-	if err != nil {
-		return nil
-	}
-	return deployment
-}
-
-// GetMCPServerStatefulSet retrieves the StatefulSet for an MCPServer by name.
-// MCPServer StatefulSets use the same name as the MCPServer resource for the workload pods.
-func GetMCPServerStatefulSet(ctx context.Context, c client.Client, serverName, namespace string) *appsv1.StatefulSet {
-	statefulset := &appsv1.StatefulSet{}
-	err := c.Get(ctx, types.NamespacedName{
-		Name:      serverName,
-		Namespace: namespace,
-	}, statefulset)
-	if err != nil {
-		return nil
-	}
-	return statefulset
 }
 
 // WaitForPodDeletion waits for a pod to be fully deleted from the cluster.
@@ -515,36 +325,6 @@ func GetServiceStats(ctx context.Context, c client.Client, namespace, serviceNam
 	_ = c.Delete(ctx, curlPod)
 
 	return logs, nil
-}
-
-// GetMockOIDCStats queries the /stats endpoint of the mock OIDC server
-func GetMockOIDCStats(ctx context.Context, c client.Client, namespace, serviceName string) (map[string]int, error) {
-	logs, err := GetServiceStats(ctx, c, namespace, serviceName, 80)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse JSON response - check if discovery_requests field exists
-	stats := make(map[string]int)
-	if len(logs) > 0 && bytes.Contains([]byte(logs), []byte("discovery_requests")) {
-		stats["discovery_requests"] = 1 // Simplified - just check if field exists
-	}
-	return stats, nil
-}
-
-// GetInstrumentedBackendStats queries the /stats endpoint of the instrumented backend
-func GetInstrumentedBackendStats(ctx context.Context, c client.Client, namespace, serviceName string) (map[string]int, error) {
-	logs, err := GetServiceStats(ctx, c, namespace, serviceName, 8080)
-	if err != nil {
-		return nil, err
-	}
-
-	// Parse JSON response - check if bearer_token_requests field exists
-	stats := make(map[string]int)
-	if len(logs) > 0 && bytes.Contains([]byte(logs), []byte("bearer_token_requests")) {
-		stats["bearer_token_requests"] = 1 // Simplified - just check if field exists and > 0
-	}
-	return stats, nil
 }
 
 // GetMockOAuth2Stats queries the /stats endpoint of the mock OAuth2 server (port 8080)

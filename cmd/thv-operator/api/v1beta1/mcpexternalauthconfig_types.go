@@ -1194,7 +1194,16 @@ func (r *MCPExternalAuthConfig) Validate() error {
 // the corresponding CEL XValidation rule on the spec, so a reviewer can
 // audit the structural-validation contract by skimming this function.
 //
-//nolint:gocyclo // intentionally one if per ExternalAuthType (parallels CEL rules)
+// The gocyclo suppression is a confirmed false positive: every new
+// ExternalAuthType adds one biconditional row and one disjunct to the
+// unauthenticated guard, which the analyzer counts as branches even though
+// the rows are syntactically uniform. Collapsing the rows into a
+// table-driven loop would reduce the score but obscure the one-to-one
+// correspondence with the CEL rules on MCPExternalAuthConfigSpec, which is
+// the property reviewers rely on to audit the structural-validation
+// contract. See issue #5329 for the broader discussion.
+//
+//nolint:gocyclo // one if per ExternalAuthType parallels the CEL rules on the spec; see doc comment
 func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	// Check that each type has its corresponding config
 	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {
@@ -1219,7 +1228,10 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 		return fmt.Errorf("obo configuration must be set if and only if type is 'obo'")
 	}
 
-	// Check that unauthenticated has no config
+	// Belt-and-braces guard for `unauthenticated`: shape-parity with the per-type
+	// biconditionals above, which always intercept a populated config field first.
+	// Listed here so a future contributor adding a new type cannot forget to extend
+	// the "no configuration must be set" invariant.
 	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
 		if r.Spec.TokenExchange != nil ||
 			r.Spec.HeaderInjection != nil ||

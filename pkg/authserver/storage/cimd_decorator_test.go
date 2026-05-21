@@ -266,6 +266,20 @@ func TestCIMDStorageDecorator_FetchOrCached_SingleflightDeduplicatesConcurrentFe
 	assert.Equal(t, int32(1), fetchCount.Load(), "singleflight must collapse concurrent fetches into one")
 }
 
+func TestCIMDStorageDecorator_FetchOrCached_FetchFailureReturnsNotFound(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+
+	dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+	_, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+	require.Error(t, err)
+	assert.ErrorIs(t, err, fosite.ErrNotFound, "fetch failure must be wrapped as fosite.ErrNotFound")
+}
+
 func TestCIMDStorageDecorator_FetchOrCached_ExpiredCacheEntryRefetches(t *testing.T) {
 	t.Parallel()
 

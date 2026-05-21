@@ -233,3 +233,33 @@ When passing configuration across process boundaries (operator → proxy-runner)
 - [Redis Storage Configuration Guide](../redis-storage.md) — User-facing setup guide
 - [Operator Architecture](09-operator-architecture.md) — CRD and controller design
 - [Core Concepts](02-core-concepts.md) — Platform terminology
+
+## CIMD Storage Decorator
+
+When `authServer.cimd.enabled: true` is set, the embedded authorization server wraps its storage backend in a `CIMDStorageDecorator` before passing it to fosite. This decorator enables MCP clients to present HTTPS URLs as `client_id` values without first calling `/oauth/register`.
+
+### What it does
+
+`CIMDStorageDecorator` embeds the full `storage.Storage` interface and overrides only `GetClient`. When fosite calls `GetClient("https://vscode.dev/oauth/client-metadata.json")` during an authorization request:
+
+1. The decorator detects the HTTPS URL using `oauthproto.IsClientIDMetadataDocumentURL`
+2. It fetches the Client ID Metadata Document from that URL via `pkg/oauthproto/cimd.FetchClientMetadataDocument` (with SSRF protection, 10 KB cap, 5-second timeout)
+3. It builds a `fosite.Client` from the document fields, caches it with a configurable TTL, and returns it to fosite
+4. Concurrent fetches for the same URL are deduplicated via `singleflight`
+
+All other `Storage` methods (`RegisterClient`, token storage, upstream token storage, etc.) delegate to the underlying backend unchanged. DCR clients (opaque string IDs) continue to work exactly as before.
+
+### Unwrap pattern
+
+`CIMDStorageDecorator` implements `Unwrap() Storage` to expose the concrete backend through the decorator layer. Two call sites in `server_impl.go` depend on this:
+
+- **`DCRCredentialStore` assertion** (`newServer`): The `DCRCredentialStore` interface is narrower than `Storage` and not embedded in it. The assertion `unwrapStorage(stor).(storage.DCRCredentialStore)` reaches the concrete backend through the decorator.
+- **`RedisStorage` migration** (`runLegacyMigration`): A type assertion to `*storage.RedisStorage` is needed to run a one-shot data migration. Same `unwrapStorage` call.
+
+Both call sites use the `unwrapStorage(stor)` helper rather than asserting directly on `stor`.
+
+### Air-gapped environments
+
+When the embedded authorization server is deployed in an environment that cannot reach `https://toolhive.dev/oauth/client-metadata.json` or any public CIMD metadata URL, set `authServer.cimd.enabled: false`. Clients will fall back to DCR (`/oauth/register`) which uses only the local storage backend and requires no outbound connectivity.
+
+**Implementation:** `pkg/authserver/storage/cimd_decorator.go`

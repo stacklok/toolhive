@@ -31,7 +31,6 @@ type CIMDStorageDecorator struct {
 	sf      singleflight.Group // deduplicates concurrent fetches for the same URL
 	cache   *lru.Cache[string, *cimdCacheEntry]
 	ttl     time.Duration
-	enabled bool
 }
 
 type cimdCacheEntry struct {
@@ -66,7 +65,6 @@ func NewCIMDStorageDecorator(
 		Storage: base,
 		cache:   c,
 		ttl:     fallbackTTL,
-		enabled: true,
 	}, nil
 }
 
@@ -106,7 +104,11 @@ func (d *CIMDStorageDecorator) fetchOrCached(ctx context.Context, id string) (fo
 	if err != nil {
 		return nil, err
 	}
-	return result.(fosite.Client), nil //nolint:forcetypeassert // fetch always returns fosite.Client
+	client, ok := result.(fosite.Client)
+	if !ok {
+		return nil, fmt.Errorf("CIMD singleflight returned unexpected type %T", result)
+	}
+	return client, nil
 }
 
 func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Client, error) {
@@ -182,11 +184,10 @@ func buildFositeClient(doc *cimd.ClientMetadataDocument) fosite.Client {
 
 	// Wrap in LoopbackClient when any redirect URI targets localhost so that
 	// RFC 8252 §7.3 dynamic port matching works for native app clients.
-	// Use openIDClient.DefaultClient so TokenEndpointAuthMethod is preserved
-	// inside the wrapper — LoopbackClient embeds DefaultClient, not the OIDC
-	// client, so passing defaultClient directly would drop the auth method.
+	// Pass openIDClient directly so TokenEndpointAuthMethod is preserved —
+	// LoopbackClient now embeds *fosite.DefaultOpenIDConnectClient.
 	if hasLoopbackRedirectURI(doc.RedirectURIs) {
-		return registration.NewLoopbackClient(openIDClient.DefaultClient)
+		return registration.NewLoopbackClient(openIDClient)
 	}
 
 	return openIDClient

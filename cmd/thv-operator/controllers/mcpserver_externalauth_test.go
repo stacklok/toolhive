@@ -613,3 +613,95 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 		})
 	}
 }
+
+// TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnRefRemoved is
+// a regression guard for the no-ref heal path: handleExternalAuthConfig's
+// early-return branch (m.Spec.ExternalAuthConfigRef == nil) never reaches the
+// mirror helper, so if a stale ExternalAuthConfigValidated=False sits on the
+// status from a previous reconcile, the user removing the ref must still
+// clear it — otherwise the condition outlives its cause.
+func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnRefRemoved(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+		Spec:       mcpv1beta1.MCPServerSpec{Image: "test-image" /* no ExternalAuthConfigRef */},
+		Status: mcpv1beta1.MCPServerStatus{
+			Conditions: []metav1.Condition{{
+				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+				Message: "stale mirror from when the ref pointed at an obo-typed config",
+			}},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(mcpServer).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	require.NoError(t, reconciler.handleExternalAuthConfig(ctx, mcpServer))
+	assert.Nil(t,
+		meta.FindStatusCondition(mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated),
+		"stale mirror must be cleared in the no-ref early-return branch")
+}
+
+// TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnSourceNotFound
+// is the second F10 regression guard: when the referenced MCPExternalAuthConfig
+// is deleted between reconciles, handleExternalAuthConfig returns the lookup
+// error and previously left any stale mirror in place. The fix clears the
+// mirror in both NotFound branches so the condition does not outlive the
+// source.
+func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnSourceNotFound(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	t.Cleanup(cancel)
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:                 "test-image",
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "gone"},
+		},
+		Status: mcpv1beta1.MCPServerStatus{
+			Conditions: []metav1.Condition{{
+				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+				Message: "stale mirror — source has since been deleted",
+			}},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(mcpServer).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	err := reconciler.handleExternalAuthConfig(ctx, mcpServer)
+	require.Error(t, err, "NotFound lookup must still surface an error")
+	assert.Contains(t, err.Error(), "not found",
+		"the pre-existing NotFound error contract is unchanged by the mirror-clear")
+	assert.Nil(t,
+		meta.FindStatusCondition(mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated),
+		"stale mirror must be cleared when the referenced source is NotFound")
+}

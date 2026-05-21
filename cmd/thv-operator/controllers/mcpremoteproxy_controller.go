@@ -788,18 +788,20 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 // mirrorExternalAuthConfigInvalidForRemoteProxy inspects the referenced
 // MCPExternalAuthConfig's Valid condition and, when it is False, mirrors the
 // reason+message onto the MCPRemoteProxy's ExternalAuthConfigValidated
-// condition. Returns (true, err) when a mirror was written so callers can
-// short-circuit; (false, nil) otherwise. The healed path is not handled here
-// because handleExternalAuthConfig sets ExternalAuthConfigValidated=True
-// downstream, which overwrites any stale False this helper previously wrote.
-// See the equivalent helper on MCPServerReconciler for the propagation
-// rationale.
+// condition. When the source is healed (Valid=True or absent), the helper
+// also clears any stale mirror it previously wrote so the heal contract is
+// robust to control-flow changes between this site and the downstream True
+// writer at the end of handleExternalAuthConfig. Returns (true, err) when a
+// mirror was written so callers can short-circuit; (false, nil) otherwise.
+// See the equivalent helper for MCPServer for the propagation rationale.
 func mirrorExternalAuthConfigInvalidForRemoteProxy(
 	proxy *mcpv1beta1.MCPRemoteProxy,
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (bool, error) {
 	mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig)
 	if mirrored == nil {
+		meta.RemoveStatusCondition(
+			&proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
 		return false, nil
 	}
 	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{

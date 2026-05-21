@@ -2016,7 +2016,9 @@ func getToolhiveRunnerImage() string {
 func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
 	if m.Spec.ExternalAuthConfigRef == nil {
-		// No MCPExternalAuthConfig referenced, clear any stored hash
+		// No MCPExternalAuthConfig referenced. Clear any stale mirror written
+		// while the ref was set so the condition doesn't outlive its cause.
+		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
 		if m.Status.ExternalAuthConfigHash != "" {
 			m.Status.ExternalAuthConfigHash = ""
 			if err := r.Status().Update(ctx, m); err != nil {
@@ -2029,10 +2031,16 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	// Get the referenced MCPExternalAuthConfig
 	externalAuthConfig, err := GetExternalAuthConfigForMCPServer(ctx, r.Client, m)
 	if err != nil {
+		// Source lookup failed (e.g. NotFound). Clear any stale mirror — the
+		// referenced source no longer exists, so the previous mirror is no
+		// longer load-bearing. Pre-existing behavior surfaces the lookup
+		// error through Phase=Failed at the caller.
+		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
 		return err
 	}
 
 	if externalAuthConfig == nil {
+		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
 		return fmt.Errorf("MCPExternalAuthConfig %s not found", m.Spec.ExternalAuthConfigRef.Name)
 	}
 

@@ -39,6 +39,13 @@ const (
 	// ExternalAuthTypeUpstreamInject is the type for upstream token injection
 	// This injects an upstream IDP access token as the Authorization: Bearer header
 	ExternalAuthTypeUpstreamInject ExternalAuthType = "upstreamInject"
+
+	// ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.
+	// This type requires a build with an OBO handler registered via
+	// controllerutil.RegisterOBOHandler; an upstream-only build surfaces
+	// status.conditions[Valid] = False with Reason: EnterpriseRequired
+	// when an obo-typed MCPExternalAuthConfig is applied.
+	ExternalAuthTypeOBO ExternalAuthType = "obo"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -1107,6 +1114,16 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		ExternalAuthTypeUnauthenticated:
 		// No complex validation needed for these types
 		return nil
+	case ExternalAuthTypeOBO:
+		// TODO(#5328): no body change is planned here — OBO validation is
+		// delegated to the registered OBO handler at the controllerutil layer
+		// (via controllerutil.OBOValidate -> obo.ErrEnterpriseRequired in
+		// upstream-only builds), invoked from the reconcile loop. The
+		// CRD-level Validate() stays a no-op for OBO and exists only to keep
+		// the `exhaustive` linter happy now that ExternalAuthTypeOBO is
+		// defined. The CRD enum currently rejects "obo" at the apiserver
+		// layer, so this arm is unreachable in upstream-only builds.
+		return nil
 	default:
 		// Unknown type - should be caught by enum validation, but handle defensively
 		return fmt.Errorf("unsupported auth type: %s", r.Spec.Type)
@@ -1115,6 +1132,13 @@ func (r *MCPExternalAuthConfig) Validate() error {
 
 // validateTypeConfigConsistency validates that the correct config is set for the selected type.
 // This mirrors the CEL validation rules but provides defense-in-depth for stored objects.
+//
+// TODO(#5329): when OBOConfig is introduced in the CRD admission task, add a
+// matching biconditional row here:
+//
+//	(r.Spec.OBO == nil) == (r.Spec.Type == ExternalAuthTypeOBO)
+//
+// and update the unauthenticated check below to also assert !has(self.obo).
 func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	// Check that each type has its corresponding config
 	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {

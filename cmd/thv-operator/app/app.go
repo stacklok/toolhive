@@ -47,8 +47,9 @@ var (
 // envEnableStorageVersionMigrator is the opt-in for the StorageVersionMigrator
 // controller. The controller defaults to OFF in this release so the change can
 // ship safely without functional impact. Set to "true" (or "1", "t") to enable.
-// A follow-up release will flip the chart default to true.
-const envEnableStorageVersionMigrator = "ENABLE_STORAGE_VERSION_MIGRATOR"
+// A follow-up release will flip the default to true alongside the helm chart
+// surface and user docs.
+const envEnableStorageVersionMigrator = "TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR"
 
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
@@ -159,12 +160,16 @@ func setupControllersAndWebhooks(mgr ctrl.Manager, imagePullSecretsDefaults imag
 	if err := setupAggregationControllers(mgr, imagePullSecretsDefaults); err != nil {
 		return err
 	}
-	if isStorageVersionMigratorEnabled() {
+	enabled, err := isStorageVersionMigratorEnabled()
+	if err != nil {
+		return err
+	}
+	if enabled {
 		if err := setupStorageVersionMigrator(mgr); err != nil {
 			return err
 		}
 	} else {
-		setupLog.Info("StorageVersionMigrator disabled", "envVar", envEnableStorageVersionMigrator)
+		setupLog.V(1).Info("StorageVersionMigrator disabled", "envVar", envEnableStorageVersionMigrator)
 	}
 	//+kubebuilder:scaffold:builder
 	return nil
@@ -188,22 +193,21 @@ func setupStorageVersionMigrator(mgr ctrl.Manager) error {
 
 // isStorageVersionMigratorEnabled reports whether the StorageVersionMigrator
 // controller should be registered. Defaults to false in this release — admins
-// must explicitly opt in via ENABLE_STORAGE_VERSION_MIGRATOR=true. An
-// unparseable value logs a warning and uses the default (disabled).
-func isStorageVersionMigratorEnabled() bool {
+// must explicitly opt in via TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR=true.
+// An unparsable value returns an error so startup fails loudly rather than
+// silently disabling the feature an admin asked to turn on.
+func isStorageVersionMigratorEnabled() (bool, error) {
 	value, found := os.LookupEnv(envEnableStorageVersionMigrator)
 	if !found {
-		return false
+		return false, nil
 	}
 	enabled, err := strconv.ParseBool(value)
 	if err != nil {
-		setupLog.Info(
-			"invalid boolean value for "+envEnableStorageVersionMigrator+", using default (disabled)",
-			"value", value,
-		)
-		return false
+		return false, fmt.Errorf(
+			"invalid value for %s: %q (expected true/false): %w",
+			envEnableStorageVersionMigrator, value, err)
 	}
-	return enabled
+	return enabled, nil
 }
 
 // setupGroupRefFieldIndexes sets up field indexing for spec.groupRef on all resource types

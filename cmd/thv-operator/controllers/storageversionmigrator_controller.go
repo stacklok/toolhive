@@ -94,9 +94,10 @@ var errMigrationRetriedDueToConflicts = errors.New(
 // etcd objects. See https://github.com/kubernetes-sigs/kube-storage-version-migrator/issues/65
 // for the upstream maintainers' explanation of this mechanism.
 //
-// Enabled by default. Opt out operator-wide via
-// operator.features.storageVersionMigrator (ENABLE_STORAGE_VERSION_MIGRATOR=false)
-// for admins who prefer to run kube-storage-version-migrator externally.
+// Disabled by default in this release. Admins opt in operator-wide via
+// TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR=true. The helm chart surface and
+// the default-on flip land together in a follow-up PR; until then, early
+// adopters can set the env var directly through operator.env.
 // Per-kind escape hatch: remove the label from the CRD (emergency only — will
 // be re-applied by GitOps / helm upgrade).
 type StorageVersionMigratorReconciler struct {
@@ -106,8 +107,8 @@ type StorageVersionMigratorReconciler struct {
 	APIReader       client.Reader        // live reads for CRDs and CR list pages (bypasses informer)
 	Scheme          *runtime.Scheme      // kubebuilder reconciler convention
 	Recorder        record.EventRecorder // MigrationSucceeded / MigrationFailed events on the CRD
-	PageSize        int64                // overrideable for tests; defaults to defaultListPageSize
-	CacheGCInterval time.Duration        // overrideable for tests; defaults to defaultCacheGCInterval
+	PageSize        int64                // overridable for tests; defaults to defaultListPageSize
+	CacheGCInterval time.Duration        // overridable for tests; defaults to defaultCacheGCInterval
 	cache           *migrationCache
 }
 
@@ -355,6 +356,13 @@ func (r *StorageVersionMigratorReconciler) restoreOne(
 // patchStoredVersions overwrites CRD.status.storedVersions to exactly
 // [storageVersion], using an optimistic lock on the CRD's resourceVersion so
 // a concurrent API-server write rejects the patch and triggers a requeue.
+//
+// Does NOT use controllerutil.MutateAndPatchStatus (the operator-wide helper
+// mandated by .claude/rules/operator.md): the target CRD is an
+// apiextensions.k8s.io type co-owned by kube-apiserver — the apiserver
+// appends to storedVersions on first write at each version — so the
+// optimistic lock is load-bearing here. The helper's plain MergeFrom would
+// race with the apiserver's append.
 func (r *StorageVersionMigratorReconciler) patchStoredVersions(
 	ctx context.Context,
 	crd *apiextensionsv1.CustomResourceDefinition,

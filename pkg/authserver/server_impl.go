@@ -107,7 +107,6 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// provably safe for the production backends; surfacing a bad backend as
 	// a constructor error keeps misconfiguration fail-loud at boot rather
 	// than at first DCR resolve.
-	//
 	baseStore := unwrapStorage(stor)
 	dcrStore, ok := baseStore.(storage.DCRCredentialStore)
 	if !ok {

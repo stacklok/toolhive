@@ -383,6 +383,12 @@ func TestBuildFositeClient_LoopbackRedirectWrapsInLoopbackClient(t *testing.T) {
 	}
 	_, ok := got.(loopbackMatcher)
 	assert.True(t, ok, "loopback redirect URI must produce a LoopbackClient")
+
+	// TokenEndpointAuthMethod must be preserved through the LoopbackClient wrapper.
+	oidc, ok := got.(fosite.OpenIDConnectClient)
+	require.True(t, ok, "LoopbackClient must implement fosite.OpenIDConnectClient")
+	assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod(),
+		"loopback client must preserve TokenEndpointAuthMethod from the OIDC client")
 }
 
 func TestBuildFositeClient_NonLoopbackRedirectReturnsOpenIDConnectClient(t *testing.T) {

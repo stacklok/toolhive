@@ -198,14 +198,10 @@ func (c *Converter) convertAuthzConfig(
 ) (*vmcpconfig.AuthzConfig, error) {
 	authzRef := vmcp.Spec.IncomingAuth.AuthzConfig
 
-	// Map Kubernetes API type to vmcp config type. API "inline" maps to vmcp "cedar";
-	// other types pass through (e.g. "configMap" → "cedar" once we populate policies).
-	authzType := authzRef.Type
-	if authzType == authzLabelValueInline || authzType == mcpv1beta1.AuthzConfigTypeConfigMap {
-		authzType = "cedar"
-	}
-
-	authz := &vmcpconfig.AuthzConfig{Type: authzType}
+	// Both "inline" and "configMap" map to vmcp "cedar"; the difference is the
+	// source the policies are loaded from. Unknown values are rejected by the
+	// default arm of the switch below.
+	authz := &vmcpconfig.AuthzConfig{Type: "cedar"}
 
 	// Pull policy content from the chosen source.
 	switch authzRef.Type {
@@ -234,6 +230,15 @@ func (c *Converter) convertAuthzConfig(
 		authz.GroupClaimName = opts.GroupClaimName
 		authz.RoleClaimName = opts.RoleClaimName
 		authz.GroupEntityType = opts.GroupEntityType
+
+	default:
+		// Defense in depth. The CRD enum (configMap;inline) blocks unknown
+		// values at admission today, but the converter is also reachable from
+		// CLI dry-runs, webhooks, and test harnesses where a stale schema or
+		// a future authz source could slip through. Failing here keeps Cedar
+		// from being constructed with an empty policy set (which silently
+		// denies every request).
+		return nil, fmt.Errorf("unsupported authz config type %q", authzRef.Type)
 	}
 
 	// Spec-level overrides for source-agnostic fields. Spec wins over ConfigMap

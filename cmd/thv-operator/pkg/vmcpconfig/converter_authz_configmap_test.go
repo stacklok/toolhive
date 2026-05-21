@@ -339,3 +339,32 @@ func TestConvertAuthzConfig_InlinePath_NewFieldsSourcedFromAuthzConfigRef(t *tes
 	assert.Equal(t, "roles", authz.RoleClaimName)
 	assert.Equal(t, "ClaimGroup", authz.GroupEntityType)
 }
+
+// TestConvertAuthzConfig_UnknownTypeIsRejected covers the default arm of the
+// type switch in convertAuthzConfig. The CRD enum already blocks unknown
+// values at admission, but the converter is also reachable from CLI dry-runs,
+// webhooks, and test harnesses where a stale schema could slip an unknown
+// type through. Returning an error keeps Cedar from being constructed with an
+// empty policy set, which would silently deny every request.
+func TestConvertAuthzConfig_UnknownTypeIsRejected(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+				AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+					Type: "future-authorizer",
+				},
+			},
+		},
+	}
+
+	ctx := log.IntoContext(t.Context(), logr.Discard())
+	converter := converterWithObjects(t)
+	_, _, err := converter.Convert(ctx, vmcp, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `unsupported authz config type "future-authorizer"`)
+}

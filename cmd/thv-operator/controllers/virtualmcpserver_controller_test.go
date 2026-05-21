@@ -3836,6 +3836,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent(t *test
 		incomingAuth     *mcpv1beta1.IncomingAuthConfig
 		authServerConfig *mcpv1beta1.EmbeddedAuthServerConfig
 		wantEvent        bool
+		wantError        bool
 	}{
 		{
 			name: "deprecated inline primary emits the deprecation event",
@@ -3880,6 +3881,21 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent(t *test
 			},
 			wantEvent: false,
 		},
+		{
+			// Mid-migration: user removed AuthServerConfig (or hasn't added it
+			// yet) but still has the deprecated inline field set. The
+			// validator rejects (no auth server to anchor the provider
+			// against), but the deprecation hint must still fire so the user
+			// sees what to fix.
+			name: "deprecated inline primary in no-auth-server branch emits the event before reject",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRefWithDeprecatedPrimary,
+			},
+			authServerConfig: nil,
+			wantEvent:        true,
+			wantError:        true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -3902,7 +3918,12 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent(t *test
 			recorder := events.NewFakeRecorder(10)
 			r := &VirtualMCPServerReconciler{Recorder: recorder}
 			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
-			require.NoError(t, r.validateAuthzUpstreamAvailable(t.Context(), vmcp, statusManager))
+			err := r.validateAuthzUpstreamAvailable(t.Context(), vmcp, statusManager)
+			if tt.wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
 
 			select {
 			case event := <-recorder.Events:

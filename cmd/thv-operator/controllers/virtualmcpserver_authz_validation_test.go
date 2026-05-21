@@ -114,6 +114,23 @@ func TestValidateAuthzConfigMapRef(t *testing.T) {
 			},
 			expectErrMessage: "failed to parse authz config",
 		},
+		{
+			// Pre-validator and converter must agree on "valid". A payload
+			// that parses as authz.Config and passes the registered-authorizer
+			// validation but isn't Cedar-flavoured (e.g. the HTTP authorizer
+			// registered alongside Cedar) must still fail here on the vMCP
+			// path, or it would pass pre-validation and then fail opaquely at
+			// convert time with a different error.
+			name: "valid authz.Config but non-Cedar type is rejected",
+			vmcp: vmcpWithAuthzConfigMap("authz-cm"),
+			seedConfigMap: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: "authz-cm", Namespace: "default"},
+				Data: map[string]string{
+					"authz.json": `{"version":"1.0","type":"httpv1","pdp":{"http":{"url":"http://localhost:9000"},"claim_mapping":"standard"}}`,
+				},
+			},
+			expectErrMessage: "is not a Cedar config",
+		},
 	}
 
 	for _, tt := range tests {

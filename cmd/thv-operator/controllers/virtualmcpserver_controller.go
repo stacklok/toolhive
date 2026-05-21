@@ -600,6 +600,25 @@ func rejectAuthzAdmission(
 // explicitly, the validator additionally rejects (a) the direct-IdP case (no
 // embedded AS) because the field is meaningless without an AS, and (b) any
 // name that does not resolve to one of spec.authServerConfig.upstreamProviders.
+// emitPrimaryUpstreamProviderDeprecatedEvent emits a Warning event with reason
+// AuthzPrimaryUpstreamProviderDeprecated when the resolved primary upstream
+// provider value came from the deprecated
+// spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider location.
+// Called from every validation branch that observes the explicit provider so
+// the kubectl-visible hint is consistent regardless of the validation outcome.
+func (r *VirtualMCPServerReconciler) emitPrimaryUpstreamProviderDeprecatedEvent(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	fromDeprecated bool,
+) {
+	if !fromDeprecated || r.Recorder == nil {
+		return
+	}
+	r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning,
+		"AuthzPrimaryUpstreamProviderDeprecated", "ResolvePrimaryUpstreamProvider",
+		"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider is deprecated; "+
+			"move the value to spec.authServerConfig.primaryUpstreamProvider")
+}
+
 func (r *VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
@@ -623,8 +642,13 @@ func (r *VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	// admission for the same "fail loudly instead of denying every request"
 	// reason as the configured-AS mismatch path below.
 	if vmcp.Spec.AuthServerConfig == nil {
-		explicitProvider, _ := vmcp.ExplicitPrimaryUpstreamProvider()
+		explicitProvider, fromDeprecated := vmcp.ExplicitPrimaryUpstreamProvider()
 		if explicitProvider != "" {
+			// A user mid-migration may still have the deprecated inline field
+			// set while removing AuthServerConfig (or before configuring it).
+			// Emit the deprecation event here too so the kubectl-visible hint
+			// is consistent across both reject and accept paths.
+			r.emitPrimaryUpstreamProviderDeprecatedEvent(vmcp, fromDeprecated)
 			message := fmt.Sprintf(
 				"primaryUpstreamProvider=%q is set but spec.authServerConfig is not configured. "+
 					"The field names an upstream IDP on the embedded auth server, which is required "+
@@ -671,11 +695,8 @@ func (r *VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	// mismatch would cause Cedar to deny every request at runtime — fail loudly
 	// at admission instead.
 	explicitProvider, fromDeprecated := vmcp.ExplicitPrimaryUpstreamProvider()
-	if explicitProvider != "" && fromDeprecated && r.Recorder != nil {
-		r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning,
-			"AuthzPrimaryUpstreamProviderDeprecated", "ResolvePrimaryUpstreamProvider",
-			"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider is deprecated; "+
-				"move the value to spec.authServerConfig.primaryUpstreamProvider")
+	if explicitProvider != "" {
+		r.emitPrimaryUpstreamProviderDeprecatedEvent(vmcp, fromDeprecated)
 	}
 	if explicitProvider != "" {
 		resolved := authserver.ResolveUpstreamName(explicitProvider)

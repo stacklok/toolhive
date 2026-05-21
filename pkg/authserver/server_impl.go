@@ -108,14 +108,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// a constructor error keeps misconfiguration fail-loud at boot rather
 	// than at first DCR resolve.
 	//
-	// Unwrap in case the storage is wrapped by a decorator (e.g. CIMDStorageDecorator).
-	baseStore := stor
-	if unwrapper, ok := stor.(interface{ Unwrap() storage.Storage }); ok {
-		baseStore = unwrapper.Unwrap()
-	}
+	baseStore := unwrapStorage(stor)
 	dcrStore, ok := baseStore.(storage.DCRCredentialStore)
 	if !ok {
-		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", stor)
+		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
 	slog.Debug("creating OAuth2 configuration")
@@ -296,15 +292,21 @@ func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, sto
 	)
 }
 
+// unwrapStorage peels off one decorator layer if the storage implements
+// Unwrap(), returning the concrete backend. Both newServer (DCRCredentialStore
+// assertion) and runLegacyMigration (RedisStorage type assertion) need this.
+func unwrapStorage(stor storage.Storage) storage.Storage {
+	if unwrapper, ok := stor.(interface{ Unwrap() storage.Storage }); ok {
+		return unwrapper.Unwrap()
+	}
+	return stor
+}
+
 // runLegacyMigration runs one-shot Redis data migrations before handlers are
 // constructed. It is a no-op for non-Redis backends and passes through any
 // decorator wrapping so the concrete type can be reached.
 func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []UpstreamConfig) error {
-	// Unwrap in case the storage is wrapped by a decorator (e.g. CIMDStorageDecorator).
-	base := stor
-	if unwrapper, ok := stor.(interface{ Unwrap() storage.Storage }); ok {
-		base = unwrapper.Unwrap()
-	}
+	base := unwrapStorage(stor)
 	rs, ok := base.(*storage.RedisStorage)
 	if !ok {
 		return nil

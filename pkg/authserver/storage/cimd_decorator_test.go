@@ -233,15 +233,23 @@ func TestCIMDStorageDecorator_FetchOrCached_SingleflightDeduplicatesConcurrentFe
 	var wg sync.WaitGroup
 	wg.Add(goroutines)
 
-	for i := range goroutines {
+	// Each goroutine signals on startBarrier immediately before calling
+	// fetchOrCached. Draining all signals before closing ready ensures they
+	// are all scheduled and about to enter sf.Do, making the singleflight
+	// deduplication deterministic without relying on time.Sleep.
+	startBarrier := make(chan struct{}, goroutines)
+
+	for i := 0; i < goroutines; i++ {
 		go func(i int) {
 			defer wg.Done()
+			startBarrier <- struct{}{}
 			_, errs[i] = dec.fetchOrCached(context.Background(), id)
 		}(i)
 	}
 
-	// Give goroutines time to queue up inside singleflight before releasing the handler.
-	time.Sleep(20 * time.Millisecond)
+	for range goroutines {
+		<-startBarrier
+	}
 	close(ready)
 
 	done := make(chan struct{})
@@ -283,7 +291,7 @@ func TestCIMDStorageDecorator_FetchOrCached_ExpiredCacheEntryRefetches(t *testin
 // Verify that GetClient routes HTTPS client_id values through fetchOrCached by
 // pre-populating the cache directly (avoiding real network).
 
-func TestCIMDStorageDecorator_GetClient_CIDMURLHitsCacheDirectly(t *testing.T) {
+func TestCIMDStorageDecorator_GetClient_CIMDURLHitsCacheDirectly(t *testing.T) {
 	t.Parallel()
 
 	base := newTestBase(t)

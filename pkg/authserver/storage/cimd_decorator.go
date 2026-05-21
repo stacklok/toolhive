@@ -41,7 +41,8 @@ type cimdCacheEntry struct {
 
 // NewCIMDStorageDecorator wraps base with CIMD client lookup. When enabled=false
 // it returns base unchanged (no allocation). cacheMaxSize must be >= 1;
-// fallbackTTL is used when the fetched document carries no Cache-Control header.
+// fallbackTTL is the fixed TTL applied to every cache entry (Cache-Control
+// header parsing is not yet implemented; all entries use this value).
 func NewCIMDStorageDecorator(
 	base Storage,
 	enabled bool,
@@ -90,13 +91,17 @@ func (d *CIMDStorageDecorator) fetchOrCached(ctx context.Context, id string) (fo
 		return entry.client, nil
 	}
 
-	// Deduplicate concurrent fetches for the same URL
+	// Deduplicate concurrent fetches for the same URL. The shared fetch uses a
+	// context detached from the caller so that one caller cancelling does not
+	// abort the in-flight request for other waiters. The HTTP client inside
+	// FetchClientMetadataDocument enforces its own 5-second timeout.
+	fetchCtx := context.WithoutCancel(ctx)
 	result, err, _ := d.sf.Do(id, func() (interface{}, error) {
 		// Re-check cache inside singleflight (another goroutine may have populated it)
 		if entry, ok := d.cache.Get(id); ok && time.Now().Before(entry.expires) {
 			return entry.client, nil
 		}
-		return d.fetch(ctx, id)
+		return d.fetch(fetchCtx, id)
 	})
 	if err != nil {
 		return nil, err
@@ -148,10 +153,10 @@ func buildFositeClient(doc *cimd.ClientMetadataDocument) fosite.Client {
 		responseTypes = defaultCIMDResponseTypes
 	}
 
-	tokenEndpointAuthMethod := doc.TokenEndpointAuthMethod
-	if tokenEndpointAuthMethod == "" {
-		tokenEndpointAuthMethod = defaultCIMDTokenEndpointAuthMethod
-	}
+	// The embedded AS advertises only "none" in token_endpoint_auth_methods_supported.
+	// Override any other value from the document to avoid an inconsistent client
+	// configuration — CIMD clients are always public and have no pre-shared secret.
+	tokenEndpointAuthMethod := defaultCIMDTokenEndpointAuthMethod
 
 	var scopes []string
 	if doc.Scope != "" {
@@ -177,8 +182,11 @@ func buildFositeClient(doc *cimd.ClientMetadataDocument) fosite.Client {
 
 	// Wrap in LoopbackClient when any redirect URI targets localhost so that
 	// RFC 8252 §7.3 dynamic port matching works for native app clients.
+	// Use openIDClient.DefaultClient so TokenEndpointAuthMethod is preserved
+	// inside the wrapper — LoopbackClient embeds DefaultClient, not the OIDC
+	// client, so passing defaultClient directly would drop the auth method.
 	if hasLoopbackRedirectURI(doc.RedirectURIs) {
-		return registration.NewLoopbackClient(defaultClient)
+		return registration.NewLoopbackClient(openIDClient.DefaultClient)
 	}
 
 	return openIDClient

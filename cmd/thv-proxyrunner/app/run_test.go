@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -49,7 +50,7 @@ func TestTryLoadConfigFromFile_MCPServerGenerationEnvOverride(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile("runconfig.json", data, 0o600))
 
-	t.Setenv("THV_MCPSERVER_GENERATION", "3")
+	t.Setenv(kubernetes.EnvVarMCPServerGeneration, "3")
 
 	loaded, err := tryLoadConfigFromFile()
 	require.NoError(t, err)

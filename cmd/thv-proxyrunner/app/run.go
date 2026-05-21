@@ -182,6 +182,19 @@ func applyMCPServerGenerationOverride(runConfig *runner.RunConfig) {
 			"env", kubernetes.EnvVarMCPServerGeneration, "value", raw, "err", err)
 		return
 	}
+	// metadata.generation is a monotonic non-negative integer per the K8s API
+	// convention. A negative value cannot have come from a legitimate downward
+	// API projection of the pod annotation and would silently disable the
+	// apply-gate stamp at pkg/container/kubernetes/client.go:479-482.
+	if gen < 0 {
+		slog.Warn("ignoring negative env var; falling back to runconfig value",
+			"env", kubernetes.EnvVarMCPServerGeneration, "value", raw)
+		return
+	}
+	slog.Debug("applied MCPServer generation override from env var",
+		"env", kubernetes.EnvVarMCPServerGeneration,
+		"file_value", runConfig.MCPServerGeneration,
+		"env_value", gen)
 	runConfig.MCPServerGeneration = gen
 }
 

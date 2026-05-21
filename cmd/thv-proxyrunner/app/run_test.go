@@ -63,3 +63,39 @@ func TestTryLoadConfigFromFile_MCPServerGenerationEnvOverride(t *testing.T) {
 			"two proxyrunner pods that have both re-read the live-mounted "+
 			"ConfigMap (issue #5360)")
 }
+
+// TestApplyMCPServerGenerationOverride exercises the override helper in
+// isolation, covering the defensive-validation branches: empty env (no-op),
+// unparseable env (fall through), negative env (fall through), and the
+// happy path. metadata.generation is a monotonic non-negative integer per
+// the K8s API convention, so a negative value cannot have come from a
+// legitimate downward-API projection and must not be allowed to silently
+// disable the apply-gate stamp.
+func TestApplyMCPServerGenerationOverride(t *testing.T) {
+	tests := []struct {
+		name     string
+		envValue string // "" means don't set
+		fileGen  int64
+		wantGen  int64
+	}{
+		{name: "env unset preserves file value", envValue: "", fileGen: 5, wantGen: 5},
+		{name: "valid env overrides file", envValue: "3", fileGen: 5, wantGen: 3},
+		{name: "zero env overrides file (caller's choice)", envValue: "0", fileGen: 5, wantGen: 0},
+		{name: "unparseable env preserves file value", envValue: "not-a-number", fileGen: 5, wantGen: 5},
+		{name: "negative env preserves file value", envValue: "-1", fileGen: 5, wantGen: 5},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.envValue != "" {
+				t.Setenv(kubernetes.EnvVarMCPServerGeneration, tc.envValue)
+			} else {
+				// Explicitly clear so a stray env from the host doesn't leak.
+				t.Setenv(kubernetes.EnvVarMCPServerGeneration, "")
+			}
+			cfg := &runner.RunConfig{MCPServerGeneration: tc.fileGen}
+			applyMCPServerGenerationOverride(cfg)
+			assert.Equal(t, tc.wantGen, cfg.MCPServerGeneration)
+		})
+	}
+}

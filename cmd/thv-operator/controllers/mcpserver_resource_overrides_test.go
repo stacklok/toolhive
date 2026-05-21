@@ -222,6 +222,13 @@ func TestResourceOverrides(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
+	// Note: expectedPodTemplateAnns entries below carry
+	// "toolhive.stacklok.dev/mcpserver-generation": "0" because the controller
+	// stamps strconv.FormatInt(m.Generation, 10) and the fake client does not
+	// auto-increment metadata.generation on Create (the real API server starts
+	// at 1). Envtest coverage in
+	// cmd/thv-operator/test-integration/mcp-server/mcpserver_generation_freeze_integration_test.go
+	// exercises the realistic generation-tracking behavior.
 	tests := []struct {
 		name                     string
 		mcpServer                *mcpv1beta1.MCPServer

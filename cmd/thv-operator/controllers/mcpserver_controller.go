@@ -1781,10 +1781,10 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 		}
 
 		// Project the MCPServer generation pod-template annotation into the
-		// proxyrunner container via the downward API. Position mirrors the
-		// construction site in deploymentForMCPServer (after Redis password,
-		// before embedded auth) so DeepEqual against container.Env succeeds.
-		// See #5360.
+		// proxyrunner container via the downward API. Position must come
+		// before the embedded-auth env vars below so the slice order matches
+		// deploymentForMCPServer and equality.Semantic.DeepEqual against
+		// container.Env succeeds. See #5360.
 		expectedProxyEnv = append(expectedProxyEnv, corev1.EnvVar{
 			Name: kubernetes.EnvVarMCPServerGeneration,
 			ValueFrom: &corev1.EnvVarSource{

@@ -13,40 +13,37 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
+// Status Condition Parity machinery for #5347. The probe reads a referenced
+// MCPExternalAuthConfig's Valid condition; the per-consumer mirror functions
+// transcribe its reason+message onto the consumer CR's parallel condition.
+// Without this, an obo-typed MCPExternalAuthConfig in an upstream-only build
+// surfaces EnterpriseRequired only on the referenced resource and the consumer
+// status reports only the generic dispatch failure.
+
+// fallbackInvalidReason is substituted when a source surfaces Valid=False with
+// an empty Reason. metav1.Condition requires Reason to be non-empty and the
+// apiserver rejects empty-Reason patches, so the mirror cannot copy an empty
+// Reason verbatim without trapping the consumer in a noisy reconcile loop.
+const fallbackInvalidReason = "InvalidExternalAuthConfig"
+
 // mirroredInvalidExternalAuthConfigError signals that a referenced
-// MCPExternalAuthConfig had Status.Conditions[Valid]=False and the source's
-// reason+message should be mirrored onto the consumer's status. Callers may
-// extract the reason via mirroredReasonFromError when they need to propagate
-// it through layers that only carry a generic error (notably the
-// VirtualMCPServer AuthConfigError aggregator).
+// MCPExternalAuthConfig had Status.Conditions[Valid]=False. Carries the
+// source's reason+message so callers can surface them on the consumer's
+// status without re-fetching the object, and satisfies the error interface
+// so it can travel through error-returning APIs (notably
+// convertBackendAuthConfigToVMCP -> buildOutgoingAuthConfig).
 type mirroredInvalidExternalAuthConfigError struct {
 	Reason  string
 	Message string
 }
 
 func (e *mirroredInvalidExternalAuthConfigError) Error() string {
-	return fmt.Sprintf("referenced MCPExternalAuthConfig is invalid (%s): %s", e.Reason, e.Message)
+	return fmt.Sprintf("invalid (%s): %s", e.Reason, e.Message)
 }
 
-// mirroredExternalAuthConfigInvalid inspects a fetched MCPExternalAuthConfig
-// and returns a non-nil *mirroredInvalidExternalAuthConfigError when its Valid
-// condition is False, or nil when Valid is True/absent. The returned value
-// implements error and carries the source's reason and message so callers can
-// surface them on the consumer's status without re-fetching the object.
-//
-// Returning the concrete pointer (rather than an (error, string) tuple) keeps
-// callers from needing errors.As to recover the reason/message fields when
-// they have the value in hand. The error path still satisfies the standard
-// error interface, so callers that propagate it through layers that only
-// carry error (notably convertBackendAuthConfigToVMCP -> buildOutgoingAuthConfig)
-// can recover the same pointer via mirroredReasonFromError below.
-//
-// Consumer reconcilers (MCPServer, MCPRemoteProxy, VirtualMCPServer) use this
-// probe to mirror the source's Valid=False condition onto the consumer CR,
-// closing the Status Condition Parity gap described in #5347. Without the
-// mirror, an obo-typed MCPExternalAuthConfig in an upstream-only build would
-// surface EnterpriseRequired only on the referenced resource, leaving the
-// consumer's status to report only the generic dispatch failure.
+// mirroredExternalAuthConfigInvalid returns a non-nil typed error when the
+// source's Valid condition is False, or nil otherwise. Use
+// [mirroredReasonFromError] to recover the reason from a wrapped chain.
 func mirroredExternalAuthConfigInvalid(
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) *mirroredInvalidExternalAuthConfigError {
@@ -54,21 +51,75 @@ func mirroredExternalAuthConfigInvalid(
 	if validCond == nil || validCond.Status != metav1.ConditionFalse {
 		return nil
 	}
-	return &mirroredInvalidExternalAuthConfigError{
-		Reason:  validCond.Reason,
-		Message: validCond.Message,
+	reason := validCond.Reason
+	if reason == "" {
+		reason = fallbackInvalidReason
 	}
+	return &mirroredInvalidExternalAuthConfigError{Reason: reason, Message: validCond.Message}
 }
 
 // mirroredReasonFromError returns the mirrored source reason embedded in err
 // (via *mirroredInvalidExternalAuthConfigError) or "" if err does not carry
-// one. Used by the VirtualMCPServer buildOutgoingAuthConfig pipeline to
-// propagate the source's reason onto the per-backend AuthConfigError without
-// re-fetching the MCPExternalAuthConfig.
+// one. Walks the wrap chain via errors.As so it remains correct when callers
+// wrap the typed error with fmt.Errorf("...: %w", err) before passing it on
+// (notably buildOutgoingAuthConfig in the VirtualMCPServer pipeline).
 func mirroredReasonFromError(err error) string {
 	var mirrored *mirroredInvalidExternalAuthConfigError
 	if stderrors.As(err, &mirrored) {
 		return mirrored.Reason
 	}
 	return ""
+}
+
+// mirrorInvalidOnMCPServer mirrors the source's Valid=False condition onto the
+// MCPServer's ExternalAuthConfigValidated condition. When the source is healed
+// (Valid=True or absent), it clears any stale mirror so the condition does not
+// outlive its cause. Returns (true, err) when a False mirror was written so
+// the caller can mark Phase=Failed; (false, nil) otherwise.
+//
+// See package-level Status Condition Parity comment for the #5347 motivation.
+func mirrorInvalidOnMCPServer(
+	m *mcpv1beta1.MCPServer,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) (bool, error) {
+	mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig)
+	if mirrored == nil {
+		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
+		return false, nil
+	}
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
+		Status:             metav1.ConditionFalse,
+		Reason:             mirrored.Reason,
+		Message:            mirrored.Message,
+		ObservedGeneration: m.Generation,
+	})
+	return true, fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", m.Namespace, externalAuthConfig.Name, mirrored)
+}
+
+// mirrorInvalidOnRemoteProxy mirrors the source's Valid=False condition onto
+// the MCPRemoteProxy's ExternalAuthConfigValidated condition. When the source
+// is healed, it clears any stale mirror defensively — the downstream True
+// writer in handleExternalAuthConfig also sets the success reason, but a
+// future early return between this site and that writer would otherwise leak
+// a stale False. Returns (true, err) when a False mirror was written so the
+// caller can short-circuit; (false, nil) otherwise.
+func mirrorInvalidOnRemoteProxy(
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
+) (bool, error) {
+	mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig)
+	if mirrored == nil {
+		meta.RemoveStatusCondition(
+			&proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated)
+		return false, nil
+	}
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyExternalAuthConfigValidated,
+		Status:             metav1.ConditionFalse,
+		Reason:             mirrored.Reason,
+		Message:            mirrored.Message,
+		ObservedGeneration: proxy.Generation,
+	})
+	return true, fmt.Errorf("MCPExternalAuthConfig %s/%s: %w", proxy.Namespace, externalAuthConfig.Name, mirrored)
 }

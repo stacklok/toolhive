@@ -499,15 +499,16 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name               string
-		proxy              *mcpv1beta1.MCPRemoteProxy
-		externalAuth       *mcpv1beta1.MCPExternalAuthConfig
-		interceptorFuncs   *interceptor.Funcs
-		expectError        bool
-		errContains        string
-		expectCondition    bool
-		expectedCondStatus metav1.ConditionStatus
-		expectedCondReason string
+		name                string
+		proxy               *mcpv1beta1.MCPRemoteProxy
+		externalAuth        *mcpv1beta1.MCPExternalAuthConfig
+		interceptorFuncs    *interceptor.Funcs
+		expectError         bool
+		errContains         string
+		expectCondition     bool
+		expectedCondStatus  metav1.ConditionStatus
+		expectedCondReason  string
+		expectedCondMessage string // when set, asserts the condition's Message verbatim
 	}{
 		{
 			name: "no external auth reference",
@@ -681,8 +682,9 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 			name: "referenced config Valid=False is mirrored onto the proxy",
 			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
-					Name:      "obo-mirror-proxy",
-					Namespace: "default",
+					Name:       "obo-mirror-proxy",
+					Namespace:  "default",
+					Generation: 7,
 				},
 				Spec: mcpv1beta1.MCPRemoteProxySpec{
 					RemoteURL: "https://mcp.example.com",
@@ -708,11 +710,12 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 					}},
 				},
 			},
-			expectError:        true,
-			errContains:        "EnterpriseRequired",
-			expectCondition:    true,
-			expectedCondStatus: metav1.ConditionFalse,
-			expectedCondReason: mcpv1beta1.ConditionReasonEnterpriseRequired,
+			expectError:         true,
+			errContains:         "EnterpriseRequired",
+			expectCondition:     true,
+			expectedCondStatus:  metav1.ConditionFalse,
+			expectedCondReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+			expectedCondMessage: "on-behalf-of (OBO) external auth type requires an enterprise build",
 		},
 		{
 			name: "embedded auth server with multiple upstreams rejected",
@@ -795,6 +798,16 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 							"Condition status should match expected")
 						assert.Equal(t, tt.expectedCondReason, cond.Reason,
 							"Condition reason should match expected")
+						if tt.expectedCondMessage != "" {
+							assert.Equal(t, tt.expectedCondMessage, cond.Message,
+								"Condition message should match expected")
+						}
+						// F9: when the test fixture sets a non-zero Generation,
+						// the mirror must stamp ObservedGeneration with it.
+						if tt.proxy.Generation != 0 {
+							assert.Equal(t, tt.proxy.Generation, cond.ObservedGeneration,
+								"Condition.ObservedGeneration must match proxy.Generation")
+						}
 					}
 				}
 			} else {

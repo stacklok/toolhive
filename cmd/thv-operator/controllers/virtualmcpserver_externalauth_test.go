@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -898,6 +899,16 @@ func TestConvertBackendAuthConfigToVMCP_MirrorsInvalidExternalAuthConfig(t *test
 	require.Nil(t, strategy)
 	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, mirroredReasonFromError(err),
 		"buildOutgoingAuthConfig depends on this reason flowing through mirroredReasonFromError")
+
+	// Wrap the error exactly as buildOutgoingAuthConfig does in production
+	// (fmt.Errorf("...: %w", err)) and assert the reason still survives the
+	// errors.As walk. A future refactor that drops %w in favour of %v or
+	// errors.New(fmt.Sprintf(...)) would silently break per-backend reason
+	// propagation and surface ConversionFailed instead of EnterpriseRequired.
+	wrapped := fmt.Errorf("failed to convert backend auth config: %w", err)
+	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, mirroredReasonFromError(wrapped),
+		"buildOutgoingAuthConfig wraps the err once before extracting the reason; "+
+			"the contract must survive that wrap")
 }
 
 // TestMirroredExternalAuthConfigInvalid verifies the source-condition probe
@@ -937,6 +948,23 @@ func TestMirroredExternalAuthConfigInvalid(t *testing.T) {
 		{
 			name:       "no Valid condition returns nil",
 			conditions: nil,
+		},
+		{
+			// F6 defense-in-depth: metav1.Condition requires Reason to be
+			// non-empty (apiserver rejects empty-Reason patches). If a source
+			// ever surfaces Valid=False with an empty Reason (corrupt status
+			// or a bug in the source reconciler), the mirror must substitute
+			// a fallback rather than copy the empty string through and trap
+			// the consumer in a noisy reconcile loop.
+			name: "Valid=False with empty Reason gets a fallback reason",
+			conditions: []metav1.Condition{{
+				Type:    mcpv1beta1.ConditionTypeValid,
+				Status:  metav1.ConditionFalse,
+				Reason:  "",
+				Message: "source surfaced an empty Reason",
+			}},
+			wantReason:  fallbackInvalidReason,
+			wantMessage: "source surfaced an empty Reason",
 		},
 	}
 

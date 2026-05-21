@@ -573,8 +573,13 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 				externalAuthConfig.Status.Conditions = []metav1.Condition{*tt.sourceValid}
 			}
 
+			const serverGeneration int64 = 11
 			mcpServer := &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: namespace},
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-server",
+					Namespace:  namespace,
+					Generation: serverGeneration,
+				},
 				Spec: mcpv1beta1.MCPServerSpec{
 					Image:                 "test-image",
 					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: authName},
@@ -610,6 +615,11 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 			assert.Equal(t, metav1.ConditionFalse, cond.Status)
 			assert.Equal(t, tt.wantReason, cond.Reason)
 			assert.Equal(t, tt.wantMessage, cond.Message)
+			// F9: the mirror must stamp ObservedGeneration with the consumer's
+			// Generation (not the source's), so the condition reflects the
+			// generation of the spec it was computed for.
+			assert.Equal(t, serverGeneration, cond.ObservedGeneration,
+				"Condition.ObservedGeneration must match MCPServer.Generation")
 		})
 	}
 }

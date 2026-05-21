@@ -1125,7 +1125,12 @@ spec:
                 - tokenUrl
                 type: object
               type:
-                description: Type is the type of external authentication to configure
+                description: |-
+                  Type is the type of external authentication to configure.
+                  When set to "obo", the cluster must run a build that has registered an
+                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
+                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
+                  for obo-typed configs.
                 enum:
                 - tokenExchange
                 - headerInjection
@@ -2399,7 +2404,12 @@ spec:
                 - tokenUrl
                 type: object
               type:
-                description: Type is the type of external authentication to configure
+                description: |-
+                  Type is the type of external authentication to configure.
+                  When set to "obo", the cluster must run a build that has registered an
+                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
+                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
+                  for obo-typed configs.
                 enum:
                 - tokenExchange
                 - headerInjection

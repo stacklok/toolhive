@@ -276,36 +276,7 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			errMsg:    "upstreamInject requires a non-empty providerName",
 		},
 		{
-			name: "invalid OIDC provider with oauth2Config instead",
-			config: &MCPExternalAuthConfig{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-oidc-wrong-config",
-					Namespace: "default",
-				},
-				Spec: MCPExternalAuthConfigSpec{
-					Type: ExternalAuthTypeEmbeddedAuthServer,
-					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
-						Issuer: "https://auth.example.com",
-						UpstreamProviders: []UpstreamProviderConfig{
-							{
-								Name: "github",
-								Type: UpstreamProviderTypeOIDC,
-								OAuth2Config: &OAuth2UpstreamConfig{
-									AuthorizationEndpoint: "https://github.com/authorize",
-									TokenEndpoint:         "https://github.com/token",
-									ClientID:              "client-id",
-									UserInfo:              &UserInfoConfig{EndpointURL: "https://github.com/userinfo"},
-								},
-							},
-						},
-					},
-				},
-			},
-			expectErr: true,
-			errMsg:    "oidcConfig must be set when type is 'oidc'",
-		},
-		{
-			name: "valid obo type with empty config",
+			name: "valid obo type with placeholder OBOConfig",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-obo",
@@ -350,7 +321,10 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			errMsg:    "obo configuration must be set if and only if type is 'obo'",
 		},
 		{
-			name: "invalid obo config set on unauthenticated type",
+			// Also intentional shape-parity coverage for the unauthenticated
+			// guard's OBO != nil disjunct, even though the OBO biconditional
+			// above intercepts first for this input.
+			name: "invalid obo config on unauthenticated type (obo biconditional intercepts first)",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-obo-on-unauth",
@@ -363,6 +337,35 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			},
 			expectErr: true,
 			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
+			name: "invalid OIDC provider with oauth2Config instead",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-oidc-wrong-config",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name: "github",
+								Type: UpstreamProviderTypeOIDC,
+								OAuth2Config: &OAuth2UpstreamConfig{
+									AuthorizationEndpoint: "https://github.com/authorize",
+									TokenEndpoint:         "https://github.com/token",
+									ClientID:              "client-id",
+									UserInfo:              &UserInfoConfig{EndpointURL: "https://github.com/userinfo"},
+								},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "oidcConfig must be set when type is 'oidc'",
 		},
 	}
 

@@ -1671,7 +1671,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1beta1.ExternalAuthType](#apiv1beta1externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject obo] <br />Required: \{\} <br /> |
+| `type` _[api.v1beta1.ExternalAuthType](#apiv1beta1externalauthtype)_ | Type is the type of external authentication to configure.<br />When set to "obo", the cluster must run a build that has registered an<br />OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds<br />surface status.conditions[Valid] = False with Reason: EnterpriseRequired<br />for obo-typed configs. |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject obo] <br />Required: \{\} <br /> |
 | `tokenExchange` _[api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  | Optional: \{\} <br /> |
 | `headerInjection` _[api.v1beta1.HeaderInjectionConfig](#apiv1beta1headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  | Optional: \{\} <br /> |
 | `bearerToken` _[api.v1beta1.BearerTokenConfig](#apiv1beta1bearertokenconfig)_ | BearerToken configures bearer token authentication<br />Only used when Type is "bearerToken" |  | Optional: \{\} <br /> |
@@ -2754,10 +2754,11 @@ _Appears in:_
 
 OBOConfig is a placeholder for On-Behalf-Of (OBO) external auth configuration.
 The inner schema is intentionally empty in this revision; sub-fields land in a
-follow-up. The struct exists today so that the CRD schema admits `spec.obo: {}`
-(matching the CEL rule "obo field must be set iff type is obo") and so that
-downstream tools that introspect the API surface can see the placeholder
-before the protocol-level fields land.
+follow-up RFC. The struct exists so OBO *OBOConfig compiles and the CRD
+schema admits `spec.obo: {}` — the CEL rule "obo configuration must be set
+if and only if type is 'obo'" requires has(self.obo), which evaluates true
+for an empty object. Stored objects with `obo: {}` will round-trip cleanly
+when sub-fields land, because Go zero values fill in.
 
 
 

@@ -66,7 +66,11 @@ type ExternalAuthType string
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
-	// Type is the type of external authentication to configure
+	// Type is the type of external authentication to configure.
+	// When set to "obo", the cluster must run a build that has registered an
+	// OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
+	// surface status.conditions[Valid] = False with Reason: EnterpriseRequired
+	// for obo-typed configs.
 	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject;obo
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
@@ -112,10 +116,11 @@ type MCPExternalAuthConfigSpec struct {
 
 // OBOConfig is a placeholder for On-Behalf-Of (OBO) external auth configuration.
 // The inner schema is intentionally empty in this revision; sub-fields land in a
-// follow-up. The struct exists today so that the CRD schema admits `spec.obo: {}`
-// (matching the CEL rule "obo field must be set iff type is obo") and so that
-// downstream tools that introspect the API surface can see the placeholder
-// before the protocol-level fields land.
+// follow-up RFC. The struct exists so OBO *OBOConfig compiles and the CRD
+// schema admits `spec.obo: {}` — the CEL rule "obo configuration must be set
+// if and only if type is 'obo'" requires has(self.obo), which evaluates true
+// for an empty object. Stored objects with `obo: {}` will round-trip cleanly
+// when sub-fields land, because Go zero values fill in.
 type OBOConfig struct{}
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
@@ -1142,7 +1147,8 @@ type MCPExternalAuthConfigList struct {
 // Validate performs validation on the MCPExternalAuthConfig spec.
 // This method is called by the controller during reconciliation.
 //
-// Note: These validations provide defense-in-depth alongside CEL validation rules (lines 44-49).
+// Note: These validations provide defense-in-depth alongside the
+// +kubebuilder:validation:XValidation markers on MCPExternalAuthConfigSpec.
 // CEL catches issues at API admission time, but this method also validates stored objects
 // to catch any that bypassed CEL or were stored before CEL rules were added.
 func (r *MCPExternalAuthConfig) Validate() error {
@@ -1169,18 +1175,20 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		// No complex validation needed for these types
 		return nil
 	case ExternalAuthTypeOBO:
-		// OBO uses a two-tier validation pattern. Structural validation
-		// (the OBO field is set iff Type is "obo") runs above in
-		// validateTypeConfigConsistency, mirrored by the CEL rule on the
-		// spec. Semantic validation (e.g., whether the cluster has an OBO
-		// handler registered) runs at reconcile time via the
-		// controllerutil.OBOValidate function-pointer hook: upstream-only
-		// builds return obo.ErrEnterpriseRequired, which the reconciler
-		// maps to status.conditions[Valid] = False / Reason:
-		// EnterpriseRequired. Out-of-tree builds that register a handler
-		// via controllerutil.RegisterOBOHandler short-circuit the sentinel
-		// and run their own protocol-level checks. Splitting the tiers
-		// this way keeps the upstream CRD schema stable across builds.
+		// Structural validation (the OBO field is set iff Type is "obo")
+		// has already run via r.validateTypeConfigConsistency() at the top
+		// of this method, so this arm is reached only when the structural
+		// invariant holds — and the matching CEL rule on the spec catches
+		// it at admission time. The remaining semantic validation
+		// (e.g., whether the cluster has an OBO handler registered) runs
+		// at reconcile time via the controllerutil.OBOValidate
+		// function-pointer hook: upstream-only builds return
+		// obo.ErrEnterpriseRequired, which the reconciler maps to
+		// status.conditions[Valid] = False / Reason: EnterpriseRequired.
+		// Out-of-tree builds that register a handler via
+		// controllerutil.RegisterOBOHandler short-circuit the sentinel and
+		// run their own protocol-level checks. Splitting the tiers this
+		// way keeps the upstream CRD schema stable across builds.
 		return nil
 	default:
 		// Unknown type - should be caught by enum validation, but handle defensively
@@ -1203,7 +1211,7 @@ func (r *MCPExternalAuthConfig) Validate() error {
 // the property reviewers rely on to audit the structural-validation
 // contract. See issue #5329 for the broader discussion.
 //
-//nolint:gocyclo // one if per ExternalAuthType parallels the CEL rules on the spec; see doc comment
+//nolint:gocyclo // one if per ExternalAuthType mirrors CEL rules; collapsing would obscure parity — see doc comment
 func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	// Check that each type has its corresponding config
 	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {
@@ -1228,10 +1236,10 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 		return fmt.Errorf("obo configuration must be set if and only if type is 'obo'")
 	}
 
-	// Belt-and-braces guard for `unauthenticated`: shape-parity with the per-type
-	// biconditionals above, which always intercept a populated config field first.
-	// Listed here so a future contributor adding a new type cannot forget to extend
-	// the "no configuration must be set" invariant.
+	// Redundant with the per-type biconditionals above — each fires first for
+	// Type=Unauthenticated with any non-nil field — but retained as a single
+	// readable invariant so a contributor adding a new ExternalAuthType extends
+	// the "no configuration must be set" check here too.
 	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
 		if r.Spec.TokenExchange != nil ||
 			r.Spec.HeaderInjection != nil ||

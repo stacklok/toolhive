@@ -595,33 +595,33 @@ func TestResourceOverrides(t *testing.T) {
 				switch tt.name {
 				case "with proxy environment variables":
 					expectedEnvVars = map[string]string{
-						"HTTP_PROXY":                "http://proxy.example.com:8080",
-						"NO_PROXY":                  "localhost,127.0.0.1",
-						"CUSTOM_ENV":                "custom-value",
-						"THV_MCPSERVER_GENERATION":  "", // downward API; Value is empty, ValueFrom set
-						"XDG_CONFIG_HOME":           "/tmp",
-						"HOME":                      "/tmp",
-						"TOOLHIVE_RUNTIME":          "kubernetes",
-						"UNSTRUCTURED_LOGS":         "false",
+						"HTTP_PROXY":               "http://proxy.example.com:8080",
+						"NO_PROXY":                 "localhost,127.0.0.1",
+						"CUSTOM_ENV":               "custom-value",
+						"THV_MCPSERVER_GENERATION": "", // downward API; Value is empty, ValueFrom set
+						"XDG_CONFIG_HOME":          "/tmp",
+						"HOME":                     "/tmp",
+						"TOOLHIVE_RUNTIME":         "kubernetes",
+						"UNSTRUCTURED_LOGS":        "false",
 					}
 				case "with debug logging via TOOLHIVE_DEBUG env var":
 					expectedEnvVars = map[string]string{
-						"TOOLHIVE_DEBUG":            "true",
-						"THV_MCPSERVER_GENERATION":  "", // downward API; Value is empty, ValueFrom set
-						"XDG_CONFIG_HOME":           "/tmp",
-						"HOME":                      "/tmp",
-						"TOOLHIVE_RUNTIME":          "kubernetes",
-						"UNSTRUCTURED_LOGS":         "false",
+						"TOOLHIVE_DEBUG":           "true",
+						"THV_MCPSERVER_GENERATION": "", // downward API; Value is empty, ValueFrom set
+						"XDG_CONFIG_HOME":          "/tmp",
+						"HOME":                     "/tmp",
+						"TOOLHIVE_RUNTIME":         "kubernetes",
+						"UNSTRUCTURED_LOGS":        "false",
 					}
 				default:
 					expectedEnvVars = map[string]string{
-						"LOG_LEVEL":                 "debug",
-						"METRICS_ENABLED":           "true",
-						"THV_MCPSERVER_GENERATION":  "", // downward API; Value is empty, ValueFrom set
-						"XDG_CONFIG_HOME":           "/tmp",
-						"HOME":                      "/tmp",
-						"TOOLHIVE_RUNTIME":          "kubernetes",
-						"UNSTRUCTURED_LOGS":         "false",
+						"LOG_LEVEL":                "debug",
+						"METRICS_ENABLED":          "true",
+						"THV_MCPSERVER_GENERATION": "", // downward API; Value is empty, ValueFrom set
+						"XDG_CONFIG_HOME":          "/tmp",
+						"HOME":                     "/tmp",
+						"TOOLHIVE_RUNTIME":         "kubernetes",
+						"UNSTRUCTURED_LOGS":        "false",
 					}
 				}
 

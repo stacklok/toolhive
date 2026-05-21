@@ -178,7 +178,7 @@ func applyMCPServerGenerationOverride(runConfig *runner.RunConfig) {
 	}
 	gen, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		slog.Warn("ignoring unparseable env var; falling back to runconfig value",
+		slog.Warn("ignoring unparsable env var; falling back to runconfig value",
 			"env", kubernetes.EnvVarMCPServerGeneration, "value", raw, "err", err)
 		return
 	}

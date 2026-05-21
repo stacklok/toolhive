@@ -166,32 +166,43 @@ func EnsureAuthzConfigMap(
 	return nil
 }
 
-func addAuthzInlineConfigOptions(
-	authzRef *mcpv1beta1.AuthzConfigRef,
-	options *[]runner.RunConfigBuilderOption,
-) error {
-	if authzRef.Inline == nil {
-		return fmt.Errorf("inline authz config type specified but inline config is nil")
+// BuildInlineCedarAuthzConfig constructs an *authz.Config from the inline
+// section of an AuthzConfigRef, threading the JWT-claim mapping fields on the
+// parent AuthzConfigRef (GroupClaimName, RoleClaimName, GroupEntityType) into
+// cedar.ConfigOptions. The returned config maintains backwards compatibility
+// with the v1.0 Cedar schema.
+//
+// This helper is exposed so callers and tests can inspect the resulting
+// *authz.Config without going through the runner builder.
+func BuildInlineCedarAuthzConfig(authzRef *mcpv1beta1.AuthzConfigRef) (*authz.Config, error) {
+	if authzRef == nil || authzRef.Inline == nil {
+		return nil, fmt.Errorf("inline authz config type specified but inline config is nil")
 	}
-
-	policies := authzRef.Inline.Policies
-	entitiesJSON := authzRef.Inline.EntitiesJSON
-
-	// Create authorization config using the full config structure
-	// This maintains backwards compatibility with the v1.0 schema
 	authzCfg, err := authz.NewConfig(cedar.Config{
 		Version: "v1",
 		Type:    cedar.ConfigType,
 		Options: &cedar.ConfigOptions{
-			Policies:     policies,
-			EntitiesJSON: entitiesJSON,
+			Policies:        authzRef.Inline.Policies,
+			EntitiesJSON:    authzRef.Inline.EntitiesJSON,
+			GroupClaimName:  authzRef.GroupClaimName,
+			RoleClaimName:   authzRef.RoleClaimName,
+			GroupEntityType: authzRef.GroupEntityType,
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create authz config: %w", err)
+		return nil, fmt.Errorf("failed to create authz config: %w", err)
 	}
+	return authzCfg, nil
+}
 
-	// Add authorization config to options
+func addAuthzInlineConfigOptions(
+	authzRef *mcpv1beta1.AuthzConfigRef,
+	options *[]runner.RunConfigBuilderOption,
+) error {
+	authzCfg, err := BuildInlineCedarAuthzConfig(authzRef)
+	if err != nil {
+		return err
+	}
 	*options = append(*options, runner.WithAuthzConfig(authzCfg))
 	return nil
 }
@@ -265,6 +276,59 @@ func LoadAuthzConfigFromConfigMap(
 	return &cfg, nil
 }
 
+// ExtractCedarAuthzOptions unwraps the Cedar-specific options embedded in an
+// authz.Config. Returns an error when cfg is nil or is not a Cedar config
+// (e.g. a future HTTP authorizer); callers that need to handle non-Cedar
+// configs gracefully should treat the error as "not Cedar, pass through".
+//
+// This wrapper exists so callers outside pkg/authz can avoid importing
+// pkg/authz/authorizers/cedar directly, keeping the Cedar dependency localised
+// to the resolver layer.
+func ExtractCedarAuthzOptions(cfg *authz.Config) (*cedar.ConfigOptions, error) {
+	if cfg == nil {
+		return nil, fmt.Errorf("authz config is nil")
+	}
+	cedarCfg, err := cedar.ExtractConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	return cedarCfg.Options, nil
+}
+
+// ApplyClaimMappingOverrides returns a new *authz.Config with the spec-level
+// JWT-claim mapping fields (GroupClaimName, RoleClaimName, GroupEntityType)
+// from authzRef applied on top of the Cedar options inside cfg. Empty
+// spec-level fields do not override the ConfigMap-supplied values, so the
+// ConfigMap remains the data-plane source for these knobs when the spec is
+// silent.
+//
+// When cfg is not a Cedar config, or authzRef has no overrides set, cfg is
+// returned unchanged. This makes the helper safe to call unconditionally on
+// the runner path after LoadAuthzConfigFromConfigMap.
+func ApplyClaimMappingOverrides(cfg *authz.Config, authzRef *mcpv1beta1.AuthzConfigRef) (*authz.Config, error) {
+	if cfg == nil || authzRef == nil {
+		return cfg, nil
+	}
+	if authzRef.GroupClaimName == "" && authzRef.RoleClaimName == "" && authzRef.GroupEntityType == "" {
+		return cfg, nil
+	}
+	cedarCfg, err := cedar.ExtractConfig(cfg)
+	if err != nil {
+		// Non-Cedar configs have nothing to override; pass through.
+		return cfg, nil
+	}
+	if authzRef.GroupClaimName != "" {
+		cedarCfg.Options.GroupClaimName = authzRef.GroupClaimName
+	}
+	if authzRef.RoleClaimName != "" {
+		cedarCfg.Options.RoleClaimName = authzRef.RoleClaimName
+	}
+	if authzRef.GroupEntityType != "" {
+		cedarCfg.Options.GroupEntityType = authzRef.GroupEntityType
+	}
+	return authz.NewConfig(*cedarCfg)
+}
+
 // AddAuthzConfigOptions adds authorization configuration options to builder options
 func AddAuthzConfigOptions(
 	ctx context.Context,
@@ -285,6 +349,13 @@ func AddAuthzConfigOptions(
 		cfg, err := LoadAuthzConfigFromConfigMap(ctx, c, namespace, authzRef)
 		if err != nil {
 			return err
+		}
+		// Apply spec-over-ConfigMap precedence for JWT-claim mapping fields so
+		// MCPServer / MCPRemoteProxy users get the same override semantics the
+		// CRD docstring on AuthzConfigRef promises.
+		cfg, err = ApplyClaimMappingOverrides(cfg, authzRef)
+		if err != nil {
+			return fmt.Errorf("failed to apply claim mapping overrides: %w", err)
 		}
 		*options = append(*options, runner.WithAuthzConfig(cfg))
 		return nil

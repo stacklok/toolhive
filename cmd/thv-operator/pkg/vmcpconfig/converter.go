@@ -19,7 +19,6 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
-	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -221,12 +220,11 @@ func (c *Converter) convertAuthzConfig(
 		if err != nil {
 			return nil, err
 		}
-		cedarCfg, err := cedar.ExtractConfig(loaded)
+		opts, err := controllerutil.ExtractCedarAuthzOptions(loaded)
 		if err != nil {
 			return nil, fmt.Errorf("authz ConfigMap %s/%s is not a Cedar config: %w",
 				vmcp.Namespace, authzRef.ConfigMap.Name, err)
 		}
-		opts := cedarCfg.Options
 		authz.Policies = opts.Policies
 		authz.EntitiesJSON = opts.EntitiesJSON
 		// ConfigMap-supplied JWT-claim mapping values are the default; spec-level

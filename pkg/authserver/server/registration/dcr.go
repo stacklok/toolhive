@@ -20,7 +20,6 @@ package registration
 import (
 	"fmt"
 	"slices"
-	"strings"
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -78,73 +77,6 @@ const (
 	MaxSoftwareIDLength = 256
 )
 
-// DCRRequest represents an OAuth 2.0 Dynamic Client Registration request
-// per RFC 7591 Section 2.
-type DCRRequest struct {
-	// RedirectURIs is an array of redirection URIs for the client.
-	// Required for public clients.
-	RedirectURIs []string `json:"redirect_uris"`
-
-	// ClientName is a human-readable name for the client.
-	ClientName string `json:"client_name,omitempty"`
-
-	// TokenEndpointAuthMethod is the requested authentication method for the token endpoint.
-	// For public clients, this must be "none".
-	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
-
-	// GrantTypes is an array of OAuth 2.0 grant types the client may use.
-	// Defaults to ["authorization_code"] if not specified.
-	GrantTypes []string `json:"grant_types,omitempty"`
-
-	// ResponseTypes is an array of OAuth 2.0 response types the client may use.
-	// Defaults to ["code"] if not specified.
-	ResponseTypes []string `json:"response_types,omitempty"`
-
-	// Scope is a space-separated list of OAuth 2.0 scope values the client may use.
-	// If not specified, defaults to the server's default scopes.
-	// All requested scopes must be supported by the server.
-	Scope string `json:"scope,omitempty"`
-
-	// SoftwareID is the RFC 7591 "software_id" — a unique identifier for the
-	// client software. Captured from the incoming registration request for
-	// observability (audit logs surfaced on the successful-registration
-	// Info log); not persisted as part of the registered client, so it
-	// cannot be correlated with subsequent token requests. Bounded by
-	// MaxSoftwareIDLength and restricted to printable ASCII by
-	// ValidateDCRRequest.
-	SoftwareID string `json:"software_id,omitempty"`
-}
-
-// DCRResponse represents a successful OAuth 2.0 Dynamic Client Registration
-// response per RFC 7591 Section 3.2.1.
-type DCRResponse struct {
-	// ClientID is the unique identifier for the client.
-	ClientID string `json:"client_id"`
-
-	// ClientIDIssuedAt is the time at which the client identifier was issued,
-	// as a Unix timestamp.
-	ClientIDIssuedAt int64 `json:"client_id_issued_at,omitempty"`
-
-	// RedirectURIs is an array of redirection URIs for the client.
-	RedirectURIs []string `json:"redirect_uris"`
-
-	// ClientName is a human-readable name for the client.
-	ClientName string `json:"client_name,omitempty"`
-
-	// TokenEndpointAuthMethod is the authentication method for the token endpoint.
-	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method"`
-
-	// GrantTypes is an array of OAuth 2.0 grant types the client may use.
-	GrantTypes []string `json:"grant_types"`
-
-	// ResponseTypes is an array of OAuth 2.0 response types the client may use.
-	ResponseTypes []string `json:"response_types"`
-
-	// Scope is a space-separated list of OAuth 2.0 scope values the client may use.
-	// Per RFC 7591 Section 3.2, this tells the client what scopes it was granted.
-	Scope string `json:"scope,omitempty"`
-}
-
 // DCRError represents an OAuth 2.0 Dynamic Client Registration error
 // response per RFC 7591 Section 3.2.2.
 type DCRError struct {
@@ -175,7 +107,13 @@ var allowedResponseTypes = map[string]bool{
 // ValidateDCRRequest validates a DCR request according to RFC 7591
 // and the server's security policy (loopback-only public clients).
 // Returns the validated request with defaults applied, or an error.
-func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
+//
+// The validated request does NOT carry the requested scopes — scope
+// validation against the server's supported set is a separate step,
+// handled by ValidateScopes using the caller's policy inputs.
+func ValidateDCRRequest(
+	req *oauthproto.DynamicClientRegistrationRequest,
+) (*oauthproto.DynamicClientRegistrationRequest, *DCRError) {
 	// 1. Validate redirect_uris - required
 	if len(req.RedirectURIs) == 0 {
 		return nil, &DCRError{
@@ -241,7 +179,7 @@ func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
 	}
 
 	// Return validated request with defaults applied
-	return &DCRRequest{
+	return &oauthproto.DynamicClientRegistrationRequest{
 		RedirectURIs:            req.RedirectURIs,
 		ClientName:              req.ClientName,
 		TokenEndpointAuthMethod: authMethod,
@@ -342,20 +280,25 @@ func ValidateRedirectURI(uri string) *DCRError {
 // ValidateScopes validates that all requested scopes are in the allowed set.
 // Returns the validated scopes (or defaults if empty) and any error.
 // This enforces server-side scope restrictions per RFC 7591 Section 2.
-func ValidateScopes(requestedScope string, allowedScopes []string) ([]string, *DCRError) {
+//
+// Callers pass already-parsed scope slices: oauthproto.ScopeList handles the
+// RFC 7591 dual-format (string or array) decode on the wire, so by the time
+// scopes reach this function they are a plain []string. Duplicates in the
+// input are preserved by ScopeList — this function deduplicates per RFC 6749
+// Section 3.3 semantics (scope is a set of case-sensitive strings).
+func ValidateScopes(requestedScopes, allowedScopes []string) ([]string, *DCRError) {
 	// Build allowed scope set for O(1) lookup
 	allowed := make(map[string]bool, len(allowedScopes))
 	for _, s := range allowedScopes {
 		allowed[s] = true
 	}
 
-	// Parse space-separated scope string per RFC 6749 Section 3.3.
-	// Deduplicate to ensure each scope appears at most once (RFC 6749
-	// defines scope as a set of case-sensitive strings).
+	// Deduplicate while validating each requested scope against the
+	// allowed set.
 	var scopes []string
-	if requestedScope != "" {
+	if len(requestedScopes) > 0 {
 		seen := make(map[string]bool)
-		for _, s := range strings.Fields(requestedScope) {
+		for _, s := range requestedScopes {
 			if !allowed[s] {
 				return nil, &DCRError{
 					Error:            DCRErrorInvalidClientMetadata,
@@ -383,9 +326,4 @@ func ValidateScopes(requestedScope string, allowedScopes []string) ([]string, *D
 	}
 
 	return scopes, nil
-}
-
-// FormatScopes formats a scope slice as a space-separated string.
-func FormatScopes(scopes []string) string {
-	return strings.Join(scopes, " ")
 }

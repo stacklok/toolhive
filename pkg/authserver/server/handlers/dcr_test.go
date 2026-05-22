@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 func TestRegisterClientHandler(t *testing.T) {
@@ -36,7 +37,7 @@ func TestRegisterClientHandler(t *testing.T) {
 	}{
 		{
 			name: "success",
-			requestBody: registration.DCRRequest{
+			requestBody: oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
 				ClientName:   "Test Client",
 			},
@@ -50,7 +51,7 @@ func TestRegisterClientHandler(t *testing.T) {
 		},
 		{
 			name: "validation error propagated",
-			requestBody: registration.DCRRequest{
+			requestBody: oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://example.com/callback"},
 			},
 			expectedStatus: http.StatusBadRequest,
@@ -58,7 +59,7 @@ func TestRegisterClientHandler(t *testing.T) {
 		},
 		{
 			name: "storage failure returns 500",
-			requestBody: registration.DCRRequest{
+			requestBody: oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
 			},
 			storageErr:      errors.New("disk full"),
@@ -111,7 +112,7 @@ func TestRegisterClientHandler(t *testing.T) {
 					assert.Contains(t, errResp.ErrorDescription, tc.expectedErrDesc)
 				}
 			} else {
-				var resp registration.DCRResponse
+				var resp oauthproto.DynamicClientRegistrationResponse
 				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 				assert.NotEmpty(t, resp.ClientID)
 				assert.NotZero(t, resp.ClientIDIssuedAt)
@@ -137,7 +138,7 @@ func TestRegisterClientHandler_ScopeInResponse(t *testing.T) {
 		},
 	}
 
-	reqBody, err := json.Marshal(registration.DCRRequest{
+	reqBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
 		RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
 	})
 	require.NoError(t, err)
@@ -149,9 +150,9 @@ func TestRegisterClientHandler_ScopeInResponse(t *testing.T) {
 	handler.RegisterClientHandler(w, req)
 	require.Equal(t, http.StatusCreated, w.Code)
 
-	var resp registration.DCRResponse
+	var resp oauthproto.DynamicClientRegistrationResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, registration.FormatScopes(registration.DefaultScopes), resp.Scope,
+	assert.Equal(t, []string(registration.DefaultScopes), []string(resp.Scopes),
 		"DCR response should include granted scopes per RFC 7591 Section 3.2.1")
 }
 
@@ -239,9 +240,9 @@ func TestRegisterClientHandler_BaselineClientScopes(t *testing.T) {
 			}
 			handler := &Handler{storage: stor, config: cfg}
 
-			reqBody, err := json.Marshal(registration.DCRRequest{
+			reqBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
-				Scope:        tc.requestScope,
+				Scopes:       oauthproto.ScopeList(strings.Fields(tc.requestScope)),
 			})
 			require.NoError(t, err)
 
@@ -253,9 +254,9 @@ func TestRegisterClientHandler_BaselineClientScopes(t *testing.T) {
 
 			require.Equal(t, http.StatusCreated, w.Code)
 
-			var resp registration.DCRResponse
+			var resp oauthproto.DynamicClientRegistrationResponse
 			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-			assert.Equal(t, registration.FormatScopes(tc.expectedScopes), resp.Scope,
+			assert.Equal(t, tc.expectedScopes, []string(resp.Scopes),
 				"DCR response scope must equal the union of requested and baseline scopes")
 
 			require.NotNil(t, capturedClient, "storage was not called")
@@ -285,7 +286,7 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	}
 	handler := &Handler{storage: stor, config: cfg}
 
-	reqBody, err := json.Marshal(registration.DCRRequest{
+	reqBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
 		RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
 		ClientName:   "Stored Client",
 	})
@@ -298,7 +299,7 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	handler.RegisterClientHandler(w, req)
 	require.Equal(t, http.StatusCreated, w.Code)
 
-	var resp registration.DCRResponse
+	var resp oauthproto.DynamicClientRegistrationResponse
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
 
 	require.NotNil(t, storedClient)
@@ -310,4 +311,51 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 	assert.Equal(t, []string{"http://127.0.0.1:8080/callback"}, loopbackClient.GetRedirectURIs())
 	assert.Equal(t, fosite.Arguments(allowedAudiences), loopbackClient.GetAudience(),
 		"DCR client must inherit server's AllowedAudiences so refresh token requests with resource= succeed")
+}
+
+// TestRegisterClientHandler_ScopeAsJSONArray verifies that the /oauth/register
+// endpoint accepts the RFC 7591 array form of "scope". Prior to consolidating
+// onto oauthproto.ScopeList, the handler only accepted space-delimited strings
+// and would reject this body as a JSON decode error.
+func TestRegisterClientHandler_ScopeAsJSONArray(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	stor := mocks.NewMockStorage(ctrl)
+	var capturedClient fosite.Client
+	stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, c fosite.Client) error {
+			capturedClient = c
+			return nil
+		})
+
+	handler := &Handler{
+		storage: stor,
+		config: &server.AuthorizationServerConfig{
+			Config:          &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+			ScopesSupported: registration.DefaultScopes,
+		},
+	}
+
+	// Raw JSON body with scope as a JSON array — the form that
+	// well-formed RFC 7591 clients can send and that the previous
+	// space-delimited-only authserver implementation rejected.
+	body := []byte(`{"redirect_uris":["http://127.0.0.1:8080/callback"],"scope":["openid","offline_access"]}`)
+	req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.RegisterClientHandler(w, req)
+
+	require.Equal(t, http.StatusCreated, w.Code,
+		"array-form scope must be accepted per RFC 7591 §2 ambiguity")
+
+	var resp oauthproto.DynamicClientRegistrationResponse
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+	assert.Equal(t, []string{"openid", "offline_access"}, []string(resp.Scopes),
+		"granted scopes must reflect the array-form request")
+
+	require.NotNil(t, capturedClient, "storage was not called")
+	assert.Equal(t, fosite.Arguments([]string{"openid", "offline_access"}), capturedClient.GetScopes(),
+		"the array-form scopes must reach storage")
 }

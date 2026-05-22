@@ -29,6 +29,11 @@ type DynamicClientRegistrationRequest struct {
 	GrantTypes              []string  `json:"grant_types,omitempty"`
 	ResponseTypes           []string  `json:"response_types,omitempty"`
 	Scopes                  ScopeList `json:"scope,omitempty"`
+
+	// SoftwareID is the RFC 7591 Section 2 "software_id": a unique identifier
+	// for the client software. Optional; servers may capture it for audit
+	// or telemetry but it is not required to register.
+	SoftwareID string `json:"software_id,omitempty"`
 }
 
 // ScopeList represents the "scope" field in both dynamic client registration requests and responses.

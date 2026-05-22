@@ -29,6 +29,11 @@ type DynamicClientRegistrationRequest struct {
 	GrantTypes              []string  `json:"grant_types,omitempty"`
 	ResponseTypes           []string  `json:"response_types,omitempty"`
 	Scopes                  ScopeList `json:"scope,omitempty"`
+
+	// SoftwareID is the RFC 7591 Section 2 "software_id": a unique identifier
+	// for the client software. Optional; servers may capture it for audit
+	// or telemetry but it is not required to register.
+	SoftwareID string `json:"software_id,omitempty"`
 }
 
 // ScopeList represents the "scope" field in both dynamic client registration requests and responses.
@@ -122,12 +127,18 @@ type DynamicClientRegistrationResponse struct {
 	RegistrationAccessToken string `json:"registration_access_token,omitempty"`
 	RegistrationClientURI   string `json:"registration_client_uri,omitempty"`
 
-	// Echo back the essential request fields
+	// Echo back the essential request fields. RFC 7591 §3.2.1 requires the
+	// AS to return redirect_uris, token_endpoint_auth_method, grant_types,
+	// and response_types in every successful registration response, so
+	// those four are emitted unconditionally (no omitempty) — a partial
+	// response built by a future code path that skips ValidateDCRRequest
+	// would still produce a spec-conformant key set, even if the values
+	// are empty.
 	ClientName              string    `json:"client_name,omitempty"`
-	RedirectURIs            []string  `json:"redirect_uris,omitempty"`
-	TokenEndpointAuthMethod string    `json:"token_endpoint_auth_method,omitempty"`
-	GrantTypes              []string  `json:"grant_types,omitempty"`
-	ResponseTypes           []string  `json:"response_types,omitempty"`
+	RedirectURIs            []string  `json:"redirect_uris"`
+	TokenEndpointAuthMethod string    `json:"token_endpoint_auth_method"`
+	GrantTypes              []string  `json:"grant_types"`
+	ResponseTypes           []string  `json:"response_types"`
 	Scopes                  ScopeList `json:"scope,omitempty"`
 }
 

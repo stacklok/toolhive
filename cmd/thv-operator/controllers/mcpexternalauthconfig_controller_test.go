@@ -4,6 +4,9 @@
 package controllers
 
 import (
+	"context"
+	stderrors "errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -18,6 +21,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
+	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 func TestMCPExternalAuthConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -1475,4 +1481,292 @@ func findCondition(conditions []metav1.Condition, t string) *metav1.Condition {
 		}
 	}
 	return nil
+}
+
+// TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequired
+// proves the dispatch wiring: with the default OBO handler installed (the
+// upstream-only state), reconciling an obo-typed MCPExternalAuthConfig surfaces
+// Valid=False / Reason=EnterpriseRequired rather than the generic "unsupported
+// external auth type" path. Drives the reconciler directly with a fake client
+// to bypass the CRD enum (which does not admit "obo" until #5329 lands).
+func TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequired(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "obo-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cfg).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{
+		Name:      cfg.Name,
+		Namespace: cfg.Namespace,
+	}}
+
+	// First reconcile adds the finalizer; the requeued reconcile runs the body.
+	result, err := r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+	if result.RequeueAfter > 0 {
+		_, err = r.Reconcile(t.Context(), req)
+		require.NoError(t, err)
+	}
+
+	var updated mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &updated))
+
+	validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, validCond, "Valid condition must be set for OBO-typed config")
+	assert.Equal(t, metav1.ConditionFalse, validCond.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, validCond.Reason,
+		"the exact reason string is part of the user-facing contract — external consumers pattern-match on it")
+
+	// Generic-error guard: the dispatch path must NOT leak a generic
+	// "unsupported external auth type" or "unknown middleware type" message.
+	assert.NotContains(t, validCond.Message, "unsupported external auth type")
+	assert.NotContains(t, validCond.Message, "unknown middleware type")
+
+	// Positive assertion: condition.Message must surface the sentinel's
+	// user-facing text. Without this check a refactor that emptied or
+	// rewrote the message would still pass the reason-string assertion.
+	assert.Equal(t, obo.ErrEnterpriseRequired.Error(), validCond.Message,
+		"condition.Message must surface the sentinel's user-facing text")
+}
+
+// TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized
+// proves that when a user switches an existing config from embeddedAuthServer
+// (which set IdentitySynthesized=True) to obo, the stale IdentitySynthesized
+// condition is removed alongside the new Valid=False/EnterpriseRequired
+// condition. Regression for the bug where setInvalid's MutateAndPatchStatus
+// diffed against an already-mutated snapshot and silently dropped the
+// IdentitySynthesized removal.
+func TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Construct a config that is already in the obo type but has a stale
+	// IdentitySynthesized condition left over from a prior embeddedAuthServer
+	// configuration. The reconciler must remove that condition on its next
+	// pass even though the failure path now routes through MutateAndPatchStatus.
+	cfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "obo-config",
+			Namespace:  "default",
+			Finalizers: []string{ExternalAuthConfigFinalizerName},
+			Generation: 2,
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+		},
+		Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               mcpv1beta1.ConditionTypeIdentitySynthesized,
+					Status:             metav1.ConditionTrue,
+					Reason:             mcpv1beta1.ConditionReasonIdentitySynthesizedActive,
+					Message:            "stale message from the embeddedAuthServer days",
+					ObservedGeneration: 1,
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(cfg).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+		Build()
+
+	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{
+		Name:      cfg.Name,
+		Namespace: cfg.Namespace,
+	}}
+
+	_, err := r.Reconcile(t.Context(), req)
+	require.NoError(t, err)
+
+	var updated mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &updated))
+
+	// IdentitySynthesized must be removed (the spec is no longer embeddedAuthServer).
+	assert.Nil(t, findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized),
+		"stale IdentitySynthesized condition must be removed once the spec leaves embeddedAuthServer")
+
+	// Valid=False/EnterpriseRequired must be set in the same reconcile pass.
+	validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, validCond)
+	assert.Equal(t, metav1.ConditionFalse, validCond.Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, validCond.Reason)
+}
+
+// defaultOBOHandlerStub returns a handler whose every method returns
+// obo.ErrEnterpriseRequired — the same shape as the package default. Used to
+// restore the registered handler after a test that overrode it.
+func defaultOBOHandlerStub() ctrlutil.OBOHandler {
+	return ctrlutil.OBOHandler{
+		Validate: func(*mcpv1beta1.MCPExternalAuthConfig) error { return obo.ErrEnterpriseRequired },
+		ApplyRunConfig: func(
+			context.Context, client.Client, string,
+			*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption,
+		) error {
+			return obo.ErrEnterpriseRequired
+		},
+		SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+			return nil, obo.ErrEnterpriseRequired
+		},
+	}
+}
+
+// TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile drives the
+// production three-way error triage in the OBO branch of Reconcile by
+// registering a stub OBO handler whose Validate returns each test's error,
+// then calling Reconcile and asserting on the resulting condition (or the
+// returned error, for the transient case). The three buckets are:
+//
+//   - errors.Is(err, ErrEnterpriseRequired) → permanent, EnterpriseRequired
+//   - errors.As(err, &*obo.ValidationError) → permanent, InvalidConfig
+//   - anything else                         → transient; Reconcile returns
+//     the error, no condition write
+//
+// This exercises the production errors.Is decision (so a regression that
+// swaps stderrors.Is for == would be caught — that would break the vMCP
+// "failed to convert to strategy: %w" wrap path) AND the new errors.As
+// decision for *obo.ValidationError.
+//
+//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
+func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile(t *testing.T) {
+	tests := []struct {
+		name        string
+		validateErr error
+		// Exactly one of these two paths is exercised per test case:
+		// either the reconciler writes a permanent Valid=False condition with
+		// the expected reason/message, or it returns a transient error and
+		// writes no Valid condition.
+		wantTransient bool
+		wantReason    string
+		wantMessage   string
+	}{
+		{
+			name:        "bare sentinel produces EnterpriseRequired (permanent)",
+			validateErr: obo.ErrEnterpriseRequired,
+			wantReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+			wantMessage: obo.ErrEnterpriseRequired.Error(),
+		},
+		{
+			name:        "wrapped sentinel still produces EnterpriseRequired via errors.Is",
+			validateErr: fmt.Errorf("outer: %w", obo.ErrEnterpriseRequired),
+			wantReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+			wantMessage: "outer: " + obo.ErrEnterpriseRequired.Error(),
+		},
+		{
+			name:        "ValidationError produces InvalidConfig (permanent)",
+			validateErr: &obo.ValidationError{Message: "audience must be a non-empty URL"},
+			wantReason:  mcpv1beta1.ConditionReasonInvalidConfig,
+			wantMessage: "audience must be a non-empty URL",
+		},
+		{
+			name:        "wrapped ValidationError still produces InvalidConfig via errors.As",
+			validateErr: fmt.Errorf("validating obo spec: %w", &obo.ValidationError{Message: "missing tokenURL"}),
+			wantReason:  mcpv1beta1.ConditionReasonInvalidConfig,
+			// setInvalid is called with the unwrapped ValidationError, so its
+			// Message lands verbatim — the wrap prefix is discarded on purpose
+			// so handler-author-visible text controls what kubectl describe shows.
+			wantMessage: "missing tokenURL",
+		},
+		{
+			name:          "unclassified error is transient — Reconcile returns it, no condition write",
+			validateErr:   stderrors.New("transient JWKS fetch failed"),
+			wantTransient: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Always restore the default after the subtest so we don't leak
+			// the stub into other tests that share this package.
+			t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
+
+			// Install the per-case stub: Validate returns tt.validateErr;
+			// the other two methods keep the default behavior.
+			stub := defaultOBOHandlerStub()
+			stub.Validate = func(*mcpv1beta1.MCPExternalAuthConfig) error { return tt.validateErr }
+			ctrlutil.RegisterOBOHandler(stub)
+
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			cfg := &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "obo-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+				},
+			}
+
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(cfg).
+				WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+				Build()
+
+			r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+			req := reconcile.Request{NamespacedName: types.NamespacedName{
+				Name:      cfg.Name,
+				Namespace: cfg.Namespace,
+			}}
+
+			// First reconcile may just add the finalizer; the requeued
+			// reconcile runs the body that exercises the triage.
+			result, err := r.Reconcile(t.Context(), req)
+			if result.RequeueAfter > 0 {
+				require.NoError(t, err)
+				result, err = r.Reconcile(t.Context(), req)
+			}
+
+			var updated mcpv1beta1.MCPExternalAuthConfig
+			require.NoError(t, fakeClient.Get(t.Context(), req.NamespacedName, &updated))
+			validCond := findCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+
+			if tt.wantTransient {
+				// Transient path: Reconcile must return an error that
+				// preserves the underlying cause (errors.Is must still match
+				// it through the wrap), and no Valid condition is written.
+				require.Error(t, err, "transient errors must propagate so controller-runtime requeues")
+				assert.ErrorIs(t, err, tt.validateErr,
+					"the transient error must remain inspectable via errors.Is")
+				assert.Nil(t, validCond,
+					"transient errors must not write a Valid condition; "+
+						"locking the resource into a permanent state would block self-healing")
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, validCond)
+			assert.Equal(t, metav1.ConditionFalse, validCond.Status)
+			assert.Equal(t, tt.wantReason, validCond.Reason)
+			assert.Equal(t, tt.wantMessage, validCond.Message)
+		})
+	}
 }

@@ -39,6 +39,13 @@ const (
 	// ExternalAuthTypeUpstreamInject is the type for upstream token injection
 	// This injects an upstream IDP access token as the Authorization: Bearer header
 	ExternalAuthTypeUpstreamInject ExternalAuthType = "upstreamInject"
+
+	// ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.
+	// This type requires a build with an OBO handler registered via
+	// controllerutil.RegisterOBOHandler; an upstream-only build surfaces
+	// status.conditions[Valid] = False with Reason: EnterpriseRequired
+	// when an obo-typed MCPExternalAuthConfig is applied.
+	ExternalAuthTypeOBO ExternalAuthType = "obo"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -224,6 +231,26 @@ type EmbeddedAuthServerConfig struct {
 	// +listType=map
 	// +listMapKey=name
 	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
+
+	// PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
+	// should read claims from when authorising a request. Must match the name
+	// of one of the entries in UpstreamProviders. When empty, the controller
+	// auto-selects the first entry of UpstreamProviders.
+	//
+	// Only meaningful on VirtualMCPServer, where multiple upstream providers
+	// can be configured and Cedar needs to pick which token's claims to
+	// evaluate. The VirtualMCPServer controller validates this field against
+	// UpstreamProviders at admission and rejects unresolvable values.
+	//
+	// On MCPServer and MCPRemoteProxy this field is structurally present (the
+	// EmbeddedAuthServerConfig struct is shared) but has no runtime effect:
+	// those CRDs are restricted to a single upstream so there is no choice to
+	// make. Setting it on those CRDs is silently ignored.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	PrimaryUpstreamProvider string `json:"primaryUpstreamProvider,omitempty"`
 
 	// Storage configures the storage backend for the embedded auth server.
 	// If not specified, defaults to in-memory storage.
@@ -1019,6 +1046,23 @@ const (
 	ConditionReasonIdentitySynthesizedInactive = "AllUpstreamsHaveUserInfo"
 )
 
+// Condition reasons for ConditionTypeValid on OBO-typed configs. These
+// literals are part of the user-facing contract — external consumers and
+// downstream tooling pattern-match on them.
+const (
+	// ConditionReasonEnterpriseRequired: an obo-typed MCPExternalAuthConfig
+	// requires an enterprise build that has registered an OBO handler via
+	// controllerutil.RegisterOBOHandler. Upstream-only builds surface this
+	// reason for every obo-typed config.
+	ConditionReasonEnterpriseRequired = "EnterpriseRequired"
+
+	// ConditionReasonInvalidConfig: an obo-typed MCPExternalAuthConfig is
+	// well-formed at the CRD level but fails the registered OBO handler's
+	// Validate() with an error other than the enterprise-required sentinel.
+	// Used by out-of-tree handlers; unreachable in upstream-only builds.
+	ConditionReasonInvalidConfig = "InvalidConfig"
+)
+
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 type MCPExternalAuthConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPExternalAuthConfig's state
@@ -1107,6 +1151,16 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		ExternalAuthTypeUnauthenticated:
 		// No complex validation needed for these types
 		return nil
+	case ExternalAuthTypeOBO:
+		// OBO validation is delegated to the registered OBO handler at the
+		// controllerutil layer (via controllerutil.OBOValidate ->
+		// obo.ErrEnterpriseRequired in upstream-only builds), invoked from
+		// the reconcile loop. The CRD-level Validate() stays a no-op for OBO
+		// and exists only to keep the `exhaustive` linter happy now that
+		// ExternalAuthTypeOBO is defined. The CRD enum currently rejects
+		// "obo" at the apiserver layer, so this arm is unreachable in
+		// upstream-only builds.
+		return nil
 	default:
 		// Unknown type - should be caught by enum validation, but handle defensively
 		return fmt.Errorf("unsupported auth type: %s", r.Spec.Type)
@@ -1115,6 +1169,13 @@ func (r *MCPExternalAuthConfig) Validate() error {
 
 // validateTypeConfigConsistency validates that the correct config is set for the selected type.
 // This mirrors the CEL validation rules but provides defense-in-depth for stored objects.
+//
+// TODO(#5329): when OBOConfig is introduced in the CRD admission task, add a
+// matching biconditional row here:
+//
+//	(r.Spec.OBO == nil) == (r.Spec.Type == ExternalAuthTypeOBO)
+//
+// and update the unauthenticated check below to also assert !has(self.obo).
 func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	// Check that each type has its corresponding config
 	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {

@@ -122,16 +122,6 @@ func NewBackendDiscoverer(
 	return NewUnifiedBackendDiscoverer(workloadDiscoverer, groupsManager, authConfig), nil
 }
 
-// NewBackendDiscovererWithManager creates a unified BackendDiscoverer with a pre-configured
-// WorkloadDiscoverer. This is useful for testing or when you already have a workload manager.
-func NewBackendDiscovererWithManager(
-	workloadManager workloads.Discoverer,
-	groupsManager groups.Manager,
-	authConfig *config.OutgoingAuthConfig,
-) BackendDiscoverer {
-	return NewUnifiedBackendDiscoverer(workloadManager, groupsManager, authConfig)
-}
-
 // Discover finds all backend workloads in the specified group.
 // Returns all accessible backends with their health status marked based on workload status.
 // The groupRef is the group name (e.g., "engineering-team").

@@ -38,6 +38,10 @@ type LoginOptions struct {
 	Audience string
 	// Scopes overrides the default OAuth scopes (defaults to ["openid", "offline_access"]).
 	Scopes []string
+	// AllowPrivateIP permits RegistryURL to resolve to a private IP address.
+	// Mirrors the `--allow-private-ip` flag on `thv config set-registry`; only
+	// honored when RegistryURL is supplied (no-op when reusing stored config).
+	AllowPrivateIP bool
 }
 
 // Login performs an interactive OAuth login against the configured registry.
@@ -196,7 +200,7 @@ func ensureRegistryURL(configProvider config.Provider, opts LoginOptions) error 
 		return nil
 	}
 
-	registryType, cleanPath := config.DetectRegistryType(opts.RegistryURL, false)
+	registryType, cleanPath := config.DetectRegistryType(opts.RegistryURL, opts.AllowPrivateIP)
 
 	// Always clear auth when a registry URL is explicitly provided, so that
 	// tokens are never sent to the wrong server.
@@ -209,11 +213,11 @@ func ensureRegistryURL(configProvider config.Provider, opts LoginOptions) error 
 
 	switch registryType {
 	case config.RegistryTypeAPI:
-		if err := configProvider.SetRegistryAPI(cleanPath, false); err != nil {
+		if err := configProvider.SetRegistryAPI(cleanPath, opts.AllowPrivateIP); err != nil {
 			return fmt.Errorf("saving registry API URL: %w", err)
 		}
 	case config.RegistryTypeURL:
-		if err := configProvider.SetRegistryURL(cleanPath, false); err != nil {
+		if err := configProvider.SetRegistryURL(cleanPath, opts.AllowPrivateIP); err != nil {
 			return fmt.Errorf("saving registry URL: %w", err)
 		}
 	case config.RegistryTypeFile:

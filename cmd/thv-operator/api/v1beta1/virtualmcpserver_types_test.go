@@ -633,3 +633,132 @@ func TestVirtualMCPServer_ResolveGroupName(t *testing.T) {
 		})
 	}
 }
+
+// TestVirtualMCPServer_ExplicitPrimaryUpstreamProvider locks the precedence
+// between the canonical spec.authServerConfig.primaryUpstreamProvider location
+// and the deprecated spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
+// fallback. The returned fromDeprecated flag is the signal callers use to emit
+// the AuthzPrimaryUpstreamProviderDeprecated warning event, so its semantics
+// matter beyond the name string.
+func TestVirtualMCPServer_ExplicitPrimaryUpstreamProvider(t *testing.T) {
+	t.Parallel()
+
+	withCanonical := func(primary string) *EmbeddedAuthServerConfig {
+		return &EmbeddedAuthServerConfig{
+			UpstreamProviders:       []UpstreamProviderConfig{{Name: "okta"}, {Name: "github"}},
+			PrimaryUpstreamProvider: primary,
+		}
+	}
+	withDeprecatedInline := func(primary string) *IncomingAuthConfig {
+		return &IncomingAuthConfig{
+			Type: "oidc",
+			AuthzConfig: &AuthzConfigRef{
+				Type: "inline",
+				Inline: &InlineAuthzConfig{
+					Policies:                []string{`permit(principal, action, resource);`},
+					PrimaryUpstreamProvider: primary,
+				},
+			},
+		}
+	}
+
+	tests := []struct {
+		name               string
+		authServerConfig   *EmbeddedAuthServerConfig
+		incomingAuth       *IncomingAuthConfig
+		wantName           string
+		wantFromDeprecated bool
+	}{
+		{
+			name:               "neither location set returns empty",
+			authServerConfig:   &EmbeddedAuthServerConfig{},
+			incomingAuth:       &IncomingAuthConfig{Type: "anonymous"},
+			wantName:           "",
+			wantFromDeprecated: false,
+		},
+		{
+			name:               "canonical set returns canonical value with fromDeprecated=false",
+			authServerConfig:   withCanonical("github"),
+			incomingAuth:       &IncomingAuthConfig{Type: "anonymous"},
+			wantName:           "github",
+			wantFromDeprecated: false,
+		},
+		{
+			name:               "deprecated inline set returns inline value with fromDeprecated=true",
+			authServerConfig:   nil,
+			incomingAuth:       withDeprecatedInline("okta"),
+			wantName:           "okta",
+			wantFromDeprecated: true,
+		},
+		{
+			name:               "canonical wins when both are set",
+			authServerConfig:   withCanonical("github"),
+			incomingAuth:       withDeprecatedInline("okta"),
+			wantName:           "github",
+			wantFromDeprecated: false,
+		},
+		{
+			name:               "nil authServerConfig falls through to deprecated inline",
+			authServerConfig:   nil,
+			incomingAuth:       withDeprecatedInline("okta"),
+			wantName:           "okta",
+			wantFromDeprecated: true,
+		},
+		{
+			name:               "nil IncomingAuth with empty canonical returns empty",
+			authServerConfig:   &EmbeddedAuthServerConfig{},
+			incomingAuth:       nil,
+			wantName:           "",
+			wantFromDeprecated: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			vmcp := &VirtualMCPServer{
+				Spec: VirtualMCPServerSpec{
+					AuthServerConfig: tt.authServerConfig,
+					IncomingAuth:     tt.incomingAuth,
+				},
+			}
+			gotName, gotFromDeprecated := vmcp.ExplicitPrimaryUpstreamProvider()
+			assert.Equal(t, tt.wantName, gotName, "name mismatch")
+			assert.Equal(t, tt.wantFromDeprecated, gotFromDeprecated, "fromDeprecated mismatch")
+		})
+	}
+}
+
+// TestAuthzConfigRef_DeprecatedInlinePrimaryUpstreamProvider validates the
+// helper that reads the legacy InlineAuthzConfig.PrimaryUpstreamProvider field.
+// Callers depend on the empty-string return for nil receivers and nil
+// Inline subtrees to keep the deprecation-fallback path safe.
+func TestAuthzConfigRef_DeprecatedInlinePrimaryUpstreamProvider(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		ref  *AuthzConfigRef
+		want string
+	}{
+		{name: "nil receiver", ref: nil, want: ""},
+		{name: "nil Inline", ref: &AuthzConfigRef{Type: "configMap"}, want: ""},
+		{name: "Inline without primary", ref: &AuthzConfigRef{
+			Type:   "inline",
+			Inline: &InlineAuthzConfig{Policies: []string{`permit(principal, action, resource);`}},
+		}, want: ""},
+		{name: "Inline with primary set", ref: &AuthzConfigRef{
+			Type: "inline",
+			Inline: &InlineAuthzConfig{
+				Policies:                []string{`permit(principal, action, resource);`},
+				PrimaryUpstreamProvider: "okta",
+			},
+		}, want: "okta"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, tt.ref.DeprecatedInlinePrimaryUpstreamProvider())
+		})
+	}
+}

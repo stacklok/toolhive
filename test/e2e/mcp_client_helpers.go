@@ -151,19 +151,6 @@ func (h *MCPClientHelper) CallTool(
 	return h.client.CallTool(ctx, request)
 }
 
-// ListResources lists all available resources from the MCP server
-func (h *MCPClientHelper) ListResources(ctx context.Context) (*mcp.ListResourcesResult, error) {
-	request := mcp.ListResourcesRequest{}
-	return h.client.ListResources(ctx, request)
-}
-
-// ReadResource reads a specific resource
-func (h *MCPClientHelper) ReadResource(ctx context.Context, uri string) (*mcp.ReadResourceResult, error) {
-	request := mcp.ReadResourceRequest{}
-	request.Params.URI = uri
-	return h.client.ReadResource(ctx, request)
-}
-
 // Ping sends a ping to test connectivity
 func (h *MCPClientHelper) Ping(ctx context.Context) error {
 	return h.client.Ping(ctx)
@@ -192,21 +179,6 @@ func (h *MCPClientHelper) ExpectToolCall(
 	ExpectWithOffset(1, err).ToNot(HaveOccurred(), fmt.Sprintf("Should be able to call tool '%s'", toolName))
 	ExpectWithOffset(1, result).ToNot(BeNil(), "Tool result should not be nil")
 	return result
-}
-
-// ExpectResourceExists verifies that a resource with the given URI exists
-func (h *MCPClientHelper) ExpectResourceExists(ctx context.Context, uri string) {
-	resources, err := h.ListResources(ctx)
-	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to list resources")
-
-	found := false
-	for _, resource := range resources.Resources {
-		if resource.URI == uri {
-			found = true
-			break
-		}
-	}
-	ExpectWithOffset(1, found).To(BeTrue(), fmt.Sprintf("Resource '%s' should exist", uri))
 }
 
 // WaitForMCPServerReady waits for an MCP server to be ready and responsive
@@ -269,48 +241,4 @@ func extractServerNameFromURL(serverURL string) string {
 		return serverURL[idx+1:]
 	}
 	return "unknown"
-}
-
-// TestMCPServerBasicFunctionality tests basic MCP server functionality
-func TestMCPServerBasicFunctionality(config *TestConfig, serverURL string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Create MCP client
-	mcpClient, err := NewMCPClientForSSE(config, serverURL)
-	if err != nil {
-		return fmt.Errorf("failed to create MCP client: %w", err)
-	}
-	defer func() {
-		// Error ignored in test cleanup - the test may have already closed the connection
-		_ = mcpClient.Close()
-	}()
-
-	// Initialize the connection
-	if err := mcpClient.Initialize(ctx); err != nil {
-		return fmt.Errorf("failed to initialize MCP connection: %w", err)
-	}
-
-	// Test ping
-	if err := mcpClient.Ping(ctx); err != nil {
-		return fmt.Errorf("ping failed: %w", err)
-	}
-
-	// List tools
-	tools, err := mcpClient.ListTools(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list tools: %w", err)
-	}
-
-	if len(tools.Tools) == 0 {
-		return fmt.Errorf("no tools available from MCP server")
-	}
-
-	// List resources (if supported)
-	// Note: Not all MCP servers support resources, so we don't fail on this
-	if _, err := mcpClient.ListResources(ctx); err != nil {
-		GinkgoWriter.Printf("Note: Server does not support resources: %v\n", err)
-	}
-
-	return nil
 }

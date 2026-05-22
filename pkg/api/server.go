@@ -142,50 +142,6 @@ func (b *ServerBuilder) WithOtelEnabled(enabled bool) *ServerBuilder {
 	return b
 }
 
-// WithMiddleware adds middleware to the server
-func (b *ServerBuilder) WithMiddleware(mw ...func(http.Handler) http.Handler) *ServerBuilder {
-	b.middlewares = append(b.middlewares, mw...)
-	return b
-}
-
-// WithRoute adds a custom route to the server
-func (b *ServerBuilder) WithRoute(prefix string, handler http.Handler) *ServerBuilder {
-	b.customRoutes[prefix] = handler
-	return b
-}
-
-// WithContainerRuntime sets the container runtime
-func (b *ServerBuilder) WithContainerRuntime(containerRuntime runtime.Runtime) *ServerBuilder {
-	b.containerRuntime = containerRuntime
-	return b
-}
-
-// WithClientManager sets the client manager
-func (b *ServerBuilder) WithClientManager(manager client.Manager) *ServerBuilder {
-	b.clientManager = manager
-	return b
-}
-
-// WithWorkloadManager sets the workload manager
-func (b *ServerBuilder) WithWorkloadManager(manager workloads.Manager) *ServerBuilder {
-	b.workloadManager = manager
-	return b
-}
-
-// WithGroupManager sets the group manager
-func (b *ServerBuilder) WithGroupManager(manager groups.Manager) *ServerBuilder {
-	b.groupManager = manager
-	return b
-}
-
-// WithSkillManager sets the skill service manager.
-// The caller is responsible for closing any underlying resources
-// when providing an external skill service.
-func (b *ServerBuilder) WithSkillManager(manager skills.SkillService) *ServerBuilder {
-	b.skillManager = manager
-	return b
-}
-
 // Build creates and configures the HTTP router
 func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r := chi.NewRouter()
@@ -821,42 +777,4 @@ func GenerateNonce() (string, error) {
 		return "", fmt.Errorf("failed to generate server nonce: %w", err)
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// Serve starts the server on the given address and serves the API.
-// It is assumed that the caller sets up appropriate signal handling.
-// If isUnixSocket is true, address is treated as a UNIX socket path.
-// If oidcConfig is provided, OIDC authentication will be enabled for all API endpoints.
-// Serve is a convenience wrapper that builds and starts the API server.
-// For callers that need to configure OTEL or other builder options not exposed
-// here, use NewServerBuilder and NewServer directly.
-func Serve(
-	ctx context.Context,
-	address string,
-	isUnixSocket bool,
-	debugMode bool,
-	enableDocs bool,
-	oidcConfig *auth.TokenValidatorConfig,
-	middlewares ...func(http.Handler) http.Handler,
-) error {
-	nonce, err := GenerateNonce()
-	if err != nil {
-		return err
-	}
-
-	builder := NewServerBuilder().
-		WithAddress(address).
-		WithUnixSocket(isUnixSocket).
-		WithDebugMode(debugMode).
-		WithDocs(enableDocs).
-		WithNonce(nonce).
-		WithOIDCConfig(oidcConfig).
-		WithMiddleware(middlewares...)
-
-	server, err := NewServer(ctx, builder)
-	if err != nil {
-		return err
-	}
-
-	return server.Start(ctx)
 }

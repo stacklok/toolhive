@@ -64,12 +64,6 @@ func WriteServerInfo(info *ServerInfo) error {
 	return writeServerInfoTo(defaultDiscoveryDir(), info)
 }
 
-// ReadServerInfo reads and parses the server discovery file.
-// Returns os.ErrNotExist if the file does not exist.
-func ReadServerInfo() (*ServerInfo, error) {
-	return readServerInfoFrom(defaultDiscoveryDir())
-}
-
 // RemoveServerInfo removes the server discovery file.
 // It is a no-op if the file does not exist.
 func RemoveServerInfo() error {

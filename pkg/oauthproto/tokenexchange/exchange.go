@@ -71,27 +71,10 @@ type exchangeRequest struct {
 	ActingParty *actingParty
 }
 
-// String implements fmt.Stringer for exchangeRequest, redacting sensitive tokens.
-func (r exchangeRequest) String() string {
-	actorToken := "<none>"
-	if r.ActingParty != nil {
-		actorToken = oauthproto.Redact(r.ActingParty.ActorToken)
-	}
-
-	return fmt.Sprintf("exchangeRequest{GrantType: %s, Audience: %s, Resource: %s, Scope: %v, SubjectToken: %s, ActorToken: %s}",
-		r.GrantType, r.Audience, r.Resource, r.Scope, oauthproto.Redact(r.SubjectToken), actorToken)
-}
-
 // clientAuthentication represents OAuth client credentials for token exchange.
 type clientAuthentication struct {
 	ClientID     string
 	ClientSecret string
-}
-
-// String implements fmt.Stringer for clientAuthentication, redacting the client secret.
-func (c clientAuthentication) String() string {
-	return fmt.Sprintf("clientAuthentication{ClientID: %s, ClientSecret: %s}",
-		c.ClientID, oauthproto.Redact(c.ClientSecret))
 }
 
 // ExchangeConfig holds the configuration for token exchange.

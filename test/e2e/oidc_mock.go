@@ -450,11 +450,6 @@ func (m *OIDCMockServer) Stop() error {
 	return nil
 }
 
-// GetBaseURL returns the base URL of the mock server
-func (m *OIDCMockServer) GetBaseURL() string {
-	return fmt.Sprintf("http://localhost:%d", m.port)
-}
-
 // EnableAutoComplete enables automatic OAuth flow completion for testing
 func (m *OIDCMockServer) EnableAutoComplete() {
 	m.autoComplete = true

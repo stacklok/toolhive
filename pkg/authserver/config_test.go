@@ -589,3 +589,49 @@ func TestConfigApplyDefaults_BaselineClientScopes(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigApplyDefaults_CIMD(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		cfg             Config
+		wantMaxSize     int
+		wantFallbackTTL time.Duration
+	}{
+		{
+			name:            "CIMD enabled with zero fields applies defaults",
+			cfg:             Config{Issuer: "https://example.com", CIMDEnabled: true},
+			wantMaxSize:     256,
+			wantFallbackTTL: 5 * time.Minute,
+		},
+		{
+			name: "CIMD enabled preserves non-zero values",
+			cfg: Config{
+				Issuer:               "https://example.com",
+				CIMDEnabled:          true,
+				CIMDCacheMaxSize:     128,
+				CIMDCacheFallbackTTL: 10 * time.Minute,
+			},
+			wantMaxSize:     128,
+			wantFallbackTTL: 10 * time.Minute,
+		},
+		{
+			name:            "CIMD disabled leaves zero fields unchanged",
+			cfg:             Config{Issuer: "https://example.com", CIMDEnabled: false},
+			wantMaxSize:     0,
+			wantFallbackTTL: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := tt.cfg
+			err := cfg.applyDefaults()
+			require.NoError(t, err)
+			require.Equal(t, tt.wantMaxSize, cfg.CIMDCacheMaxSize)
+			require.Equal(t, tt.wantFallbackTTL, cfg.CIMDCacheFallbackTTL)
+		})
+	}
+}

@@ -124,6 +124,10 @@ func (c *RunConfig) validateBaselineClientScopes() error {
 }
 
 // CIMDRunConfig controls client_id metadata document (CIMD) support.
+//
+// TODO(cimd): expose these fields in the MCPExternalAuthConfig CRD so Kubernetes
+// operators can configure CIMD through the normal CRD workflow instead of
+// writing RunConfig YAML directly.
 type CIMDRunConfig struct {
 	// Enabled activates CIMD client lookup when true.
 	Enabled bool `json:"enabled" yaml:"enabled"`
@@ -132,8 +136,8 @@ type CIMDRunConfig struct {
 	// Defaults to 256 when Enabled is true and this field is zero.
 	CacheMaxSize int `json:"cache_max_size,omitempty" yaml:"cache_max_size,omitempty"`
 
-	// CacheFallbackTTL is how long a cached CIMD document is considered valid when
-	// the fetched document carries no Cache-Control header.
+	// CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+	// Cache-Control header parsing is not yet implemented; all entries use this value.
 	// Defaults to 5 minutes when Enabled is true and this field is zero.
 	//nolint:lll // field tags require full JSON+YAML names
 	CacheFallbackTTL time.Duration `json:"cache_fallback_ttl,omitempty" yaml:"cache_fallback_ttl,omitempty" swaggertype:"string" example:"5m"`

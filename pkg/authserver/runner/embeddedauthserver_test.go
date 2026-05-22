@@ -2035,3 +2035,28 @@ func TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog(t *testing.T) {
 	assert.Contains(t, logged, "redis.example.com",
 		"closeErr host must remain in the Warn record after sanitisation")
 }
+
+func TestResolveCIMDConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil input returns zero values", func(t *testing.T) {
+		t.Parallel()
+		enabled, size, ttl := resolveCIMDConfig(nil)
+		assert.False(t, enabled)
+		assert.Zero(t, size)
+		assert.Zero(t, ttl)
+	})
+
+	t.Run("non-nil input passes values through", func(t *testing.T) {
+		t.Parallel()
+		cfg := &authserver.CIMDRunConfig{
+			Enabled:          true,
+			CacheMaxSize:     128,
+			CacheFallbackTTL: 10 * time.Minute,
+		}
+		enabled, size, ttl := resolveCIMDConfig(cfg)
+		assert.True(t, enabled)
+		assert.Equal(t, 128, size)
+		assert.Equal(t, 10*time.Minute, ttl)
+	})
+}

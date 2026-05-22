@@ -657,7 +657,7 @@ func (r *MCPServerReconciler) updateCABundleStatus(ctx context.Context, mcpServe
 // Mirrors the validateGroupRef convention: this only sets/removes the
 // condition; the caller is responsible for persisting status.
 func (*MCPServerReconciler) validateAuthzPrimaryUpstreamProviderIgnored(mcpServer *mcpv1beta1.MCPServer) {
-	provider := mcpServer.Spec.AuthzConfig.ExplicitPrimaryUpstreamProvider()
+	provider := mcpServer.Spec.AuthzConfig.DeprecatedInlinePrimaryUpstreamProvider()
 	conditionType := mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored
 	if provider == "" {
 		meta.RemoveStatusCondition(&mcpServer.Status.Conditions, conditionType)

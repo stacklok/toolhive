@@ -165,7 +165,7 @@ func TestRegisterClientHandler_BaselineClientScopes(t *testing.T) {
 
 	tests := []struct {
 		name                 string
-		requestScope         string
+		requestScopes        []string
 		baselineClientScopes []string
 		extraScopesSupported []string // appended to DefaultScopes in ScopesSupported
 		expectedScopes       []string
@@ -175,7 +175,7 @@ func TestRegisterClientHandler_BaselineClientScopes(t *testing.T) {
 			// The baseline adds "custom:scope" (not in DefaultScopes), so the
 			// union expands the set: DefaultScopes + ["custom:scope"].
 			name:                 "empty client scope with non-empty baseline adds baseline scope",
-			requestScope:         "",
+			requestScopes:        nil,
 			baselineClientScopes: []string{"custom:scope"},
 			extraScopesSupported: []string{"custom:scope"},
 			expectedScopes:       append(append([]string{}, registration.DefaultScopes...), "custom:scope"),
@@ -183,7 +183,7 @@ func TestRegisterClientHandler_BaselineClientScopes(t *testing.T) {
 		{
 			// Requested scopes already contain the baseline; no expansion occurs.
 			name:                 "baseline is subset of requested scopes no expansion",
-			requestScope:         "openid profile email offline_access",
+			requestScopes:        []string{"openid", "profile", "email", "offline_access"},
 			baselineClientScopes: []string{"openid"},
 			extraScopesSupported: nil,
 			expectedScopes:       []string{"openid", "profile", "email", "offline_access"},
@@ -193,7 +193,7 @@ func TestRegisterClientHandler_BaselineClientScopes(t *testing.T) {
 			// "offline_access" not in the request. Exercises the dedup+append paths
 			// of unionScopes in the same handler call.
 			name:                 "partial overlap baseline appends only non-overlapping scopes",
-			requestScope:         "openid profile",
+			requestScopes:        []string{"openid", "profile"},
 			baselineClientScopes: []string{"openid", "offline_access"},
 			extraScopesSupported: nil,
 			expectedScopes:       []string{"openid", "profile", "offline_access"},
@@ -202,7 +202,7 @@ func TestRegisterClientHandler_BaselineClientScopes(t *testing.T) {
 			// Canonical regression: client registers with "openid" only,
 			// baseline adds "offline_access" → union is both.
 			name:                 "disjoint baseline expands registered scope set",
-			requestScope:         "openid",
+			requestScopes:        []string{"openid"},
 			baselineClientScopes: []string{"offline_access"},
 			extraScopesSupported: nil,
 			expectedScopes:       []string{"openid", "offline_access"},
@@ -210,7 +210,7 @@ func TestRegisterClientHandler_BaselineClientScopes(t *testing.T) {
 		{
 			// Nil baseline must not alter the registered scope set.
 			name:                 "nil baseline preserves existing behavior",
-			requestScope:         "openid",
+			requestScopes:        []string{"openid"},
 			baselineClientScopes: nil,
 			extraScopesSupported: nil,
 			expectedScopes:       []string{"openid"},
@@ -242,7 +242,7 @@ func TestRegisterClientHandler_BaselineClientScopes(t *testing.T) {
 
 			reqBody, err := json.Marshal(oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1:8080/callback"},
-				Scopes:       oauthproto.ScopeList(strings.Fields(tc.requestScope)),
+				Scopes:       oauthproto.ScopeList(tc.requestScopes),
 			})
 			require.NoError(t, err)
 
@@ -316,46 +316,104 @@ func TestRegisterClientHandler_ClientIsStored(t *testing.T) {
 // TestRegisterClientHandler_ScopeAsJSONArray verifies that the /oauth/register
 // endpoint accepts the RFC 7591 array form of "scope". Prior to consolidating
 // onto oauthproto.ScopeList, the handler only accepted space-delimited strings
-// and would reject this body as a JSON decode error.
+// and would reject these bodies as a JSON decode error.
+//
+// Each case sends a raw JSON body (not a Go literal that round-trips through
+// ScopeList.MarshalJSON) so the dual-format UnmarshalJSON path is exercised
+// end-to-end at the handler boundary.
 func TestRegisterClientHandler_ScopeAsJSONArray(t *testing.T) {
 	t.Parallel()
 
-	ctrl := gomock.NewController(t)
-	stor := mocks.NewMockStorage(ctrl)
-	var capturedClient fosite.Client
-	stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, c fosite.Client) error {
-			capturedClient = c
-			return nil
-		})
-
-	handler := &Handler{
-		storage: stor,
-		config: &server.AuthorizationServerConfig{
-			Config:          &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
-			ScopesSupported: registration.DefaultScopes,
+	tests := []struct {
+		name             string
+		body             string
+		expectedStatus   int
+		expectedScopes   []string // ignored when expectedStatus != 201
+		expectedWireFrag string   // ignored when expectedStatus != 201
+		expectedError    string   // DCR error code when expectedStatus != 201
+	}{
+		{
+			name:             "happy path: array form is accepted and granted",
+			body:             `{"redirect_uris":["http://127.0.0.1:8080/callback"],"scope":["openid","offline_access"]}`,
+			expectedStatus:   http.StatusCreated,
+			expectedScopes:   []string{"openid", "offline_access"},
+			expectedWireFrag: `"scope":"openid offline_access"`,
+		},
+		{
+			// Mirrors the string-form unsupported-scope path from
+			// TestValidateScopes ("unknown scope rejected") at the handler
+			// boundary, but routed through the array-form decoder.
+			name:           "array form with unsupported scope is rejected",
+			body:           `{"redirect_uris":["http://127.0.0.1:8080/callback"],"scope":["openid","sneaky_admin"]}`,
+			expectedStatus: http.StatusBadRequest,
+			expectedError:  registration.DCRErrorInvalidClientMetadata,
+		},
+		{
+			// Empty-array case. ScopeList.UnmarshalJSON normalizes [] to
+			// nil, ValidateScopes then falls back to DefaultScopes.
+			// Documented intentional behavior change: pre-consolidation the
+			// authserver returned 400 for this body because the
+			// space-delimited-only decoder could not consume a JSON array.
+			name:             "empty array falls back to DefaultScopes",
+			body:             `{"redirect_uris":["http://127.0.0.1:8080/callback"],"scope":[]}`,
+			expectedStatus:   http.StatusCreated,
+			expectedScopes:   registration.DefaultScopes,
+			expectedWireFrag: `"scope":"openid profile email offline_access"`,
 		},
 	}
 
-	// Raw JSON body with scope as a JSON array — the form that
-	// well-formed RFC 7591 clients can send and that the previous
-	// space-delimited-only authserver implementation rejected.
-	body := []byte(`{"redirect_uris":["http://127.0.0.1:8080/callback"],"scope":["openid","offline_access"]}`)
-	req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	w := httptest.NewRecorder()
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 
-	handler.RegisterClientHandler(w, req)
+			ctrl := gomock.NewController(t)
+			stor := mocks.NewMockStorage(ctrl)
+			var capturedClient fosite.Client
+			stor.EXPECT().RegisterClient(gomock.Any(), gomock.Any()).DoAndReturn(
+				func(_ context.Context, c fosite.Client) error {
+					capturedClient = c
+					return nil
+				}).AnyTimes()
 
-	require.Equal(t, http.StatusCreated, w.Code,
-		"array-form scope must be accepted per RFC 7591 §2 ambiguity")
+			handler := &Handler{
+				storage: stor,
+				config: &server.AuthorizationServerConfig{
+					Config:          &fosite.Config{AccessTokenIssuer: "https://test-authserver"},
+					ScopesSupported: registration.DefaultScopes,
+				},
+			}
 
-	var resp oauthproto.DynamicClientRegistrationResponse
-	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
-	assert.Equal(t, []string{"openid", "offline_access"}, []string(resp.Scopes),
-		"granted scopes must reflect the array-form request")
+			req := httptest.NewRequest(http.MethodPost, "/oauth/register", bytes.NewReader([]byte(tc.body)))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
 
-	require.NotNil(t, capturedClient, "storage was not called")
-	assert.Equal(t, fosite.Arguments([]string{"openid", "offline_access"}), capturedClient.GetScopes(),
-		"the array-form scopes must reach storage")
+			handler.RegisterClientHandler(w, req)
+
+			require.Equal(t, tc.expectedStatus, w.Code)
+
+			if tc.expectedStatus != http.StatusCreated {
+				var errResp registration.DCRError
+				require.NoError(t, json.Unmarshal(w.Body.Bytes(), &errResp))
+				assert.Equal(t, tc.expectedError, errResp.Error)
+				return
+			}
+
+			// Pin the response wire form: RFC 7591 §3.2.1 requires a
+			// space-delimited scope string, not a JSON array. A raw-body
+			// assertion catches a regression that the dual-format
+			// ScopeList.UnmarshalJSON would otherwise mask when decoding
+			// resp.Scopes back into a slice.
+			assert.Contains(t, w.Body.String(), tc.expectedWireFrag,
+				"RFC 7591 §3.2.1: response scope must be space-delimited string, not JSON array")
+
+			var resp oauthproto.DynamicClientRegistrationResponse
+			require.NoError(t, json.Unmarshal(w.Body.Bytes(), &resp))
+			assert.Equal(t, tc.expectedScopes, []string(resp.Scopes),
+				"granted scopes must reflect the array-form request")
+
+			require.NotNil(t, capturedClient, "storage was not called")
+			assert.Equal(t, fosite.Arguments(tc.expectedScopes), capturedClient.GetScopes(),
+				"the array-form scopes must reach storage")
+		})
+	}
 }

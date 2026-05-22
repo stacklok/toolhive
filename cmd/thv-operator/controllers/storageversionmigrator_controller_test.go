@@ -4,6 +4,7 @@
 package controllers
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -12,7 +13,12 @@ import (
 	"github.com/stretchr/testify/require"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	apitypes "k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
 
 // ------------------------------------------------------------------
@@ -228,6 +234,203 @@ func TestNewMigrationCache_InitializesUsableInstance(t *testing.T) {
 	// Sanity: it should be writable/readable through the public methods.
 	c.add("crd-a", "uid-1", "rv-100")
 	assert.True(t, c.has("crd-a", "uid-1", "rv-100"))
+}
+
+// ------------------------------------------------------------------
+// ensureInitialized
+// ------------------------------------------------------------------
+
+func TestEnsureInitialized_AppliesDefaultsOnZeroValues(t *testing.T) {
+	t.Parallel()
+	r := &StorageVersionMigratorReconciler{}
+	r.ensureInitialized()
+
+	assert.Equal(t, int64(defaultListPageSize), r.PageSize)
+	assert.Equal(t, defaultCacheGCInterval, r.CacheGCInterval)
+	require.NotNil(t, r.cache)
+}
+
+func TestEnsureInitialized_PreservesExplicitValues(t *testing.T) {
+	t.Parallel()
+
+	customCache := newMigrationCache(time.Minute)
+	r := &StorageVersionMigratorReconciler{
+		PageSize:        7,
+		CacheGCInterval: 42 * time.Second,
+		cache:           customCache,
+	}
+	r.ensureInitialized()
+
+	assert.Equal(t, int64(7), r.PageSize, "non-zero PageSize must not be overwritten by defaults")
+	assert.Equal(t, 42*time.Second, r.CacheGCInterval, "non-zero CacheGCInterval must not be overwritten")
+	assert.Same(t, customCache, r.cache, "an existing cache must not be replaced")
+}
+
+func TestEnsureInitialized_IsIdempotent(t *testing.T) {
+	t.Parallel()
+	r := &StorageVersionMigratorReconciler{}
+	r.ensureInitialized()
+	firstCache := r.cache
+	firstPageSize := r.PageSize
+
+	// Calling again must not allocate a new cache or change any field.
+	r.ensureInitialized()
+	assert.Same(t, firstCache, r.cache)
+	assert.Equal(t, firstPageSize, r.PageSize)
+}
+
+// ------------------------------------------------------------------
+// Reconcile — early-return paths
+//
+// These tests use a fake client to exercise the branches of Reconcile that
+// return before any per-CR work happens. The interesting per-CR work is
+// covered by the envtest suite (which can simulate real apiserver semantics
+// like storage-encoder elision and optimistic-lock 409). A fake client can't
+// simulate those, so anything past the early-return points would be
+// testing the mock.
+// ------------------------------------------------------------------
+
+// newReconcileTestScheme builds a runtime scheme with apiextensions/v1
+// registered so the fake client can serialize CRDs.
+func newReconcileTestScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, apiextensionsv1.AddToScheme(scheme))
+	return scheme
+}
+
+// reconcileWithFake runs one Reconcile against a fake client and returns the
+// result + error. The fake client is constructed from the supplied initial
+// objects (typically zero or one CRD). The CRD's name in the Request is taken
+// from the supplied crdName.
+func reconcileWithFake(
+	t *testing.T,
+	crdName string,
+	initialObjects ...client.Object,
+) (ctrl.Result, error) {
+	t.Helper()
+	scheme := newReconcileTestScheme(t)
+	cli := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(initialObjects...).
+		Build()
+
+	r := &StorageVersionMigratorReconciler{
+		Client:    cli,
+		APIReader: cli,
+		Scheme:    scheme,
+		Recorder:  record.NewFakeRecorder(8),
+	}
+	return r.Reconcile(context.Background(), ctrl.Request{
+		NamespacedName: apitypes.NamespacedName{Name: crdName},
+	})
+}
+
+func TestReconcile_ReturnsNilWhenCRDIsNotFound(t *testing.T) {
+	t.Parallel()
+	// No initial objects → APIReader.Get returns IsNotFound.
+	res, err := reconcileWithFake(t, "missing.toolhive.stacklok.dev")
+	require.NoError(t, err, "IsNotFound on the target CRD must not surface as a reconcile error")
+	assert.Equal(t, ctrl.Result{}, res)
+}
+
+func TestReconcile_SkipsCRDInForeignGroup(t *testing.T) {
+	t.Parallel()
+	crd := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "widgets.example.com",
+			Labels: map[string]string{AutoMigrateLabel: AutoMigrateValue},
+		},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: "example.com",
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+				{Name: "v1", Storage: true, Served: true},
+			},
+		},
+		Status: apiextensionsv1.CustomResourceDefinitionStatus{
+			StoredVersions: []string{"v1alpha1", "v1"},
+		},
+	}
+	res, err := reconcileWithFake(t, crd.Name, crd)
+	require.NoError(t, err, "non-toolhive group must short-circuit without error")
+	assert.Equal(t, ctrl.Result{}, res)
+}
+
+func TestReconcile_SkipsCRDMissingOptInLabel(t *testing.T) {
+	t.Parallel()
+	crd := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "mcpservers.toolhive.stacklok.dev",
+			Labels: nil, // explicitly no opt-in label
+		},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: ToolhiveGroup,
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+				{Name: "v1beta1", Storage: true, Served: true},
+			},
+		},
+		Status: apiextensionsv1.CustomResourceDefinitionStatus{
+			StoredVersions: []string{"v1alpha1", "v1beta1"},
+		},
+	}
+	res, err := reconcileWithFake(t, crd.Name, crd)
+	require.NoError(t, err, "missing opt-in label must short-circuit without error")
+	assert.Equal(t, ctrl.Result{}, res)
+}
+
+func TestReconcile_SkipsCRDWithNoStorageVersion(t *testing.T) {
+	t.Parallel()
+	// Pathological CRD — every version has Storage: false. The apiserver
+	// would normally reject this at CRD-create time, so envtest can't reach
+	// this branch. Reconcile must log + return nil rather than panic or
+	// re-enqueue uselessly.
+	crd := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "mcpservers.toolhive.stacklok.dev",
+			Labels: map[string]string{AutoMigrateLabel: AutoMigrateValue},
+		},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: ToolhiveGroup,
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+				{Name: "v1alpha1", Storage: false, Served: true},
+				{Name: "v1beta1", Storage: false, Served: true},
+			},
+		},
+		Status: apiextensionsv1.CustomResourceDefinitionStatus{
+			StoredVersions: []string{"v1alpha1", "v1beta1"},
+		},
+	}
+	res, err := reconcileWithFake(t, crd.Name, crd)
+	require.NoError(t, err, "no-storage-version CRD must short-circuit without error")
+	assert.Equal(t, ctrl.Result{}, res)
+}
+
+func TestReconcile_ReturnsEarlyWhenStoredVersionsAlreadyClean(t *testing.T) {
+	t.Parallel()
+	crd := &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:   "mcpservers.toolhive.stacklok.dev",
+			Labels: map[string]string{AutoMigrateLabel: AutoMigrateValue},
+		},
+		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
+			Group: ToolhiveGroup,
+			Names: apiextensionsv1.CustomResourceDefinitionNames{
+				Kind:     "MCPServer",
+				ListKind: "MCPServerList",
+				Plural:   "mcpservers",
+				Singular: "mcpserver",
+			},
+			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+				{Name: "v1beta1", Storage: true, Served: true},
+			},
+		},
+		Status: apiextensionsv1.CustomResourceDefinitionStatus{
+			StoredVersions: []string{"v1beta1"},
+		},
+	}
+	res, err := reconcileWithFake(t, crd.Name, crd)
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, res, "already-clean storedVersions must early-return without doing any work")
 }
 
 // ------------------------------------------------------------------

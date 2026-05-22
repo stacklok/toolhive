@@ -658,7 +658,7 @@ func (r *MCPServerReconciler) updateCABundleStatus(ctx context.Context, mcpServe
 // Mirrors the validateGroupRef convention: this only sets/removes the
 // condition; the caller is responsible for persisting status.
 func (*MCPServerReconciler) validateAuthzPrimaryUpstreamProviderIgnored(mcpServer *mcpv1beta1.MCPServer) {
-	provider := mcpServer.Spec.AuthzConfig.ExplicitPrimaryUpstreamProvider()
+	provider := mcpServer.Spec.AuthzConfig.DeprecatedInlinePrimaryUpstreamProvider()
 	conditionType := mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored
 	if provider == "" {
 		meta.RemoveStatusCondition(&mcpServer.Status.Conditions, conditionType)
@@ -2067,7 +2067,9 @@ func getToolhiveRunnerImage() string {
 func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
 	if m.Spec.ExternalAuthConfigRef == nil {
-		// No MCPExternalAuthConfig referenced, clear any stored hash
+		// No MCPExternalAuthConfig referenced. Clear any stale mirror written
+		// while the ref was set so the condition doesn't outlive its cause.
+		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
 		if m.Status.ExternalAuthConfigHash != "" {
 			m.Status.ExternalAuthConfigHash = ""
 			if err := r.Status().Update(ctx, m); err != nil {
@@ -2080,11 +2082,25 @@ func (r *MCPServerReconciler) handleExternalAuthConfig(ctx context.Context, m *m
 	// Get the referenced MCPExternalAuthConfig
 	externalAuthConfig, err := GetExternalAuthConfigForMCPServer(ctx, r.Client, m)
 	if err != nil {
+		// Source lookup failed (e.g. NotFound). Clear any stale mirror — the
+		// referenced source no longer exists, so the previous mirror is no
+		// longer load-bearing. Pre-existing behavior surfaces the lookup
+		// error through Phase=Failed at the caller.
+		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
 		return err
 	}
 
 	if externalAuthConfig == nil {
+		meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated)
 		return fmt.Errorf("MCPExternalAuthConfig %s not found", m.Spec.ExternalAuthConfigRef.Name)
+	}
+
+	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
+	// the MCPServer so the failure is visible on the consumer CR (e.g. obo-typed
+	// configs surface Valid=False/EnterpriseRequired here without the user
+	// having to inspect the referenced MCPExternalAuthConfig).
+	if mirrored, err := mirrorInvalidOnMCPServer(m, externalAuthConfig); mirrored {
+		return err
 	}
 
 	// MCPServer supports only single-upstream embedded auth server configs.

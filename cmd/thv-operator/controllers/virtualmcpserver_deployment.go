@@ -1106,6 +1106,40 @@ func (*VirtualMCPServerReconciler) validateBackendAuthSecrets(
 	return nil
 }
 
+// validateAuthzConfigMapRef pre-validates the referenced authz ConfigMap when
+// spec.incomingAuth.authzConfig.type is "configMap". It uses the same shared loader
+// as the converter so the diagnostic surfaces the same parse/validation errors the
+// converter would later produce, but earlier in the reconcile and as a status condition
+// rather than as a generic conversion failure. Inline and absent authzConfig are no-ops.
+//
+// Also runs ExtractCedarAuthzOptions on the loaded payload so a configMap that
+// parses as a valid authz.Config but isn't Cedar-flavoured (wrong "type" field,
+// or a future HTTP authorizer) is rejected here with AuthzConfigMapInvalid
+// rather than passing pre-validation and then failing opaquely at convert time.
+//
+// Mirrors the pattern in mcpremoteproxy_controller.go's validateK8sRefs.
+func (r *VirtualMCPServerReconciler) validateAuthzConfigMapRef(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) error {
+	if vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.AuthzConfig == nil ||
+		vmcp.Spec.IncomingAuth.AuthzConfig.Type != mcpv1beta1.AuthzConfigTypeConfigMap {
+		return nil
+	}
+	cfg, err := ctrlutil.LoadAuthzConfigFromConfigMap(
+		ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.AuthzConfig,
+	)
+	if err != nil {
+		return err
+	}
+	if _, err := ctrlutil.ExtractCedarAuthzOptions(cfg); err != nil {
+		return fmt.Errorf("authz ConfigMap %s/%s is not a Cedar config: %w",
+			vmcp.Namespace, vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name, err)
+	}
+	return nil
+}
+
 // validateSecretKeyRef validates that a secret reference exists and contains the required key.
 // This implements the validation pattern from ctrlutil.GenerateOIDCClientSecretEnvVar().
 func (r *VirtualMCPServerReconciler) validateSecretKeyRef(

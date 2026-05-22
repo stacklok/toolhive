@@ -75,6 +75,11 @@ type AuthConfigError struct {
 	BackendName string
 	// Error is the underlying error that occurred during conversion
 	Error error
+	// Reason, when non-empty, overrides the default "ConversionFailed" condition reason.
+	// Used to mirror upstream MCPExternalAuthConfig.Status.Conditions[Valid].Reason
+	// (e.g. "EnterpriseRequired") onto the per-backend auth config condition so the
+	// failure surfaces with the same taxonomy on the consumer CR.
+	Reason string
 }
 
 // SpecValidationError represents a spec validation failure that the user must fix.
@@ -86,6 +91,16 @@ type SpecValidationError struct {
 
 func (e *SpecValidationError) Error() string {
 	return e.Message
+}
+
+// authConfigErrorReason returns the reason string to use when surfacing an
+// auth-config error via SetAuthConfigCondition: the mirrored source reason
+// when present, otherwise the generic "ConversionFailed".
+func authConfigErrorReason(authErr *AuthConfigError) string {
+	if authErr != nil && authErr.Reason != "" {
+		return authErr.Reason
+	}
+	return "ConversionFailed"
 }
 
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
@@ -600,7 +615,26 @@ func rejectAuthzAdmission(
 // explicitly, the validator additionally rejects (a) the direct-IdP case (no
 // embedded AS) because the field is meaningless without an AS, and (b) any
 // name that does not resolve to one of spec.authServerConfig.upstreamProviders.
-func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
+// emitPrimaryUpstreamProviderDeprecatedEvent emits a Warning event with reason
+// AuthzPrimaryUpstreamProviderDeprecated when the resolved primary upstream
+// provider value came from the deprecated
+// spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider location.
+// Called from every validation branch that observes the explicit provider so
+// the kubectl-visible hint is consistent regardless of the validation outcome.
+func (r *VirtualMCPServerReconciler) emitPrimaryUpstreamProviderDeprecatedEvent(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	fromDeprecated bool,
+) {
+	if !fromDeprecated || r.Recorder == nil {
+		return
+	}
+	r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning,
+		"AuthzPrimaryUpstreamProviderDeprecated", "ResolvePrimaryUpstreamProvider",
+		"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider is deprecated; "+
+			"move the value to spec.authServerConfig.primaryUpstreamProvider")
+}
+
+func (r *VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
@@ -623,14 +657,18 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 	// admission for the same "fail loudly instead of denying every request"
 	// reason as the configured-AS mismatch path below.
 	if vmcp.Spec.AuthServerConfig == nil {
-		explicitProvider := vmcp.Spec.IncomingAuth.AuthzConfig.ExplicitPrimaryUpstreamProvider()
+		explicitProvider, fromDeprecated := vmcp.ExplicitPrimaryUpstreamProvider()
 		if explicitProvider != "" {
+			// A user mid-migration may still have the deprecated inline field
+			// set while removing AuthServerConfig (or before configuring it).
+			// Emit the deprecation event here too so the kubectl-visible hint
+			// is consistent across both reject and accept paths.
+			r.emitPrimaryUpstreamProviderDeprecatedEvent(vmcp, fromDeprecated)
 			message := fmt.Sprintf(
-				"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider=%q is set but "+
-					"spec.authServerConfig is not configured. The field names an upstream IDP "+
-					"on the embedded auth server, which is required for it to take effect. "+
-					"Remove primaryUpstreamProvider, or configure spec.authServerConfig with "+
-					"an upstream of that name.",
+				"primaryUpstreamProvider=%q is set but spec.authServerConfig is not configured. "+
+					"The field names an upstream IDP on the embedded auth server, which is required "+
+					"for it to take effect. Remove primaryUpstreamProvider, or configure "+
+					"spec.authServerConfig with an upstream of that name.",
 				explicitProvider,
 			)
 			return rejectAuthzAdmission(ctx, vmcp, statusManager,
@@ -665,11 +703,16 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 		)
 	}
 
-	// If the user has set spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
-	// explicitly, the name must resolve to one of the declared upstreams after
-	// normalization on both sides. A mismatch would cause Cedar to deny every
-	// request at runtime — fail loudly at admission instead.
-	explicitProvider := vmcp.Spec.IncomingAuth.AuthzConfig.ExplicitPrimaryUpstreamProvider()
+	// If the user has set primaryUpstreamProvider explicitly (either on the
+	// canonical spec.authServerConfig location or on the deprecated
+	// spec.incomingAuth.authzConfig.inline location), the name must resolve to
+	// one of the declared upstreams after normalization on both sides. A
+	// mismatch would cause Cedar to deny every request at runtime — fail loudly
+	// at admission instead.
+	explicitProvider, fromDeprecated := vmcp.ExplicitPrimaryUpstreamProvider()
+	if explicitProvider != "" {
+		r.emitPrimaryUpstreamProviderDeprecatedEvent(vmcp, fromDeprecated)
+	}
 	if explicitProvider != "" {
 		resolved := authserver.ResolveUpstreamName(explicitProvider)
 		matched := slices.ContainsFunc(
@@ -680,10 +723,10 @@ func (*VirtualMCPServerReconciler) validateAuthzUpstreamAvailable(
 		)
 		if !matched {
 			message := fmt.Sprintf(
-				"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider=%q does not "+
-					"match any upstream declared on spec.authServerConfig.upstreamProviders. "+
-					"Set primaryUpstreamProvider to one of the configured upstream names, or "+
-					"leave it empty to default to the first upstream.",
+				"primaryUpstreamProvider=%q does not match any upstream declared on "+
+					"spec.authServerConfig.upstreamProviders. Set primaryUpstreamProvider "+
+					"to one of the configured upstream names, or leave it empty to default "+
+					"to the first upstream.",
 				explicitProvider,
 			)
 			return rejectAuthzAdmission(ctx, vmcp, statusManager,
@@ -1035,14 +1078,18 @@ func (r *VirtualMCPServerReconciler) ensureAllResources(
 	return ctrl.Result{}, nil
 }
 
-// ensureAuthSecretsValid validates secret references and sets the AuthConfigured condition.
+// ensureAuthSecretsValid validates secret references and the authz ConfigMap reference
+// (when configured), and sets the AuthConfigured condition. Catches configuration errors
+// early so the user gets a status-level diagnostic instead of an opaque conversion error
+// or, worse, a silently degraded runtime.
 func (r *VirtualMCPServerReconciler) ensureAuthSecretsValid(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
 ) error {
+	ctxLogger := log.FromContext(ctx)
+
 	if err := r.validateSecretReferences(ctx, vmcp); err != nil {
-		ctxLogger := log.FromContext(ctx)
 		ctxLogger.Error(err, "Secret validation failed")
 		statusManager.SetAuthConfiguredCondition(
 			mcpv1beta1.ConditionReasonAuthInvalid,
@@ -1053,6 +1100,27 @@ func (r *VirtualMCPServerReconciler) ensureAuthSecretsValid(
 		if r.Recorder != nil {
 			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, "SecretValidationFailed", "ValidateSecrets",
 				"Secret validation failed: %v", err)
+		}
+		return err
+	}
+
+	if err := r.validateAuthzConfigMapRef(ctx, vmcp); err != nil {
+		ctxLogger.Error(err, "Authz ConfigMap validation failed")
+		reason := mcpv1beta1.ConditionReasonAuthzConfigMapInvalid
+		eventReason := "AuthzConfigMapInvalid"
+		if errors.IsNotFound(err) {
+			reason = mcpv1beta1.ConditionReasonAuthzConfigMapNotFound
+			eventReason = "AuthzConfigMapNotFound"
+		}
+		statusManager.SetAuthConfiguredCondition(
+			reason,
+			fmt.Sprintf("Authorization ConfigMap is invalid: %v", err),
+			metav1.ConditionFalse,
+		)
+		statusManager.SetObservedGeneration(vmcp.Generation)
+		if r.Recorder != nil {
+			r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning, eventReason, "ValidateAuthzConfigMap",
+				"Authz ConfigMap validation failed: %v", err)
 		}
 		return err
 	}
@@ -2137,6 +2205,12 @@ func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 			return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", crdConfig.ExternalAuthConfigRef.Name, err)
 		}
 
+		// Mirror the source's Valid=False condition before attempting conversion
+		// so the per-backend condition surfaces with the same reason taxonomy.
+		if mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig); mirrored != nil {
+			return nil, mirrored
+		}
+
 		// Convert the external auth config to strategy
 		return r.convertExternalAuthConfigToStrategy(externalAuthConfig)
 	}
@@ -2252,6 +2326,19 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 			continue
 		}
 
+		// Mirror the source's Valid=False condition (e.g. EnterpriseRequired for
+		// obo-typed configs in upstream-only builds) onto the per-backend
+		// condition so the failure surfaces with the same reason taxonomy.
+		if mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig); mirrored != nil {
+			authErrors = append(authErrors, AuthConfigError{
+				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
+				BackendName: workloadInfo.Name,
+				Error:       mirrored,
+				Reason:      mirrored.Reason,
+			})
+			continue
+		}
+
 		// Convert MCPExternalAuthConfig to BackendAuthStrategy
 		strategy, err := r.convertExternalAuthConfigToStrategy(externalAuthConfig)
 		if err != nil {
@@ -2349,6 +2436,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 				Context:     authContextDefault,
 				BackendName: "",
 				Error:       fmt.Errorf("failed to convert default auth config: %w", err),
+				Reason:      mirroredReasonFromError(err),
 			})
 		} else {
 			outgoing.Default = injectSubjectProviderIfNeeded(defaultStrategy, vmcp.Spec.AuthServerConfig)
@@ -2374,6 +2462,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 					Context:     fmt.Sprintf("%s%s", authContextBackendPrefix, backendName),
 					BackendName: backendName,
 					Error:       fmt.Errorf("failed to convert backend auth config: %w", err),
+					Reason:      mirroredReasonFromError(err),
 				})
 			} else {
 				outgoing.Backends[backendName] = injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
@@ -3129,27 +3218,32 @@ func setAuthConfigConditions(
 	allAuthErrors []AuthConfigError,
 ) {
 	// Build error maps by context for quick lookup
-	var defaultAuthError error
-	backendAuthErrors := make(map[string]error)
-	discoveredAuthErrors := make(map[string]error)
+	var defaultAuthError *AuthConfigError
+	backendAuthErrors := make(map[string]*AuthConfigError)
+	discoveredAuthErrors := make(map[string]*AuthConfigError)
 
-	for _, authError := range allAuthErrors {
-		if authError.Context == authContextDefault {
-			defaultAuthError = authError.Error
-		} else if strings.HasPrefix(authError.Context, authContextBackendPrefix) {
-			backendAuthErrors[authError.BackendName] = authError.Error
-		} else if strings.HasPrefix(authError.Context, authContextDiscoveredPrefix) {
-			discoveredAuthErrors[authError.BackendName] = authError.Error
+	for i := range allAuthErrors {
+		authError := &allAuthErrors[i]
+		switch {
+		case authError.Context == authContextDefault:
+			defaultAuthError = authError
+		case strings.HasPrefix(authError.Context, authContextBackendPrefix):
+			backendAuthErrors[authError.BackendName] = authError
+		case strings.HasPrefix(authError.Context, authContextDiscoveredPrefix):
+			discoveredAuthErrors[authError.BackendName] = authError
 		}
 	}
 
 	// Handle DefaultAuthConfig condition
 	if defaultAuthError != nil {
-		// Default auth has error - set False condition
+		// Default auth has error - set False condition. When the source's
+		// MCPExternalAuthConfig surfaced a Valid=False condition we propagate
+		// the source's reason (e.g. EnterpriseRequired); otherwise we report
+		// ConversionFailed.
 		statusManager.SetAuthConfigCondition(
 			"DefaultAuthConfig",
-			"ConversionFailed",
-			fmt.Sprintf("Failed to convert default auth config: %v", defaultAuthError),
+			authConfigErrorReason(defaultAuthError),
+			fmt.Sprintf("Failed to convert default auth config: %v", defaultAuthError.Error),
 			metav1.ConditionFalse,
 		)
 	} else if hasValidDefaultAuth {
@@ -3188,12 +3282,15 @@ func setAuthConfigConditions(
 	for _, backendName := range backendsWithAuthConfig {
 		conditionType := fmt.Sprintf("DiscoveredAuthConfig-%s", backendName)
 
-		if err, hasError := discoveredAuthErrors[backendName]; hasError {
-			// Backend has discovered auth config error - set False condition
+		if authErr, hasError := discoveredAuthErrors[backendName]; hasError {
+			// Backend has discovered auth config error - set False condition.
+			// Propagate the source's reason when the underlying
+			// MCPExternalAuthConfig surfaced Valid=False; otherwise report
+			// ConversionFailed.
 			statusManager.SetAuthConfigCondition(
 				conditionType,
-				"ConversionFailed",
-				fmt.Sprintf("Failed to convert discovered auth config: %v", err),
+				authConfigErrorReason(authErr),
+				fmt.Sprintf("Failed to convert discovered auth config: %v", authErr.Error),
 				metav1.ConditionFalse,
 			)
 		} else {
@@ -3207,14 +3304,16 @@ func setAuthConfigConditions(
 		}
 	}
 
-	// Set BackendAuthConfig conditions for inline backend-specific auth configs
-	// First, set error conditions
-	for backendName, err := range backendAuthErrors {
+	// Set BackendAuthConfig conditions for inline backend-specific auth configs.
+	// First, set error conditions. Propagate the source's reason when the
+	// underlying MCPExternalAuthConfig surfaced Valid=False; otherwise report
+	// ConversionFailed.
+	for backendName, authErr := range backendAuthErrors {
 		conditionType := fmt.Sprintf("BackendAuthConfig-%s", backendName)
 		statusManager.SetAuthConfigCondition(
 			conditionType,
-			"ConversionFailed",
-			fmt.Sprintf("Failed to convert backend auth config: %v", err),
+			authConfigErrorReason(authErr),
+			fmt.Sprintf("Failed to convert backend auth config: %v", authErr.Error),
 			metav1.ConditionFalse,
 		)
 	}

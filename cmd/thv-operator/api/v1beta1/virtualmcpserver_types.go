@@ -338,6 +338,13 @@ const (
 	// ConditionReasonIncomingAuthInvalid indicates incoming auth is invalid
 	ConditionReasonIncomingAuthInvalid = "IncomingAuthInvalid"
 
+	// Note: ConditionReasonAuthzConfigMapNotFound is shared with MCPRemoteProxy and is
+	// declared in mcpremoteproxy_types.go.
+
+	// ConditionReasonAuthzConfigMapInvalid indicates the referenced authz ConfigMap was
+	// found but its payload is missing/empty/malformed or fails Cedar validation.
+	ConditionReasonAuthzConfigMapInvalid = "AuthzConfigMapInvalid"
+
 	// ConditionReasonGroupRefValid indicates the GroupRef is valid
 	ConditionReasonVirtualMCPServerGroupRefValid = "GroupRefValid"
 
@@ -499,6 +506,28 @@ func (*VirtualMCPServer) GetProxyPort() int32 {
 // ResolveGroupName returns the group name from spec.groupRef.
 func (r *VirtualMCPServer) ResolveGroupName() string {
 	return r.Spec.GroupRef.GetName()
+}
+
+// ExplicitPrimaryUpstreamProvider returns the user-configured primary upstream
+// provider name and a flag indicating whether the value came from the
+// deprecated spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
+// location (fromDeprecated=true) or the canonical
+// spec.authServerConfig.primaryUpstreamProvider location (fromDeprecated=false).
+// Returns ("", false) when neither location is set.
+//
+// Precedence: the canonical location wins if set; the deprecated location is
+// read only as a backward-compatibility fallback. Callers should emit a
+// Warning event when fromDeprecated is true.
+func (r *VirtualMCPServer) ExplicitPrimaryUpstreamProvider() (name string, fromDeprecated bool) {
+	if r.Spec.AuthServerConfig != nil && r.Spec.AuthServerConfig.PrimaryUpstreamProvider != "" {
+		return r.Spec.AuthServerConfig.PrimaryUpstreamProvider, false
+	}
+	if r.Spec.IncomingAuth != nil {
+		if dep := r.Spec.IncomingAuth.AuthzConfig.DeprecatedInlinePrimaryUpstreamProvider(); dep != "" {
+			return dep, true
+		}
+	}
+	return "", false
 }
 
 // Validate performs validation for VirtualMCPServer

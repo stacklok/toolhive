@@ -16,6 +16,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/pkg/authz"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -684,4 +686,251 @@ func getKey(namespace, name string) struct {
 		Namespace string
 		Name      string
 	}{Namespace: namespace, Name: name}
+}
+
+// TestBuildInlineCedarAuthzConfig verifies that the JWT-claim mapping fields
+// declared on the parent AuthzConfigRef (GroupClaimName, RoleClaimName,
+// GroupEntityType) are threaded into the cedar.ConfigOptions of the inline
+// runner path. The CRD docstring on AuthzConfigRef promises spec-over-ConfigMap
+// override semantics for these fields; this test locks the inline half of that
+// promise on the MCPServer / MCPRemoteProxy runner code path, where they were
+// previously dropped on the floor.
+func TestBuildInlineCedarAuthzConfig(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		authzRef  *mcpv1beta1.AuthzConfigRef
+		wantOpts  *cedar.ConfigOptions
+		expectErr string
+	}{
+		{
+			name:      "nil ref returns error",
+			authzRef:  nil,
+			expectErr: "inline authz config type specified but inline config is nil",
+		},
+		{
+			name: "nil Inline subtree returns error",
+			authzRef: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+			},
+			expectErr: "inline authz config type specified but inline config is nil",
+		},
+		{
+			name: "claim-mapping fields flow into cedar options",
+			authzRef: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies:     []string{`permit(principal, action, resource);`},
+					EntitiesJSON: `[{"uid":{"type":"ClaimGroup","id":"eng"}}]`,
+				},
+				GroupClaimName:  "groups",
+				RoleClaimName:   "roles",
+				GroupEntityType: "ClaimGroup",
+			},
+			wantOpts: &cedar.ConfigOptions{
+				Policies:        []string{`permit(principal, action, resource);`},
+				EntitiesJSON:    `[{"uid":{"type":"ClaimGroup","id":"eng"}}]`,
+				GroupClaimName:  "groups",
+				RoleClaimName:   "roles",
+				GroupEntityType: "ClaimGroup",
+			},
+		},
+		{
+			name: "unset claim-mapping fields stay empty",
+			authzRef: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies: []string{`permit(principal, action, resource);`},
+				},
+			},
+			wantOpts: &cedar.ConfigOptions{
+				Policies: []string{`permit(principal, action, resource);`},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, err := BuildInlineCedarAuthzConfig(tt.authzRef)
+			if tt.expectErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.expectErr)
+				return
+			}
+			require.NoError(t, err)
+			got, err := ExtractCedarAuthzOptions(cfg)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantOpts.Policies, got.Policies)
+			assert.Equal(t, tt.wantOpts.EntitiesJSON, got.EntitiesJSON)
+			assert.Equal(t, tt.wantOpts.GroupClaimName, got.GroupClaimName)
+			assert.Equal(t, tt.wantOpts.RoleClaimName, got.RoleClaimName)
+			assert.Equal(t, tt.wantOpts.GroupEntityType, got.GroupEntityType)
+		})
+	}
+}
+
+// TestApplyClaimMappingOverrides verifies the spec-over-ConfigMap precedence
+// the CRD docstring on AuthzConfigRef promises for JWT-claim mapping fields.
+// The ConfigMap payload contributes a baseline; non-empty spec-level fields on
+// AuthzConfigRef override field-by-field. Empty spec-level fields preserve the
+// ConfigMap value (no accidental clobbering).
+func TestApplyClaimMappingOverrides(t *testing.T) {
+	t.Parallel()
+
+	baseCfg := func(t *testing.T, opts cedar.ConfigOptions) *authz.Config {
+		t.Helper()
+		cfg, err := authz.NewConfig(cedar.Config{
+			Version: "v1",
+			Type:    cedar.ConfigType,
+			Options: &opts,
+		})
+		require.NoError(t, err)
+		return cfg
+	}
+
+	tests := []struct {
+		name     string
+		cfg      func(t *testing.T) *authz.Config
+		authzRef *mcpv1beta1.AuthzConfigRef
+		wantOpts cedar.ConfigOptions
+	}{
+		{
+			name: "nil ref leaves cedar options untouched",
+			cfg: func(t *testing.T) *authz.Config {
+				t.Helper()
+				return baseCfg(t, cedar.ConfigOptions{
+					Policies:       []string{`permit(principal, action, resource);`},
+					GroupClaimName: "cm-groups",
+				})
+			},
+			authzRef: nil,
+			wantOpts: cedar.ConfigOptions{
+				Policies:       []string{`permit(principal, action, resource);`},
+				GroupClaimName: "cm-groups",
+			},
+		},
+		{
+			name: "no overrides on ref leaves cedar options untouched",
+			cfg: func(t *testing.T) *authz.Config {
+				t.Helper()
+				return baseCfg(t, cedar.ConfigOptions{
+					Policies:        []string{`permit(principal, action, resource);`},
+					GroupClaimName:  "cm-groups",
+					GroupEntityType: "CMGroup",
+				})
+			},
+			authzRef: &mcpv1beta1.AuthzConfigRef{Type: mcpv1beta1.AuthzConfigTypeConfigMap},
+			wantOpts: cedar.ConfigOptions{
+				Policies:        []string{`permit(principal, action, resource);`},
+				GroupClaimName:  "cm-groups",
+				GroupEntityType: "CMGroup",
+			},
+		},
+		{
+			name: "spec GroupClaimName overrides ConfigMap value",
+			cfg: func(t *testing.T) *authz.Config {
+				t.Helper()
+				return baseCfg(t, cedar.ConfigOptions{
+					Policies:       []string{`permit(principal, action, resource);`},
+					GroupClaimName: "cm-groups",
+				})
+			},
+			authzRef: &mcpv1beta1.AuthzConfigRef{
+				Type:           mcpv1beta1.AuthzConfigTypeConfigMap,
+				GroupClaimName: "spec-groups",
+			},
+			wantOpts: cedar.ConfigOptions{
+				Policies:       []string{`permit(principal, action, resource);`},
+				GroupClaimName: "spec-groups",
+			},
+		},
+		{
+			name: "all three spec fields override; unset fields keep ConfigMap value",
+			cfg: func(t *testing.T) *authz.Config {
+				t.Helper()
+				return baseCfg(t, cedar.ConfigOptions{
+					Policies:        []string{`permit(principal, action, resource);`},
+					GroupClaimName:  "cm-groups",
+					RoleClaimName:   "cm-roles",
+					GroupEntityType: "CMGroup",
+				})
+			},
+			authzRef: &mcpv1beta1.AuthzConfigRef{
+				Type:            mcpv1beta1.AuthzConfigTypeConfigMap,
+				GroupClaimName:  "spec-groups",
+				GroupEntityType: "SpecGroup",
+				// RoleClaimName intentionally left unset to verify CM fallback.
+			},
+			wantOpts: cedar.ConfigOptions{
+				Policies:        []string{`permit(principal, action, resource);`},
+				GroupClaimName:  "spec-groups",
+				RoleClaimName:   "cm-roles",
+				GroupEntityType: "SpecGroup",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := tt.cfg(t)
+			got, err := ApplyClaimMappingOverrides(cfg, tt.authzRef)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			opts, err := ExtractCedarAuthzOptions(got)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantOpts.Policies, opts.Policies)
+			assert.Equal(t, tt.wantOpts.GroupClaimName, opts.GroupClaimName)
+			assert.Equal(t, tt.wantOpts.RoleClaimName, opts.RoleClaimName)
+			assert.Equal(t, tt.wantOpts.GroupEntityType, opts.GroupEntityType)
+		})
+	}
+}
+
+// TestApplyClaimMappingOverrides_NilConfig is a defense-in-depth check that the
+// helper does not panic on a nil cfg input. Callers on the runner path should
+// not pass nil, but the override is invoked unconditionally after the loader
+// so the contract is "safe to call".
+func TestApplyClaimMappingOverrides_NilConfig(t *testing.T) {
+	t.Parallel()
+	got, err := ApplyClaimMappingOverrides(nil, &mcpv1beta1.AuthzConfigRef{
+		Type:           mcpv1beta1.AuthzConfigTypeConfigMap,
+		GroupClaimName: "spec-groups",
+	})
+	require.NoError(t, err)
+	assert.Nil(t, got)
+}
+
+// TestExtractCedarAuthzOptions covers the unwrap helper used by both the
+// runner path (via ApplyClaimMappingOverrides) and the vMCP converter. The
+// helper localises the dependency on pkg/authz/authorizers/cedar so callers
+// outside pkg/authz do not have to import it directly.
+func TestExtractCedarAuthzOptions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("happy path returns the embedded cedar options", func(t *testing.T) {
+		t.Parallel()
+		cfg, err := authz.NewConfig(cedar.Config{
+			Version: "v1",
+			Type:    cedar.ConfigType,
+			Options: &cedar.ConfigOptions{
+				Policies:     []string{`permit(principal, action, resource);`},
+				EntitiesJSON: `[]`,
+			},
+		})
+		require.NoError(t, err)
+		opts, err := ExtractCedarAuthzOptions(cfg)
+		require.NoError(t, err)
+		require.NotNil(t, opts)
+		assert.Equal(t, []string{`permit(principal, action, resource);`}, opts.Policies)
+	})
+
+	t.Run("nil config returns error", func(t *testing.T) {
+		t.Parallel()
+		opts, err := ExtractCedarAuthzOptions(nil)
+		require.Error(t, err)
+		assert.Nil(t, opts)
+	})
 }

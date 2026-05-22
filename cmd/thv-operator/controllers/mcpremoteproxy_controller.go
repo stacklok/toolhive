@@ -460,42 +460,34 @@ func (*MCPRemoteProxyReconciler) validateAuthzPolicySyntax(
 }
 
 // validateK8sRefs validates that referenced ConfigMaps and Secrets exist.
+// Authz ConfigMap references are validated through the shared loader so a malformed
+// payload surfaces as AuthzConfigMapInvalid here instead of crashing the runner pod.
 func (r *MCPRemoteProxyReconciler) validateK8sRefs(
 	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
 ) error {
-	// Check authz ConfigMap reference
+	// Check authz ConfigMap reference.
 	if proxy.Spec.AuthzConfig != nil &&
 		proxy.Spec.AuthzConfig.Type == mcpv1beta1.AuthzConfigTypeConfigMap &&
 		proxy.Spec.AuthzConfig.ConfigMap != nil {
-		cm := &corev1.ConfigMap{}
 		cmName := proxy.Spec.AuthzConfig.ConfigMap.Name
-		err := r.Get(ctx, types.NamespacedName{
-			Name: cmName, Namespace: proxy.Namespace,
-		}, cm)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				msg := fmt.Sprintf(
-					"authorization ConfigMap %q not found in namespace %q",
-					cmName, proxy.Namespace,
-				)
-				r.recordValidationEvent(
-					proxy,
-					mcpv1beta1.ConditionReasonAuthzConfigMapNotFound,
-					msg,
-				)
-				setConfigurationInvalidCondition(
-					proxy,
-					mcpv1beta1.ConditionReasonAuthzConfigMapNotFound,
-					msg,
-				)
-				return stderrors.New(msg)
+		cfg, err := ctrlutil.LoadAuthzConfigFromConfigMap(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig)
+		if err == nil {
+			if _, cerr := ctrlutil.ExtractCedarAuthzOptions(cfg); cerr != nil {
+				err = fmt.Errorf("authz ConfigMap %q is not a Cedar config: %w", cmName, cerr)
 			}
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to fetch authorization ConfigMap", "name", cmName, "namespace", proxy.Namespace)
-			genericMsg := fmt.Sprintf("failed to fetch authorization ConfigMap %q", cmName)
-			r.recordValidationEvent(proxy, mcpv1beta1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
-			setConfigurationInvalidCondition(proxy, mcpv1beta1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
-			return stderrors.New(genericMsg)
+		}
+		if err != nil {
+			reason := mcpv1beta1.ConditionReasonAuthzConfigMapInvalid
+			msg := fmt.Sprintf("authorization ConfigMap %q is invalid: %v", cmName, err)
+			if errors.IsNotFound(err) {
+				reason = mcpv1beta1.ConditionReasonAuthzConfigMapNotFound
+				msg = fmt.Sprintf("authorization ConfigMap %q not found in namespace %q", cmName, proxy.Namespace)
+			} else {
+				log.FromContext(ctx).Error(err, "Authz ConfigMap validation failed", "name", cmName, "namespace", proxy.Namespace)
+			}
+			r.recordValidationEvent(proxy, reason, msg)
+			setConfigurationInvalidCondition(proxy, reason, msg)
+			return stderrors.New(msg)
 		}
 	}
 

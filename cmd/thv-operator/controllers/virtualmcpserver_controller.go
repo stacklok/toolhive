@@ -606,11 +606,19 @@ func rejectAuthzAdmission(
 // spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider location.
 // Called from every validation branch that observes the explicit provider so
 // the kubectl-visible hint is consistent regardless of the validation outcome.
+//
+// Only emits when the spec has changed since the last observed generation, so
+// the event fires once per spec change instead of on every reconcile. K8s
+// event aggregation would dedupe within a 10-minute window anyway, but spec
+// changes are the load-bearing signal users care about.
 func (r *VirtualMCPServerReconciler) emitPrimaryUpstreamProviderDeprecatedEvent(
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	fromDeprecated bool,
 ) {
 	if !fromDeprecated || r.Recorder == nil {
+		return
+	}
+	if vmcp.Generation == vmcp.Status.ObservedGeneration {
 		return
 	}
 	r.Recorder.Eventf(vmcp, nil, corev1.EventTypeWarning,

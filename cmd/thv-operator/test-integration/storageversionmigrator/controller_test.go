@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -248,7 +249,16 @@ var _ = Describe("StorageVersionMigrator", func() {
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1beta1"}))
 		})
 
-		It("migrates storedVersions from [v1alpha1,v1beta1] to [v1beta1]", func() {
+		It("succeeds end-to-end with elided updates when all CRs are already at storage version", func() {
+			// Orchestration smoke test: lists CRs, calls per-CR Update
+			// (each elided by the apiserver because etcd already holds
+			// the storage-version representation), trims storedVersions.
+			// The cross-version test below is the load-bearing proof
+			// that the migration mechanism actually re-encodes etcd.
+			// This spec adds value by: (a) confirming Reconcile drives
+			// the full restoreCRs + patchStoredVersions sequence against
+			// a real apiserver, and (b) verifying the list loop ran at
+			// least once via a list-call counter.
 			suf := uniqueSuffix()
 			spec := crdSpec{
 				Name:              "happies" + suf + "." + toolhiveGroup,
@@ -267,14 +277,6 @@ var _ = Describe("StorageVersionMigrator", func() {
 			installCRD(spec)
 			DeferCleanup(func() { deleteCRD(spec.Name) })
 
-			// The CRs created here are already stored at v1beta1 (the
-			// current storage version), so the apiserver will elide each
-			// per-CR Update — its freshly-encoded body matches etcd
-			// byte-for-byte. That's correct apiserver behaviour, not a
-			// controller bug, so this test does NOT assert per-CR
-			// resourceVersion bumps. The cross-version test below proves
-			// the migration mechanism actually re-encodes objects that were
-			// stored at an older apiVersion.
 			createCRs(
 				schema.GroupVersionKind{Group: spec.Group, Version: "v1beta1", Kind: spec.Kind},
 				"obj-"+suf, 3,
@@ -282,9 +284,19 @@ var _ = Describe("StorageVersionMigrator", func() {
 
 			setStoredVersions(spec.Name, []string{"v1alpha1", "v1beta1"})
 
-			_, err := reconcile(newReconciler(), spec.Name)
+			counting := &countingAPIReader{Reader: k8sClient, kind: spec.Kind}
+			r := &controllers.StorageVersionMigratorReconciler{
+				Client:    k8sClient,
+				APIReader: counting,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  &noopRecorder{},
+			}
+			_, err := reconcile(r, spec.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1beta1"}))
+			Expect(counting.listCalls).To(Equal(1),
+				"list loop should have run exactly once for 3 CRs under default page size; got %d",
+				counting.listCalls)
 		})
 
 		// Load-bearing proof of the migration mechanism: a CR stored at
@@ -393,8 +405,16 @@ var _ = Describe("StorageVersionMigrator", func() {
 			Expect(k8sClient.Get(ctx, client.ObjectKeyFromObject(cr), preLive)).To(Succeed())
 			preRV := preLive.GetResourceVersion()
 
-			// Step 6: reconcile.
-			_, err := reconcile(newReconciler(), crdName)
+			// Step 6: reconcile with an event-capturing recorder so we can
+			// verify the public-contract MigrationSucceeded event fires.
+			fakeRecorder := events.NewFakeRecorder(8)
+			r := &controllers.StorageVersionMigratorReconciler{
+				Client:    k8sClient,
+				APIReader: k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  fakeRecorder,
+			}
+			_, err := reconcile(r, crdName)
 			Expect(err).NotTo(HaveOccurred())
 
 			// Step 7: storedVersions trimmed.
@@ -408,6 +428,23 @@ var _ = Describe("StorageVersionMigrator", func() {
 			Expect(postLive.GetResourceVersion()).NotTo(Equal(preRV),
 				"CR %s/%s resourceVersion did not bump (pre=%s post=%s) — cross-version re-store did not write to etcd",
 				cr.GetNamespace(), cr.GetName(), preRV, postLive.GetResourceVersion())
+
+			// Step 9: content fidelity — the apiserver's encode-decode
+			// round-trip across the version flip must preserve spec data.
+			// createCRs writes spec.marker = "placeholder"; that value
+			// must still be readable after the cross-version re-encode.
+			marker, found, err := unstructured.NestedString(postLive.Object, "spec", "marker")
+			Expect(err).NotTo(HaveOccurred())
+			Expect(found).To(BeTrue(), "spec.marker must survive the cross-version re-encode")
+			Expect(marker).To(Equal("placeholder"),
+				"spec.marker content must be byte-preserved through the v1alpha1→v1beta1 re-encode")
+
+			// Step 10: public-contract event — operators consuming the CRD's
+			// Events stream depend on MigrationSucceeded firing on the
+			// happy path.
+			Eventually(fakeRecorder.Events, time.Second).Should(
+				Receive(ContainSubstring(controllers.EventReasonMigrationSucceeded)),
+				"successful migration must emit a "+controllers.EventReasonMigrationSucceeded+" event")
 		})
 
 		It("skips CRDs in foreign API groups", func() {
@@ -507,9 +544,11 @@ var _ = Describe("StorageVersionMigrator", func() {
 			Expect(err).NotTo(HaveOccurred())
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1beta1"}))
 
-			// 7 CRs with PageSize=3 ⇒ 3 list calls (pages of 3+3+1).
-			Expect(counting.listCalls).To(BeNumerically(">=", 3),
-				"pagination should have triggered at least 3 list calls for 7 CRs at pageSize=3; got %d",
+			// 7 CRs with PageSize=3 ⇒ exactly 3 list calls (pages of 3+3+1).
+			// Equal (not >=) pins the loop count so a runaway over-fetch
+			// would fail the test.
+			Expect(counting.listCalls).To(Equal(3),
+				"pagination should have triggered exactly 3 list calls for 7 CRs at pageSize=3; got %d",
 				counting.listCalls)
 		})
 
@@ -548,11 +587,12 @@ var _ = Describe("StorageVersionMigrator", func() {
 					return nil
 				},
 			}
+			fakeRecorder := events.NewFakeRecorder(8)
 			r := &controllers.StorageVersionMigratorReconciler{
 				Client:    failing,
 				APIReader: k8sClient,
 				Scheme:    k8sClient.Scheme(),
-				Recorder:  &noopRecorder{},
+				Recorder:  fakeRecorder,
 			}
 			_, err := reconcile(r, spec.Name)
 			Expect(err).To(HaveOccurred(), "reconcile should surface the injected failure")
@@ -562,6 +602,12 @@ var _ = Describe("StorageVersionMigrator", func() {
 			// CR re-store failed. Otherwise the next release's v1alpha1
 			// removal would orphan the un-migrated object in etcd.
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1alpha1", "v1beta1"}))
+
+			// Public-contract event: a real failure (not a self-healing
+			// conflict) must emit MigrationFailed so operators can alert.
+			Eventually(fakeRecorder.Events, time.Second).Should(
+				Receive(ContainSubstring(controllers.EventReasonMigrationFailed)),
+				"failed migration must emit a "+controllers.EventReasonMigrationFailed+" event")
 		})
 
 		It("leaves storedVersions untouched when a CR re-store hits a Conflict, then trims on retry", func() {
@@ -626,6 +672,51 @@ var _ = Describe("StorageVersionMigrator", func() {
 			_, err = reconcile(r, spec.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1beta1"}))
+		})
+
+		It("does not trim storedVersions when reconcile context is cancelled mid-flight", func() {
+			// Failure mode this guards against: a future refactor that
+			// swallows ctx.Err() during the per-CR loop and then trims
+			// storedVersions anyway would orphan un-migrated objects on
+			// operator shutdown. The contract is: any error during
+			// restoreCRs — including context cancellation — leaves
+			// storedVersions intact for the next reconcile to retry.
+			suf := uniqueSuffix()
+			spec := crdSpec{
+				Name:              "cancels" + suf + "." + toolhiveGroup,
+				Group:             toolhiveGroup,
+				Kind:              "Cancel" + suf,
+				ListKind:          "Cancel" + suf + "List",
+				Plural:            "cancels" + suf,
+				Singular:          "cancel" + suf,
+				Labelled:          true,
+				HasStatusOnStored: true,
+				Versions: []versionSpec{
+					{Name: "v1alpha1", Served: true, Storage: false},
+					{Name: "v1beta1", Served: true, Storage: true},
+				},
+			}
+			installCRD(spec)
+			DeferCleanup(func() { deleteCRD(spec.Name) })
+
+			createCRs(
+				schema.GroupVersionKind{Group: spec.Group, Version: "v1beta1", Kind: spec.Kind},
+				"obj-"+suf, 3,
+			)
+			setStoredVersions(spec.Name, []string{"v1alpha1", "v1beta1"})
+
+			// Cancel the context before invoking Reconcile. The list
+			// call will fail with context.Canceled and restoreCRs will
+			// bubble it up; patchStoredVersions must NOT run.
+			cancelCtx, cancel := context.WithCancel(ctx)
+			cancel()
+			_, err := newReconciler().Reconcile(cancelCtx, ctrl.Request{
+				NamespacedName: types.NamespacedName{Name: spec.Name},
+			})
+			Expect(err).To(HaveOccurred(),
+				"reconcile must return an error when context is cancelled before list completes")
+			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1alpha1", "v1beta1"}),
+				"storedVersions must not be trimmed on a cancelled reconcile — a future operator restart would otherwise orphan un-migrated CRs")
 		})
 	})
 })

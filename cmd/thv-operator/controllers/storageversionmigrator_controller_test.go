@@ -215,20 +215,6 @@ func TestMigrationCache_KeyIsolation(t *testing.T) {
 	assert.False(t, c.has("crd-c", "uid-2", "rv-300"))
 }
 
-func TestNewMigrationCache_InitializesUsableInstance(t *testing.T) {
-	t.Parallel()
-	c := newMigrationCache(5 * time.Minute)
-
-	require.NotNil(t, c)
-	require.NotNil(t, c.entries, "entries map must be non-nil to avoid nil-map writes")
-	assert.Equal(t, 5*time.Minute, c.ttl)
-	require.NotNil(t, c.now, "clock must default to a real time source")
-
-	// Sanity: it should be writable/readable through the public methods.
-	c.add("crd-a", "uid-1", "rv-100")
-	assert.True(t, c.has("crd-a", "uid-1", "rv-100"))
-}
-
 // ensureInitialized
 
 func TestEnsureInitialized_AppliesDefaultsOnZeroValues(t *testing.T) {

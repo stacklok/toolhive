@@ -90,9 +90,11 @@ func TestListenURL(t *testing.T) {
 }
 
 // TestServerBuilderExtensionPoints exercises WithMiddleware and WithRoute so
-// the deadcode tool keeps them alive. Both methods are the only public API
-// available to ApplyServerExtensions hooks (e.g. the enterprise overlay),
-// whose callers live behind build tags not exercised by upstream CI.
+// they remain reachable to deadcode analysis. Both methods form the public
+// surface for ApplyServerExtensions consumers, whose callers may live in
+// downstream repositories that this module's analyzer cannot see. Without
+// this test, a future deadcode pass would flag them as unreachable (as
+// happened in #5355) even though external callers depend on them.
 func TestServerBuilderExtensionPoints(t *testing.T) {
 	t.Parallel()
 

@@ -7,6 +7,10 @@
   ],
   "labels": ["dependencies"],
   "schedule": ["every weekend"],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"]
+  },
   "prConcurrentLimit": 5,
   "prHourlyLimit": 2,
   "packageRules": [

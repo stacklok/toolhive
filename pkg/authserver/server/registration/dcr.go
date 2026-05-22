@@ -277,15 +277,15 @@ func ValidateRedirectURI(uri string) *DCRError {
 	return nil
 }
 
-// ValidateScopes validates that all requested scopes are in the allowed set.
-// Returns the validated scopes (or defaults if empty) and any error.
-// This enforces server-side scope restrictions per RFC 7591 Section 2.
+// ValidateScopes validates a slice of already-parsed scope tokens against
+// the server's allowed set per RFC 7591 §2.
 //
-// Callers pass already-parsed scope slices: oauthproto.ScopeList handles the
-// RFC 7591 dual-format (string or array) decode on the wire, so by the time
-// scopes reach this function they are a plain []string. Duplicates in the
-// input are preserved by ScopeList — this function deduplicates per RFC 6749
-// Section 3.3 semantics (scope is a set of case-sensitive strings).
+//   - Empty/nil input falls back to DefaultScopes (which must itself be a
+//     subset of allowedScopes; otherwise the call returns an error).
+//   - Each requested scope must appear in allowedScopes; otherwise returns
+//     invalid_client_metadata.
+//   - Duplicates in the input are tolerated and deduplicated per RFC 6749
+//     §3.3 (scope is a set of case-sensitive strings).
 func ValidateScopes(requestedScopes, allowedScopes []string) ([]string, *DCRError) {
 	// Build allowed scope set for O(1) lookup
 	allowed := make(map[string]bool, len(allowedScopes))

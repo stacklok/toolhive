@@ -142,6 +142,35 @@ func (b *ServerBuilder) WithOtelEnabled(enabled bool) *ServerBuilder {
 	return b
 }
 
+// WithMiddleware appends HTTP middleware that runs after the default middleware
+// stack (request-ID, body-size limit, headers, update-check, auth) and before
+// route handlers. Part of the ApplyServerExtensions extension point — used by
+// downstream consumers to inject custom authentication or request-scoping
+// middleware into the API server.
+//
+// Public extension API. Do not remove based on deadcode analysis alone:
+// callers may live in repositories that are not visible to this module's
+// analyzer. The test in server_test.go intentionally exercises this method
+// to keep it reachable.
+func (b *ServerBuilder) WithMiddleware(mw ...func(http.Handler) http.Handler) *ServerBuilder {
+	b.middlewares = append(b.middlewares, mw...)
+	return b
+}
+
+// WithRoute mounts a sub-router at the given prefix. The caller is responsible
+// for any per-route timeout middleware. Part of the ApplyServerExtensions
+// extension point — used by downstream consumers to add API surface alongside
+// the built-in routes.
+//
+// Public extension API. Do not remove based on deadcode analysis alone:
+// callers may live in repositories that are not visible to this module's
+// analyzer. The test in server_test.go intentionally exercises this method
+// to keep it reachable.
+func (b *ServerBuilder) WithRoute(prefix string, handler http.Handler) *ServerBuilder {
+	b.customRoutes[prefix] = handler
+	return b
+}
+
 // Build creates and configures the HTTP router
 func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r := chi.NewRouter()

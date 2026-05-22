@@ -868,6 +868,7 @@ func TestConvertBackendAuthConfigToVMCP_MirrorsInvalidExternalAuthConfig(t *test
 		ObjectMeta: metav1.ObjectMeta{Name: "obo-source", Namespace: "default"},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
 		},
 		Status: mcpv1beta1.MCPExternalAuthConfigStatus{
 			Conditions: []metav1.Condition{{
@@ -1845,6 +1846,7 @@ func TestGetExternalAuthConfigSecretEnvVar_OBO(t *testing.T) {
 		},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
 		},
 	}
 

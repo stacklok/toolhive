@@ -51,12 +51,13 @@ func (c *fakeClock) Advance(d time.Duration) {
 }
 
 // newCache builds a migrationCache wired to a fake clock so tests control time.
-func newCache(t *testing.T, ttl time.Duration) (*migrationCache, *fakeClock) {
+// All current callers use a 1-hour TTL.
+func newCache(t *testing.T) (*migrationCache, *fakeClock) {
 	t.Helper()
 	clock := newFakeClock(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 	c := &migrationCache{
 		entries: make(map[string]cacheEntry),
-		ttl:     ttl,
+		ttl:     time.Hour,
 		now:     clock.Now,
 	}
 	return c, clock
@@ -64,20 +65,20 @@ func newCache(t *testing.T, ttl time.Duration) (*migrationCache, *fakeClock) {
 
 func TestMigrationCache_HasReturnsFalseOnEmpty(t *testing.T) {
 	t.Parallel()
-	c, _ := newCache(t, time.Hour)
+	c, _ := newCache(t)
 	assert.False(t, c.has("crd-a", "uid-1", "rv-100"))
 }
 
 func TestMigrationCache_AddThenHasReturnsTrue(t *testing.T) {
 	t.Parallel()
-	c, _ := newCache(t, time.Hour)
+	c, _ := newCache(t)
 	c.add("crd-a", "uid-1", "rv-100")
 	assert.True(t, c.has("crd-a", "uid-1", "rv-100"))
 }
 
 func TestMigrationCache_HasReturnsFalseOnRVMismatch(t *testing.T) {
 	t.Parallel()
-	c, _ := newCache(t, time.Hour)
+	c, _ := newCache(t)
 	c.add("crd-a", "uid-1", "rv-100")
 
 	// Same CRD and UID but a different RV — caller's CR was updated by some
@@ -90,7 +91,7 @@ func TestMigrationCache_HasReturnsFalseOnRVMismatch(t *testing.T) {
 
 func TestMigrationCache_TTLExpiryLazilyEvictsInHas(t *testing.T) {
 	t.Parallel()
-	c, clock := newCache(t, time.Hour)
+	c, clock := newCache(t)
 	c.add("crd-a", "uid-1", "rv-100")
 	require.True(t, c.has("crd-a", "uid-1", "rv-100"))
 
@@ -104,7 +105,7 @@ func TestMigrationCache_TTLExpiryLazilyEvictsInHas(t *testing.T) {
 
 func TestMigrationCache_AddOverwritesExistingEntry(t *testing.T) {
 	t.Parallel()
-	c, clock := newCache(t, time.Hour)
+	c, clock := newCache(t)
 	c.add("crd-a", "uid-1", "rv-100")
 
 	// Advance halfway through the TTL, then re-add with a new RV.
@@ -125,7 +126,7 @@ func TestMigrationCache_AddOverwritesExistingEntry(t *testing.T) {
 
 func TestMigrationCache_GCEvictsOnlyExpiredEntries(t *testing.T) {
 	t.Parallel()
-	c, clock := newCache(t, time.Hour)
+	c, clock := newCache(t)
 
 	c.add("crd-a", "uid-1", "rv-100")
 	clock.Advance(30 * time.Minute)
@@ -150,7 +151,7 @@ func TestMigrationCache_GCEvictsOnlyExpiredEntries(t *testing.T) {
 // of the test is the race detector.
 func TestMigrationCache_ConcurrentAccess(t *testing.T) {
 	t.Parallel()
-	c, _ := newCache(t, time.Hour)
+	c, _ := newCache(t)
 
 	const goroutines = 16
 	const iterations = 200
@@ -196,7 +197,7 @@ func TestMigrationCache_ConcurrentAccess(t *testing.T) {
 // against it anyway.
 func TestMigrationCache_KeyIsolation(t *testing.T) {
 	t.Parallel()
-	c, _ := newCache(t, time.Hour)
+	c, _ := newCache(t)
 
 	// Cross-CRD, same UID.
 	c.add("crd-a", "uid-shared", "rv-100")
@@ -528,12 +529,13 @@ func makeTestCRD(storedVersions []string) *apiextensionsv1.CustomResourceDefinit
 	}
 }
 
-// makeTestCR returns an unstructured CR with the synthetic GVK. UID is
-// derived from name so tests can assert cache state by name.
-func makeTestCR(namespace, name string) *unstructured.Unstructured {
+// makeTestCR returns an unstructured CR with the synthetic GVK in the
+// "default" namespace. UID is derived from name so tests can assert cache
+// state by name.
+func makeTestCR(name string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(testCRGVK())
-	u.SetNamespace(namespace)
+	u.SetNamespace("default")
 	u.SetName(name)
 	u.SetUID(apitypes.UID(name + "-uid"))
 	u.SetResourceVersion("1")
@@ -572,7 +574,7 @@ func buildFakeReconciler(
 
 func TestRestoreOne_HappyPath(t *testing.T) {
 	t.Parallel()
-	cr := makeTestCR("default", "obj-1")
+	cr := makeTestCR("obj-1")
 	r := buildFakeReconciler(t, []client.Object{cr}, nil)
 
 	restored, err := r.restoreOne(context.Background(), testCRGVK(), cr)
@@ -605,6 +607,7 @@ func TestRestoreOne_PropagatesErrors(t *testing.T) {
 			name:      "Get NotFound propagates",
 			crPresent: false,
 			check: func(t *testing.T, err error) {
+				t.Helper()
 				require.Error(t, err)
 				assert.True(t, apierrors.IsNotFound(err),
 					"Get NotFound must propagate verbatim so restoreCRs can classify it")
@@ -615,6 +618,7 @@ func TestRestoreOne_PropagatesErrors(t *testing.T) {
 			crPresent: true,
 			updateErr: apierrors.NewConflict(gr, "obj-1", errors.New("injected conflict")),
 			check: func(t *testing.T, err error) {
+				t.Helper()
 				require.Error(t, err)
 				assert.True(t, apierrors.IsConflict(err),
 					"Update Conflict must propagate verbatim so restoreCRs can classify it")
@@ -625,6 +629,7 @@ func TestRestoreOne_PropagatesErrors(t *testing.T) {
 			crPresent: true,
 			updateErr: errors.New("injected generic failure"),
 			check: func(t *testing.T, err error) {
+				t.Helper()
 				require.Error(t, err)
 				assert.False(t, apierrors.IsConflict(err))
 				assert.False(t, apierrors.IsNotFound(err))
@@ -637,7 +642,7 @@ func TestRestoreOne_PropagatesErrors(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			target := makeTestCR("default", "obj-1")
+			target := makeTestCR("obj-1")
 			var initial []client.Object
 			if tc.crPresent {
 				initial = []client.Object{target}
@@ -664,9 +669,9 @@ func TestRestoreCRs_HappyPathAllUpdatedAndCachePopulated(t *testing.T) {
 	t.Parallel()
 	crd := makeTestCRD([]string{"v1alpha1", testCRVersion})
 	crs := []client.Object{
-		makeTestCR("default", "obj-a"),
-		makeTestCR("default", "obj-b"),
-		makeTestCR("default", "obj-c"),
+		makeTestCR("obj-a"),
+		makeTestCR("obj-b"),
+		makeTestCR("obj-c"),
 	}
 	objs := append([]client.Object{crd}, crs...)
 	r := buildFakeReconciler(t, objs, nil)
@@ -720,6 +725,7 @@ func TestRestoreCRs_ErrorClassification(t *testing.T) {
 			crNames: []string{"obj-a", "obj-b"},
 			getErrs: map[string]error{"obj-a": apierrors.NewNotFound(gr, "obj-a")},
 			check: func(t *testing.T, err error, r *StorageVersionMigratorReconciler) {
+				t.Helper()
 				require.NoError(t, err, "IsNotFound on a per-CR Get must not bubble up")
 				// Cache must contain only obj-b — NotFound must skip the cache add.
 				assert.Len(t, r.cache.entries, 1, "only the surviving CR may be cached")
@@ -730,6 +736,7 @@ func TestRestoreCRs_ErrorClassification(t *testing.T) {
 			crNames:    []string{"obj-a", "obj-b"},
 			updateErrs: map[string]error{"obj-a": apierrors.NewConflict(gr, "obj-a", errors.New("injected"))},
 			check: func(t *testing.T, err error, _ *StorageVersionMigratorReconciler) {
+				t.Helper()
 				require.Error(t, err, "a swallowed Conflict must surface as a function-level error")
 				assert.ErrorIs(t, err, errMigrationRetriedDueToConflicts,
 					"the sentinel must be returned so the caller knows storedVersions is unsafe to trim")
@@ -740,6 +747,7 @@ func TestRestoreCRs_ErrorClassification(t *testing.T) {
 			crNames:    []string{"obj-a"},
 			updateErrs: map[string]error{"obj-a": errors.New("injected generic update failure")},
 			check: func(t *testing.T, err error, _ *StorageVersionMigratorReconciler) {
+				t.Helper()
 				require.Error(t, err)
 				assert.NotErrorIs(t, err, errMigrationRetriedDueToConflicts,
 					"a generic error must NOT be misclassified as the conflict sentinel")
@@ -755,6 +763,7 @@ func TestRestoreCRs_ErrorClassification(t *testing.T) {
 				"obj-failure":  errors.New("injected generic failure"),
 			},
 			check: func(t *testing.T, err error, _ *StorageVersionMigratorReconciler) {
+				t.Helper()
 				require.Error(t, err)
 				// When there is at least one non-conflict error the aggregate
 				// wins — the sentinel is only meaningful in the conflicts-only
@@ -773,7 +782,7 @@ func TestRestoreCRs_ErrorClassification(t *testing.T) {
 			crd := makeTestCRD([]string{"v1alpha1", testCRVersion})
 			objs := []client.Object{crd}
 			for _, n := range tc.crNames {
-				objs = append(objs, makeTestCR("default", n))
+				objs = append(objs, makeTestCR(n))
 			}
 			funcs := &interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
@@ -817,7 +826,7 @@ func TestRestoreCRs_FirstListFailsReturnsImmediately(t *testing.T) {
 func TestRestoreCRs_CacheSkipsAlreadyMigratedCRs(t *testing.T) {
 	t.Parallel()
 	crd := makeTestCRD([]string{"v1alpha1", testCRVersion})
-	cr := makeTestCR("default", "obj-a")
+	cr := makeTestCR("obj-a")
 	objs := []client.Object{crd, cr}
 
 	// Pre-populate the cache so restoreCRs finds the CR's (UID, RV) on
@@ -1004,7 +1013,7 @@ func (p *paginatingFakeReader) List(_ context.Context, list client.ObjectList, o
 
 	items := make([]unstructured.Unstructured, 0, len(pg.names))
 	for _, name := range pg.names {
-		u := makeTestCR("default", name)
+		u := makeTestCR(name)
 		items = append(items, *u)
 	}
 	ul.Items = items

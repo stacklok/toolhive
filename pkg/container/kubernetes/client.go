@@ -543,14 +543,10 @@ func (c *Client) shouldSkipStatefulSetApply(
 		return false, nil
 	}
 	if theirsGen > ourGen {
-		// TEMPORARY: INFO level for #5360 diagnosis. Demote to Debug before merge.
-		slog.Info("skipping StatefulSet apply; newer MCPServer generation already applied",
+		slog.Debug("skipping StatefulSet apply; newer MCPServer generation already applied",
 			"sts", name, "ours", ourGen, "theirs", theirsGen)
 		return true, nil
 	}
-	// TEMPORARY: INFO level for #5360 diagnosis. Demote to Debug before merge.
-	slog.Info("StatefulSet apply proceeding",
-		"sts", name, "ours", ourGen, "theirs", theirsGen)
 	return false, nil
 }
 

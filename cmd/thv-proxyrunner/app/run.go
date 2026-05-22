@@ -191,8 +191,7 @@ func applyMCPServerGenerationOverride(runConfig *runner.RunConfig) {
 			"env", kubernetes.EnvVarMCPServerGeneration, "value", raw)
 		return
 	}
-	// TEMPORARY: INFO level for #5360 diagnosis. Demote to Debug before merge.
-	slog.Info("applied MCPServer generation override from env var",
+	slog.Debug("applied MCPServer generation override from env var",
 		"env", kubernetes.EnvVarMCPServerGeneration,
 		"file_value", runConfig.MCPServerGeneration,
 		"env_value", gen)

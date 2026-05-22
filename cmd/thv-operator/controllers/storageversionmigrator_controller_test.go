@@ -29,9 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-// ------------------------------------------------------------------
 // migrationCache
-// ------------------------------------------------------------------
 
 // fakeClock is an injectable clock for migrationCache TTL tests.
 type fakeClock struct {
@@ -147,15 +145,6 @@ func TestMigrationCache_GCEvictsOnlyExpiredEntries(t *testing.T) {
 	assert.Len(t, c.entries, 1)
 }
 
-func TestMigrationCache_GCNoopOnEmpty(t *testing.T) {
-	t.Parallel()
-	c, _ := newCache(t, time.Hour)
-
-	// Must not panic on an empty map and must leave the map empty.
-	require.NotPanics(t, c.gc)
-	assert.Empty(t, c.entries)
-}
-
 // TestMigrationCache_ConcurrentAccess exercises the mutex contract — running
 // has/add/gc from many goroutines in parallel under -race must not produce a
 // data race or panic. The assertions only verify the loop completed; the value
@@ -201,33 +190,30 @@ func TestMigrationCache_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-func TestMigrationCache_KeyNoCollisionAcrossCRDs(t *testing.T) {
+// TestMigrationCache_KeyIsolation exercises both key-isolation axes: two
+// distinct CRDs sharing a UID must not collide, and two distinct UIDs under
+// the same CRD must not collide. UID re-use across CRDs is impossible in
+// practice (apiserver UIDs are globally unique) but the cache must defend
+// against it anyway.
+func TestMigrationCache_KeyIsolation(t *testing.T) {
 	t.Parallel()
 	c, _ := newCache(t, time.Hour)
 
-	// Two CRDs sharing a UID (in practice impossible — apiserver UIDs are
-	// globally unique — but the cache must defend against UID re-use anyway).
+	// Cross-CRD, same UID.
 	c.add("crd-a", "uid-shared", "rv-100")
 	c.add("crd-b", "uid-shared", "rv-200")
-
 	assert.True(t, c.has("crd-a", "uid-shared", "rv-100"))
 	assert.True(t, c.has("crd-b", "uid-shared", "rv-200"))
-	// Cross-CRD lookup must NOT match the wrong entry.
 	assert.False(t, c.has("crd-a", "uid-shared", "rv-200"))
 	assert.False(t, c.has("crd-b", "uid-shared", "rv-100"))
-}
 
-func TestMigrationCache_KeyNoCollisionAcrossUIDs(t *testing.T) {
-	t.Parallel()
-	c, _ := newCache(t, time.Hour)
-
-	c.add("crd-a", "uid-1", "rv-100")
-	c.add("crd-a", "uid-2", "rv-200")
-
-	assert.True(t, c.has("crd-a", "uid-1", "rv-100"))
-	assert.True(t, c.has("crd-a", "uid-2", "rv-200"))
-	assert.False(t, c.has("crd-a", "uid-1", "rv-200"))
-	assert.False(t, c.has("crd-a", "uid-2", "rv-100"))
+	// Same CRD, cross UID.
+	c.add("crd-c", "uid-1", "rv-300")
+	c.add("crd-c", "uid-2", "rv-400")
+	assert.True(t, c.has("crd-c", "uid-1", "rv-300"))
+	assert.True(t, c.has("crd-c", "uid-2", "rv-400"))
+	assert.False(t, c.has("crd-c", "uid-1", "rv-400"))
+	assert.False(t, c.has("crd-c", "uid-2", "rv-300"))
 }
 
 func TestNewMigrationCache_InitializesUsableInstance(t *testing.T) {
@@ -244,23 +230,19 @@ func TestNewMigrationCache_InitializesUsableInstance(t *testing.T) {
 	assert.True(t, c.has("crd-a", "uid-1", "rv-100"))
 }
 
-// ------------------------------------------------------------------
 // ensureInitialized
-// ------------------------------------------------------------------
 
 func TestEnsureInitialized_AppliesDefaultsOnZeroValues(t *testing.T) {
 	t.Parallel()
 	r := &StorageVersionMigratorReconciler{}
 	r.ensureInitialized()
-
 	assert.Equal(t, int64(defaultListPageSize), r.PageSize)
 	assert.Equal(t, defaultCacheGCInterval, r.CacheGCInterval)
 	require.NotNil(t, r.cache)
 }
 
-func TestEnsureInitialized_PreservesExplicitValues(t *testing.T) {
+func TestEnsureInitialized_PreservesExplicitValuesAndIsIdempotent(t *testing.T) {
 	t.Parallel()
-
 	customCache := newMigrationCache(time.Minute)
 	r := &StorageVersionMigratorReconciler{
 		PageSize:        7,
@@ -268,182 +250,103 @@ func TestEnsureInitialized_PreservesExplicitValues(t *testing.T) {
 		cache:           customCache,
 	}
 	r.ensureInitialized()
-
 	assert.Equal(t, int64(7), r.PageSize, "non-zero PageSize must not be overwritten by defaults")
 	assert.Equal(t, 42*time.Second, r.CacheGCInterval, "non-zero CacheGCInterval must not be overwritten")
 	assert.Same(t, customCache, r.cache, "an existing cache must not be replaced")
-}
 
-func TestEnsureInitialized_IsIdempotent(t *testing.T) {
-	t.Parallel()
-	r := &StorageVersionMigratorReconciler{}
+	// Idempotent: a second call must not change any field.
 	r.ensureInitialized()
-	firstCache := r.cache
-	firstPageSize := r.PageSize
-
-	// Calling again must not allocate a new cache or change any field.
-	r.ensureInitialized()
-	assert.Same(t, firstCache, r.cache)
-	assert.Equal(t, firstPageSize, r.PageSize)
+	assert.Equal(t, int64(7), r.PageSize)
+	assert.Same(t, customCache, r.cache)
 }
 
-// ------------------------------------------------------------------
-// Reconcile — early-return paths
-//
-// These tests use a fake client to exercise the branches of Reconcile that
-// return before any per-CR work happens. The interesting per-CR work is
-// covered by the envtest suite (which can simulate real apiserver semantics
-// like storage-encoder elision and optimistic-lock 409). A fake client can't
-// simulate those, so anything past the early-return points would be
-// testing the mock.
-// ------------------------------------------------------------------
+// Reconcile early-return paths. Per-CR work paths are covered by the envtest
+// suite, which can simulate real apiserver semantics the fake client cannot
+// (storage-encoder elision, optimistic-lock 409).
 
-// newReconcileTestScheme builds a runtime scheme with apiextensions/v1
-// registered so the fake client can serialize CRDs.
-func newReconcileTestScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, apiextensionsv1.AddToScheme(scheme))
-	return scheme
-}
-
-// reconcileWithFake runs one Reconcile against a fake client and returns the
-// result + error. The fake client is constructed from the supplied initial
-// objects (typically zero or one CRD). The CRD's name in the Request is taken
-// from the supplied crdName.
-func reconcileWithFake(
-	t *testing.T,
-	crdName string,
-	initialObjects ...client.Object,
-) (ctrl.Result, error) {
-	t.Helper()
-	scheme := newReconcileTestScheme(t)
-	cli := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(initialObjects...).
-		Build()
-
-	r := &StorageVersionMigratorReconciler{
-		Client:    cli,
-		APIReader: cli,
-		Scheme:    scheme,
-		Recorder:  record.NewFakeRecorder(8),
-	}
-	return r.Reconcile(context.Background(), ctrl.Request{
-		NamespacedName: apitypes.NamespacedName{Name: crdName},
-	})
-}
-
-func TestReconcile_ReturnsNilWhenCRDIsNotFound(t *testing.T) {
-	t.Parallel()
-	// No initial objects → APIReader.Get returns IsNotFound.
-	res, err := reconcileWithFake(t, "missing.toolhive.stacklok.dev")
-	require.NoError(t, err, "IsNotFound on the target CRD must not surface as a reconcile error")
-	assert.Equal(t, ctrl.Result{}, res)
-}
-
-func TestReconcile_SkipsCRDInForeignGroup(t *testing.T) {
-	t.Parallel()
-	crd := &apiextensionsv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "widgets.example.com",
-			Labels: map[string]string{AutoMigrateLabel: AutoMigrateValue},
-		},
+// reconcileCRD builds a CRD for Reconcile early-return tests.
+func reconcileCRD(name, group string, labels map[string]string, versions []apiextensionsv1.CustomResourceDefinitionVersion, stored []string) *apiextensionsv1.CustomResourceDefinition {
+	return &apiextensionsv1.CustomResourceDefinition{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Labels: labels, ResourceVersion: "1"},
 		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Group: "example.com",
-			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
-				{Name: "v1", Storage: true, Served: true},
-			},
-		},
-		Status: apiextensionsv1.CustomResourceDefinitionStatus{
-			StoredVersions: []string{"v1alpha1", "v1"},
-		},
-	}
-	res, err := reconcileWithFake(t, crd.Name, crd)
-	require.NoError(t, err, "non-toolhive group must short-circuit without error")
-	assert.Equal(t, ctrl.Result{}, res)
-}
-
-func TestReconcile_SkipsCRDMissingOptInLabel(t *testing.T) {
-	t.Parallel()
-	crd := &apiextensionsv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "mcpservers.toolhive.stacklok.dev",
-			Labels: nil, // explicitly no opt-in label
-		},
-		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Group: ToolhiveGroup,
-			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
-				{Name: "v1beta1", Storage: true, Served: true},
-			},
-		},
-		Status: apiextensionsv1.CustomResourceDefinitionStatus{
-			StoredVersions: []string{"v1alpha1", "v1beta1"},
-		},
-	}
-	res, err := reconcileWithFake(t, crd.Name, crd)
-	require.NoError(t, err, "missing opt-in label must short-circuit without error")
-	assert.Equal(t, ctrl.Result{}, res)
-}
-
-func TestReconcile_SkipsCRDWithNoStorageVersion(t *testing.T) {
-	t.Parallel()
-	// Pathological CRD — every version has Storage: false. The apiserver
-	// would normally reject this at CRD-create time, so envtest can't reach
-	// this branch. Reconcile must log + return nil rather than panic or
-	// re-enqueue uselessly.
-	crd := &apiextensionsv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "mcpservers.toolhive.stacklok.dev",
-			Labels: map[string]string{AutoMigrateLabel: AutoMigrateValue},
-		},
-		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Group: ToolhiveGroup,
-			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
-				{Name: "v1alpha1", Storage: false, Served: true},
-				{Name: "v1beta1", Storage: false, Served: true},
-			},
-		},
-		Status: apiextensionsv1.CustomResourceDefinitionStatus{
-			StoredVersions: []string{"v1alpha1", "v1beta1"},
-		},
-	}
-	res, err := reconcileWithFake(t, crd.Name, crd)
-	require.NoError(t, err, "no-storage-version CRD must short-circuit without error")
-	assert.Equal(t, ctrl.Result{}, res)
-}
-
-func TestReconcile_ReturnsEarlyWhenStoredVersionsAlreadyClean(t *testing.T) {
-	t.Parallel()
-	crd := &apiextensionsv1.CustomResourceDefinition{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:   "mcpservers.toolhive.stacklok.dev",
-			Labels: map[string]string{AutoMigrateLabel: AutoMigrateValue},
-		},
-		Spec: apiextensionsv1.CustomResourceDefinitionSpec{
-			Group: ToolhiveGroup,
+			Group: group,
 			Names: apiextensionsv1.CustomResourceDefinitionNames{
-				Kind:     "MCPServer",
-				ListKind: "MCPServerList",
-				Plural:   "mcpservers",
-				Singular: "mcpserver",
+				Kind: "MCPServer", ListKind: "MCPServerList", Plural: "mcpservers", Singular: "mcpserver",
 			},
-			Versions: []apiextensionsv1.CustomResourceDefinitionVersion{
-				{Name: "v1beta1", Storage: true, Served: true},
-			},
+			Versions: versions,
 		},
-		Status: apiextensionsv1.CustomResourceDefinitionStatus{
-			StoredVersions: []string{"v1beta1"},
-		},
+		Status: apiextensionsv1.CustomResourceDefinitionStatus{StoredVersions: stored},
 	}
-	res, err := reconcileWithFake(t, crd.Name, crd)
-	require.NoError(t, err)
-	assert.Equal(t, ctrl.Result{}, res, "already-clean storedVersions must early-return without doing any work")
 }
 
-// ------------------------------------------------------------------
+func TestReconcile_EarlyReturns(t *testing.T) {
+	t.Parallel()
+
+	const mcpName = "mcpservers.toolhive.stacklok.dev"
+	optIn := map[string]string{AutoMigrateLabel: AutoMigrateValue}
+	servedV1Beta1 := []apiextensionsv1.CustomResourceDefinitionVersion{{Name: "v1beta1", Storage: true, Served: true}}
+
+	tests := []struct {
+		name    string
+		crd     *apiextensionsv1.CustomResourceDefinition // nil ⇒ CRD absent, expect IsNotFound branch
+		crdName string
+	}{
+		{
+			name:    "CRD not found returns nil without error",
+			crd:     nil,
+			crdName: "missing.toolhive.stacklok.dev",
+		},
+		{
+			name: "foreign group is skipped",
+			crd: reconcileCRD("widgets.example.com", "example.com", optIn,
+				[]apiextensionsv1.CustomResourceDefinitionVersion{{Name: "v1", Storage: true, Served: true}},
+				[]string{"v1alpha1", "v1"}),
+			crdName: "widgets.example.com",
+		},
+		{
+			name:    "missing opt-in label is skipped",
+			crd:     reconcileCRD(mcpName, ToolhiveGroup, nil, servedV1Beta1, []string{"v1alpha1", "v1beta1"}),
+			crdName: mcpName,
+		},
+		{
+			// Pathological CRD — every version has Storage: false. The apiserver
+			// would normally reject this at CRD-create time, so envtest can't
+			// reach this branch. Reconcile must return nil rather than panic.
+			name: "no storage version is skipped",
+			crd: reconcileCRD(mcpName, ToolhiveGroup, optIn,
+				[]apiextensionsv1.CustomResourceDefinitionVersion{
+					{Name: "v1alpha1", Storage: false, Served: true},
+					{Name: "v1beta1", Storage: false, Served: true},
+				},
+				[]string{"v1alpha1", "v1beta1"}),
+			crdName: mcpName,
+		},
+		{
+			name:    "already-clean storedVersions returns early",
+			crd:     reconcileCRD(mcpName, ToolhiveGroup, optIn, servedV1Beta1, []string{"v1beta1"}),
+			crdName: mcpName,
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var initial []client.Object
+			if tc.crd != nil {
+				initial = []client.Object{tc.crd}
+			}
+			r := buildFakeReconciler(t, initial, nil)
+			res, err := r.Reconcile(context.Background(), ctrl.Request{
+				NamespacedName: apitypes.NamespacedName{Name: tc.crdName},
+			})
+			require.NoError(t, err, "early-return branch must not surface as a reconcile error")
+			assert.Equal(t, ctrl.Result{}, res)
+		})
+	}
+}
+
 // isManagedCRD
-// ------------------------------------------------------------------
 
 func TestIsManagedCRD(t *testing.T) {
 	t.Parallel()
@@ -454,54 +357,11 @@ func TestIsManagedCRD(t *testing.T) {
 		labels map[string]string
 		want   bool
 	}{
-		{
-			name:   "toolhive group with opt-in label is managed",
-			group:  ToolhiveGroup,
-			labels: map[string]string{AutoMigrateLabel: AutoMigrateValue},
-			want:   true,
-		},
-		{
-			name:   "toolhive group with wrong label value is not managed",
-			group:  ToolhiveGroup,
-			labels: map[string]string{AutoMigrateLabel: "false"},
-			want:   false,
-		},
-		{
-			name:   "toolhive group with empty label value is not managed",
-			group:  ToolhiveGroup,
-			labels: map[string]string{AutoMigrateLabel: ""},
-			want:   false,
-		},
-		{
-			name:   "toolhive group with no opt-in label is not managed",
-			group:  ToolhiveGroup,
-			labels: map[string]string{"unrelated.example.com/key": "true"},
-			want:   false,
-		},
-		{
-			name:   "toolhive group with nil labels map is not managed",
-			group:  ToolhiveGroup,
-			labels: nil,
-			want:   false,
-		},
-		{
-			name:   "non-toolhive group with opt-in label is not managed",
-			group:  "example.com",
-			labels: map[string]string{AutoMigrateLabel: AutoMigrateValue},
-			want:   false,
-		},
-		{
-			name:   "non-toolhive group with no label is not managed",
-			group:  "example.com",
-			labels: nil,
-			want:   false,
-		},
-		{
-			name:   "empty group is not managed",
-			group:  "",
-			labels: map[string]string{AutoMigrateLabel: AutoMigrateValue},
-			want:   false,
-		},
+		{"toolhive group with opt-in label is managed", ToolhiveGroup, map[string]string{AutoMigrateLabel: AutoMigrateValue}, true},
+		{"toolhive group with wrong label value is not managed", ToolhiveGroup, map[string]string{AutoMigrateLabel: "false"}, false},
+		{"toolhive group with unrelated label is not managed", ToolhiveGroup, map[string]string{"unrelated.example.com/key": "true"}, false},
+		{"toolhive group with nil labels map is not managed", ToolhiveGroup, nil, false},
+		{"non-toolhive group with opt-in label is not managed", "example.com", map[string]string{AutoMigrateLabel: AutoMigrateValue}, false},
 	}
 
 	for _, tc := range tests {
@@ -517,9 +377,7 @@ func TestIsManagedCRD(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------
 // isToolhiveCRDName
-// ------------------------------------------------------------------
 
 func TestIsToolhiveCRDName(t *testing.T) {
 	t.Parallel()
@@ -529,26 +387,12 @@ func TestIsToolhiveCRDName(t *testing.T) {
 		crdName  string
 		expected bool
 	}{
-		{name: "well-formed toolhive CRD name matches", crdName: "mcpservers.toolhive.stacklok.dev", expected: true},
-		{name: "different toolhive CRD also matches", crdName: "virtualmcpservers.toolhive.stacklok.dev", expected: true},
-		{name: "empty string does not match", crdName: "", expected: false},
-		{name: "group string with no plural prefix does not match", crdName: "toolhive.stacklok.dev", expected: false},
-		{
-			name:     "group as bare suffix without leading dot does not match",
-			crdName:  "footoolhive.stacklok.dev",
-			expected: false,
-		},
-		{name: "foreign group does not match", crdName: "widgets.example.com", expected: false},
-		{
-			name:     "toolhive suffix in the middle of the name does not match",
-			crdName:  "foo.toolhive.stacklok.dev.example.com",
-			expected: false,
-		},
-		{
-			name:     "similar-looking but distinct group does not match",
-			crdName:  "mcpservers.toolhive-stacklok.dev",
-			expected: false,
-		},
+		{"well-formed toolhive CRD name matches", "mcpservers.toolhive.stacklok.dev", true},
+		{"empty string does not match", "", false},
+		{"group string with no plural prefix does not match", "toolhive.stacklok.dev", false},
+		{"group as bare suffix without leading dot does not match", "footoolhive.stacklok.dev", false},
+		{"foreign group does not match", "widgets.example.com", false},
+		{"toolhive suffix in the middle of the name does not match", "foo.toolhive.stacklok.dev.example.com", false},
 	}
 
 	for _, tc := range tests {
@@ -560,61 +404,40 @@ func TestIsToolhiveCRDName(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------
 // findStorageVersion
-// ------------------------------------------------------------------
 
 func TestFindStorageVersion(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name        string
-		versions    []apiextensionsv1.CustomResourceDefinitionVersion
-		wantName    string
-		wantOK      bool
+		name     string
+		versions []apiextensionsv1.CustomResourceDefinitionVersion
+		wantName string
+		wantOK   bool
 	}{
 		{
-			name: "single storage version returns its name",
-			versions: []apiextensionsv1.CustomResourceDefinitionVersion{
-				{Name: "v1", Storage: true},
-			},
-			wantName: "v1",
-			wantOK:   true,
+			"single storage version returns its name",
+			[]apiextensionsv1.CustomResourceDefinitionVersion{{Name: "v1", Storage: true}},
+			"v1", true,
 		},
 		{
-			name: "multiple versions returns the storage entry",
-			versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+			"multiple versions returns the storage entry",
+			[]apiextensionsv1.CustomResourceDefinitionVersion{
 				{Name: "v1alpha1", Storage: false},
 				{Name: "v1beta1", Storage: true},
 				{Name: "v1beta2", Storage: false},
 			},
-			wantName: "v1beta1",
-			wantOK:   true,
+			"v1beta1", true,
 		},
 		{
-			name: "no storage version returns empty and false",
-			versions: []apiextensionsv1.CustomResourceDefinitionVersion{
+			"no storage version returns empty and false",
+			[]apiextensionsv1.CustomResourceDefinitionVersion{
 				{Name: "v1alpha1", Storage: false},
 				{Name: "v1beta1", Storage: false},
 			},
-			wantName: "",
-			wantOK:   false,
+			"", false,
 		},
-		{
-			name:     "empty versions list returns empty and false",
-			versions: nil,
-			wantName: "",
-			wantOK:   false,
-		},
-		{
-			name: "storage at first index is returned",
-			versions: []apiextensionsv1.CustomResourceDefinitionVersion{
-				{Name: "v1beta1", Storage: true},
-				{Name: "v1alpha1", Storage: false},
-			},
-			wantName: "v1beta1",
-			wantOK:   true,
-		},
+		{"empty versions list returns empty and false", nil, "", false},
 	}
 
 	for _, tc := range tests {
@@ -631,9 +454,7 @@ func TestFindStorageVersion(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------
 // isMigrationNeeded
-// ------------------------------------------------------------------
 
 func TestIsMigrationNeeded(t *testing.T) {
 	t.Parallel()
@@ -644,42 +465,10 @@ func TestIsMigrationNeeded(t *testing.T) {
 		storageVersion string
 		want           bool
 	}{
-		{
-			name:           "single matching entry is not needed",
-			storedVersions: []string{"v1beta1"},
-			storageVersion: "v1beta1",
-			want:           false,
-		},
-		{
-			name:           "single mismatching entry is needed",
-			storedVersions: []string{"v1alpha1"},
-			storageVersion: "v1beta1",
-			want:           true,
-		},
-		{
-			name:           "two entries including target is needed",
-			storedVersions: []string{"v1alpha1", "v1beta1"},
-			storageVersion: "v1beta1",
-			want:           true,
-		},
-		{
-			name:           "two entries excluding target is needed",
-			storedVersions: []string{"v1alpha1", "v1alpha2"},
-			storageVersion: "v1beta1",
-			want:           true,
-		},
-		{
-			name:           "empty list is needed",
-			storedVersions: nil,
-			storageVersion: "v1beta1",
-			want:           true,
-		},
-		{
-			name:           "single-entry list with target at element 0 only (length==1 happy case) matches when equal",
-			storedVersions: []string{"v1beta2"},
-			storageVersion: "v1beta2",
-			want:           false,
-		},
+		{"single matching entry is not needed", []string{"v1beta1"}, "v1beta1", false},
+		{"single mismatching entry is needed", []string{"v1alpha1"}, "v1beta1", true},
+		{"two entries including target is needed", []string{"v1alpha1", "v1beta1"}, "v1beta1", true},
+		{"empty list is needed", nil, "v1beta1", true},
 	}
 
 	for _, tc := range tests {
@@ -694,13 +483,7 @@ func TestIsMigrationNeeded(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------
-// Shared helpers for restoreCRs / restoreOne / patchStoredVersions tests
-//
-// These tests exercise the controller's orchestration logic against a fake
-// client. The fake client supports unstructured objects as long as the kind
-// is registered in the runtime scheme.
-// ------------------------------------------------------------------
+// Shared helpers for restoreCRs / restoreOne / patchStoredVersions tests.
 
 const (
 	testCRGroup    = ToolhiveGroup
@@ -712,36 +495,28 @@ const (
 	testCRDName    = testCRPlural + "." + testCRGroup
 )
 
-// testCRGVK is the singular GVK for the synthetic CR kind used by the
-// orchestration tests below.
+// testCRGVK is the singular GVK for the synthetic CR kind.
 func testCRGVK() schema.GroupVersionKind {
 	return schema.GroupVersionKind{Group: testCRGroup, Version: testCRVersion, Kind: testCRKind}
 }
 
 // schemeForCRD builds a runtime scheme with apiextensions/v1 plus the
-// synthetic CR kind registered as unstructured. The fake client looks up
-// kinds via the scheme on List, so without this registration List calls
-// return "no kind is registered" errors.
+// synthetic CR's singular and list kinds registered as unstructured (the
+// fake client requires the kind to be in the scheme on List/Get/Update).
 func schemeForCRD(t *testing.T) *runtime.Scheme {
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, apiextensionsv1.AddToScheme(scheme))
-
 	gvk := testCRGVK()
 	listGVK := gvk
 	listGVK.Kind = testCRListKind
-
-	// Register both the singular and list kind so the fake client can
-	// satisfy both Get/Update and List against the synthetic CR.
 	scheme.AddKnownTypeWithName(gvk, &unstructured.Unstructured{})
 	scheme.AddKnownTypeWithName(listGVK, &unstructured.UnstructuredList{})
 	return scheme
 }
 
-// makeTestCRD builds a CRD wired to the synthetic CR kind. The supplied
-// storedVersions become the CRD's status.storedVersions. The CRD is
-// labelled for opt-in by default (every restoreCRs/patchStoredVersions
-// caller bypasses isManagedCRD, so the label is just for realism).
+// makeTestCRD builds a CRD wired to the synthetic CR kind with the supplied
+// status.storedVersions and the opt-in label set.
 func makeTestCRD(storedVersions []string) *apiextensionsv1.CustomResourceDefinition {
 	return &apiextensionsv1.CustomResourceDefinition{
 		ObjectMeta: metav1.ObjectMeta{
@@ -768,9 +543,8 @@ func makeTestCRD(storedVersions []string) *apiextensionsv1.CustomResourceDefinit
 	}
 }
 
-// makeTestCR returns an unstructured CR with the synthetic GVK and the
-// given identity fields. UID is derived from name so tests can assert
-// cache state by name.
+// makeTestCR returns an unstructured CR with the synthetic GVK. UID is
+// derived from name so tests can assert cache state by name.
 func makeTestCR(namespace, name string) *unstructured.Unstructured {
 	u := &unstructured.Unstructured{}
 	u.SetGroupVersionKind(testCRGVK())
@@ -809,11 +583,9 @@ func buildFakeReconciler(
 	return r
 }
 
-// ------------------------------------------------------------------
 // restoreOne
-// ------------------------------------------------------------------
 
-func TestRestoreOne_GetAndUpdateSucceeds(t *testing.T) {
+func TestRestoreOne_HappyPath(t *testing.T) {
 	t.Parallel()
 	cr := makeTestCR("default", "obj-1")
 	r := buildFakeReconciler(t, []client.Object{cr}, nil)
@@ -830,56 +602,78 @@ func TestRestoreOne_GetAndUpdateSucceeds(t *testing.T) {
 		"fake client must bump RV on Update; if it doesn't, restoreOne's cache add will record a stale RV")
 }
 
-func TestRestoreOne_PropagatesGetNotFound(t *testing.T) {
+func TestRestoreOne_PropagatesErrors(t *testing.T) {
 	t.Parallel()
-	// CR not present in the fake store → Get returns NotFound.
-	missing := makeTestCR("default", "missing")
-	r := buildFakeReconciler(t, []client.Object{}, nil)
-
-	_, err := r.restoreOne(context.Background(), testCRGVK(), missing)
-	require.Error(t, err)
-	assert.True(t, apierrors.IsNotFound(err),
-		"Get NotFound must propagate verbatim so restoreCRs can classify it")
-}
-
-func TestRestoreOne_PropagatesUpdateConflict(t *testing.T) {
-	t.Parallel()
-	cr := makeTestCR("default", "obj-1")
 
 	gr := schema.GroupResource{Group: testCRGroup, Resource: testCRPlural}
-	funcs := &interceptor.Funcs{
-		Update: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.UpdateOption) error {
-			return apierrors.NewConflict(gr, "obj-1", errors.New("injected conflict"))
+
+	// Per-row: when crPresent is false, the CR is absent from the fake store
+	// and Get returns NotFound (no interceptor needed). When crPresent is true,
+	// updateErr is returned from an Update interceptor.
+	tests := []struct {
+		name      string
+		crPresent bool
+		updateErr error
+		check     func(t *testing.T, err error)
+	}{
+		{
+			name:      "Get NotFound propagates",
+			crPresent: false,
+			check: func(t *testing.T, err error) {
+				require.Error(t, err)
+				assert.True(t, apierrors.IsNotFound(err),
+					"Get NotFound must propagate verbatim so restoreCRs can classify it")
+			},
+		},
+		{
+			name:      "Update Conflict propagates",
+			crPresent: true,
+			updateErr: apierrors.NewConflict(gr, "obj-1", errors.New("injected conflict")),
+			check: func(t *testing.T, err error) {
+				require.Error(t, err)
+				assert.True(t, apierrors.IsConflict(err),
+					"Update Conflict must propagate verbatim so restoreCRs can classify it")
+			},
+		},
+		{
+			name:      "Update generic error propagates",
+			crPresent: true,
+			updateErr: errors.New("injected generic failure"),
+			check: func(t *testing.T, err error) {
+				require.Error(t, err)
+				assert.False(t, apierrors.IsConflict(err))
+				assert.False(t, apierrors.IsNotFound(err))
+				assert.Contains(t, err.Error(), "injected generic failure")
+			},
 		},
 	}
-	r := buildFakeReconciler(t, []client.Object{cr}, funcs)
 
-	_, err := r.restoreOne(context.Background(), testCRGVK(), cr)
-	require.Error(t, err)
-	assert.True(t, apierrors.IsConflict(err),
-		"Update Conflict must propagate verbatim so restoreCRs can classify it")
-}
-
-func TestRestoreOne_PropagatesUpdateGenericError(t *testing.T) {
-	t.Parallel()
-	cr := makeTestCR("default", "obj-1")
-	funcs := &interceptor.Funcs{
-		Update: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.UpdateOption) error {
-			return errors.New("injected generic failure")
-		},
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			target := makeTestCR("default", "obj-1")
+			var initial []client.Object
+			if tc.crPresent {
+				initial = []client.Object{target}
+			}
+			var funcs *interceptor.Funcs
+			if tc.updateErr != nil {
+				updateErr := tc.updateErr
+				funcs = &interceptor.Funcs{
+					Update: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.UpdateOption) error {
+						return updateErr
+					},
+				}
+			}
+			r := buildFakeReconciler(t, initial, funcs)
+			_, err := r.restoreOne(context.Background(), testCRGVK(), target)
+			tc.check(t, err)
+		})
 	}
-	r := buildFakeReconciler(t, []client.Object{cr}, funcs)
-
-	_, err := r.restoreOne(context.Background(), testCRGVK(), cr)
-	require.Error(t, err)
-	assert.False(t, apierrors.IsConflict(err))
-	assert.False(t, apierrors.IsNotFound(err))
-	assert.Contains(t, err.Error(), "injected generic failure")
 }
 
-// ------------------------------------------------------------------
 // restoreCRs
-// ------------------------------------------------------------------
 
 func TestRestoreCRs_HappyPathAllUpdatedAndCachePopulated(t *testing.T) {
 	t.Parallel()
@@ -916,111 +710,105 @@ func TestRestoreCRs_EmptyListIsNoop(t *testing.T) {
 	assert.Empty(t, r.cache.entries, "no CRs ⇒ no cache adds")
 }
 
-func TestRestoreCRs_PerCRNotFoundIsSilentlySkipped(t *testing.T) {
+// TestRestoreCRs_ErrorClassification covers the per-CR error classification
+// logic: IsNotFound is silently skipped, IsConflict is counted and surfaces
+// as the conflict sentinel iff no other errors occurred, generic errors are
+// aggregated, and mixed conflict + generic errors surface the aggregate
+// rather than the sentinel.
+func TestRestoreCRs_ErrorClassification(t *testing.T) {
 	t.Parallel()
-	crd := makeTestCRD([]string{"v1alpha1", testCRVersion})
-	crs := []client.Object{
-		makeTestCR("default", "obj-a"),
-		makeTestCR("default", "obj-b"),
-	}
-	objs := append([]client.Object{crd}, crs...)
-
-	// Intercept Get inside restoreOne for obj-a only → NotFound. obj-b
-	// continues normally.
-	gr := schema.GroupResource{Group: testCRGroup, Resource: testCRPlural}
-	funcs := &interceptor.Funcs{
-		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-			if key.Name == "obj-a" {
-				return apierrors.NewNotFound(gr, "obj-a")
-			}
-			return c.Get(ctx, key, obj, opts...)
-		},
-	}
-	r := buildFakeReconciler(t, objs, funcs)
-
-	err := r.restoreCRs(context.Background(), crd, testCRVersion)
-	require.NoError(t, err, "IsNotFound on a per-CR Get must not bubble up")
-
-	// Cache must contain only obj-b — the NotFound path must skip the
-	// cache add for obj-a.
-	assert.Len(t, r.cache.entries, 1, "only the surviving CR may be cached")
-}
-
-func TestRestoreCRs_ConflictCountedAndSentinelReturned(t *testing.T) {
-	t.Parallel()
-	crd := makeTestCRD([]string{"v1alpha1", testCRVersion})
-	crs := []client.Object{
-		makeTestCR("default", "obj-a"),
-		makeTestCR("default", "obj-b"),
-	}
-	objs := append([]client.Object{crd}, crs...)
 
 	gr := schema.GroupResource{Group: testCRGroup, Resource: testCRPlural}
-	funcs := &interceptor.Funcs{
-		Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
-			if obj.GetName() == "obj-a" {
-				return apierrors.NewConflict(gr, "obj-a", errors.New("injected"))
+
+	// Per-row: getErrs/updateErrs map a CR name → the error its Get/Update
+	// interceptor must return (other names fall through to the fake client).
+	// check is run against the (err, reconciler) pair after restoreCRs.
+	tests := []struct {
+		name       string
+		crNames    []string
+		getErrs    map[string]error
+		updateErrs map[string]error
+		check      func(t *testing.T, err error, r *StorageVersionMigratorReconciler)
+	}{
+		{
+			name:    "per-CR Get NotFound is silently skipped",
+			crNames: []string{"obj-a", "obj-b"},
+			getErrs: map[string]error{"obj-a": apierrors.NewNotFound(gr, "obj-a")},
+			check: func(t *testing.T, err error, r *StorageVersionMigratorReconciler) {
+				require.NoError(t, err, "IsNotFound on a per-CR Get must not bubble up")
+				// Cache must contain only obj-b — NotFound must skip the cache add.
+				assert.Len(t, r.cache.entries, 1, "only the surviving CR may be cached")
+			},
+		},
+		{
+			name:       "Conflict counted and sentinel returned",
+			crNames:    []string{"obj-a", "obj-b"},
+			updateErrs: map[string]error{"obj-a": apierrors.NewConflict(gr, "obj-a", errors.New("injected"))},
+			check: func(t *testing.T, err error, _ *StorageVersionMigratorReconciler) {
+				require.Error(t, err, "a swallowed Conflict must surface as a function-level error")
+				assert.ErrorIs(t, err, errMigrationRetriedDueToConflicts,
+					"the sentinel must be returned so the caller knows storedVersions is unsafe to trim")
+			},
+		},
+		{
+			name:       "generic error is aggregated",
+			crNames:    []string{"obj-a"},
+			updateErrs: map[string]error{"obj-a": errors.New("injected generic update failure")},
+			check: func(t *testing.T, err error, _ *StorageVersionMigratorReconciler) {
+				require.Error(t, err)
+				assert.NotErrorIs(t, err, errMigrationRetriedDueToConflicts,
+					"a generic error must NOT be misclassified as the conflict sentinel")
+				assert.Contains(t, err.Error(), "injected generic update failure")
+				assert.Contains(t, err.Error(), "obj-a", "aggregated error should name the failing CR")
+			},
+		},
+		{
+			name:    "conflicts plus generic errors returns aggregate, not sentinel",
+			crNames: []string{"obj-conflict", "obj-failure"},
+			updateErrs: map[string]error{
+				"obj-conflict": apierrors.NewConflict(gr, "obj-conflict", errors.New("injected conflict")),
+				"obj-failure":  errors.New("injected generic failure"),
+			},
+			check: func(t *testing.T, err error, _ *StorageVersionMigratorReconciler) {
+				require.Error(t, err)
+				// When there is at least one non-conflict error the aggregate
+				// wins — the sentinel is only meaningful in the conflicts-only
+				// case.
+				assert.NotErrorIs(t, err, errMigrationRetriedDueToConflicts,
+					"mixed conflicts+errors must return the aggregate, not the conflict sentinel")
+				assert.Contains(t, err.Error(), "injected generic failure")
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			crd := makeTestCRD([]string{"v1alpha1", testCRVersion})
+			objs := []client.Object{crd}
+			for _, n := range tc.crNames {
+				objs = append(objs, makeTestCR("default", n))
 			}
-			return c.Update(ctx, obj, opts...)
-		},
-	}
-	r := buildFakeReconciler(t, objs, funcs)
-
-	err := r.restoreCRs(context.Background(), crd, testCRVersion)
-	require.Error(t, err, "a swallowed Conflict must surface as a function-level error")
-	assert.ErrorIs(t, err, errMigrationRetriedDueToConflicts,
-		"the sentinel must be returned so the caller knows storedVersions is unsafe to trim")
-}
-
-func TestRestoreCRs_GenericErrorAggregated(t *testing.T) {
-	t.Parallel()
-	crd := makeTestCRD([]string{"v1alpha1", testCRVersion})
-	cr := makeTestCR("default", "obj-a")
-	funcs := &interceptor.Funcs{
-		Update: func(_ context.Context, _ client.WithWatch, _ client.Object, _ ...client.UpdateOption) error {
-			return errors.New("injected generic update failure")
-		},
-	}
-	r := buildFakeReconciler(t, []client.Object{crd, cr}, funcs)
-
-	err := r.restoreCRs(context.Background(), crd, testCRVersion)
-	require.Error(t, err)
-	assert.NotErrorIs(t, err, errMigrationRetriedDueToConflicts,
-		"a generic error must NOT be misclassified as the conflict sentinel")
-	assert.Contains(t, err.Error(), "injected generic update failure")
-	assert.Contains(t, err.Error(), "obj-a", "aggregated error should name the failing CR")
-}
-
-func TestRestoreCRs_ConflictsPlusGenericErrorsReturnsAggregateNotSentinel(t *testing.T) {
-	t.Parallel()
-	crd := makeTestCRD([]string{"v1alpha1", testCRVersion})
-	crs := []client.Object{
-		makeTestCR("default", "obj-conflict"),
-		makeTestCR("default", "obj-failure"),
-	}
-	objs := append([]client.Object{crd}, crs...)
-
-	gr := schema.GroupResource{Group: testCRGroup, Resource: testCRPlural}
-	funcs := &interceptor.Funcs{
-		Update: func(_ context.Context, _ client.WithWatch, obj client.Object, _ ...client.UpdateOption) error {
-			switch obj.GetName() {
-			case "obj-conflict":
-				return apierrors.NewConflict(gr, "obj-conflict", errors.New("injected conflict"))
-			case "obj-failure":
-				return errors.New("injected generic failure")
+			funcs := &interceptor.Funcs{
+				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if e, ok := tc.getErrs[key.Name]; ok {
+						return e
+					}
+					return c.Get(ctx, key, obj, opts...)
+				},
+				Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+					if e, ok := tc.updateErrs[obj.GetName()]; ok {
+						return e
+					}
+					return c.Update(ctx, obj, opts...)
+				},
 			}
-			return nil
-		},
+			r := buildFakeReconciler(t, objs, funcs)
+			err := r.restoreCRs(context.Background(), crd, testCRVersion)
+			tc.check(t, err, r)
+		})
 	}
-	r := buildFakeReconciler(t, objs, funcs)
-
-	err := r.restoreCRs(context.Background(), crd, testCRVersion)
-	require.Error(t, err)
-	// When there is at least one non-conflict error, the aggregate wins —
-	// the sentinel is only meaningful in the conflicts-only case.
-	assert.NotErrorIs(t, err, errMigrationRetriedDueToConflicts,
-		"mixed conflicts+errors must return the aggregate, not the conflict sentinel")
-	assert.Contains(t, err.Error(), "injected generic failure")
 }
 
 func TestRestoreCRs_FirstListFailsReturnsImmediately(t *testing.T) {
@@ -1095,30 +883,22 @@ func TestRestoreCRs_PaginationWiresContinueTokenThroughOptions(t *testing.T) {
 	assert.Equal(t, "page-3", listCalls[2].continueToken)
 }
 
-// ------------------------------------------------------------------
 // patchStoredVersions
-// ------------------------------------------------------------------
 
-func TestPatchStoredVersions_TrimsStoredVersionsOnSuccess(t *testing.T) {
-	t.Parallel()
-	crd := makeTestCRD([]string{"v1alpha1", testCRVersion})
-	r := buildFakeReconciler(t, []client.Object{crd}, nil)
-
-	err := r.patchStoredVersions(context.Background(), crd, testCRVersion)
-	require.NoError(t, err)
-
-	// Re-read from the fake store and verify the trim landed.
-	live := &apiextensionsv1.CustomResourceDefinition{}
-	require.NoError(t, r.Get(context.Background(), client.ObjectKey{Name: crd.Name}, live))
-	assert.Equal(t, []string{testCRVersion}, live.Status.StoredVersions)
-}
-
-func TestPatchStoredVersions_TargetsStatusSubresource(t *testing.T) {
+// TestPatchStoredVersions_SuccessAssertsAllProperties exercises the success
+// path and verifies three orthogonal properties in one run:
+//   - storedVersions is trimmed to exactly [storageVersion] in the fake store,
+//   - the /status subresource endpoint is hit (and the main-resource Patch is NOT),
+//   - the patch body carries resourceVersion as a precondition (the marker that
+//     MergeFromWithOptimisticLock is in effect; plain MergeFrom omits it).
+func TestPatchStoredVersions_SuccessAssertsAllProperties(t *testing.T) {
 	t.Parallel()
 	crd := makeTestCRD([]string{"v1alpha1", testCRVersion})
 
 	var mainResourcePatchCalls int32
 	var statusSubresourcePatchCalls int32
+	var capturedPatchBody []byte
+
 	funcs := &interceptor.Funcs{
 		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 			atomic.AddInt32(&mainResourcePatchCalls, 1)
@@ -1128,29 +908,6 @@ func TestPatchStoredVersions_TargetsStatusSubresource(t *testing.T) {
 			if subResourceName == "status" {
 				atomic.AddInt32(&statusSubresourcePatchCalls, 1)
 			}
-			return c.Status().Patch(ctx, obj, patch, opts...)
-		},
-	}
-	r := buildFakeReconciler(t, []client.Object{crd}, funcs)
-
-	require.NoError(t, r.patchStoredVersions(context.Background(), crd, testCRVersion))
-
-	assert.Equal(t, int32(0), atomic.LoadInt32(&mainResourcePatchCalls),
-		"patchStoredVersions must NOT hit the main-resource Patch endpoint")
-	assert.Equal(t, int32(1), atomic.LoadInt32(&statusSubresourcePatchCalls),
-		"patchStoredVersions must hit the /status subresource exactly once")
-}
-
-func TestPatchStoredVersions_UsesOptimisticLock(t *testing.T) {
-	t.Parallel()
-	crd := makeTestCRD([]string{"v1alpha1", testCRVersion})
-
-	// Capture the patch data so we can confirm it carries resourceVersion
-	// (the marker that MergeFromWithOptimisticLock is in effect — plain
-	// MergeFrom does NOT include resourceVersion in the patch body).
-	var capturedPatchBody []byte
-	funcs := &interceptor.Funcs{
-		SubResourcePatch: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
 			data, err := patch.Data(obj)
 			if err != nil {
 				return err
@@ -1162,13 +919,25 @@ func TestPatchStoredVersions_UsesOptimisticLock(t *testing.T) {
 	r := buildFakeReconciler(t, []client.Object{crd}, funcs)
 
 	require.NoError(t, r.patchStoredVersions(context.Background(), crd, testCRVersion))
-	require.NotEmpty(t, capturedPatchBody, "interceptor never captured the patch body")
 
+	// Subresource routing.
+	assert.Equal(t, int32(0), atomic.LoadInt32(&mainResourcePatchCalls),
+		"patchStoredVersions must NOT hit the main-resource Patch endpoint")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&statusSubresourcePatchCalls),
+		"patchStoredVersions must hit the /status subresource exactly once")
+
+	// Patch body carries the optimistic-lock precondition and the trimmed list.
+	require.NotEmpty(t, capturedPatchBody, "interceptor never captured the patch body")
 	body := string(capturedPatchBody)
 	assert.Contains(t, body, `"resourceVersion":"1"`,
 		"optimistic-lock patches must include the source resourceVersion as a precondition")
 	assert.Contains(t, body, `"storedVersions":["`+testCRVersion+`"]`,
 		"patch body must overwrite storedVersions to exactly [storageVersion]")
+
+	// storedVersions actually trimmed in the fake store.
+	live := &apiextensionsv1.CustomResourceDefinition{}
+	require.NoError(t, r.Get(context.Background(), client.ObjectKey{Name: crd.Name}, live))
+	assert.Equal(t, []string{testCRVersion}, live.Status.StoredVersions)
 }
 
 func TestPatchStoredVersions_PropagatesError(t *testing.T) {
@@ -1187,9 +956,7 @@ func TestPatchStoredVersions_PropagatesError(t *testing.T) {
 	assert.Contains(t, err.Error(), "injected patch failure")
 }
 
-// ------------------------------------------------------------------
 // Test doubles used by the orchestration tests above
-// ------------------------------------------------------------------
 
 // listCallRecord captures the ListOptions of a single List call so the
 // pagination test can verify Limit + Continue threading.

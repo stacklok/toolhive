@@ -184,7 +184,7 @@ func setupStorageVersionMigrator(mgr ctrl.Manager) error {
 		Client:    mgr.GetClient(),
 		APIReader: mgr.GetAPIReader(),
 		Scheme:    mgr.GetScheme(),
-		Recorder:  mgr.GetEventRecorderFor("storageversionmigrator-controller"),
+		Recorder:  mgr.GetEventRecorder("storageversionmigrator-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller StorageVersionMigrator: %w", err)
 	}

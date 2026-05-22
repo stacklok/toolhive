@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -20,7 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	apitypes "k8s.io/apimachinery/pkg/types"
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
-	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -32,7 +33,9 @@ import (
 // Public contract for the StorageVersionMigrator controller.
 
 // AutoMigrateLabel identifies CRDs that opt in to storage-version migration.
-// Applied via a kubebuilder marker on each root type in api/v1beta1/.
+// Will be applied via a kubebuilder marker on each root type in api/v1beta1/
+// in the follow-up PR; no toolhive CRD opts in yet, so the controller is a
+// no-op even when the feature flag is set on this release.
 const AutoMigrateLabel = "toolhive.stacklok.dev/auto-migrate-storage-version"
 
 // AutoMigrateValue is the label value that enables migration for a CRD.
@@ -70,6 +73,12 @@ var errMigrationRetriedDueToConflicts = errors.New(
 // API group AND the opt-in label. Wildcard RBAC plus isManagedCRD form the
 // defence in depth: RBAC bounds the controller to a single API group, and
 // the label gate further restricts it to opted-in CRDs.
+//
+// Chart-consumer note: these markers regenerate role.yaml, so every chart
+// install gains get/list/update on toolhive.stacklok.dev/* regardless of
+// whether the migrator is opted in via TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR.
+// Templating this rule behind a helm conditional is deferred to PR-C alongside
+// the rest of the chart surface for the feature flag.
 
 //+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 //+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions/status,verbs=update;patch
@@ -106,10 +115,15 @@ type StorageVersionMigratorReconciler struct {
 	client.Client
 	APIReader       client.Reader        // live reads for CRDs and CR list pages (bypasses informer)
 	Scheme          *runtime.Scheme      // kubebuilder reconciler convention
-	Recorder        record.EventRecorder // MigrationSucceeded / MigrationFailed events on the CRD
-	PageSize        int64                // overridable for tests; defaults to defaultListPageSize
-	CacheGCInterval time.Duration        // overridable for tests; defaults to defaultCacheGCInterval
+	Recorder        events.EventRecorder // MigrationSucceeded / MigrationFailed events on the CRD
+	PageSize        int64                // overridable for tests; zero means defaultListPageSize
+	CacheGCInterval time.Duration        // overridable for tests; zero means defaultCacheGCInterval
 	cache           *migrationCache
+	// initOnce guards ensureInitialized so the lazy-default writes to PageSize,
+	// CacheGCInterval, and cache happen exactly once across all callers
+	// (SetupWithManager, Reconcile, and any future entrypoint). Without it,
+	// two concurrent callers seeing zero values could race on the field writes.
+	initOnce sync.Once
 }
 
 // Reconcile runs for each opted-in toolhive.stacklok.dev CRD event. See the
@@ -155,19 +169,27 @@ func (r *StorageVersionMigratorReconciler) Reconcile(ctx context.Context, req ct
 	)
 
 	if err := r.restoreCRs(ctx, crd, storageVersion); err != nil {
-		r.Recorder.Eventf(crd, "Warning", EventReasonMigrationFailed,
-			"storage version migration failed: %v", err)
+		// Concurrent-write conflicts are normal steady-state — the migration
+		// self-heals on the next reconcile. Don't surface them as Warning
+		// events. Real errors do still get a Warning.
+		if errors.Is(err, errMigrationRetriedDueToConflicts) {
+			logger.V(1).Info("storage version migration deferred due to concurrent writes; will retry",
+				"err", err)
+		} else {
+			r.Recorder.Eventf(crd, nil, corev1.EventTypeWarning, EventReasonMigrationFailed,
+				"RestoreCRs", "storage version migration failed: %v", err)
+		}
 		return ctrl.Result{}, fmt.Errorf("re-store CRs for %s: %w", crd.Name, err)
 	}
 
 	if err := r.patchStoredVersions(ctx, crd, storageVersion); err != nil {
-		r.Recorder.Eventf(crd, "Warning", EventReasonMigrationFailed,
-			"storedVersions patch failed: %v", err)
+		r.Recorder.Eventf(crd, nil, corev1.EventTypeWarning, EventReasonMigrationFailed,
+			"PatchStoredVersions", "storedVersions patch failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("patch storedVersions for %s: %w", crd.Name, err)
 	}
 
-	r.Recorder.Eventf(crd, "Normal", EventReasonMigrationSucceeded,
-		"storage version migrated to %s", storageVersion)
+	r.Recorder.Eventf(crd, nil, corev1.EventTypeNormal, EventReasonMigrationSucceeded,
+		"Migrate", "storage version migrated to %s", storageVersion)
 	logger.Info("storage version migration complete", "storageVersion", storageVersion)
 	return ctrl.Result{}, nil
 }
@@ -227,16 +249,21 @@ func (r *StorageVersionMigratorReconciler) SetupWithManager(mgr ctrl.Manager) er
 // Private implementation below.
 // ------------------------------------------------------------------
 
+// ensureInitialized lazily fills in field defaults. Wrapped in sync.Once so
+// concurrent callers (Setup vs. Reconcile vs. any future entrypoint) cannot
+// race on the field writes.
 func (r *StorageVersionMigratorReconciler) ensureInitialized() {
-	if r.PageSize == 0 {
-		r.PageSize = defaultListPageSize
-	}
-	if r.CacheGCInterval == 0 {
-		r.CacheGCInterval = defaultCacheGCInterval
-	}
-	if r.cache == nil {
-		r.cache = newMigrationCache(defaultMigrationCacheTTL)
-	}
+	r.initOnce.Do(func() {
+		if r.PageSize == 0 {
+			r.PageSize = defaultListPageSize
+		}
+		if r.CacheGCInterval == 0 {
+			r.CacheGCInterval = defaultCacheGCInterval
+		}
+		if r.cache == nil {
+			r.cache = newMigrationCache(defaultMigrationCacheTTL)
+		}
+	})
 }
 
 // restoreCRs lists all CRs of the CRD's served kind (served version = storageVersion)
@@ -368,10 +395,13 @@ func (r *StorageVersionMigratorReconciler) patchStoredVersions(
 	crd *apiextensionsv1.CustomResourceDefinition,
 	storageVersion string,
 ) error {
-	original := crd.DeepCopy()
-	crd.Status.StoredVersions = []string{storageVersion}
-	return r.Client.Status().Patch(ctx, crd,
-		client.MergeFromWithOptions(original, client.MergeFromWithOptimisticLock{}))
+	// Mutate a copy, not the caller's CRD — per .claude/rules/go-style.md
+	// "Copy Before Mutating Caller Input". The original serves as the
+	// merge-patch base; the copy carries the desired state.
+	updated := crd.DeepCopy()
+	updated.Status.StoredVersions = []string{storageVersion}
+	return r.Client.Status().Patch(ctx, updated,
+		client.MergeFromWithOptions(crd, client.MergeFromWithOptimisticLock{}))
 }
 
 // isManagedCRD returns true if a CRD is opted in to migration: the group matches

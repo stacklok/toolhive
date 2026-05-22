@@ -22,7 +22,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	apitypes "k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -577,7 +576,7 @@ func buildFakeReconciler(
 		Client:    cli,
 		APIReader: cli,
 		Scheme:    scheme,
-		Recorder:  record.NewFakeRecorder(8),
+		Recorder:  noopEventRecorder{},
 	}
 	r.ensureInitialized()
 	return r
@@ -1025,4 +1024,11 @@ func (p *paginatingFakeReader) List(_ context.Context, list client.ObjectList, o
 	ul.Items = items
 	ul.SetContinue(pg.next)
 	return nil
+}
+
+// noopEventRecorder satisfies events.EventRecorder for tests that don't
+// assert on emitted events.
+type noopEventRecorder struct{}
+
+func (noopEventRecorder) Eventf(_ runtime.Object, _ runtime.Object, _, _, _, _ string, _ ...any) {
 }

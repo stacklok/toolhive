@@ -684,12 +684,10 @@ func (s *failingUpdateStatus) Apply(ctx context.Context, obj runtime.ApplyConfig
 	return s.inner.Apply(ctx, obj, opts...)
 }
 
-// noopRecorder is a minimal EventRecorder for direct-Reconcile tests.
+// noopRecorder is a minimal events.EventRecorder for direct-Reconcile tests.
 type noopRecorder struct{}
 
-func (*noopRecorder) Event(_ runtime.Object, _, _, _ string)            {}
-func (*noopRecorder) Eventf(_ runtime.Object, _, _, _ string, _ ...any) {}
-func (*noopRecorder) AnnotatedEventf(_ runtime.Object, _ map[string]string, _, _, _ string, _ ...any) {
+func (*noopRecorder) Eventf(_ runtime.Object, _ runtime.Object, _, _, _, _ string, _ ...any) {
 }
 
 // countingAPIReader wraps a client.Reader and records how many List calls

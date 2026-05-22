@@ -567,6 +567,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 				ObjectMeta: metav1.ObjectMeta{Name: authName, Namespace: namespace},
 				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  &mcpv1beta1.OBOConfig{},
 				},
 			}
 			if tt.sourceValid != nil {

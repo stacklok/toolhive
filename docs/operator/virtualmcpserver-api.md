@@ -86,14 +86,32 @@ Configures authentication for clients connecting to the Virtual MCP server. Reus
   - `type` (string, required): `inline` or `configMap`
   - `inline` (InlineAuthzConfig, required when type=inline): Inline Cedar policies
     - `policies` ([]string, required): Cedar policy strings
-    - `entitiesJson` (string, optional): Cedar entities (JSON)
-    - `primaryUpstreamProvider` (string, optional): Names the upstream IDP whose
-      access token claims Cedar should evaluate. Only meaningful when
-      `spec.authServerConfig` is set with multiple upstreamProviders. When
-      empty, the controller defaults to the first upstream. Must match a
-      configured upstream name; the VirtualMCPServer is rejected with
-      `AuthServerConfigValidated=False` otherwise.
-  - `configMap` (ConfigMapAuthzRef, required when type=configMap): Reference to a ConfigMap holding policies
+    - `entitiesJson` (string, optional): Cedar entities (JSON). Required when
+      transitive policies (e.g. `ClaimGroup` → `PlatformRole`) need a static
+      entity store. Defaults to `"[]"`.
+    - `primaryUpstreamProvider` (string, optional): **Deprecated.** Use
+      `.spec.authServerConfig.primaryUpstreamProvider` instead. Setting this
+      field still resolves a primary upstream for backward compatibility and
+      emits a Warning event with reason
+      `AuthzPrimaryUpstreamProviderDeprecated`. Planned removal one release
+      after the deprecation cycle.
+  - `configMap` (ConfigMapAuthzRef, required when type=configMap): Reference to
+    a ConfigMap holding Cedar policies. The operator resolves the ConfigMap at
+    reconcile time and bakes the policies into the rendered vmcp `config.yaml`.
+    Failures surface as `AuthConfigured=False` with reason
+    `AuthzConfigMapNotFound` (missing reference) or `AuthzConfigMapInvalid`
+    (parse, validation, or non-Cedar payload).
+  - `groupClaimName` (string, optional): JWT claim key Cedar should treat as
+    the group list (overrides the well-known defaults `groups`, `roles`,
+    `cognito:groups`). When `type` is `configMap`, the spec value overrides
+    any `group_claim_name` set in the ConfigMap payload.
+  - `roleClaimName` (string, optional): JWT claim key Cedar should treat as
+    the role list. Same spec-over-ConfigMap precedence as `groupClaimName`.
+  - `groupEntityType` (string, optional): Cedar entity type used for principal
+    parent UIDs synthesised from JWT group/role claims. Defaults to
+    `THVGroup`. Must match the entity type used in the static entity store
+    for transitive `in` checks to resolve. Same spec-over-ConfigMap
+    precedence as `groupClaimName`.
 
 **Important**: The `type` field must always be explicitly specified. When no authentication is required, use `type: anonymous`.
 

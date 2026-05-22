@@ -417,3 +417,24 @@ func TestBuildFositeClient_TokenEndpointAuthMethodDefault(t *testing.T) {
 		assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod())
 	}
 }
+
+func TestFetch_RejectsUnsupportedTokenEndpointAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	// Serve a CIMD doc that declares a non-"none" auth method.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientID := "http://" + r.Host + r.URL.Path
+		doc := cimd.ClientMetadataDocument{
+			ClientID:                clientID,
+			RedirectURIs:            []string{"https://example.com/callback"},
+			TokenEndpointAuthMethod: "private_key_jwt",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	}))
+	t.Cleanup(srv.Close)
+
+	dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+	_, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+	require.Error(t, err, "fetch must fail when token_endpoint_auth_method is not \"none\"")
+}

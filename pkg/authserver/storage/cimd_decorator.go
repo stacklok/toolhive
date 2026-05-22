@@ -117,6 +117,17 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 		return nil, fmt.Errorf("%w: %w", fosite.ErrNotFound.WithHint("CIMD fetch failed"), err)
 	}
 
+	// Reject documents that declare an auth method this AS does not support.
+	// The embedded AS only advertises "none"; accepting a doc that says
+	// "private_key_jwt" and then silently treating the client as public would
+	// mislead operators and break clients that actually try to use JWT assertions.
+	if m := doc.TokenEndpointAuthMethod; m != "" && m != defaultCIMDTokenEndpointAuthMethod {
+		return nil, fmt.Errorf("%w: CIMD document at %s claims token_endpoint_auth_method %q "+
+			"but this server only supports %q",
+			fosite.ErrNotFound.WithHint("unsupported token_endpoint_auth_method"),
+			id, m, defaultCIMDTokenEndpointAuthMethod)
+	}
+
 	client := buildFositeClient(doc)
 
 	d.cache.Add(id, &cimdCacheEntry{
@@ -138,7 +149,8 @@ var defaultCIMDResponseTypes = []string{"code"}
 
 // defaultCIMDTokenEndpointAuthMethod is the token endpoint authentication
 // method applied when the CIMD document omits token_endpoint_auth_method.
-// CIMD clients are always public — no pre-shared secret is established.
+// Documents that declare any other value are rejected by fetch() before
+// buildFositeClient is called.
 const defaultCIMDTokenEndpointAuthMethod = "none"
 
 // buildFositeClient converts a ClientMetadataDocument into a fosite.Client.
@@ -155,10 +167,10 @@ func buildFositeClient(doc *cimd.ClientMetadataDocument) fosite.Client {
 		responseTypes = defaultCIMDResponseTypes
 	}
 
-	// The embedded AS advertises only "none" in token_endpoint_auth_methods_supported.
-	// Override any other value from the document to avoid an inconsistent client
-	// configuration — CIMD clients are always public and have no pre-shared secret.
-	tokenEndpointAuthMethod := defaultCIMDTokenEndpointAuthMethod
+	tokenEndpointAuthMethod := doc.TokenEndpointAuthMethod
+	if tokenEndpointAuthMethod == "" {
+		tokenEndpointAuthMethod = defaultCIMDTokenEndpointAuthMethod
+	}
 
 	var scopes []string
 	if doc.Scope != "" {

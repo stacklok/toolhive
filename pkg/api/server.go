@@ -142,6 +142,31 @@ func (b *ServerBuilder) WithOtelEnabled(enabled bool) *ServerBuilder {
 	return b
 }
 
+// WithMiddleware appends HTTP middleware that runs after the default middleware
+// stack (request-ID, body-size limit, headers, update-check, auth) and before
+// route handlers. Consumed by ApplyServerExtensions hooks that inject custom
+// authentication or request-scoping middleware into the API server.
+//
+// Required for the ApplyServerExtensions extension point — do not remove even
+// if deadcode analysis reports it unused, since the callers live behind build
+// tags not exercised by upstream CI.
+func (b *ServerBuilder) WithMiddleware(mw ...func(http.Handler) http.Handler) *ServerBuilder {
+	b.middlewares = append(b.middlewares, mw...)
+	return b
+}
+
+// WithRoute mounts a sub-router at the given prefix. The caller is responsible
+// for any per-route timeout middleware. Consumed by ApplyServerExtensions hooks
+// that add additional API surface alongside the built-in routes.
+//
+// Required for the ApplyServerExtensions extension point — do not remove even
+// if deadcode analysis reports it unused, since the callers live behind build
+// tags not exercised by upstream CI.
+func (b *ServerBuilder) WithRoute(prefix string, handler http.Handler) *ServerBuilder {
+	b.customRoutes[prefix] = handler
+	return b
+}
+
 // Build creates and configures the HTTP router
 func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r := chi.NewRouter()

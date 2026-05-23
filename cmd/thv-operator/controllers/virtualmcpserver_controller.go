@@ -75,6 +75,11 @@ type AuthConfigError struct {
 	BackendName string
 	// Error is the underlying error that occurred during conversion
 	Error error
+	// Reason, when non-empty, overrides the default "ConversionFailed" condition reason.
+	// Used to mirror upstream MCPExternalAuthConfig.Status.Conditions[Valid].Reason
+	// (e.g. "EnterpriseRequired") onto the per-backend auth config condition so the
+	// failure surfaces with the same taxonomy on the consumer CR.
+	Reason string
 }
 
 // SpecValidationError represents a spec validation failure that the user must fix.
@@ -86,6 +91,16 @@ type SpecValidationError struct {
 
 func (e *SpecValidationError) Error() string {
 	return e.Message
+}
+
+// authConfigErrorReason returns the reason string to use when surfacing an
+// auth-config error via SetAuthConfigCondition: the mirrored source reason
+// when present, otherwise the generic "ConversionFailed".
+func authConfigErrorReason(authErr *AuthConfigError) string {
+	if authErr != nil && authErr.Reason != "" {
+		return authErr.Reason
+	}
+	return "ConversionFailed"
 }
 
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
@@ -2190,6 +2205,12 @@ func (r *VirtualMCPServerReconciler) convertBackendAuthConfigToVMCP(
 			return nil, fmt.Errorf("failed to get MCPExternalAuthConfig %s: %w", crdConfig.ExternalAuthConfigRef.Name, err)
 		}
 
+		// Mirror the source's Valid=False condition before attempting conversion
+		// so the per-backend condition surfaces with the same reason taxonomy.
+		if mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig); mirrored != nil {
+			return nil, mirrored
+		}
+
 		// Convert the external auth config to strategy
 		return r.convertExternalAuthConfigToStrategy(externalAuthConfig)
 	}
@@ -2305,6 +2326,19 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 			continue
 		}
 
+		// Mirror the source's Valid=False condition (e.g. EnterpriseRequired for
+		// obo-typed configs in upstream-only builds) onto the per-backend
+		// condition so the failure surfaces with the same reason taxonomy.
+		if mirrored := mirroredExternalAuthConfigInvalid(externalAuthConfig); mirrored != nil {
+			authErrors = append(authErrors, AuthConfigError{
+				Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
+				BackendName: workloadInfo.Name,
+				Error:       mirrored,
+				Reason:      mirrored.Reason,
+			})
+			continue
+		}
+
 		// Convert MCPExternalAuthConfig to BackendAuthStrategy
 		strategy, err := r.convertExternalAuthConfigToStrategy(externalAuthConfig)
 		if err != nil {
@@ -2402,6 +2436,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 				Context:     authContextDefault,
 				BackendName: "",
 				Error:       fmt.Errorf("failed to convert default auth config: %w", err),
+				Reason:      mirroredReasonFromError(err),
 			})
 		} else {
 			outgoing.Default = injectSubjectProviderIfNeeded(defaultStrategy, vmcp.Spec.AuthServerConfig)
@@ -2427,6 +2462,7 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 					Context:     fmt.Sprintf("%s%s", authContextBackendPrefix, backendName),
 					BackendName: backendName,
 					Error:       fmt.Errorf("failed to convert backend auth config: %w", err),
+					Reason:      mirroredReasonFromError(err),
 				})
 			} else {
 				outgoing.Backends[backendName] = injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
@@ -3182,27 +3218,32 @@ func setAuthConfigConditions(
 	allAuthErrors []AuthConfigError,
 ) {
 	// Build error maps by context for quick lookup
-	var defaultAuthError error
-	backendAuthErrors := make(map[string]error)
-	discoveredAuthErrors := make(map[string]error)
+	var defaultAuthError *AuthConfigError
+	backendAuthErrors := make(map[string]*AuthConfigError)
+	discoveredAuthErrors := make(map[string]*AuthConfigError)
 
-	for _, authError := range allAuthErrors {
-		if authError.Context == authContextDefault {
-			defaultAuthError = authError.Error
-		} else if strings.HasPrefix(authError.Context, authContextBackendPrefix) {
-			backendAuthErrors[authError.BackendName] = authError.Error
-		} else if strings.HasPrefix(authError.Context, authContextDiscoveredPrefix) {
-			discoveredAuthErrors[authError.BackendName] = authError.Error
+	for i := range allAuthErrors {
+		authError := &allAuthErrors[i]
+		switch {
+		case authError.Context == authContextDefault:
+			defaultAuthError = authError
+		case strings.HasPrefix(authError.Context, authContextBackendPrefix):
+			backendAuthErrors[authError.BackendName] = authError
+		case strings.HasPrefix(authError.Context, authContextDiscoveredPrefix):
+			discoveredAuthErrors[authError.BackendName] = authError
 		}
 	}
 
 	// Handle DefaultAuthConfig condition
 	if defaultAuthError != nil {
-		// Default auth has error - set False condition
+		// Default auth has error - set False condition. When the source's
+		// MCPExternalAuthConfig surfaced a Valid=False condition we propagate
+		// the source's reason (e.g. EnterpriseRequired); otherwise we report
+		// ConversionFailed.
 		statusManager.SetAuthConfigCondition(
 			"DefaultAuthConfig",
-			"ConversionFailed",
-			fmt.Sprintf("Failed to convert default auth config: %v", defaultAuthError),
+			authConfigErrorReason(defaultAuthError),
+			fmt.Sprintf("Failed to convert default auth config: %v", defaultAuthError.Error),
 			metav1.ConditionFalse,
 		)
 	} else if hasValidDefaultAuth {
@@ -3241,12 +3282,15 @@ func setAuthConfigConditions(
 	for _, backendName := range backendsWithAuthConfig {
 		conditionType := fmt.Sprintf("DiscoveredAuthConfig-%s", backendName)
 
-		if err, hasError := discoveredAuthErrors[backendName]; hasError {
-			// Backend has discovered auth config error - set False condition
+		if authErr, hasError := discoveredAuthErrors[backendName]; hasError {
+			// Backend has discovered auth config error - set False condition.
+			// Propagate the source's reason when the underlying
+			// MCPExternalAuthConfig surfaced Valid=False; otherwise report
+			// ConversionFailed.
 			statusManager.SetAuthConfigCondition(
 				conditionType,
-				"ConversionFailed",
-				fmt.Sprintf("Failed to convert discovered auth config: %v", err),
+				authConfigErrorReason(authErr),
+				fmt.Sprintf("Failed to convert discovered auth config: %v", authErr.Error),
 				metav1.ConditionFalse,
 			)
 		} else {
@@ -3260,14 +3304,16 @@ func setAuthConfigConditions(
 		}
 	}
 
-	// Set BackendAuthConfig conditions for inline backend-specific auth configs
-	// First, set error conditions
-	for backendName, err := range backendAuthErrors {
+	// Set BackendAuthConfig conditions for inline backend-specific auth configs.
+	// First, set error conditions. Propagate the source's reason when the
+	// underlying MCPExternalAuthConfig surfaced Valid=False; otherwise report
+	// ConversionFailed.
+	for backendName, authErr := range backendAuthErrors {
 		conditionType := fmt.Sprintf("BackendAuthConfig-%s", backendName)
 		statusManager.SetAuthConfigCondition(
 			conditionType,
-			"ConversionFailed",
-			fmt.Sprintf("Failed to convert backend auth config: %v", err),
+			authConfigErrorReason(authErr),
+			fmt.Sprintf("Failed to convert backend auth config: %v", authErr.Error),
 			metav1.ConditionFalse,
 		)
 	}

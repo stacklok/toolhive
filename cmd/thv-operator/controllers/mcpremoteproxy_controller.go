@@ -735,6 +735,14 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 		return fmt.Errorf("failed to fetch MCPExternalAuthConfig: %w", err)
 	}
 
+	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
+	// the MCPRemoteProxy so the failure is visible on the consumer CR (e.g.
+	// obo-typed configs surface Valid=False/EnterpriseRequired here without the
+	// user having to inspect the referenced MCPExternalAuthConfig).
+	if mirrored, err := mirrorInvalidOnRemoteProxy(proxy, externalAuthConfig); mirrored {
+		return err
+	}
+
 	// MCPRemoteProxy supports only single-upstream embedded auth server configs.
 	// Multi-upstream requires VirtualMCPServer.
 	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {

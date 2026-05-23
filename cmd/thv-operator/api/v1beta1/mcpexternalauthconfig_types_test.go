@@ -276,6 +276,69 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			errMsg:    "upstreamInject requires a non-empty providerName",
 		},
 		{
+			name: "valid obo type with placeholder OBOConfig",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeOBO,
+					OBO:  &OBOConfig{},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "invalid obo type with nil obo config",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-missing",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeOBO,
+					OBO:  nil,
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
+			name: "invalid obo config set on non-obo type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-on-tokenexchange",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:          ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{TokenURL: "https://example.com/token"},
+					OBO:           &OBOConfig{},
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
+			// Also intentional shape-parity coverage for the unauthenticated
+			// guard's OBO != nil disjunct, even though the OBO biconditional
+			// above intercepts first for this input.
+			name: "invalid obo config on unauthenticated type (obo biconditional intercepts first)",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-on-unauth",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeUnauthenticated,
+					OBO:  &OBOConfig{},
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
 			name: "invalid OIDC provider with oauth2Config instead",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{

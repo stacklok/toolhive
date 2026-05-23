@@ -1044,6 +1044,14 @@ spec:
                 - headerName
                 - valueSecretRef
                 type: object
+              obo:
+                description: |-
+                  OBO configures On-Behalf-Of (OBO) authentication.
+                  Only used when Type is "obo". The inner schema is intentionally empty in
+                  this revision; sub-fields land in a follow-up. Setting this field on an
+                  upstream-only build will cause the MCPExternalAuthConfig to transition to
+                  status.conditions[Valid] = False with Reason: EnterpriseRequired.
+                type: object
               tokenExchange:
                 description: |-
                   TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange
@@ -1114,7 +1122,12 @@ spec:
                 - tokenUrl
                 type: object
               type:
-                description: Type is the type of external authentication to configure
+                description: |-
+                  Type is the type of external authentication to configure.
+                  When set to "obo", the cluster must run a build that has registered an
+                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
+                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
+                  for obo-typed configs.
                 enum:
                 - tokenExchange
                 - headerInjection
@@ -1123,6 +1136,7 @@ spec:
                 - embeddedAuthServer
                 - awsSts
                 - upstreamInject
+                - obo
                 type: string
               upstreamInject:
                 description: |-
@@ -1162,10 +1176,13 @@ spec:
                 is 'upstreamInject'
               rule: 'self.type == ''upstreamInject'' ? has(self.upstreamInject) :
                 !has(self.upstreamInject)'
+            - message: obo configuration must be set if and only if type is 'obo'
+              rule: 'self.type == ''obo'' ? has(self.obo) : !has(self.obo)'
             - message: no configuration must be set when type is 'unauthenticated'
               rule: 'self.type == ''unauthenticated'' ? (!has(self.tokenExchange)
                 && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)
-                && !has(self.awsSts) && !has(self.upstreamInject)) : true'
+                && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo))
+                : true'
           status:
             description: MCPExternalAuthConfigStatus defines the observed state of
               MCPExternalAuthConfig
@@ -2306,6 +2323,14 @@ spec:
                 - headerName
                 - valueSecretRef
                 type: object
+              obo:
+                description: |-
+                  OBO configures On-Behalf-Of (OBO) authentication.
+                  Only used when Type is "obo". The inner schema is intentionally empty in
+                  this revision; sub-fields land in a follow-up. Setting this field on an
+                  upstream-only build will cause the MCPExternalAuthConfig to transition to
+                  status.conditions[Valid] = False with Reason: EnterpriseRequired.
+                type: object
               tokenExchange:
                 description: |-
                   TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange
@@ -2376,7 +2401,12 @@ spec:
                 - tokenUrl
                 type: object
               type:
-                description: Type is the type of external authentication to configure
+                description: |-
+                  Type is the type of external authentication to configure.
+                  When set to "obo", the cluster must run a build that has registered an
+                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
+                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
+                  for obo-typed configs.
                 enum:
                 - tokenExchange
                 - headerInjection
@@ -2385,6 +2415,7 @@ spec:
                 - embeddedAuthServer
                 - awsSts
                 - upstreamInject
+                - obo
                 type: string
               upstreamInject:
                 description: |-
@@ -2424,10 +2455,13 @@ spec:
                 is 'upstreamInject'
               rule: 'self.type == ''upstreamInject'' ? has(self.upstreamInject) :
                 !has(self.upstreamInject)'
+            - message: obo configuration must be set if and only if type is 'obo'
+              rule: 'self.type == ''obo'' ? has(self.obo) : !has(self.obo)'
             - message: no configuration must be set when type is 'unauthenticated'
               rule: 'self.type == ''unauthenticated'' ? (!has(self.tokenExchange)
                 && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)
-                && !has(self.awsSts) && !has(self.upstreamInject)) : true'
+                && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo))
+                : true'
           status:
             description: MCPExternalAuthConfigStatus defines the observed state of
               MCPExternalAuthConfig

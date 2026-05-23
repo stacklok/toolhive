@@ -38,6 +38,7 @@ func TestOBOConverter_ConvertToStrategy(t *testing.T) {
 			externalCfg: &mcpv1beta1.MCPExternalAuthConfig{
 				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  &mcpv1beta1.OBOConfig{},
 				},
 			},
 		},
@@ -69,6 +70,7 @@ func TestOBOConverter_ResolveSecrets(t *testing.T) {
 			externalCfg: &mcpv1beta1.MCPExternalAuthConfig{
 				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  &mcpv1beta1.OBOConfig{},
 				},
 			},
 			strategy: &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO},
@@ -123,6 +125,7 @@ func TestDiscoverAndResolveAuth_OBO_SentinelSurvivesWrap(t *testing.T) {
 		},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
 		},
 	}
 

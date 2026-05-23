@@ -5,6 +5,7 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -850,6 +851,181 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 	}
 }
 
+// TestConvertBackendAuthConfigToVMCP_MirrorsInvalidExternalAuthConfig verifies
+// the mirror added for #5347: when the referenced MCPExternalAuthConfig has
+// Status.Conditions[Valid]=False (e.g. obo-typed configs in upstream-only
+// builds), the conversion must short-circuit before reaching the converter and
+// return a typed error that carries the source's reason+message so callers
+// (buildOutgoingAuthConfig) can propagate the reason onto the per-backend
+// AuthConfigError.
+func TestConvertBackendAuthConfigToVMCP_MirrorsInvalidExternalAuthConfig(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+
+	invalidSource := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "obo-source", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
+		},
+		Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+			Conditions: []metav1.Condition{{
+				Type:    mcpv1beta1.ConditionTypeValid,
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+				Message: "obo enterprise required",
+			}},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(invalidSource).
+		Build()
+
+	r := &VirtualMCPServerReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	strategy, err := r.convertBackendAuthConfigToVMCP(context.Background(), "default", &mcpv1beta1.BackendAuthConfig{
+		Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+		ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "obo-source"},
+	})
+
+	require.Error(t, err, "must short-circuit when source Valid=False")
+	require.Nil(t, strategy)
+	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, mirroredReasonFromError(err),
+		"buildOutgoingAuthConfig depends on this reason flowing through mirroredReasonFromError")
+
+	// Wrap the error exactly as buildOutgoingAuthConfig does in production
+	// (fmt.Errorf("...: %w", err)) and assert the reason still survives the
+	// errors.As walk. A future refactor that drops %w in favour of %v or
+	// errors.New(fmt.Sprintf(...)) would silently break per-backend reason
+	// propagation and surface ConversionFailed instead of EnterpriseRequired.
+	wrapped := fmt.Errorf("failed to convert backend auth config: %w", err)
+	assert.Equal(t, mcpv1beta1.ConditionReasonEnterpriseRequired, mirroredReasonFromError(wrapped),
+		"buildOutgoingAuthConfig wraps the err once before extracting the reason; "+
+			"the contract must survive that wrap")
+}
+
+// TestMirroredExternalAuthConfigInvalid verifies the source-condition probe
+// returns the typed pointer exactly when Status.Conditions[Valid] is False,
+// and nil otherwise. Also asserts that the typed value satisfies the error
+// interface so callers can pass it through error-returning APIs (notably
+// convertBackendAuthConfigToVMCP -> buildOutgoingAuthConfig) and recover the
+// reason via mirroredReasonFromError.
+func TestMirroredExternalAuthConfigInvalid(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		conditions  []metav1.Condition
+		wantReason  string
+		wantMessage string
+	}{
+		{
+			name: "Valid=False/EnterpriseRequired returns mirrored pointer",
+			conditions: []metav1.Condition{{
+				Type:    mcpv1beta1.ConditionTypeValid,
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+				Message: "obo enterprise required",
+			}},
+			wantReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+			wantMessage: "obo enterprise required",
+		},
+		{
+			name: "Valid=True returns nil",
+			conditions: []metav1.Condition{{
+				Type:   mcpv1beta1.ConditionTypeValid,
+				Status: metav1.ConditionTrue,
+				Reason: "ValidationSucceeded",
+			}},
+		},
+		{
+			name:       "no Valid condition returns nil",
+			conditions: nil,
+		},
+		{
+			// F6 defense-in-depth: metav1.Condition requires Reason to be
+			// non-empty (apiserver rejects empty-Reason patches). If a source
+			// ever surfaces Valid=False with an empty Reason (corrupt status
+			// or a bug in the source reconciler), the mirror must substitute
+			// a fallback rather than copy the empty string through and trap
+			// the consumer in a noisy reconcile loop.
+			name: "Valid=False with empty Reason gets a fallback reason",
+			conditions: []metav1.Condition{{
+				Type:    mcpv1beta1.ConditionTypeValid,
+				Status:  metav1.ConditionFalse,
+				Reason:  "",
+				Message: "source surfaced an empty Reason",
+			}},
+			wantReason:  fallbackInvalidReason,
+			wantMessage: "source surfaced an empty Reason",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &mcpv1beta1.MCPExternalAuthConfig{
+				Status: mcpv1beta1.MCPExternalAuthConfigStatus{Conditions: tt.conditions},
+			}
+			mirrored := mirroredExternalAuthConfigInvalid(cfg)
+			if tt.wantReason == "" {
+				assert.Nil(t, mirrored)
+				return
+			}
+			require.NotNil(t, mirrored)
+			assert.Equal(t, tt.wantReason, mirrored.Reason)
+			assert.Equal(t, tt.wantMessage, mirrored.Message)
+			// Round-trips through error-typed APIs.
+			assert.Equal(t, tt.wantReason, mirroredReasonFromError(mirrored))
+		})
+	}
+}
+
+// TestAuthConfigErrorReason verifies the conversion of an AuthConfigError into
+// the reason string used by setAuthConfigConditions: the mirrored source
+// reason when present, otherwise the generic "ConversionFailed".
+func TestAuthConfigErrorReason(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   *AuthConfigError
+		want string
+	}{
+		{
+			name: "nil falls back to ConversionFailed",
+			in:   nil,
+			want: "ConversionFailed",
+		},
+		{
+			name: "empty Reason falls back to ConversionFailed",
+			in:   &AuthConfigError{},
+			want: "ConversionFailed",
+		},
+		{
+			name: "non-empty Reason is propagated verbatim",
+			in:   &AuthConfigError{Reason: mcpv1beta1.ConditionReasonEnterpriseRequired},
+			want: mcpv1beta1.ConditionReasonEnterpriseRequired,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, authConfigErrorReason(tt.in))
+		})
+	}
+}
+
 // TestGenerateUniqueTokenExchangeEnvVarName tests the generateUniqueTokenExchangeEnvVarName function
 func TestGenerateUniqueTokenExchangeEnvVarName(t *testing.T) {
 	t.Parallel()
@@ -1670,6 +1846,7 @@ func TestGetExternalAuthConfigSecretEnvVar_OBO(t *testing.T) {
 		},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
 			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
 		},
 	}
 

@@ -192,7 +192,7 @@ func TestMigrationCache_ConcurrentAccess(t *testing.T) {
 
 // TestMigrationCache_KeyIsolation exercises both key-isolation axes: two
 // distinct CRDs sharing a UID must not collide, and two distinct UIDs under
-// the same CRD must not collide. UID re-use across CRDs is impossible in
+// the same CRD must not collide. UID reuse across CRDs is impossible in
 // practice (apiserver UIDs are globally unique) but the cache must defend
 // against it anyway.
 func TestMigrationCache_KeyIsolation(t *testing.T) {
@@ -269,7 +269,7 @@ func TestReconcile_EarlyReturns(t *testing.T) {
 	t.Parallel()
 
 	const mcpName = "mcpservers.toolhive.stacklok.dev"
-	optIn := map[string]string{AutoMigrateLabel: AutoMigrateValue}
+	optInLabels := map[string]string{AutoMigrateLabel: AutoMigrateValue}
 	servedV1Beta1 := []apiextensionsv1.CustomResourceDefinitionVersion{{Name: "v1beta1", Storage: true, Served: true}}
 
 	tests := []struct {
@@ -284,7 +284,7 @@ func TestReconcile_EarlyReturns(t *testing.T) {
 		},
 		{
 			name: "foreign group is skipped",
-			crd: reconcileCRD("widgets.example.com", "example.com", optIn,
+			crd: reconcileCRD("widgets.example.com", "example.com", optInLabels,
 				[]apiextensionsv1.CustomResourceDefinitionVersion{{Name: "v1", Storage: true, Served: true}},
 				[]string{"v1alpha1", "v1"}),
 			crdName: "widgets.example.com",
@@ -299,7 +299,7 @@ func TestReconcile_EarlyReturns(t *testing.T) {
 			// would normally reject this at CRD-create time, so envtest can't
 			// reach this branch. Reconcile must return nil rather than panic.
 			name: "no storage version is skipped",
-			crd: reconcileCRD(mcpName, ToolhiveGroup, optIn,
+			crd: reconcileCRD(mcpName, ToolhiveGroup, optInLabels,
 				[]apiextensionsv1.CustomResourceDefinitionVersion{
 					{Name: "v1alpha1", Storage: false, Served: true},
 					{Name: "v1beta1", Storage: false, Served: true},
@@ -309,7 +309,7 @@ func TestReconcile_EarlyReturns(t *testing.T) {
 		},
 		{
 			name:    "already-clean storedVersions returns early",
-			crd:     reconcileCRD(mcpName, ToolhiveGroup, optIn, servedV1Beta1, []string{"v1beta1"}),
+			crd:     reconcileCRD(mcpName, ToolhiveGroup, optInLabels, servedV1Beta1, []string{"v1beta1"}),
 			crdName: mcpName,
 		},
 	}

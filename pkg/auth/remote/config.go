@@ -86,6 +86,10 @@ type Config struct {
 	// CachedTokenEndpointAuthMethod is the auth method used for the token endpoint
 	// (e.g., "client_secret_basic", "none"). Persisted for RFC 7592 updates.
 	CachedTokenEndpointAuthMethod string `json:"cached_token_auth_method,omitempty" yaml:"cached_token_auth_method,omitempty"`
+	// CachedDCRCallbackPort is the callback port that was actually registered
+	// during DCR. It may differ from CallbackPort when the requested port was
+	// unavailable and a fallback port was selected.
+	CachedDCRCallbackPort int `json:"cached_dcr_callback_port,omitempty" yaml:"cached_dcr_callback_port,omitempty"`
 }
 
 // BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
@@ -194,6 +198,7 @@ func (c *Config) ClearCachedClientCredentials() {
 	c.CachedRegTokenRef = ""
 	c.CachedRegClientURI = ""
 	c.CachedTokenEndpointAuthMethod = ""
+	c.CachedDCRCallbackPort = 0
 }
 
 // LogContext returns the upstream issuer and resolved client_id for use as

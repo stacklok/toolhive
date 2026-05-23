@@ -14,6 +14,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -25,6 +26,7 @@ type Handler struct {
 	tokenPersister             TokenPersister
 	clientCredentialsPersister ClientCredentialsPersister
 	secretProvider             secrets.Provider
+	httpClient                 networking.HTTPClient
 }
 
 // NewHandler creates a new remote authentication handler
@@ -49,6 +51,11 @@ func (h *Handler) SetSecretProvider(provider secrets.Provider) {
 // when DCR client credentials are obtained and need to be persisted.
 func (h *Handler) SetClientCredentialsPersister(persister ClientCredentialsPersister) {
 	h.clientCredentialsPersister = persister
+}
+
+// SetHTTPClient sets the HTTP client used for RFC 7592 registration management requests.
+func (h *Handler) SetHTTPClient(client networking.HTTPClient) {
+	h.httpClient = client
 }
 
 // Authenticate is the main entry point for remote MCP server authentication
@@ -215,6 +222,7 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 			result.RegistrationAccessToken,
 			result.RegistrationClientURI,
 			result.TokenEndpointAuthMethod,
+			result.RegisteredCallbackPort,
 		); err != nil {
 			slog.Warn("Failed to persist DCR client credentials", "error", err)
 		} else {
@@ -264,7 +272,7 @@ func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clien
 
 		// Proactively renew the client secret if it is expiring soon (RFC 7592)
 		if h.isSecretExpiredOrExpiringSoon() {
-			slog.Info("Cached client secret is expiring soon, attempting renewal",
+			slog.Debug("Cached client secret is expiring soon, attempting renewal",
 				"expiry", h.config.CachedSecretExpiry)
 			if renewErr := h.renewClientSecret(ctx); renewErr != nil {
 				slog.Warn("Failed to proactively renew client secret; continuing with existing secret",
@@ -303,7 +311,7 @@ func (h *Handler) tryRestoreFromCachedTokens(
 	// Check if the cached client secret is expired before attempting token refresh.
 	// If it has fully expired and renewal also fails we must force a fresh OAuth flow.
 	if h.isSecretExpiredOrExpiringSoon() {
-		slog.Info("Cached client secret is expiring or expired; attempting renewal before token restore",
+		slog.Debug("Cached client secret is expiring or expired; attempting renewal before token restore",
 			"expiry", h.config.CachedSecretExpiry)
 		if renewErr := h.renewClientSecret(ctx); renewErr != nil {
 			slog.Warn("Client secret renewal failed", "error", renewErr)

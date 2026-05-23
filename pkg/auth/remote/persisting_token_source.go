@@ -31,6 +31,7 @@ type TokenPersister func(refreshToken string, expiry time.Time) error
 //   - registrationAccessToken: bearer token for RFC 7592 management operations (sensitive)
 //   - registrationClientURI: endpoint for RFC 7592 client update/read operations (plain text)
 //   - tokenEndpointAuthMethod: the auth method used for the token endpoint (e.g., "client_secret_basic", "none")
+//   - registeredCallbackPort: the callback port used in the original DCR redirect URI
 type ClientCredentialsPersister func(
 	clientID string,
 	clientSecret string,
@@ -38,6 +39,7 @@ type ClientCredentialsPersister func(
 	registrationAccessToken string,
 	registrationClientURI string,
 	tokenEndpointAuthMethod string,
+	registeredCallbackPort int,
 ) error
 
 // PersistingTokenSource wraps an oauth2.TokenSource and persists tokens

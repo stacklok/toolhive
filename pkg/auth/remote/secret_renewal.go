@@ -4,6 +4,7 @@
 package remote
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,16 +12,24 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // secretExpiryBuffer is the lead time before expiry at which we proactively
 // renew the client secret (RFC 7592). Renewal is attempted when the secret
 // expires within this window, not only after expiry.
 const secretExpiryBuffer = 24 * time.Hour
+
+var defaultRenewalHTTPClient = &http.Client{
+	Timeout: 30 * time.Second,
+	Transport: &http.Transport{
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 10 * time.Second,
+	},
+}
 
 // clientUpdateRequest is the body sent in a RFC 7592 §2.2 PUT request.
 // Per the spec, all client metadata fields that were provided during
@@ -94,8 +103,8 @@ func (h *Handler) renewClientSecret(ctx context.Context) error {
 	// that were provided during the initial registration.
 	updateReq := clientUpdateRequest{
 		ClientID:                h.config.CachedClientID,
-		ClientName:              "ToolHive MCP Client",
-		RedirectURIs:            []string{fmt.Sprintf("http://localhost:%d/callback", h.config.CallbackPort)},
+		ClientName:              oauthproto.ToolHiveMCPClientName,
+		RedirectURIs:            []string{fmt.Sprintf("http://localhost:%d/callback", h.registeredDCRCallbackPort())},
 		GrantTypes:              []string{"authorization_code", "refresh_token"},
 		ResponseTypes:           []string{"code"},
 		TokenEndpointAuthMethod: h.config.CachedTokenEndpointAuthMethod,
@@ -111,7 +120,7 @@ func (h *Handler) renewClientSecret(ctx context.Context) error {
 		ctx,
 		http.MethodPut,
 		h.config.CachedRegClientURI,
-		strings.NewReader(string(reqBody)),
+		bytes.NewReader(reqBody),
 	)
 	if err != nil {
 		return fmt.Errorf("failed to create client update request: %w", err)
@@ -119,15 +128,11 @@ func (h *Handler) renewClientSecret(ctx context.Context) error {
 
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
-	req.Header.Set("Authorization", "Bearer "+regAccessToken) //nolint:gosec // G117
+	req.Header.Set("Authorization", "Bearer "+regAccessToken)
 
-	// Execute the request
-	httpClient := &http.Client{
-		Timeout: 30 * time.Second,
-		Transport: &http.Transport{
-			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
-		},
+	httpClient := h.httpClient
+	if httpClient == nil {
+		httpClient = defaultRenewalHTTPClient
 	}
 
 	resp, err := httpClient.Do(req)
@@ -142,6 +147,7 @@ func (h *Handler) renewClientSecret(ctx context.Context) error {
 
 	if resp.StatusCode != http.StatusOK {
 		errorBody, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return fmt.Errorf("client update request returned HTTP %d: %s", resp.StatusCode, string(errorBody))
 	}
 
@@ -175,6 +181,13 @@ func (h *Handler) validateRenewalPrerequisites() error {
 	return nil
 }
 
+func (h *Handler) registeredDCRCallbackPort() int {
+	if h.config.CachedDCRCallbackPort != 0 {
+		return h.config.CachedDCRCallbackPort
+	}
+	return h.config.CallbackPort
+}
+
 func (h *Handler) persistRenewedSecret(updateResp clientUpdateResponse) error {
 	if h.clientCredentialsPersister == nil {
 		return fmt.Errorf("client credentials persister not configured; cannot save renewed secret")
@@ -199,11 +212,19 @@ func (h *Handler) persistRenewedSecret(updateResp clientUpdateResponse) error {
 		newRegToken,
 		newRegURI,
 		h.config.CachedTokenEndpointAuthMethod,
+		h.registeredDCRCallbackPort(),
 	); err != nil {
 		return fmt.Errorf("failed to persist renewed client secret: %w", err)
 	}
 
-	slog.Info("Successfully renewed client secret via RFC 7592",
+	h.config.CachedClientID = updateResp.ClientID
+	h.config.CachedSecretExpiry = newExpiry
+	h.config.CachedRegClientURI = newRegURI
+	if h.config.CachedDCRCallbackPort == 0 {
+		h.config.CachedDCRCallbackPort = h.config.CallbackPort
+	}
+
+	slog.Debug("Successfully renewed client secret via RFC 7592",
 		"client_id", updateResp.ClientID,
 		"new_expiry_zero", newExpiry.IsZero(),
 		"reg_token_rotated", newRegToken != "")
@@ -225,6 +246,9 @@ func validateRegistrationClientURI(registrationClientURI string) error {
 
 	if parsedURL.Scheme != "https" && !networking.IsLocalhost(parsedURL.Host) {
 		return fmt.Errorf("registration_client_uri must use HTTPS: %s", registrationClientURI)
+	}
+	if parsedURL.Path == "" || parsedURL.Path == "/" {
+		return fmt.Errorf("registration_client_uri must include a non-root path: %s", registrationClientURI)
 	}
 
 	return nil

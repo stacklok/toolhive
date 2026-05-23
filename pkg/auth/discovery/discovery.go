@@ -536,6 +536,7 @@ type OAuthFlowConfig struct {
 	RegistrationAccessToken string    //nolint:gosec // G117: field legitimately holds sensitive data
 	RegistrationClientURI   string
 	TokenEndpointAuthMethod string
+	RegisteredCallbackPort  int
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -560,6 +561,7 @@ type OAuthFlowResult struct {
 	RegistrationAccessToken string //nolint:gosec // G117: field legitimately holds sensitive data
 	RegistrationClientURI   string
 	TokenEndpointAuthMethod string
+	RegisteredCallbackPort  int
 }
 
 func shouldDynamicallyRegisterClient(config *OAuthFlowConfig) bool {
@@ -632,20 +634,12 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 // exists.
 //
 // One consequence of option (b) is that the resolver's RFC 7591 §3.2.1
-// expiry-driven refetch does NOT participate in the CLI's cross-
-// invocation persistence loop: each PerformOAuthFlow call builds a fresh
-// in-memory store, so a "cached but expired" entry from the previous
-// invocation never reaches the resolver. Cross-invocation expiry is also
-// NOT enforced by the remote handler's gate today —
-// HasCachedClientCredentials only checks CachedClientID != "" and does
-// not consult CachedSecretExpiry, so an expired-but-still-cached client
-// gets reused on the next invocation and surfaces as a token-endpoint
-// failure rather than a clean DCR re-registration. Tightening the gate
-// to also check CachedSecretExpiry is open follow-up work; the
-// behaviour today is "cross-invocation expiry is unhandled". Within a
-// single invocation, the resolver's expiry check is still in the loop
-// and would fire if the same call site somehow registered, persisted,
-// and re-queried the in-memory store — but the CLI never does this today.
+// expiry-driven refetch does NOT participate in the CLI's cross-invocation
+// persistence loop: each PerformOAuthFlow call builds a fresh in-memory store,
+// so a cached entry from a previous invocation never reaches the resolver.
+// Cross-invocation client-secret expiry is handled instead by the remote
+// handler, which consults CachedSecretExpiry and renews through RFC 7592 before
+// cached credentials are used.
 //
 // Wrapping the remote handler's secretProvider into a dcr.CredentialStore
 // adapter (option (a)) would close that loop and is the natural follow-up;
@@ -694,27 +688,14 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 	}
 
 	// Store DCR renewal metadata for RFC 7592 operations.
-	// client_secret_expires_at == 0 means the secret never expires (RFC 7591 §3.2.1).
-	if registrationResponse.ClientSecretExpiresAt > 0 {
-		config.SecretExpiry = time.Unix(registrationResponse.ClientSecretExpiresAt, 0)
-	}
-	config.RegistrationAccessToken = registrationResponse.RegistrationAccessToken
-	config.RegistrationClientURI = registrationResponse.RegistrationClientURI
+	// A zero ClientSecretExpiresAt means the secret never expires (RFC 7591 §3.2.1).
+	config.SecretExpiry = resolution.ClientSecretExpiresAt
+	config.RegistrationAccessToken = resolution.RegistrationAccessToken
+	config.RegistrationClientURI = resolution.RegistrationClientURI
+	config.TokenEndpointAuthMethod = resolution.TokenEndpointAuthMethod
+	config.RegisteredCallbackPort = config.CallbackPort
 
-	if registrationResponse.RegistrationAccessToken != "" {
-		slog.Debug("DCR response includes registration access token for RFC 7592 operations")
-	}
-
-	// Store DCR renewal metadata for RFC 7592 operations.
-	// client_secret_expires_at == 0 means the secret never expires (RFC 7591 §3.2.1).
-	if registrationResponse.ClientSecretExpiresAt > 0 {
-		config.SecretExpiry = time.Unix(registrationResponse.ClientSecretExpiresAt, 0)
-	}
-	config.RegistrationAccessToken = registrationResponse.RegistrationAccessToken
-	config.RegistrationClientURI = registrationResponse.RegistrationClientURI
-	config.TokenEndpointAuthMethod = registrationResponse.TokenEndpointAuthMethod
-
-	if registrationResponse.RegistrationAccessToken != "" {
+	if resolution.RegistrationAccessToken != "" {
 		slog.Debug("DCR response includes registration access token for RFC 7592 operations")
 	}
 
@@ -983,6 +964,7 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 		RegistrationAccessToken: config.RegistrationAccessToken,
 		RegistrationClientURI:   config.RegistrationClientURI,
 		TokenEndpointAuthMethod: config.TokenEndpointAuthMethod,
+		RegisteredCallbackPort:  config.RegisteredCallbackPort,
 	}, nil
 }
 

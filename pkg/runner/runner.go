@@ -784,10 +784,11 @@ func (r *Runner) handleRemoteAuthentication(ctx context.Context) (oauth2.TokenSo
 			secretExpiry time.Time,
 			regAccessToken, regClientURI string,
 			tokenEndpointAuthMethod string,
+			registeredCallbackPort int,
 		) error {
 			return r.persistClientCredentials(
 				ctx, secretManager, clientID, clientSecret,
-				secretExpiry, regAccessToken, regClientURI, tokenEndpointAuthMethod)
+				secretExpiry, regAccessToken, regClientURI, tokenEndpointAuthMethod, registeredCallbackPort)
 		})
 	}
 
@@ -837,46 +838,64 @@ func (r *Runner) persistClientCredentials(
 	secretExpiry time.Time,
 	regAccessToken, regClientURI string,
 	tokenEndpointAuthMethod string,
+	registeredCallbackPort int,
 ) error {
-	r.Config.RemoteAuthConfig.CachedClientID = clientID
+	updatedConfig := *r.Config
+	updatedRemoteAuthConfig := remote.Config{}
+	if r.Config.RemoteAuthConfig != nil {
+		updatedRemoteAuthConfig = *r.Config.RemoteAuthConfig
+	}
+	updatedConfig.RemoteAuthConfig = &updatedRemoteAuthConfig
+	updatedRemoteAuthConfig.CachedClientID = clientID
 
 	if clientSecret != "" {
-		clientSecretSecretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(
-			r.Config.Name,
-			"OAUTH_CLIENT_SECRET_",
-			secretManager,
-		)
-		if err != nil {
-			return fmt.Errorf("failed to generate client secret secret name: %w", err)
+		clientSecretSecretName := updatedRemoteAuthConfig.CachedClientSecretRef
+		if clientSecretSecretName == "" {
+			var err error
+			clientSecretSecretName, err = authsecrets.GenerateUniqueSecretNameWithPrefix(
+				r.Config.Name,
+				"OAUTH_CLIENT_SECRET_",
+				secretManager,
+			)
+			if err != nil {
+				return fmt.Errorf("failed to generate client secret secret name: %w", err)
+			}
 		}
 
 		if err := authsecrets.StoreSecretInManagerWithProvider(ctx, clientSecretSecretName, clientSecret, secretManager); err != nil {
 			return fmt.Errorf("failed to store client secret: %w", err)
 		}
-		r.Config.RemoteAuthConfig.CachedClientSecretRef = clientSecretSecretName
+		updatedRemoteAuthConfig.CachedClientSecretRef = clientSecretSecretName
 	}
 
-	r.Config.RemoteAuthConfig.CachedSecretExpiry = secretExpiry
+	updatedRemoteAuthConfig.CachedSecretExpiry = secretExpiry
 
 	if regAccessToken != "" {
-		regTokenSecretName, err := authsecrets.GenerateUniqueSecretNameWithPrefix(r.Config.Name, "OAUTH_REG_TOKEN_", secretManager)
-		if err != nil {
-			return fmt.Errorf("failed to generate registration token secret name: %w", err)
+		regTokenSecretName := updatedRemoteAuthConfig.CachedRegTokenRef
+		if regTokenSecretName == "" {
+			var err error
+			regTokenSecretName, err = authsecrets.GenerateUniqueSecretNameWithPrefix(r.Config.Name, "OAUTH_REG_TOKEN_", secretManager)
+			if err != nil {
+				return fmt.Errorf("failed to generate registration token secret name: %w", err)
+			}
 		}
 
 		if err := authsecrets.StoreSecretInManagerWithProvider(ctx, regTokenSecretName, regAccessToken, secretManager); err != nil {
 			return fmt.Errorf("failed to store registration access token: %w", err)
 		}
-		r.Config.RemoteAuthConfig.CachedRegTokenRef = regTokenSecretName
+		updatedRemoteAuthConfig.CachedRegTokenRef = regTokenSecretName
 		slog.Debug("Stored DCR registration access token for RFC 7592 operations")
 	}
 
-	r.Config.RemoteAuthConfig.CachedRegClientURI = regClientURI
-	r.Config.RemoteAuthConfig.CachedTokenEndpointAuthMethod = tokenEndpointAuthMethod
+	updatedRemoteAuthConfig.CachedRegClientURI = regClientURI
+	updatedRemoteAuthConfig.CachedTokenEndpointAuthMethod = tokenEndpointAuthMethod
+	updatedRemoteAuthConfig.CachedDCRCallbackPort = registeredCallbackPort
 
-	if err := r.Config.SaveState(ctx); err != nil {
+	if err := updatedConfig.SaveState(ctx); err != nil {
 		return fmt.Errorf("failed to save config with client credentials: %w", err)
 	}
+
+	r.Config.RemoteAuthConfig = &updatedRemoteAuthConfig
 
 	slog.Debug("Stored DCR client credentials", "client_id", clientID,
 		"has_expiry", !secretExpiry.IsZero(),

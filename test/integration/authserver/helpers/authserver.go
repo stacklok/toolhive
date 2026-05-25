@@ -29,6 +29,7 @@ type authServerConfig struct {
 	tokenLifespans       *authserver.TokenLifespanRunConfig
 	scopesSupported      []string
 	baselineClientScopes []string
+	cimd                 *authserver.CIMDRunConfig
 }
 
 // WithSigningKey sets the signing key configuration.
@@ -50,6 +51,16 @@ func WithScopesSupported(scopes []string) AuthServerOption {
 func WithBaselineClientScopes(scopes []string) AuthServerOption {
 	return func(c *authServerConfig) {
 		c.baselineClientScopes = scopes
+	}
+}
+
+// WithCIMD enables Client ID Metadata Document (CIMD) support on the test
+// auth server. When cfg is non-nil and cfg.Enabled is true, the auth server
+// accepts HTTPS (and http://localhost) URLs as client_id values and resolves
+// them on the fly without requiring prior DCR registration.
+func WithCIMD(cfg *authserver.CIMDRunConfig) AuthServerOption {
+	return func(c *authServerConfig) {
+		c.cimd = cfg
 	}
 }
 
@@ -113,6 +124,7 @@ func NewTestAuthServerConfig(tb testing.TB, upstreamURL string, opts ...AuthServ
 		ScopesSupported:      cfg.scopesSupported,
 		BaselineClientScopes: cfg.baselineClientScopes,
 		AllowedAudiences:     cfg.allowedAudiences,
+		CIMD:                 cfg.cimd,
 	}
 }
 

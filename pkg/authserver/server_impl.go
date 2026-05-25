@@ -107,9 +107,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// provably safe for the production backends; surfacing a bad backend as
 	// a constructor error keeps misconfiguration fail-loud at boot rather
 	// than at first DCR resolve.
-	dcrStore, ok := stor.(storage.DCRCredentialStore)
+	baseStore := unwrapStorage(stor)
+	dcrStore, ok := baseStore.(storage.DCRCredentialStore)
 	if !ok {
-		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", stor)
+		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
 	slog.Debug("creating OAuth2 configuration")
@@ -168,13 +169,8 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 
 	// Run one-shot bulk migration of legacy data before handler construction.
 	// TODO(migration): Remove once all deployments have upgraded past this version.
-	if rs, ok := stor.(*storage.RedisStorage); ok {
-		for i := range cfg.Upstreams {
-			upCfg := &cfg.Upstreams[i]
-			if err := rs.MigrateLegacyUpstreamData(ctx, upCfg.Name, string(upCfg.Type)); err != nil {
-				return nil, fmt.Errorf("legacy data migration failed for upstream %q: %w", upCfg.Name, err)
-			}
-		}
+	if err := runLegacyMigration(ctx, stor, cfg.Upstreams); err != nil {
+		return nil, err
 	}
 
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams)
@@ -293,4 +289,32 @@ func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, sto
 		compose.OAuth2RefreshTokenGrantFactory, // Refresh token grant
 		compose.OAuth2PKCEFactory,              // PKCE for public clients
 	)
+}
+
+// unwrapStorage peels off one decorator layer if the storage implements
+// Unwrap(), returning the concrete backend. Both newServer (DCRCredentialStore
+// assertion) and runLegacyMigration (RedisStorage type assertion) need this.
+func unwrapStorage(stor storage.Storage) storage.Storage {
+	if unwrapper, ok := stor.(interface{ Unwrap() storage.Storage }); ok {
+		return unwrapper.Unwrap()
+	}
+	return stor
+}
+
+// runLegacyMigration runs one-shot Redis data migrations before handlers are
+// constructed. It is a no-op for non-Redis backends and passes through any
+// decorator wrapping so the concrete type can be reached.
+func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []UpstreamConfig) error {
+	base := unwrapStorage(stor)
+	rs, ok := base.(*storage.RedisStorage)
+	if !ok {
+		return nil
+	}
+	for i := range upstreams {
+		upCfg := &upstreams[i]
+		if err := rs.MigrateLegacyUpstreamData(ctx, upCfg.Name, string(upCfg.Type)); err != nil {
+			return fmt.Errorf("legacy data migration failed for upstream %q: %w", upCfg.Name, err)
+		}
+	}
+	return nil
 }

@@ -346,6 +346,28 @@ components:
             This is required and must match a configured upstream provider name.
           type: string
       type: object
+    github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig:
+      description: |-
+        CIMD controls client_id metadata document support. When enabled, the
+        embedded authorization server accepts HTTPS URLs as client_id values
+        and resolves them via the CIMD protocol instead of requiring DCR.
+      properties:
+        cache_fallback_ttl:
+          description: |-
+            CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+            Cache-Control header parsing is not yet implemented; all entries use this value.
+            Defaults to 5 minutes when Enabled is true and this field is zero.
+          example: 5m
+          type: string
+        cache_max_size:
+          description: |-
+            CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+            Defaults to 256 when Enabled is true and this field is zero.
+          type: integer
+        enabled:
+          description: Enabled activates CIMD client lookup when true.
+          type: boolean
+      type: object
     github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig:
       description: |-
         DCRConfig enables RFC 7591 Dynamic Client Registration against the
@@ -573,6 +595,8 @@ components:
             type: string
           type: array
           uniqueItems: false
+        cimd:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig'
         hmac_secret_files:
           description: |-
             HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes

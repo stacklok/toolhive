@@ -20,6 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+
 	// Import all Kubernetes client auth plugins (e.g. Azure, GCP, OIDC, etc.)
 	// to ensure that exec-entrypoint and run can make use of them.
 	_ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -372,7 +373,7 @@ func setupRegistryController(mgr ctrl.Manager, imagePullSecretsDefaults imagepul
 }
 
 // setupAggregationControllers sets up Virtual MCP-related controllers and webhooks
-// (MCPGroup, VirtualMCPServer, and their webhooks). Must run after
+// (MCPGroup, VirtualMCPServer, VirtualMCPCompositeToolDefinition, and their webhooks). Must run after
 // setupServerControllers, which creates the MCPServer.Spec.GroupRef field index
 // these controllers depend on.
 // imagePullSecretsDefaults are merged with vmcp.Spec.ImagePullSecrets when the
@@ -394,6 +395,13 @@ func setupAggregationControllers(mgr ctrl.Manager, imagePullSecretsDefaults imag
 		ImagePullSecretsDefaults: imagePullSecretsDefaults,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)
+	}
+
+	// Set up VirtualMCPCompositeToolDefinition controller
+	if err := (&controllers.VirtualMCPCompositeToolDefinitionReconciler{
+		Client: mgr.GetClient(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller VirtualMCPCompositeToolDefinition: %w", err)
 	}
 
 	return nil

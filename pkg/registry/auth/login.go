@@ -97,6 +97,14 @@ func Login(
 }
 
 // Logout clears cached OAuth credentials for the configured registry.
+//
+// Every secret under the registry scope is deleted, not just the refresh-token
+// key the current config points at. This is intentional: the token source also
+// stores a cached access token under "<key>_AT" (see pkg/auth/tokensource),
+// and a registry/issuer change can leave stale entries under derived keys the
+// current config no longer points at. A targeted delete would miss both and
+// allow the next login to short-circuit through tier 2/3 of the token source
+// instead of triggering a fresh browser flow.
 func Logout(ctx context.Context, configProvider config.Provider, secretsProvider secrets.Provider) error {
 	cfg, err := configProvider.LoadOrCreateConfig()
 	if err != nil {
@@ -106,30 +114,13 @@ func Logout(ctx context.Context, configProvider config.Provider, secretsProvider
 		return err
 	}
 
-	registryURL := registryURLFromConfig(cfg)
-
-	if ref := cfg.RegistryAuth.OAuth.CachedRefreshTokenRef; ref != "" {
-		if err := secretsProvider.DeleteSecret(ctx, ref); err != nil && !secrets.IsNotFoundError(err) {
-			return fmt.Errorf("deleting cached token: %w", err)
-		}
-	}
-
-	// Also attempt cleanup using the derived key as a fallback. If
-	// updateConfigTokenRef failed previously (it only logs a warning),
-	// the secret may exist under this key even when CachedRefreshTokenRef
-	// is empty or points to a different reference.
-	if cfg.RegistryAuth.OAuth.Issuer != "" {
-		derivedKey := DeriveSecretKey(registryURL, cfg.RegistryAuth.OAuth.Issuer)
-		if derivedKey != cfg.RegistryAuth.OAuth.CachedRefreshTokenRef {
-			if err := secretsProvider.DeleteSecret(ctx, derivedKey); err != nil && !secrets.IsNotFoundError(err) {
-				slog.Debug("failed to delete derived secret key", "error", err)
-			}
-		}
+	if err := deleteAllScopedSecrets(ctx, secretsProvider); err != nil {
+		return fmt.Errorf("deleting cached tokens: %w", err)
 	}
 
 	// Clear the persistent registry cache so authenticated data doesn't
 	// remain on disk after logout.
-	if err := clearRegistryCache(registryURL); err != nil {
+	if err := clearRegistryCache(registryURLFromConfig(cfg)); err != nil {
 		slog.Debug("failed to clear registry cache", "error", err)
 	}
 
@@ -140,6 +131,29 @@ func Logout(ctx context.Context, configProvider config.Provider, secretsProvider
 		}
 		return nil
 	})
+}
+
+// deleteAllScopedSecrets removes every secret visible to the given (already
+// scope-restricted) provider. Mirrors pkg/llm.DeleteCachedTokens — providers
+// that cannot list or delete (e.g. the environment provider) cannot hold cached
+// tokens, so the operation is a no-op there.
+func deleteAllScopedSecrets(ctx context.Context, provider secrets.Provider) error {
+	caps := provider.Capabilities()
+	if !caps.CanList || !caps.CanDelete {
+		return nil
+	}
+	descs, err := provider.ListSecrets(ctx)
+	if err != nil {
+		return fmt.Errorf("listing cached tokens: %w", err)
+	}
+	if len(descs) == 0 {
+		return nil
+	}
+	names := make([]string, len(descs))
+	for i, d := range descs {
+		names[i] = d.Key
+	}
+	return provider.DeleteSecrets(ctx, names)
 }
 
 // validateOAuthConfig checks that registry OAuth authentication is configured.

@@ -27,6 +27,13 @@ import (
 const (
 	// DefaultAuthzKey is the default key for authorization policies in ConfigMaps
 	DefaultAuthzKey = "authz.json"
+
+	// AuthzConfigVersion is the version stamped onto authz configs written or
+	// constructed by the operator. Kept consistent across `EnsureAuthzConfigMap`
+	// and `BuildInlineCedarAuthzConfig` so a future version enum on
+	// `authz.Config.Validate()` does not see two divergent values from the same
+	// pipeline. The rest of `pkg/authz/` uses the same literal.
+	AuthzConfigVersion = "1.0"
 )
 
 // GenerateAuthzVolumeConfig generates volume mount and volume for authorization policies
@@ -128,7 +135,7 @@ func EnsureAuthzConfigMap(
 	configMapName := fmt.Sprintf("%s-authz-inline", resourceName)
 
 	authzConfigData := map[string]interface{}{
-		"version": "1.0",
+		"version": AuthzConfigVersion,
 		"type":    "cedarv1",
 		"cedar": map[string]interface{}{
 			"policies": authzConfig.Inline.Policies,
@@ -179,7 +186,7 @@ func BuildInlineCedarAuthzConfig(authzRef *mcpv1beta1.AuthzConfigRef) (*authz.Co
 		return nil, fmt.Errorf("inline authz config type specified but inline config is nil")
 	}
 	authzCfg, err := authz.NewConfig(cedar.Config{
-		Version: "v1",
+		Version: AuthzConfigVersion,
 		Type:    cedar.ConfigType,
 		Options: &cedar.ConfigOptions{
 			Policies:        authzRef.Inline.Policies,
@@ -281,9 +288,10 @@ func LoadAuthzConfigFromConfigMap(
 // (e.g. a future HTTP authorizer); callers that need to handle non-Cedar
 // configs gracefully should treat the error as "not Cedar, pass through".
 //
-// This wrapper exists so callers outside pkg/authz can avoid importing
-// pkg/authz/authorizers/cedar directly, keeping the Cedar dependency localised
-// to the resolver layer.
+// The return type is *cedar.ConfigOptions, so any caller that reads fields off
+// the result still imports pkg/authz/authorizers/cedar. Packages like
+// vmcpconfig avoid the import by copying the fields they need into a local
+// struct, which this wrapper does not do for them.
 func ExtractCedarAuthzOptions(cfg *authz.Config) (*cedar.ConfigOptions, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("authz config is nil")

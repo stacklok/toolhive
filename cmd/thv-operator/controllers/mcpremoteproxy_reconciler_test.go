@@ -810,6 +810,58 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 			conditionStatus: metav1.ConditionFalse,
 		},
 		{
+			name: "referenced authz ConfigMap with malformed payload is rejected",
+			proxy: &mcpv1beta1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "malformed-configmap-proxy", Namespace: "default"},
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+						ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
+							Name: "malformed-authz",
+						},
+					},
+				},
+			},
+			existingObjects: []runtime.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{Name: "malformed-authz", Namespace: "default"},
+					Data:       map[string]string{ctrlutil.DefaultAuthzKey: "this is not valid yaml or json: {"},
+				},
+			},
+			expectError:     true,
+			errContains:     "malformed-authz",
+			expectCondition: mcpv1beta1.ConditionReasonAuthzConfigMapInvalid,
+			conditionStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "referenced authz ConfigMap with non-Cedar payload is rejected",
+			proxy: &mcpv1beta1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "non-cedar-configmap-proxy", Namespace: "default"},
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type: mcpv1beta1.AuthzConfigTypeConfigMap,
+						ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{
+							Name: "non-cedar-authz",
+						},
+					},
+				},
+			},
+			existingObjects: []runtime.Object{
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{Name: "non-cedar-authz", Namespace: "default"},
+					Data: map[string]string{
+						ctrlutil.DefaultAuthzKey: `{"version":"1.0","type":"httpv1","pdp":{"http":{"url":"http://pdp.example.com"},"claim_mapping":"standard"}}`,
+					},
+				},
+			},
+			expectError:     true,
+			errContains:     "not a Cedar config",
+			expectCondition: mcpv1beta1.ConditionReasonAuthzConfigMapInvalid,
+			conditionStatus: metav1.ConditionFalse,
+		},
+		{
 			name: "malformed remote URL is rejected",
 			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{Name: "bad-scheme-proxy", Namespace: "default"},

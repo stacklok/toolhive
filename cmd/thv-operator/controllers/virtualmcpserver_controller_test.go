@@ -3832,11 +3832,12 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent(t *test
 	}
 
 	tests := []struct {
-		name             string
-		incomingAuth     *mcpv1beta1.IncomingAuthConfig
-		authServerConfig *mcpv1beta1.EmbeddedAuthServerConfig
-		wantEvent        bool
-		wantError        bool
+		name               string
+		incomingAuth       *mcpv1beta1.IncomingAuthConfig
+		authServerConfig   *mcpv1beta1.EmbeddedAuthServerConfig
+		observedGeneration int64
+		wantEvent          bool
+		wantError          bool
 	}{
 		{
 			name: "deprecated inline primary emits the deprecation event",
@@ -3851,6 +3852,25 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent(t *test
 				},
 			},
 			wantEvent: true,
+		},
+		{
+			// Steady-state reconcile (e.g. watch resync, dependent resource
+			// change) on a VMCP whose spec has already been observed. The
+			// deprecation hint must not fire again until the user changes the
+			// spec, so logs are not flooded during the deprecation window.
+			name: "deprecated inline primary suppresses event when generation already observed",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRefWithDeprecatedPrimary,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			observedGeneration: 1,
+			wantEvent:          false,
 		},
 		{
 			name: "canonical authServerConfig primary does not emit the event",
@@ -3912,6 +3932,9 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent(t *test
 					GroupRef:         &mcpv1beta1.MCPGroupRef{Name: testGroupName},
 					IncomingAuth:     tt.incomingAuth,
 					AuthServerConfig: tt.authServerConfig,
+				},
+				Status: mcpv1beta1.VirtualMCPServerStatus{
+					ObservedGeneration: tt.observedGeneration,
 				},
 			}
 

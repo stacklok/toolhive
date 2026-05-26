@@ -172,7 +172,10 @@ func buildFositeClient(doc *cimd.ClientMetadataDocument) fosite.Client {
 		tokenEndpointAuthMethod = defaultCIMDTokenEndpointAuthMethod
 	}
 
-	var scopes []string
+	// When the document omits the scope field, apply the same defaults as DCR
+	// registration so CIMD clients can request openid/profile/email/offline_access
+	// without needing to enumerate them explicitly in the metadata document.
+	scopes := registration.DefaultScopes
 	if doc.Scope != "" {
 		scopes = strings.Fields(doc.Scope)
 	}

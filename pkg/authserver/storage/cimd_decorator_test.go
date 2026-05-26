@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -62,7 +63,7 @@ func newTestBase(t *testing.T) *MemoryStorage {
 // newEnabledDecorator creates a CIMDStorageDecorator wrapping base.
 func newEnabledDecorator(t *testing.T, base *MemoryStorage, maxSize int, ttl time.Duration) *CIMDStorageDecorator {
 	t.Helper()
-	got, err := NewCIMDStorageDecorator(base, true, maxSize, ttl)
+	got, err := NewCIMDStorageDecorator(base, true, maxSize, ttl, nil)
 	require.NoError(t, err)
 	return got.(*CIMDStorageDecorator)
 }
@@ -77,7 +78,7 @@ func cimdURL(srv *httptest.Server, path string) string {
 func TestNewCIMDStorageDecorator_DisabledReturnsBase(t *testing.T) {
 	t.Parallel()
 	base := newTestBase(t)
-	got, err := NewCIMDStorageDecorator(base, false, 10, time.Minute)
+	got, err := NewCIMDStorageDecorator(base, false, 10, time.Minute, nil)
 	require.NoError(t, err)
 	assert.Same(t, base, got, "disabled decorator must return base unchanged")
 }
@@ -85,21 +86,21 @@ func TestNewCIMDStorageDecorator_DisabledReturnsBase(t *testing.T) {
 func TestNewCIMDStorageDecorator_ZeroCacheSizeReturnsError(t *testing.T) {
 	t.Parallel()
 	base := newTestBase(t)
-	_, err := NewCIMDStorageDecorator(base, true, 0, time.Minute)
+	_, err := NewCIMDStorageDecorator(base, true, 0, time.Minute, nil)
 	require.Error(t, err)
 }
 
 func TestNewCIMDStorageDecorator_NegativeCacheSizeReturnsError(t *testing.T) {
 	t.Parallel()
 	base := newTestBase(t)
-	_, err := NewCIMDStorageDecorator(base, true, -1, time.Minute)
+	_, err := NewCIMDStorageDecorator(base, true, -1, time.Minute, nil)
 	require.Error(t, err)
 }
 
 func TestNewCIMDStorageDecorator_EnabledReturnsCIMDDecorator(t *testing.T) {
 	t.Parallel()
 	base := newTestBase(t)
-	got, err := NewCIMDStorageDecorator(base, true, 10, time.Minute)
+	got, err := NewCIMDStorageDecorator(base, true, 10, time.Minute, nil)
 	require.NoError(t, err)
 	require.NotNil(t, got)
 	_, isCIMD := got.(*CIMDStorageDecorator)
@@ -336,7 +337,7 @@ func TestBuildFositeClient_Defaults(t *testing.T) {
 		RedirectURIs: []string{"https://example.com/callback"},
 	}
 
-	got := buildFositeClient(doc)
+	got := buildFositeClient(doc, nil)
 	assert.Equal(t, "https://example.com/meta.json", got.GetID())
 	assert.True(t, got.IsPublic())
 	assert.ElementsMatch(t, []string{"authorization_code", "refresh_token"}, []string(got.GetGrantTypes()))
@@ -355,7 +356,7 @@ func TestBuildFositeClient_ExplicitGrantTypes(t *testing.T) {
 		GrantTypes:   []string{"authorization_code"},
 	}
 
-	got := buildFositeClient(doc)
+	got := buildFositeClient(doc, nil)
 	assert.ElementsMatch(t, []string{"authorization_code"}, []string(got.GetGrantTypes()))
 }
 
@@ -368,7 +369,9 @@ func TestBuildFositeClient_ScopeParsing(t *testing.T) {
 		Scope:        "openid profile email",
 	}
 
-	got := buildFositeClient(doc)
+	// Scope parsing is now done by fetch() before calling buildFositeClient.
+	resolvedScopes := strings.Fields(doc.Scope)
+	got := buildFositeClient(doc, resolvedScopes)
 	assert.ElementsMatch(t, []string{"openid", "profile", "email"}, []string(got.GetScopes()))
 }
 
@@ -380,7 +383,7 @@ func TestBuildFositeClient_LoopbackRedirectWrapsInLoopbackClient(t *testing.T) {
 		RedirectURIs: []string{"http://localhost/callback"},
 	}
 
-	got := buildFositeClient(doc)
+	got := buildFositeClient(doc, nil)
 	// LoopbackClient adds MatchRedirectURI — check the distinctive method is present.
 	type loopbackMatcher interface {
 		MatchRedirectURI(string) bool
@@ -403,7 +406,7 @@ func TestBuildFositeClient_NonLoopbackRedirectReturnsOpenIDConnectClient(t *test
 		RedirectURIs: []string{"https://example.com/callback"},
 	}
 
-	got := buildFositeClient(doc)
+	got := buildFositeClient(doc, nil)
 	_, ok := got.(*fosite.DefaultOpenIDConnectClient)
 	assert.True(t, ok, "non-loopback redirect URI must produce a DefaultOpenIDConnectClient")
 }
@@ -416,7 +419,7 @@ func TestBuildFositeClient_TokenEndpointAuthMethodDefault(t *testing.T) {
 		RedirectURIs: []string{"https://example.com/callback"},
 	}
 
-	got := buildFositeClient(doc)
+	got := buildFositeClient(doc, nil)
 	if oidc, ok := got.(fosite.OpenIDConnectClient); ok {
 		assert.Equal(t, "none", oidc.GetTokenEndpointAuthMethod())
 	}
@@ -441,4 +444,128 @@ func TestFetch_RejectsUnsupportedTokenEndpointAuthMethod(t *testing.T) {
 	dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
 	_, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
 	require.Error(t, err, "fetch must fail when token_endpoint_auth_method is not \"none\"")
+}
+
+// --- C4: grant_types / response_types validation ---
+
+func TestFetch_RejectsUnsupportedGrantType(t *testing.T) {
+	t.Parallel()
+	for _, unsupported := range []string{"client_credentials", "implicit", "urn:ietf:params:oauth:grant-type:device_code"} {
+		t.Run(unsupported, func(t *testing.T) {
+			t.Parallel()
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				clientID := "http://" + r.Host + r.URL.Path
+				doc := cimd.ClientMetadataDocument{
+					ClientID:     clientID,
+					RedirectURIs: []string{"https://example.com/callback"},
+					GrantTypes:   []string{unsupported},
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(doc)
+			}))
+			t.Cleanup(srv.Close)
+			dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+			_, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+			require.Error(t, err, "unsupported grant_type %q must be rejected", unsupported)
+		})
+	}
+}
+
+func TestFetch_AcceptsSupportedGrantTypes(t *testing.T) {
+	t.Parallel()
+	srv := serveCIMDDoc(t, "/meta.json", nil)
+	dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+	// Default grant_types (omitted in document) must succeed
+	_, err := dec.fetchOrCached(context.Background(), cimdURL(srv, "/meta.json"))
+	require.NoError(t, err)
+}
+
+func TestFetch_RejectsUnsupportedResponseType(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientID := "http://" + r.Host + r.URL.Path
+		doc := cimd.ClientMetadataDocument{
+			ClientID:      clientID,
+			RedirectURIs:  []string{"https://example.com/callback"},
+			ResponseTypes: []string{"token"},
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	}))
+	t.Cleanup(srv.Close)
+	dec := newEnabledDecorator(t, newTestBase(t), 10, time.Minute)
+	_, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+	require.Error(t, err, "unsupported response_type \"token\" must be rejected")
+}
+
+// --- C3: scope validation against ScopesSupported ---
+
+func TestBuildFositeClient_ScopeDefaultsToScopesSupported(t *testing.T) {
+	t.Parallel()
+	doc := &cimd.ClientMetadataDocument{
+		ClientID:     "https://example.com/meta.json",
+		RedirectURIs: []string{"https://example.com/callback"},
+		// Scope deliberately omitted
+	}
+	scopesSupported := []string{"openid", "profile"}
+	got := buildFositeClient(doc, scopesSupported)
+	assert.ElementsMatch(t, scopesSupported, []string(got.GetScopes()),
+		"omitted scope should default to ScopesSupported, not DefaultScopes")
+}
+
+func TestBuildFositeClient_ScopeDefaultsToDefaultScopesWhenNoScopesSupported(t *testing.T) {
+	t.Parallel()
+	doc := &cimd.ClientMetadataDocument{
+		ClientID:     "https://example.com/meta.json",
+		RedirectURIs: []string{"https://example.com/callback"},
+	}
+	got := buildFositeClient(doc, nil)
+	assert.ElementsMatch(t, registration.DefaultScopes, []string(got.GetScopes()),
+		"omitted scope with no ScopesSupported should default to registration.DefaultScopes")
+}
+
+func TestFetch_RejectsScopeOutsideScopesSupported(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientID := "http://" + r.Host + r.URL.Path
+		doc := cimd.ClientMetadataDocument{
+			ClientID:     clientID,
+			RedirectURIs: []string{"https://example.com/callback"},
+			Scope:        "openid profile email",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Decorator configured with scopesSupported=["openid"] only
+	got, err := NewCIMDStorageDecorator(newTestBase(t), true, 10, time.Minute, []string{"openid"})
+	require.NoError(t, err)
+	dec := got.(*CIMDStorageDecorator)
+
+	_, err = dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+	require.Error(t, err, "scope outside ScopesSupported must be rejected")
+}
+
+func TestFetch_AcceptsScopeWithinScopesSupported(t *testing.T) {
+	t.Parallel()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		clientID := "http://" + r.Host + r.URL.Path
+		doc := cimd.ClientMetadataDocument{
+			ClientID:     clientID,
+			RedirectURIs: []string{"https://example.com/callback"},
+			Scope:        "openid",
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(doc)
+	}))
+	t.Cleanup(srv.Close)
+
+	got, err := NewCIMDStorageDecorator(newTestBase(t), true, 10, time.Minute, []string{"openid", "profile"})
+	require.NoError(t, err)
+	dec := got.(*CIMDStorageDecorator)
+
+	client, err := dec.fetchOrCached(context.Background(), srv.URL+"/meta.json")
+	require.NoError(t, err)
+	assert.ElementsMatch(t, []string{"openid"}, []string(client.GetScopes()))
 }

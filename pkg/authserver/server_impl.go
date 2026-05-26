@@ -177,7 +177,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// so that GetClient calls for HTTPS client_id values are intercepted at the
 	// fosite level (not just the handler level).
 	if cfg.CIMDEnabled {
-		stor, err = storage.NewCIMDStorageDecorator(stor, true, cfg.CIMDCacheMaxSize, cfg.CIMDCacheFallbackTTL)
+		stor, err = storage.NewCIMDStorageDecorator(stor, true, cfg.CIMDCacheMaxSize, cfg.CIMDCacheFallbackTTL, cfg.ScopesSupported)
 		if err != nil {
 			return nil, fmt.Errorf("failed to initialize CIMD storage decorator: %w", err)
 		}

@@ -28,10 +28,11 @@ import (
 // Only GetClient is overridden. DCR clients (opaque IDs) continue to work
 // exactly as before.
 type CIMDStorageDecorator struct {
-	Storage                    // embed full interface — all methods delegate
-	sf      singleflight.Group // deduplicates concurrent fetches for the same URL
-	cache   *lru.Cache[string, *cimdCacheEntry]
-	ttl     time.Duration
+	Storage                            // embed full interface — all methods delegate
+	sf              singleflight.Group // deduplicates concurrent fetches for the same URL
+	cache           *lru.Cache[string, *cimdCacheEntry]
+	ttl             time.Duration
+	scopesSupported []string // AS-configured scopes; nil means accept any
 }
 
 type cimdCacheEntry struct {
@@ -43,11 +44,15 @@ type cimdCacheEntry struct {
 // it returns base unchanged (no allocation). cacheMaxSize must be >= 1;
 // fallbackTTL is the fixed TTL applied to every cache entry (Cache-Control
 // header parsing is not yet implemented; all entries use this value).
+// scopesSupported is the AS-configured scope allowlist; documents that declare
+// scopes outside this set are rejected at fetch time. Pass nil to skip scope
+// validation (e.g. when ScopesSupported is unset and DefaultScopes applies).
 func NewCIMDStorageDecorator(
 	base Storage,
 	enabled bool,
 	cacheMaxSize int,
 	fallbackTTL time.Duration,
+	scopesSupported []string,
 ) (Storage, error) {
 	if !enabled {
 		return base, nil
@@ -63,9 +68,10 @@ func NewCIMDStorageDecorator(
 	}
 
 	return &CIMDStorageDecorator{
-		Storage: base,
-		cache:   c,
-		ttl:     fallbackTTL,
+		Storage:         base,
+		cache:           c,
+		ttl:             fallbackTTL,
+		scopesSupported: scopesSupported,
 	}, nil
 }
 
@@ -129,7 +135,49 @@ func (d *CIMDStorageDecorator) fetch(ctx context.Context, id string) (fosite.Cli
 			id, m, defaultCIMDTokenEndpointAuthMethod)
 	}
 
-	client := buildFositeClient(doc)
+	// Reject documents that declare grant_types the embedded AS does not support.
+	// Consistent with DCR which restricts public clients to authorization_code + refresh_token.
+	allowedGrantTypes := map[string]bool{"authorization_code": true, "refresh_token": true}
+	for _, gt := range doc.GrantTypes {
+		if !allowedGrantTypes[gt] {
+			return nil, fmt.Errorf("%w: CIMD document at %s claims grant_type %q "+
+				"but this server only supports %v for public clients",
+				fosite.ErrNotFound.WithHint("unsupported grant_type"),
+				id, gt, defaultCIMDGrantTypes)
+		}
+	}
+
+	// Reject documents that declare response_types the embedded AS does not support.
+	allowedResponseTypes := map[string]bool{"code": true}
+	for _, rt := range doc.ResponseTypes {
+		if !allowedResponseTypes[rt] {
+			return nil, fmt.Errorf("%w: CIMD document at %s claims response_type %q "+
+				"but this server only supports %v",
+				fosite.ErrNotFound.WithHint("unsupported response_type"),
+				id, rt, defaultCIMDResponseTypes)
+		}
+	}
+
+	// Compute and validate the client scope list consistent with DCR.
+	// When ScopesSupported is configured: use registration.ValidateScopes which
+	// validates each declared scope against the allowlist and falls back to
+	// DefaultScopes (also validated) when the document omits the field — the
+	// same logic the DCR handler applies.
+	// When ScopesSupported is not configured: no AS-level validation; use the
+	// declared scopes directly, or nil to let buildFositeClient apply DefaultScopes.
+	var resolvedScopes []string
+	if len(d.scopesSupported) > 0 {
+		computed, dcrErr := registration.ValidateScopes(strings.Fields(doc.Scope), d.scopesSupported)
+		if dcrErr != nil {
+			return nil, fmt.Errorf("%w: CIMD document at %s: %s",
+				fosite.ErrNotFound.WithHint(string(dcrErr.Error)), id, dcrErr.ErrorDescription)
+		}
+		resolvedScopes = computed
+	} else if doc.Scope != "" {
+		resolvedScopes = strings.Fields(doc.Scope)
+	}
+
+	client := buildFositeClient(doc, resolvedScopes)
 
 	d.cache.Add(id, &cimdCacheEntry{
 		client:  client,
@@ -157,7 +205,9 @@ const defaultCIMDTokenEndpointAuthMethod = "none"
 // buildFositeClient converts a ClientMetadataDocument into a fosite.Client.
 // Redirect URIs containing http://localhost are wrapped in a LoopbackClient
 // so that RFC 8252 §7.3 dynamic port matching applies.
-func buildFositeClient(doc *cimd.ClientMetadataDocument) fosite.Client {
+// resolvedScopes is the already-validated scope list computed by fetch() via
+// registration.ValidateScopes; when nil, DefaultScopes is used (unconstrained AS).
+func buildFositeClient(doc *cimd.ClientMetadataDocument, resolvedScopes []string) fosite.Client {
 	grantTypes := doc.GrantTypes
 	if len(grantTypes) == 0 {
 		grantTypes = defaultCIMDGrantTypes
@@ -173,13 +223,12 @@ func buildFositeClient(doc *cimd.ClientMetadataDocument) fosite.Client {
 		tokenEndpointAuthMethod = defaultCIMDTokenEndpointAuthMethod
 	}
 
-	// When the document omits the scope field, apply the same defaults as DCR
-	// registration so CIMD clients can request openid/profile/email/offline_access
-	// without needing to enumerate them explicitly in the metadata document.
-	// Clone to avoid aliasing the package-level DefaultScopes slice.
-	scopes := slices.Clone(registration.DefaultScopes)
-	if doc.Scope != "" {
-		scopes = strings.Fields(doc.Scope)
+	// Scopes were computed and validated by fetch() via registration.ValidateScopes,
+	// consistent with the DCR handler. Fall back to DefaultScopes only when the
+	// decorator has no ScopesSupported restriction (unconstrained AS).
+	scopes := resolvedScopes
+	if len(scopes) == 0 {
+		scopes = slices.Clone(registration.DefaultScopes)
 	}
 
 	defaultClient := &fosite.DefaultClient{

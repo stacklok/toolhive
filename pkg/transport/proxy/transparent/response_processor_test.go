@@ -6,6 +6,7 @@ package transparent
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 )
 
 func TestNoOpResponseProcessorValidatesJSONRPCResponses(t *testing.T) {
@@ -292,14 +295,19 @@ func TestNoOpResponseProcessorRequiresMCPSignal(t *testing.T) {
 	body := `{"id":1,"result":{"ok":true}}` // missing jsonrpc — would be rejected if validated
 
 	tests := []struct {
-		name     string
-		headers  map[string]string
-		validate bool
+		name          string
+		headers       map[string]string
+		parsedContext bool
+		validate      bool
 	}{
 		{
-			name:     "no MCP headers — pass through",
-			headers:  nil,
+			name:     "no parsed context or MCP headers — pass through",
 			validate: false,
+		},
+		{
+			name:          "parsed MCP context without headers — validated",
+			parsedContext: true,
+			validate:      true,
 		},
 		{
 			name:     "MCP-Protocol-Version header — validated",
@@ -310,6 +318,12 @@ func TestNoOpResponseProcessorRequiresMCPSignal(t *testing.T) {
 			name:     "Mcp-Session-Id header — validated",
 			headers:  map[string]string{"Mcp-Session-Id": "session-abc"},
 			validate: true,
+		},
+		{
+			name:          "parsed MCP context and header — validated",
+			headers:       map[string]string{"MCP-Protocol-Version": "2025-06-18"},
+			parsedContext: true,
+			validate:      true,
 		},
 	}
 
@@ -322,6 +336,9 @@ func TestNoOpResponseProcessorRequiresMCPSignal(t *testing.T) {
 			require.NoError(t, err)
 			for k, v := range tt.headers {
 				req.Header.Set(k, v)
+			}
+			if tt.parsedContext {
+				req = withParsedMCPRequest(req)
 			}
 			resp := &http.Response{
 				StatusCode:    http.StatusOK,
@@ -384,6 +401,16 @@ func mcpRequest(method string) *http.Request {
 	req, _ := http.NewRequest(method, "http://example.com/mcp", nil)
 	req.Header.Set("MCP-Protocol-Version", "2025-06-18")
 	return req
+}
+
+func withParsedMCPRequest(req *http.Request) *http.Request {
+	parsed := &mcpparser.ParsedMCPRequest{
+		Method:    "tools/list",
+		ID:        1,
+		IsRequest: true,
+	}
+	ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, parsed)
+	return req.WithContext(ctx)
 }
 
 func gzipBytes(t *testing.T, payload string) string {

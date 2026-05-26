@@ -389,10 +389,14 @@ func TestDiscoveryHandlers_CIMDDisabled_OmitsFlag(t *testing.T) {
 			tc.fn(rec, req)
 			require.Equal(t, http.StatusOK, rec.Code)
 
-			var meta sharedobauth.AuthorizationServerMetadata
-			require.NoError(t, json.NewDecoder(rec.Body).Decode(&meta))
-			assert.False(t, meta.ClientIDMetadataDocumentSupported,
-				"client_id_metadata_document_supported must be absent when CIMD is disabled")
+			// Decode to raw map to verify the field is truly absent from the JSON
+			// output (omitempty), not merely false — a struct decode cannot
+			// distinguish between an omitted field and an explicit false value.
+			var raw map[string]interface{}
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&raw))
+			_, present := raw["client_id_metadata_document_supported"]
+			assert.False(t, present,
+				"client_id_metadata_document_supported must be omitted from JSON when CIMD is disabled")
 		})
 	}
 }

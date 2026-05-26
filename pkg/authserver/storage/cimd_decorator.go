@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -175,7 +176,8 @@ func buildFositeClient(doc *cimd.ClientMetadataDocument) fosite.Client {
 	// When the document omits the scope field, apply the same defaults as DCR
 	// registration so CIMD clients can request openid/profile/email/offline_access
 	// without needing to enumerate them explicitly in the metadata document.
-	scopes := registration.DefaultScopes
+	// Clone to avoid aliasing the package-level DefaultScopes slice.
+	scopes := slices.Clone(registration.DefaultScopes)
 	if doc.Scope != "" {
 		scopes = strings.Fields(doc.Scope)
 	}

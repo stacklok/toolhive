@@ -572,9 +572,9 @@ type Config struct {
 	// is true.
 	CIMDCacheMaxSize int
 
-	// CIMDCacheFallbackTTL is the TTL applied to cached CIMD documents that carry
-	// no Cache-Control header. Zero is replaced by a default (5 minutes) in
-	// applyDefaults when CIMDEnabled is true.
+	// CIMDCacheFallbackTTL is the fixed TTL applied to all cached CIMD documents
+	// (Cache-Control header parsing is not yet implemented). Zero is replaced by
+	// a default (5 minutes) in applyDefaults when CIMDEnabled is true.
 	CIMDCacheFallbackTTL time.Duration
 }
 
@@ -630,6 +630,9 @@ func (c *Config) Validate() error {
 
 	if c.CIMDEnabled && c.CIMDCacheMaxSize < 1 {
 		return fmt.Errorf("cimd.cache_max_size must be >= 1 when CIMD is enabled")
+	}
+	if c.CIMDEnabled && c.CIMDCacheFallbackTTL < 0 {
+		return fmt.Errorf("cimd.cache_fallback_ttl must be non-negative when CIMD is enabled")
 	}
 
 	slog.Debug("authserver config validation passed",

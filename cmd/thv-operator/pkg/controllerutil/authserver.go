@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -581,6 +582,22 @@ func BuildAuthServerRunConfig(
 		return nil, fmt.Errorf("failed to build storage config: %w", err)
 	}
 	config.Storage = storageCfg
+
+	// Build CIMD configuration
+	if authConfig.CIMD != nil && authConfig.CIMD.Enabled {
+		cimdCfg := &authserver.CIMDRunConfig{
+			Enabled:      authConfig.CIMD.Enabled,
+			CacheMaxSize: authConfig.CIMD.CacheMaxSize,
+		}
+		if authConfig.CIMD.CacheFallbackTTL != "" {
+			ttl, err := time.ParseDuration(authConfig.CIMD.CacheFallbackTTL)
+			if err != nil {
+				return nil, fmt.Errorf("cimd.cacheFallbackTtl: %w", err)
+			}
+			cimdCfg.CacheFallbackTTL = ttl
+		}
+		config.CIMD = cimdCfg
+	}
 
 	return config, nil
 }

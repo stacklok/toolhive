@@ -129,10 +129,6 @@ func (c *RunConfig) validateBaselineClientScopes() error {
 }
 
 // CIMDRunConfig controls client_id metadata document (CIMD) support.
-//
-// TODO(cimd): expose these fields in the MCPExternalAuthConfig CRD so Kubernetes
-// operators can configure CIMD through the normal CRD workflow instead of
-// writing RunConfig YAML directly.
 type CIMDRunConfig struct {
 	// Enabled activates CIMD client lookup when true.
 	Enabled bool `json:"enabled" yaml:"enabled"`

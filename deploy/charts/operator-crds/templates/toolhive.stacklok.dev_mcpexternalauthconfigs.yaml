@@ -240,6 +240,33 @@ spec:
                     maxItems: 10
                     type: array
                     x-kubernetes-list-type: atomic
+                  cimd:
+                    description: CIMD configures Client ID Metadata Document support.
+                      When omitted, CIMD is disabled.
+                    properties:
+                      cacheFallbackTtl:
+                        description: |-
+                          CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+                          Cache-Control header parsing is not yet implemented; all entries use this value.
+                          Format: Go duration string (e.g. "5m", "10m", "1h").
+                          Defaults to 5 minutes when Enabled is true and this field is omitted.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      cacheMaxSize:
+                        description: |-
+                          CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+                          Defaults to 256 when Enabled is true and this field is omitted.
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled activates CIMD client lookup. When false (the default), the AS only
+                          accepts client_id values that were registered via DCR.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -1519,6 +1546,33 @@ spec:
                     maxItems: 10
                     type: array
                     x-kubernetes-list-type: atomic
+                  cimd:
+                    description: CIMD configures Client ID Metadata Document support.
+                      When omitted, CIMD is disabled.
+                    properties:
+                      cacheFallbackTtl:
+                        description: |-
+                          CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+                          Cache-Control header parsing is not yet implemented; all entries use this value.
+                          Format: Go duration string (e.g. "5m", "10m", "1h").
+                          Defaults to 5 minutes when Enabled is true and this field is omitted.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      cacheMaxSize:
+                        description: |-
+                          CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+                          Defaults to 256 when Enabled is true and this field is omitted.
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled activates CIMD client lookup. When false (the default), the AS only
+                          accepts client_id values that were registered via DCR.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing

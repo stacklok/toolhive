@@ -299,6 +299,10 @@ type EmbeddedAuthServerConfig struct {
 	// +listType=atomic
 	// +optional
 	BaselineClientScopes []string `json:"baselineClientScopes,omitempty"`
+
+	// CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled.
+	// +optional
+	CIMD *EmbeddedAuthServerCIMDConfig `json:"cimd,omitempty"`
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.
@@ -323,6 +327,31 @@ type TokenLifespanConfig struct {
 	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 	// +optional
 	AuthCodeLifespan string `json:"authCodeLifespan,omitempty"`
+}
+
+// EmbeddedAuthServerCIMDConfig configures Client ID Metadata Document (CIMD) support
+// on the embedded authorization server. When enabled, the AS accepts HTTPS URLs as
+// client_id values and resolves them via the CIMD protocol, allowing clients such as
+// VS Code to authenticate without prior Dynamic Client Registration.
+type EmbeddedAuthServerCIMDConfig struct {
+	// Enabled activates CIMD client lookup. When false (the default), the AS only
+	// accepts client_id values that were registered via DCR.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+	// Defaults to 256 when Enabled is true and this field is omitted.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	CacheMaxSize int `json:"cacheMaxSize,omitempty"`
+
+	// CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+	// Cache-Control header parsing is not yet implemented; all entries use this value.
+	// Format: Go duration string (e.g. "5m", "10m", "1h").
+	// Defaults to 5 minutes when Enabled is true and this field is omitted.
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +optional
+	CacheFallbackTTL string `json:"cacheFallbackTtl,omitempty"`
 }
 
 // UpstreamProviderType identifies the type of upstream Identity Provider.

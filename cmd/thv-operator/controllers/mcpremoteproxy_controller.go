@@ -735,6 +735,14 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 		return fmt.Errorf("failed to fetch MCPExternalAuthConfig: %w", err)
 	}
 
+	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
+	// the MCPRemoteProxy so the failure is visible on the consumer CR (e.g.
+	// obo-typed configs surface Valid=False/EnterpriseRequired here without the
+	// user having to inspect the referenced MCPExternalAuthConfig).
+	if mirrored, err := mirrorInvalidOnRemoteProxy(proxy, externalAuthConfig); mirrored {
+		return err
+	}
+
 	// MCPRemoteProxy supports only single-upstream embedded auth server configs.
 	// Multi-upstream requires VirtualMCPServer.
 	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
@@ -1030,6 +1038,7 @@ func (r *MCPRemoteProxyReconciler) updateOIDCConfigReferencingWorkloads(
 
 	// Add the workload reference
 	oidcConfig.Status.ReferencingWorkloads = append(oidcConfig.Status.ReferencingWorkloads, ref)
+	oidcConfig.Status.ReferenceCount = workloadReferenceCount(oidcConfig.Status.ReferencingWorkloads)
 	if err := r.Status().Update(ctx, oidcConfig); err != nil {
 		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingWorkloads: %w", err)
 	}
@@ -1090,7 +1099,7 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 // Mirrors the validateGroupRef convention: this only sets/removes the
 // condition; the caller is responsible for persisting status.
 func (*MCPRemoteProxyReconciler) validateAuthzPrimaryUpstreamProviderIgnored(proxy *mcpv1beta1.MCPRemoteProxy) {
-	provider := proxy.Spec.AuthzConfig.ExplicitPrimaryUpstreamProvider()
+	provider := proxy.Spec.AuthzConfig.DeprecatedInlinePrimaryUpstreamProvider()
 	conditionType := mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored
 	if provider == "" {
 		meta.RemoveStatusCondition(&proxy.Status.Conditions, conditionType)

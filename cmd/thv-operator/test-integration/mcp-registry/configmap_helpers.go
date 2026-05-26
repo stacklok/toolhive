@@ -12,7 +12,6 @@ import (
 	"github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -71,21 +70,6 @@ func (h *ConfigMapTestHelper) NewConfigMapBuilder(name string) *ConfigMapBuilder
 			Data: make(map[string]string),
 		},
 	}
-}
-
-// WithLabel adds a label to the ConfigMap
-func (cb *ConfigMapBuilder) WithLabel(key, value string) *ConfigMapBuilder {
-	if cb.configMap.Labels == nil {
-		cb.configMap.Labels = make(map[string]string)
-	}
-	cb.configMap.Labels[key] = value
-	return cb
-}
-
-// WithData adds arbitrary data to the ConfigMap
-func (cb *ConfigMapBuilder) WithData(key, value string) *ConfigMapBuilder {
-	cb.configMap.Data[key] = value
-	return cb
 }
 
 // WithToolHiveRegistry adds ToolHive format registry data
@@ -149,21 +133,6 @@ func (h *ConfigMapTestHelper) CreateSampleToolHiveRegistry(name string) *corev1.
 	return h.NewConfigMapBuilder(name).
 		WithToolHiveRegistry("registry.json", servers).
 		Create(h)
-}
-
-// GetConfigMap retrieves a ConfigMap by name
-func (h *ConfigMapTestHelper) GetConfigMap(name string) (*corev1.ConfigMap, error) {
-	cm := &corev1.ConfigMap{}
-	err := h.Client.Get(h.Context, types.NamespacedName{
-		Namespace: h.Namespace,
-		Name:      name,
-	}, cm)
-	return cm, err
-}
-
-// UpdateConfigMap updates an existing ConfigMap
-func (h *ConfigMapTestHelper) UpdateConfigMap(configMap *corev1.ConfigMap) error {
-	return h.Client.Update(h.Context, configMap)
 }
 
 // DeleteConfigMap deletes a ConfigMap by name

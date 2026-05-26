@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -3538,6 +3539,9 @@ func TestDiscoveredRBACRulesIncludeMCPServerEntries(t *testing.T) {
 func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 	t.Parallel()
 
+	// inlineAuthzRef is the baseline inline authz config used by tests that
+	// place the explicit primary on the canonical spec.authServerConfig
+	// location.
 	inlineAuthzRef := &mcpv1beta1.AuthzConfigRef{
 		Type: "inline",
 		Inline: &mcpv1beta1.InlineAuthzConfig{
@@ -3545,9 +3549,11 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 		},
 	}
 
-	// authzRefWithPrimary builds an inline authz ref with an explicit
-	// PrimaryUpstreamProvider — used to exercise the override branch.
-	authzRefWithPrimary := func(primary string) *mcpv1beta1.AuthzConfigRef {
+	// authzRefWithDeprecatedInlinePrimary builds an inline authz ref that
+	// sets PrimaryUpstreamProvider on the deprecated InlineAuthzConfig field.
+	// Used to exercise the backward-compatibility fallback path on
+	// ExplicitPrimaryUpstreamProvider.
+	authzRefWithDeprecatedInlinePrimary := func(primary string) *mcpv1beta1.AuthzConfigRef {
 		return &mcpv1beta1.AuthzConfigRef{
 			Type: "inline",
 			Inline: &mcpv1beta1.InlineAuthzConfig{
@@ -3652,7 +3658,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			name: "explicit primary provider matching an upstream is valid",
 			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type:        "oidc",
-				AuthzConfig: authzRefWithPrimary("entra"),
+				AuthzConfig: inlineAuthzRef,
 			},
 			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://authserver.example.com",
@@ -3660,6 +3666,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 					{Name: "entra", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "entra",
 			},
 			expectedWarning: warningExpectation{expectPresent: false},
 		},
@@ -3669,7 +3676,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			name: "explicit primary provider suppresses multi-upstream advisory",
 			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type:        "oidc",
-				AuthzConfig: authzRefWithPrimary("okta"),
+				AuthzConfig: inlineAuthzRef,
 			},
 			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://authserver.example.com",
@@ -3678,6 +3685,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 					{Name: "entra", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 					{Name: "google", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "okta",
 			},
 			expectedWarning: warningExpectation{expectPresent: false},
 		},
@@ -3688,7 +3696,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			name: "explicit primary provider not matching any upstream is invalid",
 			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type:        "oidc",
-				AuthzConfig: authzRefWithPrimary("ping"),
+				AuthzConfig: inlineAuthzRef,
 			},
 			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://authserver.example.com",
@@ -3696,6 +3704,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 					{Name: "entra", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "ping",
 			},
 			expectError:     true,
 			expectedReason:  mcpv1beta1.ConditionReasonAuthzUpstreamUnknown,
@@ -3707,11 +3716,13 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			// the embedded AS — without an AS there is nothing for it to refer
 			// to, and the converter would otherwise forward an unresolvable
 			// name. Distinct condition reason from the upstream-mismatch case
-			// so tooling can route the two misconfigurations separately.
+			// so tooling can route the two misconfigurations separately. With
+			// authServerConfig=nil the canonical location can't carry the
+			// field, so this case exercises the deprecated inline fallback.
 			name: "explicit primary provider without embedded auth server is invalid",
 			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type:        "oidc",
-				AuthzConfig: authzRefWithPrimary("okta"),
+				AuthzConfig: authzRefWithDeprecatedInlinePrimary("okta"),
 			},
 			authServerConfig: nil,
 			expectError:      true,
@@ -3791,6 +3802,143 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable(t *testing.T) {
 			assert.Equal(t, tt.expectedWarning.reason, warning.Reason)
 			if tt.expectedWarning.messageSubstr != "" {
 				assert.Contains(t, warning.Message, tt.expectedWarning.messageSubstr)
+			}
+		})
+	}
+}
+
+// TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent confirms
+// that when validateAuthzUpstreamAvailable resolves the primary upstream from
+// the deprecated spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
+// location, a Warning event is recorded with reason
+// AuthzPrimaryUpstreamProviderDeprecated. The canonical location does not emit
+// the event. The event is the only user-visible signal that the deprecated
+// field is being read, so its emission must remain test-locked.
+func TestVirtualMCPServerValidateAuthzUpstreamAvailable_DeprecationEvent(t *testing.T) {
+	t.Parallel()
+
+	inlineAuthzRefWithDeprecatedPrimary := &mcpv1beta1.AuthzConfigRef{
+		Type: "inline",
+		Inline: &mcpv1beta1.InlineAuthzConfig{
+			Policies:                []string{`permit(principal, action, resource);`},
+			PrimaryUpstreamProvider: "okta",
+		},
+	}
+	inlineAuthzRef := &mcpv1beta1.AuthzConfigRef{
+		Type: "inline",
+		Inline: &mcpv1beta1.InlineAuthzConfig{
+			Policies: []string{`permit(principal, action, resource);`},
+		},
+	}
+
+	tests := []struct {
+		name             string
+		incomingAuth     *mcpv1beta1.IncomingAuthConfig
+		authServerConfig *mcpv1beta1.EmbeddedAuthServerConfig
+		wantEvent        bool
+		wantError        bool
+	}{
+		{
+			name: "deprecated inline primary emits the deprecation event",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRefWithDeprecatedPrimary,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			wantEvent: true,
+		},
+		{
+			name: "canonical authServerConfig primary does not emit the event",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+				PrimaryUpstreamProvider: "okta",
+			},
+			wantEvent: false,
+		},
+		{
+			name: "no explicit primary does not emit the event",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRef,
+			},
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+				},
+			},
+			wantEvent: false,
+		},
+		{
+			// Mid-migration: user removed AuthServerConfig (or hasn't added it
+			// yet) but still has the deprecated inline field set. The
+			// validator rejects (no auth server to anchor the provider
+			// against), but the deprecation hint must still fire so the user
+			// sees what to fix.
+			name: "deprecated inline primary in no-auth-server branch emits the event before reject",
+			incomingAuth: &mcpv1beta1.IncomingAuthConfig{
+				Type:        "oidc",
+				AuthzConfig: inlineAuthzRefWithDeprecatedPrimary,
+			},
+			authServerConfig: nil,
+			wantEvent:        true,
+			wantError:        true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := &mcpv1beta1.VirtualMCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       testVmcpName,
+					Namespace:  "default",
+					Generation: 1,
+				},
+				Spec: mcpv1beta1.VirtualMCPServerSpec{
+					GroupRef:         &mcpv1beta1.MCPGroupRef{Name: testGroupName},
+					IncomingAuth:     tt.incomingAuth,
+					AuthServerConfig: tt.authServerConfig,
+				},
+			}
+
+			recorder := events.NewFakeRecorder(10)
+			r := &VirtualMCPServerReconciler{Recorder: recorder}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			err := r.validateAuthzUpstreamAvailable(t.Context(), vmcp, statusManager)
+			if tt.wantError {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			select {
+			case event := <-recorder.Events:
+				if !tt.wantEvent {
+					t.Errorf("expected no event, got %q", event)
+					return
+				}
+				assert.Contains(t, event, "Warning")
+				assert.Contains(t, event, "AuthzPrimaryUpstreamProviderDeprecated")
+				assert.Contains(t, event,
+					"spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider is deprecated")
+			case <-time.After(50 * time.Millisecond):
+				if tt.wantEvent {
+					t.Errorf("expected AuthzPrimaryUpstreamProviderDeprecated event, none recorded")
+				}
 			}
 		})
 	}
@@ -3955,8 +4103,7 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_ClearsStaleAuthzUnknown(
 			authzRef := &mcpv1beta1.AuthzConfigRef{
 				Type: "inline",
 				Inline: &mcpv1beta1.InlineAuthzConfig{
-					Policies:                []string{`permit(principal, action, resource);`},
-					PrimaryUpstreamProvider: "okta",
+					Policies: []string{`permit(principal, action, resource);`},
 				},
 			}
 
@@ -3972,12 +4119,13 @@ func TestVirtualMCPServerValidateAuthzUpstreamAvailable_ClearsStaleAuthzUnknown(
 						Type:        "oidc",
 						AuthzConfig: authzRef,
 					},
-					// Spec is now valid: explicit "okta" matches a declared upstream.
+					// Spec is now valid: explicit "okta" matches the single declared upstream.
 					AuthServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 						Issuer: "https://authserver.example.com",
 						UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 							{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 						},
+						PrimaryUpstreamProvider: "okta",
 					},
 				},
 				Status: mcpv1beta1.VirtualMCPServerStatus{
@@ -4170,4 +4318,65 @@ func TestVirtualMCPServerReconciler_IdentitySynthesizedTransitionsOnValidationFa
 	assert.Equal(t, mcpv1beta1.ConditionReasonIdentitySynthesizedInactive, cond.Reason)
 	assert.NotContains(t, cond.Message, "atlassian",
 		"stale message naming the now-removed upstream must not survive the broken edit")
+}
+
+func TestVirtualMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) {
+	t.Parallel()
+
+	existingRef := mcpv1beta1.WorkloadReference{
+		Kind: mcpv1beta1.WorkloadKindVirtualMCPServer,
+		Name: "existing",
+	}
+	newRef := mcpv1beta1.WorkloadReference{
+		Kind: mcpv1beta1.WorkloadKindVirtualMCPServer,
+		Name: "new",
+	}
+
+	tests := []struct {
+		name          string
+		vmcpName      string
+		expectedRefs  []mcpv1beta1.WorkloadReference
+		expectedCount int32
+	}{
+		{
+			name:          "adds new virtual server reference",
+			vmcpName:      "new",
+			expectedRefs:  []mcpv1beta1.WorkloadReference{existingRef, newRef},
+			expectedCount: 2,
+		},
+		{
+			name:          "does not duplicate existing reference",
+			vmcpName:      "existing",
+			expectedRefs:  []mcpv1beta1.WorkloadReference{existingRef},
+			expectedCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+
+			oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
+				Status: mcpv1beta1.MCPOIDCConfigStatus{
+					ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
+					ReferenceCount:       1,
+				},
+			}
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(oidcConfig).
+				WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
+				Build()
+			reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: scheme}
+
+			require.NoError(t, reconciler.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, tt.vmcpName))
+			assert.ElementsMatch(t, tt.expectedRefs, oidcConfig.Status.ReferencingWorkloads)
+			assert.Equal(t, tt.expectedCount, oidcConfig.Status.ReferenceCount)
+		})
+	}
 }

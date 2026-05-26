@@ -80,10 +80,20 @@ type Request struct {
 	// On this branch the caller is expected to also supply AuthorizationEndpoint
 	// and TokenEndpoint explicitly; the resolver's auth-method selection
 	// defaults to client_secret_basic because no server-capability fields
-	// are available.
+	// are available unless CodeChallengeMethodsSupported is also set.
 	//
 	// Mutually exclusive with DiscoveryURL.
 	RegistrationEndpoint string
+
+	// CodeChallengeMethodsSupported lists the PKCE challenge methods the
+	// upstream advertises. Only consulted when RegistrationEndpoint is set;
+	// on the DiscoveryURL branch the resolver reads this value from the
+	// fetched metadata document. Callers that have already performed
+	// multi-URL AS metadata discovery (e.g. via
+	// oauthproto.FetchAuthorizationServerMetadata) should populate this
+	// field so the S256 PKCE gate fires correctly without a redundant
+	// round-trip.
+	CodeChallengeMethodsSupported []string
 
 	// AuthorizationEndpoint, when non-empty, overrides any value discovered
 	// via DiscoveryURL. Explicit caller configuration always wins.
@@ -117,8 +127,8 @@ type Request struct {
 	// > client_secret_basic > client_secret_post > none, with the same
 	// S256 gate on "none").
 	//
-	// Has no effect on the RegistrationEndpoint-direct branch when the
-	// caller has not also supplied a DiscoveryURL: without
+	// Has no effect on the RegistrationEndpoint-direct branch when neither
+	// DiscoveryURL nor CodeChallengeMethodsSupported is set: without
 	// code_challenge_methods_supported the S256 gate cannot be evaluated,
 	// so the resolver refuses to register as a public client.
 	PublicClient bool

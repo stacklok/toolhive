@@ -831,6 +831,9 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		// No secrets to mount via env vars
 		return nil, nil
 
+	case mcpv1beta1.ExternalAuthTypeOBO:
+		return firstOBOSecretEnvVar(externalAuthConfig)
+
 	default:
 		return nil, nil // Not applicable
 	}
@@ -846,6 +849,20 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 			},
 		},
 	}, nil
+}
+
+// firstOBOSecretEnvVar dispatches through the registered OBO handler and
+// returns the first env var (if any) or the dispatch error. In upstream-only
+// builds the default handler returns obo.ErrEnterpriseRequired; an out-of-tree
+// build registers a real handler via controllerutil.RegisterOBOHandler.
+// Extracted from getExternalAuthConfigSecretEnvVar to keep its cyclomatic
+// complexity below the project threshold.
+func firstOBOSecretEnvVar(cfg *mcpv1beta1.MCPExternalAuthConfig) (*corev1.EnvVar, error) {
+	envVars, err := ctrlutil.OBOSecretEnvVars(cfg)
+	if err != nil || len(envVars) == 0 {
+		return nil, err
+	}
+	return &envVars[0], nil
 }
 
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
@@ -1086,6 +1103,40 @@ func (*VirtualMCPServerReconciler) validateBackendAuthSecrets(
 	_ string,
 ) error {
 	// No backend auth types currently require secret validation
+	return nil
+}
+
+// validateAuthzConfigMapRef pre-validates the referenced authz ConfigMap when
+// spec.incomingAuth.authzConfig.type is "configMap". It uses the same shared loader
+// as the converter so the diagnostic surfaces the same parse/validation errors the
+// converter would later produce, but earlier in the reconcile and as a status condition
+// rather than as a generic conversion failure. Inline and absent authzConfig are no-ops.
+//
+// Also runs ExtractCedarAuthzOptions on the loaded payload so a configMap that
+// parses as a valid authz.Config but isn't Cedar-flavoured (wrong "type" field,
+// or a future HTTP authorizer) is rejected here with AuthzConfigMapInvalid
+// rather than passing pre-validation and then failing opaquely at convert time.
+//
+// Mirrors the pattern in mcpremoteproxy_controller.go's validateK8sRefs.
+func (r *VirtualMCPServerReconciler) validateAuthzConfigMapRef(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) error {
+	if vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.AuthzConfig == nil ||
+		vmcp.Spec.IncomingAuth.AuthzConfig.Type != mcpv1beta1.AuthzConfigTypeConfigMap {
+		return nil
+	}
+	cfg, err := ctrlutil.LoadAuthzConfigFromConfigMap(
+		ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.AuthzConfig,
+	)
+	if err != nil {
+		return err
+	}
+	if _, err := ctrlutil.ExtractCedarAuthzOptions(cfg); err != nil {
+		return fmt.Errorf("authz ConfigMap %s/%s is not a Cedar config: %w",
+			vmcp.Namespace, vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name, err)
+	}
 	return nil
 }
 

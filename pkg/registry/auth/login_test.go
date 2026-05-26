@@ -334,6 +334,19 @@ func TestEnsureRegistryURL(t *testing.T) {
 			wantErr: false,
 		},
 		{
+			name: "AllowPrivateIP propagates to SetRegistryURL",
+			cfg:  &config.Config{},
+			opts: LoginOptions{
+				RegistryURL:    "https://registry.example.com/mcp.json",
+				AllowPrivateIP: true,
+			},
+			setupMock: func(m *configmocks.MockProvider) {
+				m.EXPECT().UpdateConfig(gomock.Any()).Return(nil)
+				m.EXPECT().SetRegistryURL(gomock.Any(), true).Return(nil)
+			},
+			wantErr: false,
+		},
+		{
 			name: "opts supply file path - clears auth then calls SetRegistryFile",
 			cfg:  &config.Config{},
 			opts: LoginOptions{RegistryURL: "file:///tmp/registry.json"},

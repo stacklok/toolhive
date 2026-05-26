@@ -110,21 +110,6 @@ func RegisterRuntime(info *Info) {
 	DefaultRegistry.Register(info)
 }
 
-// GetRegisteredRuntime returns the Info from the DefaultRegistry for the given name.
-func GetRegisteredRuntime(name string) *Info {
-	return DefaultRegistry.Get(name)
-}
-
-// IsRuntimeRegistered returns true if a runtime is registered in the DefaultRegistry.
-func IsRuntimeRegistered(name string) bool {
-	return DefaultRegistry.IsRegistered(name)
-}
-
-// RegisteredRuntimes returns all runtimes from the DefaultRegistry.
-func RegisteredRuntimes() []*Info {
-	return DefaultRegistry.All()
-}
-
 // RegisteredRuntimesByPriority returns all runtimes from the DefaultRegistry
 // sorted by priority.
 func RegisteredRuntimesByPriority() []*Info {

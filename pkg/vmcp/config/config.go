@@ -267,6 +267,14 @@ type AuthzConfig struct {
 	// Policies contains Cedar policy definitions (when Type = "cedar").
 	Policies []string `json:"policies,omitempty" yaml:"policies,omitempty"`
 
+	// EntitiesJSON is a JSON string representing Cedar entities. Required for
+	// enterprise policies that rely on transitive relationships (e.g.
+	// `ClaimGroup → PlatformRole`) — without it the Cedar authorizer is
+	// constructed with an empty entity store and `in` checks against absent
+	// entities silently evaluate to false. Defaults to "[]" when empty.
+	// +optional
+	EntitiesJSON string `json:"entitiesJson,omitempty" yaml:"entitiesJson,omitempty"`
+
 	// PrimaryUpstreamProvider names the upstream IDP provider whose access
 	// token should be used as the source of JWT claims for Cedar evaluation.
 	// When empty, claims from the ToolHive-issued token are used.
@@ -274,6 +282,28 @@ type AuthzConfig struct {
 	// (e.g. "default", "github"). Only relevant when the embedded auth server is active.
 	// +optional
 	PrimaryUpstreamProvider string `json:"primaryUpstreamProvider,omitempty" yaml:"primaryUpstreamProvider,omitempty"`
+
+	// GroupClaimName is the JWT claim key that contains group membership for
+	// the principal. When set, takes priority over the well-known defaults
+	// ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+	// groups under a URI-style claim (e.g. "https://example.com/groups").
+	// When empty, only the well-known claim names are checked.
+	// +optional
+	GroupClaimName string `json:"groupClaimName,omitempty" yaml:"groupClaimName,omitempty"`
+
+	// RoleClaimName is the JWT claim key that contains role membership for the
+	// principal. When set, the claim is extracted separately from GroupClaimName
+	// and both are mapped to the configured group entity type. When empty, no
+	// role extraction is performed.
+	// +optional
+	RoleClaimName string `json:"roleClaimName,omitempty" yaml:"roleClaimName,omitempty"`
+
+	// GroupEntityType is the Cedar entity type name used for principal parent
+	// UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+	// empty. Must match the entity type used in EntitiesJSON for transitive
+	// `in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported.
+	// +optional
+	GroupEntityType string `json:"groupEntityType,omitempty" yaml:"groupEntityType,omitempty"`
 }
 
 // StaticBackendConfig defines a pre-configured backend server for static mode.

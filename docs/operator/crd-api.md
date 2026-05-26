@@ -97,7 +97,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _string_ | Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts" |  |  |
+| `type` _string_ | Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts", "obo" |  |  |
 | `headerInjection` _[auth.types.HeaderInjectionConfig](#authtypesheaderinjectionconfig)_ | HeaderInjection contains configuration for header injection auth strategy.<br />Used when Type = "header_injection". |  |  |
 | `tokenExchange` _[auth.types.TokenExchangeConfig](#authtypestokenexchangeconfig)_ | TokenExchange contains configuration for token exchange auth strategy.<br />Used when Type = "token_exchange". |  |  |
 | `upstreamInject` _[auth.types.UpstreamInjectConfig](#authtypesupstreaminjectconfig)_ | UpstreamInject contains configuration for upstream inject auth strategy.<br />Used when Type = "upstream_inject". |  |  |
@@ -231,7 +231,11 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `type` _string_ | Type is the authz type: "cedar", "none" |  |  |
 | `policies` _string array_ | Policies contains Cedar policy definitions (when Type = "cedar"). |  |  |
+| `entitiesJson` _string_ | EntitiesJSON is a JSON string representing Cedar entities. Required for<br />enterprise policies that rely on transitive relationships (e.g.<br />`ClaimGroup → PlatformRole`) — without it the Cedar authorizer is<br />constructed with an empty entity store and `in` checks against absent<br />entities silently evaluate to false. Defaults to "[]" when empty. |  | Optional: \{\} <br /> |
 | `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP provider whose access<br />token should be used as the source of JWT claims for Cedar evaluation.<br />When empty, claims from the ToolHive-issued token are used.<br />Must match an upstream provider name configured in the embedded auth server<br />(e.g. "default", "github"). Only relevant when the embedded auth server is active. |  | Optional: \{\} <br /> |
+| `groupClaimName` _string_ | GroupClaimName is the JWT claim key that contains group membership for<br />the principal. When set, takes priority over the well-known defaults<br />("groups", "roles", "cognito:groups"). Use this for IDPs that place<br />groups under a URI-style claim (e.g. "https://example.com/groups").<br />When empty, only the well-known claim names are checked. |  | Optional: \{\} <br /> |
+| `roleClaimName` _string_ | RoleClaimName is the JWT claim key that contains role membership for the<br />principal. When set, the claim is extracted separately from GroupClaimName<br />and both are mapped to the configured group entity type. When empty, no<br />role extraction is performed. |  | Optional: \{\} <br /> |
+| `groupEntityType` _string_ | GroupEntityType is the Cedar entity type name used for principal parent<br />UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when<br />empty. Must match the entity type used in EntitiesJSON for transitive<br />`in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported. |  | Optional: \{\} <br /> |
 
 
 #### vmcp.config.CircuitBreakerConfig
@@ -1069,6 +1073,9 @@ _Appears in:_
 | `type` _string_ | Type is the type of authorization configuration | configMap | Enum: [configMap inline] <br /> |
 | `configMap` _[api.v1beta1.ConfigMapAuthzRef](#apiv1beta1configmapauthzref)_ | ConfigMap references a ConfigMap containing authorization configuration<br />Only used when Type is "configMap" |  | Optional: \{\} <br /> |
 | `inline` _[api.v1beta1.InlineAuthzConfig](#apiv1beta1inlineauthzconfig)_ | Inline contains direct authorization configuration<br />Only used when Type is "inline" |  | Optional: \{\} <br /> |
+| `groupClaimName` _string_ | GroupClaimName is the JWT claim key that contains group membership for the<br />principal. When set, takes priority over the well-known defaults<br />("groups", "roles", "cognito:groups"). Use this for IDPs that place<br />groups under a URI-style claim (e.g. "https://example.com/groups"). When<br />Type is "configMap", a group_claim_name entry in the referenced ConfigMap<br />is overridden by this field if both are set. |  | MaxLength: 253 <br />Optional: \{\} <br /> |
+| `roleClaimName` _string_ | RoleClaimName is the JWT claim key that contains role membership for the<br />principal. When set, the claim is extracted separately from GroupClaimName<br />and both are mapped to the configured GroupEntityType. When Type is<br />"configMap", a role_claim_name entry in the referenced ConfigMap is<br />overridden by this field if both are set. |  | MaxLength: 253 <br />Optional: \{\} <br /> |
+| `groupEntityType` _string_ | GroupEntityType is the Cedar entity type name used for principal parent<br />UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when<br />empty. Must match the entity type used in the static entity store for<br />transitive `in` checks (e.g. `ClaimGroup → PlatformRole`) to resolve.<br />Namespaced names (`Foo::Bar`) are not yet supported. When Type is<br />"configMap", a group_entity_type entry in the referenced ConfigMap is<br />overridden by this field if both are set. |  | MaxLength: 63 <br />Pattern: `^[A-Za-z_][A-Za-z0-9_]*$` <br />Optional: \{\} <br /> |
 
 
 #### api.v1beta1.BackendAuthConfig
@@ -1198,6 +1205,7 @@ _Appears in:_
 | `hmacSecretRefs` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref) array_ | HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing<br />authorization codes and refresh tokens (opaque tokens).<br />Current secret must be at least 32 bytes and cryptographically random.<br />Supports secret rotation via multiple entries (first is current, rest are for verification).<br />If not specified, an ephemeral secret will be auto-generated (development only -<br />auth codes and refresh tokens will be invalid after restart). |  | Optional: \{\} <br /> |
 | `tokenLifespans` _[api.v1beta1.TokenLifespanConfig](#apiv1beta1tokenlifespanconfig)_ | TokenLifespans configures the duration that various tokens are valid.<br />If not specified, defaults are applied (access: 1h, refresh: 7d, authCode: 10m). |  | Optional: \{\} <br /> |
 | `upstreamProviders` _[api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig) array_ | UpstreamProviders configures connections to upstream Identity Providers.<br />The embedded auth server delegates authentication to these providers.<br />MCPServer and MCPRemoteProxy support a single upstream; VirtualMCPServer supports multiple. |  | MinItems: 1 <br />Required: \{\} <br /> |
+| `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token Cedar<br />should read claims from when authorising a request. Must match the name<br />of one of the entries in UpstreamProviders. When empty, the controller<br />auto-selects the first entry of UpstreamProviders.<br />Only meaningful on VirtualMCPServer, where multiple upstream providers<br />can be configured and Cedar needs to pick which token's claims to<br />evaluate. The VirtualMCPServer controller validates this field against<br />UpstreamProviders at admission and rejects unresolvable values.<br />On MCPServer and MCPRemoteProxy this field is structurally present (the<br />EmbeddedAuthServerConfig struct is shared) but has no runtime effect:<br />those CRDs are restricted to a single upstream so there is no choice to<br />make. Setting it on those CRDs is silently ignored. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 | `storage` _[api.v1beta1.AuthServerStorageConfig](#apiv1beta1authserverstorageconfig)_ | Storage configures the storage backend for the embedded auth server.<br />If not specified, defaults to in-memory storage. |  | Optional: \{\} <br /> |
 | `baselineClientScopes` _string array_ | BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be<br />included in every client registration. The embedded auth server unions these<br />scopes into the registered set returned by RFC 7591 Dynamic Client<br />Registration, so a client that narrows the `scope` field at /oauth/register<br />can still request the baseline scopes at /oauth/authorize. All values must<br />be present in the upstream-derived scopesSupported set; the auth server<br />fails to start if any value is missing.<br />Security: every client registered via /oauth/register will gain the<br />ability to request these scopes at /oauth/authorize, regardless of what<br />the client itself requested. Keep the baseline narrow (typically<br />"openid" and "offline_access"). Adding a privileged scope here — e.g.<br />"admin:read" — would grant it to every DCR-registered client, including<br />public clients like Claude Code, Cursor, and VS Code. |  | MaxItems: 10 <br />items:MinLength: 1 <br />items:Pattern: `^[\x21\x23-\x5B\x5D-\x7E]+$` <br />Optional: \{\} <br /> |
 
@@ -1425,6 +1433,7 @@ _Appears in:_
 | `embeddedAuthServer` | ExternalAuthTypeEmbeddedAuthServer is the type for embedded OAuth2/OIDC authorization server<br />This enables running an embedded auth server that delegates to upstream IDPs<br /> |
 | `awsSts` | ExternalAuthTypeAWSSts is the type for AWS STS authentication<br /> |
 | `upstreamInject` | ExternalAuthTypeUpstreamInject is the type for upstream token injection<br />This injects an upstream IDP access token as the Authorization: Bearer header<br /> |
+| `obo` | ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.<br />This type requires a build with an OBO handler registered via<br />controllerutil.RegisterOBOHandler; an upstream-only build surfaces<br />status.conditions[Valid] = False with Reason: EnterpriseRequired<br />when an obo-typed MCPExternalAuthConfig is applied.<br /> |
 
 
 #### api.v1beta1.HeaderForwardConfig
@@ -1535,7 +1544,11 @@ _Appears in:_
 
 
 
-InlineAuthzConfig contains direct authorization configuration
+InlineAuthzConfig contains direct authorization configuration.
+
+Source-agnostic Cedar JWT-claim mapping settings (GroupClaimName,
+RoleClaimName, GroupEntityType) live on the parent AuthzConfigRef so they
+work the same way for inline and configMap-sourced authz.
 
 
 
@@ -1545,8 +1558,8 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `policies` _string array_ | Policies is a list of Cedar policy strings |  | MinItems: 1 <br />Required: \{\} <br /> |
-| `entitiesJson` _string_ | EntitiesJSON is a JSON string representing Cedar entities | [] | Optional: \{\} <br /> |
-| `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token's claims<br />Cedar should evaluate. Currently honored only when the parent<br />AuthzConfigRef.Type is "inline"; configMap-sourced policies will support<br />this in a future release (see #5208). Only meaningful for VirtualMCPServer<br />with an embedded auth server. When empty and an embedded auth server has<br />upstreams configured, the controller defaults to the first upstream<br />provider. The name must match one of the upstreams declared on<br />spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is<br />rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy<br />have no embedded auth server; setting this field on those CRs surfaces an<br />AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
+| `entitiesJson` _string_ | EntitiesJSON is a JSON string representing Cedar entities. Required when<br />transitive policies (e.g. `ClaimGroup → PlatformRole`) need a static<br />entity store; defaults to "[]". | [] | Optional: \{\} <br /> |
+| `primaryUpstreamProvider` _string_ | PrimaryUpstreamProvider names the upstream IDP whose access token's<br />claims Cedar should evaluate.<br />Deprecated: on VirtualMCPServer this field has moved to<br />spec.authServerConfig.primaryUpstreamProvider. The old location is<br />still read for one release for backward compatibility; the<br />VirtualMCPServer controller emits an AuthzPrimaryUpstreamProviderDeprecated<br />Warning event whenever it is consumed, and removal is planned for the<br />release after the deprecation cycle.<br />On MCPServer and MCPRemoteProxy this field has always been a structural<br />no-op (those CRDs do not run an embedded auth server). Setting it<br />continues to surface the AuthzPrimaryUpstreamProviderIgnored advisory<br />condition; the deprecation does not change that behaviour. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
 
 
 #### api.v1beta1.InlineOIDCSharedConfig
@@ -1658,13 +1671,14 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1beta1.ExternalAuthType](#apiv1beta1externalauthtype)_ | Type is the type of external authentication to configure |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject] <br />Required: \{\} <br /> |
+| `type` _[api.v1beta1.ExternalAuthType](#apiv1beta1externalauthtype)_ | Type is the type of external authentication to configure.<br />When set to "obo", the cluster must run a build that has registered an<br />OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds<br />surface status.conditions[Valid] = False with Reason: EnterpriseRequired<br />for obo-typed configs. |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject obo] <br />Required: \{\} <br /> |
 | `tokenExchange` _[api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  | Optional: \{\} <br /> |
 | `headerInjection` _[api.v1beta1.HeaderInjectionConfig](#apiv1beta1headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  | Optional: \{\} <br /> |
 | `bearerToken` _[api.v1beta1.BearerTokenConfig](#apiv1beta1bearertokenconfig)_ | BearerToken configures bearer token authentication<br />Only used when Type is "bearerToken" |  | Optional: \{\} <br /> |
 | `embeddedAuthServer` _[api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)_ | EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server<br />Only used when Type is "embeddedAuthServer" |  | Optional: \{\} <br /> |
 | `awsSts` _[api.v1beta1.AWSStsConfig](#apiv1beta1awsstsconfig)_ | AWSSts configures AWS STS authentication with SigV4 request signing<br />Only used when Type is "awsSts" |  | Optional: \{\} <br /> |
 | `upstreamInject` _[api.v1beta1.UpstreamInjectSpec](#apiv1beta1upstreaminjectspec)_ | UpstreamInject configures upstream token injection for backend requests.<br />Only used when Type is "upstreamInject". |  | Optional: \{\} <br /> |
+| `obo` _[api.v1beta1.OBOConfig](#apiv1beta1oboconfig)_ | OBO configures On-Behalf-Of (OBO) authentication.<br />Only used when Type is "obo". The inner schema is intentionally empty in<br />this revision; sub-fields land in a follow-up. Setting this field on an<br />upstream-only build will cause the MCPExternalAuthConfig to transition to<br />status.conditions[Valid] = False with Reason: EnterpriseRequired. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPExternalAuthConfigStatus
@@ -1683,6 +1697,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPExternalAuthConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.<br />It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
+| `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
 | `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
@@ -1927,6 +1942,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPOIDCConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPOIDCConfig. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
+| `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
 | `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
@@ -2610,6 +2626,7 @@ _Appears in:_
 | `conditions` _[Condition](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#condition-v1-meta) array_ | Conditions represent the latest available observations of the MCPToolConfig's state |  | Optional: \{\} <br /> |
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPToolConfig.<br />It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
+| `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
 | `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
 
 
@@ -2729,6 +2746,25 @@ _Appears in:_
 | `identityFromToken` _[api.v1beta1.IdentityFromTokenConfig](#apiv1beta1identityfromtokenconfig)_ | IdentityFromToken extracts user identity (subject, name, email) directly<br />from the OAuth2 token-endpoint response body using gjson dot-notation paths.<br />When set, the embedded auth server skips the userinfo HTTP call entirely<br />and resolves identity from the token response. See IdentityFromTokenConfig<br />for trust-model and uniqueness considerations. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
 | `dcrConfig` _[api.v1beta1.DCRUpstreamConfig](#apiv1beta1dcrupstreamconfig)_ | DCRConfig enables RFC 7591 Dynamic Client Registration against the upstream<br />authorization server. When set, the client credentials are obtained at<br />runtime rather than being pre-provisioned, and ClientID must be left empty.<br />Mutually exclusive with ClientID. |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.OBOConfig
+
+
+
+OBOConfig is a placeholder for On-Behalf-Of (OBO) external auth configuration.
+The inner schema is intentionally empty in this revision; sub-fields land in a
+follow-up RFC. The struct exists so OBO *OBOConfig compiles and the CRD
+schema admits `spec.obo: {}` — the CEL rule "obo configuration must be set
+if and only if type is 'obo'" requires has(self.obo), which evaluates true
+for an empty object. Stored objects with `obo: {}` will round-trip cleanly
+when sub-fields land, because Go zero values fill in.
+
+
+
+_Appears in:_
+- [api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)
+
 
 
 #### api.v1beta1.OIDCUpstreamConfig

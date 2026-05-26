@@ -7,12 +7,21 @@
   ],
   "labels": ["dependencies"],
   "schedule": ["every weekend"],
+  "vulnerabilityAlerts": {
+    "enabled": true,
+    "schedule": ["at any time"]
+  },
   "prConcurrentLimit": 5,
   "prHourlyLimit": 2,
   "packageRules": [
     {
       "description": "Update toolhive-catalog dependency daily",
       "matchPackageNames": ["github.com/stacklok/toolhive-catalog"],
+      "schedule": ["at any time"]
+    },
+    {
+      "description": "Update toolhive-core dependency daily",
+      "matchPackageNames": ["github.com/stacklok/toolhive-core"],
       "schedule": ["at any time"]
     },
     {

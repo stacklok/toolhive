@@ -214,7 +214,7 @@ func TestIsValidRegistryJSON(t *testing.T) {
 			expectedError: true,
 		},
 		{
-			name: "valid upstream registry with groups",
+			name: "valid upstream registry with skills",
 			setupServer: func() *httptest.Server {
 				return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 					w.Header().Set("Content-Type", "application/json")
@@ -224,13 +224,10 @@ func TestIsValidRegistryJSON(t *testing.T) {
 						"meta":    map[string]interface{}{},
 						"data": map[string]interface{}{
 							"servers": []interface{}{},
-							"groups": []map[string]interface{}{
+							"skills": []map[string]interface{}{
 								{
-									"name":        "test-group",
-									"description": "Test group",
-									"servers": []interface{}{
-										map[string]interface{}{"name": "io.example.grouped"},
-									},
+									"name":        "test-skill",
+									"description": "Test skill",
 								},
 							},
 						},
@@ -314,7 +311,7 @@ func TestValidateRegistryFileStructure_UpstreamFormat(t *testing.T) {
 				"data": {"servers": []}
 			}`,
 			expectError:    true,
-			errMsgContains: "no servers or groups",
+			errMsgContains: "no servers or skills",
 		},
 		{
 			name: "legacy format with top-level servers returns migration hint",

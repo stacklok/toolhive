@@ -121,41 +121,6 @@ func LoadRunConfig[T any](ctx context.Context, name string, readJSONFunc ReadJSO
 	return readJSONFunc(reader)
 }
 
-// ReadRunConfigJSON deserializes a run configuration from JSON read from the provided reader
-// This is a generic JSON deserializer for any type that can be unmarshalled from JSON
-func ReadRunConfigJSON[T any](r io.Reader) (*T, error) {
-	var config T
-	decoder := json.NewDecoder(r)
-	if err := decoder.Decode(&config); err != nil {
-		return nil, err
-	}
-	return &config, nil
-}
-
-// LoadRunConfigOfType loads a run configuration of a specific type T from the state store
-func LoadRunConfigOfType[T any](ctx context.Context, name string) (*T, error) {
-	return LoadRunConfig(ctx, name, ReadRunConfigJSON[T])
-}
-
-// RunConfigReadJSONFunc defines the function signature for reading a RunConfig from JSON
-// This allows us to accept the runner.ReadJSON function without creating a circular dependency
-type RunConfigReadJSONFunc func(r io.Reader) (interface{}, error)
-
-// LoadRunConfigWithFunc loads a run configuration using a provided read function
-func LoadRunConfigWithFunc(ctx context.Context, name string, readFunc RunConfigReadJSONFunc) (interface{}, error) {
-	reader, err := LoadRunConfigJSON(ctx, name)
-	if err != nil {
-		return nil, err
-	}
-	defer func() {
-		if err := reader.Close(); err != nil {
-			slog.Warn("Failed to close reader", "error", err)
-		}
-	}()
-
-	return readFunc(reader)
-}
-
 // ReadJSON deserializes JSON from the provided reader into a generic interface
 // This function is moved from the runner package to avoid circular dependencies
 func ReadJSON(r io.Reader, target interface{}) error {

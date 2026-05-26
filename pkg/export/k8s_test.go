@@ -306,6 +306,18 @@ func TestParseVolumeString(t *testing.T) {
 			index:   0,
 			wantErr: true,
 		},
+		{
+			name:    "invalid format - too many fields",
+			volStr:  "/host/path:/container/path:ro:extra",
+			index:   0,
+			wantErr: true,
+		},
+		{
+			name:    "invalid format - unknown mode",
+			volStr:  "/host/path:/container/path:rw",
+			index:   0,
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {

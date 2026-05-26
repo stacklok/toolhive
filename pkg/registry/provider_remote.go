@@ -89,8 +89,8 @@ func (p *RemoteRegistryProvider) validateConnectivity() error {
 	if err := json.Unmarshal(data, &upstream); err != nil {
 		return fmt.Errorf("registry returned invalid upstream JSON from %s: %w", p.registryURL, err)
 	}
-	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Groups) == 0 {
-		return fmt.Errorf("registry at %s returned upstream format with no servers or groups", p.registryURL)
+	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Skills) == 0 {
+		return fmt.Errorf("registry at %s returned upstream format with no servers or skills", p.registryURL)
 	}
 	return nil
 }

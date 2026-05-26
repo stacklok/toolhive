@@ -103,6 +103,7 @@ type HttpClientBuilder struct {
 	authTokenFile         string
 	allowPrivate          bool
 	insecureAllowHTTP     bool
+	disableKeepAlives     bool
 }
 
 // NewHttpClientBuilder returns a new HttpClientBuilder
@@ -139,6 +140,14 @@ func (b *HttpClientBuilder) WithInsecureAllowHTTP(allow bool) *HttpClientBuilder
 	return b
 }
 
+// WithDisableKeepAlives disables HTTP keep-alive on the transport. When true,
+// each request uses a fresh connection, ensuring the per-dial SSRF check fires
+// on every request rather than being bypassed by a reused connection.
+func (b *HttpClientBuilder) WithDisableKeepAlives(disable bool) *HttpClientBuilder {
+	b.disableKeepAlives = disable
+	return b
+}
+
 // WithTimeout sets the HTTP client timeout
 func (b *HttpClientBuilder) WithTimeout(timeout time.Duration) *HttpClientBuilder {
 	b.clientTimeout = timeout
@@ -151,6 +160,7 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 		TLSHandshakeTimeout:   b.tlsHandshakeTimeout,
 		ResponseHeaderTimeout: b.responseHeaderTimeout,
 	}
+	transport.DisableKeepAlives = b.disableKeepAlives
 
 	if !b.allowPrivate {
 		transport.DialContext = (&net.Dialer{

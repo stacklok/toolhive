@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -103,6 +104,9 @@ type RunFlags struct {
 
 	// Endpoint prefix for SSE endpoint URLs
 	EndpointPrefix string
+
+	// SessionTTL is the session inactivity timeout. Zero uses the transport default.
+	SessionTTL time.Duration
 
 	// Network mode
 	Network string
@@ -264,6 +268,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().BoolVar(&config.Stateless, "stateless", false,
 		"Declare the server as stateless (POST-only, no SSE). "+
 			"Use for MCP servers implementing streamable-HTTP stateless mode.")
+	cmd.Flags().DurationVar(&config.SessionTTL, "session-ttl", 0,
+		"Session inactivity timeout (e.g., 30m, 2h); zero uses the default (2h)")
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
@@ -665,6 +671,7 @@ func buildRunnerConfig(
 		runner.WithAllowDockerGateway(runFlags.AllowDockerGateway),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
 		runner.WithStateless(runFlags.Stateless),
+		runner.WithSessionTTL(runFlags.SessionTTL),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),

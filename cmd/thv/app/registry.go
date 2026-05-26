@@ -158,7 +158,7 @@ func printJSONServer(server types.ServerMetadata) error {
 func printTextServers(servers []types.ServerMetadata) {
 	// Create a tabwriter for pretty output
 	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
-	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTIER\tSTARS\tPULLS"); err != nil {
+	if _, err := fmt.Fprintln(w, "NAME\tTYPE\tDESCRIPTION\tTIER\tSTARS"); err != nil {
 		slog.Warn(fmt.Sprintf("Failed to write output: %v", err))
 		return
 	}

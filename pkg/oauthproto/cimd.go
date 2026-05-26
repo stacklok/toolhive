@@ -3,7 +3,10 @@
 
 package oauthproto
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 // ToolHiveClientMetadataDocumentURL is the stable HTTPS URL where ToolHive's
 // client metadata document is hosted. ToolHive presents this URL as its
@@ -28,23 +31,11 @@ func IsClientIDMetadataDocumentURL(clientID string) bool {
 	// development and integration testing. These are the only HTTP URLs that
 	// FetchClientMetadataDocument / validateCIMDClientURL also accept.
 	if strings.HasPrefix(clientID, "http://") {
-		return IsLoopbackHost(hostFromURL(clientID))
+		parsed, err := url.Parse(clientID)
+		if err != nil {
+			return false
+		}
+		return IsLoopbackHost(parsed.Host)
 	}
 	return false
-}
-
-// hostFromURL extracts the host (and port, if present) from a raw URL string
-// for the narrow purpose of IsClientIDMetadataDocumentURL's loopback check.
-// It avoids importing net/url so this leaf package stays import-free. A full
-// URL parse is performed by FetchClientMetadataDocument before any network I/O.
-func hostFromURL(rawURL string) string {
-	// Strip scheme
-	rest := strings.TrimPrefix(rawURL, "http://")
-	// Extract host (up to first '/', '?', or '#')
-	for i, c := range rest {
-		if c == '/' || c == '?' || c == '#' {
-			return rest[:i]
-		}
-	}
-	return rest
 }

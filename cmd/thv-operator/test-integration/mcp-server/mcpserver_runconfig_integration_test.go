@@ -17,6 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -666,7 +667,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 
 			// Verify authorization configuration
 			Expect(runConfig.AuthzConfig).NotTo(BeNil())
-			Expect(runConfig.AuthzConfig.Version).To(Equal("v1"))
+			Expect(runConfig.AuthzConfig.Version).To(Equal(ctrlutil.AuthzConfigVersion))
 			Expect(runConfig.AuthzConfig.Type).To(Equal(authz.ConfigType(cedar.ConfigType)))
 
 			cedarCfg, err := cedar.ExtractConfig(runConfig.AuthzConfig)
@@ -807,7 +808,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				},
 				Data: map[string]string{
 					"authz.json": `{
-						"version": "v1",
+						"version": "1.0",
 						"type": "cedarv1",
 						"cedar": {
 							"policies": [
@@ -870,7 +871,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 
 			// Verify authorization configuration was embedded from external ConfigMap
 			Expect(runConfig.AuthzConfig).NotTo(BeNil())
-			Expect(runConfig.AuthzConfig.Version).To(Equal("v1"))
+			Expect(runConfig.AuthzConfig.Version).To(Equal(ctrlutil.AuthzConfigVersion))
 			Expect(runConfig.AuthzConfig.Type).To(Equal(authz.ConfigType(cedar.ConfigType)))
 
 			// Verify Cedar configuration

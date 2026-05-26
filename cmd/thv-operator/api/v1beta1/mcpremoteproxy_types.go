@@ -332,8 +332,16 @@ const (
 	// ConditionReasonAuthzPolicySyntaxInvalid indicates an inline Cedar policy has a syntax error
 	ConditionReasonAuthzPolicySyntaxInvalid = "AuthzPolicySyntaxInvalid"
 
-	// ConditionReasonAuthzConfigMapNotFound indicates the referenced authz ConfigMap was not found
+	// ConditionReasonAuthzConfigMapNotFound indicates the referenced authz ConfigMap was not found.
+	// Shared with VirtualMCPServer (see virtualmcpserver_types.go); both reconcilers use this
+	// reason when the ConfigMap itself is absent.
 	ConditionReasonAuthzConfigMapNotFound = "AuthzConfigMapNotFound"
+
+	// ConditionReasonAuthzConfigMapInvalid indicates the referenced authz ConfigMap was found
+	// but its payload is missing/empty/malformed, fails validation, or does not contain a
+	// Cedar-flavoured config. Shared with VirtualMCPServer; both reconcilers use this reason
+	// to distinguish a malformed payload from a missing ConfigMap.
+	ConditionReasonAuthzConfigMapInvalid = "AuthzConfigMapInvalid"
 
 	// ConditionReasonHeaderSecretNotFound indicates a referenced header Secret was not found
 	ConditionReasonHeaderSecretNotFound = "HeaderSecretNotFound"

@@ -3,7 +3,10 @@
 
 package oauthproto
 
-import "strings"
+import (
+	"net/url"
+	"strings"
+)
 
 // ToolHiveClientMetadataDocumentURL is the stable HTTPS URL where ToolHive's
 // client metadata document is hosted. ToolHive presents this URL as its
@@ -12,11 +15,32 @@ import "strings"
 // be used in production.
 const ToolHiveClientMetadataDocumentURL = "https://toolhive.dev/oauth/client-metadata.json"
 
-// IsClientIDMetadataDocumentURL returns true if clientID is an HTTPS URL.
-// Any HTTPS URL is treated as a CIMD client_id; DCR-issued IDs are always
-// opaque strings that never begin with "https://". Do not tighten this to an
-// exact match against ToolHiveClientMetadataDocumentURL — the embedded AS
-// must accept CIMD URLs from third-party clients too.
+// IsClientIDMetadataDocumentURL returns true if clientID looks like a CIMD URL.
+// In production this means any HTTPS URL; in local development http://localhost,
+// http://127.0.0.1, and http://[::1] URLs are also accepted so that integration
+// tests can use plain httptest.Server instances without TLS setup. DCR-issued IDs
+// are always opaque strings that never begin with a URL scheme, so there is no
+// risk of false positives. Do not tighten this to an exact match against
+// ToolHiveClientMetadataDocumentURL — the embedded AS must accept CIMD URLs
+// from third-party clients too.
+//
+// This predicate is also used by pkg/auth/remote/handler.go to decide whether to
+// persist a client_id as DCR credentials or as a CIMD URL. The loopback HTTP
+// acceptance is safe in that context: real DCR-issued client IDs are always opaque
+// strings that never start with "http://", so no live deployment is affected.
 func IsClientIDMetadataDocumentURL(clientID string) bool {
-	return strings.HasPrefix(clientID, "https://")
+	if strings.HasPrefix(clientID, "https://") {
+		return true
+	}
+	// Allow loopback HTTP URLs (localhost, 127.0.0.1, [::1]) for local
+	// development and integration testing. These are the only HTTP URLs that
+	// FetchClientMetadataDocument / validateCIMDClientURL also accept.
+	if strings.HasPrefix(clientID, "http://") {
+		parsed, err := url.Parse(clientID)
+		if err != nil {
+			return false
+		}
+		return IsLoopbackHost(parsed.Host)
+	}
+	return false
 }

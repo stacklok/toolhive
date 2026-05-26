@@ -114,6 +114,13 @@ func TestConfigValidate(t *testing.T) {
 		{name: "baseline scope not in scopes_supported", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"offline_access"}}, wantErr: true, errMsg: `baseline_client_scopes contains "offline_access"`},
 		{name: "nil supported with baseline in DefaultScopes passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: nil, BaselineClientScopes: []string{"offline_access"}}},
 
+		// CIMD validation
+		{name: "CIMD enabled zero cache_max_size rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 0}, wantErr: true, errMsg: "cache_max_size must be >= 1"},
+		{name: "CIMD enabled negative cache_max_size rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: -1}, wantErr: true, errMsg: "cache_max_size must be >= 1"},
+		{name: "CIMD enabled negative cache_fallback_ttl rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: -time.Second}, wantErr: true, errMsg: "cache_fallback_ttl must be non-negative"},
+		{name: "CIMD disabled ignores invalid cache fields", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: false, CIMDCacheMaxSize: -1, CIMDCacheFallbackTTL: -time.Second}},
+		{name: "CIMD enabled with valid bounds passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: 5 * time.Minute}},
+
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
 		{name: "valid nil key provider", config: Config{Issuer: "https://example.com", HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -431,6 +438,14 @@ func TestRunConfigValidate(t *testing.T) {
 			wantErr: true,
 			errMsg:  "foo",
 		},
+		// CIMD RunConfig validation
+		{name: "CIMD nil passes", config: RunConfig{CIMD: nil}},
+		{name: "CIMD disabled passes even with invalid fields", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: false, CacheMaxSize: -1, CacheFallbackTTL: "-1s"}}},
+		{name: "CIMD enabled negative cache_max_size rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheMaxSize: -1}}, wantErr: true, errMsg: "cache_max_size"},
+		{name: "CIMD enabled invalid TTL string rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheFallbackTTL: "not-a-duration"}}, wantErr: true, errMsg: "cache_fallback_ttl"},
+		{name: "CIMD enabled negative TTL rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheFallbackTTL: "-5m"}}, wantErr: true, errMsg: "cache_fallback_ttl"},
+		{name: "CIMD enabled valid passes", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheMaxSize: 64, CacheFallbackTTL: "5m"}}},
+		{name: "CIMD enabled omitted optional fields pass", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true}}},
 	}
 
 	for _, tt := range tests {
@@ -586,6 +601,52 @@ func TestConfigApplyDefaults_BaselineClientScopes(t *testing.T) {
 			} else {
 				require.Equal(t, tt.scopesSupported, cfg.ScopesSupported)
 			}
+		})
+	}
+}
+
+func TestConfigApplyDefaults_CIMD(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		cfg             Config
+		wantMaxSize     int
+		wantFallbackTTL time.Duration
+	}{
+		{
+			name:            "CIMD enabled with zero fields applies defaults",
+			cfg:             Config{Issuer: "https://example.com", CIMDEnabled: true},
+			wantMaxSize:     256,
+			wantFallbackTTL: 5 * time.Minute,
+		},
+		{
+			name: "CIMD enabled preserves non-zero values",
+			cfg: Config{
+				Issuer:               "https://example.com",
+				CIMDEnabled:          true,
+				CIMDCacheMaxSize:     128,
+				CIMDCacheFallbackTTL: 10 * time.Minute,
+			},
+			wantMaxSize:     128,
+			wantFallbackTTL: 10 * time.Minute,
+		},
+		{
+			name:            "CIMD disabled leaves zero fields unchanged",
+			cfg:             Config{Issuer: "https://example.com", CIMDEnabled: false},
+			wantMaxSize:     0,
+			wantFallbackTTL: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := tt.cfg
+			err := cfg.applyDefaults()
+			require.NoError(t, err)
+			require.Equal(t, tt.wantMaxSize, cfg.CIMDCacheMaxSize)
+			require.Equal(t, tt.wantFallbackTTL, cfg.CIMDCacheFallbackTTL)
 		})
 	}
 }

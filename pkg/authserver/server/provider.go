@@ -67,6 +67,9 @@ type AuthorizationServerConfig struct {
 	// AuthorizationEndpointBaseURL overrides the base URL for the authorization_endpoint
 	// in the discovery document. When empty, defaults to the issuer (AccessTokenIssuer).
 	AuthorizationEndpointBaseURL string
+	// CIMDEnabled indicates that the CIMD storage decorator is active. When true,
+	// the discovery document advertises client_id_metadata_document_supported.
+	CIMDEnabled bool
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -102,6 +105,9 @@ type AuthorizationServerParams struct {
 	// AuthorizationEndpointBaseURL overrides the base URL for the authorization_endpoint
 	// in the discovery document. When empty, defaults to Issuer.
 	AuthorizationEndpointBaseURL string
+	// CIMDEnabled indicates that the CIMD storage decorator is active. When true,
+	// the discovery document advertises client_id_metadata_document_supported.
+	CIMDEnabled bool
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -256,6 +262,7 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		ScopesSupported:              cfg.ScopesSupported,
 		BaselineClientScopes:         cfg.BaselineClientScopes,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                  cfg.CIMDEnabled,
 	}, nil
 }
 

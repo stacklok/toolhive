@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	"github.com/stacklok/toolhive/pkg/config"
 	configmocks "github.com/stacklok/toolhive/pkg/config/mocks"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
 
@@ -647,13 +648,23 @@ func TestLogout(t *testing.T) {
 	})
 }
 
-// TestLogout_DeletesCachedToken cannot be parallel because it uses t.Setenv.
-func TestLogout_DeletesCachedToken(t *testing.T) {
+// fullCaps is the set of capabilities a real keyring/encrypted provider exposes:
+// every operation is supported, so Logout takes the list-and-delete fast path.
+var fullCaps = secrets.ProviderCapabilities{CanRead: true, CanWrite: true, CanDelete: true, CanList: true}
+
+// TestLogout_DeletesAllScopedSecrets cannot be parallel because it uses t.Setenv.
+//
+// Verifies that Logout wipes every secret the (already scope-restricted)
+// provider can see — both the refresh token and the access-token cache entry
+// stored under "<key>_AT" by the token source. The original bug (#5373) was
+// that the "_AT" entry survived logout and let the next login short-circuit
+// through the access-token cache without a browser flow.
+func TestLogout_DeletesAllScopedSecrets(t *testing.T) {
 	tmpDir := resolvedTempDir(t)
 	t.Setenv("XDG_CACHE_HOME", tmpDir)
 
 	cfg := configWithOAuth()
-	cfg.RegistryAuth.OAuth.CachedRefreshTokenRef = "my-token-ref"
+	cfg.RegistryAuth.OAuth.CachedRefreshTokenRef = "REGISTRY_OAUTH_abc"
 	cfg.RegistryAuth.OAuth.CachedTokenExpiry = time.Now().Add(time.Hour)
 
 	ctrl := gomock.NewController(t)
@@ -661,10 +672,19 @@ func TestLogout_DeletesCachedToken(t *testing.T) {
 	mockCfg.EXPECT().LoadOrCreateConfig().Return(cfg, nil)
 
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-	mockSecrets.EXPECT().DeleteSecret(gomock.Any(), "my-token-ref").Return(nil)
-	// Derived key fallback: DeriveSecretKey(registryURL, issuer) differs from "my-token-ref".
-	derivedKey := DeriveSecretKey(cfg.RegistryApiUrl, cfg.RegistryAuth.OAuth.Issuer)
-	mockSecrets.EXPECT().DeleteSecret(gomock.Any(), derivedKey).Return(nil)
+	mockSecrets.EXPECT().Capabilities().Return(fullCaps)
+	// A scoped provider strips the "__thv_registry_" prefix from listed keys;
+	// the bug surfaces when the "_AT" entry is present alongside the refresh token.
+	mockSecrets.EXPECT().ListSecrets(gomock.Any()).Return([]secrets.SecretDescription{
+		{Key: "REGISTRY_OAUTH_abc"},
+		{Key: "REGISTRY_OAUTH_abc_AT"},
+		{Key: "REGISTRY_OAUTH_stale"}, // left over from an earlier issuer/registry config
+	}, nil)
+	mockSecrets.EXPECT().DeleteSecrets(gomock.Any(), gomock.InAnyOrder([]string{
+		"REGISTRY_OAUTH_abc",
+		"REGISTRY_OAUTH_abc_AT",
+		"REGISTRY_OAUTH_stale",
+	})).Return(nil)
 
 	mockCfg.EXPECT().UpdateConfig(gomock.Any()).DoAndReturn(func(fn func(*config.Config) error) error {
 		require.NoError(t, fn(cfg))
@@ -676,46 +696,91 @@ func TestLogout_DeletesCachedToken(t *testing.T) {
 	require.NoError(t, Logout(context.Background(), mockCfg, mockSecrets))
 }
 
-// TestLogout_NoCachedRefSkipsDelete cannot be parallel because it uses t.Setenv.
-func TestLogout_NoCachedRefSkipsDelete(t *testing.T) {
+// TestLogout_NoSecretsIsNoop cannot be parallel because it uses t.Setenv.
+func TestLogout_NoSecretsIsNoop(t *testing.T) {
 	tmpDir := resolvedTempDir(t)
 	t.Setenv("XDG_CACHE_HOME", tmpDir)
 
 	cfg := configWithOAuth()
-	cfg.RegistryAuth.OAuth.CachedRefreshTokenRef = ""
 
 	ctrl := gomock.NewController(t)
 	mockCfg := configmocks.NewMockProvider(ctrl)
 	mockCfg.EXPECT().LoadOrCreateConfig().Return(cfg, nil)
 
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-	// No CachedRefreshTokenRef, but derived key fallback fires.
-	derivedKey := DeriveSecretKey(cfg.RegistryApiUrl, cfg.RegistryAuth.OAuth.Issuer)
-	mockSecrets.EXPECT().DeleteSecret(gomock.Any(), derivedKey).Return(nil)
+	mockSecrets.EXPECT().Capabilities().Return(fullCaps)
+	mockSecrets.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil)
+	// DeleteSecrets is not expected — the list is empty, nothing to delete.
 
 	mockCfg.EXPECT().UpdateConfig(gomock.Any()).Return(nil)
 
 	require.NoError(t, Logout(context.Background(), mockCfg, mockSecrets))
 }
 
-// TestLogout_DeleteSecretError cannot be parallel because it uses t.Setenv.
-func TestLogout_DeleteSecretError(t *testing.T) {
+// TestLogout_ReadOnlyProviderSkipsCleanup cannot be parallel because it uses t.Setenv.
+//
+// Providers like EnvironmentProvider cannot list or delete; they also cannot
+// hold cached tokens, so cleanup is a no-op rather than an error.
+func TestLogout_ReadOnlyProviderSkipsCleanup(t *testing.T) {
 	tmpDir := resolvedTempDir(t)
 	t.Setenv("XDG_CACHE_HOME", tmpDir)
 
 	cfg := configWithOAuth()
-	cfg.RegistryAuth.OAuth.CachedRefreshTokenRef = "token-ref"
 
 	ctrl := gomock.NewController(t)
 	mockCfg := configmocks.NewMockProvider(ctrl)
 	mockCfg.EXPECT().LoadOrCreateConfig().Return(cfg, nil)
 
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-	mockSecrets.EXPECT().DeleteSecret(gomock.Any(), "token-ref").Return(errors.New("vault locked"))
+	mockSecrets.EXPECT().Capabilities().Return(secrets.ProviderCapabilities{CanRead: true})
+	// ListSecrets / DeleteSecrets are not expected.
+
+	mockCfg.EXPECT().UpdateConfig(gomock.Any()).Return(nil)
+
+	require.NoError(t, Logout(context.Background(), mockCfg, mockSecrets))
+}
+
+// TestLogout_ListSecretsError cannot be parallel because it uses t.Setenv.
+func TestLogout_ListSecretsError(t *testing.T) {
+	tmpDir := resolvedTempDir(t)
+	t.Setenv("XDG_CACHE_HOME", tmpDir)
+
+	cfg := configWithOAuth()
+
+	ctrl := gomock.NewController(t)
+	mockCfg := configmocks.NewMockProvider(ctrl)
+	mockCfg.EXPECT().LoadOrCreateConfig().Return(cfg, nil)
+
+	mockSecrets := secretsmocks.NewMockProvider(ctrl)
+	mockSecrets.EXPECT().Capabilities().Return(fullCaps)
+	mockSecrets.EXPECT().ListSecrets(gomock.Any()).Return(nil, errors.New("vault locked"))
 
 	err := Logout(context.Background(), mockCfg, mockSecrets)
 	require.Error(t, err)
-	require.Contains(t, err.Error(), "deleting cached token")
+	require.Contains(t, err.Error(), "deleting cached tokens")
+}
+
+// TestLogout_DeleteSecretsError cannot be parallel because it uses t.Setenv.
+func TestLogout_DeleteSecretsError(t *testing.T) {
+	tmpDir := resolvedTempDir(t)
+	t.Setenv("XDG_CACHE_HOME", tmpDir)
+
+	cfg := configWithOAuth()
+
+	ctrl := gomock.NewController(t)
+	mockCfg := configmocks.NewMockProvider(ctrl)
+	mockCfg.EXPECT().LoadOrCreateConfig().Return(cfg, nil)
+
+	mockSecrets := secretsmocks.NewMockProvider(ctrl)
+	mockSecrets.EXPECT().Capabilities().Return(fullCaps)
+	mockSecrets.EXPECT().ListSecrets(gomock.Any()).Return([]secrets.SecretDescription{
+		{Key: "REGISTRY_OAUTH_abc"},
+	}, nil)
+	mockSecrets.EXPECT().DeleteSecrets(gomock.Any(), gomock.Any()).Return(errors.New("vault locked"))
+
+	err := Logout(context.Background(), mockCfg, mockSecrets)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "deleting cached tokens")
 }
 
 // TestLogout_UpdateConfigError cannot be parallel because it uses t.Setenv.
@@ -730,9 +795,8 @@ func TestLogout_UpdateConfigError(t *testing.T) {
 	mockCfg.EXPECT().LoadOrCreateConfig().Return(cfg, nil)
 
 	mockSecrets := secretsmocks.NewMockProvider(ctrl)
-	// Derived key fallback fires since CachedRefreshTokenRef is empty.
-	derivedKey := DeriveSecretKey(cfg.RegistryApiUrl, cfg.RegistryAuth.OAuth.Issuer)
-	mockSecrets.EXPECT().DeleteSecret(gomock.Any(), derivedKey).Return(nil)
+	mockSecrets.EXPECT().Capabilities().Return(fullCaps)
+	mockSecrets.EXPECT().ListSecrets(gomock.Any()).Return(nil, nil)
 
 	mockCfg.EXPECT().UpdateConfig(gomock.Any()).Return(errors.New("write failed"))
 

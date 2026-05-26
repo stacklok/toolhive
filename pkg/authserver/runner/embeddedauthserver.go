@@ -176,6 +176,8 @@ func newEmbeddedAuthServerWithStorage(
 	// here once at the boundary lets all downstream stages share by reference
 	// safely. Cost is negligible — each slice is bounded by validation (≤10
 	// for BaselineClientScopes, low cardinality in practice for the others).
+	cimdEnabled, cimdCacheMaxSize, cimdCacheFallbackTTL := resolveCIMDConfig(cfg.CIMD)
+
 	resolvedCfg := authserver.Config{
 		Issuer:                       cfg.Issuer,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
@@ -188,6 +190,9 @@ func newEmbeddedAuthServerWithStorage(
 		ScopesSupported:              slices.Clone(cfg.ScopesSupported),
 		BaselineClientScopes:         slices.Clone(cfg.BaselineClientScopes),
 		AllowedAudiences:             slices.Clone(cfg.AllowedAudiences),
+		CIMDEnabled:                  cimdEnabled,
+		CIMDCacheMaxSize:             cimdCacheMaxSize,
+		CIMDCacheFallbackTTL:         cimdCacheFallbackTTL,
 	}
 
 	// 7. Create the auth server. authserver.New also asserts the DCR
@@ -780,6 +785,27 @@ func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*tcredis.TLSConfig
 		cfg.CACert = data
 	}
 	return cfg, nil
+}
+
+// resolveCIMDConfig extracts CIMD settings from a CIMDRunConfig.
+// Returns zero values when cfg is nil (CIMD disabled).
+// The CacheFallbackTTL string is parsed to time.Duration; callers must ensure
+// CIMDRunConfig.Validate() has already been called so the string is well-formed.
+func resolveCIMDConfig(cfg *authserver.CIMDRunConfig) (enabled bool, cacheMaxSize int, cacheFallbackTTL time.Duration) {
+	if cfg == nil {
+		return false, 0, 0
+	}
+	var ttl time.Duration
+	if cfg.CacheFallbackTTL != "" {
+		var err error
+		ttl, err = time.ParseDuration(cfg.CacheFallbackTTL)
+		if err != nil {
+			// Should not happen when called after CIMDRunConfig.Validate().
+			slog.Warn("invalid cimd cache_fallback_ttl, zero will be replaced by default",
+				"value", cfg.CacheFallbackTTL, "err", err)
+		}
+	}
+	return cfg.Enabled, cfg.CacheMaxSize, ttl
 }
 
 // resolveEnvVar reads a value from the named environment variable.

@@ -90,6 +90,11 @@ type RunConfig struct {
 	// Storage configures the storage backend for the auth server.
 	// If nil, defaults to in-memory storage.
 	Storage *storage.RunConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
+
+	// CIMD controls client_id metadata document support. When enabled, the
+	// embedded authorization server accepts HTTPS URLs as client_id values
+	// and resolves them via the CIMD protocol instead of requiring DCR.
+	CIMD *CIMDRunConfig `json:"cimd,omitempty" yaml:"cimd,omitempty"`
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -97,6 +102,11 @@ type RunConfig struct {
 // catches operator-supplied misconfiguration early so server startup fails
 // loudly instead of degrading silently at runtime.
 func (c *RunConfig) Validate() error {
+	if c.CIMD != nil {
+		if err := c.CIMD.Validate(); err != nil {
+			return fmt.Errorf("cimd: %w", err)
+		}
+	}
 	return c.validateBaselineClientScopes()
 }
 
@@ -116,6 +126,46 @@ func (c *RunConfig) validateBaselineClientScopes() error {
 		effective = registration.DefaultScopes
 	}
 	return registration.ValidateScopeSubset(c.BaselineClientScopes, effective, "baseline_client_scopes")
+}
+
+// CIMDRunConfig controls client_id metadata document (CIMD) support.
+//
+// TODO(cimd): expose these fields in the MCPExternalAuthConfig CRD so Kubernetes
+// operators can configure CIMD through the normal CRD workflow instead of
+// writing RunConfig YAML directly.
+type CIMDRunConfig struct {
+	// Enabled activates CIMD client lookup when true.
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+	// Defaults to 256 when Enabled is true and this field is zero.
+	CacheMaxSize int `json:"cache_max_size,omitempty" yaml:"cache_max_size,omitempty"`
+
+	// CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+	// Cache-Control header parsing is not yet implemented; all entries use this value.
+	// Format: Go duration string (e.g. "5m", "10m", "1h").
+	// Defaults to 5 minutes when Enabled is true and this field is omitted.
+	CacheFallbackTTL string `json:"cache_fallback_ttl,omitempty" yaml:"cache_fallback_ttl,omitempty" example:"5m"`
+}
+
+// Validate checks that the CIMDRunConfig fields are internally consistent.
+func (c *CIMDRunConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.CacheMaxSize < 0 {
+		return fmt.Errorf("cache_max_size must be non-negative when CIMD is enabled, got %d", c.CacheMaxSize)
+	}
+	if c.CacheFallbackTTL != "" {
+		d, err := time.ParseDuration(c.CacheFallbackTTL)
+		if err != nil {
+			return fmt.Errorf("cache_fallback_ttl: %w", err)
+		}
+		if d < 0 {
+			return fmt.Errorf("cache_fallback_ttl must be non-negative when CIMD is enabled, got %s", c.CacheFallbackTTL)
+		}
+	}
+	return nil
 }
 
 // SigningKeyRunConfig configures where to load signing keys from.
@@ -537,6 +587,20 @@ type Config struct {
 	// When empty, any request with a "resource" parameter will be rejected with
 	// "invalid_target". Configure this for proper MCP specification compliance.
 	AllowedAudiences []string
+
+	// CIMDEnabled enables the CIMD storage decorator so the authorization server
+	// accepts HTTPS URLs as client_id values without prior DCR registration.
+	CIMDEnabled bool
+
+	// CIMDCacheMaxSize is the maximum number of CIMD documents held in the LRU
+	// cache. Zero is replaced by a default (256) in applyDefaults when CIMDEnabled
+	// is true.
+	CIMDCacheMaxSize int
+
+	// CIMDCacheFallbackTTL is the fixed TTL applied to all cached CIMD documents
+	// (Cache-Control header parsing is not yet implemented). Zero is replaced by
+	// a default (5 minutes) in applyDefaults when CIMDEnabled is true.
+	CIMDCacheFallbackTTL time.Duration
 }
 
 // Validate checks that the Config is valid.
@@ -587,6 +651,13 @@ func (c *Config) Validate() error {
 		if err := registration.ValidateScopeSubset(c.BaselineClientScopes, effective, "baseline_client_scopes"); err != nil {
 			return err
 		}
+	}
+
+	if c.CIMDEnabled && c.CIMDCacheMaxSize < 1 {
+		return fmt.Errorf("cimd.cache_max_size must be >= 1 when CIMD is enabled")
+	}
+	if c.CIMDEnabled && c.CIMDCacheFallbackTTL < 0 {
+		return fmt.Errorf("cimd.cache_fallback_ttl must be non-negative when CIMD is enabled")
 	}
 
 	slog.Debug("authserver config validation passed",
@@ -818,6 +889,14 @@ func (c *Config) applyDefaults() error {
 	if len(c.ScopesSupported) == 0 {
 		c.ScopesSupported = registration.DefaultScopes
 		slog.Debug("applied default scopes_supported", "scopes", c.ScopesSupported)
+	}
+	if c.CIMDEnabled && c.CIMDCacheMaxSize == 0 {
+		c.CIMDCacheMaxSize = 256
+		slog.Debug("applied default cimd cache_max_size", "size", c.CIMDCacheMaxSize)
+	}
+	if c.CIMDEnabled && c.CIMDCacheFallbackTTL == 0 {
+		c.CIMDCacheFallbackTTL = 5 * time.Minute
+		slog.Debug("applied default cimd cache_fallback_ttl", "ttl", c.CIMDCacheFallbackTTL)
 	}
 	return nil
 }

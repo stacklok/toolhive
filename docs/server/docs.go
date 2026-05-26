@@ -345,6 +345,25 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig": {
+                "description": "CIMD controls client_id metadata document support. When enabled, the\nembedded authorization server accepts HTTPS URLs as client_id values\nand resolves them via the CIMD protocol instead of requiring DCR.",
+                "properties": {
+                    "cache_fallback_ttl": {
+                        "description": "CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.\nCache-Control header parsing is not yet implemented; all entries use this value.\nFormat: Go duration string (e.g. \"5m\", \"10m\", \"1h\").\nDefaults to 5 minutes when Enabled is true and this field is omitted.",
+                        "example": "5m",
+                        "type": "string"
+                    },
+                    "cache_max_size": {
+                        "description": "CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.\nDefaults to 256 when Enabled is true and this field is zero.",
+                        "type": "integer"
+                    },
+                    "enabled": {
+                        "description": "Enabled activates CIMD client lookup when true.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig": {
                 "description": "DCRConfig enables RFC 7591 Dynamic Client Registration against the\nupstream authorization server. When set, the client credentials are\nobtained at runtime rather than being pre-provisioned via ClientID /\nClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.\nMutually exclusive with ClientID.",
                 "properties": {
@@ -516,6 +535,9 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "cimd": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig"
                     },
                     "hmac_secret_files": {
                         "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",

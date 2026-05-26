@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 )
 
 func TestUnionScopes(t *testing.T) {
@@ -108,7 +110,7 @@ func TestUnionScopes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := unionScopes(tt.req, tt.baseline)
+			got := registration.UnionScopes(tt.req, tt.baseline)
 			assert.Equal(t, tt.want, got)
 		})
 	}

@@ -327,3 +327,31 @@ func ValidateScopes(requestedScopes, allowedScopes []string) ([]string, *DCRErro
 
 	return scopes, nil
 }
+
+// UnionScopes returns the union of requested and baseline scopes, preserving
+// the order of requested first, then appending any baseline scopes not already
+// present. Duplicates are removed. Returns nil when the result is empty.
+//
+// Both inputs must already be validated by the caller. UnionScopes does not
+// filter empty strings or validate scope syntax — it only deduplicates and
+// merges in stable order.
+func UnionScopes(requested, baseline []string) []string {
+	seen := make(map[string]bool, len(requested)+len(baseline))
+	out := make([]string, 0, len(requested)+len(baseline))
+	for _, s := range requested {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range baseline {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}

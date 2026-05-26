@@ -102,6 +102,11 @@ type RunConfig struct {
 // catches operator-supplied misconfiguration early so server startup fails
 // loudly instead of degrading silently at runtime.
 func (c *RunConfig) Validate() error {
+	if c.CIMD != nil {
+		if err := c.CIMD.Validate(); err != nil {
+			return fmt.Errorf("cimd: %w", err)
+		}
+	}
 	return c.validateBaselineClientScopes()
 }
 
@@ -138,9 +143,29 @@ type CIMDRunConfig struct {
 
 	// CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
 	// Cache-Control header parsing is not yet implemented; all entries use this value.
-	// Defaults to 5 minutes when Enabled is true and this field is zero.
-	//nolint:lll // field tags require full JSON+YAML names
-	CacheFallbackTTL time.Duration `json:"cache_fallback_ttl,omitempty" yaml:"cache_fallback_ttl,omitempty" swaggertype:"string" example:"5m"`
+	// Format: Go duration string (e.g. "5m", "10m", "1h").
+	// Defaults to 5 minutes when Enabled is true and this field is omitted.
+	CacheFallbackTTL string `json:"cache_fallback_ttl,omitempty" yaml:"cache_fallback_ttl,omitempty" example:"5m"`
+}
+
+// Validate checks that the CIMDRunConfig fields are internally consistent.
+func (c *CIMDRunConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.CacheMaxSize < 0 {
+		return fmt.Errorf("cache_max_size must be non-negative when CIMD is enabled, got %d", c.CacheMaxSize)
+	}
+	if c.CacheFallbackTTL != "" {
+		d, err := time.ParseDuration(c.CacheFallbackTTL)
+		if err != nil {
+			return fmt.Errorf("cache_fallback_ttl: %w", err)
+		}
+		if d < 0 {
+			return fmt.Errorf("cache_fallback_ttl must be non-negative when CIMD is enabled, got %s", c.CacheFallbackTTL)
+		}
+	}
+	return nil
 }
 
 // SigningKeyRunConfig configures where to load signing keys from.
@@ -867,9 +892,11 @@ func (c *Config) applyDefaults() error {
 	}
 	if c.CIMDEnabled && c.CIMDCacheMaxSize == 0 {
 		c.CIMDCacheMaxSize = 256
+		slog.Debug("applied default cimd cache_max_size", "size", c.CIMDCacheMaxSize)
 	}
 	if c.CIMDEnabled && c.CIMDCacheFallbackTTL == 0 {
 		c.CIMDCacheFallbackTTL = 5 * time.Minute
+		slog.Debug("applied default cimd cache_fallback_ttl", "ttl", c.CIMDCacheFallbackTTL)
 	}
 	return nil
 }

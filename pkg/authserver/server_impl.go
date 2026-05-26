@@ -23,6 +23,9 @@ import (
 // server is the internal implementation of the Server interface.
 type server struct {
 	handler http.Handler
+	// storage is the active storage backend, potentially wrapped by decorators
+	// such as CIMDStorageDecorator. Code that needs the concrete type must walk
+	// the Unwrap() chain rather than asserting directly.
 	storage storage.Storage
 	// dcrStore is the same storage.Storage value asserted to
 	// storage.DCRCredentialStore. The assertion runs once at construction

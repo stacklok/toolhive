@@ -2052,7 +2052,7 @@ func TestResolveCIMDConfig(t *testing.T) {
 		cfg := &authserver.CIMDRunConfig{
 			Enabled:          true,
 			CacheMaxSize:     128,
-			CacheFallbackTTL: 10 * time.Minute,
+			CacheFallbackTTL: "10m",
 		}
 		enabled, size, ttl := resolveCIMDConfig(cfg)
 		assert.True(t, enabled)

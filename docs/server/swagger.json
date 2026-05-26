@@ -342,7 +342,7 @@
                 "description": "CIMD controls client_id metadata document support. When enabled, the\nembedded authorization server accepts HTTPS URLs as client_id values\nand resolves them via the CIMD protocol instead of requiring DCR.",
                 "properties": {
                     "cache_fallback_ttl": {
-                        "description": "CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.\nCache-Control header parsing is not yet implemented; all entries use this value.\nDefaults to 5 minutes when Enabled is true and this field is zero.",
+                        "description": "CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.\nCache-Control header parsing is not yet implemented; all entries use this value.\nFormat: Go duration string (e.g. \"5m\", \"10m\", \"1h\").\nDefaults to 5 minutes when Enabled is true and this field is omitted.",
                         "example": "5m",
                         "type": "string"
                     },

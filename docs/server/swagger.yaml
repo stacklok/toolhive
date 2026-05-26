@@ -356,7 +356,8 @@ components:
           description: |-
             CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
             Cache-Control header parsing is not yet implemented; all entries use this value.
-            Defaults to 5 minutes when Enabled is true and this field is zero.
+            Format: Go duration string (e.g. "5m", "10m", "1h").
+            Defaults to 5 minutes when Enabled is true and this field is omitted.
           example: 5m
           type: string
         cache_max_size:

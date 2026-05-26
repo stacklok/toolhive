@@ -23,6 +23,11 @@ const ToolHiveClientMetadataDocumentURL = "https://toolhive.dev/oauth/client-met
 // risk of false positives. Do not tighten this to an exact match against
 // ToolHiveClientMetadataDocumentURL — the embedded AS must accept CIMD URLs
 // from third-party clients too.
+//
+// This predicate is also used by pkg/auth/remote/handler.go to decide whether to
+// persist a client_id as DCR credentials or as a CIMD URL. The loopback HTTP
+// acceptance is safe in that context: real DCR-issued client IDs are always opaque
+// strings that never start with "http://", so no live deployment is affected.
 func IsClientIDMetadataDocumentURL(clientID string) bool {
 	if strings.HasPrefix(clientID, "https://") {
 		return true

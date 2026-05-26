@@ -89,47 +89,52 @@ func compositeToolDefinitionItemCount(length int) int32 {
 	return int32(length) //nolint:gosec // Kubernetes object size limits keep CRD list lengths within int32.
 }
 
+// mapVirtualMCPServerToCompositeToolDefinitions enqueues both definitions a server
+// currently references and definitions that still contain a stale reference to it.
+func (r *VirtualMCPCompositeToolDefinitionReconciler) mapVirtualMCPServerToCompositeToolDefinitions(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	virtualMCPServer, ok := obj.(*mcpv1beta1.VirtualMCPServer)
+	if !ok {
+		return nil
+	}
+
+	requests := make([]reconcile.Request, 0, len(virtualMCPServer.Spec.Config.CompositeToolRefs))
+	seen := make(map[types.NamespacedName]struct{})
+	for _, ref := range virtualMCPServer.Spec.Config.CompositeToolRefs {
+		name := types.NamespacedName{Name: ref.Name, Namespace: virtualMCPServer.Namespace}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		seen[name] = struct{}{}
+		requests = append(requests, reconcile.Request{NamespacedName: name})
+	}
+
+	definitions := &mcpv1beta1.VirtualMCPCompositeToolDefinitionList{}
+	if err := r.List(ctx, definitions, client.InNamespace(virtualMCPServer.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPCompositeToolDefinitions for VirtualMCPServer watch")
+		return requests
+	}
+	for _, definition := range definitions.Items {
+		name := types.NamespacedName{Name: definition.Name, Namespace: definition.Namespace}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		for _, referencingVirtualServer := range definition.Status.ReferencingVirtualServers {
+			if referencingVirtualServer == virtualMCPServer.Name {
+				requests = append(requests, reconcile.Request{NamespacedName: name})
+				break
+			}
+		}
+	}
+	return requests
+}
+
 // SetupWithManager configures reconciliation of definitions and the virtual
 // servers whose references determine the Refs column.
 func (r *VirtualMCPCompositeToolDefinitionReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	virtualMCPServerHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
-			virtualMCPServer, ok := obj.(*mcpv1beta1.VirtualMCPServer)
-			if !ok {
-				return nil
-			}
-
-			requests := make([]reconcile.Request, 0, len(virtualMCPServer.Spec.Config.CompositeToolRefs))
-			seen := make(map[types.NamespacedName]struct{})
-			for _, ref := range virtualMCPServer.Spec.Config.CompositeToolRefs {
-				name := types.NamespacedName{Name: ref.Name, Namespace: virtualMCPServer.Namespace}
-				if _, exists := seen[name]; exists {
-					continue
-				}
-				seen[name] = struct{}{}
-				requests = append(requests, reconcile.Request{NamespacedName: name})
-			}
-
-			definitions := &mcpv1beta1.VirtualMCPCompositeToolDefinitionList{}
-			if err := r.List(ctx, definitions, client.InNamespace(virtualMCPServer.Namespace)); err != nil {
-				log.FromContext(ctx).Error(err, "Failed to list VirtualMCPCompositeToolDefinitions for VirtualMCPServer watch")
-				return requests
-			}
-			for _, definition := range definitions.Items {
-				name := types.NamespacedName{Name: definition.Name, Namespace: definition.Namespace}
-				if _, exists := seen[name]; exists {
-					continue
-				}
-				for _, referencingVirtualServer := range definition.Status.ReferencingVirtualServers {
-					if referencingVirtualServer == virtualMCPServer.Name {
-						requests = append(requests, reconcile.Request{NamespacedName: name})
-						break
-					}
-				}
-			}
-			return requests
-		},
-	)
+	virtualMCPServerHandler := handler.EnqueueRequestsFromMapFunc(r.mapVirtualMCPServerToCompositeToolDefinitions)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.VirtualMCPCompositeToolDefinition{}).

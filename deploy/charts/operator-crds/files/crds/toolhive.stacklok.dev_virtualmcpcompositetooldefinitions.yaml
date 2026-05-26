@@ -32,7 +32,7 @@ spec:
       jsonPath: .status.validationStatus
       name: Status
       type: string
-    - description: Number of referencing VirtualMCPServers
+    - description: Referencing servers
       jsonPath: .status.refCount
       name: Refs
       type: integer
@@ -449,7 +449,7 @@ spec:
       jsonPath: .status.validationStatus
       name: Status
       type: string
-    - description: Number of referencing VirtualMCPServers
+    - description: Referencing servers
       jsonPath: .status.refCount
       name: Refs
       type: integer

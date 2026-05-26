@@ -8,6 +8,7 @@ package transparent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
@@ -126,10 +127,7 @@ func validateJSONRPCResponse(body []byte) error {
 	if err := dec.Decode(&payload); err != nil {
 		return fmt.Errorf("invalid JSON body: %w", err)
 	}
-	if dec.More() {
-		return fmt.Errorf("JSON-RPC response must contain a single JSON value")
-	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return fmt.Errorf("JSON-RPC response must contain a single JSON value")
 	}
 

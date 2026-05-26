@@ -80,6 +80,12 @@ func TestNoOpResponseProcessorValidatesJSONRPCResponses(t *testing.T) {
 			wantBody:   `"JSON-RPC response must contain a single JSON value"`,
 		},
 		{
+			name:       "trailing delimiter is rejected",
+			body:       `{"jsonrpc":"2.0","id":1,"result":{}}]`,
+			wantStatus: http.StatusBadGateway,
+			wantBody:   `"JSON-RPC response must contain a single JSON value"`,
+		},
+		{
 			name:       "fractional error code is rejected",
 			body:       `{"jsonrpc":"2.0","id":1,"error":{"code":1.5,"message":"nope"}}`,
 			wantStatus: http.StatusBadGateway,

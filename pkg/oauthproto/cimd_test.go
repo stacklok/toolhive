@@ -28,9 +28,19 @@ func TestIsClientIDMetadataDocumentURL(t *testing.T) {
 		{"arbitrary HTTPS URL", "https://example.com/client-metadata.json", true},
 		{"HTTPS URL no path", "https://example.com", true},
 		{"DCR-issued UUID", "some-uuid-client-id", false},
-		{"HTTP URL", "http://example.com/metadata.json", false},
+		{"HTTP URL non-loopback", "http://example.com/metadata.json", false},
 		{"empty string", "", false},
 		{"partial match", "xhttps://example.com", false},
+		// Loopback HTTP URLs accepted for local development and integration tests
+		{"loopback localhost", "http://localhost/metadata.json", true},
+		{"loopback localhost with port", "http://localhost:8080/metadata.json", true},
+		{"loopback 127.0.0.1", "http://127.0.0.1/metadata.json", true},
+		{"loopback 127.0.0.1 with port", "http://127.0.0.1:8080/metadata.json", true},
+		{"loopback [::1]", "http://[::1]/metadata.json", true},
+		{"loopback [::1] with port", "http://[::1]:8080/metadata.json", true},
+		// Subdomain bypass attempts must be rejected
+		{"subdomain bypass localhost.evil.com", "http://localhost.evil.com/metadata.json", false},
+		{"subdomain bypass 127.0.0.1.evil.com", "http://127.0.0.1.evil.com/metadata.json", false},
 	}
 
 	for _, tt := range tests {

@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/oauthproto/cimd"
 )
 
@@ -340,6 +341,9 @@ func TestBuildFositeClient_Defaults(t *testing.T) {
 	assert.True(t, got.IsPublic())
 	assert.ElementsMatch(t, []string{"authorization_code", "refresh_token"}, []string(got.GetGrantTypes()))
 	assert.ElementsMatch(t, []string{"code"}, []string(got.GetResponseTypes()))
+	// Documents that omit scope must still allow the default scopes so that
+	// CIMD clients behave consistently with DCR-registered clients.
+	assert.ElementsMatch(t, registration.DefaultScopes, []string(got.GetScopes()))
 }
 
 func TestBuildFositeClient_ExplicitGrantTypes(t *testing.T) {

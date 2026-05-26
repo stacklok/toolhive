@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -2709,7 +2708,7 @@ func TestBuildAuthServerRunConfig_CIMD(t *testing.T) {
 				t.Helper()
 				assert.True(t, got.Enabled)
 				assert.Equal(t, 512, got.CacheMaxSize)
-				assert.Equal(t, 10*time.Minute, got.CacheFallbackTTL)
+				assert.Equal(t, "10m", got.CacheFallbackTTL)
 			},
 		},
 		{
@@ -2726,13 +2725,18 @@ func TestBuildAuthServerRunConfig_CIMD(t *testing.T) {
 			},
 		},
 		{
-			name: "invalid CacheFallbackTTL returns parse error",
+			name: "invalid CacheFallbackTTL passes through to runner for validation",
 			cimd: &mcpv1beta1.EmbeddedAuthServerCIMDConfig{
 				Enabled:          true,
 				CacheFallbackTTL: "not-a-duration",
 			},
-			wantErr:     true,
-			errContains: "cimd.cacheFallbackTtl",
+			wantCIMD: true,
+			checkFunc: func(t *testing.T, got *authserver.CIMDRunConfig) {
+				t.Helper()
+				// The converter passes the string through; parse errors are caught
+				// by CIMDRunConfig.Validate() or resolveCIMDConfig in the runner.
+				assert.Equal(t, "not-a-duration", got.CacheFallbackTTL)
+			},
 		},
 	}
 

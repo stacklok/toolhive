@@ -7,7 +7,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -583,20 +582,14 @@ func BuildAuthServerRunConfig(
 	}
 	config.Storage = storageCfg
 
-	// Build CIMD configuration
+	// Build CIMD configuration. CacheFallbackTTL is passed as-is (string);
+	// resolveCIMDConfig in the runner parses it to time.Duration at startup.
 	if authConfig.CIMD != nil && authConfig.CIMD.Enabled {
-		cimdCfg := &authserver.CIMDRunConfig{
-			Enabled:      authConfig.CIMD.Enabled,
-			CacheMaxSize: authConfig.CIMD.CacheMaxSize,
+		config.CIMD = &authserver.CIMDRunConfig{
+			Enabled:          authConfig.CIMD.Enabled,
+			CacheMaxSize:     authConfig.CIMD.CacheMaxSize,
+			CacheFallbackTTL: authConfig.CIMD.CacheFallbackTTL,
 		}
-		if authConfig.CIMD.CacheFallbackTTL != "" {
-			ttl, err := time.ParseDuration(authConfig.CIMD.CacheFallbackTTL)
-			if err != nil {
-				return nil, fmt.Errorf("cimd.cacheFallbackTtl: %w", err)
-			}
-			cimdCfg.CacheFallbackTTL = ttl
-		}
-		config.CIMD = cimdCfg
 	}
 
 	return config, nil

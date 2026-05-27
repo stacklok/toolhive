@@ -54,8 +54,27 @@ const (
 
 const (
 	defaultMigrationCacheTTL = 1 * time.Hour
-	defaultListPageSize      = 100
-	defaultCacheGCInterval   = 10 * time.Minute
+	// defaultListPageSize bounds the per-page response size from List. At ~50 KB
+	// per CR this keeps a single page envelope under ~5 MB even on CRDs with
+	// large objects, comfortably inside the default 128Mi operator memory
+	// limit. Realistic deployments fit in a single page; the extra round trip
+	// is irrelevant compared to peak memory headroom.
+	defaultListPageSize    = 100
+	defaultCacheGCInterval = 10 * time.Minute
+
+	// restoreOneMaxRetries bounds per-CR retry attempts inside restoreOne when
+	// the Update returns IsConflict. Each retry re-Gets the live object and
+	// re-issues the Update with the fresh resourceVersion. Bounded so a
+	// pathologically contended CR can't pin a reconcile pass indefinitely.
+	restoreOneMaxRetries = 3
+
+	// sentinelConflictLogThreshold is the number of consecutive reconciles
+	// that return errMigrationRetriedDueToConflicts before the controller
+	// escalates from V(1) diagnostic to an INFO log. Below the threshold the
+	// migration is treated as normal steady-state self-healing; at or above
+	// it the operator surfaces operator-visible signal that the migration is
+	// not converging.
+	sentinelConflictLogThreshold = 5
 )
 
 // errMigrationRetriedDueToConflicts is returned by restoreCRs when at least one
@@ -83,7 +102,6 @@ var errMigrationRetriedDueToConflicts = errors.New(
 //+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions,verbs=get;list;watch
 //+kubebuilder:rbac:groups=apiextensions.k8s.io,resources=customresourcedefinitions/status,verbs=update;patch
 //+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=*,verbs=get;list;update
-//+kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=*/status,verbs=update
 
 // StorageVersionMigratorReconciler reconciles CustomResourceDefinition objects
 // in the toolhive.stacklok.dev group that carry the opt-in
@@ -119,17 +137,28 @@ type StorageVersionMigratorReconciler struct {
 	PageSize        int64                // overridable for tests; zero means defaultListPageSize
 	CacheGCInterval time.Duration        // overridable for tests; zero means defaultCacheGCInterval
 	cache           *migrationCache
+	// conflictMu guards conflictPasses. A separate primitive from the cache's
+	// mutex because the two maps are independent: the cache holds per-CR
+	// (UID, RV) entries, while conflictPasses holds per-CRD counters. No
+	// operation needs to be atomic across both, so each data structure owns
+	// its own lock (.claude/rules/go-style.md: one primitive per data set).
+	conflictMu     sync.Mutex
+	conflictPasses map[string]int
 	// initOnce guards ensureInitialized so the lazy-default writes to PageSize,
-	// CacheGCInterval, and cache happen exactly once across all callers
-	// (SetupWithManager, Reconcile, and any future entrypoint). Without it,
-	// two concurrent callers seeing zero values could race on the field writes.
+	// CacheGCInterval, cache, and conflictPasses happen exactly once across all
+	// callers (SetupWithManager, Reconcile, and any future entrypoint). Without
+	// it, two concurrent callers seeing zero values could race on the field writes.
 	initOnce sync.Once
 }
 
 // Reconcile runs for each opted-in toolhive.stacklok.dev CRD event. See the
 // package-level docs on StorageVersionMigratorReconciler for the full flow.
-// Returns a non-nil error to trigger exponential backoff; the CRD watch
-// re-enqueues on any status change, so explicit requeue intervals are not used.
+// Returns a non-nil error to trigger controller-runtime's exponential backoff
+// on genuine failures. The conflict-sentinel path is special-cased: a normal
+// steady-state condition where sibling controllers (MCPServerReconciler etc.)
+// are racing per-CR Updates is requeued at a fixed 30s interval with a nil
+// error, so the migrator keeps trying without exponential backoff pinning it
+// in a stuck state.
 func (r *StorageVersionMigratorReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	logger := log.FromContext(ctx).WithValues("crd", req.Name)
 
@@ -173,12 +202,25 @@ func (r *StorageVersionMigratorReconciler) Reconcile(ctx context.Context, req ct
 		// self-heals on the next reconcile. Don't surface them as Warning
 		// events. Real errors do still get a Warning.
 		if errors.Is(err, errMigrationRetriedDueToConflicts) {
+			count := r.incrementConflictPasses(req.Name)
 			logger.V(1).Info("storage version migration deferred due to concurrent writes; will retry",
-				"err", err)
-		} else {
-			r.Recorder.Eventf(crd, nil, corev1.EventTypeWarning, EventReasonMigrationFailed,
-				"RestoreCRs", "storage version migration failed: %v", err)
+				"err", err, "consecutiveConflictPasses", count)
+			if count >= sentinelConflictLogThreshold {
+				// Escalate to operator-visible INFO once a CRD has stayed in
+				// the conflict-sentinel path across N consecutive reconciles.
+				// Returning RequeueAfter+nil below means controller-runtime
+				// won't backoff exponentially, so without this log a stuck
+				// migration would be invisible at default verbosity.
+				logger.Info("storage version migration not converging — sustained concurrent writes",
+					"crd", req.Name, "consecutiveConflictPasses", count)
+			}
+			// Return nil error so controller-runtime does NOT apply exponential
+			// backoff: this is a normal steady-state condition, not a failure.
+			// A fixed 30s requeue is enough to let the contending writers settle.
+			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
+		r.Recorder.Eventf(crd, nil, corev1.EventTypeWarning, EventReasonMigrationFailed,
+			"RestoreCRs", "storage version migration failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("re-store CRs for %s: %w", crd.Name, err)
 	}
 
@@ -187,6 +229,11 @@ func (r *StorageVersionMigratorReconciler) Reconcile(ctx context.Context, req ct
 			"PatchStoredVersions", "storedVersions patch failed: %v", err)
 		return ctrl.Result{}, fmt.Errorf("patch storedVersions for %s: %w", crd.Name, err)
 	}
+
+	// A successful trim means the migration converged for this CRD; clear any
+	// accumulated conflict-pass count so a later spike of conflicts starts
+	// from zero rather than re-tripping the INFO threshold immediately.
+	r.resetConflictPasses(req.Name)
 
 	r.Recorder.Eventf(crd, nil, corev1.EventTypeNormal, EventReasonMigrationSucceeded,
 		"Migrate", "storage version migrated to %s", storageVersion)
@@ -249,6 +296,26 @@ func (r *StorageVersionMigratorReconciler) SetupWithManager(mgr ctrl.Manager) er
 // Private implementation below.
 // ------------------------------------------------------------------
 
+// incrementConflictPasses increments and returns the per-CRD count of
+// consecutive reconciles that returned errMigrationRetriedDueToConflicts.
+// Used to gate the INFO log that signals a non-converging migration.
+func (r *StorageVersionMigratorReconciler) incrementConflictPasses(crdName string) int {
+	r.conflictMu.Lock()
+	defer r.conflictMu.Unlock()
+	r.conflictPasses[crdName]++
+	return r.conflictPasses[crdName]
+}
+
+// resetConflictPasses clears the per-CRD conflict-pass counter. Called after
+// a successful patchStoredVersions so a later transient burst of conflicts
+// starts counting from zero rather than immediately re-tripping the INFO
+// threshold.
+func (r *StorageVersionMigratorReconciler) resetConflictPasses(crdName string) {
+	r.conflictMu.Lock()
+	defer r.conflictMu.Unlock()
+	delete(r.conflictPasses, crdName)
+}
+
 // ensureInitialized lazily fills in field defaults. Wrapped in sync.Once so
 // concurrent callers (Setup vs. Reconcile vs. any future entrypoint) cannot
 // race on the field writes.
@@ -262,6 +329,9 @@ func (r *StorageVersionMigratorReconciler) ensureInitialized() {
 		}
 		if r.cache == nil {
 			r.cache = newMigrationCache(defaultMigrationCacheTTL)
+		}
+		if r.conflictPasses == nil {
+			r.conflictPasses = make(map[string]int)
 		}
 	})
 }
@@ -351,33 +421,64 @@ func (r *StorageVersionMigratorReconciler) restoreCRs(
 	return kerrors.NewAggregate(errs)
 }
 
-// restoreOne issues a plain Get + Update on the live CR. The apiserver
-// re-encodes the request body at the current storage version and compares
-// it to etcd's record; when the CR was originally stored at a different
-// apiVersion the bytes differ, the write proceeds, and etcd is re-encoded
-// at the current storage version. When the CR is already at the current
-// storage version the bytes match and the apiserver harmlessly elides the
-// write — there was nothing to migrate. The Update goes through the main
-// resource, so validating/mutating admission webhooks on the kind see this
-// request as part of normal admission flow; only requests that actually
-// persist produce downstream state changes. Returns the live object after
-// the update so the caller can record its post-update resourceVersion in
-// the cache.
+// restoreOne issues an Update on the live CR. The apiserver re-encodes the
+// request body at the current storage version and compares it to etcd's
+// record; when the CR was originally stored at a different apiVersion the
+// bytes differ, the write proceeds, and etcd is re-encoded at the current
+// storage version. When the CR is already at the current storage version
+// the bytes match and the apiserver harmlessly elides the etcd write and
+// watch fanout — but validating/mutating admission webhooks still fire on
+// every Update, before the bytes-equality elision check, so callers must
+// not assume an already-migrated CR is webhook-free. Returns the live
+// object after the update so the caller can record its post-update
+// resourceVersion in the cache.
+//
+// The original parameter is the list-page object from restoreCRs (a full
+// object, not OnlyMetadata) and is mutated in place by Update. The first
+// attempt issues the Update directly against that object — no Get round
+// trip — since the list call already returned a coherent snapshot. On
+// IsConflict the function re-Gets the live object to refresh its
+// resourceVersion and re-issues the Update, up to restoreOneMaxRetries
+// times. IsNotFound and any other non-Conflict error short-circuit
+// immediately (NotFound is handled by the caller; other errors propagate
+// for aggregation). After all retries are exhausted on IsConflict the last
+// conflict error is returned so the caller can count this CR toward the
+// per-pass conflict total.
 func (r *StorageVersionMigratorReconciler) restoreOne(
 	ctx context.Context,
 	gvk schema.GroupVersionKind,
 	original *unstructured.Unstructured,
 ) (*unstructured.Unstructured, error) {
-	live := &unstructured.Unstructured{}
-	live.SetGroupVersionKind(gvk)
-	if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(original), live); err != nil {
-		// IsNotFound is propagated to the caller, which handles it.
-		return nil, err
+	live := original
+	var lastErr error
+	for attempt := 0; attempt < restoreOneMaxRetries; attempt++ {
+		if attempt > 0 {
+			// Refresh the live object so the next Update carries the current
+			// resourceVersion. Without this the retry would re-submit the same
+			// stale RV and the apiserver would return 409 again.
+			fresh := &unstructured.Unstructured{}
+			fresh.SetGroupVersionKind(gvk)
+			if err := r.APIReader.Get(ctx, client.ObjectKeyFromObject(original), fresh); err != nil {
+				// IsNotFound here is propagated unchanged so restoreCRs can
+				// classify it as "object deleted between attempts" and skip.
+				return nil, err
+			}
+			live = fresh
+		}
+		err := r.Update(ctx, live)
+		if err == nil {
+			return live, nil
+		}
+		if !apierrors.IsConflict(err) {
+			// Non-Conflict errors (including IsNotFound) are returned verbatim
+			// for the caller to classify. Only IsConflict triggers a retry.
+			return nil, err
+		}
+		lastErr = err
 	}
-	if err := r.Update(ctx, live); err != nil {
-		return nil, err
-	}
-	return live, nil
+	// All attempts saw IsConflict — propagate the last one so restoreCRs can
+	// count this CR toward the per-pass conflict total.
+	return nil, lastErr
 }
 
 // patchStoredVersions overwrites CRD.status.storedVersions to exactly

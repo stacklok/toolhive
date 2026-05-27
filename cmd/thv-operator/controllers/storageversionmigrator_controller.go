@@ -54,7 +54,7 @@ const (
 
 const (
 	defaultMigrationCacheTTL = 1 * time.Hour
-	defaultListPageSize      = 500
+	defaultListPageSize      = 100
 	defaultCacheGCInterval   = 10 * time.Minute
 )
 

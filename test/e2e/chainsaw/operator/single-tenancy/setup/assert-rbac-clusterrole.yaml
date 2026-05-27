@@ -121,7 +121,6 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
-  - '*/status'
   - embeddingservers/finalizers
   - mcpexternalauthconfigs/finalizers
   - mcpgroups/finalizers

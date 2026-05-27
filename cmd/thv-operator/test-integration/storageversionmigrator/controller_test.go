@@ -657,10 +657,15 @@ var _ = Describe("StorageVersionMigrator", func() {
 
 			// First pass: conflict swallowed at the per-CR level, but the
 			// function-level conflict counter trips errMigrationRetriedDueToConflicts
-			// so storedVersions is left untouched.
-			_, err := reconcile(r, spec.Name)
-			Expect(err).To(HaveOccurred(),
-				"reconcile must return an error when a Conflict was swallowed")
+			// so storedVersions is left untouched. The Reconcile contract is to
+			// surface this as a fixed-interval requeue with a nil error (not an
+			// exponential-backoff error) because sustained concurrent writes are
+			// normal steady-state, not a failure.
+			res, err := reconcile(r, spec.Name)
+			Expect(err).NotTo(HaveOccurred(),
+				"conflict-sentinel path must NOT surface as a reconcile error — exponential backoff would pin the migrator under sustained concurrent writes")
+			Expect(res.RequeueAfter).To(BeNumerically(">", time.Duration(0)),
+				"conflict-sentinel path must return a RequeueAfter so controller-runtime re-enqueues without backoff")
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1alpha1", "v1beta1"}),
 				"storedVersions must not be trimmed on a pass with any swallowed Conflict")
 
@@ -672,6 +677,95 @@ var _ = Describe("StorageVersionMigrator", func() {
 			_, err = reconcile(r, spec.Name)
 			Expect(err).NotTo(HaveOccurred())
 			Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1beta1"}))
+		})
+
+		It("under sustained conflict pressure, storedVersions never trims and no success event is emitted", func() {
+			// Companion to the one-shot conflict test above. The one-shot
+			// test proves the controller can recover from a transient
+			// conflict; this spec proves the architectural fix from review
+			// finding #5 — per-CR retry + RequeueAfter sentinel — actually
+			// holds under steady-state pressure where every pass hits at
+			// least one conflict. Observable contract per pass:
+			//   1. Reconcile returns nil error (no exponential backoff —
+			//      the sentinel path is fixed-interval requeue).
+			//   2. Result.RequeueAfter == 30s.
+			//   3. storedVersions stays at the pre-migration set, never
+			//      trimmed while any CR's re-store is unverified.
+			//   4. No MigrationSucceeded event fires across the entire run.
+			// The per-CRD conflictPasses counter and its INFO-log threshold
+			// (sentinelConflictLogThreshold = 5) are private; we exercise
+			// them indirectly by running enough passes (6) to cross the
+			// threshold and asserting only on the public contract.
+			suf := uniqueSuffix()
+			spec := crdSpec{
+				Name:              "sustained" + suf + "." + toolhiveGroup,
+				Group:             toolhiveGroup,
+				Kind:              "Sustained" + suf,
+				ListKind:          "Sustained" + suf + "List",
+				Plural:            "sustained" + suf,
+				Singular:          "sustained" + suf,
+				Labelled:          true,
+				HasStatusOnStored: true,
+				Versions: []versionSpec{
+					{Name: "v1alpha1", Served: true, Storage: false},
+					{Name: "v1beta1", Served: true, Storage: true},
+				},
+			}
+			installCRD(spec)
+			DeferCleanup(func() { deleteCRD(spec.Name) })
+
+			crs := createCRs(
+				schema.GroupVersionKind{Group: spec.Group, Version: "v1beta1", Kind: spec.Kind},
+				"obj-"+suf, 2,
+			)
+			setStoredVersions(spec.Name, []string{"v1alpha1", "v1beta1"})
+
+			// Inject IsConflict on obj-0 on every pass — never toggled off.
+			// restoreOne's per-CR retry (restoreOneMaxRetries=3) is
+			// exhausted on every pass, so the conflict bubbles up to
+			// restoreCRs and surfaces as errMigrationRetriedDueToConflicts.
+			// obj-1 succeeds normally, matching the real-world steady-state
+			// where most CRs are fine but at least one races.
+			conflictTarget := client.ObjectKeyFromObject(crs[0])
+			gr := schema.GroupResource{Group: spec.Group, Resource: spec.Plural}
+			conflicting := &failingUpdateClient{
+				Client: k8sClient,
+				errFn: func(key client.ObjectKey) error {
+					if key == conflictTarget {
+						return apierrors.NewConflict(gr, key.Name,
+							fmt.Errorf("sustained injection"))
+					}
+					return nil
+				},
+			}
+			fakeRecorder := events.NewFakeRecorder(32)
+			r := &controllers.StorageVersionMigratorReconciler{
+				Client:    conflicting,
+				APIReader: k8sClient,
+				Scheme:    k8sClient.Scheme(),
+				Recorder:  fakeRecorder,
+			}
+
+			// 6 passes exceeds sentinelConflictLogThreshold (5) so the
+			// internal INFO-log path also fires. We don't assert on logs
+			// directly (flaky), only on observable behavior.
+			const passes = 6
+			for i := 0; i < passes; i++ {
+				res, err := reconcile(r, spec.Name)
+				Expect(err).NotTo(HaveOccurred(),
+					"pass %d: sentinel-conflict path must return nil error (RequeueAfter, not backoff)", i)
+				Expect(res.RequeueAfter).To(Equal(30*time.Second),
+					"pass %d: sentinel-conflict path must requeue after 30s", i)
+				Expect(getStoredVersions(spec.Name)).To(Equal([]string{"v1alpha1", "v1beta1"}),
+					"pass %d: storedVersions must not be trimmed while conflicts persist", i)
+			}
+
+			// Public-contract: no success event fired across any pass.
+			// Consistently polls the channel for its default duration and
+			// fails if anything matching the matcher is ever received.
+			Consistently(fakeRecorder.Events).ShouldNot(
+				Receive(ContainSubstring(controllers.EventReasonMigrationSucceeded)),
+				"no MigrationSucceeded event may be emitted while migration is still deferred")
 		})
 
 		It("does not trim storedVersions when reconcile context is cancelled mid-flight", func() {

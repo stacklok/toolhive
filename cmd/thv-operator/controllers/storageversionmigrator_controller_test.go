@@ -710,23 +710,22 @@ func TestRestoreCRs_ErrorClassification(t *testing.T) {
 
 	gr := schema.GroupResource{Group: testCRGroup, Resource: testCRPlural}
 
-	// Per-row: getErrs/updateErrs map a CR name → the error its Get/Update
-	// interceptor must return (other names fall through to the fake client).
-	// check is run against the (err, reconciler) pair after restoreCRs.
+	// Per-row: updateErrs maps a CR name → the error its Update interceptor
+	// must return (other names fall through to the fake client). check is run
+	// against the (err, reconciler) pair after restoreCRs.
 	tests := []struct {
 		name       string
 		crNames    []string
-		getErrs    map[string]error
 		updateErrs map[string]error
 		check      func(t *testing.T, err error, r *StorageVersionMigratorReconciler)
 	}{
 		{
-			name:    "per-CR Get NotFound is silently skipped",
-			crNames: []string{"obj-a", "obj-b"},
-			getErrs: map[string]error{"obj-a": apierrors.NewNotFound(gr, "obj-a")},
+			name:       "per-CR Update NotFound is silently skipped",
+			crNames:    []string{"obj-a", "obj-b"},
+			updateErrs: map[string]error{"obj-a": apierrors.NewNotFound(gr, "obj-a")},
 			check: func(t *testing.T, err error, r *StorageVersionMigratorReconciler) {
 				t.Helper()
-				require.NoError(t, err, "IsNotFound on a per-CR Get must not bubble up")
+				require.NoError(t, err, "IsNotFound on a per-CR Update must not bubble up — the object was deleted between list and update")
 				// Cache must contain only obj-b — NotFound must skip the cache add.
 				assert.Len(t, r.cache.entries, 1, "only the surviving CR may be cached")
 			},
@@ -785,12 +784,6 @@ func TestRestoreCRs_ErrorClassification(t *testing.T) {
 				objs = append(objs, makeTestCR(n))
 			}
 			funcs := &interceptor.Funcs{
-				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-					if e, ok := tc.getErrs[key.Name]; ok {
-						return e
-					}
-					return c.Get(ctx, key, obj, opts...)
-				},
 				Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
 					if e, ok := tc.updateErrs[obj.GetName()]; ok {
 						return e

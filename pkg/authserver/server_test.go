@@ -8,6 +8,7 @@ import (
 	"crypto/rand"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/mock/gomock"
 
@@ -186,5 +187,39 @@ func TestNewServer_Success(t *testing.T) {
 	}
 	if srv.IDPTokenStorage() != stor {
 		t.Error("server.IDPTokenStorage() did not return expected storage")
+	}
+}
+
+func TestNewServer_CIMDEnabled_WrapsStorage(t *testing.T) {
+	t.Parallel()
+
+	mockUpstream := upstreammocks.NewMockOAuth2Provider(gomock.NewController(t))
+
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+
+	cfg := Config{
+		Issuer:               "https://example.com",
+		KeyProvider:          keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		HMACSecrets:          &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+		AllowedAudiences:     []string{"https://mcp.example.com"},
+		CIMDEnabled:          true,
+		CIMDCacheMaxSize:     16,
+		CIMDCacheFallbackTTL: 5 * time.Minute,
+	}
+
+	mockFactory := func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		return mockUpstream, nil
+	}
+
+	srv, err := newServer(context.Background(), cfg, stor, withUpstreamFactory(mockFactory))
+	if err != nil {
+		t.Fatalf("newServer() unexpected error: %v", err)
+	}
+
+	_, ok := srv.storage.(*storage.CIMDStorageDecorator)
+	if !ok {
+		t.Errorf("expected storage to be *storage.CIMDStorageDecorator when CIMDEnabled=true, got %T", srv.storage)
 	}
 }

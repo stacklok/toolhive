@@ -23,6 +23,9 @@ import (
 // server is the internal implementation of the Server interface.
 type server struct {
 	handler http.Handler
+	// storage is the active storage backend, potentially wrapped by decorators
+	// such as CIMDStorageDecorator. Code that needs the concrete type must walk
+	// the Unwrap() chain rather than asserting directly.
 	storage storage.Storage
 	// dcrStore is the same storage.Storage value asserted to
 	// storage.DCRCredentialStore. The assertion runs once at construction
@@ -107,9 +110,10 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// provably safe for the production backends; surfacing a bad backend as
 	// a constructor error keeps misconfiguration fail-loud at boot rather
 	// than at first DCR resolve.
-	dcrStore, ok := stor.(storage.DCRCredentialStore)
+	baseStore := unwrapStorage(stor)
+	dcrStore, ok := baseStore.(storage.DCRCredentialStore)
 	if !ok {
-		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", stor)
+		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", baseStore)
 	}
 
 	slog.Debug("creating OAuth2 configuration")
@@ -134,6 +138,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		BaselineClientScopes:         cfg.BaselineClientScopes,
 		AllowedAudiences:             cfg.AllowedAudiences,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                  cfg.CIMDEnabled,
 	}
 	authServerConfig, err := oauthserver.NewAuthorizationServerConfig(oauthParams)
 	if err != nil {
@@ -145,10 +150,6 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		"refresh_token_lifespan", cfg.RefreshTokenLifespan,
 		"auth_code_lifespan", cfg.AuthCodeLifespan,
 	)
-
-	// Create fosite provider
-	slog.Debug("creating fosite OAuth2 provider")
-	fositeProvider := createProvider(authServerConfig, stor)
 
 	// Build ordered upstream provider list from all configured upstreams.
 	upstreams := make([]handlers.NamedUpstream, 0, len(cfg.Upstreams))
@@ -168,14 +169,23 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 
 	// Run one-shot bulk migration of legacy data before handler construction.
 	// TODO(migration): Remove once all deployments have upgraded past this version.
-	if rs, ok := stor.(*storage.RedisStorage); ok {
-		for i := range cfg.Upstreams {
-			upCfg := &cfg.Upstreams[i]
-			if err := rs.MigrateLegacyUpstreamData(ctx, upCfg.Name, string(upCfg.Type)); err != nil {
-				return nil, fmt.Errorf("legacy data migration failed for upstream %q: %w", upCfg.Name, err)
-			}
+	if err := runLegacyMigration(ctx, stor, cfg.Upstreams); err != nil {
+		return nil, err
+	}
+
+	// Wrap storage with the CIMD decorator before constructing the fosite provider
+	// so that GetClient calls for HTTPS client_id values are intercepted at the
+	// fosite level (not just the handler level).
+	if cfg.CIMDEnabled {
+		stor, err = storage.NewCIMDStorageDecorator(stor, true, cfg.CIMDCacheMaxSize, cfg.CIMDCacheFallbackTTL)
+		if err != nil {
+			return nil, fmt.Errorf("failed to initialize CIMD storage decorator: %w", err)
 		}
 	}
+
+	// Create fosite provider with the (possibly decorated) storage.
+	slog.Debug("creating fosite OAuth2 provider")
+	fositeProvider := createProvider(authServerConfig, stor)
 
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams)
 	if err != nil {
@@ -293,4 +303,32 @@ func createProvider(authServerConfig *oauthserver.AuthorizationServerConfig, sto
 		compose.OAuth2RefreshTokenGrantFactory, // Refresh token grant
 		compose.OAuth2PKCEFactory,              // PKCE for public clients
 	)
+}
+
+// unwrapStorage peels off one decorator layer if the storage implements
+// Unwrap(), returning the concrete backend. Both newServer (DCRCredentialStore
+// assertion) and runLegacyMigration (RedisStorage type assertion) need this.
+func unwrapStorage(stor storage.Storage) storage.Storage {
+	if unwrapper, ok := stor.(interface{ Unwrap() storage.Storage }); ok {
+		return unwrapper.Unwrap()
+	}
+	return stor
+}
+
+// runLegacyMigration runs one-shot Redis data migrations before handlers are
+// constructed. It is a no-op for non-Redis backends and passes through any
+// decorator wrapping so the concrete type can be reached.
+func runLegacyMigration(ctx context.Context, stor storage.Storage, upstreams []UpstreamConfig) error {
+	base := unwrapStorage(stor)
+	rs, ok := base.(*storage.RedisStorage)
+	if !ok {
+		return nil
+	}
+	for i := range upstreams {
+		upCfg := &upstreams[i]
+		if err := rs.MigrateLegacyUpstreamData(ctx, upCfg.Name, string(upCfg.Type)); err != nil {
+			return fmt.Errorf("legacy data migration failed for upstream %q: %w", upCfg.Name, err)
+		}
+	}
+	return nil
 }

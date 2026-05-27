@@ -782,7 +782,7 @@ func TestApplyClaimMappingOverrides(t *testing.T) {
 	baseCfg := func(t *testing.T, opts cedar.ConfigOptions) *authz.Config {
 		t.Helper()
 		cfg, err := authz.NewConfig(cedar.Config{
-			Version: "v1",
+			Version: AuthzConfigVersion,
 			Type:    cedar.ConfigType,
 			Options: &opts,
 		})
@@ -913,7 +913,7 @@ func TestExtractCedarAuthzOptions(t *testing.T) {
 	t.Run("happy path returns the embedded cedar options", func(t *testing.T) {
 		t.Parallel()
 		cfg, err := authz.NewConfig(cedar.Config{
-			Version: "v1",
+			Version: AuthzConfigVersion,
 			Type:    cedar.ConfigType,
 			Options: &cedar.ConfigOptions{
 				Policies:     []string{`permit(principal, action, resource);`},

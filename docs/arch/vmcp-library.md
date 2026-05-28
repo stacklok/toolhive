@@ -56,6 +56,7 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 | `pkg/vmcp/cache` | Internal | Token cache; not intended for external use |
 | `pkg/vmcp/conversion` | Internal | CRD-to-config conversion; K8s-specific, not for local embedding |
 | `pkg/vmcp/discovery` | Internal | Discovery middleware; use via aggregator, not directly |
+| `pkg/vmcp/headerforward` | Internal | Per-backend HTTP header-forwarding round-tripper; the root `headerforward` package only; `pkg/vmcp/headerforward/wirefmt` is a separate wire-format helper used by aggregator/workloads/cli/operator |
 | `pkg/vmcp/k8s` | Internal | Kubernetes-specific discovery; not for local embedding |
 | `pkg/vmcp/workloads` | Internal | Backend workload helpers for K8s mode; not for local embedding |
 | `pkg/vmcp/schema` | Internal | MCP schema parsing; subject to change |

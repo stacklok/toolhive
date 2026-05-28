@@ -27,18 +27,10 @@ spec:
       jsonPath: .spec.name
       name: Workflow
       type: string
-    - description: Number of steps
-      jsonPath: .status.stepCount
-      name: Steps
-      type: integer
     - description: Validation status
       jsonPath: .status.validationStatus
       name: Status
       type: string
-    - description: Referencing servers
-      jsonPath: .status.refCount
-      name: Refs
-      type: integer
     - description: Age
       jsonPath: .metadata.creationTimestamp
       name: Age
@@ -398,11 +390,6 @@ spec:
                   It corresponds to the resource's generation, which is updated on mutation by the API Server
                 format: int64
                 type: integer
-              refCount:
-                description: RefCount is the number of VirtualMCPServers that reference
-                  this workflow.
-                format: int32
-                type: integer
               referencingVirtualServers:
                 description: |-
                   ReferencingVirtualServers lists VirtualMCPServer resources that reference this workflow
@@ -411,11 +398,6 @@ spec:
                   type: string
                 type: array
                 x-kubernetes-list-type: set
-              stepCount:
-                description: StepCount is the number of steps in the composite tool
-                  workflow.
-                format: int32
-                type: integer
               validationErrors:
                 description: ValidationErrors contains validation error messages if
                   ValidationStatus is Invalid
@@ -444,18 +426,10 @@ spec:
       jsonPath: .spec.name
       name: Workflow
       type: string
-    - description: Number of steps
-      jsonPath: .status.stepCount
-      name: Steps
-      type: integer
     - description: Validation status
       jsonPath: .status.validationStatus
       name: Status
       type: string
-    - description: Referencing servers
-      jsonPath: .status.refCount
-      name: Refs
-      type: integer
     - description: Age
       jsonPath: .metadata.creationTimestamp
       name: Age
@@ -815,11 +789,6 @@ spec:
                   It corresponds to the resource's generation, which is updated on mutation by the API Server
                 format: int64
                 type: integer
-              refCount:
-                description: RefCount is the number of VirtualMCPServers that reference
-                  this workflow.
-                format: int32
-                type: integer
               referencingVirtualServers:
                 description: |-
                   ReferencingVirtualServers lists VirtualMCPServer resources that reference this workflow
@@ -828,11 +797,6 @@ spec:
                   type: string
                 type: array
                 x-kubernetes-list-type: set
-              stepCount:
-                description: StepCount is the number of steps in the composite tool
-                  workflow.
-                format: int32
-                type: integer
               validationErrors:
                 description: ValidationErrors contains validation error messages if
                   ValidationStatus is Invalid

@@ -167,7 +167,6 @@ rules:
   - mcptelemetryconfigs/status
   - mcptoolconfigs/status
   - mcpwebhookconfigs/status
-  - virtualmcpcompositetooldefinitions/status
   - virtualmcpservers/status
   verbs:
   - get

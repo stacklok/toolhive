@@ -18,14 +18,6 @@ type VirtualMCPCompositeToolDefinitionSpec struct {
 
 // VirtualMCPCompositeToolDefinitionStatus defines the observed state of VirtualMCPCompositeToolDefinition
 type VirtualMCPCompositeToolDefinitionStatus struct {
-	// StepCount is the number of steps in the composite tool workflow.
-	// +optional
-	StepCount int32 `json:"stepCount,omitempty"`
-
-	// RefCount is the number of VirtualMCPServers that reference this workflow.
-	// +optional
-	RefCount int32 `json:"refCount,omitempty"`
-
 	// ValidationStatus indicates the validation state of the workflow
 	// - Valid: Workflow structure is valid
 	// - Invalid: Workflow has validation errors
@@ -110,9 +102,7 @@ const (
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=vmcpctd;compositetool,categories=toolhive
 //+kubebuilder:printcolumn:name="Workflow",type="string",JSONPath=".spec.name",description="Workflow name"
-//+kubebuilder:printcolumn:name="Steps",type="integer",JSONPath=".status.stepCount",description="Number of steps"
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.validationStatus",description="Validation status"
-//+kubebuilder:printcolumn:name="Refs",type="integer",JSONPath=".status.refCount",description="Referencing servers"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Age"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 

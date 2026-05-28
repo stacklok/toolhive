@@ -372,7 +372,7 @@ func setupRegistryController(mgr ctrl.Manager, imagePullSecretsDefaults imagepul
 }
 
 // setupAggregationControllers sets up Virtual MCP-related controllers and webhooks
-// (MCPGroup, VirtualMCPServer, VirtualMCPCompositeToolDefinition, and their webhooks). Must run after
+// (MCPGroup, VirtualMCPServer, and their webhooks). Must run after
 // setupServerControllers, which creates the MCPServer.Spec.GroupRef field index
 // these controllers depend on.
 // imagePullSecretsDefaults are merged with vmcp.Spec.ImagePullSecrets when the
@@ -394,13 +394,6 @@ func setupAggregationControllers(mgr ctrl.Manager, imagePullSecretsDefaults imag
 		ImagePullSecretsDefaults: imagePullSecretsDefaults,
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller VirtualMCPServer: %w", err)
-	}
-
-	// Set up VirtualMCPCompositeToolDefinition controller
-	if err := (&controllers.VirtualMCPCompositeToolDefinitionReconciler{
-		Client: mgr.GetClient(),
-	}).SetupWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create controller VirtualMCPCompositeToolDefinition: %w", err)
 	}
 
 	return nil

@@ -3545,8 +3545,6 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `stepCount` _integer_ | StepCount is the number of steps in the composite tool workflow. |  | Optional: \{\} <br /> |
-| `refCount` _integer_ | RefCount is the number of VirtualMCPServers that reference this workflow. |  | Optional: \{\} <br /> |
 | `validationStatus` _[api.v1beta1.ValidationStatus](#apiv1beta1validationstatus)_ | ValidationStatus indicates the validation state of the workflow<br />- Valid: Workflow structure is valid<br />- Invalid: Workflow has validation errors |  | Enum: [Valid Invalid Unknown] <br />Optional: \{\} <br /> |
 | `validationErrors` _string array_ | ValidationErrors contains validation error messages if ValidationStatus is Invalid |  | Optional: \{\} <br /> |
 | `referencingVirtualServers` _string array_ | ReferencingVirtualServers lists VirtualMCPServer resources that reference this workflow<br />This helps track which servers need to be reconciled when this workflow changes |  | Optional: \{\} <br /> |

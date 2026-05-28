@@ -37,6 +37,9 @@ func newMCPCommand() *cobra.Command {
 	// Add serve subcommand
 	cmd.AddCommand(newMCPServeCommand())
 
+	// Add call subcommand
+	cmd.AddCommand(newMCPCallCommand())
+
 	// Create list command
 	listCmd := &cobra.Command{
 		Use:   "list [tools|resources|prompts]",

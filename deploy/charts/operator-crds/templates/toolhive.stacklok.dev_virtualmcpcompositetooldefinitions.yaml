@@ -27,18 +27,10 @@ spec:
       jsonPath: .spec.name
       name: Workflow
       type: string
-    - description: Number of steps
-      jsonPath: .spec.steps[*]
-      name: Steps
-      type: integer
     - description: Validation status
       jsonPath: .status.validationStatus
       name: Status
       type: string
-    - description: Refs
-      jsonPath: .status.referencingVirtualServers[*]
-      name: Refs
-      type: integer
     - description: Age
       jsonPath: .metadata.creationTimestamp
       name: Age
@@ -434,18 +426,10 @@ spec:
       jsonPath: .spec.name
       name: Workflow
       type: string
-    - description: Number of steps
-      jsonPath: .spec.steps[*]
-      name: Steps
-      type: integer
     - description: Validation status
       jsonPath: .status.validationStatus
       name: Status
       type: string
-    - description: Refs
-      jsonPath: .status.referencingVirtualServers[*]
-      name: Refs
-      type: integer
     - description: Age
       jsonPath: .metadata.creationTimestamp
       name: Age

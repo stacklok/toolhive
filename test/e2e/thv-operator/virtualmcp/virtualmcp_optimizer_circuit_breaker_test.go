@@ -10,6 +10,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -296,6 +297,32 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 
 		backend.Spec.Image = images.YardstickServerImage
 		Expect(k8sClient.Update(ctx, backend)).To(Succeed())
+
+		By("Waiting for backend StatefulSet template to use the fixed image")
+		// Without this wait we can race the proxyrunner: deleting the
+		// Pending pod before the StatefulSet template has flipped to the
+		// good image just causes it to be recreated against the old (bad)
+		// template, and the StatefulSet controller may not re-roll an
+		// already-unhealthy pod afterwards. Mirrors the same guard in
+		// virtualmcp_circuit_breaker_test.go added in #5079.
+		Eventually(func() error {
+			sts := &appsv1.StatefulSet{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      unstableName,
+				Namespace: testNamespace,
+			}, sts); err != nil {
+				return err
+			}
+			for _, container := range sts.Spec.Template.Spec.Containers {
+				if container.Name == "mcp" {
+					if container.Image != images.YardstickServerImage {
+						return fmt.Errorf("statefulset still has image %q", container.Image)
+					}
+					return nil
+				}
+			}
+			return fmt.Errorf("mcp container not found in statefulset template")
+		}, timeout, pollingInterval).Should(Succeed())
 
 		By("Deleting stuck pods to force recreation with fixed image")
 		podList := &corev1.PodList{}

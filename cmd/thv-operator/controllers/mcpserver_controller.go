@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1151,6 +1152,25 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	// name collision (ResourceOverrides.Env only accepts plain strings).
 	env = append(env, r.buildRedisPasswordEnvVar(m)...)
 
+	// Project the MCPServer generation pod-template annotation into the
+	// proxyrunner container via the downward API. The proxyrunner uses this
+	// to override the value read from the live-mounted RunConfig ConfigMap,
+	// freezing it per pod at creation time. See #5360.
+	//
+	// APIVersion must be explicitly "v1" — the API server defaults it on
+	// persistence and equality.Semantic.DeepEqual treats "" != "v1" as drift,
+	// which would otherwise force a Deployment update on every reconcile.
+	env = append(env, corev1.EnvVar{
+		Name: kubernetes.EnvVarMCPServerGeneration,
+		ValueFrom: &corev1.EnvVarSource{
+			FieldRef: &corev1.ObjectFieldSelector{
+				APIVersion: "v1",
+				FieldPath: fmt.Sprintf("metadata.annotations['%s']",
+					kubernetes.RunConfigMCPServerGenerationAnnotation),
+			},
+		},
+	})
+
 	// Add volume mounts for user-defined volumes
 	for _, v := range m.Spec.Volumes {
 		volumeMounts = append(volumeMounts, corev1.VolumeMount{
@@ -1263,6 +1283,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 
 	// Add RunConfig checksum annotation to trigger pod rollout when config changes
 	deploymentTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(deploymentTemplateAnnotations, runConfigChecksum)
+
+	// Stamp the MCPServer generation on the proxy Deployment's pod template so the
+	// downward-API env var below resolves to a value that is frozen at pod creation
+	// time, not live-updated like the runconfig.json ConfigMap mount. See #5360.
+	deploymentTemplateAnnotations[kubernetes.RunConfigMCPServerGenerationAnnotation] =
+		strconv.FormatInt(m.Generation, 10)
 
 	if m.Spec.ResourceOverrides != nil && m.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if m.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
@@ -1759,6 +1785,26 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			}
 		}
 
+		// Project the MCPServer generation pod-template annotation into the
+		// proxyrunner container via the downward API. Position must come
+		// before the embedded-auth env vars below so the slice order matches
+		// deploymentForMCPServer and equality.Semantic.DeepEqual against
+		// container.Env succeeds.
+		//
+		// APIVersion must mirror the construction site at "v1" — the API
+		// server defaults it on persistence and an empty string here would
+		// produce false drift on every reconcile. See #5360.
+		expectedProxyEnv = append(expectedProxyEnv, corev1.EnvVar{
+			Name: kubernetes.EnvVarMCPServerGeneration,
+			ValueFrom: &corev1.EnvVarSource{
+				FieldRef: &corev1.ObjectFieldSelector{
+					APIVersion: "v1",
+					FieldPath: fmt.Sprintf("metadata.annotations['%s']",
+						kubernetes.RunConfigMCPServerGenerationAnnotation),
+				},
+			},
+		})
+
 		// Add embedded auth server environment variables. AuthServerRef takes precedence;
 		// externalAuthConfigRef is used as a fallback (legacy path).
 		if configName := ctrlutil.EmbeddedAuthServerConfigName(
@@ -1879,6 +1925,11 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 	// Check if pod template annotations have changed (including runconfig checksum)
 	expectedPodTemplateAnnotations := make(map[string]string)
 	expectedPodTemplateAnnotations = checksum.AddRunConfigChecksumToPodTemplate(expectedPodTemplateAnnotations, runConfigChecksum)
+	// Mirrors deploymentForMCPServer: stamp the MCPServer generation so the
+	// downward-API env var injected into the proxyrunner container resolves
+	// to a frozen-per-pod value (#5360).
+	expectedPodTemplateAnnotations[kubernetes.RunConfigMCPServerGenerationAnnotation] =
+		strconv.FormatInt(mcpServer.Generation, 10)
 
 	if mcpServer.Spec.ResourceOverrides != nil &&
 		mcpServer.Spec.ResourceOverrides.ProxyDeployment != nil &&

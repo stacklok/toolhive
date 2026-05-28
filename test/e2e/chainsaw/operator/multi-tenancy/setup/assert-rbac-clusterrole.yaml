@@ -121,20 +121,6 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
-  - embeddingservers/finalizers
-  - mcpexternalauthconfigs/finalizers
-  - mcpgroups/finalizers
-  - mcpoidcconfigs/finalizers
-  - mcpregistries/finalizers
-  - mcpservers/finalizers
-  - mcptelemetryconfigs/finalizers
-  - mcptoolconfigs/finalizers
-  - mcpwebhookconfigs/finalizers
-  verbs:
-  - update
-- apiGroups:
-  - toolhive.stacklok.dev
-  resources:
   - embeddingservers
   - mcpexternalauthconfigs
   - mcpgroups
@@ -153,6 +139,20 @@ rules:
   - patch
   - update
   - watch
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
+  - embeddingservers/finalizers
+  - mcpexternalauthconfigs/finalizers
+  - mcpgroups/finalizers
+  - mcpoidcconfigs/finalizers
+  - mcpregistries/finalizers
+  - mcpservers/finalizers
+  - mcptelemetryconfigs/finalizers
+  - mcptoolconfigs/finalizers
+  - mcpwebhookconfigs/finalizers
+  verbs:
+  - update
 - apiGroups:
   - toolhive.stacklok.dev
   resources:

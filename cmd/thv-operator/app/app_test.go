@@ -15,7 +15,7 @@ import (
 //   - default to (false, nil) when the env var is unset (the controller is
 //     opt-in for this release),
 //   - accept strconv.ParseBool's full truth-table for explicit values,
-//   - fail loudly on unparseable values so a misconfigured admin sees a
+//   - fail loudly on unparsable values so a misconfigured admin sees a
 //     startup error instead of silently disabled migration.
 //
 // The error-case rows assert on both the env-var name AND the offending
@@ -70,9 +70,9 @@ func TestIsStorageVersionMigratorEnabled(t *testing.T) {
 			wantErr:     false,
 		},
 		{
-			name:        "unparseable typo errors with env-var name and bad value",
+			name:        "unparsable value errors with env-var name and bad value",
 			setEnv:      true,
-			envValue:    "ture",
+			envValue:    "garbage",
 			wantEnabled: false,
 			wantErr:     true,
 		},

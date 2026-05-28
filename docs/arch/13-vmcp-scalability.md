@@ -67,9 +67,8 @@ aggregation.
 ### Redis sliding-window TTL
 
 When Redis session storage is enabled, every `Load` call issues a `GETEX` that
-resets the key's TTL atomically
-(`pkg/transport/session/storage_redis.go:NewRedisStorage` and the comment at
-line 177). This means:
+resets the key's TTL atomically (see `pkg/transport/session/storage_redis.go`,
+`NewRedisStorage` and the `Load` function docstring). This means:
 
 - Active sessions are preserved indefinitely as long as they receive at least
   one request per TTL window.
@@ -109,7 +108,7 @@ request (`Load` + `GETEX`). Redis is on the hot path.
 
 | Parameter | Default | Notes |
 | --------- | ------- | ----- |
-| Dial timeout | 5 s (`DefaultDialTimeout`) | `pkg/transport/session/redis_config.go` |
+| Dial timeout | 5 s (`DefaultDialTimeout`) | `github.com/stacklok/toolhive-core/redis/config.go` |
 | Read timeout | 3 s (`DefaultReadTimeout`) | |
 | Write timeout | 3 s (`DefaultWriteTimeout`) | |
 | Key prefix | configurable | Must end with `:` to avoid collisions |
@@ -119,12 +118,12 @@ estimate: 10–50 KB per session depending on backend count and tool count.
 Maximum concurrent session count across the fleet is `replicas × 1,000`.
 
 **Connection pools:** Each vMCP pod creates one go-redis client with its own
-connection pool. No explicit `PoolSize` is configured
-(`pkg/transport/session/storage_redis.go`), so go-redis applies its default of
-`10 × GOMAXPROCS` connections per pool. Total Redis connections therefore scale
-as `replicas × (10 × GOMAXPROCS)`. Size the Redis `maxclients` setting
-accordingly, and tune `PoolSize` in `RedisConfig` if the default is too large
-or too small for your workload.
+connection pool. Client construction is delegated to
+`github.com/stacklok/toolhive-core/redis` and no explicit `PoolSize` is
+configured (the `tcredis.Config` struct does not expose one), so go-redis
+applies its default of `10 × GOMAXPROCS` connections per pool. Total Redis
+connections therefore scale as `replicas × (10 × GOMAXPROCS)`. Size the Redis
+`maxclients` setting accordingly.
 
 **Eviction policy:** Use `allkeys-lru` so Redis can shed stale sessions under
 memory pressure rather than returning errors on new writes.
@@ -174,16 +173,16 @@ for session affinity design details.
 | Per-pod session cache | 1,000 sessions | `sessionmanager/factory.go:defaultCacheCapacity` | No (internal field) |
 | vMCP session TTL | 30 minutes | `vmcp/server/server.go:defaultSessionTTL` | Via `server.Config.SessionTTL` (not CRD-exposed) |
 | MCPServer proxy session TTL | 2 hours | `transport/session/proxy_session.go:DefaultSessionTTL` | No |
-| Redis dial timeout | 5 s | `transport/session/redis_config.go:DefaultDialTimeout` | Via `RedisConfig.DialTimeout` |
-| Redis read timeout | 3 s | `transport/session/redis_config.go:DefaultReadTimeout` | Via `RedisConfig.ReadTimeout` |
-| Redis write timeout | 3 s | `transport/session/redis_config.go:DefaultWriteTimeout` | Via `RedisConfig.WriteTimeout` |
-| forEach max iterations | 1,000 | `vmcp/config/config.go:MaxForEachIterations` | Via `WorkflowStepConfig.MaxIterations` (capped at 1,000) |
+| Redis dial timeout | 5 s | `toolhive-core/redis/config.go:DefaultDialTimeout` | Via `tcredis.Config.DialTimeout` |
+| Redis read timeout | 3 s | `toolhive-core/redis/config.go:DefaultReadTimeout` | Via `tcredis.Config.ReadTimeout` |
+| Redis write timeout | 3 s | `toolhive-core/redis/config.go:DefaultWriteTimeout` | Via `tcredis.Config.WriteTimeout` |
+| forEach max iterations | 1,000 | `vmcp/config/composite_validation.go:MaxForEachIterations` | Via `WorkflowStepConfig.MaxIterations` (capped at 1,000) |
 
 ## Related
 
 - `pkg/vmcp/server/sessionmanager/factory.go` — LRU cache and `FactoryConfig`
 - `pkg/vmcp/server/server.go` — `defaultSessionTTL`, `Config.SessionTTL`
 - `pkg/transport/session/storage_redis.go` — sliding-window TTL via `GETEX`
-- `pkg/transport/session/redis_config.go` — timeout defaults
+- `github.com/stacklok/toolhive-core/redis/config.go` — Redis client config and timeout defaults
 - `docs/arch/10-virtual-mcp-architecture.md` — overall vMCP architecture
 - `docs/arch/11-auth-server-storage.md` — Redis Sentinel for auth server sessions

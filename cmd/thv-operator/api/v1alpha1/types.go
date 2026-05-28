@@ -280,6 +280,7 @@ type MCPTelemetryConfigList struct {
 
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
+//+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=mwc,categories=toolhive
 //+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`

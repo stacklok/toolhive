@@ -134,6 +134,12 @@ The same `Applier` backs both the CLI (`thv upgrade apply`) and the API (`POST /
 
 **Implementation**: `pkg/workloads/upgrade/`, `cmd/thv/app/upgrade.go`
 
+### Proxy termination
+
+Stop and delete terminate the proxy using its recorded PID. When PID-based termination is unavailable or fails (for example, the status file is missing, records no PID, or the process is already gone), they fall back to port-based cleanup: the process holding the proxy port is terminated only after it is confirmed to be this workload's proxy. This prevents an orphaned proxy from continuing to hold the port after the container has been stopped or removed.
+
+**Implementation**: `pkg/workloads/manager.go`
+
 ### List
 
 Listing combines container workloads from the runtime with remote workloads from persisted state. The manager can filter workloads by label or group, and can optionally include stopped workloads.

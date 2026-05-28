@@ -158,25 +158,61 @@ func TestStorageVersionRootMarkerCoverage(t *testing.T) {
 			"+kubebuilder:storageversion marker; this test is meaningless without coverage")
 
 	for _, r := range roots {
+		key := r.version + "/" + r.file + "." + r.typeName
+		if _, allowed := excludedRootTypes[key]; allowed {
+			continue
+		}
 		assert.Truef(t, containsMarker(r.markerBlock, migrateMarker),
-			"root type %s/%s.%s is missing the storage-version migrate marker:\n"+
+			"root type %s is missing the storage-version migrate marker:\n"+
 				"  %s\n"+
 				"Every root type carrying +kubebuilder:storageversion must declare it.\n"+
 				"See cmd/thv-operator/controllers/storageversionmigrator_controller.go\n"+
 				"for context. There is no opt-out marker — if a CRD legitimately\n"+
 				"should not be auto-migrated, raise it as a PR review conversation\n"+
-				"and update the test's allowlist explicitly.",
-			r.version, r.file, r.typeName, migrateMarker)
+				"and add an entry to excludedRootTypes in this file.",
+			key, migrateMarker)
 	}
 }
 
-// containsMarker returns true if any line in block contains the given
-// marker substring.
+// excludedRootTypes is the (intentionally empty) allowlist of storage-version
+// root types that are deliberately not auto-migrated. Entries are keyed by
+// "<version>/<file>.<TypeName>" (e.g. "v1alpha1/types.go.MCPSomething").
+//
+// Adding an entry here is a deliberate, reviewed decision — not a self-serve
+// escape hatch. If a future CRD legitimately cannot or should not participate
+// in storage-version migration:
+//
+//  1. Open a PR with the entry added here.
+//  2. Make the case in the PR description: why is this CRD different?
+//     What happens at version-drop time if no migration ever runs?
+//  3. The reviewer should push back hard. Excluding a CRD means accepting
+//     that it can never have a version dropped without manual intervention.
+var excludedRootTypes = map[string]struct{}{
+	// Example (do not enable):
+	// "v1alpha1/types.go.MCPSomething": {},
+}
+
+// containsMarker returns true if any line in block carries the given
+// kubebuilder marker as a complete token — the marker must be followed by
+// end-of-line or whitespace.
+//
+// Strict matching matters: the migrate marker ends in "=true". A typo such
+// as "=truee" would still be a substring match under strings.Contains, the
+// test would pass, the generated CRD YAML would have label value "truee",
+// and the controller's runtime check (`labels[key] == "true"`) would
+// silently exclude the CRD. The bug would only surface at version-drop time
+// months later. Whole-token matching catches the typo at PR time.
 func containsMarker(block []string, marker string) bool {
 	for _, l := range block {
-		if strings.Contains(l, marker) {
+		idx := strings.Index(l, marker)
+		if idx < 0 {
+			continue
+		}
+		end := idx + len(marker)
+		if end == len(l) || l[end] == ' ' || l[end] == '\t' {
 			return true
 		}
+		// Marker appeared only as a prefix of a longer token — reject.
 	}
 	return false
 }
@@ -189,4 +225,37 @@ func extractTypeName(line string) string {
 		return ""
 	}
 	return fields[1]
+}
+
+// TestContainsMarkerStrictBoundary defends the whole-token match contract of
+// containsMarker. If someone "improves" it back to strings.Contains semantics,
+// the value-typo failure mode reopens silently. Keep this test as the
+// regression guard.
+func TestContainsMarkerStrictBoundary(t *testing.T) {
+	t.Parallel()
+
+	const marker = "+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true"
+
+	tests := []struct {
+		name string
+		line string
+		want bool
+	}{
+		{name: "exact match at end of line", line: marker, want: true},
+		{name: "marker followed by space", line: marker + " // trailing comment", want: true},
+		{name: "marker followed by tab", line: marker + "\t", want: true},
+		{name: "value typo =truee is a prefix match — must reject", line: marker + "e", want: false},
+		{name: "value typo =trueX is a prefix match — must reject", line: marker + "X", want: false},
+		{name: "marker absent", line: "+kubebuilder:object:root=true", want: false},
+		{name: "marker followed by alphanumeric — must reject", line: marker + "0", want: false},
+	}
+
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := containsMarker([]string{tc.line}, marker)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }

@@ -25,10 +25,18 @@ import (
 // drop a deprecated version — at which point it is far too late.
 //
 // The test walks every cmd/thv-operator/api/v*/ directory and scans the
-// *_types.go files inside. For each type whose marker block contains both
-// +kubebuilder:object:root=true AND +kubebuilder:storageversion (i.e., the
-// current storage version's root types), it requires either the migrate
-// marker or an explicit +thv:storage-version-migrator:exclude sibling marker.
+// *_types.go (and legacy types.go) files inside. For each type whose marker
+// block contains both +kubebuilder:object:root=true AND
+// +kubebuilder:storageversion (i.e., the current storage version's root
+// types), it requires the migrate marker. No escape hatch — every
+// storage-version root must opt in.
+//
+// Why no escape hatch? An "exclude" marker would let a single-version CRD
+// declare "don't auto-migrate me", but at graduation time the developer
+// must remember to swap exclude→migrate. Forgetting the swap reintroduces
+// the silent-skip failure mode the test is meant to prevent. If a CRD ever
+// legitimately needs to be excluded, handle it as a one-off PR conversation
+// (e.g. a hardcoded allowlist here) rather than a self-serve marker.
 //
 // Notes on the scope:
 //   - List types (+kubebuilder:object:root=true WITHOUT +kubebuilder:storageversion)
@@ -51,7 +59,6 @@ func TestStorageVersionRootMarkerCoverage(t *testing.T) {
 		rootMarker         = "+kubebuilder:object:root=true"
 		storageMarker      = "+kubebuilder:storageversion"
 		migrateMarker      = "+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true"
-		excludeMarker      = "+thv:storage-version-migrator:exclude"
 		groupversionInfoGo = "groupversion_info.go"
 		zzGeneratedPrefix  = "zz_generated"
 		// Match both the modern one-type-per-file convention (e.g.
@@ -151,17 +158,15 @@ func TestStorageVersionRootMarkerCoverage(t *testing.T) {
 			"+kubebuilder:storageversion marker; this test is meaningless without coverage")
 
 	for _, r := range roots {
-		hasMigrate := containsMarker(r.markerBlock, migrateMarker)
-		hasExclude := containsMarker(r.markerBlock, excludeMarker)
-		assert.Truef(t, hasMigrate || hasExclude,
-			"root type %s/%s.%s is missing either\n"+
+		assert.Truef(t, containsMarker(r.markerBlock, migrateMarker),
+			"root type %s/%s.%s is missing the storage-version migrate marker:\n"+
 				"  %s\n"+
-				"(opt in to storage-version migration) or\n"+
-				"  %s\n"+
-				"(explicit opt-out). Every root type carrying +kubebuilder:storageversion\n"+
-				"must declare one. See\n"+
-				"cmd/thv-operator/controllers/storageversionmigrator_controller.go for context.",
-			r.version, r.file, r.typeName, migrateMarker, excludeMarker)
+				"Every root type carrying +kubebuilder:storageversion must declare it.\n"+
+				"See cmd/thv-operator/controllers/storageversionmigrator_controller.go\n"+
+				"for context. There is no opt-out marker — if a CRD legitimately\n"+
+				"should not be auto-migrated, raise it as a PR review conversation\n"+
+				"and update the test's allowlist explicitly.",
+			r.version, r.file, r.typeName, migrateMarker)
 	}
 }
 

@@ -23,7 +23,7 @@ func AnalyzeGroup(group string, assessments []ServerAssessment) GroupAssessment 
 			if f.Confidence.rank() > best[role].rank() {
 				best[role] = f.Confidence
 			}
-			if f.Confidence.atLeast(ConfPossible) {
+			if f.Confidence.atOrAbove(ConfPossible) {
 				switch role {
 				case RoleData:
 					ga.DataHolders = append(ga.DataHolders, s.Name)
@@ -80,7 +80,7 @@ func hasUnknownRole(s ServerAssessment) bool {
 // possible-or-likely confidence, forming a toxic flow on its own.
 func holdsAllRoles(s ServerAssessment) bool {
 	for _, role := range AllRoles {
-		if !s.Finding(role).Confidence.atLeast(ConfPossible) {
+		if !s.Finding(role).Confidence.atOrAbove(ConfPossible) {
 			return false
 		}
 	}

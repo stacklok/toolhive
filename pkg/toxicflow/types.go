@@ -70,8 +70,8 @@ func (c Confidence) rank() int {
 	}
 }
 
-// atLeast reports whether c is at least as strong as other.
-func (c Confidence) atLeast(other Confidence) bool {
+// atOrAbove reports whether c is as strong as, or stronger than, other.
+func (c Confidence) atOrAbove(other Confidence) bool {
 	return c.rank() >= other.rank()
 }
 

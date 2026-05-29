@@ -2389,6 +2389,108 @@ type nopWriteCloser struct {
 
 func (nopWriteCloser) Close() error { return nil }
 
+// TestIsOwnedByActiveRuntime exercises every branch of the ownership check.
+// Ownership may only be denied when a *different* runtime is positively
+// identified; every ambiguous case must default to "owned" so we never silently
+// suppress reconciliation for a workload we are responsible for.
+func TestIsOwnedByActiveRuntime(t *testing.T) {
+	t.Parallel()
+
+	const workloadName = "test-workload"
+	const activeRuntime = "docker"
+
+	tests := []struct {
+		name string
+		// existsResult/existsErr control the runConfigStore.Exists mock.
+		existsResult bool
+		existsErr    error
+		// when the config exists, getReaderErr or runConfigJSON drive GetReader.
+		getReaderErr  error
+		runConfigJSON string
+		expectOwned   bool
+	}{
+		{
+			name:          "owned by active runtime",
+			existsResult:  true,
+			runConfigJSON: `{"runtime_name": "docker"}`,
+			expectOwned:   true,
+		},
+		{
+			name:          "owned by a different runtime is not ours",
+			existsResult:  true,
+			runConfigJSON: `{"runtime_name": "go-microvm"}`,
+			expectOwned:   false,
+		},
+		{
+			name:          "legacy workload with empty runtime_name is assumed ours",
+			existsResult:  true,
+			runConfigJSON: `{"name": "test-workload"}`,
+			expectOwned:   true,
+		},
+		{
+			name:          "whitespace-only runtime_name is treated as legacy",
+			existsResult:  true,
+			runConfigJSON: `{"runtime_name": "   "}`,
+			expectOwned:   true,
+		},
+		{
+			name:         "missing run config is assumed ours",
+			existsResult: false,
+			expectOwned:  true,
+		},
+		{
+			name:        "exists error is assumed ours",
+			existsErr:   errors.New("store unavailable"),
+			expectOwned: true,
+		},
+		{
+			name:         "unreadable run config is assumed ours",
+			existsResult: true,
+			getReaderErr: errors.New("read error"),
+			expectOwned:  true,
+		},
+		{
+			name:          "undecodable run config is assumed ours",
+			existsResult:  true,
+			runConfigJSON: `{bad json`,
+			expectOwned:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			manager, mockRuntime, mockRunConfigStore := newTestFileStatusManager(t, ctrl)
+			ctx := t.Context()
+
+			// Name() is only consulted when a non-empty runtime_name is compared.
+			mockRuntime.EXPECT().Name().Return(activeRuntime).AnyTimes()
+
+			mockRunConfigStore.EXPECT().Exists(gomock.Any(), workloadName).
+				Return(tt.existsResult, tt.existsErr)
+
+			// GetReader is only reached when the config exists and Exists succeeds.
+			if tt.existsErr == nil && tt.existsResult {
+				if tt.getReaderErr != nil {
+					mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).
+						Return(nil, tt.getReaderErr)
+				} else {
+					mockRunConfigStore.EXPECT().GetReader(gomock.Any(), workloadName).DoAndReturn(
+						func(context.Context, string) (io.ReadCloser, error) {
+							return io.NopCloser(strings.NewReader(tt.runConfigJSON)), nil
+						})
+				}
+			}
+
+			assert.Equal(t, tt.expectOwned, manager.isOwnedByActiveRuntime(ctx, workloadName))
+		})
+	}
+}
+
 func TestMigrateRuntimeName(t *testing.T) {
 	t.Parallel()
 

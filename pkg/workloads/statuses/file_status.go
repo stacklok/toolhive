@@ -76,14 +76,30 @@ type fileStatusManager struct {
 
 // isOwnedByActiveRuntime checks whether the named workload was created by the
 // currently active runtime. It loads the runtime_name field from the persisted
-// RunConfig and compares it against f.runtime.Name(). Legacy workloads that
-// predate the runtime_name field (empty string) are conservatively treated as
-// owned by the active runtime so that existing validation behaviour is preserved.
+// RunConfig and compares it against f.runtime.Name().
+//
+// Ownership can only be denied when we positively identify a *different* owning
+// runtime: the RunConfig must exist, decode cleanly, and carry a non-empty
+// runtime_name that differs from the active runtime. Every other case --
+// missing/unreadable config, decode failure, or a legacy workload that predates
+// the runtime_name field (empty string) -- is conservatively treated as owned by
+// the active runtime, preserving the pre-feature validation behaviour. This bias
+// matters: a false "not ours" would silently suppress reconciliation for a
+// workload we are responsible for, leaving it stuck in a stale status.
 func (f *fileStatusManager) isOwnedByActiveRuntime(ctx context.Context, workloadName string) bool {
+	// A workload with no RunConfig cannot have been tagged with another
+	// runtime's name, so it can only be ours (or a legacy workload). Checking
+	// existence explicitly lets us distinguish "no config" from "config present
+	// but cannot be parsed" and mirrors isRemoteWorkload's handling.
+	exists, err := f.runConfigStore.Exists(ctx, workloadName)
+	if err != nil || !exists {
+		return true
+	}
+
 	reader, err := f.runConfigStore.GetReader(ctx, workloadName)
 	if err != nil {
-		// RunConfig missing or unreadable -- assume ours so we don't silently
-		// skip validation for workloads we should be checking.
+		// RunConfig unreadable -- assume ours so we don't silently skip
+		// validation for workloads we should be checking.
 		return true
 	}
 	defer func() {
@@ -99,10 +115,12 @@ func (f *fileStatusManager) isOwnedByActiveRuntime(ctx context.Context, workload
 		return true // can't determine ownership -- assume ours
 	}
 
-	// Empty means legacy workload; treat as owned by active runtime.
-	if config.RuntimeName == "" {
+	// Empty means legacy workload (predates runtime_name); treat as ours.
+	if strings.TrimSpace(config.RuntimeName) == "" {
 		return true
 	}
+
+	// Only deny ownership when another runtime is positively identified.
 	return config.RuntimeName == f.runtime.Name()
 }
 

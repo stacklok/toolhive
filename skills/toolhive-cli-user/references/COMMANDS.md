@@ -560,6 +560,30 @@ thv mcp list prompts --server SERVER
 | `--timeout` | Connection timeout | |
 | `--transport` | Transport (auto, sse, streamable-http) | auto |
 
+### thv mcp call
+
+Invoke a tool on an MCP server. Opens a fresh MCP session, calls the tool, prints
+the result, and closes the session.
+
+```
+thv mcp call TOOL_NAME --server SERVER [--args JSON | --args-file PATH]
+```
+
+**Flags:**
+| Flag | Description | Default |
+|------|-------------|---------|
+| `--server` | Server URL or name | Required |
+| `--args` | Tool arguments as a JSON object literal. Omit both `--args` and `--args-file` to call the tool with no arguments. | |
+| `--args-file` | Path to JSON args file (`-` reads stdin); mutually exclusive with `--args` | |
+| `--ignore-tool-error` | Exit zero even when the tool reports an error | false |
+| `--format` | Output format (text, json) | text |
+| `--timeout` | Connection timeout | 30s |
+| `--transport` | Transport (auto, sse, streamable-http) | auto |
+
+Exits non-zero when the tool reports an error (`isError=true` in the result)
+unless `--ignore-tool-error` is set. Transport and protocol failures always
+exit non-zero.
+
 ### thv runtime check
 
 Check container runtime.

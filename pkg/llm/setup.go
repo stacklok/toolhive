@@ -82,7 +82,7 @@ func Setup(
 		return err
 	}
 
-	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
+	proxyBaseURL := llmCfg.ProxyBaseURL()
 
 	// Detect tools before login so we skip the interactive browser flow when
 	// there is nothing to configure. Login still runs before any files are

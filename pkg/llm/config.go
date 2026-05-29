@@ -119,3 +119,10 @@ func (c *Config) EffectiveProxyPort() int {
 	}
 	return DefaultProxyListenPort
 }
+
+// ProxyBaseURL returns the OpenAI-compatible base URL of the localhost proxy
+// (e.g. "http://localhost:14000/v1"). Callers append the API path. This is the
+// single source of truth for the proxy's loopback base URL.
+func (c *Config) ProxyBaseURL() string {
+	return fmt.Sprintf("http://localhost:%d/v1", c.EffectiveProxyPort())
+}

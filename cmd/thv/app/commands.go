@@ -76,6 +76,7 @@ func NewRootCmd(enableUpdates bool) *cobra.Command {
 	rootCmd.AddCommand(skillCmd)
 	rootCmd.AddCommand(statusCmd)
 	rootCmd.AddCommand(tuiCmd)
+	rootCmd.AddCommand(auditTrifectaCmd)
 
 	// Silence printing the usage on error
 	rootCmd.SilenceUsage = true

@@ -215,32 +215,6 @@ func TestRateLimitHandler_NoIdentityPassesEmptyUserID(t *testing.T) {
 	assert.Empty(t, recorder.userID, "unauthenticated requests should pass empty userID")
 }
 
-func TestDefaultToolNameResolverNilParsedRequest(t *testing.T) {
-	t.Parallel()
-
-	assert.Empty(t, DefaultToolNameResolver(nil))
-}
-
-func TestNewMiddlewareUsesCustomToolNameResolver(t *testing.T) {
-	t.Parallel()
-
-	recorder := &recordingLimiter{}
-	handler := NewMiddleware(recorder, func(*mcp.ParsedMCPRequest) string {
-		return "resolved-tool"
-	})(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	req = withParsedMCPRequest(req, "tools/call", "raw-tool", 1)
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "resolved-tool", recorder.toolName)
-}
-
 func TestRateLimitMiddlewareHandlerReturnsConfiguredHandler(t *testing.T) {
 	t.Parallel()
 

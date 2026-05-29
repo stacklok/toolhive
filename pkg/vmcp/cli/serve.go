@@ -36,13 +36,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
+	authfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	ratelimitfactory "github.com/stacklok/toolhive/pkg/vmcp/ratelimit/factory"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -372,16 +373,33 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	authMiddleware, authzMiddleware, authInfoHandler, err :=
-		factory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools, upstreamReader, keyProvider)
+		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools, upstreamReader, keyProvider)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
 
 	slog.Info(fmt.Sprintf("Incoming authentication configured: %s", vmcpCfg.IncomingAuth.Type))
 
+	namespace := vmcpNamespace()
+	rateLimitMiddleware, rateLimitCleanup, err := ratelimitfactory.NewMiddleware(ctx, ratelimitfactory.Config{
+		Namespace:      namespace,
+		ServerName:     vmcpCfg.Name,
+		RateLimiting:   vmcpCfg.RateLimiting,
+		SessionStorage: vmcpCfg.SessionStorage,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create rate limit middleware: %w", err)
+	}
+	if rateLimitCleanup != nil {
+		defer func() {
+			if closeErr := rateLimitCleanup(context.Background()); closeErr != nil {
+				slog.Error(fmt.Sprintf("failed to close rate limit middleware: %v", closeErr))
+			}
+		}()
+	}
+
 	serverCfg := &vmcpserver.Config{
 		Name:                    vmcpCfg.Name,
-		Namespace:               vmcpNamespace(),
 		Version:                 versions.Version,
 		GroupRef:                vmcpCfg.Group,
 		Host:                    cfg.Host,
@@ -390,6 +408,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		AuthMiddleware:          authMiddleware,
 		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,
+		RateLimitMiddleware:     rateLimitMiddleware,
 		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       telemetryProvider,
 		AuditConfig:             vmcpCfg.Audit,
@@ -400,7 +419,6 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		OptimizerConfig:         optCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
-		RateLimiting:            vmcpCfg.RateLimiting,
 	}
 
 	// Assign Watcher only when backendWatcher is non-nil. A typed nil
@@ -575,7 +593,7 @@ func discoverBackends(
 ) ([]vmcp.Backend, vmcp.BackendClient, vmcpauth.OutgoingAuthRegistry, error) {
 	slog.Info("initializing outgoing authentication")
 	envReader := &env.OSReader{}
-	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, envReader)
+	outgoingRegistry, err := authfactory.NewOutgoingAuthRegistry(ctx, envReader)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}

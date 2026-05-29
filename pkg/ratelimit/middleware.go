@@ -52,17 +52,6 @@ type rateLimitMiddleware struct {
 	client  redis.UniversalClient
 }
 
-// ToolNameResolver resolves the rate-limit tool name from a parsed MCP request.
-type ToolNameResolver func(*mcp.ParsedMCPRequest) string
-
-// DefaultToolNameResolver uses the parsed MCP resource ID as the rate-limit tool name.
-func DefaultToolNameResolver(parsed *mcp.ParsedMCPRequest) string {
-	if parsed == nil {
-		return ""
-	}
-	return parsed.ResourceID
-}
-
 // Handler returns the middleware function used by the proxy.
 func (m *rateLimitMiddleware) Handler() types.MiddlewareFunction {
 	return m.handler
@@ -110,19 +99,16 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	}
 
 	mw := &rateLimitMiddleware{
-		handler: NewMiddleware(limiter, nil),
+		handler: rateLimitHandler(limiter),
 		client:  client,
 	}
 	runner.AddMiddleware(MiddlewareType, mw)
 	return nil
 }
 
-// NewMiddleware returns a middleware function that enforces rate limits
+// rateLimitHandler returns a middleware function that enforces rate limits
 // on tools/call requests.
-func NewMiddleware(limiter Limiter, resolveToolName ToolNameResolver) types.MiddlewareFunction {
-	if resolveToolName == nil {
-		resolveToolName = DefaultToolNameResolver
-	}
+func rateLimitHandler(limiter Limiter) types.MiddlewareFunction {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// Rate limits only apply to parsed tools/call requests.
@@ -141,7 +127,7 @@ func NewMiddleware(limiter Limiter, resolveToolName ToolNameResolver) types.Midd
 			if identity, ok := auth.IdentityFromContext(r.Context()); ok {
 				userID = identity.Subject
 			}
-			decision, err := limiter.Allow(r.Context(), resolveToolName(parsed), userID)
+			decision, err := limiter.Allow(r.Context(), parsed.ResourceID, userID)
 			if err != nil {
 				slog.Warn("rate limit check failed, allowing request", "error", err)
 				next.ServeHTTP(w, r)
@@ -154,11 +140,6 @@ func NewMiddleware(limiter Limiter, resolveToolName ToolNameResolver) types.Midd
 			next.ServeHTTP(w, r)
 		})
 	}
-}
-
-// rateLimitHandler returns the default rate-limit middleware used by tests and legacy callers.
-func rateLimitHandler(limiter Limiter) types.MiddlewareFunction {
-	return NewMiddleware(limiter, nil)
 }
 
 // writeRateLimited writes an HTTP 429 response with a JSON-RPC error body.

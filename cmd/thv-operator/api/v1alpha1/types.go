@@ -126,6 +126,35 @@ type MCPOIDCConfigList struct {
 	Items           []MCPOIDCConfig `json:"items"`
 }
 
+// ─── MCPAuthzConfig ──────────────────────────────────────────────────────────
+
+//+kubebuilder:object:root=true
+//+kubebuilder:deprecatedversion:warning="toolhive.stacklok.dev/v1alpha1 is deprecated; use v1beta1"
+//+kubebuilder:subresource:status
+//+kubebuilder:resource:shortName=authzcfg,categories=toolhive
+//+kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+//+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+//+kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
+//+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// MCPAuthzConfig is the deprecated v1alpha1 version of the MCPAuthzConfig resource.
+type MCPAuthzConfig struct {
+	metav1.TypeMeta   `json:",inline"` // nolint:revive
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   v1beta1.MCPAuthzConfigSpec   `json:"spec,omitempty"`
+	Status v1beta1.MCPAuthzConfigStatus `json:"status,omitempty"`
+}
+
+//+kubebuilder:object:root=true
+
+// MCPAuthzConfigList contains a list of MCPAuthzConfig.
+type MCPAuthzConfigList struct {
+	metav1.TypeMeta `json:",inline"` // nolint:revive
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []MCPAuthzConfig `json:"items"`
+}
+
 // ─── MCPRegistry ─────────────────────────────────────────────────────────────
 
 //+kubebuilder:object:root=true
@@ -397,6 +426,7 @@ type VirtualMCPServerList struct {
 func init() {
 	SchemeBuilder.Register(
 		&EmbeddingServer{}, &EmbeddingServerList{},
+		&MCPAuthzConfig{}, &MCPAuthzConfigList{},
 		&MCPExternalAuthConfig{}, &MCPExternalAuthConfigList{},
 		&MCPGroup{}, &MCPGroupList{},
 		&MCPOIDCConfig{}, &MCPOIDCConfigList{},

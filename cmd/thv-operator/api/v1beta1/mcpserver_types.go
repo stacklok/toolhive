@@ -200,6 +200,7 @@ const SessionStorageProviderRedis = "redis"
 
 // MCPServerSpec defines the desired state of MCPServer
 //
+// +kubebuilder:validation:XValidation:rule="!(has(self.authzConfig) && has(self.authzConfigRef))",message="authzConfig and authzConfigRef are mutually exclusive; use authzConfigRef to reference a shared MCPAuthzConfig"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
 // +kubebuilder:validation:XValidation:rule="!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="rateLimiting.perUser requires authentication (oidcConfigRef or externalAuthConfigRef)"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t, !has(t.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="per-tool perUser rate limiting requires authentication (oidcConfigRef or externalAuthConfigRef)"
@@ -293,9 +294,17 @@ type MCPServerSpec struct {
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
-	// AuthzConfig defines authorization policy configuration for the MCP server
+	// AuthzConfig defines authorization policy configuration for the MCP server.
+	// Deprecated: Use AuthzConfigRef to reference a shared MCPAuthzConfig resource instead.
+	// AuthzConfig and AuthzConfigRef are mutually exclusive.
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
+
+	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+	// The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.
+	// Mutually exclusive with authzConfig.
+	// +optional
+	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 
 	// Audit defines audit logging configuration for the MCP server
 	// +optional

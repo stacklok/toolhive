@@ -36,6 +36,11 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
+	// Import authorizer backends so they register with the factory registry.
+	// Placed in the binary entrypoint (not the controller) to keep the
+	// MCPAuthzConfig controller backend-agnostic.
+	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/http"
 	"github.com/stacklok/toolhive/pkg/operator/telemetry"
 )
 
@@ -310,6 +315,14 @@ func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepull
 		Scheme: mgr.GetScheme(),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPOIDCConfig: %w", err)
+	}
+
+	// Set up MCPAuthzConfig controller
+	if err := (&controllers.MCPAuthzConfigReconciler{
+		Client: mgr.GetClient(),
+		Scheme: mgr.GetScheme(),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller MCPAuthzConfig: %w", err)
 	}
 
 	// Set up MCPTelemetryConfig controller

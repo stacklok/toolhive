@@ -281,6 +281,7 @@ type MCPTelemetryConfigList struct {
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
+//+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 //+kubebuilder:resource:shortName=mwc,categories=toolhive
 //+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
 //+kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
@@ -339,9 +340,7 @@ type MCPToolConfigList struct {
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=vmcpctd;compositetool,categories=toolhive
 //+kubebuilder:printcolumn:name="Workflow",type="string",JSONPath=".spec.name",description="Workflow name"
-//+kubebuilder:printcolumn:name="Steps",type="integer",JSONPath=".spec.steps[*]",description="Number of steps"
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.validationStatus",description="Validation status"
-//+kubebuilder:printcolumn:name="Refs",type="integer",JSONPath=".status.referencingVirtualServers[*]",description="Refs"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Age"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 

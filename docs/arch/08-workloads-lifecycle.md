@@ -39,6 +39,7 @@ stateDiagram-v2
 **States**: `pkg/container/runtime/types.go`
 - `starting`, `running`, `stopping`, `stopped`
 - `removing`, `error`, `unhealthy`, `unauthenticated`
+- `policy_stopped`, `unknown`
 
 ## Core Operations
 
@@ -105,11 +106,9 @@ Listing combines container workloads from the runtime with remote workloads from
 
 Some operations (stop, delete) support processing multiple workloads in a single invocation, handling each workload sequentially or in parallel as appropriate.
 
-**Pattern**: Operations return `errgroup.Group`
+**Pattern**: Operations return a `CompletionFunc` (call to block until completion); internally uses `golang.org/x/sync/errgroup`
 
 **Timeout**: 5 minutes per operation
-
-**Implementation**: Uses `golang.org/x/sync/errgroup`
 
 ## Container vs Remote
 

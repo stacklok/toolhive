@@ -12,9 +12,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 
 	"github.com/go-logr/logr"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
@@ -42,10 +44,18 @@ var (
 	setupLog = log.Log.WithName("setup")
 )
 
+// envEnableStorageVersionMigrator is the opt-in for the StorageVersionMigrator
+// controller. The controller defaults to OFF in this release so the change can
+// ship safely without functional impact. Set to "true" (or "1", "t") to enable.
+// A follow-up release will flip the default to true alongside the helm chart
+// surface and user docs.
+const envEnableStorageVersionMigrator = "TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR"
+
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 	utilruntime.Must(mcpv1alpha1.AddToScheme(scheme))
 	utilruntime.Must(mcpv1beta1.AddToScheme(scheme))
+	utilruntime.Must(apiextensionsv1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -150,8 +160,54 @@ func setupControllersAndWebhooks(mgr ctrl.Manager, imagePullSecretsDefaults imag
 	if err := setupAggregationControllers(mgr, imagePullSecretsDefaults); err != nil {
 		return err
 	}
+	enabled, err := isStorageVersionMigratorEnabled()
+	if err != nil {
+		return err
+	}
+	if enabled {
+		if err := setupStorageVersionMigrator(mgr); err != nil {
+			return err
+		}
+	} else {
+		setupLog.V(1).Info("StorageVersionMigrator disabled", "envVar", envEnableStorageVersionMigrator)
+	}
 	//+kubebuilder:scaffold:builder
 	return nil
+}
+
+// setupStorageVersionMigrator wires the StorageVersionMigrator controller into
+// the manager. The controller reconciles status.storedVersions on opted-in
+// toolhive.stacklok.dev CRDs so a future operator release can drop deprecated
+// versions from spec.versions without orphaning etcd objects.
+func setupStorageVersionMigrator(mgr ctrl.Manager) error {
+	if err := (&controllers.StorageVersionMigratorReconciler{
+		Client:    mgr.GetClient(),
+		APIReader: mgr.GetAPIReader(),
+		Scheme:    mgr.GetScheme(),
+		Recorder:  mgr.GetEventRecorder("storageversionmigrator-controller"),
+	}).SetupWithManager(mgr); err != nil {
+		return fmt.Errorf("unable to create controller StorageVersionMigrator: %w", err)
+	}
+	return nil
+}
+
+// isStorageVersionMigratorEnabled reports whether the StorageVersionMigrator
+// controller should be registered. Defaults to false in this release — admins
+// must explicitly opt in via TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR=true.
+// An unparsable value returns an error so startup fails loudly rather than
+// silently disabling the feature an admin asked to turn on.
+func isStorageVersionMigratorEnabled() (bool, error) {
+	value, found := os.LookupEnv(envEnableStorageVersionMigrator)
+	if !found {
+		return false, nil
+	}
+	enabled, err := strconv.ParseBool(value)
+	if err != nil {
+		return false, fmt.Errorf(
+			"invalid value for %s: %q (expected true/false): %w",
+			envEnableStorageVersionMigrator, value, err)
+	}
+	return enabled, nil
 }
 
 // setupGroupRefFieldIndexes sets up field indexing for spec.groupRef on all resource types

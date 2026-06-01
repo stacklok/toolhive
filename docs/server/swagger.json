@@ -1959,18 +1959,6 @@
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_workloads_upgrade.BoolChange": {
-                "description": "NetworkIsolation is set when the candidate's network isolation posture\ndiffers from the workload's current setting.",
-                "properties": {
-                    "from": {
-                        "type": "boolean"
-                    },
-                    "to": {
-                        "type": "boolean"
-                    }
-                },
-                "type": "object"
-            },
             "github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult": {
                 "description": "Result is the upgrade-check outcome for the workload. It carries only\nmetadata (status, image references, drift) and never secret values.",
                 "properties": {
@@ -2007,11 +1995,8 @@
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_workloads_upgrade.ConfigDrift": {
-                "description": "ConfigDrift describes posture differences (transport, network isolation,\npermission profile) between the workload and the candidate registry entry.",
+                "description": "ConfigDrift describes posture differences (transport, permission profile)\nbetween the workload and the candidate registry entry.",
                 "properties": {
-                    "network_isolation": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.BoolChange"
-                    },
                     "permission_profile": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.StringChange"
                     },

@@ -62,7 +62,21 @@ func init() {
 	listCmd.PreRunE = chainPreRunE(
 		validateGroupFlag(),
 		ValidateFormat(&listFormat, FormatJSON, FormatText, "mcpservers"),
+		validateCheckUpgradesFormat(),
 	)
+}
+
+// validateCheckUpgradesFormat rejects --check-upgrades with --format mcpservers.
+// The mcpservers format emits client configuration and has no upgrade column, so
+// the flag combination would perform a registry lookup per workload and then
+// discard the result. Fail loudly rather than do hidden, wasted work.
+func validateCheckUpgradesFormat() func(*cobra.Command, []string) error {
+	return func(_ *cobra.Command, _ []string) error {
+		if listCheckUpgrades && listFormat == "mcpservers" {
+			return fmt.Errorf("--check-upgrades is not supported with --format mcpservers; use --format text or json")
+		}
+		return nil
+	}
 }
 
 func listCmdFunc(cmd *cobra.Command, _ []string) error {

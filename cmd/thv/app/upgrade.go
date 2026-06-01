@@ -175,6 +175,11 @@ func printUpgradeTable(results []*upgrade.CheckResult) {
 	}
 
 	for _, r := range results {
+		if r == nil {
+			// CheckAll does not return nil entries today; guard so this stays
+			// robust if that ever changes.
+			continue
+		}
 		if _, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\t%s\n",
 			r.WorkloadName,
 			r.Status,
@@ -228,9 +233,6 @@ func printUpgradeDetail(r *upgrade.CheckResult) {
 		fmt.Println("\nConfiguration (posture) drift:")
 		if c := r.ConfigDrift.Transport; c != nil {
 			fmt.Printf("  ⚠ transport: %s -> %s\n", c.From, c.To)
-		}
-		if c := r.ConfigDrift.NetworkIsolation; c != nil {
-			fmt.Printf("  ⚠ network isolation: %t -> %t\n", c.From, c.To)
 		}
 		if c := r.ConfigDrift.PermissionProfile; c != nil {
 			fmt.Printf("  ⚠ permission profile: %s -> %s\n", c.From, c.To)

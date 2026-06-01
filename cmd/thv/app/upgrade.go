@@ -4,18 +4,24 @@
 package app
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
+	"golang.org/x/term"
 
+	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/core"
+	"github.com/stacklok/toolhive/pkg/environment"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	"github.com/stacklok/toolhive/pkg/workloads/upgrade"
 )
@@ -54,15 +60,69 @@ Examples:
 	RunE:              upgradeCheckCmdFunc,
 }
 
-var upgradeCheckFormat string
+var upgradeApplyCmd = &cobra.Command{
+	Use:   "apply <workload-name>",
+	Short: "Apply an available upgrade to a workload",
+	Long: `Apply the upgrade the registry reports for a registry-sourced workload.
+
+The candidate image is resolved, verified, and pulled BEFORE the existing
+workload is touched. The existing workload is then stopped and replaced with one
+running the candidate image; the rest of the workload's configuration (env vars,
+secrets, posture, middleware) is preserved. There is no automatic rollback: if
+recreation fails the previous workload is not restored, so recovery is a forward
+operation.
+
+New environment variables the candidate declares can be supplied with --env and
+--secret. When run interactively, missing required values are prompted for; with
+--yes (or in a non-interactive shell) the command runs non-interactively and
+fails if a required value is missing.
+
+Examples:
+  # Apply the available upgrade, prompting for confirmation
+  thv upgrade apply my-server
+
+  # Apply non-interactively, supplying a new env var
+  thv upgrade apply my-server --yes --env NEW_FLAG=true
+
+  # Preview what an upgrade would change without applying it
+  thv upgrade apply my-server --dry-run`,
+	Args:              cobra.ExactArgs(1),
+	ValidArgsFunction: completeMCPServerNames,
+	RunE:              upgradeApplyCmdFunc,
+}
+
+var (
+	upgradeCheckFormat  string
+	upgradeApplyYes     bool
+	upgradeApplyDryRun  bool
+	upgradeApplyEnv     []string
+	upgradeApplySecrets []string
+	upgradeApplyVerify  string
+	upgradeApplyCACert  string
+)
 
 func init() {
 	upgradeCmd.AddCommand(upgradeCheckCmd)
+	upgradeCmd.AddCommand(upgradeApplyCmd)
 
 	AddFormatFlag(upgradeCheckCmd, &upgradeCheckFormat, FormatJSON, FormatText)
 	upgradeCheckCmd.PreRunE = chainPreRunE(
 		ValidateFormat(&upgradeCheckFormat, FormatJSON, FormatText),
 	)
+
+	upgradeApplyCmd.Flags().BoolVarP(&upgradeApplyYes, "yes", "y", false,
+		"Skip the confirmation prompt and run non-interactively (fail if required values are missing)")
+	upgradeApplyCmd.Flags().BoolVar(&upgradeApplyDryRun, "dry-run", false,
+		"Print what the upgrade would change without applying it")
+	upgradeApplyCmd.Flags().StringArrayVarP(&upgradeApplyEnv, "env", "e", nil,
+		"Environment variables to set on the upgraded workload (format: KEY=VALUE, repeatable)")
+	upgradeApplyCmd.Flags().StringArrayVar(&upgradeApplySecrets, "secret", nil,
+		"Secrets to set on the upgraded workload (format: NAME,target=TARGET, repeatable)")
+	upgradeApplyCmd.Flags().StringVar(&upgradeApplyVerify, "image-verification", retriever.VerifyImageWarn,
+		fmt.Sprintf("Set image verification mode (%s, %s, %s)",
+			retriever.VerifyImageWarn, retriever.VerifyImageEnabled, retriever.VerifyImageDisabled))
+	upgradeApplyCmd.Flags().StringVar(&upgradeApplyCACert, "ca-cert", "",
+		"Path to a custom CA certificate file to use when resolving the candidate image")
 }
 
 func upgradeCheckCmdFunc(cmd *cobra.Command, args []string) error {
@@ -103,6 +163,132 @@ func upgradeCheckCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 	printUpgradeTable(results)
 	return nil
+}
+
+func upgradeApplyCmdFunc(cmd *cobra.Command, args []string) error {
+	ctx := cmd.Context()
+	name := args[0]
+
+	checker, err := newUpgradeChecker()
+	if err != nil {
+		return err
+	}
+
+	// 1. Load the workload's saved config and run the check. This is an offline
+	// metadata comparison; the Applier re-checks (and re-resolves) before
+	// applying, so this result drives messaging/confirmation only.
+	cfg, err := runner.LoadState(ctx, name)
+	if err != nil {
+		return fmt.Errorf("failed to load configuration for workload %q: %w", name, err)
+	}
+	result, err := checker.Check(ctx, cfg)
+	if err != nil {
+		return fmt.Errorf("failed to check workload %q for upgrade: %w", name, err)
+	}
+
+	// 2. Nothing to apply: report the status and exit successfully.
+	if result.Status != upgrade.StatusUpgradeAvailable {
+		printNoUpgradeMessage(result)
+		return nil
+	}
+
+	// 3. Dry-run: print the planned changes and stop before building the applier.
+	if upgradeApplyDryRun {
+		fmt.Printf("Dry run: %s would be upgraded.\n\n", name)
+		printUpgradeDetail(result)
+		return nil
+	}
+
+	// 4. Determine interactivity and pick the matching env-var validator.
+	configProvider := config.NewDefaultProvider()
+	interactive := term.IsTerminal(int(os.Stdin.Fd())) && !upgradeApplyYes
+	envVarValidator := func() runner.EnvVarValidator {
+		if interactive {
+			return runner.NewCLIEnvVarValidator(configProvider)
+		}
+		return &runner.DetachedEnvVarValidator{}
+	}()
+
+	// 5. Interactive confirmation: show the summary and prompt before applying.
+	if interactive {
+		printUpgradeDetail(result)
+		confirmed, err := confirmUpgrade()
+		if err != nil {
+			return err
+		}
+		if !confirmed {
+			fmt.Println("Upgrade cancelled.")
+			return nil
+		}
+	}
+
+	// 6. Build the applier and parse the new env/secret inputs into ApplyOptions.
+	envVars, err := environment.ParseEnvironmentVariables(upgradeApplyEnv)
+	if err != nil {
+		return fmt.Errorf("failed to parse environment variables: %w", err)
+	}
+
+	manager, err := workloads.NewManager(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to create workload manager: %w", err)
+	}
+	applier, err := upgrade.NewApplier(manager, checker, configProvider)
+	if err != nil {
+		return fmt.Errorf("failed to create upgrade applier: %w", err)
+	}
+
+	applied, err := applier.Apply(ctx, name, upgrade.ApplyOptions{
+		EnvVars:         envVars,
+		Secrets:         upgradeApplySecrets,
+		EnvVarValidator: envVarValidator,
+		VerifySetting:   upgradeApplyVerify,
+		CACertPath:      upgradeApplyCACert,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to upgrade workload %q: %w", name, err)
+	}
+
+	// 7. Confirm what was applied.
+	fmt.Printf("%s upgraded to %s\n", name, applied.CandidateImage)
+	return nil
+}
+
+// printNoUpgradeMessage prints a friendly, non-error explanation of why there
+// is nothing to apply for the given check result.
+func printNoUpgradeMessage(r *upgrade.CheckResult) {
+	switch r.Status {
+	case upgrade.StatusUpToDate:
+		fmt.Printf("%s is already up to date.\n", r.WorkloadName)
+	case upgrade.StatusNotRegistrySourced:
+		fmt.Printf("%s was not created from a registry entry; no upgrade can be applied.\n", r.WorkloadName)
+	case upgrade.StatusServerNotFound:
+		fmt.Printf("%s references a registry server that no longer exists; no upgrade can be applied.\n", r.WorkloadName)
+	case upgrade.StatusUnknown:
+		msg := "the upgrade status could not be determined"
+		if r.Reason != "" {
+			msg = r.Reason
+		}
+		fmt.Printf("%s: %s; no upgrade can be applied.\n", r.WorkloadName, msg)
+	case upgrade.StatusUpgradeAvailable:
+		// Unreachable: callers only invoke this for non-upgrade-available results.
+		fmt.Printf("%s has an upgrade available.\n", r.WorkloadName)
+	default:
+		fmt.Printf("%s: no upgrade can be applied.\n", r.WorkloadName)
+	}
+}
+
+// confirmUpgrade prompts the user to confirm an upgrade and returns whether they
+// accepted. It reads a single line from stdin and treats only "y"/"yes" as
+// confirmation.
+func confirmUpgrade() (bool, error) {
+	fmt.Printf("\nApply? [y/N]: ")
+	reader := bufio.NewReader(os.Stdin)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		return false, fmt.Errorf("failed to read user input: %w", err)
+	}
+	response = strings.TrimSpace(strings.ToLower(response))
+	return response == "y" || response == "yes", nil
 }
 
 // newUpgradeChecker builds an upgrade.Checker backed by the default registry

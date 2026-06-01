@@ -3533,6 +3533,27 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.upgradeRequest": {
+                "description": "Request to apply an available upgrade to a workload. All fields are optional; an empty body applies the upgrade preserving the workload's existing configuration.",
+                "properties": {
+                    "env": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "Env holds additional or overriding environment variables to merge into the\nupgraded workload's configuration.",
+                        "type": "object"
+                    },
+                    "secrets": {
+                        "description": "Secrets holds additional secret parameters (` + "`" + `\u003cname\u003e,target=\u003cenv\u003e` + "`" + `) to merge\ninto the upgraded workload's configuration. Only references are accepted;\nno secret values are transmitted in the request.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.validateSkillRequest": {
                 "description": "Request to validate a skill definition",
                 "properties": {
@@ -7144,6 +7165,97 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Stop a workload",
+                "tags": [
+                    "workloads"
+                ]
+            }
+        },
+        "/api/v1beta/workloads/{name}/upgrade": {
+            "post": {
+                "description": "Apply a registry-sourced upgrade to a single workload. This\nre-resolves and verifies the candidate image, pulls it, and only\nthen recreates the workload with the new image, preserving the\nexisting configuration. If the workload is already up to date or\nis not registry-sourced, the current check result is returned\nunchanged (no-op). Secret values are never accepted or returned.",
+                "parameters": [
+                    {
+                        "description": "Workload name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.upgradeRequest",
+                                        "summary": "request",
+                                        "description": "Upgrade options"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Upgrade options"
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.upgradeCheckResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "422": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Apply an available upgrade to a workload",
                 "tags": [
                     "workloads"
                 ]

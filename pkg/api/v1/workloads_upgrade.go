@@ -6,6 +6,7 @@ package v1
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -21,6 +22,18 @@ import (
 	"github.com/stacklok/toolhive/pkg/workloads"
 	"github.com/stacklok/toolhive/pkg/workloads/upgrade"
 )
+
+// workloadUpgradeApplier is the subset of *upgrade.Applier the POST handler
+// depends on. It exists so the apply path can be unit tested with a stub,
+// without resolving and pulling a real candidate image.
+type workloadUpgradeApplier interface {
+	Apply(ctx context.Context, name string, opts upgrade.ApplyOptions) (*upgrade.CheckResult, error)
+}
+
+// upgradeApplierFactory builds the applier used to materialize an upgrade for a
+// single workload. It is always populated in WorkloadRouter with the real
+// registry/pull-backed applier; it is injected so tests can supply a stub.
+type upgradeApplierFactory func() (workloadUpgradeApplier, error)
 
 // runConfigLoader loads a single workload's saved RunConfig by name.
 type runConfigLoader func(ctx context.Context, name string) (*runner.RunConfig, error)
@@ -84,6 +97,111 @@ func (s *WorkloadRoutes) upgradeCheckSingle(w http.ResponseWriter, r *http.Reque
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(upgradeCheckResponse{Result: result}); err != nil {
 		return fmt.Errorf("failed to marshal upgrade check result: %w", err)
+	}
+	return nil
+}
+
+// upgradeWorkload handles POST /workloads/{name}/upgrade.
+//
+//	@Summary		Apply an available upgrade to a workload
+//	@Description	Apply a registry-sourced upgrade to a single workload. This
+//	@Description	re-resolves and verifies the candidate image, pulls it, and only
+//	@Description	then recreates the workload with the new image, preserving the
+//	@Description	existing configuration. If the workload is already up to date or
+//	@Description	is not registry-sourced, the current check result is returned
+//	@Description	unchanged (no-op). Secret values are never accepted or returned.
+//	@Tags			workloads
+//	@Accept			json
+//	@Produce		json
+//	@Param			name	path		string			true	"Workload name"
+//	@Param			request	body		upgradeRequest	false	"Upgrade options"
+//	@Success		200		{object}	upgradeCheckResponse
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		404		{string}	string	"Not Found"
+//	@Failure		422		{string}	string	"Unprocessable Entity"
+//	@Failure		500		{string}	string	"Internal Server Error"
+//	@Router			/api/v1beta/workloads/{name}/upgrade [post]
+func (s *WorkloadRoutes) upgradeWorkload(w http.ResponseWriter, r *http.Request) error {
+	ctx := r.Context()
+	name := chi.URLParam(r, "name")
+
+	// Check if workload exists first (mirrors upgradeCheckSingle's existence check).
+	if _, err := s.workloadManager.GetWorkload(ctx, name); err != nil {
+		return err // ErrWorkloadNotFound (404) or ErrInvalidWorkloadName (400) already have status codes
+	}
+
+	// Decode the optional request body. An empty body is valid: it applies the
+	// upgrade preserving the workload's existing configuration.
+	var req upgradeRequest
+	if r.Body != nil && r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return httperr.WithCode(
+				fmt.Errorf("failed to decode request: %w", err),
+				http.StatusBadRequest,
+			)
+		}
+	}
+
+	applier, err := s.applierFactory()
+	if err != nil {
+		return err
+	}
+
+	// The API path is always non-interactive: use the detached validator so a
+	// candidate that newly requires an unsupplied secret fails loud rather than
+	// prompting. s.workloadService.imageVerification keeps API verification in
+	// sync with the create/edit paths.
+	opts := upgrade.ApplyOptions{
+		EnvVars:         req.Env,
+		Secrets:         req.Secrets,
+		EnvVarValidator: &runner.DetachedEnvVarValidator{},
+		VerifySetting:   s.workloadService.imageVerification,
+	}
+
+	// Apply is synchronous and returns the CheckResult that drove the upgrade.
+	// We deliberately return 200 (not 202) because Apply runs the entire verify
+	// -> pull -> recreate sequence inline and reports the applied result; a 202
+	// would lose that result and force the client to re-poll. The longTimeout on
+	// this route accommodates the image pull.
+	result, err := applier.Apply(ctx, name, opts)
+	if err != nil {
+		// apierrors.ErrorHandler returns the error message verbatim to the client
+		// for 4xx codes, so the underlying error must NOT be wrapped into the
+		// response: it may reference the request's secret parameters (e.g. an
+		// env/secret validation failure). Log the detailed cause server-side and
+		// return a sanitized, secret-free message to the caller. The log line
+		// carries only the error chain (which itself references secrets by name,
+		// never resolved values).
+		slog.Error("failed to apply workload upgrade", "workload", name, "error", err)
+
+		// A failure tagged ErrApplyAfterDestroy happened AFTER the destructive
+		// recreate began: the workload may be stopped, deleted, or only partially
+		// recreated, so its state is uncertain. That is a 5xx-class condition, not
+		// a 422 — returning 422 ("request couldn't be processed, nothing changed")
+		// would wrongly tell the client it is safe to retry against an intact
+		// workload.
+		if errors.Is(err, upgrade.ErrApplyAfterDestroy) {
+			return httperr.WithCode(
+				fmt.Errorf("upgrade of workload %q failed after the recreate began; its state is uncertain", name),
+				http.StatusInternalServerError,
+			)
+		}
+
+		// Preparation failures (resolve/verify/pull/build/validate) map to 422:
+		// the request was well-formed but the candidate could not be applied, and
+		// the running workload is untouched.
+		return httperr.WithCode(
+			fmt.Errorf("failed to apply upgrade for workload %q", name),
+			http.StatusUnprocessableEntity,
+		)
+	}
+
+	// On a no-op (already up to date / not registry-sourced) Apply returns the
+	// current result without recreating the workload. Either way we return the
+	// result so the client can see what happened.
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(upgradeCheckResponse{Result: result}); err != nil {
+		return fmt.Errorf("failed to marshal upgrade result: %w", err)
 	}
 	return nil
 }

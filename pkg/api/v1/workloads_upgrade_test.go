@@ -20,6 +20,7 @@ import (
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/core"
+	groupsmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/registry"
 	registrymocks "github.com/stacklok/toolhive/pkg/registry/mocks"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -225,11 +226,15 @@ func TestUpgradeCheckBulk(t *testing.T) {
 		}, nil)
 		provider.EXPECT().GetServer("io.github/fetch").Return(imageServer("ghcr.io/example/fetch:1.1.0"), nil)
 
+		gm := groupsmocks.NewMockManager(ctrl)
+		gm.EXPECT().Exists(gomock.Any(), "prod").Return(true, nil)
+
 		configs := map[string]*runner.RunConfig{
 			"fetch": {Name: "fetch", Image: "ghcr.io/example/fetch:1.0.0", RegistryServerName: "io.github/fetch"},
 			"time":  {Name: "time", Image: "ghcr.io/example/time:1.0.0", RegistryServerName: "io.github/time"},
 		}
 		routes := upgradeTestRoutes(wm, provider, configs)
+		routes.groupManager = gm
 
 		req := httptest.NewRequest("GET", "/upgrade-check?group=prod", nil)
 		w := httptest.NewRecorder()
@@ -242,6 +247,33 @@ func TestUpgradeCheckBulk(t *testing.T) {
 		require.Len(t, resp.Results, 1)
 		assert.Equal(t, "fetch", resp.Results[0].WorkloadName)
 		assert.Equal(t, upgrade.StatusUpgradeAvailable, resp.Results[0].Status)
+	})
+
+	t.Run("unknown group returns 404", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		wm := workloadsmocks.NewMockManager(ctrl)
+		provider := registrymocks.NewMockProvider(ctrl)
+
+		// The group does not exist, so no per-workload registry lookup happens.
+		wm.EXPECT().ListWorkloads(gomock.Any(), false).Return([]core.Workload{
+			{Name: "fetch", Group: "prod"},
+		}, nil)
+
+		gm := groupsmocks.NewMockManager(ctrl)
+		gm.EXPECT().Exists(gomock.Any(), "ghost").Return(false, nil)
+
+		routes := upgradeTestRoutes(wm, provider, map[string]*runner.RunConfig{})
+		routes.groupManager = gm
+
+		req := httptest.NewRequest("GET", "/upgrade-check?group=ghost", nil)
+		w := httptest.NewRecorder()
+		apierrors.ErrorHandler(routes.upgradeCheckBulk).ServeHTTP(w, req)
+
+		require.Equal(t, http.StatusNotFound, w.Code)
 	})
 
 	t.Run("invalid group name", func(t *testing.T) {

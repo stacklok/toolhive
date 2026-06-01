@@ -14,6 +14,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/httperr"
 	groupval "github.com/stacklok/toolhive-core/validation/group"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/state"
@@ -120,9 +121,18 @@ func (s *WorkloadRoutes) upgradeCheckBulk(w http.ResponseWriter, r *http.Request
 				http.StatusBadRequest,
 			)
 		}
+		// FilterByGroup silently returns an empty slice for an unknown group,
+		// so check existence explicitly to honor the documented 404.
+		exists, existsErr := s.groupManager.Exists(ctx, groupFilter)
+		if existsErr != nil {
+			return fmt.Errorf("failed to check group existence: %w", existsErr)
+		}
+		if !exists {
+			return fmt.Errorf("%w: %s", groups.ErrGroupNotFound, groupFilter)
+		}
 		workloadList, err = workloads.FilterByGroup(workloadList, groupFilter)
 		if err != nil {
-			return err // groups.ErrGroupNotFound already has 404 status code
+			return err
 		}
 	}
 

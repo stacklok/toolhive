@@ -1,0 +1,31 @@
+{
+  "version": "1.0.0",
+  "meta": {
+    "last_updated": "2026-01-15T10:00:00Z"
+  },
+  "data": {
+    "servers": [
+      {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+        "name": "osv-upgrade-test",
+        "title": "OSV (upgrade e2e fixture)",
+        "description": "OSV MCP server fixture for upgrade e2e tests (high tag). Mirrors the bundled osv entry's transport (streamable-http) and image exactly, pinned to the higher tag advertised as the upgrade candidate. The transport url port 8080 is the image-INTERNAL target port (becomes RunConfig.TargetPort); thv still assigns an OS-chosen host proxy port, so there is no fixed host-port clash. Only the image tag differs between this file and registry-low.json.",
+        "version": "1.0.0",
+        "repository": {
+          "url": "https://github.com/StacklokLabs/osv-mcp",
+          "source": "github"
+        },
+        "packages": [
+          {
+            "identifier": "ghcr.io/stackloklabs/osv-mcp/server:0.1.3",
+            "registryType": "oci",
+            "transport": {
+              "type": "streamable-http",
+              "url": "http://localhost:8080"
+            }
+          }
+        ]
+      }
+    ]
+  }
+}

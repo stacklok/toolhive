@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
+	"github.com/stacklok/toolhive/pkg/workloads/upgrade"
 )
 
 // workloadListResponse represents the response for listing workloads
@@ -181,6 +182,25 @@ type oidcOptions struct {
 	ClientSecret string `json:"client_secret"` //nolint:gosec // G117
 	// OAuth scopes to advertise in well-known endpoint (RFC 9728)
 	Scopes []string `json:"scopes,omitempty"`
+}
+
+// upgradeCheckResponse is the response for a single-workload upgrade check.
+//
+//	@Description	Result of checking a single workload for an available upgrade
+type upgradeCheckResponse struct {
+	// Result is the upgrade-check outcome for the workload. It carries only
+	// metadata (status, image references, drift) and never secret values.
+	Result *upgrade.CheckResult `json:"result"`
+}
+
+// upgradeCheckBulkResponse is the response for a batch upgrade check.
+//
+//	@Description	Results of checking multiple workloads for available upgrades
+type upgradeCheckBulkResponse struct {
+	// Results holds one upgrade-check outcome per scoped workload, in the order
+	// the workloads were enumerated. Each entry carries only metadata and never
+	// secret values.
+	Results []*upgrade.CheckResult `json:"results"`
 }
 
 // createWorkloadResponse represents the response for workload creation

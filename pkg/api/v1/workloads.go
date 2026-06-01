@@ -18,6 +18,7 @@ import (
 	apierrors "github.com/stacklok/toolhive/pkg/api/errors"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
@@ -41,6 +42,16 @@ type WorkloadRoutes struct {
 	debugMode        bool
 	groupManager     groups.Manager
 	workloadService  *WorkloadService
+
+	// loadRunConfig loads a single workload's saved RunConfig. Injected so the
+	// upgrade-check handlers can be unit tested without the global state store.
+	loadRunConfig runConfigLoader
+	// listRunConfigNames lists all saved RunConfig names. Injected for the same
+	// testability reason as loadRunConfig.
+	listRunConfigNames runConfigLister
+	// registryProvider returns the registry provider used by upgrade checks.
+	// Injected so tests can supply a mock provider.
+	registryProvider registryProviderFunc
 }
 
 //	@title			ToolHive API
@@ -64,11 +75,19 @@ func WorkloadRouter(
 	)
 
 	routes := WorkloadRoutes{
-		workloadManager:  workloadManager,
-		containerRuntime: containerRuntime,
-		debugMode:        debugMode,
-		groupManager:     groupManager,
-		workloadService:  workloadService,
+		workloadManager:    workloadManager,
+		containerRuntime:   containerRuntime,
+		debugMode:          debugMode,
+		groupManager:       groupManager,
+		workloadService:    workloadService,
+		loadRunConfig:      runner.LoadState,
+		listRunConfigNames: defaultRunConfigLister,
+		registryProvider: func() (registry.Provider, error) {
+			return registry.GetDefaultProviderWithConfig(
+				workloadService.configProvider,
+				registry.WithInteractive(false),
+			)
+		},
 	}
 
 	r := chi.NewRouter()
@@ -80,6 +99,10 @@ func WorkloadRouter(
 	r.With(stdTimeout).Post("/stop", apierrors.ErrorHandler(routes.stopWorkloadsBulk))
 	r.With(stdTimeout).Post("/restart", apierrors.ErrorHandler(routes.restartWorkloadsBulk))
 	r.With(stdTimeout).Post("/delete", apierrors.ErrorHandler(routes.deleteWorkloadsBulk))
+	// Register the literal /upgrade-check before /{name} so chi routes it
+	// distinctly from the single-workload wildcard.
+	r.With(stdTimeout).Get("/upgrade-check", apierrors.ErrorHandler(routes.upgradeCheckBulk))
+	r.With(stdTimeout).Get("/{name}/upgrade-check", apierrors.ErrorHandler(routes.upgradeCheckSingle))
 	r.With(stdTimeout).Get("/{name}", apierrors.ErrorHandler(routes.getWorkload))
 	r.With(longTimeout).Post("/{name}/edit", apierrors.ErrorHandler(routes.updateWorkload))
 	r.With(stdTimeout).Post("/{name}/stop", apierrors.ErrorHandler(routes.stopWorkload))

@@ -348,6 +348,25 @@ thv mcp list prompts --server filesystem
 thv mcp list tools --server filesystem --format json
 ```
 
+### Invoke a Tool
+
+```bash
+# Inline JSON args
+thv mcp call fetch --server fetch --args '{"url":"https://example.com"}'
+
+# Args from a file
+thv mcp call read_file --server filesystem --args-file ./args.json
+
+# Args from stdin
+echo '{"url":"https://example.com"}' | thv mcp call fetch --server fetch --args-file -
+
+# JSON output (full CallToolResult, includes content + structuredContent + isError)
+thv mcp call fetch --server fetch --args '{"url":"https://example.com"}' --format json
+
+# Tool-reported errors normally exit non-zero; flip with --ignore-tool-error
+thv mcp call fetch --server fetch --args '{"url":"not-a-url"}' --ignore-tool-error
+```
+
 ### Launch Inspector UI
 
 ```bash

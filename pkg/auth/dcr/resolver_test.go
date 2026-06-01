@@ -983,6 +983,21 @@ func TestDeriveExpectedIssuerFromDiscoveryURL(t *testing.T) {
 			want:         "https://idp.example.com/tenants/acme",
 		},
 		{
+			// Trailing-slash edge case: hits the HasPrefix arm (path doesn't end
+			// at the bare suffix) but has no tenant after it. Without the empty-
+			// path normalisation, TrimPrefix would leave a stray "/" and produce
+			// a spurious "https://host/" that fails the RFC 8414 §3.3 byte
+			// equality check.
+			name:         "oauth well-known with trailing slash normalises to origin",
+			discoveryURL: "https://mcp.example.com/.well-known/oauth-authorization-server/",
+			want:         "https://mcp.example.com",
+		},
+		{
+			name:         "oidc well-known with trailing slash normalises to origin",
+			discoveryURL: "https://idp.example.com/.well-known/openid-configuration/",
+			want:         "https://idp.example.com",
+		},
+		{
 			name:         "non-well-known path falls back to origin",
 			discoveryURL: "https://idp.example.com/tenants/acme/metadata",
 			want:         "https://idp.example.com",

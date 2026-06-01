@@ -946,14 +946,29 @@ func deriveExpectedIssuerFromDiscoveryURL(discoveryURL string) (string, error) {
 		u.Path = strings.TrimSuffix(u.Path, oidcSuffix)
 	// RFC 8414 §3.1 path-insertion form (case 2): well-known segment at the
 	// start of the path with tenant path following. Strip just the well-known
-	// segment to recover {origin}{tenant-path}. Note the "/" guard — a bare
-	// suffix (e.g. /.well-known/oauth-authorization-server) is already covered
-	// by the suffix cases above; we only enter this branch when there is a
-	// tenant path after the well-known segment.
+	// segment to recover {origin}{tenant-path}.
+	//
+	// Two shapes hit this branch:
+	//   1. A real tenant suffix follows the well-known segment, e.g.
+	//      /.well-known/oauth-authorization-server/v1/mcp →
+	//      issuer https://host/v1/mcp.
+	//   2. A trailing slash with no tenant, e.g.
+	//      /.well-known/oauth-authorization-server/ — TrimPrefix leaves
+	//      a stray "/", which would yield a spurious issuer
+	//      "https://host/" that fails the §3.3 byte-equality check
+	//      against the upstream's declared "https://host". Normalise
+	//      that stray "/" back to empty so case (2.2) and the bare
+	//      suffix case derive the same origin issuer.
 	case strings.HasPrefix(u.Path, oauthSuffix+"/"):
 		u.Path = strings.TrimPrefix(u.Path, oauthSuffix)
+		if u.Path == "/" {
+			u.Path = ""
+		}
 	case strings.HasPrefix(u.Path, oidcSuffix+"/"):
 		u.Path = strings.TrimPrefix(u.Path, oidcSuffix)
+		if u.Path == "/" {
+			u.Path = ""
+		}
 	default:
 		// Custom (non-well-known) discovery URL — fall back to origin.
 		u.Path = ""

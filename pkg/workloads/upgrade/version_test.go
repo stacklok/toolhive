@@ -32,6 +32,12 @@ func TestCompareImageTags(t *testing.T) {
 			want:      comparisonNewer,
 		},
 		{
+			name:      "candidate newer semver with uppercase V prefix",
+			current:   "ghcr.io/example/server:V1.2.0",
+			candidate: "ghcr.io/example/server:V1.3.0",
+			want:      comparisonNewer,
+		},
+		{
 			name:      "double-digit minor orders numerically not lexically",
 			current:   "ghcr.io/example/server:1.9.0",
 			candidate: "ghcr.io/example/server:1.10.0",
@@ -190,7 +196,7 @@ func TestNormalizeSemver(t *testing.T) {
 	}{
 		{name: "bare version gets v prefix", in: "1.2.3", want: "v1.2.3"},
 		{name: "already prefixed unchanged", in: "v1.2.3", want: "v1.2.3"},
-		{name: "uppercase V unchanged", in: "V1.2.3", want: "V1.2.3"},
+		{name: "uppercase V lowercased for semver validation", in: "V1.2.3", want: "v1.2.3"},
 		{name: "non-semver tag unchanged", in: "stable", want: "stable"},
 		{name: "empty unchanged", in: "", want: ""},
 		{name: "numeric prefix gets v", in: "2024.01", want: "v2024.01"},

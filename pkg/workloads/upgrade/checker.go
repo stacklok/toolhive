@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/registry"
@@ -61,8 +62,13 @@ func (c *Checker) Check(_ context.Context, cfg *runner.RunConfig) (*CheckResult,
 			result.Status = StatusServerNotFound
 			return result, nil
 		}
+		// Keep the detailed provider error out of the result: Reason is
+		// serialized into the HTTP response, and for an unreachable or
+		// misconfigured registry the raw error can carry internal addressing
+		// (e.g. "dial tcp 10.x.x.x:443: ..."). Log it for operators instead.
+		slog.Debug("registry lookup failed", "server", cfg.RegistryServerName, "error", err)
 		result.Status = StatusUnknown
-		result.Reason = fmt.Sprintf("registry lookup failed: %v", err)
+		result.Reason = "registry lookup failed"
 		return result, nil
 	}
 
@@ -86,6 +92,11 @@ func (c *Checker) Check(_ context.Context, cfg *runner.RunConfig) (*CheckResult,
 	case comparisonUndecidable:
 		result.Status = StatusUnknown
 		result.Reason = reason
+	default:
+		// Defensive: a future tagComparison value (or an unset zero value) must
+		// not fall through to the least-safe StatusUpToDate. Treat anything
+		// unexpected as unknown.
+		result.Status = StatusUnknown
 	}
 
 	return result, nil
@@ -105,10 +116,11 @@ func (c *Checker) CheckAll(ctx context.Context, configs []*runner.RunConfig) []*
 		// so the error here is unreachable; encode defensively rather than drop.
 		res, err := c.Check(ctx, cfg)
 		if err != nil {
+			slog.Debug("upgrade check failed", "workload", cfg.Name, "error", err)
 			res = &CheckResult{
 				WorkloadName: cfg.Name,
 				Status:       StatusUnknown,
-				Reason:       fmt.Sprintf("check failed: %v", err),
+				Reason:       "check failed",
 			}
 		}
 		results = append(results, res)
@@ -176,13 +188,6 @@ func computeConfigDrift(cfg *runner.RunConfig, imgMeta *regtypes.ImageMetadata) 
 		drift.Transport = &StringChange{From: currentTransport, To: candidateTransport}
 	}
 
-	// Network isolation is a plain boolean on the config; the registry entry has
-	// no explicit network-isolation field, so the candidate posture is the
-	// default (false). Report drift only when the workload currently isolates.
-	if cfg.IsolateNetwork {
-		drift.NetworkIsolation = &BoolChange{From: true, To: false}
-	}
-
 	// Permission profile: compare names. The candidate name is only known when
 	// the registry entry carries a profile with a non-empty Name.
 	candidateProfile := ""
@@ -194,7 +199,7 @@ func computeConfigDrift(cfg *runner.RunConfig, imgMeta *regtypes.ImageMetadata) 
 		drift.PermissionProfile = &StringChange{From: currentProfile, To: candidateProfile}
 	}
 
-	if drift.Transport == nil && drift.NetworkIsolation == nil && drift.PermissionProfile == nil {
+	if drift.Transport == nil && drift.PermissionProfile == nil {
 		return nil
 	}
 	return drift

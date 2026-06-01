@@ -63,8 +63,8 @@ type CheckResult struct {
 	// declares that differ from the workload's current configuration.
 	EnvVarDrift *EnvVarDrift `json:"env_var_drift,omitempty"`
 
-	// ConfigDrift describes posture differences (transport, network isolation,
-	// permission profile) between the workload and the candidate registry entry.
+	// ConfigDrift describes posture differences (transport, permission profile)
+	// between the workload and the candidate registry entry.
 	ConfigDrift *ConfigDrift `json:"config_drift,omitempty"`
 }
 
@@ -110,10 +110,6 @@ type ConfigDrift struct {
 	// workload's current transport.
 	Transport *StringChange `json:"transport,omitempty"`
 
-	// NetworkIsolation is set when the candidate's network isolation posture
-	// differs from the workload's current setting.
-	NetworkIsolation *BoolChange `json:"network_isolation,omitempty"`
-
 	// PermissionProfile is set when the candidate's permission profile differs
 	// from the workload's current profile.
 	PermissionProfile *StringChange `json:"permission_profile,omitempty"`
@@ -124,13 +120,6 @@ type ConfigDrift struct {
 type StringChange struct {
 	From string `json:"from"`
 	To   string `json:"to"`
-}
-
-// BoolChange records a boolean-valued configuration change from the workload's
-// current value to the candidate registry value.
-type BoolChange struct {
-	From bool `json:"from"`
-	To   bool `json:"to"`
 }
 
 // ApplyOptions controls how an upgrade is applied to a workload.

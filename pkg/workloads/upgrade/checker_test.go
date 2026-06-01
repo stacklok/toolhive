@@ -148,7 +148,6 @@ func TestChecker_Check(t *testing.T) {
 				Image:                       "ghcr.io/example/server:1.0.0",
 				RegistryServerName:          testServerName,
 				Transport:                   transporttypes.TransportTypeStdio,
-				IsolateNetwork:              true,
 				PermissionProfileNameOrPath: "none",
 				EnvVars:                     map[string]string{"LOG_LEVEL": "info"},
 				Secrets:                     []string{"mykey,target=API_KEY"},
@@ -182,9 +181,6 @@ func TestChecker_Check(t *testing.T) {
 				require.NotNil(t, res.ConfigDrift.Transport)
 				assert.Equal(t, "stdio", res.ConfigDrift.Transport.From)
 				assert.Equal(t, "streamable-http", res.ConfigDrift.Transport.To)
-				require.NotNil(t, res.ConfigDrift.NetworkIsolation)
-				assert.True(t, res.ConfigDrift.NetworkIsolation.From)
-				assert.False(t, res.ConfigDrift.NetworkIsolation.To)
 				require.NotNil(t, res.ConfigDrift.PermissionProfile)
 				assert.Equal(t, "none", res.ConfigDrift.PermissionProfile.From)
 				assert.Equal(t, "network", res.ConfigDrift.PermissionProfile.To)
@@ -279,16 +275,15 @@ func TestComputeConfigDrift_GracefulDegradation(t *testing.T) {
 		assert.Nil(t, computeConfigDrift(cfg, meta))
 	})
 
-	t.Run("network isolation alone drifts", func(t *testing.T) {
+	t.Run("network isolation alone does not drift", func(t *testing.T) {
 		t.Parallel()
+		// The registry has no network-isolation field, so a workload's own
+		// isolation choice is not registry-driven drift and must not be
+		// reported (it would otherwise fire for every isolated workload).
 		cfg := &runner.RunConfig{IsolateNetwork: true}
 		meta := imageMeta("ghcr.io/example/server:1.0.0")
 		meta.Transport = ""
-		drift := computeConfigDrift(cfg, meta)
-		require.NotNil(t, drift)
-		require.NotNil(t, drift.NetworkIsolation)
-		assert.Nil(t, drift.Transport)
-		assert.Nil(t, drift.PermissionProfile)
+		assert.Nil(t, computeConfigDrift(cfg, meta))
 	})
 }
 

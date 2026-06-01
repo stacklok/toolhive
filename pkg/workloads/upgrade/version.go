@@ -103,14 +103,23 @@ func splitRepoTag(ref string) (repo, tag string, err error) {
 
 // normalizeSemver prepends a "v" to a tag that looks like a bare semantic
 // version (e.g. "1.2.3" -> "v1.2.3") so it can be validated and compared by
-// golang.org/x/mod/semver, which requires the "v" prefix. Tags that already
-// start with "v", or that are not semver-shaped, are returned unchanged.
+// golang.org/x/mod/semver, which requires a lowercase "v" prefix. Tags that
+// already start with a lowercase "v" are returned unchanged; an uppercase "V"
+// prefix is lowercased (semver.IsValid rejects "V1.2.3"). Tags that are not
+// semver-shaped are returned unchanged.
 func normalizeSemver(tag string) string {
 	if tag == "" {
 		return tag
 	}
-	if tag[0] == 'v' || tag[0] == 'V' {
+	if tag[0] == 'v' {
 		return tag
+	}
+	if tag[0] == 'V' {
+		// semver.IsValid only accepts a lowercase "v"; without this an
+		// uppercase-tagged pair (e.g. "V1.2.0" vs "V1.3.0") falls through to
+		// the non-semver path and reports an undecidable comparison, hiding a
+		// real upgrade.
+		return "v" + tag[1:]
 	}
 	if tag[0] >= '0' && tag[0] <= '9' {
 		return "v" + tag

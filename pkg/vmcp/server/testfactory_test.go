@@ -27,7 +27,7 @@ type minimalTestFactory struct{}
 var _ vmcpsession.MultiSessionFactory = (*minimalTestFactory)(nil)
 
 func (*minimalTestFactory) MakeSessionWithID(
-	_ context.Context, _ string, _ *auth.Identity, _ bool, _ []*vmcp.Backend,
+	_ context.Context, _ string, _ *auth.Identity, _ []*vmcp.Backend,
 ) (vmcpsession.MultiSession, error) {
 	return nil, fmt.Errorf("minimalTestFactory: MakeSessionWithID not implemented in test helper")
 }

@@ -111,7 +111,7 @@ func newBackendAwareTestFactory(tools []vmcp.Tool, rt *vmcp.RoutingTable) (*back
 }
 
 func (f *backendAwareTestFactory) MakeSessionWithID(
-	_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend,
+	_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend,
 ) (vmcpsession.MultiSession, error) {
 	return &backendAwareTestSession{
 		Session:      transportsession.NewStreamableSession(id),

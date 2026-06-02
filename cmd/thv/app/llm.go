@@ -296,6 +296,7 @@ func runLLMSetup(
 		ctx, out, errOut,
 		&clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login,
 		inlineOpts, anthropicPathPrefix, anthropicPathPrefixSet, targetClient,
+		false, // lazy: wired to the --lazy flag in a later change
 	)
 }
 

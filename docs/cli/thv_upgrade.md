@@ -36,5 +36,6 @@ comparison and never pull images.
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
+* [thv upgrade apply](thv_upgrade_apply.md)	 - Apply an available upgrade to a workload
 * [thv upgrade check](thv_upgrade_check.md)	 - Check workloads for available upgrades
 

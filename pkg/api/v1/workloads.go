@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads"
 	wt "github.com/stacklok/toolhive/pkg/workloads/types"
+	"github.com/stacklok/toolhive/pkg/workloads/upgrade"
 )
 
 const (
@@ -52,6 +53,11 @@ type WorkloadRoutes struct {
 	// registryProvider returns the registry provider used by upgrade checks.
 	// Injected so tests can supply a mock provider.
 	registryProvider registryProviderFunc
+	// applierFactory builds the applier used by the POST upgrade handler. It is
+	// always populated in WorkloadRouter with the real registry/pull-backed
+	// upgrade.Applier; injected so tests can supply a stub that exercises the
+	// apply path without resolving and pulling a real image.
+	applierFactory upgradeApplierFactory
 }
 
 //	@title			ToolHive API
@@ -89,6 +95,20 @@ func WorkloadRouter(
 			)
 		},
 	}
+	// applierFactory builds the real registry/pull-backed upgrade applier. It is
+	// assigned after routes is constructed so the closure can reuse the route's
+	// own newUpgradeChecker (which shares the registry provider above).
+	routes.applierFactory = func() (workloadUpgradeApplier, error) {
+		checker, err := routes.newUpgradeChecker()
+		if err != nil {
+			return nil, err
+		}
+		applier, err := upgrade.NewApplier(workloadManager, checker, workloadService.configProvider)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create upgrade applier: %w", err)
+		}
+		return applier, nil
+	}
 
 	r := chi.NewRouter()
 	stdTimeout := middleware.Timeout(standardRouteTimeout)
@@ -103,6 +123,10 @@ func WorkloadRouter(
 	// distinctly from the single-workload wildcard.
 	r.With(stdTimeout).Get("/upgrade-check", apierrors.ErrorHandler(routes.upgradeCheckBulk))
 	r.With(stdTimeout).Get("/{name}/upgrade-check", apierrors.ErrorHandler(routes.upgradeCheckSingle))
+	// The upgrade apply path verifies and pulls the candidate image, so it gets
+	// the longer timeout. The /{name}/upgrade sub-path is distinct from /{name}
+	// and is never shadowed by the single-workload wildcard.
+	r.With(longTimeout).Post("/{name}/upgrade", apierrors.ErrorHandler(routes.upgradeWorkload))
 	r.With(stdTimeout).Get("/{name}", apierrors.ErrorHandler(routes.getWorkload))
 	r.With(longTimeout).Post("/{name}/edit", apierrors.ErrorHandler(routes.updateWorkload))
 	r.With(stdTimeout).Post("/{name}/stop", apierrors.ErrorHandler(routes.stopWorkload))

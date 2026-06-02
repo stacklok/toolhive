@@ -193,6 +193,21 @@ type upgradeCheckResponse struct {
 	Result *upgrade.CheckResult `json:"result"`
 }
 
+// upgradeRequest is the request body for applying an upgrade to a workload.
+//
+//	@Description	Request to apply an available upgrade to a workload. All fields
+//	@Description	are optional; an empty body applies the upgrade preserving the
+//	@Description	workload's existing configuration.
+type upgradeRequest struct {
+	// Env holds additional or overriding environment variables to merge into the
+	// upgraded workload's configuration.
+	Env map[string]string `json:"env,omitempty"`
+	// Secrets holds additional secret parameters (`<name>,target=<env>`) to merge
+	// into the upgraded workload's configuration. Only references are accepted;
+	// no secret values are transmitted in the request.
+	Secrets []string `json:"secrets,omitempty"`
+}
+
 // upgradeCheckBulkResponse is the response for a batch upgrade check.
 //
 //	@Description	Results of checking multiple workloads for available upgrades

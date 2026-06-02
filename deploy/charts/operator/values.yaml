@@ -8,6 +8,12 @@ operator:
   features:
     # -- Enable experimental features
     experimental: false
+    # -- Enable the StorageVersionMigrator controller, which auto-cleans
+    # status.storedVersions on opted-in toolhive.stacklok.dev CRDs so a
+    # future release can drop deprecated versions (e.g. v1alpha1) without
+    # orphaning etcd objects in the cluster. Sets
+    # TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR in the operator deployment.
+    storageVersionMigrator: false
   # -- Number of replicas for the operator deployment
   replicaCount: 1
 

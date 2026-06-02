@@ -83,18 +83,26 @@ func NewClient(baseURL string, opts ...Option) *Client {
 //
 // The context is used for the server discovery health check; it is not stored.
 func NewDefaultClient(ctx context.Context, opts ...Option) *Client {
-	return newDefaultClientWithEnv(ctx, &env.OSReader{}, opts...)
+	return newDefaultClientWithEnv(ctx, &env.OSReader{}, resolveViaDiscovery, opts...)
 }
 
-// newDefaultClientWithEnv is the testable core of NewDefaultClient.
-func newDefaultClientWithEnv(ctx context.Context, envReader env.Reader, opts ...Option) *Client {
+// discoverFunc resolves a running server's base URL and any transport options
+// (e.g. a Unix socket client). It returns an empty base URL when no running
+// server is found. resolveViaDiscovery is the production implementation; tests
+// inject a stub so the discovery step does not read real local state.
+type discoverFunc func(ctx context.Context) (string, []Option)
+
+// newDefaultClientWithEnv is the testable core of NewDefaultClient. The
+// envReader and discover dependencies are injected so each resolution step
+// can be exercised in isolation.
+func newDefaultClientWithEnv(ctx context.Context, envReader env.Reader, discover discoverFunc, opts ...Option) *Client {
 	// 1. Explicit env var override always wins.
 	if base := envReader.Getenv(envAPIURL); base != "" {
 		return NewClient(base, opts...)
 	}
 
 	// 2. Try server discovery.
-	if base, httpOpts := resolveViaDiscovery(ctx); base != "" {
+	if base, httpOpts := discover(ctx); base != "" {
 		// Discovery opts go first so caller-supplied opts can override them
 		// (e.g. a caller-provided WithTimeout replaces the discovery default).
 		merged := make([]Option, 0, len(httpOpts)+len(opts))

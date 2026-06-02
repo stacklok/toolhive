@@ -1645,3 +1645,67 @@ func TestDeployWorkload_RunConfigMCPServerGenerationGate(t *testing.T) {
 		})
 	}
 }
+
+// TestDeployWorkload_EqualGenerationDifferentImageClobbers documents the
+// regression mode for issue #5360. Two proxyrunner pods coexist during a
+// rolling update; both have read the same MCPServerGeneration N from the
+// live-mounted RunConfig ConfigMap, but each holds a different image in
+// its CLI positional arg (frozen at pod creation). The gate at
+// shouldSkipStatefulSetApply uses strict-greater-than, so equal
+// generations cannot distinguish the callers — the stale-image apply
+// lands successfully and clobbers the fresh-image apply.
+//
+// The fix is upstream of this layer: freeze MCPServerGeneration per pod
+// (downward-API env var) so the two callers carry different ourGen
+// values and the gate fires correctly. This test pins down what the gate
+// cannot defend against alone; it continues to pass after the fix
+// because the production scenario it models can no longer occur.
+func TestDeployWorkload_EqualGenerationDifferentImageClobbers(t *testing.T) {
+	t.Parallel()
+
+	const containerName = "test-container"
+	const gen = int64(100)
+	const freshImage = "fresh-image:new"
+	const staleImage = "stale-image:old"
+
+	clientset := fake.NewClientset()
+	client := NewClientWithConfigAndPlatformDetector(
+		clientset,
+		&rest.Config{Host: "https://fake-k8s-api.example.com"},
+		&mockPlatformDetector{platform: PlatformKubernetes},
+	)
+	client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+	client.namespaceFunc = func() string { return defaultNamespace }
+
+	options := runtime.NewDeployWorkloadOptions()
+	options.RunConfigMCPServerGeneration = gen
+
+	// Fresh-image proxyrunner pod applies first.
+	_, err := client.DeployWorkload(
+		t.Context(),
+		freshImage, containerName, nil,
+		map[string]string{}, map[string]string{},
+		nil, "streamable-http", options, false,
+	)
+	require.NoError(t, err)
+
+	// Stale-image proxyrunner pod (restarted old-RS pod that re-read the
+	// live ConfigMap) applies second with the SAME generation.
+	_, err = client.DeployWorkload(
+		t.Context(),
+		staleImage, containerName, nil,
+		map[string]string{}, map[string]string{},
+		nil, "streamable-http", options, false,
+	)
+	require.NoError(t, err)
+
+	sts, err := clientset.AppsV1().StatefulSets(defaultNamespace).Get(
+		t.Context(), containerName, metav1.GetOptions{},
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, sts.Spec.Template.Spec.Containers)
+	assert.Equal(t, staleImage, sts.Spec.Template.Spec.Containers[0].Image,
+		"stale apply must clobber the fresh image when generations are equal; "+
+			"the gate cannot defend against this and the fix must live upstream "+
+			"(see issue #5360)")
+}

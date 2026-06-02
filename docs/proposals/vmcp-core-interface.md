@@ -193,6 +193,12 @@ already return `vmcp.ToolCallResult` / `vmcp.ResourceReadResult` /
 collaborators that `server.New` builds today — aggregator, router, backend
 registry, backend client, composer, authorization admission — into a concrete
 `VMCP`. This is a relocation of existing wiring, not new domain logic.
+`CallTool` on the core encapsulates composite-tool (workflow) execution
+end-to-end; because composite steps may require elicitation against the live
+mcp-go client session, the core depends on an injected `ElicitationRequester`
+interface that `Serve` implements (mirroring today's `SDKElicitationAdapter`).
+The core therefore drives workflows without taking a direct dependency on the
+mcp-go SDK.
 
 **`Serve` helper (`pkg/vmcp/server`).** Houses everything in today's
 `server.New` + `(*Server).Handler` + `(*Server).Start` that is *not* domain
@@ -203,6 +209,20 @@ the health monitor. Instead of the discovery middleware aggregating capabilities
 and stuffing them into `context`, the transport layer calls
 `v.ListTools(ctx, identity)` (and friends) directly, removing the
 context-coupling described in [anti-pattern #1](https://github.com/stacklok/toolhive/blob/main/.claude/rules/vmcp-anti-patterns.md#1-context-variable-coupling).
+
+The core `VMCP` is **stateless with respect to sessions**: it aggregates on
+demand and holds no per-session state. `Serve` is therefore responsible for
+everything session-scoped. It captures the aggregated capability set once per
+MCP session (it already owns the session lifecycle) and reuses it for the life
+of that session, preserving today's "capabilities fixed at `initialize`"
+consistency guarantee without putting a cache in the core (consistent with
+anti-patterns
+[#8](https://github.com/stacklok/toolhive/blob/main/.claude/rules/vmcp-anti-patterns.md#8-unnecessary-abstraction--interface-modification)/[#9](https://github.com/stacklok/toolhive/blob/main/.claude/rules/vmcp-anti-patterns.md#9-premature-optimization)).
+`Serve` (with the existing `pkg/vmcp/session` layer) likewise retains all
+bound-session and token-hijack-prevention logic
+(`PreventSessionHijacking`, `MetadataKeyTokenHash`); the core takes an identity
+per call and never reasons about sessions, so binding never leaks into the
+domain interface.
 
 **`server.New` compatibility wrapper.** Reduced to:
 
@@ -239,10 +259,13 @@ type VMCP interface {
     ListPrompts(ctx context.Context, identity *auth.Identity) ([]vmcp.Prompt, error)
     GetPrompt(ctx context.Context, identity *auth.Identity, name string, args map[string]any) (*vmcp.PromptGetResult, error)
 
-    // LookupTool resolves an advertised tool name to the tool (including its
-    // BackendID), without invoking it. Enables decorators to make a per-call
-    // decision before delegating to CallTool.
+    // LookupTool / LookupResource / LookupPrompt resolve an advertised
+    // name/URI to the capability (including its BackendID) without invoking it.
+    // They give decorators a symmetric way to make a per-call decision before
+    // delegating to CallTool / ReadResource / GetPrompt.
     LookupTool(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Tool, error)
+    LookupResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.Resource, error)
+    LookupPrompt(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Prompt, error)
 
     // Close releases resources held by the core (backend connections, caches).
     Close() error
@@ -255,6 +278,13 @@ func New(cfg *Config) (VMCP, error)
 // listener until (*Server).Start is called. Accepts any VMCP, including a
 // consumer-supplied decorator.
 func Serve(ctx context.Context, v VMCP, cfg *ServerConfig) (*Server, error)
+
+// Handler returns the fully-composed MCP http.Handler (mux + middleware chain)
+// without starting a listener, so an embedder can mount it in its own server,
+// wrap it with outer middleware, and serve sibling routes. Carried forward from
+// today's (*Server).Handler. Start runs the handler on Serve's own listener.
+func (*Server) Handler(ctx context.Context) (http.Handler, error)
+func (*Server) Start(ctx context.Context) error
 ```
 
 **Reuse of `Tool.BackendID`.** The interface relies on
@@ -305,16 +335,93 @@ Because both the list path and the call path delegate to the same `inner`
 aggregation, a decorator cannot drift between "what is advertised" and "what is
 callable" — they share one source of truth.
 
+#### Extending the Transport Layer
+
+Decoration is the extension model for **domain** behavior. The **transport**
+layer — the middleware chain, the route mux, the embedded AS, and the mcp-go SDK
+integration — is owned by `Serve` and is *not* wrapped behind an interface. This
+is deliberate: HTTP middleware is already a composition mechanism, and the SDK
+lifecycle is exactly the coupling the refactor hides
+([anti-pattern #5](https://github.com/stacklok/toolhive/blob/main/.claude/rules/vmcp-anti-patterns.md#5-sdk-coupling-leaking-through-abstractions)).
+Transport augmentation therefore falls into four cases:
+
+1. **Replace a named middleware slot (supported, via config).** `ServerConfig`
+   carries the consumer-supplied `AuthMiddleware` / `AuthzMiddleware` funcs (and
+   `AuthInfoHandler` / `AuthServer`) that exist on today's `server.Config`. An
+   embedder injects its own auth, authz, or AS implementation through these
+   slots. This is the bounded, ordering-defined extension surface the library
+   commits to.
+
+2. **Add outermost middleware and sibling routes (supported, via `Handler()`).**
+   This is a fully supported, first-class pattern. `(*Server).Handler(ctx)`
+   returns the fully-composed MCP handler (mux + the entire vMCP middleware
+   chain) without starting a listener. An embedder mounts it in its own mux and
+   **wraps it with its own outermost middleware** — middleware that runs before
+   vMCP's own chain (recovery, auth, discovery, …) on every request to the
+   handler. This is the sanctioned home for cross-cutting concerns such as rate
+   limiting, request-size limits, tenant resolution, or custom access logging.
+   The embedder may also serve its own adjacent routes under its own auth:
+
+   ```go
+   srv, _ := vmcp.Serve(ctx, core, serverCfg) // builds, does not listen
+   h, _   := srv.Handler(ctx)                 // composed vMCP handler (full chain)
+
+   mux := http.NewServeMux()
+   mux.Handle("/mcp", myOutermostMiddleware(h)) // SUPPORTED: wraps the whole vMCP chain
+   mux.Handle("/my/routes", myHandler)          // sibling routes, embedder-owned
+   http.ListenAndServe(addr, mux)               // embedder owns the listener
+   ```
+
+   Because the wrapper sits entirely outside `Handler()`'s output, it cannot
+   reorder or bypass vMCP's internal security middleware — it only adds layers in
+   front of them. Outermost wrapping is therefore both unrestricted and safe.
+
+3. **Insert middleware *between* internal layers (not supported from outside).**
+   The chain order (auth → audit → discovery → authz → … → handler) lives inside
+   `Serve`. If the need is domain behavior, it belongs in a `VMCP` decorator
+   (case above), not middleware; if it is genuinely transport-level, it requires
+   a new `ServerConfig` slot upstreamed into `Serve`. There is no seam for
+   arbitrary mid-chain insertion, by design — this keeps the chain order a single
+   source of truth rather than a consumer-tunable contract.
+
+4. **Change SDK-level behavior (intentionally closed).** mcp-go hooks, the
+   session-ID manager, heartbeat, and two-phase session creation stay inside
+   `Serve`/the adapter layer. Exposing them would re-leak the SDK across the
+   library boundary, defeating the refactor. Needs here are met by changing
+   `Serve` itself, not by composition.
+
+A consequence worth stating: this refactor does not add a new transport
+extension mechanism so much as it **reduces the need for one**. Concerns that
+today must be implemented as context-stuffing middleware (per-request capability
+filtering, authorization shaping) move to `VMCP` decorators, shrinking the
+middleware chain toward genuinely cross-cutting concerns (recovery, telemetry,
+transport auth) and easing
+[anti-pattern #4](https://github.com/stacklok/toolhive/blob/main/.claude/rules/vmcp-anti-patterns.md#4-middleware-overuse).
+
 #### Configuration Changes
 
-No new user-facing configuration. `New` consumes the existing
-`vmcpconfig.Config`; `Serve` consumes a `ServerConfig` that is a subset of
-today's [`server.Config`](https://github.com/stacklok/toolhive/blob/main/pkg/vmcp/server/server.go) (host, port, endpoint
-path, session TTL, incoming auth middleware, AS, telemetry, audit, health
-monitor, status reporter, session storage). The split also lets us decompose
-the current monolithic `server.Config` per [anti-pattern #6 (configuration object
-passed everywhere)](https://github.com/stacklok/toolhive/blob/main/.claude/rules/vmcp-anti-patterns.md#6-configuration-object-passed-everywhere),
-giving the core and the transport each only the fields they need.
+No new user-facing configuration, and **no change to any serialized config**.
+The split is purely an in-memory restructuring performed at initialization
+(the composition root), not a change to the on-disk/wire format:
+
+- `vmcpconfig.Config` — the *serialized* runtime config produced by the YAML
+  loader and the CRD conversion — is unchanged. It remains the single serialized
+  input and is what `New` consumes.
+- `server.Config` is already an *in-memory-only* struct: it holds
+  non-serializable runtime objects (e.g. `AuthMiddleware func(http.Handler)
+  http.Handler`, `OptimizerFactory`, `*telemetry.Provider`, `StatusReporter`,
+  `SessionFactory`, `Watcher`) assembled at the composition root. It is never
+  serialized.
+
+Decomposing `server.Config` into a core config and a `ServerConfig` (host, port,
+endpoint path, session TTL, incoming auth middleware, AS, telemetry, audit,
+health monitor, status reporter, session storage) is therefore an in-memory
+split only: `New`/`Serve` derive their respective structs from the unchanged
+`vmcpconfig.Config` plus injected runtime dependencies at startup (the
+`deriveCoreConfig`/`deriveServerConfig` step in the wrapper above). This gives
+the core and the transport each only the fields they need, per
+[anti-pattern #6 (configuration object passed everywhere)](https://github.com/stacklok/toolhive/blob/main/.claude/rules/vmcp-anti-patterns.md#6-configuration-object-passed-everywhere),
+without touching the serialized schema, CRD, or storage.
 
 #### Data Model Changes
 
@@ -322,6 +429,12 @@ None. The interface is expressed entirely in existing root-package domain types
 (`vmcp.Tool`, `vmcp.Resource`, `vmcp.Prompt`, `vmcp.ToolCallResult`,
 `vmcp.ResourceReadResult`, `vmcp.PromptGetResult`) and `auth.Identity`. No
 schema, CRD, or storage change.
+
+These result types retain their `Meta` field. As today, resource `_meta` may be
+nil because the SDK's `resources/read` handler signature cannot forward it; the
+interface doc comments state this limitation explicitly rather than implying
+otherwise. No behavior change — if the SDK gains support later, the field is
+already present.
 
 ## Security Considerations
 
@@ -539,31 +652,6 @@ stays stable throughout**; the core/serve split lands behind it.
 - **Package docs:** update [`pkg/vmcp/doc.go`](https://github.com/stacklok/toolhive/blob/main/pkg/vmcp/doc.go) to describe
   the core interface and the domain/transport seam.
 - **Embedder guide:** a worked decorator example.
-
-## Open Questions
-
-1. **Per-session capability caching.** Today aggregation happens once per session
-   (on `initialize`) and results are cached on the `MultiSession`. With a
-   stateless `VMCP.ListTools(ctx, identity)`, where does that caching live — an
-   internal cache in the `New` core keyed by identity/session, or a thin
-   caching layer in `Serve`? This must avoid anti-patterns
-   [#8](https://github.com/stacklok/toolhive/blob/main/.claude/rules/vmcp-anti-patterns.md#8-unnecessary-abstraction--interface-modification)/[#9](https://github.com/stacklok/toolhive/blob/main/.claude/rules/vmcp-anti-patterns.md#9-premature-optimization)
-   (no cache without evidence) while not regressing the per-request aggregation cost.
-2. **Session affinity and binding.** The existing bound-session/token-binding
-   checks (`PreventSessionHijacking`, `MetadataKeyTokenHash`) are session-scoped.
-   How do these map onto an identity-parameterized core — does the core stay
-   session-agnostic with `Serve` owning binding, or does the core expose a
-   session concept too?
-3. **Composite tools and the routing table.** Composite workflows currently route
-   via a session-scoped routing table injected through context. Does `CallTool`
-   on the core encapsulate composite execution end-to-end, or does the transport
-   layer still orchestrate elicitation (which needs the live mcp-go session)?
-4. **Resource/prompt `_meta` forwarding.** The `BackendClient` contract notes
-   resource `_meta` cannot currently be forwarded due to SDK limitations; the
-   interface should not imply otherwise.
-5. **Granularity of `LookupTool`.** Is a single `LookupTool` sufficient, or do
-   resources/prompts need analogous `LookupResource`/`LookupPrompt` for
-   symmetric decorator short-circuiting on the call path?
 
 ## References
 

@@ -963,6 +963,41 @@ func TestDeriveExpectedIssuerFromDiscoveryURL(t *testing.T) {
 			want:         "https://idp.example.com/tenants/acme",
 		},
 		{
+			// RFC 8414 §3.1 path-insertion: well-known segment between host
+			// and tenant path. Issuer reconstructed as origin + tenant path.
+			// Matches the shape served by Datadog's MCP authorization server
+			// (mcp.us5.datadoghq.com) and any other provider with a path-
+			// component issuer that follows the RFC literally.
+			name:         "oauth well-known path-insertion (RFC 8414 §3.1)",
+			discoveryURL: "https://mcp.us5.datadoghq.com/.well-known/oauth-authorization-server/v1/mcp",
+			want:         "https://mcp.us5.datadoghq.com/v1/mcp",
+		},
+		{
+			name:         "oauth well-known path-insertion with multi-segment tenant",
+			discoveryURL: "https://idp.example.com/.well-known/oauth-authorization-server/tenants/acme",
+			want:         "https://idp.example.com/tenants/acme",
+		},
+		{
+			name:         "oidc well-known path-insertion",
+			discoveryURL: "https://idp.example.com/.well-known/openid-configuration/tenants/acme",
+			want:         "https://idp.example.com/tenants/acme",
+		},
+		{
+			// Trailing-slash edge case: hits the HasPrefix arm (path doesn't end
+			// at the bare suffix) but has no tenant after it. Without the empty-
+			// path normalisation, TrimPrefix would leave a stray "/" and produce
+			// a spurious "https://host/" that fails the RFC 8414 §3.3 byte
+			// equality check.
+			name:         "oauth well-known with trailing slash normalises to origin",
+			discoveryURL: "https://mcp.example.com/.well-known/oauth-authorization-server/",
+			want:         "https://mcp.example.com",
+		},
+		{
+			name:         "oidc well-known with trailing slash normalises to origin",
+			discoveryURL: "https://idp.example.com/.well-known/openid-configuration/",
+			want:         "https://idp.example.com",
+		},
+		{
 			name:         "non-well-known path falls back to origin",
 			discoveryURL: "https://idp.example.com/tenants/acme/metadata",
 			want:         "https://idp.example.com",

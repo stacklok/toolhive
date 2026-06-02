@@ -11,18 +11,13 @@ import (
 // backward compatibility and convenience.
 type MultiSession = sessiontypes.MultiSession
 
+// Re-exports from the types package for convenience. See the types package for
+// authoritative documentation.
 const (
-	// MetadataKeyTokenHash is the session metadata key that holds the HMAC-SHA256
-	// hash of the bearer token used to create the session. For authenticated sessions
-	// this is hex(HMAC-SHA256(bearerToken)). For anonymous sessions this is the empty
-	// string sentinel. The raw token is never stored — only the hash.
-	//
-	// Re-exported from types package for convenience.
+	// Legacy: superseded by MetadataKeyIdentityBinding (#5306); invalidated on read.
 	MetadataKeyTokenHash = sessiontypes.MetadataKeyTokenHash
-
-	// MetadataKeyTokenSalt is the session metadata key that holds the hex-encoded
-	// random salt used for HMAC-SHA256 token hashing. Omitted for anonymous sessions.
-	//
-	// Re-exported from types package for convenience.
+	// Legacy: superseded by MetadataKeyIdentityBinding (#5306).
 	MetadataKeyTokenSalt = sessiontypes.MetadataKeyTokenSalt
+
+	MetadataKeyIdentityBinding = sessiontypes.MetadataKeyIdentityBinding
 )

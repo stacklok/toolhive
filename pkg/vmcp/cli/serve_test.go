@@ -17,6 +17,7 @@ import (
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	aggregatormocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	clientmocks "github.com/stacklok/toolhive/pkg/vmcp/client/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -165,45 +166,27 @@ func newSessionFactoryMocks(t *testing.T) (*clientmocks.MockOutgoingAuthRegistry
 	return clientmocks.NewMockOutgoingAuthRegistry(ctrl), aggregatormocks.NewMockAggregator(ctrl)
 }
 
-func TestCreateSessionFactory_WithHMACSecret(t *testing.T) {
+func TestCreateSessionFactory(t *testing.T) {
 	t.Parallel()
-	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("a-sufficiently-long-hmac-secret-value-32b", false, registry, agg)
-	require.NoError(t, err)
-	require.NotNil(t, factory)
-}
-
-func TestCreateSessionFactory_HMACSecretExactly32Bytes(t *testing.T) {
-	t.Parallel()
-	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("12345678901234567890123456789012", false, registry, agg)
-	require.NoError(t, err)
-	require.NotNil(t, factory)
-}
-
-func TestCreateSessionFactory_ShortHMACSecret(t *testing.T) {
-	t.Parallel()
-	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("short", false, registry, agg)
-	require.NoError(t, err)
-	require.NotNil(t, factory)
-}
-
-func TestCreateSessionFactory_NoSecretNonKubernetes(t *testing.T) {
-	t.Parallel()
-	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("", false, registry, agg)
-	require.NoError(t, err)
-	require.NotNil(t, factory)
-}
-
-func TestCreateSessionFactory_NoSecretKubernetes(t *testing.T) {
-	t.Parallel()
-	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("", true, registry, agg)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "an HMAC secret is required when running in Kubernetes")
-	require.Nil(t, factory)
+	tests := []struct {
+		name   string
+		useAgg bool
+	}{
+		{name: "with aggregator", useAgg: true},
+		{name: "without aggregator", useAgg: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			registry, agg := newSessionFactoryMocks(t)
+			var aggArg aggregator.Aggregator
+			if tc.useAgg {
+				aggArg = agg
+			}
+			factory := createSessionFactory(registry, aggArg)
+			require.NotNil(t, factory)
+		})
+	}
 }
 
 // TestRunDiscovery_KubernetesGroupNotFound exercises the Kubernetes-specific branch

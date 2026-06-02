@@ -77,7 +77,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// offline_access) — every DCR-registered client gains the ability to request
 	// these scopes at /oauth/authorize regardless of what they registered with.
 	if len(h.config.BaselineClientScopes) > 0 {
-		effective := unionScopes(scopes, h.config.BaselineClientScopes)
+		effective := registration.UnionScopes(scopes, h.config.BaselineClientScopes)
 		if !slices.Equal(effective, scopes) {
 			// Baseline-driven expansion is the intended behavior whenever
 			// baseline_client_scopes is configured, so per-registration

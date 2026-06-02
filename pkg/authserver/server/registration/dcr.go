@@ -327,3 +327,47 @@ func ValidateScopes(requestedScopes, allowedScopes []string) ([]string, *DCRErro
 
 	return scopes, nil
 }
+
+// UnionScopes returns the union of requested and baseline scopes, preserving
+// the order of requested first, then appending any baseline scopes not already
+// present. Duplicates are removed. Returns nil when the result is empty.
+//
+// Both inputs must already be validated by the caller. UnionScopes does not
+// filter empty strings or validate scope syntax — it only deduplicates and
+// merges in stable order.
+func UnionScopes(requested, baseline []string) []string {
+	seen := make(map[string]bool, len(requested)+len(baseline))
+	out := make([]string, 0, len(requested)+len(baseline))
+	for _, s := range requested {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range baseline {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ValidatePublicGrantTypes validates the grant_types for a public OAuth client,
+// applying the same rules as DCR: authorization_code must be present, and all
+// declared values must be in the allowed set. Returns the validated slice (with
+// defaults applied when nil/empty) or a *DCRError on violation.
+func ValidatePublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
+	return validateGrantTypes(grantTypes)
+}
+
+// ValidatePublicResponseTypes validates the response_types for a public OAuth
+// client, applying the same rules as DCR: code must be present and all declared
+// values must be in the allowed set. Returns the validated slice (with defaults
+// applied when nil/empty) or a *DCRError on violation.
+func ValidatePublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
+	return validateResponseTypes(responseTypes)
+}

@@ -293,6 +293,9 @@ type EmbeddedAuthServerConfig struct {
 	// "openid" and "offline_access"). Adding a privileged scope here — e.g.
 	// "admin:read" — would grant it to every DCR-registered client, including
 	// public clients like Claude Code, Cursor, and VS Code.
+	// When cimd.enabled is true, every dynamically resolved CIMD client will
+	// also gain the ability to request these scopes, including third-party
+	// clients resolved from arbitrary HTTPS URLs.
 	// +kubebuilder:validation:MaxItems=10
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:Pattern=`^[\x21\x23-\x5B\x5D-\x7E]+$`

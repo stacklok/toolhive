@@ -157,8 +157,8 @@ func (c *CIMDRunConfig) Validate() error {
 		if err != nil {
 			return fmt.Errorf("cache_fallback_ttl: %w", err)
 		}
-		if d < 0 {
-			return fmt.Errorf("cache_fallback_ttl must be non-negative when CIMD is enabled, got %s", c.CacheFallbackTTL)
+		if d <= 0 {
+			return fmt.Errorf("cache_fallback_ttl must be positive when CIMD is enabled, got %s", c.CacheFallbackTTL)
 		}
 	}
 	return nil

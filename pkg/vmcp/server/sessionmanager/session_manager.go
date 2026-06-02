@@ -304,18 +304,11 @@ func (sm *Manager) CreateSession(
 	// Resolve the caller identity (may be nil for anonymous access).
 	identity, _ := auth.IdentityFromContext(ctx)
 
-	// Note: Token hash and salt are computed and stored by the session factory
-	// (MakeSessionWithID below). Token binding enforcement happens at the session
-	// level via validateCaller(), which uses HMAC-SHA256 with a per-session salt.
-
 	// List all available backends from the registry.
 	backends := sm.listAllBackends(ctx)
 
 	// Build the fully-formed MultiSession using the SDK-assigned session ID.
-	// Sessions created with an identity are bound to that identity (allowAnonymous=false).
-	// Sessions created without an identity allow anonymous access (allowAnonymous=true).
-	allowAnonymous := sessiontypes.ShouldAllowAnonymous(identity)
-	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, allowAnonymous, backends)
+	sess, err := sm.factory.MakeSessionWithID(ctx, sessionID, identity, backends)
 	if err != nil {
 		sm.cleanupFailedPlaceholder(sessionID, placeholder)
 		return nil, fmt.Errorf("Manager.CreateSession: failed to create multi-session: %w", err)
@@ -482,7 +475,7 @@ func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {
 		return false, fmt.Errorf("Manager.Terminate: failed to load session %q: %w", sessionID, loadErr)
 	}
 
-	if _, isFullSession := metadata[sessiontypes.MetadataKeyTokenHash]; isFullSession {
+	if _, isFullSession := metadata[sessiontypes.MetadataKeyIdentityBinding]; isFullSession {
 		// Phase 2 (full MultiSession): delete from storage. The cache entry will be
 		// evicted lazily on the next Get when checkSession finds the session gone.
 		if deleteErr := sm.storage.Delete(ctx, sessionID); deleteErr != nil {
@@ -701,16 +694,17 @@ func (sm *Manager) loadSession(sessionID string) (vmcpsession.MultiSession, erro
 	}
 
 	// Don't restore placeholder sessions (Phase 2 never ran).
-	// PreventSessionHijacking always writes MetadataKeyTokenHash during Phase 2
-	// (empty sentinel for anonymous, non-empty hash for authenticated). Its
-	// absence means Generate() stored this record but CreateSession() never
-	// completed — treat it as "not found" rather than "corrupted".
+	// BindSession always writes MetadataKeyIdentityBinding during Phase 2
+	// (the unauthenticated sentinel for anonymous sessions, a bound (iss, sub)
+	// binding for authenticated ones). Its absence means Generate() stored
+	// this record but CreateSession() never completed — treat it as "not
+	// found" rather than "corrupted".
 	//
 	// Note: this is intentionally different from RestoreSession's fail-closed
 	// check (absent key → error). Here we know a placeholder's empty metadata
 	// is valid storage state produced by Generate(), so we return the
 	// SDK-standard ErrSessionNotFound instead of an error.
-	if _, hashPresent := metadata[sessiontypes.MetadataKeyTokenHash]; !hashPresent {
+	if _, bindingPresent := metadata[sessiontypes.MetadataKeyIdentityBinding]; !bindingPresent {
 		return nil, transportsession.ErrSessionNotFound
 	}
 

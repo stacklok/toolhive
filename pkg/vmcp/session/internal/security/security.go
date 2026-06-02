@@ -1,117 +1,123 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package security provides cryptographic utilities for session token binding
-// and hijacking prevention. It handles HMAC-SHA256 token hashing, salt generation,
-// and constant-time comparison to prevent timing attacks.
+// Package security provides the session-hijack-prevention decorator for
+// vMCP sessions. It binds a session to a stable identity tuple (iss, sub)
+// extracted from the OIDC identity that created the session, and validates
+// that every subsequent request comes from the same identity.
+//
+// Session bindings are stored as plaintext at rest in the session metadata
+// (see pkg/vmcp/session/binding for the format and trust-boundary statement).
+// The binding is NOT a credential; it identifies but does not authenticate.
+// Callers must validate the request's token independently before passing the
+// resulting *auth.Identity to validateCaller.
 package security
 
 import (
 	"context"
-	"crypto/hmac"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/hex"
+	"crypto/subtle"
 	"fmt"
 	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/auth"
-	pkgsecurity "github.com/stacklok/toolhive/pkg/security"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/binding"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
-const (
-	// SHA256HexLen is the length of a hex-encoded SHA256 hash (32 bytes = 64 hex characters)
-	SHA256HexLen = 64
-
-	// metadataKeyTokenHash is the session metadata key for the token hash.
-	// Imported from types package to ensure consistency across all packages.
-	metadataKeyTokenHash = sessiontypes.MetadataKeyTokenHash
-
-	// metadataKeyTokenSalt is the session metadata key for the token salt.
-	// Imported from types package to ensure consistency across all packages.
-	metadataKeyTokenSalt = sessiontypes.MetadataKeyTokenSalt
-)
-
-// generateSalt generates a cryptographically secure random salt for token hashing.
-// Returns 16 bytes of random data from crypto/rand.
-//
-// Each session should have a unique salt to provide additional entropy and prevent
-// attacks that work across multiple sessions.
-func generateSalt() ([]byte, error) {
-	salt := make([]byte, 16)
-	if _, err := rand.Read(salt); err != nil {
-		return nil, fmt.Errorf("failed to generate salt: %w", err)
-	}
-	return salt, nil
-}
-
-// hashToken returns the hex-encoded HMAC-SHA256 hash of a raw bearer token string.
-// Uses HMAC with a server-managed secret and per-session salt to prevent offline
-// attacks if session storage is compromised.
-//
-// For empty tokens (anonymous sessions) it returns the empty string, which is
-// the sentinel value used to identify sessions created without credentials.
-// The raw token is never stored — only the hash.
-//
-// Parameters:
-//   - token: The bearer token to hash
-//   - secret: Server-managed HMAC secret (should be 32+ bytes)
-//   - salt: Per-session random salt (typically 16 bytes)
-//
-// Security: Uses HMAC-SHA256 instead of plain SHA256 to prevent rainbow table
-// attacks and offline brute force if session state leaks from Redis/Valkey.
-func hashToken(token string, secret, salt []byte) string {
-	if token == "" {
-		return ""
-	}
-	h := hmac.New(sha256.New, secret)
-	h.Write(salt)
-	h.Write([]byte(token))
-	return hex.EncodeToString(h.Sum(nil))
-}
-
-// hijackPreventionDecorator wraps a session and adds token binding validation
+// sessionBindingDecorator wraps a session and adds identity-binding validation
 // to prevent session hijacking attacks. It validates that all requests come from
 // the same identity that created the session.
 //
-// The decorator is applied by PreventSessionHijacking to ALL sessions (both authenticated
-// and anonymous). For authenticated sessions, it validates the caller's token matches
-// the creator's token. For anonymous sessions (allowAnonymous=true), it allows nil
-// callers and prevents session upgrade attacks by rejecting any token presentation.
+// The decorator is applied by BindSession to ALL sessions (both authenticated
+// and anonymous). For authenticated sessions, it validates the caller's (iss, sub)
+// identity binding matches the creator's binding. For anonymous sessions
+// (allowAnonymous=true), it allows nil callers and prevents session upgrade
+// attacks by rejecting any token presentation.
 //
 // The decorator embeds MultiSession and only overrides the methods that require
-// validation (CallTool, ReadResource, GetPrompt). All other methods are automatically
-// delegated to the embedded session.
-type hijackPreventionDecorator struct {
-	sessiontypes.MultiSession // Embedded interface - provides automatic delegation for most methods
+// validation (CallTool, ReadResource, GetPrompt). All other methods are
+// automatically delegated to the embedded session.
+type sessionBindingDecorator struct {
+	sessiontypes.MultiSession // embedded — automatic delegation for unwrapped methods
 
-	// Token binding fields: enforce that subsequent requests come from the same
-	// identity that created the session.
-	// These fields are immutable after decorator creation (no mutex needed).
-	boundTokenHash string // HMAC-SHA256 hash of creator's token (empty for anonymous)
-	tokenSalt      []byte // Random salt used for HMAC (empty for anonymous)
-	hmacSecret     []byte // Server-managed secret for HMAC-SHA256
-	allowAnonymous bool   // Whether to allow nil caller
+	// boundIdentity is the canonical identity binding written at session
+	// creation. Immutable after construction.
+	//
+	// For sessions allowed to be anonymous, boundIdentity is
+	// binding.UnauthenticatedSentinel.
+	// For sessions bound to an authenticated identity, boundIdentity is the
+	// output of binding.Format(iss, sub).
+	boundIdentity string
+
+	// allowAnonymous tracks whether the session was created without a bound
+	// identity. Used to reject session-upgrade attacks (caller presents a
+	// token on an anonymous session).
+	allowAnonymous bool
 }
 
-// validateCaller checks if the provided caller identity matches the session owner.
-// Returns nil if validation succeeds, or an error if:
-//   - The session requires a bound identity but caller is nil (ErrNilCaller)
-//   - The caller's token hash doesn't match the session owner (ErrUnauthorizedCaller)
-//   - An anonymous session receives a caller with a non-empty token (ErrUnauthorizedCaller)
+// extractBindingID derives the canonical identity-binding string from the
+// given auth identity's OIDC claims. It reads "iss" and "sub" from
+// identity.Claims (not identity.Subject) so that JWT-validation and
+// introspection paths canonicalize against the same source.
 //
-// For anonymous sessions (allowAnonymous=true, boundTokenHash=""), validation succeeds
-// only when the caller is nil or has an empty token (prevents session upgrade attacks).
-func (d hijackPreventionDecorator) validateCaller(caller *auth.Identity) error {
-	// No lock needed - token binding fields are immutable after decorator creation
+// Returns ("", error) when:
+//   - identity is nil.
+//   - identity.Claims is missing "iss" or "sub".
+//   - either claim is present but not a string.
+//   - binding.Format rejects the (iss, sub) pair (empty halves or stray NULs).
+//
+// Callers MUST treat a non-nil error as "no identifying claims available"
+// and fail closed (do not silently fall through to anonymous).
+//
+// TODO(#5306-followup): if/when RFC 7662 introspection becomes a top-level
+// incoming-auth type, add a startup probe that verifies the IdP emits iss
+// and sub in introspection responses (extractBindingID requires both).
+func extractBindingID(identity *auth.Identity) (string, error) {
+	if identity == nil {
+		return "", fmt.Errorf("auth identity is nil")
+	}
 
-	// Anonymous sessions: reject callers that present tokens
-	if d.allowAnonymous && d.boundTokenHash == "" {
-		// Prevent session upgrade attack: anonymous sessions cannot accept tokens
+	issRaw, issPresent := identity.Claims["iss"]
+	if !issPresent {
+		return "", fmt.Errorf("auth identity is missing iss claim")
+	}
+	iss, issIsString := issRaw.(string)
+	if !issIsString {
+		return "", fmt.Errorf("auth identity has non-string iss claim")
+	}
+
+	subRaw, subPresent := identity.Claims["sub"]
+	if !subPresent {
+		return "", fmt.Errorf("auth identity is missing sub claim")
+	}
+	sub, subIsString := subRaw.(string)
+	if !subIsString {
+		return "", fmt.Errorf("auth identity has non-string sub claim")
+	}
+
+	b, err := binding.Format(iss, sub)
+	if err != nil {
+		return "", fmt.Errorf("auth identity (iss, sub) pair is invalid: %w", err)
+	}
+	return b, nil
+}
+
+// validateCaller checks the caller against the session's bound identity.
+//
+// Returns:
+//   - ErrSessionOwnerUnknown when the decorator was constructed with neither
+//     an anonymous marker nor a real binding (programming error).
+//   - ErrNilCaller when a bound session receives nil.
+//   - ErrUnauthorizedCaller when:
+//   - an anonymous session receives a caller presenting a token (upgrade attack),
+//   - the caller's identity binding does not match the session's bound identity.
+func (d sessionBindingDecorator) validateCaller(caller *auth.Identity) error {
+	// Anonymous path: sessions that were created without a bound identity.
+	if d.allowAnonymous && binding.IsUnauthenticated(d.boundIdentity) {
+		// Prevent session upgrade attack: anonymous sessions cannot accept tokens.
 		if caller != nil && caller.Token != "" {
-			slog.Warn("token validation failed: session upgrade attack prevented",
+			slog.Warn("identity binding validation failed: session upgrade attack prevented",
 				"reason", "token_presented_to_anonymous_session",
 			)
 			return sessiontypes.ErrUnauthorizedCaller
@@ -119,32 +125,43 @@ func (d hijackPreventionDecorator) validateCaller(caller *auth.Identity) error {
 		return nil
 	}
 
-	// Bound sessions require a caller
+	// Bound sessions require a non-nil caller.
 	if caller == nil {
-		slog.Warn("token validation failed: nil caller for bound session",
+		slog.Warn("identity binding validation failed: nil caller for bound session",
 			"reason", "nil_caller",
 		)
 		return sessiontypes.ErrNilCaller
 	}
 
-	// Defensive check: bound sessions must have a non-empty token hash.
-	// This prevents misconfigured sessions from accepting empty tokens.
-	// Scenario: if boundTokenHash="" and caller.Token="", both would hash to "",
-	// and ConstantTimeHashCompare would return true (both empty case).
-	if d.boundTokenHash == "" {
-		slog.Error("token validation failed: bound session has empty token hash",
-			"reason", "misconfigured_session",
-		)
-		return sessiontypes.ErrSessionOwnerUnknown
+	// Defensive check: the stored binding must be parsable. An unparsable value
+	// means the session was misconfigured at construction time — fail closed
+	// rather than accepting or rejecting based on garbage state.
+	if !binding.IsUnauthenticated(d.boundIdentity) {
+		if _, _, ok := binding.Parse(d.boundIdentity); !ok {
+			slog.Error("identity binding validation failed: stored binding is not parsable",
+				"reason", "misconfigured_session",
+			)
+			return sessiontypes.ErrSessionOwnerUnknown
+		}
 	}
 
-	// Compute caller's token hash using the same HMAC secret and salt
-	callerHash := hashToken(caller.Token, d.hmacSecret, d.tokenSalt)
+	// Compute the caller's binding from their identity claims.
+	callerBinding, err := extractBindingID(caller)
+	if err != nil {
+		slog.Warn("identity binding validation failed: could not extract caller binding",
+			"reason", "caller_binding_extraction_failed",
+			"error", err,
+		)
+		return sessiontypes.ErrUnauthorizedCaller
+	}
 
-	// Constant-time comparison to prevent timing attacks
-	if !pkgsecurity.ConstantTimeHashCompare(d.boundTokenHash, callerHash, SHA256HexLen) {
-		slog.Warn("token validation failed: token hash mismatch",
-			"reason", "token_hash_mismatch",
+	// ConstantTimeCompare is constant-time over content but short-circuits on
+	// length mismatch. Leaking binding length is acceptable: iss is the OIDC
+	// issuer (public, in the discovery document) and sub is an opaque
+	// identifier whose length is typically per-issuer. Neither is secret.
+	if subtle.ConstantTimeCompare([]byte(d.boundIdentity), []byte(callerBinding)) != 1 {
+		slog.Warn("identity binding validation failed: identity binding mismatch",
+			"reason", "identity_binding_mismatch",
 		)
 		return sessiontypes.ErrUnauthorizedCaller
 	}
@@ -153,14 +170,13 @@ func (d hijackPreventionDecorator) validateCaller(caller *auth.Identity) error {
 }
 
 // CallTool validates the caller identity before delegating to the embedded session.
-func (d hijackPreventionDecorator) CallTool(
+func (d sessionBindingDecorator) CallTool(
 	ctx context.Context,
 	caller *auth.Identity,
 	toolName string,
 	arguments map[string]any,
 	meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	// Validate caller identity
 	if err := d.validateCaller(caller); err != nil {
 		return nil, err
 	}
@@ -169,12 +185,11 @@ func (d hijackPreventionDecorator) CallTool(
 }
 
 // ReadResource validates the caller identity before delegating to the embedded session.
-func (d hijackPreventionDecorator) ReadResource(
+func (d sessionBindingDecorator) ReadResource(
 	ctx context.Context,
 	caller *auth.Identity,
 	uri string,
 ) (*vmcp.ResourceReadResult, error) {
-	// Validate caller identity
 	if err := d.validateCaller(caller); err != nil {
 		return nil, err
 	}
@@ -183,13 +198,12 @@ func (d hijackPreventionDecorator) ReadResource(
 }
 
 // GetPrompt validates the caller identity before delegating to the embedded session.
-func (d hijackPreventionDecorator) GetPrompt(
+func (d sessionBindingDecorator) GetPrompt(
 	ctx context.Context,
 	caller *auth.Identity,
 	name string,
 	arguments map[string]any,
 ) (*vmcp.PromptGetResult, error) {
-	// Validate caller identity
 	if err := d.validateCaller(caller); err != nil {
 		return nil, err
 	}
@@ -197,148 +211,101 @@ func (d hijackPreventionDecorator) GetPrompt(
 	return d.MultiSession.GetPrompt(ctx, caller, name, arguments)
 }
 
-// RestoreHijackPrevention recreates the hijack-prevention decorator from persisted
-// metadata, rather than recomputing token binding from an identity. Use this when
-// reconstructing a MultiSession after a pod restart or cross-pod failover where the
-// original bearer token is no longer available but the stored hash and salt are.
+// BindSession wraps a session with identity-binding validation. It writes
+// the canonical binding into session metadata under MetadataKeyIdentityBinding
+// and returns a decorator that validates the caller on every operation.
 //
-// If tokenHash is empty the session is treated as anonymous (allowAnonymous=true).
-// The hmacSecret must be the same server-managed secret used at creation time.
-func RestoreHijackPrevention(
+// Whether the session is anonymous is derived from the identity via
+// types.ShouldAllowAnonymous.
+//
+// For bound sessions, the (iss, sub) tuple is extracted from identity.Claims.
+// If the tuple cannot be extracted (missing claims, non-string claims, or
+// invalid format), BindSession returns an error BEFORE writing anything to
+// the session metadata — preserving the invariant that a session always has
+// a valid MetadataKeyIdentityBinding value once written.
+//
+// Returns an error if session is nil, or if a bound identity is required
+// but no valid (iss, sub) binding can be produced.
+func BindSession(
 	session sessiontypes.MultiSession,
-	tokenHash string,
-	tokenSaltHex string,
-	hmacSecret []byte,
-) (sessiontypes.MultiSession, error) {
-	if session == nil {
-		return nil, fmt.Errorf("session must not be nil")
-	}
-
-	// Both fields must be either both present or both absent. Any other
-	// combination indicates corrupted or incomplete metadata and must be
-	// rejected to fail closed:
-	//   - hash present, salt absent: HMAC comparison will always fail,
-	//     producing a silently broken (always-rejecting) decorator.
-	//   - hash absent, salt present: session would be treated as anonymous,
-	//     silently downgrading a bound session and bypassing token validation.
-	if tokenHash != "" && tokenSaltHex == "" {
-		return nil, fmt.Errorf("RestoreHijackPrevention: stored token hash is present but salt is missing " +
-			"(incomplete session metadata)")
-	}
-	if tokenHash == "" && tokenSaltHex != "" {
-		return nil, fmt.Errorf("RestoreHijackPrevention: stored token salt is present but hash is missing " +
-			"(incomplete session metadata)")
-	}
-
-	allowAnonymous := tokenHash == ""
-
-	var tokenSalt []byte
-	if tokenSaltHex != "" {
-		var decErr error
-		tokenSalt, decErr = hex.DecodeString(tokenSaltHex)
-		if decErr != nil {
-			return nil, fmt.Errorf("failed to decode stored token salt: %w", decErr)
-		}
-	}
-
-	// Make defensive copies to prevent external mutation after construction.
-	var hmacSecretCopy, tokenSaltCopy []byte
-	if len(hmacSecret) > 0 {
-		hmacSecretCopy = append([]byte(nil), hmacSecret...)
-	}
-	if len(tokenSalt) > 0 {
-		tokenSaltCopy = append([]byte(nil), tokenSalt...)
-	}
-
-	return &hijackPreventionDecorator{
-		MultiSession:   session,
-		allowAnonymous: allowAnonymous,
-		hmacSecret:     hmacSecretCopy,
-		boundTokenHash: tokenHash,
-		tokenSalt:      tokenSaltCopy,
-	}, nil
-}
-
-// PreventSessionHijacking wraps a session with hijack prevention security measures.
-// It computes token binding hashes, stores them in session metadata, and returns
-// a decorated session that validates caller identity on every operation.
-//
-// Whether the session is anonymous is derived from the identity: nil identity or
-// empty token means anonymous, a non-empty token means bound/authenticated.
-//
-// For authenticated sessions (identity.Token != ""):
-//   - Generates a unique random salt
-//   - Computes HMAC-SHA256 hash of the bearer token
-//   - Stores hash and salt in session metadata
-//   - Returns decorator that validates every request against the creator's token
-//
-// For anonymous sessions (identity == nil or identity.Token == ""):
-//   - Stores an empty string sentinel for the token hash metadata key
-//   - Omits the salt metadata key entirely (no salt is generated for anonymous sessions)
-//   - Returns decorator that allows nil callers and rejects token presentation
-//
-// Security:
-//   - Makes defensive copies of secret and salt to prevent external mutation
-//   - Uses constant-time comparison to prevent timing attacks
-//   - Prevents session upgrade attacks (anonymous → authenticated)
-//   - Raw tokens are never stored, only HMAC-SHA256 hashes
-//
-// Returns an error if:
-//   - session is nil
-//   - salt generation fails
-func PreventSessionHijacking(
-	session sessiontypes.MultiSession,
-	hmacSecret []byte,
 	identity *auth.Identity,
 ) (sessiontypes.MultiSession, error) {
 	if session == nil {
 		return nil, fmt.Errorf("session must not be nil")
 	}
+
 	allowAnonymous := sessiontypes.ShouldAllowAnonymous(identity)
 
-	// Note: Pass-through methods (ID, Type, CreatedAt, etc.) are validated by the
-	// type system when the decorator is used. We don't validate them here to keep
-	// the constructor simple and allow minimal mocks for testing.
-
-	var boundTokenHash string
-	var tokenSalt []byte
-	var err error
-
-	// Compute token binding for authenticated sessions
-	if !allowAnonymous && identity != nil && identity.Token != "" {
-		// Generate unique salt for this session
-		tokenSalt, err = generateSalt()
-		if err != nil {
-			return nil, fmt.Errorf("failed to generate token salt: %w", err)
+	// Determine the binding value to write. For bound sessions, extract the
+	// (iss, sub) binding before touching session metadata — if extraction fails,
+	// we must not leave a partial or sentinel value in the session.
+	bid, err := func() (string, error) {
+		if allowAnonymous {
+			return binding.UnauthenticatedSentinel, nil
 		}
-		// Compute HMAC-SHA256 hash with server secret and per-session salt
-		boundTokenHash = hashToken(identity.Token, hmacSecret, tokenSalt)
+		b, err := extractBindingID(identity)
+		if err != nil {
+			return "", fmt.Errorf("BindSession: cannot derive identity binding: %w", err)
+		}
+		return b, nil
+	}()
+	if err != nil {
+		return nil, err
 	}
 
-	// Store hash and salt in session metadata for persistence, auditing,
-	// and backward compatibility
-	session.SetMetadata(metadataKeyTokenHash, boundTokenHash)
-	if len(tokenSalt) > 0 {
-		session.SetMetadata(metadataKeyTokenSalt, hex.EncodeToString(tokenSalt))
-	}
+	// Write the resolved binding. This is the only metadata key written here;
+	// backend IDs and per-backend session keys are written by makeBaseSession.
+	session.SetMetadata(sessiontypes.MetadataKeyIdentityBinding, bid)
 
-	// Make defensive copies of slices to prevent external mutation
-	var hmacSecretCopy, tokenSaltCopy []byte
-	if len(hmacSecret) > 0 {
-		hmacSecretCopy = append([]byte(nil), hmacSecret...)
-	}
-	if len(tokenSalt) > 0 {
-		tokenSaltCopy = append([]byte(nil), tokenSalt...)
-	}
-
-	// Wrap with hijackPreventionDecorator for runtime validation.
-	// The decorator embeds the MultiSession interface, so all methods are automatically
-	// delegated except for the three we override (CallTool, ReadResource, GetPrompt).
-	return &hijackPreventionDecorator{
+	return &sessionBindingDecorator{
 		MultiSession:   session,
+		boundIdentity:  bid,
 		allowAnonymous: allowAnonymous,
-		hmacSecret:     hmacSecretCopy,
-		boundTokenHash: boundTokenHash,
-		tokenSalt:      tokenSaltCopy,
+	}, nil
+}
+
+// RestoreSessionBinding recreates the session-binding decorator from a
+// persisted binding string read out of session metadata. Use this when
+// reconstructing a MultiSession after a pod restart or cross-pod failover.
+//
+// This function is the symmetric counterpart of BindSession for the restore
+// path. It is invoked by the session factory after RestoreSession deserializes
+// the binding from session metadata. Unlike BindSession, it does NOT write
+// metadata — the factory has already restored the metadata layer separately.
+//
+// storedBinding must be either:
+//   - binding.UnauthenticatedSentinel (the session was anonymous), or
+//   - a valid bound binding (binding.Parse returns ok).
+//
+// Anything else (empty string, malformed value) is rejected as corrupted
+// metadata.
+func RestoreSessionBinding(
+	session sessiontypes.MultiSession,
+	storedBinding string,
+) (sessiontypes.MultiSession, error) {
+	if session == nil {
+		return nil, fmt.Errorf("session must not be nil")
+	}
+
+	if binding.IsUnauthenticated(storedBinding) {
+		return &sessionBindingDecorator{
+			MultiSession:   session,
+			boundIdentity:  storedBinding,
+			allowAnonymous: true,
+		}, nil
+	}
+
+	// Validate the stored binding is parsable. We do not use iss/sub here —
+	// the factory calls binding.Parse separately when it needs them to
+	// reconstruct identity. This call is purely a validation gate.
+	if _, _, ok := binding.Parse(storedBinding); !ok {
+		return nil, fmt.Errorf("RestoreSessionBinding: stored binding is neither the unauthenticated sentinel " +
+			"nor a valid bound binding (corrupted metadata)")
+	}
+
+	return &sessionBindingDecorator{
+		MultiSession:   session,
+		boundIdentity:  storedBinding,
+		allowAnonymous: false,
 	}, nil
 }

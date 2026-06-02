@@ -355,3 +355,19 @@ func UnionScopes(requested, baseline []string) []string {
 	}
 	return out
 }
+
+// ValidatePublicGrantTypes validates the grant_types for a public OAuth client,
+// applying the same rules as DCR: authorization_code must be present, and all
+// declared values must be in the allowed set. Returns the validated slice (with
+// defaults applied when nil/empty) or a *DCRError on violation.
+func ValidatePublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
+	return validateGrantTypes(grantTypes)
+}
+
+// ValidatePublicResponseTypes validates the response_types for a public OAuth
+// client, applying the same rules as DCR: code must be present and all declared
+// values must be in the allowed set. Returns the validated slice (with defaults
+// applied when nil/empty) or a *DCRError on violation.
+func ValidatePublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
+	return validateResponseTypes(responseTypes)
+}

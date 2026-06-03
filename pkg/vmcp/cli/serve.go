@@ -372,7 +372,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	authMiddleware, authzMiddleware, authInfoHandler, err :=
-		factory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, passThroughTools, upstreamReader, keyProvider)
+		factory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools, upstreamReader, keyProvider)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}

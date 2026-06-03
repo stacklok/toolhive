@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net/netip"
 	"os"
 	"path/filepath"
 	rt "runtime"
@@ -21,14 +22,11 @@ import (
 	"time"
 
 	"github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/docker/client"
-	"github.com/docker/docker/pkg/stdcopy"
-	"github.com/docker/go-connections/nat"
-	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/moby/moby/api/pkg/stdcopy"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
 
 	"github.com/stacklok/toolhive-core/permissions"
 	"github.com/stacklok/toolhive/pkg/container/docker/sdk"
@@ -62,20 +60,31 @@ const (
 
 // dockerAPI defines the minimal Docker client surface we need for unit-testing
 // ListWorkloads/GetWorkloadInfo through an adapter without requiring a live daemon.
+// The signatures mirror the methods on *mobyclient.Client so the real client can
+// be assigned directly to Client.api.
 type dockerAPI interface {
-	ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
-	ContainerInspect(ctx context.Context, containerID string) (container.InspectResponse, error)
-	ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error
-	ContainerCreate(
+	ContainerList(ctx context.Context, options mobyclient.ContainerListOptions) (mobyclient.ContainerListResult, error)
+	ContainerInspect(
 		ctx context.Context,
-		config *container.Config,
-		hostConfig *container.HostConfig,
-		networkingConfig *network.NetworkingConfig,
-		platform *v1.Platform,
-		containerName string,
-	) (container.CreateResponse, error)
-	ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error
-	ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error
+		containerID string,
+		options mobyclient.ContainerInspectOptions,
+	) (mobyclient.ContainerInspectResult, error)
+	ContainerStop(
+		ctx context.Context,
+		containerID string,
+		options mobyclient.ContainerStopOptions,
+	) (mobyclient.ContainerStopResult, error)
+	ContainerCreate(ctx context.Context, options mobyclient.ContainerCreateOptions) (mobyclient.ContainerCreateResult, error)
+	ContainerStart(
+		ctx context.Context,
+		containerID string,
+		options mobyclient.ContainerStartOptions,
+	) (mobyclient.ContainerStartResult, error)
+	ContainerRemove(
+		ctx context.Context,
+		containerID string,
+		options mobyclient.ContainerRemoveOptions,
+	) (mobyclient.ContainerRemoveResult, error)
 }
 
 // deployOps defines the internal operations used by DeployWorkload.
@@ -129,7 +138,7 @@ type deployOps interface {
 type Client struct {
 	runtimeType  runtime.Type
 	socketPath   string
-	client       *client.Client
+	client       *mobyclient.Client
 	api          dockerAPI
 	imageManager images.ImageManager
 	ops          deployOps
@@ -337,17 +346,17 @@ func (c *Client) DeployWorkload(
 // ListWorkloads lists workloads
 func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, error) {
 	// Create filter for toolhive containers
-	filterArgs := filters.NewArgs()
-	filterArgs.Add("label", "toolhive=true")
+	filterArgs := mobyclient.Filters{}.Add("label", "toolhive=true")
 
 	// List containers
-	containers, err := c.api.ContainerList(ctx, container.ListOptions{
+	listResult, err := c.api.ContainerList(ctx, mobyclient.ContainerListOptions{
 		All:     true,
 		Filters: filterArgs,
 	})
 	if err != nil {
 		return nil, NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
 	}
+	containers := listResult.Items
 
 	// Convert to our ContainerInfo format
 	result := make([]runtime.ContainerInfo, 0, len(containers))
@@ -381,7 +390,7 @@ func (c *Client) ListWorkloads(ctx context.Context) ([]runtime.ContainerInfo, er
 			Name:    name,
 			Image:   c.Image,
 			Status:  c.Status,
-			State:   dockerToDomainStatus(c.State),
+			State:   dockerToDomainStatus(string(c.State)),
 			Created: created,
 			Labels:  c.Labels,
 			Ports:   ports,
@@ -411,7 +420,7 @@ func (c *Client) StopWorkload(ctx context.Context, workloadName string) error {
 
 	// Use a reasonable timeout
 	timeoutSeconds := 30
-	err = c.api.ContainerStop(ctx, workloadName, container.StopOptions{Timeout: &timeoutSeconds})
+	_, err = c.api.ContainerStop(ctx, workloadName, mobyclient.ContainerStopOptions{Timeout: &timeoutSeconds})
 	if err != nil {
 		return NewContainerError(err, workloadName, fmt.Sprintf("failed to stop workload: %v", err))
 	}
@@ -497,7 +506,7 @@ func (c *Client) GetWorkloadLogs(ctx context.Context, workloadName string, follo
 		tail = fmt.Sprintf("%d", lines)
 	}
 
-	options := container.LogsOptions{
+	options := mobyclient.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Follow:     follow,
@@ -577,9 +586,9 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runt
 			}
 
 			ports = append(ports, runtime.PortMapping{
-				ContainerPort: containerPort.Int(),
+				ContainerPort: int(containerPort.Num()),
 				HostPort:      hostPort,
-				Protocol:      containerPort.Proto(),
+				Protocol:      string(containerPort.Proto()),
 			})
 		}
 	}
@@ -599,8 +608,8 @@ func (c *Client) GetWorkloadInfo(ctx context.Context, workloadName string) (runt
 	return runtime.ContainerInfo{
 		Name:      strings.TrimPrefix(info.Name, "/"),
 		Image:     info.Config.Image,
-		Status:    info.State.Status,
-		State:     dockerToDomainStatus(info.State.Status),
+		Status:    string(info.State.Status),
+		State:     dockerToDomainStatus(string(info.State.Status)),
 		Created:   created,
 		StartedAt: startedAt,
 		Labels:    info.Config.Labels,
@@ -620,7 +629,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 	}
 
 	// Attach to workload
-	resp, err := c.client.ContainerAttach(ctx, workloadName, container.AttachOptions{
+	resp, err := c.client.ContainerAttach(ctx, workloadName, mobyclient.ContainerAttachOptions{
 		Stream: true,
 		Stdin:  true,
 		Stdout: true,
@@ -655,7 +664,7 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 // This is used to verify that the runtime is operational and can manage workloads.
 func (c *Client) IsRunning(ctx context.Context) error {
 	// Try to ping the Docker server
-	_, err := c.client.Ping(ctx)
+	_, err := c.client.Ping(ctx, mobyclient.PingOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to ping Docker server: %w", err)
 	}
@@ -865,18 +874,16 @@ func (c *Client) getPermissionConfigFromProfile(
 // Uses container runtime's name filter for efficiency but then verifies exact match to prevent partial matching
 func (c *Client) findExistingContainer(ctx context.Context, name string) (string, error) {
 	// Use name filter to narrow results, then verify exact match
-	containers, err := c.api.ContainerList(ctx, container.ListOptions{
-		All: true, // Include stopped containers
-		Filters: filters.NewArgs(
-			filters.Arg("name", name),
-		),
+	listResult, err := c.api.ContainerList(ctx, mobyclient.ContainerListOptions{
+		All:     true, // Include stopped containers
+		Filters: mobyclient.Filters{}.Add("name", name),
 	})
 	if err != nil {
 		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
 	}
 
 	// Verify exact name match from the filtered results (name filter does partial matching)
-	for _, cont := range containers {
+	for _, cont := range listResult.Items {
 		for _, containerName := range cont.Names {
 			// Container names in the API have a leading slash
 			if containerName == "/"+name || containerName == name {
@@ -1108,10 +1115,11 @@ func (c *Client) handleExistingContainer(
 	desiredHostConfig *container.HostConfig,
 ) (bool, error) {
 	// Get container info
-	info, err := c.api.ContainerInspect(ctx, containerID)
+	inspectResult, err := c.api.ContainerInspect(ctx, containerID, mobyclient.ContainerInspectOptions{})
 	if err != nil {
 		return false, NewContainerError(err, containerID, fmt.Sprintf("failed to inspect container: %v", err))
 	}
+	info := inspectResult.Container
 
 	// Compare configurations
 	if compareContainerConfig(&info, desiredConfig, desiredHostConfig) {
@@ -1120,7 +1128,7 @@ func (c *Client) handleExistingContainer(
 		// Check if the container is running
 		if !info.State.Running {
 			// Container exists but is not running, start it
-			err = c.api.ContainerStart(ctx, containerID, container.StartOptions{})
+			_, err = c.api.ContainerStart(ctx, containerID, mobyclient.ContainerStartOptions{})
 			if err != nil {
 				return false, NewContainerError(err, containerID, fmt.Sprintf("failed to start existing container: %v", err))
 			}
@@ -1149,21 +1157,21 @@ func (c *Client) createNetwork(
 ) error {
 	// Check if the network already exists
 	// Use name filter for efficiency but verify exact match to avoid partial matching
-	networks, err := c.client.NetworkList(ctx, network.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("name", name)),
+	networks, err := c.client.NetworkList(ctx, mobyclient.NetworkListOptions{
+		Filters: mobyclient.Filters{}.Add("name", name),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to list networks: %w", err)
 	}
 	// Verify exact name match from filtered results
-	for _, n := range networks {
+	for _, n := range networks.Items {
 		if n.Name == name {
 			// Network already exists
 			return nil
 		}
 	}
 
-	networkCreate := network.CreateOptions{
+	networkCreate := mobyclient.NetworkCreateOptions{
 		Driver:   "bridge",
 		Internal: internal,
 		Labels:   labels,
@@ -1183,14 +1191,14 @@ func (c *Client) createNetwork(
 // the daemon directly is more accurate than hardcoding platform-specific IPs.
 // Falls back to dockerDefaultBridgeGatewayIP on any error.
 func (c *Client) getDockerBridgeGatewayIP(ctx context.Context) string {
-	nr, err := c.client.NetworkInspect(ctx, "bridge", network.InspectOptions{})
+	nr, err := c.client.NetworkInspect(ctx, "bridge", mobyclient.NetworkInspectOptions{})
 	if err != nil {
 		slog.Debug("failed to inspect bridge network, using default gateway IP", "error", err)
 		return dockerDefaultBridgeGatewayIP
 	}
-	for _, cfg := range nr.IPAM.Config {
-		if cfg.Gateway != "" {
-			return cfg.Gateway
+	for _, cfg := range nr.Network.IPAM.Config {
+		if cfg.Gateway.IsValid() {
+			return cfg.Gateway.String()
 		}
 	}
 	slog.Debug("bridge network has no gateway in IPAM config, using default gateway IP")
@@ -1200,8 +1208,8 @@ func (c *Client) getDockerBridgeGatewayIP(ctx context.Context) string {
 // DeleteNetwork deletes a network by name.
 func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 	// find the network by name using filter for efficiency but verify exact match
-	networks, err := c.client.NetworkList(ctx, network.ListOptions{
-		Filters: filters.NewArgs(filters.Arg("name", name)),
+	networks, err := c.client.NetworkList(ctx, mobyclient.NetworkListOptions{
+		Filters: mobyclient.Filters{}.Add("name", name),
 	})
 	if err != nil {
 		return err
@@ -1209,7 +1217,7 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 
 	// Verify exact name match from filtered results
 	var networkToRemove *network.Summary
-	for _, n := range networks {
+	for _, n := range networks.Items {
 		if n.Name == name {
 			networkToRemove = &n
 			break
@@ -1222,7 +1230,7 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 		return nil
 	}
 
-	if err := c.client.NetworkRemove(ctx, networkToRemove.ID); err != nil {
+	if _, err := c.client.NetworkRemove(ctx, networkToRemove.ID, mobyclient.NetworkRemoveOptions{}); err != nil {
 		return fmt.Errorf("failed to remove network %s: %w", name, err)
 	}
 	return nil
@@ -1230,7 +1238,7 @@ func (c *Client) deleteNetwork(ctx context.Context, name string) error {
 
 // removeContainer removes a container by ID, without removing any associated networks or proxy containers.
 func (c *Client) removeContainer(ctx context.Context, containerID string) error {
-	err := c.api.ContainerRemove(ctx, containerID, container.RemoveOptions{
+	_, err := c.api.ContainerRemove(ctx, containerID, mobyclient.ContainerRemoveOptions{
 		Force: true,
 	})
 	if err != nil {
@@ -1276,7 +1284,7 @@ func (c *Client) removeProxyContainers(
 			continue
 		}
 
-		err = c.client.ContainerRemove(ctx, containerId, container.RemoveOptions{
+		_, err = c.client.ContainerRemove(ctx, containerId, mobyclient.ContainerRemoveOptions{
 			Force: true,
 		})
 		if err != nil {
@@ -1322,13 +1330,13 @@ func setupExposedPorts(config *container.Config, exposedPorts map[string]struct{
 		return nil
 	}
 
-	config.ExposedPorts = nat.PortSet{}
+	config.ExposedPorts = network.PortSet{}
 	for port := range exposedPorts {
-		natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
+		networkPort, err := network.ParsePort(strings.Split(port, "/")[0])
 		if err != nil {
 			return fmt.Errorf("failed to parse port: %w", err)
 		}
-		config.ExposedPorts[natPort] = struct{}{}
+		config.ExposedPorts[networkPort] = struct{}{}
 	}
 
 	return nil
@@ -1340,24 +1348,38 @@ func setupPortBindings(hostConfig *container.HostConfig, portBindings map[string
 		return nil
 	}
 
-	hostConfig.PortBindings = nat.PortMap{}
+	hostConfig.PortBindings = network.PortMap{}
 	for port, bindings := range portBindings {
-		natPort, err := nat.NewPort("tcp", strings.Split(port, "/")[0])
+		networkPort, err := network.ParsePort(strings.Split(port, "/")[0])
 		if err != nil {
 			return fmt.Errorf("failed to parse port: %w", err)
 		}
 
-		natBindings := make([]nat.PortBinding, len(bindings))
+		networkBindings := make([]network.PortBinding, len(bindings))
 		for i, binding := range bindings {
-			natBindings[i] = nat.PortBinding{
-				HostIP:   binding.HostIP,
+			hostIP, err := parseHostIP(binding.HostIP)
+			if err != nil {
+				return fmt.Errorf("failed to parse host IP %q: %w", binding.HostIP, err)
+			}
+			networkBindings[i] = network.PortBinding{
+				HostIP:   hostIP,
 				HostPort: binding.HostPort,
 			}
 		}
-		hostConfig.PortBindings[natPort] = natBindings
+		hostConfig.PortBindings[networkPort] = networkBindings
 	}
 
 	return nil
+}
+
+// parseHostIP converts a host IP string into a netip.Addr. An empty string
+// (meaning "all interfaces") maps to the zero netip.Addr, preserving the
+// previous behavior where an empty HostIP string was passed through verbatim.
+func parseHostIP(hostIP string) (netip.Addr, error) {
+	if hostIP == "" {
+		return netip.Addr{}, nil
+	}
+	return netip.ParseAddr(hostIP)
 }
 
 func (c *Client) createContainer(
@@ -1392,14 +1414,13 @@ func (c *Client) createContainer(
 	}
 
 	// Create the container
-	resp, err := c.api.ContainerCreate(
-		ctx,
-		config,
-		hostConfig,
-		networkConfig,
-		nil,
-		containerName,
-	)
+	resp, err := c.api.ContainerCreate(ctx, mobyclient.ContainerCreateOptions{
+		Config:           config,
+		HostConfig:       hostConfig,
+		NetworkingConfig: networkConfig,
+		Platform:         nil,
+		Name:             containerName,
+	})
 	if err != nil {
 		return "", NewContainerError(err, "", fmt.Sprintf("failed to create container: %v", err))
 	}
@@ -1409,7 +1430,7 @@ func (c *Client) createContainer(
 	}
 
 	// Start the container
-	err = c.api.ContainerStart(ctx, resp.ID, container.StartOptions{})
+	_, err = c.api.ContainerStart(ctx, resp.ID, mobyclient.ContainerStartOptions{})
 	if err != nil {
 		return "", NewContainerError(err, resp.ID, fmt.Sprintf("failed to start container: %v", err))
 	}
@@ -1465,16 +1486,21 @@ func (c *Client) createDnsContainer(ctx context.Context, dnsContainerName string
 		return "", "", fmt.Errorf("failed to create dns container: %w", err)
 	}
 
-	dnsContainerResponse, err := c.client.ContainerInspect(ctx, dnsContainerId)
+	dnsInspectResult, err := c.client.ContainerInspect(ctx, dnsContainerId, mobyclient.ContainerInspectOptions{})
 	if err != nil {
 		return "", "", fmt.Errorf("failed to inspect DNS container: %w", err)
 	}
 
-	dnsNetworkSettings, ok := dnsContainerResponse.NetworkSettings.Networks[networkName]
+	dnsNetworkSettings, ok := dnsInspectResult.Container.NetworkSettings.Networks[networkName]
 	if !ok {
 		return "", "", fmt.Errorf("network %s not found in container's network settings", networkName)
 	}
-	dnsContainerIP := dnsNetworkSettings.IPAddress
+	// EndpointSettings.IPAddress is a netip.Addr; render it back to the string
+	// form the callers expect, treating the zero value as an empty address.
+	dnsContainerIP := ""
+	if dnsNetworkSettings.IPAddress.IsValid() {
+		dnsContainerIP = dnsNetworkSettings.IPAddress.String()
+	}
 
 	return dnsContainerId, dnsContainerIP, nil
 }
@@ -1520,7 +1546,11 @@ func (c *Client) createMcpContainer(
 		},
 	}
 	if additionalDNS != "" {
-		hostConfig.DNS = []string{additionalDNS}
+		dnsAddr, err := netip.ParseAddr(additionalDNS)
+		if err != nil {
+			return NewContainerError(err, "", fmt.Sprintf("invalid additional DNS address %q: %v", additionalDNS, err))
+		}
+		hostConfig.DNS = []netip.Addr{dnsAddr}
 	}
 
 	// Configure ports if options are provided
@@ -1699,16 +1729,16 @@ func (c *Client) stopProxyContainer(ctx context.Context, containerName string, t
 	if containerId == "" {
 		return
 	}
-	if err := c.api.ContainerStop(ctx, containerId, container.StopOptions{Timeout: &timeoutSeconds}); err != nil {
+	if _, err := c.api.ContainerStop(ctx, containerId, mobyclient.ContainerStopOptions{Timeout: &timeoutSeconds}); err != nil {
 		slog.Debug("failed to stop internal container", "name", containerName, "error", err)
 	}
 }
 
 func (c *Client) deleteNetworks(ctx context.Context, containerName string) error {
 	// Delete networks if there are no containers using them.
-	toolHiveContainers, err := c.client.ContainerList(ctx, container.ListOptions{
+	toolHiveContainers, err := c.client.ContainerList(ctx, mobyclient.ContainerListOptions{
 		All:     true,
-		Filters: filters.NewArgs(filters.Arg("label", "toolhive=true")),
+		Filters: mobyclient.Filters{}.Add("label", "toolhive=true"),
 	})
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %w", err)
@@ -1721,7 +1751,7 @@ func (c *Client) deleteNetworks(ctx context.Context, containerName string) error
 		slog.Warn("failed to delete network", "name", networkName, "error", err)
 	}
 
-	if len(toolHiveContainers) == 0 {
+	if len(toolHiveContainers.Items) == 0 {
 		// remove external network
 		if err := c.deleteNetwork(ctx, "toolhive-external"); err != nil {
 			// just log the error and continue
@@ -1750,17 +1780,18 @@ func dockerToDomainStatus(status string) runtime.WorkloadStatus {
 // findContainerByLabel finds a container by the base name label.
 // Returns the container ID if found, empty string otherwise.
 func (c *Client) findContainerByLabel(ctx context.Context, workloadName string) (string, error) {
-	filterArgs := filters.NewArgs()
-	filterArgs.Add("label", "toolhive=true")
-	filterArgs.Add("label", fmt.Sprintf("toolhive-basename=%s", workloadName))
+	filterArgs := mobyclient.Filters{}.
+		Add("label", "toolhive=true").
+		Add("label", fmt.Sprintf("toolhive-basename=%s", workloadName))
 
-	containers, err := c.api.ContainerList(ctx, container.ListOptions{
+	listResult, err := c.api.ContainerList(ctx, mobyclient.ContainerListOptions{
 		All:     true,
 		Filters: filterArgs,
 	})
 	if err != nil {
 		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
 	}
+	containers := listResult.Items
 
 	if len(containers) == 0 {
 		return "", nil
@@ -1786,17 +1817,18 @@ func (c *Client) findContainerByLabel(ctx context.Context, workloadName string) 
 // Returns the container ID if found, empty string otherwise.
 // Uses container runtime's name filter for efficiency but then verifies exact match to prevent partial matching
 func (c *Client) findContainerByExactName(ctx context.Context, workloadName string) (string, error) {
-	filterArgs := filters.NewArgs()
-	filterArgs.Add("label", "toolhive=true")
-	filterArgs.Add("name", workloadName) // Use name filter for efficiency
+	filterArgs := mobyclient.Filters{}.
+		Add("label", "toolhive=true").
+		Add("name", workloadName) // Use name filter for efficiency
 
-	containers, err := c.api.ContainerList(ctx, container.ListOptions{
+	listResult, err := c.api.ContainerList(ctx, mobyclient.ContainerListOptions{
 		All:     true,
 		Filters: filterArgs,
 	})
 	if err != nil {
 		return "", NewContainerError(err, "", fmt.Sprintf("failed to list containers: %v", err))
 	}
+	containers := listResult.Items
 
 	if len(containers) == 0 {
 		return "", nil
@@ -1826,7 +1858,8 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 		return empty, err
 	}
 	if containerID != "" {
-		return c.api.ContainerInspect(ctx, containerID)
+		result, err := c.api.ContainerInspect(ctx, containerID, mobyclient.ContainerInspectOptions{})
+		return result.Container, err
 	}
 
 	// Fall back to exact name matching for backward compatibility
@@ -1838,5 +1871,6 @@ func (c *Client) inspectContainerByName(ctx context.Context, workloadName string
 		return empty, NewContainerError(runtime.ErrWorkloadNotFound, workloadName, "no containers found")
 	}
 
-	return c.api.ContainerInspect(ctx, containerID)
+	result, err := c.api.ContainerInspect(ctx, containerID, mobyclient.ContainerInspectOptions{})
+	return result.Container, err
 }

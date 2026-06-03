@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
+	"github.com/moby/moby/api/types/container"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -21,7 +22,7 @@ func TestListWorkloads_FiltersAuxiliaryAndMapsFields(t *testing.T) {
 	created := time.Now().Add(-1 * time.Hour).Unix()
 
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			return []container.Summary{
 				{
 					ID:      "aux1",
@@ -30,7 +31,7 @@ func TestListWorkloads_FiltersAuxiliaryAndMapsFields(t *testing.T) {
 					State:   "running",
 					Names:   []string{"/aux-name"},
 					Labels:  map[string]string{ToolhiveAuxiliaryWorkloadLabel: LabelValueTrue, "toolhive": "true"},
-					Ports:   []container.Port{{PrivatePort: 3128, PublicPort: 0, Type: "tcp"}},
+					Ports:   []container.PortSummary{{PrivatePort: 3128, PublicPort: 0, Type: "tcp"}},
 					Created: created,
 				},
 				{
@@ -40,7 +41,7 @@ func TestListWorkloads_FiltersAuxiliaryAndMapsFields(t *testing.T) {
 					State:   "running",
 					Names:   []string{"/mcp-name"},
 					Labels:  map[string]string{"toolhive": "true", "custom": "x"},
-					Ports:   []container.Port{{PrivatePort: 8080, PublicPort: 18080, Type: "tcp"}},
+					Ports:   []container.PortSummary{{PrivatePort: 8080, PublicPort: 18080, Type: "tcp"}},
 					Created: created,
 				},
 			}, nil

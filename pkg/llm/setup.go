@@ -110,8 +110,8 @@ func Setup(
 	// non-interactive and still runs, so the on-disk result is identical to a
 	// normal setup except that no OIDC token is obtained yet.
 	if lazy {
-		_, _ = fmt.Fprintln(out, "Lazy mode: skipping OIDC login. You'll be signed in automatically")
-		_, _ = fmt.Fprintln(out, "the first time a configured tool accesses the LLM gateway.")
+		_, _ = fmt.Fprintln(out, "Lazy mode: skipping OIDC login. You'll be signed in on the first")
+		_, _ = fmt.Fprintln(out, "request a configured tool makes to the LLM gateway.")
 	} else {
 		_, _ = fmt.Fprintln(out, "Ensuring you are logged in to the LLM gateway…")
 		if err := login(ctx, &llmCfg); err != nil {

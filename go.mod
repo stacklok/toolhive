@@ -2,6 +2,8 @@ module github.com/stacklok/toolhive
 
 go 1.26
 
+toolchain go1.26.4
+
 require (
 	dario.cat/mergo v1.0.2
 	github.com/1password/onepassword-sdk-go v0.3.1

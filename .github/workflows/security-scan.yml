@@ -56,8 +56,16 @@ jobs:
 
       - name: Check for vulnerabilities (with exclusions)
         run: |
-          # Ignored vulnerabilities with justification: none currently.
-          IGNORED_VULNS=""
+          # Ignored vulnerabilities with justification:
+          # Go stdlib advisories published 2026-06-02, all fixed in go1.26.4 /
+          # go1.25.11 (DoS / log-injection class, no RCE):
+          #   GO-2026-5037 (CVE-2026-27145, crypto/x509 VerifyHostname)
+          #   GO-2026-5038 (CVE-2026-42504, mime WordDecoder.DecodeHeader)
+          #   GO-2026-5039 (CVE-2026-42507, net/textproto error messages)
+          # CI's `setup-go: stable` still resolves to go1.26.3 because the
+          # actions/go-versions manifest lags the Go release. Temporary
+          # exclusion; remove once CI builds on go1.26.4 or later.
+          IGNORED_VULNS="GO-2026-5037 GO-2026-5038 GO-2026-5039"
 
           # Show the raw output for debugging
           echo "::group::govulncheck raw output"

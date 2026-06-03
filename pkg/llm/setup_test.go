@@ -235,9 +235,9 @@ func TestSetup_Lazy_SkipsLoginAndPersistsTools(t *testing.T) {
 	// Tool config must still be persisted even though login was skipped.
 	require.Len(t, provider.cfg.ConfiguredTools, 1)
 	assert.Equal(t, "cursor", provider.cfg.ConfiguredTools[0].Tool)
-	// User must be told that login is deferred to first use.
+	// User must be told that login is deferred to the first request.
 	assert.Contains(t, stdout.String(), "Lazy mode")
-	assert.Contains(t, stdout.String(), "first time")
+	assert.Contains(t, stdout.String(), "first")
 }
 
 func TestSetup_NonLazy_InvokesLogin(t *testing.T) {

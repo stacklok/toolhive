@@ -6,24 +6,16 @@ package factory
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"log/slog"
-	"math"
 	"net/http"
-	"os"
-	"time"
 
-	"github.com/redis/go-redis/v9"
-
-	"github.com/stacklok/toolhive/pkg/auth"
-	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
+	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
-
-const redisPingTimeout = 5 * time.Second
 
 // Config contains the vMCP rate-limit middleware inputs.
 type Config struct {
@@ -35,7 +27,7 @@ type Config struct {
 
 // NewMiddleware creates Redis-backed rate-limit middleware for vMCP.
 func NewMiddleware(
-	ctx context.Context,
+	_ context.Context,
 	cfg Config,
 ) (func(http.Handler) http.Handler, func(context.Context) error, error) {
 	if cfg.RateLimiting == nil {
@@ -48,88 +40,51 @@ func NewMiddleware(
 		return nil, nil, fmt.Errorf("rate limiting requires Redis session storage address")
 	}
 
-	client := redis.NewClient(&redis.Options{
-		Addr:     cfg.SessionStorage.Address,
-		DB:       int(cfg.SessionStorage.DB),
-		Password: os.Getenv(vmcpconfig.RedisPasswordEnvVar),
+	middlewareConfig, err := transporttypes.NewMiddlewareConfig(ratelimit.MiddlewareType, ratelimit.MiddlewareParams{
+		Namespace:  cfg.Namespace,
+		ServerName: cfg.ServerName,
+		Config:     cfg.RateLimiting,
+		RedisAddr:  cfg.SessionStorage.Address,
+		RedisDB:    cfg.SessionStorage.DB,
 	})
-
-	pingCtx, cancel := context.WithTimeout(ctx, redisPingTimeout)
-	defer cancel()
-	if err := client.Ping(pingCtx).Err(); err != nil {
-		_ = client.Close()
-		return nil, nil, fmt.Errorf("rate limit middleware: failed to connect to Redis at %s: %w",
-			cfg.SessionStorage.Address, err)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create rate limit middleware config: %w", err)
 	}
 
-	limiter, err := ratelimit.NewLimiter(client, cfg.Namespace, cfg.ServerName, cfg.RateLimiting)
-	if err != nil {
-		_ = client.Close()
-		return nil, nil, fmt.Errorf("failed to create rate limiter: %w", err)
+	runner := &captureRunner{}
+	if err := ratelimit.CreateMiddleware(middlewareConfig, runner); err != nil {
+		return nil, nil, err
+	}
+	if runner.middleware == nil {
+		return nil, nil, fmt.Errorf("rate limit middleware factory did not register middleware")
 	}
 
 	cleanup := func(context.Context) error {
-		return client.Close()
+		return runner.middleware.Close()
 	}
-	return rateLimitHandler(limiter), cleanup, nil
+	return runner.middleware.Handler(), cleanup, nil
 }
 
-func rateLimitHandler(limiter ratelimit.Limiter) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			parsed := mcpparser.GetParsedMCPRequest(r.Context())
-			if parsed == nil || parsed.Method != "tools/call" {
-				next.ServeHTTP(w, r)
-				return
-			}
-
-			var userID string
-			if identity, ok := auth.IdentityFromContext(r.Context()); ok {
-				userID = identity.Subject
-			}
-			decision, err := limiter.Allow(r.Context(), parsed.ResourceID, userID)
-			if err != nil {
-				slog.Warn("rate limit check failed, allowing request", "error", err)
-				next.ServeHTTP(w, r)
-				return
-			}
-			if !decision.Allowed {
-				writeRateLimited(w, parsed.ID, decision.RetryAfter)
-				return
-			}
-			next.ServeHTTP(w, r)
-		})
-	}
+type captureRunner struct {
+	middleware transporttypes.Middleware
 }
 
-func writeRateLimited(w http.ResponseWriter, requestID any, retryAfter time.Duration) {
-	retrySeconds := int(math.Ceil(retryAfter.Seconds()))
-	w.Header().Set("Content-Type", "application/json")
-	w.Header().Set("Retry-After", fmt.Sprintf("%d", retrySeconds))
-	w.WriteHeader(http.StatusTooManyRequests)
-	//nolint:gosec // G104: writing a static JSON error response to an HTTP client
-	_, _ = w.Write(rateLimitedBody(requestID, retryAfter))
+func (r *captureRunner) AddMiddleware(_ string, middleware transporttypes.Middleware) {
+	r.middleware = middleware
 }
 
-func rateLimitedBody(requestID any, retryAfter time.Duration) []byte {
-	retrySeconds := math.Ceil(retryAfter.Seconds())
-	resp := map[string]any{
-		"jsonrpc": "2.0",
-		"error": map[string]any{
-			"code":    ratelimit.CodeRateLimited,
-			"message": ratelimit.MessageRateLimited,
-			"data": map[string]any{
-				"retryAfterSeconds": retrySeconds,
-			},
-		},
-		"id": requestID,
-	}
-	data, err := json.Marshal(resp)
-	if err != nil {
-		return []byte(fmt.Sprintf(
-			`{"jsonrpc":"2.0","error":{"code":-32029,"message":"Rate limit exceeded","data":{"retryAfterSeconds":%.0f}},"id":null}`,
-			retrySeconds,
-		))
-	}
-	return data
+func (*captureRunner) SetAuthInfoHandler(http.Handler) {}
+
+func (*captureRunner) SetPrometheusHandler(http.Handler) {}
+
+func (*captureRunner) GetConfig() transporttypes.RunnerConfig {
+	return nil
+}
+
+func (*captureRunner) GetUpstreamTokenReader() upstreamtoken.TokenReader {
+	return nil
+}
+
+func (*captureRunner) GetKeyProvider() keys.PublicKeyProvider {
+	return nil
 }

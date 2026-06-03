@@ -23,17 +23,6 @@ import (
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-type recordingLimiter struct {
-	toolName string
-	userID   string
-}
-
-func (r *recordingLimiter) Allow(_ context.Context, toolName, userID string) (*ratelimit.Decision, error) {
-	r.toolName = toolName
-	r.userID = userID
-	return &ratelimit.Decision{Allowed: true}, nil
-}
-
 func TestNewMiddlewareDisabledWithoutConfig(t *testing.T) {
 	t.Parallel()
 
@@ -167,26 +156,6 @@ func TestRateLimitMiddlewareUsesPostAggregationToolNames(t *testing.T) {
 
 	secondMatchingTool := serveToolCall(t, handler, "backend_a_echo", "")
 	assert.Equal(t, http.StatusTooManyRequests, secondMatchingTool.Code)
-}
-
-func TestRateLimitHandlerPassesParsedResourceIDAndUserID(t *testing.T) {
-	t.Parallel()
-
-	recorder := &recordingLimiter{}
-	handler := rateLimitHandler(recorder)(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	req = withParsedMCPRequest(req, "tools/call", "backend_a_echo", 1)
-	req = withIdentity(req, "alice@example.com")
-	w := httptest.NewRecorder()
-
-	handler.ServeHTTP(w, req)
-
-	assert.Equal(t, http.StatusOK, w.Code)
-	assert.Equal(t, "backend_a_echo", recorder.toolName)
-	assert.Equal(t, "alice@example.com", recorder.userID)
 }
 
 func newTestRateLimitHandler(t *testing.T, cfg *ratelimittypes.RateLimitConfig) http.Handler {

@@ -7,64 +7,91 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 // fakeDockerAPI provides a minimal test double for dockerAPI used by Client.
-// Centralized here for reuse across tests.
+// Centralized here for reuse across tests. The hook signatures mirror the
+// redesigned moby/moby client API that Client.api targets.
 type fakeDockerAPI struct {
-	listFunc    func(ctx context.Context, options container.ListOptions) ([]container.Summary, error)
+	listFunc    func(ctx context.Context, options mobyclient.ContainerListOptions) ([]container.Summary, error)
 	inspectFunc func(ctx context.Context, id string) (container.InspectResponse, error)
-	stopFunc    func(ctx context.Context, containerID string, options container.StopOptions) error
+	stopFunc    func(ctx context.Context, containerID string, options mobyclient.ContainerStopOptions) error
 
 	// additional hooks to satisfy extended dockerAPI for create/start/remove
 	createFunc func(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *v1.Platform, containerName string) (container.CreateResponse, error)
-	startFunc  func(ctx context.Context, containerID string, options container.StartOptions) error
-	removeFunc func(ctx context.Context, containerID string, options container.RemoveOptions) error
+	startFunc  func(ctx context.Context, containerID string, options mobyclient.ContainerStartOptions) error
+	removeFunc func(ctx context.Context, containerID string, options mobyclient.ContainerRemoveOptions) error
 }
 
-func (f *fakeDockerAPI) ContainerList(ctx context.Context, options container.ListOptions) ([]container.Summary, error) {
+func (f *fakeDockerAPI) ContainerList(
+	ctx context.Context,
+	options mobyclient.ContainerListOptions,
+) (mobyclient.ContainerListResult, error) {
 	if f.listFunc != nil {
-		return f.listFunc(ctx, options)
+		items, err := f.listFunc(ctx, options)
+		return mobyclient.ContainerListResult{Items: items}, err
 	}
-	return nil, nil
+	return mobyclient.ContainerListResult{}, nil
 }
 
-func (f *fakeDockerAPI) ContainerInspect(ctx context.Context, id string) (container.InspectResponse, error) {
+func (f *fakeDockerAPI) ContainerInspect(
+	ctx context.Context,
+	id string,
+	_ mobyclient.ContainerInspectOptions,
+) (mobyclient.ContainerInspectResult, error) {
 	if f.inspectFunc != nil {
-		return f.inspectFunc(ctx, id)
+		resp, err := f.inspectFunc(ctx, id)
+		return mobyclient.ContainerInspectResult{Container: resp}, err
 	}
-	return container.InspectResponse{}, nil
+	return mobyclient.ContainerInspectResult{}, nil
 }
 
-func (f *fakeDockerAPI) ContainerStop(ctx context.Context, containerID string, options container.StopOptions) error {
+func (f *fakeDockerAPI) ContainerStop(
+	ctx context.Context,
+	containerID string,
+	options mobyclient.ContainerStopOptions,
+) (mobyclient.ContainerStopResult, error) {
 	if f.stopFunc != nil {
-		return f.stopFunc(ctx, containerID, options)
+		return mobyclient.ContainerStopResult{}, f.stopFunc(ctx, containerID, options)
 	}
-	return nil
+	return mobyclient.ContainerStopResult{}, nil
 }
 
-func (f *fakeDockerAPI) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *v1.Platform, containerName string) (container.CreateResponse, error) {
+func (f *fakeDockerAPI) ContainerCreate(
+	ctx context.Context,
+	options mobyclient.ContainerCreateOptions,
+) (mobyclient.ContainerCreateResult, error) {
 	if f.createFunc != nil {
-		return f.createFunc(ctx, config, hostConfig, networkingConfig, platform, containerName)
+		resp, err := f.createFunc(ctx, options.Config, options.HostConfig, options.NetworkingConfig, options.Platform, options.Name)
+		return mobyclient.ContainerCreateResult{ID: resp.ID, Warnings: resp.Warnings}, err
 	}
-	return container.CreateResponse{}, nil
+	return mobyclient.ContainerCreateResult{}, nil
 }
 
-func (f *fakeDockerAPI) ContainerStart(ctx context.Context, containerID string, options container.StartOptions) error {
+func (f *fakeDockerAPI) ContainerStart(
+	ctx context.Context,
+	containerID string,
+	options mobyclient.ContainerStartOptions,
+) (mobyclient.ContainerStartResult, error) {
 	if f.startFunc != nil {
-		return f.startFunc(ctx, containerID, options)
+		return mobyclient.ContainerStartResult{}, f.startFunc(ctx, containerID, options)
 	}
-	return nil
+	return mobyclient.ContainerStartResult{}, nil
 }
 
-func (f *fakeDockerAPI) ContainerRemove(ctx context.Context, containerID string, options container.RemoveOptions) error {
+func (f *fakeDockerAPI) ContainerRemove(
+	ctx context.Context,
+	containerID string,
+	options mobyclient.ContainerRemoveOptions,
+) (mobyclient.ContainerRemoveResult, error) {
 	if f.removeFunc != nil {
-		return f.removeFunc(ctx, containerID, options)
+		return mobyclient.ContainerRemoveResult{}, f.removeFunc(ctx, containerID, options)
 	}
-	return nil
+	return mobyclient.ContainerRemoveResult{}, nil
 }
 
 // fakeImageManager provides a minimal test double for ImageManager

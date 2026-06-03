@@ -6,11 +6,12 @@ package docker
 import (
 	"context"
 	"fmt"
+	"net/netip"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/network"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,7 +39,7 @@ func TestCreateMcpContainer_Isolated_WiresConfigAndNetworks(t *testing.T) {
 			assert.Equal(t, "app", name)
 			return container.CreateResponse{ID: "cid-new"}, nil
 		},
-		startFunc: func(_ context.Context, id string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, id string, _ mobyclient.ContainerStartOptions) error {
 			startCalled = true
 			assert.Equal(t, "cid-new", id)
 			return nil
@@ -98,7 +99,7 @@ func TestCreateMcpContainer_Isolated_WiresConfigAndNetworks(t *testing.T) {
 	assert.Equal(t, labels, gotConfig.Labels)
 
 	// Exposed ports set
-	p8080, err := nat.NewPort("tcp", "8080")
+	p8080, err := network.ParsePort("8080")
 	require.NoError(t, err)
 	require.Contains(t, gotConfig.ExposedPorts, p8080)
 
@@ -109,12 +110,12 @@ func TestCreateMcpContainer_Isolated_WiresConfigAndNetworks(t *testing.T) {
 	assert.Equal(t, []string{"ALL"}, []string(gotHost.CapDrop))
 	assert.Equal(t, []string{"seccomp:unconfined"}, gotHost.SecurityOpt)
 	assert.Equal(t, false, gotHost.Privileged)
-	assert.Equal(t, []string{"1.2.3.4"}, gotHost.DNS)
+	assert.Equal(t, []netip.Addr{netip.MustParseAddr("1.2.3.4")}, gotHost.DNS)
 
 	// Port bindings wired
 	require.Contains(t, gotHost.PortBindings, p8080)
 	require.Len(t, gotHost.PortBindings[p8080], 1)
-	assert.Equal(t, "127.0.0.1", gotHost.PortBindings[p8080][0].HostIP)
+	assert.Equal(t, netip.MustParseAddr("127.0.0.1"), gotHost.PortBindings[p8080][0].HostIP)
 	assert.Equal(t, "18080", gotHost.PortBindings[p8080][0].HostPort)
 
 	// Networking config points to internal network when isolated
@@ -134,7 +135,7 @@ func TestCreateMcpContainer_NonIsolated_UsesExternalNetwork(t *testing.T) {
 			gotNet = netCfg
 			return container.CreateResponse{ID: "cid-new"}, nil
 		},
-		startFunc: func(_ context.Context, _ string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStartOptions) error {
 			return nil
 		},
 	}
@@ -171,7 +172,7 @@ func TestCreateContainer_CreateAndStart_New(t *testing.T) {
 	var started bool
 
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			// No existing container
 			return []container.Summary{}, nil
 		},
@@ -181,7 +182,7 @@ func TestCreateContainer_CreateAndStart_New(t *testing.T) {
 			gotNet = netCfg
 			return container.CreateResponse{ID: "cid-new"}, nil
 		},
-		startFunc: func(_ context.Context, id string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, id string, _ mobyclient.ContainerStartOptions) error {
 			started = true
 			assert.Equal(t, "cid-new", id)
 			return nil
@@ -218,7 +219,7 @@ func TestCreateContainer_ReuseExisting_WhenConfigMatchesAndStartIfStopped(t *tes
 
 	api := &fakeDockerAPI{
 		// findExistingContainer will call ContainerList filtering by name
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			return []container.Summary{
 				{ID: "cid-reuse", Names: []string{"/reuse"}},
 			}, nil
@@ -227,18 +228,16 @@ func TestCreateContainer_ReuseExisting_WhenConfigMatchesAndStartIfStopped(t *tes
 			require.Equal(t, "cid-reuse", id)
 			// Existing matches desired (all zero-values) and is not running
 			return container.InspectResponse{
-				Config: &container.Config{},
-				ContainerJSONBase: &container.ContainerJSONBase{
-					HostConfig: &container.HostConfig{},
-					State:      &container.State{Status: "exited", Running: false},
-				},
+				Config:     &container.Config{},
+				HostConfig: &container.HostConfig{},
+				State:      &container.State{Status: "exited", Running: false},
 			}, nil
 		},
 		createFunc: func(_ context.Context, _ *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *v1.Platform, _ string) (container.CreateResponse, error) {
 			createCalled = true
 			return container.CreateResponse{ID: "cid-should-not"}, nil
 		},
-		startFunc: func(_ context.Context, id string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, id string, _ mobyclient.ContainerStartOptions) error {
 			startCalled = true
 			assert.Equal(t, "cid-reuse", id)
 			return nil
@@ -266,7 +265,7 @@ func TestCreateContainer_Mismatch_RemovesAndRecreates(t *testing.T) {
 	hcfg := &container.HostConfig{}
 
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			return []container.Summary{
 				{ID: "cid-old", Names: []string{"/app"}},
 			}, nil
@@ -275,14 +274,12 @@ func TestCreateContainer_Mismatch_RemovesAndRecreates(t *testing.T) {
 			require.Equal(t, "cid-old", id)
 			// Existing image different -> mismatch path
 			return container.InspectResponse{
-				Config: &container.Config{Image: "different"},
-				ContainerJSONBase: &container.ContainerJSONBase{
-					HostConfig: &container.HostConfig{},
-					State:      &container.State{Status: "running", Running: true},
-				},
+				Config:     &container.Config{Image: "different"},
+				HostConfig: &container.HostConfig{},
+				State:      &container.State{Status: "running", Running: true},
 			}, nil
 		},
-		removeFunc: func(_ context.Context, id string, _ container.RemoveOptions) error {
+		removeFunc: func(_ context.Context, id string, _ mobyclient.ContainerRemoveOptions) error {
 			removedID = id
 			return nil
 		},
@@ -290,7 +287,7 @@ func TestCreateContainer_Mismatch_RemovesAndRecreates(t *testing.T) {
 			created = true
 			return container.CreateResponse{ID: "cid-new"}, nil
 		},
-		startFunc: func(_ context.Context, id string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, id string, _ mobyclient.ContainerStartOptions) error {
 			started = true
 			assert.Equal(t, "cid-new", id)
 			return nil
@@ -316,7 +313,7 @@ func TestCreateMcpContainer_InvalidExposedPort_ReturnsError(t *testing.T) {
 			t.Fatalf("ContainerCreate should not be called when exposed ports are invalid")
 			return container.CreateResponse{}, nil
 		},
-		startFunc: func(_ context.Context, _ string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStartOptions) error {
 			t.Fatalf("ContainerStart should not be called when exposed ports are invalid")
 			return nil
 		},
@@ -356,7 +353,7 @@ func TestCreateMcpContainer_InvalidPortBinding_ReturnsError(t *testing.T) {
 			t.Fatalf("ContainerCreate should not be called when port bindings are invalid")
 			return container.CreateResponse{}, nil
 		},
-		startFunc: func(_ context.Context, _ string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStartOptions) error {
 			t.Fatalf("ContainerStart should not be called when port bindings are invalid")
 			return nil
 		},
@@ -400,7 +397,7 @@ func TestCreateMcpContainer_NoAdditionalDNS_DNSNotSet(t *testing.T) {
 			gotHost = host
 			return container.CreateResponse{ID: "cid-dns"}, nil
 		},
-		startFunc: func(_ context.Context, _ string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStartOptions) error {
 			return nil
 		},
 	}
@@ -432,7 +429,7 @@ func TestCreateContainer_ListError_Propagates(t *testing.T) {
 	ctx := t.Context()
 
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			return nil, fmt.Errorf("list fail")
 		},
 	}
@@ -448,7 +445,7 @@ func TestCreateContainer_InspectError_Propagates(t *testing.T) {
 	ctx := t.Context()
 
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			return []container.Summary{
 				{ID: "cid1", Names: []string{"/x"}},
 			}, nil
@@ -469,21 +466,19 @@ func TestCreateContainer_StartExistingError_Wrapped(t *testing.T) {
 	ctx := t.Context()
 
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			return []container.Summary{
 				{ID: "cid-exist", Names: []string{"/svc"}},
 			}, nil
 		},
 		inspectFunc: func(_ context.Context, _ string) (container.InspectResponse, error) {
 			return container.InspectResponse{
-				Config: &container.Config{},
-				ContainerJSONBase: &container.ContainerJSONBase{
-					HostConfig: &container.HostConfig{},
-					State:      &container.State{Status: "exited", Running: false},
-				},
+				Config:     &container.Config{},
+				HostConfig: &container.HostConfig{},
+				State:      &container.State{Status: "exited", Running: false},
 			}, nil
 		},
-		startFunc: func(_ context.Context, _ string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStartOptions) error {
 			return fmt.Errorf("start fail")
 		},
 	}
@@ -500,7 +495,7 @@ func TestCreateContainer_CreateError_Wrapped(t *testing.T) {
 	ctx := t.Context()
 
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			return []container.Summary{}, nil
 		},
 		createFunc: func(_ context.Context, _ *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *v1.Platform, _ string) (container.CreateResponse, error) {
@@ -520,13 +515,13 @@ func TestCreateContainer_StartError_Wrapped(t *testing.T) {
 	ctx := t.Context()
 
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			return []container.Summary{}, nil
 		},
 		createFunc: func(_ context.Context, _ *container.Config, _ *container.HostConfig, _ *network.NetworkingConfig, _ *v1.Platform, _ string) (container.CreateResponse, error) {
 			return container.CreateResponse{ID: "cid-new"}, nil
 		},
-		startFunc: func(_ context.Context, _ string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStartOptions) error {
 			return fmt.Errorf("start fail")
 		},
 	}
@@ -543,7 +538,7 @@ func TestCreateContainer_RemoveError_Propagates(t *testing.T) {
 	ctx := t.Context()
 
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			return []container.Summary{
 				{ID: "cid-old", Names: []string{"/svc"}},
 			}, nil
@@ -551,14 +546,12 @@ func TestCreateContainer_RemoveError_Propagates(t *testing.T) {
 		inspectFunc: func(_ context.Context, _ string) (container.InspectResponse, error) {
 			// Mismatch to force recreation
 			return container.InspectResponse{
-				Config: &container.Config{Image: "different"},
-				ContainerJSONBase: &container.ContainerJSONBase{
-					HostConfig: &container.HostConfig{},
-					State:      &container.State{Status: "running", Running: true},
-				},
+				Config:     &container.Config{Image: "different"},
+				HostConfig: &container.HostConfig{},
+				State:      &container.State{Status: "running", Running: true},
 			}, nil
 		},
-		removeFunc: func(_ context.Context, id string, _ container.RemoveOptions) error {
+		removeFunc: func(_ context.Context, id string, _ mobyclient.ContainerRemoveOptions) error {
 			return fmt.Errorf("remove fail: %s", id)
 		},
 	}

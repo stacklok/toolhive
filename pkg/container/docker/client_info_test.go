@@ -5,11 +5,13 @@ package docker
 
 import (
 	"context"
+	"net/netip"
 	"testing"
 	"time"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -24,7 +26,7 @@ func TestGetWorkloadInfo_MapsInspectResponseToDomain(t *testing.T) {
 
 	call := 0
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			call++
 			if call == 1 {
 				// First call: find by base name label -> return empty to force fallback
@@ -42,20 +44,18 @@ func TestGetWorkloadInfo_MapsInspectResponseToDomain(t *testing.T) {
 		},
 		inspectFunc: func(_ context.Context, id string) (container.InspectResponse, error) {
 			require.Equal(t, "cid-123", id)
-			p8080, err := nat.NewPort("tcp", "8080")
+			p8080, err := network.ParsePort("8080")
 			require.NoError(t, err)
 
 			ns := &container.NetworkSettings{}
-			ns.Ports = nat.PortMap{
-				p8080: []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: "18080"}},
+			ns.Ports = network.PortMap{
+				p8080: []network.PortBinding{{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: "18080"}},
 			}
 
 			return container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:    "/mcp",
-					Created: createdStr,
-					State:   &container.State{Status: "running", Running: true},
-				},
+				Name:    "/mcp",
+				Created: createdStr,
+				State:   &container.State{Status: "running", Running: true},
 				Config: &container.Config{
 					Image:  "ghcr.io/example/mcp:latest",
 					Labels: map[string]string{"toolhive": "true", "k": "v"},
@@ -86,7 +86,7 @@ func TestIsWorkloadRunning_TrueWhenDockerReportsRunning(t *testing.T) {
 
 	call := 0
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			call++
 			if call == 1 {
 				// First call: base name lookup -> not found
@@ -106,13 +106,11 @@ func TestIsWorkloadRunning_TrueWhenDockerReportsRunning(t *testing.T) {
 			require.Equal(t, "cid-xyz", id)
 
 			ns := &container.NetworkSettings{}
-			ns.Ports = nat.PortMap{}
+			ns.Ports = network.PortMap{}
 
 			return container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:  "/server",
-					State: &container.State{Status: "running", Running: true},
-				},
+				Name:  "/server",
+				State: &container.State{Status: "running", Running: true},
 				Config: &container.Config{
 					Image: "img",
 				},
@@ -134,7 +132,7 @@ func TestGetWorkloadInfo_PortParseAndCreatedFallback(t *testing.T) {
 
 	call := 0
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			call++
 			if call == 1 {
 				// First attempt (label-based) -> none found
@@ -154,19 +152,17 @@ func TestGetWorkloadInfo_PortParseAndCreatedFallback(t *testing.T) {
 			require.Equal(t, "cid-badfields", id)
 
 			// Non-numeric host port; GetWorkloadInfo should log a warning and fall back to 0
-			p8080, err := nat.NewPort("tcp", "8080")
+			p8080, err := network.ParsePort("8080")
 			require.NoError(t, err)
 			ns := &container.NetworkSettings{}
-			ns.Ports = nat.PortMap{
-				p8080: []nat.PortBinding{{HostIP: "127.0.0.1", HostPort: "abc"}},
+			ns.Ports = network.PortMap{
+				p8080: []network.PortBinding{{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: "abc"}},
 			}
 
 			return container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:    "/svc-bad",
-					State:   &container.State{Status: "exited", Running: false},
-					Created: "not-a-time", // invalid RFC3339 -> Created should be zero time
-				},
+				Name:            "/svc-bad",
+				State:           &container.State{Status: "exited", Running: false},
+				Created:         "not-a-time", // invalid RFC3339 -> Created should be zero time
 				Config:          &container.Config{Image: "img", Labels: map[string]string{"toolhive": "true"}},
 				NetworkSettings: ns,
 			}, nil

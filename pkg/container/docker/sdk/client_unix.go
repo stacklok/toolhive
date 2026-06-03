@@ -14,7 +14,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/docker/docker/client"
+	mobyclient "github.com/moby/moby/client"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
@@ -23,7 +23,7 @@ import (
 var ErrRuntimeNotFound = fmt.Errorf("container runtime not found")
 
 // newPlatformClient creates a Docker client using Unix sockets
-func newPlatformClient(socketPath string) (*http.Client, []client.Opt) {
+func newPlatformClient(socketPath string) (*http.Client, []mobyclient.Opt) {
 	// Create a custom HTTP client that uses the Unix socket
 	httpClient := &http.Client{
 		Transport: &http.Transport{
@@ -33,11 +33,12 @@ func newPlatformClient(socketPath string) (*http.Client, []client.Opt) {
 		},
 	}
 
-	// Create Docker client options
-	opts := []client.Opt{
-		client.WithAPIVersionNegotiation(),
-		client.WithHTTPClient(httpClient),
-		client.WithHost("unix://" + socketPath),
+	// Create Docker client options. API-version negotiation is enabled by
+	// default in the new client, so it no longer needs to be requested
+	// explicitly.
+	opts := []mobyclient.Opt{
+		mobyclient.WithHTTPClient(httpClient),
+		mobyclient.WithHost("unix://" + socketPath),
 	}
 
 	return httpClient, opts

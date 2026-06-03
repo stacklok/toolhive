@@ -18,8 +18,8 @@ require (
 	github.com/charmbracelet/x/ansi v0.11.7
 	github.com/containerd/errdefs v1.0.0
 	github.com/coreos/go-oidc/v3 v3.18.0
-	github.com/docker/docker v28.5.2+incompatible
-	github.com/docker/go-connections v0.7.0
+	github.com/docker/docker v28.5.2+incompatible // indirect
+	github.com/docker/go-connections v0.7.0 // indirect
 	github.com/evanphx/json-patch/v5 v5.9.11
 	github.com/go-chi/chi/v5 v5.2.5
 	github.com/go-git/go-billy/v5 v5.9.0
@@ -208,7 +208,7 @@ require (
 	github.com/mfridman/interpolate v0.0.2 // indirect
 	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/moby/go-archive v0.1.0 // indirect
-	github.com/moby/moby/api v1.54.2 // indirect
+	github.com/moby/moby/api v1.54.2
 	github.com/moby/patternmatcher v0.6.0 // indirect
 	github.com/moby/spdystream v0.5.1 // indirect
 	github.com/moby/sys/sequential v0.6.0 // indirect

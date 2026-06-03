@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -29,13 +30,26 @@ func runSetupWithOIDCCompletion(
 	oidcServer *e2e.OIDCMockServer,
 	extraArgs ...string,
 ) (string, string, error) {
+	return runWithOIDCCompletion(thvCmd, oidcServer, append([]string{"llm", "setup"}, extraArgs...)...)
+}
+
+// runWithOIDCCompletion runs an arbitrary "thv" command in a goroutine and
+// concurrently satisfies the OIDC authorization request it triggers, so a
+// command that performs the interactive browser login flow (e.g. "thv llm
+// token" after a lazy setup) completes without a real browser. It returns an
+// error if the command exits before an auth request arrives — i.e. it did not
+// actually start the browser flow.
+func runWithOIDCCompletion(
+	thvCmd func(args ...string) *e2e.THVCommand,
+	oidcServer *e2e.OIDCMockServer,
+	args ...string,
+) (string, string, error) {
 	type result struct {
 		stdout, stderr string
 		err            error
 	}
 	done := make(chan result, 1)
 
-	args := append([]string{"llm", "setup"}, extraArgs...)
 	cmd := thvCmd(args...)
 	go func() {
 		stdout, stderr, err := cmd.RunWithTimeout(60 * time.Second)
@@ -382,6 +396,84 @@ var _ = Describe("thv llm setup / teardown", Label("cli", "llm", "setup", "e2e")
 				"ConfiguredTools should be empty after teardown --purge-tokens")
 			Expect(cfg.OIDC.CachedRefreshTokenRef).To(BeEmpty(),
 				"cached token reference should be cleared after purge")
+		})
+	})
+
+	// ── Test 6 ────────────────────────────────────────────────────────────────
+
+	Describe("thv llm setup --lazy", func() {
+		It("configures tools without logging in and prints a deferred-login message", func() {
+			// Create ~/.claude/ and stub the claude binary so Claude Code is detected.
+			claudeDir := filepath.Join(tempDir, ".claude")
+			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
+
+			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+
+			By("Running thv llm setup --lazy (must complete with no browser flow)")
+			// Run directly: lazy mode must finish without ever triggering OIDC, so
+			// there is no auth request to satisfy. A bounded timeout guards against a
+			// regression that re-introduces the inline login.
+			stdout, stderr, err := thvCmd(
+				"llm", "setup", "--lazy",
+				"--gateway-url", gatewayURL,
+				"--issuer", issuerURL,
+				"--client-id", clientID,
+			).RunWithTimeout(30 * time.Second)
+			Expect(err).ToNot(HaveOccurred(),
+				"lazy setup should succeed without a browser; stdout=%q stderr=%q", stdout, stderr)
+
+			By("Verifying the deferred-login message was printed")
+			Expect(stdout).To(ContainSubstring("Lazy mode"),
+				"lazy mode should tell the user login is deferred")
+
+			By("Verifying ~/.claude/settings.json was patched just like a normal setup")
+			settingsPath := filepath.Join(tempDir, ".claude", "settings.json")
+			data, err := os.ReadFile(settingsPath)
+			Expect(err).ToNot(HaveOccurred(), "settings.json should exist after lazy setup")
+			var settings map[string]any
+			Expect(json.Unmarshal(data, &settings)).To(Succeed())
+			Expect(settings).To(HaveKey("apiKeyHelper"),
+				"apiKeyHelper should be set even in lazy mode")
+
+			By("Verifying ConfiguredTools was persisted")
+			showOut, _ := thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+			var cfg llm.Config
+			Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+			Expect(cfg.ConfiguredTools).ToNot(BeEmpty(),
+				"at least one tool should be configured after lazy setup")
+		})
+	})
+
+	// ── Test 7 ────────────────────────────────────────────────────────────────
+
+	Describe("thv llm token after a lazy setup", func() {
+		It("triggers the deferred OIDC login and prints a fresh token", func() {
+			claudeDir := filepath.Join(tempDir, ".claude")
+			Expect(os.MkdirAll(claudeDir, 0750)).To(Succeed())
+			Expect(createFakeBinary(binDir, "claude")).To(Succeed())
+
+			issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+
+			By("Running thv llm setup --lazy")
+			stdout, stderr, err := thvCmd(
+				"llm", "setup", "--lazy",
+				"--gateway-url", gatewayURL,
+				"--issuer", issuerURL,
+				"--client-id", clientID,
+			).RunWithTimeout(30 * time.Second)
+			Expect(err).ToNot(HaveOccurred(),
+				"lazy setup should succeed; stdout=%q stderr=%q", stdout, stderr)
+
+			By("Running thv llm token — must launch the deferred OIDC browser flow")
+			// With no cached token after a lazy setup, "thv llm token" launches the
+			// same browser flow setup would have run. The fake browser triggers the
+			// auth request; runWithOIDCCompletion satisfies the callback.
+			tokenOut, tokenStderr, err := runWithOIDCCompletion(thvCmd, oidcServer, "llm", "token")
+			Expect(err).ToNot(HaveOccurred(),
+				"deferred login via token should succeed; stdout=%q stderr=%q", tokenOut, tokenStderr)
+			Expect(strings.TrimSpace(tokenOut)).ToNot(BeEmpty(),
+				"a fresh token should be printed to stdout after deferred login")
 		})
 	})
 })

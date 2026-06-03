@@ -39,9 +39,8 @@ import (
 //     context (anti-pattern #1). A nil identity is anonymous; bound-identity
 //     mismatch is the caller's concern only at the session layer (in Serve), not
 //     here — the core takes an already-authenticated *auth.Identity. The
-//     nil-identity/anonymous semantics mirror
-//     [pkg/vmcp/session/types.ShouldAllowAnonymous]; the concrete behavior is
-//     reproduced by New.
+//     nil-identity/anonymous semantics mirror session/types.ShouldAllowAnonymous;
+//     the concrete behavior is reproduced by New.
 //   - Implementations MUST be safe for concurrent use.
 //   - Decorators may only SUBTRACT reachability: filter list output or refuse a
 //     call before delegating to inner. They hold only an inner VMCP and have no
@@ -50,7 +49,7 @@ import (
 //   - args/meta maps are treated as read-only; the core copies before mutating
 //     (go-style: copy before mutating caller input).
 //   - ReadResource results: Meta may be nil — the mcp-go resources/read handler
-//     cannot forward _meta (see [vmcp.ResourceReadResult] and types.go:556-561).
+//     cannot forward _meta (see the NOTE on [vmcp.ResourceReadResult].Meta).
 //     Do not rely on it.
 //
 // ctx is used only for cancellation, deadlines, and trace propagation — never to

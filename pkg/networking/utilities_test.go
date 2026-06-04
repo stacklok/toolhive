@@ -314,6 +314,31 @@ func TestIsPrivateIP(t *testing.T) {
 		{"documentation TEST-NET-3", "203.0.113.1", true},
 		{"public IPv4", "8.8.8.8", false},
 		{"public IPv6", "2001:db8::1", false},
+
+		// Unspecified / "this host" / reserved ranges (defense-in-depth).
+		{"unspecified IPv4", "0.0.0.0", true},
+		{"unspecified IPv6", "::", true},
+		{`RFC1122 "this host" 0.x`, "0.1.2.3", true},
+		{"Class E reserved", "240.0.0.1", true},
+		{"limited broadcast", "255.255.255.255", true},
+
+		// NAT64 (RFC 6052 / RFC 8215): classified by the embedded IPv4.
+		// IPv4-mapped form is still caught by the link-local check, not NAT64.
+		{"IPv4-mapped link-local", "::ffff:169.254.169.254", true},
+		// Well-known prefix 64:ff9b::/96 embedding a private/link-local IPv4.
+		{"NAT64 well-known -> IMDS link-local", "64:ff9b::a9fe:a9fe", true},
+		{"NAT64 well-known -> loopback", "64:ff9b::7f00:1", true},
+		{"NAT64 well-known -> RFC1918 10.x", "64:ff9b::a00:1", true},
+		{"NAT64 well-known -> RFC1918 192.168.x", "64:ff9b::c0a8:1", true},
+		// Well-known prefix embedding a genuinely public IPv4 must stay allowed.
+		{"NAT64 well-known -> public", "64:ff9b::8.8.8.8", false},
+		// Local-use /96 sub-prefix is decoded the same way.
+		{"NAT64 local-use /96 -> IMDS", "64:ff9b:1::a9fe:a9fe", true},
+		{"NAT64 local-use /96 -> public", "64:ff9b:1::8.8.8.8", false},
+		// Remainder of the local-use /48 uses a non-/96 embedding that cannot be
+		// decoded, so it is blocked wholesale even when the low 32 bits look
+		// public (would otherwise be a false-negative SSRF bypass).
+		{"NAT64 local-use non-/96 blocked", "64:ff9b:1:1::8.8.8.8", true},
 	}
 
 	for _, tt := range tests {
@@ -385,6 +410,31 @@ func TestAddressReferencesPrivateIp(t *testing.T) {
 		{
 			name:        "IPv6 unique local with port",
 			address:     "[fc00::1]:80",
+			expectError: true,
+		},
+		{
+			name:        "NAT64 well-known to IMDS with port",
+			address:     "[64:ff9b::a9fe:a9fe]:443",
+			expectError: true,
+		},
+		{
+			name:        "NAT64 local-use to IMDS with port",
+			address:     "[64:ff9b:1::a9fe:a9fe]:443",
+			expectError: true,
+		},
+		{
+			name:        "NAT64 to public IPv4 with port",
+			address:     "[64:ff9b::8.8.8.8]:443",
+			expectError: false,
+		},
+		{
+			name:        "unspecified IPv4 with port",
+			address:     "0.0.0.0:80",
+			expectError: true,
+		},
+		{
+			name:        "unspecified IPv6 with port",
+			address:     "[::]:80",
 			expectError: true,
 		},
 

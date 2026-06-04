@@ -395,7 +395,14 @@ func TestIdentityNotLogged(t *testing.T) {
 
 	const secret = "super-secret-token-value"
 
-	m.reg.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+	// An excluded backend makes filterHealthyBackends emit a DEBUG log on every
+	// aggregatedView, guaranteeing the buffer is non-empty so the assertion below
+	// is not vacuous (it would otherwise pass if every path short-circuited).
+	cfg.HealthStatusProvider = fakeStatusProvider{"bad": vmcp.BackendUnhealthy}
+	m.reg.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{
+		{ID: "ok", HealthStatus: vmcp.BackendHealthy},
+		{ID: "bad", HealthStatus: vmcp.BackendHealthy},
+	}).AnyTimes()
 	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
 		RoutingTable: &vmcp.RoutingTable{},
 	}, nil).AnyTimes()
@@ -409,9 +416,22 @@ func TestIdentityNotLogged(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	identity := &auth.Identity{Token: secret, UpstreamTokens: map[string]string{"github": secret}}
-	_, _ = c.ListTools(context.Background(), identity)
-	_, _ = c.CallTool(context.Background(), identity, "missing", nil, nil)
+	id := &auth.Identity{Token: secret, UpstreamTokens: map[string]string{"github": secret}}
+	ctx := context.Background()
 
-	assert.NotContains(t, buf.String(), secret, "identity token must never be logged")
+	// Drive every identity-taking method; return values are irrelevant — we only
+	// inspect the captured logs.
+	_, _ = c.ListTools(ctx, id)
+	_, _ = c.ListResources(ctx, id)
+	_, _ = c.ListPrompts(ctx, id)
+	_, _ = c.LookupTool(ctx, id, "missing")
+	_, _ = c.LookupResource(ctx, id, "missing")
+	_, _ = c.LookupPrompt(ctx, id, "missing")
+	_, _ = c.CallTool(ctx, id, "missing", nil, nil)
+	_, _ = c.ReadResource(ctx, id, "missing")
+	_, _ = c.GetPrompt(ctx, id, "missing", nil)
+
+	logs := buf.String()
+	require.NotEmpty(t, logs, "expected the driven methods to emit logs, else the assertion is vacuous")
+	assert.NotContains(t, logs, secret, "identity token must never be logged")
 }

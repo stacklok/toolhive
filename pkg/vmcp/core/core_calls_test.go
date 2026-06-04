@@ -196,6 +196,34 @@ func TestGetPrompt(t *testing.T) {
 	assert.Equal(t, want, got)
 }
 
+func TestGetPrompt_CopyBeforeMutate(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	target := backendTarget()
+	expectAggregation(m, &aggregator.AggregatedCapabilities{
+		RoutingTable: &vmcp.RoutingTable{Prompts: map[string]*vmcp.BackendTarget{"p1": target}},
+	})
+
+	// The backend client mutates the args it receives; the caller's original must be
+	// untouched because GetPrompt forwards a clone (parity with CallTool).
+	m.client.EXPECT().
+		GetPrompt(gomock.Any(), gomock.Any(), "p1", gomock.Any()).
+		DoAndReturn(func(_ context.Context, _ *vmcp.BackendTarget, _ string, args map[string]any) (*vmcp.PromptGetResult, error) {
+			args["injected"] = true
+			return &vmcp.PromptGetResult{}, nil
+		})
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	args := map[string]any{"x": 1}
+	_, err = c.GetPrompt(context.Background(), nil, "p1", args)
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"x": 1}, args, "caller args must not be mutated")
+}
+
 func TestGetPrompt_NotFound(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)
@@ -344,6 +372,13 @@ func TestExecuteComposite(t *testing.T) {
 			composer:    stubComposer{result: &composer.WorkflowResult{Error: errors.New("step failed")}},
 			wantIsError: true,
 			wantMsg:     "Workflow error",
+		},
+		{
+			name: "marshal failure",
+			// A channel is not JSON-serializable, forcing json.Marshal(Output) to fail.
+			composer:    stubComposer{result: &composer.WorkflowResult{Output: map[string]any{"ch": make(chan int)}}},
+			wantIsError: true,
+			wantMsg:     "failed to marshal output",
 		},
 	}
 

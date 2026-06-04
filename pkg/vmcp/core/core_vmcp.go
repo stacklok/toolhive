@@ -60,9 +60,10 @@ type coreVMCP struct {
 	// table, generalizing server.New's sessionComposerFactory (server.go:393).
 	composerFactory func(sessionRT *vmcp.RoutingTable, sessionTools []vmcp.Tool) composer.Composer
 
-	// stateStore backs the workflow engine and owns a background cleanup
-	// goroutine that Close stops.
-	stateStore composer.WorkflowStateStore
+	// stopStore stops the workflow state store's background cleanup goroutine.
+	// Captured at construction (the store is created internally, not injected) so
+	// Close is not a silent capability assertion. Guarded by closeOnce.
+	stopStore func()
 
 	closeOnce sync.Once
 }
@@ -137,8 +138,24 @@ func New(cfg *Config) (VMCP, error) {
 	// must stop it to avoid a leak.
 	stateStore := composer.NewInMemoryStateStore(stateStoreCleanupInterval, stateStoreMaxAge)
 
+	// NewInMemoryStateStore returns *inMemoryStateStore, which owns that cleanup
+	// goroutine. Capture its Stop here so Close releases it; warn loudly (rather
+	// than a silent no-op, per go-style) if a future store swap drops the
+	// capability, so a leaked goroutine is diagnosable instead of invisible.
+	stopStore := func() {}
+	if s, ok := stateStore.(interface{ Stop() }); ok {
+		stopStore = s.Stop
+	} else {
+		slog.Warn("workflow state store exposes no Stop(); its cleanup goroutine will leak on Close",
+			"type", fmt.Sprintf("%T", stateStore))
+	}
+
 	// composerFactory builds a composite-tool engine bound to a specific routing
 	// table, generalizing server.New's sessionComposerFactory (server.go:393-398).
+	// Workflow-level telemetry (toolhive_vmcp_workflow_*) is intentionally NOT wired
+	// here: that instrumentation lives in the session/Serve layer
+	// (sessionmanager/factory.go:174-176) and is added when the core is wired into
+	// Serve (#5439). This mirrors server.go:393-398, which is also uninstrumented.
 	composerFactory := func(sessionRT *vmcp.RoutingTable, sessionTools []vmcp.Tool) composer.Composer {
 		return composer.NewWorkflowEngine(
 			router.NewSessionRouter(sessionRT), backendClient, elicitationHandler,
@@ -154,7 +171,7 @@ func New(cfg *Config) (VMCP, error) {
 	)
 	workflowDefs, err := validateWorkflowDefs(validationEngine, cfg.WorkflowDefs)
 	if err != nil {
-		stopStateStore(stateStore)
+		stopStore()
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
@@ -165,7 +182,7 @@ func New(cfg *Config) (VMCP, error) {
 		health:          cfg.HealthStatusProvider,
 		workflowDefs:    workflowDefs,
 		composerFactory: composerFactory,
-		stateStore:      stateStore,
+		stopStore:       stopStore,
 	}, nil
 }
 
@@ -256,9 +273,7 @@ func (c *coreVMCP) LookupPrompt(ctx context.Context, identity *auth.Identity, na
 // the underlying Stop closes a channel that cannot be closed twice, so the work
 // is guarded by sync.Once and subsequent calls return nil.
 func (c *coreVMCP) Close() error {
-	c.closeOnce.Do(func() {
-		stopStateStore(c.stateStore)
-	})
+	c.closeOnce.Do(c.stopStore)
 	return nil
 }
 
@@ -348,16 +363,6 @@ func validateWorkflowDefs(
 	return validDefs, nil
 }
 
-// stopStateStore stops the state store's background cleanup goroutine when the
-// concrete implementation supports it. The WorkflowStateStore interface does not
-// expose Stop, so the in-memory implementation is detected via a capability
-// assertion; other stores (no goroutine to stop) are a no-op.
-func stopStateStore(store composer.WorkflowStateStore) {
-	if s, ok := store.(interface{ Stop() }); ok {
-		s.Stop()
-	}
-}
-
 // filterHealthyBackends filters backends to only include those that are healthy
 // or degraded. Backends that are unhealthy, unknown, or unauthenticated are
 // excluded from capability aggregation to prevent exposing tools from
@@ -417,7 +422,13 @@ func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.
 			slog.Debug("excluding backend from capability aggregation due to health status",
 				"backend_name", backend.Name,
 				"backend_id", backend.ID,
-				"health_status", healthStatus)
+				"health_status", healthStatus,
+				"source", func() string {
+					if healthStatusProvider != nil {
+						return "health_monitor"
+					}
+					return "registry"
+				}())
 		}
 	}
 

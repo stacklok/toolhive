@@ -237,6 +237,52 @@ func TestCallTool_ResolvesRenamedTool(t *testing.T) {
 	require.NoError(t, err)
 }
 
+// TestCompositeNameConflict_AdvertisedEqualsExecuted is the F1 parity guard: when a
+// composite tool name collides with a backend tool name, ListTools advertises the
+// backend tool (composites dropped) and CallTool must ALSO route that name to the
+// backend — never execute the withheld composite. The single accessibleComposites
+// gate keeps advertised == executed (matching the legacy decorator).
+func TestCompositeNameConflict_AdvertisedEqualsExecuted(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	// Composite "shared" is accessible (its step routes), but its name also collides
+	// with an advertised backend tool "shared".
+	cfg.WorkflowDefs = map[string]*composer.WorkflowDefinition{
+		"shared": {Name: "shared", Steps: []composer.WorkflowStep{{ID: "s1", Type: composer.StepTypeTool, Tool: "be1.echo"}}},
+	}
+
+	beTarget := &vmcp.BackendTarget{WorkloadID: "be1", BaseURL: "http://be1:8080"}
+	agg := &aggregator.AggregatedCapabilities{
+		Tools: []vmcp.Tool{{Name: "shared", BackendID: "be1"}},
+		RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{
+			"shared":   beTarget,
+			"be1.echo": beTarget,
+		}},
+	}
+	// Two aggregations: one for ListTools, one for CallTool.
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(2)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(agg, nil).Times(2)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	// ListTools advertises only the backend tool; the conflicting composite is dropped.
+	tools, err := c.ListTools(context.Background(), nil)
+	require.NoError(t, err)
+	require.Len(t, tools, 1)
+	assert.Equal(t, "shared", tools[0].Name)
+	assert.Equal(t, "be1", tools[0].BackendID)
+
+	// CallTool("shared") must route to the backend, not execute the composite.
+	want := &vmcp.ToolCallResult{StructuredContent: map[string]any{"from": "backend"}}
+	m.client.EXPECT().CallTool(gomock.Any(), beTarget, "shared", gomock.Any(), gomock.Any()).Return(want, nil)
+
+	got, err := c.CallTool(context.Background(), nil, "shared", nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "conflicting name must resolve to the backend tool, not the composite")
+}
+
 // stubComposer is a configurable composer.Composer for unit-testing
 // executeComposite's result/error conversion without the real workflow engine.
 type stubComposer struct {

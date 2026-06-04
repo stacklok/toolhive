@@ -14,7 +14,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
-	"github.com/stacklok/toolhive/pkg/vmcp/internal/compositetools"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 )
 
@@ -42,13 +41,12 @@ func (c *coreVMCP) CallTool(
 		return nil, err
 	}
 
-	// Composite tool: execute the workflow when the tool is defined AND reachable
-	// in the current view (same accessibility filter ListTools advertises with).
-	if def, ok := c.workflowDefs[name]; ok {
-		accessible := compositetools.FilterWorkflowDefsForSession(c.workflowDefs, agg.RoutingTable)
-		if _, ok := accessible[name]; !ok {
-			return nil, fmt.Errorf("%w: composite tool %q", vmcp.ErrNotFound, name)
-		}
+	// Composite tool: execute only when the workflow is actually advertised in the
+	// current view — accessible AND not shadowed by a conflicting backend tool. This
+	// uses the same gate as ListTools (accessibleComposites), so advertised equals
+	// executed. A name that collides with a backend tool is NOT in the set and falls
+	// through to backend routing, matching the legacy decorator.
+	if def, ok := c.accessibleComposites(agg)[name]; ok {
 		engine := c.composerFactory(agg.RoutingTable, agg.Tools)
 		return executeComposite(ctx, engine, def, argsCopy)
 	}

@@ -281,27 +281,45 @@ func (c *coreVMCP) aggregatedView(ctx context.Context) (*aggregator.AggregatedCa
 //
 // Composite tools must be added here rather than by a Serve decorator: decorators
 // may only SUBTRACT reachability ([VMCP] contract), so the core is the only layer
-// that can advertise them. The accessibility filter and conflict check mirror the
-// legacy compositeToolsDecorator (sessionmanager/factory.go:158-180).
+// that can advertise them.
 func (c *coreVMCP) advertisedTools(agg *aggregator.AggregatedCapabilities) []vmcp.Tool {
-	if len(c.workflowDefs) == 0 {
+	defs := c.accessibleComposites(agg)
+	if len(defs) == 0 {
 		return agg.Tools
 	}
 
-	accessibleDefs := compositetools.FilterWorkflowDefsForSession(c.workflowDefs, agg.RoutingTable)
-	composite := compositetools.ConvertWorkflowDefsToTools(accessibleDefs)
-	if len(composite) == 0 {
-		return agg.Tools
-	}
-	if err := compositetools.ValidateNoToolConflicts(agg.Tools, composite); err != nil {
-		slog.Warn("composite tool name conflict detected; omitting composite tools", "error", err)
-		return agg.Tools
-	}
-
+	composite := compositetools.ConvertWorkflowDefsToTools(defs)
 	out := make([]vmcp.Tool, 0, len(agg.Tools)+len(composite))
 	out = append(out, agg.Tools...)
 	out = append(out, composite...)
 	return out
+}
+
+// accessibleComposites returns the composite-tool definitions the core advertises
+// (and therefore executes) for agg's view: those whose every tool step is reachable
+// in the routing table AND whose names do not collide with a backend tool. On a name
+// collision ALL composites are dropped so the backend tool wins, matching the legacy
+// compositeToolsDecorator (sessionmanager/factory.go:158-168, decorator.go:83-86).
+//
+// This is the single source of truth shared by advertisedTools (what ListTools shows)
+// and CallTool (what executes), so a withheld composite is never executed — advertised
+// equals executed. Returns nil when there are no composites or a conflict drops them.
+func (c *coreVMCP) accessibleComposites(
+	agg *aggregator.AggregatedCapabilities,
+) map[string]*composer.WorkflowDefinition {
+	if len(c.workflowDefs) == 0 {
+		return nil
+	}
+
+	defs := compositetools.FilterWorkflowDefsForSession(c.workflowDefs, agg.RoutingTable)
+	if len(defs) == 0 {
+		return nil
+	}
+	if err := compositetools.ValidateNoToolConflicts(agg.Tools, compositetools.ConvertWorkflowDefsToTools(defs)); err != nil {
+		slog.Warn("composite tool name conflict detected; omitting composite tools", "error", err)
+		return nil
+	}
+	return defs
 }
 
 // validateWorkflowDefs validates each workflow definition, returning only the

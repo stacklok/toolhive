@@ -264,7 +264,9 @@ func (c *coreVMCP) Close() error {
 
 // aggregatedView health-filters the backend registry and aggregates capabilities
 // on demand. The core holds no per-session capability cache (the core filters,
-// Serve caches): every List/Lookup/Call re-derives the advertised view.
+// Serve caches): every List/Lookup/Call re-derives the advertised view, so a
+// lookup-then-call flow aggregates twice. This is intentional — caching is the
+// Serve layer's responsibility, not the core's (vmcp anti-patterns #8/#9).
 func (c *coreVMCP) aggregatedView(ctx context.Context) (*aggregator.AggregatedCapabilities, error) {
 	backends := filterHealthyBackends(c.backendRegistry.List(ctx), c.health)
 	agg, err := c.aggregator.AggregateCapabilities(ctx, backends)
@@ -312,6 +314,8 @@ func validateWorkflowDefs(
 	workflowDefs map[string]*composer.WorkflowDefinition,
 ) (map[string]*composer.WorkflowDefinition, error) {
 	if len(workflowDefs) == 0 {
+		// Nil-when-empty, mirroring legacy server.New; all readers guard for it
+		// (advertisedTools' len check and the c.workflowDefs[name] lookup).
 		return nil, nil
 	}
 

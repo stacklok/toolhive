@@ -5,6 +5,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -206,4 +207,114 @@ func TestGetPrompt_NotFound(t *testing.T) {
 
 	_, err = c.GetPrompt(context.Background(), nil, "missing", nil)
 	assert.ErrorIs(t, err, vmcp.ErrNotFound)
+}
+
+// TestCallTool_ResolvesRenamedTool exercises the conflict-resolution name path:
+// the advertised name uses the dot convention ("be1.echo") while the routing
+// table is keyed by the prefixed resolved name ("be1_echo") whose target carries
+// a non-empty OriginalCapabilityName. The session router resolves it via
+// GetBackendCapabilityName, and the core forwards the advertised name to the
+// client (the client owns the translation to the backend's capability name).
+func TestCallTool_ResolvesRenamedTool(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	target := &vmcp.BackendTarget{WorkloadID: "be1", OriginalCapabilityName: "echo", BaseURL: "http://be1:8080"}
+	expectAggregation(m, &aggregator.AggregatedCapabilities{
+		Tools:        []vmcp.Tool{{Name: "be1_echo", BackendID: "be1"}},
+		RoutingTable: &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{"be1_echo": target}},
+	})
+
+	m.client.EXPECT().
+		CallTool(gomock.Any(), target, "be1.echo", gomock.Any(), gomock.Any()).
+		Return(&vmcp.ToolCallResult{}, nil)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	_, err = c.CallTool(context.Background(), nil, "be1.echo", nil, nil)
+	require.NoError(t, err)
+}
+
+// stubComposer is a configurable composer.Composer for unit-testing
+// executeComposite's result/error conversion without the real workflow engine.
+type stubComposer struct {
+	result *composer.WorkflowResult
+	err    error
+}
+
+func (s stubComposer) ExecuteWorkflow(
+	_ context.Context, _ *composer.WorkflowDefinition, _ map[string]any,
+) (*composer.WorkflowResult, error) {
+	return s.result, s.err
+}
+func (stubComposer) ValidateWorkflow(_ context.Context, _ *composer.WorkflowDefinition) error {
+	return nil
+}
+func (stubComposer) GetWorkflowStatus(_ context.Context, _ string) (*composer.WorkflowStatus, error) {
+	return nil, nil
+}
+func (stubComposer) CancelWorkflow(_ context.Context, _ string) error { return nil }
+
+func TestExecuteComposite(t *testing.T) {
+	t.Parallel()
+
+	def := &composer.WorkflowDefinition{Name: "wf"}
+
+	tests := []struct {
+		name        string
+		composer    stubComposer
+		wantIsError bool
+		wantMsg     string // substring expected in the error content
+		wantOutput  map[string]any
+	}{
+		{
+			name:        "success",
+			composer:    stubComposer{result: &composer.WorkflowResult{Output: map[string]any{"k": "v"}}},
+			wantIsError: false,
+			wantOutput:  map[string]any{"k": "v"},
+		},
+		{
+			name:        "execution error",
+			composer:    stubComposer{err: errors.New("boom")},
+			wantIsError: true,
+			wantMsg:     "Workflow execution failed",
+		},
+		{
+			name:        "timeout",
+			composer:    stubComposer{err: context.DeadlineExceeded},
+			wantIsError: true,
+			wantMsg:     "timeout",
+		},
+		{
+			name:        "nil result",
+			composer:    stubComposer{},
+			wantIsError: true,
+			wantMsg:     "nil result",
+		},
+		{
+			name:        "result carries error",
+			composer:    stubComposer{result: &composer.WorkflowResult{Error: errors.New("step failed")}},
+			wantIsError: true,
+			wantMsg:     "Workflow error",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := executeComposite(context.Background(), tt.composer, def, nil)
+			require.NoError(t, err) // workflow failures are returned as IsError results, not errors
+			require.NotNil(t, got)
+			assert.Equal(t, tt.wantIsError, got.IsError)
+			if tt.wantMsg != "" {
+				require.NotEmpty(t, got.Content)
+				assert.Contains(t, got.Content[0].Text, tt.wantMsg)
+			}
+			if tt.wantOutput != nil {
+				assert.Equal(t, tt.wantOutput, got.StructuredContent)
+			}
+		})
+	}
 }

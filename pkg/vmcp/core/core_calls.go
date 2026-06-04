@@ -85,7 +85,9 @@ func (c *coreVMCP) ReadResource(
 		}
 		return nil, fmt.Errorf("routing resource %q: %w", uri, err)
 	}
-	return c.backendClient.ReadResource(ctx, target, target.GetBackendCapabilityName(uri))
+	// Pass the advertised URI; the backend client owns the single translation to
+	// the backend's capability name (client.go:874), matching CallTool.
+	return c.backendClient.ReadResource(ctx, target, uri)
 }
 
 // GetPrompt retrieves the named prompt from its backend. args is treated as
@@ -109,7 +111,9 @@ func (c *coreVMCP) GetPrompt(
 		}
 		return nil, fmt.Errorf("routing prompt %q: %w", name, err)
 	}
-	return c.backendClient.GetPrompt(ctx, target, target.GetBackendCapabilityName(name), maps.Clone(args))
+	// Pass the advertised name; the backend client owns the single translation to
+	// the backend's capability name (client.go:927), matching CallTool.
+	return c.backendClient.GetPrompt(ctx, target, name, maps.Clone(args))
 }
 
 // executeComposite runs a composite-tool workflow and converts the result to a

@@ -4,11 +4,12 @@
 package docker
 
 import (
+	"net/netip"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -28,9 +29,9 @@ func TestSetupExposedPorts_SetsPorts(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, cfg.ExposedPorts)
 
-	p8080, err := nat.NewPort("tcp", "8080")
+	p8080, err := network.ParsePort("8080")
 	require.NoError(t, err)
-	p9090, err := nat.NewPort("tcp", "9090")
+	p9090, err := network.ParsePort("9090")
 	require.NoError(t, err)
 
 	assert.Contains(t, cfg.ExposedPorts, p8080)
@@ -63,14 +64,14 @@ func TestSetupPortBindings_SetsBindings(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NotNil(t, hostCfg.PortBindings)
-	p8080, err := nat.NewPort("tcp", "8080")
+	p8080, err := network.ParsePort("8080")
 	require.NoError(t, err)
 
 	got, ok := hostCfg.PortBindings[p8080]
 	require.True(t, ok)
 	require.Len(t, got, 2)
-	assert.Equal(t, nat.PortBinding{HostIP: "127.0.0.1", HostPort: "8081"}, got[0])
-	assert.Equal(t, nat.PortBinding{HostIP: "", HostPort: "8082"}, got[1])
+	assert.Equal(t, network.PortBinding{HostIP: netip.MustParseAddr("127.0.0.1"), HostPort: "8081"}, got[0])
+	assert.Equal(t, network.PortBinding{HostIP: netip.Addr{}, HostPort: "8082"}, got[1])
 }
 
 func TestConvertMounts_BindMounts(t *testing.T) {
@@ -123,15 +124,13 @@ func TestCompareHostConfig_EqualAndMismatch(t *testing.T) {
 	t.Parallel()
 
 	existing := &container.InspectResponse{
-		ContainerJSONBase: &container.ContainerJSONBase{
-			HostConfig: &container.HostConfig{
-				NetworkMode:   "bridge",
-				CapAdd:        []string{"CAP_A"},
-				CapDrop:       []string{"ALL"},
-				SecurityOpt:   []string{"seccomp:unconfined"},
-				Privileged:    false,
-				RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
-			},
+		HostConfig: &container.HostConfig{
+			NetworkMode:   "bridge",
+			CapAdd:        []string{"CAP_A"},
+			CapDrop:       []string{"ALL"},
+			SecurityOpt:   []string{"seccomp:unconfined"},
+			Privileged:    false,
+			RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
 		},
 	}
 
@@ -164,18 +163,16 @@ func TestComparePortConfig_EqualAndMismatch(t *testing.T) {
 	}))
 
 	// Build existing to match desired
-	p8080, err := nat.NewPort("tcp", "8080")
+	p8080, err := network.ParsePort("8080")
 	require.NoError(t, err)
 
 	existing := &container.InspectResponse{
 		Config: &container.Config{
-			ExposedPorts: nat.PortSet{p8080: {}},
+			ExposedPorts: network.PortSet{p8080: {}},
 		},
-		ContainerJSONBase: &container.ContainerJSONBase{
-			HostConfig: &container.HostConfig{
-				PortBindings: nat.PortMap{
-					p8080: []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "18080"}},
-				},
+		HostConfig: &container.HostConfig{
+			PortBindings: network.PortMap{
+				p8080: []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: "18080"}},
 			},
 		},
 	}
@@ -183,7 +180,7 @@ func TestComparePortConfig_EqualAndMismatch(t *testing.T) {
 	assert.True(t, comparePortConfig(existing, desiredCfg, desiredHost))
 
 	// Mismatch: different host port
-	existing.HostConfig.PortBindings[p8080] = []nat.PortBinding{{HostIP: "0.0.0.0", HostPort: "18081"}}
+	existing.HostConfig.PortBindings[p8080] = []network.PortBinding{{HostIP: netip.MustParseAddr("0.0.0.0"), HostPort: "18081"}}
 	assert.False(t, comparePortConfig(existing, desiredCfg, desiredHost))
 }
 
@@ -222,7 +219,7 @@ func TestCompareContainerConfig_AllMatch(t *testing.T) {
 	}))
 
 	// Existing configuration (must be a superset for env vars)
-	p8080, err := nat.NewPort("tcp", "8080")
+	p8080, err := network.ParsePort("8080")
 	require.NoError(t, err)
 
 	existing := &container.InspectResponse{
@@ -236,23 +233,21 @@ func TestCompareContainerConfig_AllMatch(t *testing.T) {
 			AttachStderr: true,
 			OpenStdin:    true,
 			Tty:          false,
-			ExposedPorts: nat.PortSet{p8080: {}},
+			ExposedPorts: network.PortSet{p8080: {}},
 		},
-		ContainerJSONBase: &container.ContainerJSONBase{
-			HostConfig: &container.HostConfig{
-				NetworkMode:   "bridge",
-				CapAdd:        []string{"NET_BIND_SERVICE"},
-				CapDrop:       []string{"ALL"},
-				SecurityOpt:   []string{"seccomp:unconfined"},
-				Privileged:    false,
-				RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
-				Mounts: []mount.Mount{
-					{Type: mount.TypeBind, Source: "/src1", Target: "/dst1", ReadOnly: true},
-					{Type: mount.TypeBind, Source: "/src2", Target: "/dst2", ReadOnly: false},
-				},
-				PortBindings: nat.PortMap{
-					p8080: []nat.PortBinding{{HostIP: "", HostPort: "18080"}},
-				},
+		HostConfig: &container.HostConfig{
+			NetworkMode:   "bridge",
+			CapAdd:        []string{"NET_BIND_SERVICE"},
+			CapDrop:       []string{"ALL"},
+			SecurityOpt:   []string{"seccomp:unconfined"},
+			Privileged:    false,
+			RestartPolicy: container.RestartPolicy{Name: "unless-stopped"},
+			Mounts: []mount.Mount{
+				{Type: mount.TypeBind, Source: "/src1", Target: "/dst1", ReadOnly: true},
+				{Type: mount.TypeBind, Source: "/src2", Target: "/dst2", ReadOnly: false},
+			},
+			PortBindings: network.PortMap{
+				p8080: []network.PortBinding{{HostIP: netip.Addr{}, HostPort: "18080"}},
 			},
 		},
 	}

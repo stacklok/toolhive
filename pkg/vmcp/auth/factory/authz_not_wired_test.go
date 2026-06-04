@@ -6,6 +6,7 @@ package factory
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -47,7 +48,7 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			},
 		}
 
-		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil, nil, nil)
+		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, "test-server", nil, nil, nil)
 		require.NoError(t, err, "middleware creation should succeed")
 		require.NotNil(t, authMw, "auth middleware should not be nil")
 		require.NotNil(t, authzMw, "authz middleware should not be nil")
@@ -105,7 +106,7 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			},
 		}
 
-		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil, nil, nil)
+		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, "test-server", nil, nil, nil)
 		require.NoError(t, err, "middleware creation should succeed")
 		require.NotNil(t, authMw, "auth middleware should not be nil")
 		require.NotNil(t, authzMw, "authz middleware should not be nil")
@@ -163,7 +164,7 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 		},
 	}
 
-	authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, nil, nil, nil)
+	authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, "test-server", nil, nil, nil)
 	require.NoError(t, err, "middleware creation should succeed")
 	require.NotNil(t, authMw, "auth middleware should not be nil")
 	require.NotNil(t, authzMw, "authz middleware should not be nil")
@@ -346,5 +347,128 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 			"handler should NOT be called - no permit policy for prompts/get (default deny)")
 		assert.Equal(t, http.StatusForbidden, recorder.Code,
 			"response should be 403 Forbidden when no policy permits the request")
+	})
+}
+
+// TestNewIncomingAuthMiddleware_ServerNameThreaded verifies that the serverName
+// parameter is used as the Cedar resource entity name, not a hard-coded constant.
+// Regression test for: VirtualMCPServer Cedar authz uses hard-coded "vmcp" resource name.
+//
+// The policy uses `resource in MCP::"<name>"` (membership traversal) because the
+// resource entity's UID is the tool type (e.g. Tool::"some_tool"), not the MCP
+// server entity itself. The `in` operator traverses the parent chain to reach the
+// MCP parent entity that carries the server name.
+func TestNewIncomingAuthMiddleware_ServerNameThreaded(t *testing.T) {
+	t.Parallel()
+
+	const actualServerName = "my-production-vmcp"
+
+	// The MCP parent entity must be present in the entity store for Cedar's `in`
+	// operator to traverse the parent chain and match the policy.
+	mcpEntityJSON := fmt.Sprintf(`[{"uid":{"type":"MCP","id":"%s"},"parents":[],"attrs":{}}]`, actualServerName)
+
+	// Policy uses `resource in MCP::"<name>"` — the tool resource is a child of
+	// the MCP server entity, so `in` traversal reaches MCP::"my-production-vmcp".
+	// If the middleware hard-codes "vmcp" instead of using actualServerName,
+	// the resource entity will not have the right MCP parent and Cedar's
+	// default-deny will fire, returning 403 even though the principal should be permitted.
+	cfg := &config.IncomingAuthConfig{
+		Type: "anonymous",
+		Authz: &config.AuthzConfig{
+			Type: "cedar",
+			Policies: []string{
+				fmt.Sprintf(`permit(principal, action == Action::"call_tool", resource in MCP::"%s");`, actualServerName),
+			},
+			EntitiesJSON: mcpEntityJSON,
+		},
+	}
+
+	authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, actualServerName, nil, nil, nil)
+	require.NoError(t, err, "middleware creation should succeed")
+	require.NotNil(t, authMw, "auth middleware should not be nil")
+	require.NotNil(t, authzMw, "authz middleware should not be nil")
+
+	t.Run("correct_server_name_permits_call_tool", func(t *testing.T) {
+		t.Parallel()
+
+		handlerCalled := false
+		testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handlerCalled = true
+			w.WriteHeader(http.StatusOK)
+		})
+
+		wrapped := authMw(authzMw(testHandler))
+
+		mcpRequest := map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "tools/call",
+			"id":      1,
+			"params": map[string]any{
+				"name":      "some_tool",
+				"arguments": map[string]any{},
+			},
+		}
+		body, err := json.Marshal(mcpRequest)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+
+		wrapped.ServeHTTP(recorder, req)
+
+		assert.True(t, handlerCalled,
+			"handler SHOULD be called — serverName must match the Cedar resource entity name")
+		assert.Equal(t, http.StatusOK, recorder.Code,
+			"call_tool should be permitted when serverName matches the Cedar resource")
+	})
+
+	t.Run("wrong_server_name_denies_call_tool", func(t *testing.T) {
+		t.Parallel()
+
+		wrongCfg := &config.IncomingAuthConfig{
+			Type: "anonymous",
+			Authz: &config.AuthzConfig{
+				Type: "cedar",
+				Policies: []string{
+					fmt.Sprintf(`permit(principal, action == Action::"call_tool", resource in MCP::"%s");`, actualServerName),
+				},
+				EntitiesJSON: mcpEntityJSON,
+			},
+		}
+
+		wrongAuthMw, wrongAuthzMw, _, err := NewIncomingAuthMiddleware(t.Context(), wrongCfg, "wrong-server", nil, nil, nil)
+		require.NoError(t, err, "middleware creation should succeed")
+
+		handlerCalled := false
+		testHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			handlerCalled = true
+			w.WriteHeader(http.StatusOK)
+		})
+
+		wrapped := wrongAuthMw(wrongAuthzMw(testHandler))
+
+		mcpRequest := map[string]any{
+			"jsonrpc": "2.0",
+			"method":  "tools/call",
+			"id":      1,
+			"params": map[string]any{
+				"name":      "some_tool",
+				"arguments": map[string]any{},
+			},
+		}
+		body, err := json.Marshal(mcpRequest)
+		require.NoError(t, err)
+
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		recorder := httptest.NewRecorder()
+
+		wrapped.ServeHTTP(recorder, req)
+
+		assert.False(t, handlerCalled,
+			"handler should NOT be called — wrong serverName means resource has a different MCP parent")
+		assert.Equal(t, http.StatusForbidden, recorder.Code,
+			"call_tool should be denied when serverName does not match the Cedar resource policy")
 	})
 }

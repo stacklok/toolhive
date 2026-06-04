@@ -172,7 +172,11 @@ func runLLMToken(ctx context.Context) error {
 		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
 	}
 
-	ts, err := buildLLMTokenSource(&llmCfg, false /* non-interactive */)
+	// Interactive: on a genuine cache miss (no cached or refreshable token) this
+	// launches the OIDC browser flow — the same flow "thv llm setup" runs — so a
+	// prior "thv llm setup --lazy" signs the user in transparently on first use.
+	// A cached or refreshable token is served without any browser prompt.
+	ts, err := buildLLMTokenSource(&llmCfg, true /* interactive */)
 	if err != nil {
 		return err
 	}
@@ -217,6 +221,7 @@ func newLLMSetupCommand() *cobra.Command {
 		tlsSkipVerify       bool
 		targetClient        string
 		anthropicPathPrefix string
+		lazy                bool
 	)
 
 	cmd := &cobra.Command{
@@ -251,7 +256,7 @@ Run "thv llm teardown" to revert all changes.`,
 			return runLLMSetup(
 				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				cm, config.NewDefaultProvider(), oidcLogin, opts,
-				anthropicPathPrefix, cmd.Flags().Changed("anthropic-path-prefix"), targetClient,
+				anthropicPathPrefix, cmd.Flags().Changed("anthropic-path-prefix"), targetClient, lazy,
 			)
 		},
 	}
@@ -272,6 +277,10 @@ Run "thv llm teardown" to revert all changes.`,
 			"(e.g. /anthropic). When omitted, the gateway is probed automatically.")
 	cmd.Flags().StringVar(&targetClient, "client", "",
 		"Configure only this AI tool by name (e.g. claude-code, cursor). Omit to configure all detected tools.")
+	cmd.Flags().BoolVar(&lazy, "lazy", false,
+		"Skip the interactive OIDC login and defer it until the first time a configured tool "+
+			"accesses the gateway. Tool config and persisted settings are written normally. "+
+			"Useful for unattended provisioning (e.g. an MDM profile).")
 
 	return cmd
 }
@@ -291,11 +300,12 @@ func runLLMSetup(
 	ctx context.Context, out, errOut io.Writer,
 	cm *client.ClientManager, provider config.Provider, login llm.LoginFunc,
 	inlineOpts llm.SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
+	lazy bool,
 ) error {
 	return llm.Setup(
 		ctx, out, errOut,
 		&clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login,
-		inlineOpts, anthropicPathPrefix, anthropicPathPrefixSet, targetClient,
+		inlineOpts, anthropicPathPrefix, anthropicPathPrefixSet, targetClient, lazy,
 	)
 }
 
@@ -483,7 +493,10 @@ func newLLMTokenCommand() *cobra.Command {
 		Short: "Print a fresh LLM gateway access token to stdout",
 		Long: `Print a fresh OIDC access token to stdout (all other output on stderr).
 Intended for use as apiKeyHelper or auth.command in OIDC-capable AI tools.
-Runs non-interactively — will not launch a browser flow.`,
+
+A cached or refreshable token is printed without prompting. If none exists
+(for example after "thv llm setup --lazy"), the OIDC browser login flow is
+launched automatically and the resulting token is printed once login completes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			return runLLMToken(cmd.Context())

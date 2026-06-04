@@ -48,6 +48,7 @@ thv llm setup [flags]
       --gateway-url string             LLM gateway base URL (must use HTTPS)
   -h, --help                           help for setup
       --issuer string                  OIDC issuer URL
+      --lazy                           Skip the interactive OIDC login and defer it until the first time a configured tool accesses the gateway. Tool config and persisted settings are written normally. Useful for unattended provisioning (e.g. an MDM profile).
       --proxy-port int                 Localhost proxy listen port (omit to keep current; default: 14000)
       --tls-skip-verify                Skip TLS certificate verification for the upstream gateway (local dev only). For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, disabling TLS for ALL of that tool's outbound connections. For proxy-mode tools only the proxy-to-gateway connection is affected.
 ```

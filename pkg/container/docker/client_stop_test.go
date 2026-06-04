@@ -8,8 +8,9 @@ import (
 	"testing"
 
 	"github.com/containerd/errdefs"
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/go-connections/nat"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,7 +21,7 @@ func TestStopWorkload_NotRunning_ReturnsNil(t *testing.T) {
 	// Arrange: find by exact name and inspect -> not running
 	call := 0
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			call++
 			if call == 1 {
 				// First call: base-name label lookup -> none found
@@ -40,19 +41,17 @@ func TestStopWorkload_NotRunning_ReturnsNil(t *testing.T) {
 			require.Equal(t, "cid-not-running", id)
 			// Not running
 			ns := &container.NetworkSettings{}
-			ns.Ports = nat.PortMap{}
+			ns.Ports = network.PortMap{}
 			return container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:  "/svc",
-					State: &container.State{Status: "exited", Running: false},
-				},
+				Name:                    "/svc",
+				State:                   &container.State{Status: "exited", Running: false},
 				Config:                  &container.Config{Image: "img", Labels: map[string]string{"toolhive": "true"}},
 				NetworkSettings:         ns,
 				ImageManifestDescriptor: nil,
 			}, nil
 		},
 		// stopFunc should not be called
-		stopFunc: func(_ context.Context, _ string, _ container.StopOptions) error {
+		stopFunc: func(_ context.Context, _ string, _ mobyclient.ContainerStopOptions) error {
 			t.Fatalf("ContainerStop should not be called for not-running container")
 			return nil
 		},
@@ -72,7 +71,7 @@ func TestStopWorkload_Running_CallsContainerStop(t *testing.T) {
 	called := false
 	call := 0
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			call++
 			if call == 1 {
 				return []container.Summary{}, nil
@@ -89,17 +88,15 @@ func TestStopWorkload_Running_CallsContainerStop(t *testing.T) {
 		inspectFunc: func(_ context.Context, id string) (container.InspectResponse, error) {
 			require.Equal(t, "cid-running", id)
 			ns := &container.NetworkSettings{}
-			ns.Ports = nat.PortMap{}
+			ns.Ports = network.PortMap{}
 			return container.InspectResponse{
-				ContainerJSONBase: &container.ContainerJSONBase{
-					Name:  "/app",
-					State: &container.State{Status: "running", Running: true},
-				},
+				Name:            "/app",
+				State:           &container.State{Status: "running", Running: true},
 				Config:          &container.Config{Image: "img", Labels: map[string]string{"toolhive": "true"}},
 				NetworkSettings: ns,
 			}, nil
 		},
-		stopFunc: func(_ context.Context, id string, _ container.StopOptions) error {
+		stopFunc: func(_ context.Context, id string, _ mobyclient.ContainerStopOptions) error {
 			// The implementation stops by workloadName (not ID), verify that
 			assert.Equal(t, "app", id)
 			called = true
@@ -118,7 +115,7 @@ func TestStopWorkload_NotFound_ReturnsNil(t *testing.T) {
 
 	// Simulate a case where a container appears in listing, but inspect returns NotFound
 	api := &fakeDockerAPI{
-		listFunc: func(_ context.Context, _ container.ListOptions) ([]container.Summary, error) {
+		listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
 			// Exact name lookup will find a candidate
 			return []container.Summary{
 				{

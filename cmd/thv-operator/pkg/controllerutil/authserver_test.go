@@ -2645,3 +2645,132 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildAuthServerRunConfig_CIMD verifies that BuildAuthServerRunConfig
+// correctly converts the CRD EmbeddedAuthServerCIMDConfig into
+// authserver.CIMDRunConfig. The four cases cover the nil path (CIMD off
+// by default), explicit values (fields are mapped and TTL is parsed), zero
+// optional fields (authserver applies its own defaults at startup), and an
+// invalid TTL string (returns a parse error).
+func TestBuildAuthServerRunConfig_CIMD(t *testing.T) {
+	t.Parallel()
+
+	// baseAuthConfig returns a minimal EmbeddedAuthServerConfig that is valid
+	// enough for BuildAuthServerRunConfig to proceed past signing-key and
+	// upstream validation without requiring real secrets.
+	baseAuthConfig := func(cimd *mcpv1beta1.EmbeddedAuthServerCIMDConfig) *mcpv1beta1.EmbeddedAuthServerConfig {
+		return &mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+				{Name: "signing-key", Key: "private.pem"},
+			},
+			HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+				{Name: "hmac-secret", Key: "hmac"},
+			},
+			CIMD: cimd,
+		}
+	}
+
+	defaultAudiences := []string{"https://mcp.example.com"}
+	defaultScopes := []string{"openid", "offline_access"}
+
+	tests := []struct {
+		name        string
+		cimd        *mcpv1beta1.EmbeddedAuthServerCIMDConfig
+		wantCIMD    bool
+		wantErr     bool
+		errContains string
+		checkFunc   func(t *testing.T, got *authserver.CIMDRunConfig)
+	}{
+		{
+			name:     "nil CIMD leaves config.CIMD nil",
+			cimd:     nil,
+			wantCIMD: false,
+		},
+		{
+			name: "CIMD disabled leaves config.CIMD nil",
+			cimd: &mcpv1beta1.EmbeddedAuthServerCIMDConfig{
+				Enabled:          false,
+				CacheMaxSize:     100,
+				CacheFallbackTTL: "10m",
+			},
+			wantCIMD: false,
+		},
+		{
+			name: "CIMD enabled with explicit values maps all fields",
+			cimd: &mcpv1beta1.EmbeddedAuthServerCIMDConfig{
+				Enabled:          true,
+				CacheMaxSize:     512,
+				CacheFallbackTTL: "10m",
+			},
+			wantCIMD: true,
+			checkFunc: func(t *testing.T, got *authserver.CIMDRunConfig) {
+				t.Helper()
+				assert.True(t, got.Enabled)
+				assert.Equal(t, 512, got.CacheMaxSize)
+				assert.Equal(t, "10m", got.CacheFallbackTTL)
+			},
+		},
+		{
+			name: "CIMD enabled with zero optional fields leaves defaults to authserver",
+			cimd: &mcpv1beta1.EmbeddedAuthServerCIMDConfig{
+				Enabled: true,
+			},
+			wantCIMD: true,
+			checkFunc: func(t *testing.T, got *authserver.CIMDRunConfig) {
+				t.Helper()
+				assert.True(t, got.Enabled)
+				assert.Zero(t, got.CacheMaxSize, "zero means authserver applies its own default at startup")
+				assert.Zero(t, got.CacheFallbackTTL, "zero means authserver applies its own default at startup")
+			},
+		},
+		{
+			name: "invalid CacheFallbackTTL passes through to runner for validation",
+			cimd: &mcpv1beta1.EmbeddedAuthServerCIMDConfig{
+				Enabled:          true,
+				CacheFallbackTTL: "not-a-duration",
+			},
+			wantCIMD: true,
+			checkFunc: func(t *testing.T, got *authserver.CIMDRunConfig) {
+				t.Helper()
+				// The converter passes the string through; parse errors are caught
+				// by CIMDRunConfig.Validate() or resolveCIMDConfig in the runner.
+				assert.Equal(t, "not-a-duration", got.CacheFallbackTTL)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := BuildAuthServerRunConfig(
+				"default", "test-server",
+				baseAuthConfig(tt.cimd),
+				defaultAudiences, defaultScopes,
+				"https://mcp.example.com",
+			)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			if !tt.wantCIMD {
+				assert.Nil(t, cfg.CIMD, "expected config.CIMD to be nil")
+				return
+			}
+
+			require.NotNil(t, cfg.CIMD, "expected config.CIMD to be set")
+			if tt.checkFunc != nil {
+				tt.checkFunc(t, cfg.CIMD)
+			}
+		})
+	}
+}

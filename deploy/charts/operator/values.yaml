@@ -8,6 +8,12 @@ operator:
   features:
     # -- Enable experimental features
     experimental: false
+    # -- Enable the StorageVersionMigrator controller, which auto-cleans
+    # status.storedVersions on opted-in toolhive.stacklok.dev CRDs so a
+    # future release can drop deprecated versions (e.g. v1alpha1) without
+    # orphaning etcd objects in the cluster. Sets
+    # TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR in the operator deployment.
+    storageVersionMigrator: false
   # -- Number of replicas for the operator deployment
   replicaCount: 1
 
@@ -30,15 +36,15 @@ operator:
   # above for convenience.
   defaultImagePullSecrets: []
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.28.3
+  image: ghcr.io/stacklok/toolhive/operator:v0.29.0
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.28.3
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.29.0
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.28.3
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.29.0
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0

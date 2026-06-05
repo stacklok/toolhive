@@ -52,6 +52,11 @@ type coreVMCP struct {
 	// filtering (all backends included), matching today's no-monitor behavior.
 	health health.StatusProvider
 
+	// admission enforces the authorization decision for List* (filter) and
+	// Call/Read/Get (deny) from one source. Never nil: New installs an allow-all
+	// seam when authz is unconfigured.
+	admission Admission
+
 	// workflowDefs holds the validated composite-tool workflow definitions keyed
 	// by advertised tool name.
 	workflowDefs map[string]*composer.WorkflowDefinition
@@ -78,8 +83,9 @@ var _ VMCP = (*coreVMCP)(nil)
 // cfg.Router is consumed only to build the workflow-validation engine (parity
 // with server.New); the core does not route through it at request time. cfg's
 // Aggregator, BackendRegistry, and BackendClient are required and New fails
-// loudly when any is nil. The admission seam (cfg.Authz) is NOT wired here — it
-// lands in #5438.
+// loudly when any is nil. The admission seam is built here from cfg.Authz (with
+// cfg.ServerName and cfg.PassThroughTools); a nil cfg.Authz yields an allow-all
+// seam.
 func New(cfg *Config) (VMCP, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("%w: nil core config", vmcp.ErrInvalidConfig)
@@ -103,6 +109,13 @@ func New(cfg *Config) (VMCP, error) {
 	if cfg.Elicitation == nil && workflowsRequireElicitation(cfg.WorkflowDefs) {
 		return nil, fmt.Errorf(
 			"%w: Elicitation is required when a workflow contains an elicitation step", vmcp.ErrInvalidConfig)
+	}
+
+	// Build the admission seam before acquiring resources so a bad policy fails
+	// fast without leaking the state store's cleanup goroutine.
+	admission, err := newAdmission(cfg.Authz, cfg.ServerName, cfg.PassThroughTools)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build admission seam: %w", err)
 	}
 
 	backendClient := cfg.BackendClient
@@ -188,6 +201,7 @@ func New(cfg *Config) (VMCP, error) {
 		backendRegistry: cfg.BackendRegistry,
 		backendClient:   backendClient,
 		health:          cfg.HealthStatusProvider,
+		admission:       admission,
 		workflowDefs:    workflowDefs,
 		composerFactory: composerFactory,
 		stopStore:       stopStore,
@@ -195,42 +209,46 @@ func New(cfg *Config) (VMCP, error) {
 }
 
 // ListTools health-filters the registry, aggregates backend capabilities on
-// demand, and appends the composite tools reachable in the current view.
+// demand, appends the composite tools reachable in the current view, and returns
+// only the subset identity is admitted to call (the admission seam — the same
+// decision CallTool enforces).
 //
-// identity is accepted for the admission seam wired in #5438; this core performs
-// no identity-based filtering yet. A nil identity is treated as anonymous,
-// consistent with session/types.ShouldAllowAnonymous — bound-session caller
-// enforcement (ErrNilCaller/ErrUnauthorizedCaller) lives in the Serve session
-// layer, not here. identity is never logged.
-func (c *coreVMCP) ListTools(ctx context.Context, _ *auth.Identity) ([]vmcp.Tool, error) {
+// A nil identity is treated as anonymous, consistent with
+// session/types.ShouldAllowAnonymous — bound-session caller enforcement
+// (ErrNilCaller/ErrUnauthorizedCaller) lives in the Serve session layer, not
+// here. identity is never logged.
+func (c *coreVMCP) ListTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return c.advertisedTools(agg), nil
+	return c.admission.FilterTools(ctx, identity, c.advertisedTools(agg))
 }
 
-// ListResources health-filters the registry and aggregates resources on demand.
-func (c *coreVMCP) ListResources(ctx context.Context, _ *auth.Identity) ([]vmcp.Resource, error) {
+// ListResources health-filters the registry, aggregates resources on demand, and
+// returns only those identity is admitted to read.
+func (c *coreVMCP) ListResources(ctx context.Context, identity *auth.Identity) ([]vmcp.Resource, error) {
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return agg.Resources, nil
+	return c.admission.FilterResources(ctx, identity, agg.Resources)
 }
 
-// ListPrompts health-filters the registry and aggregates prompts on demand.
-func (c *coreVMCP) ListPrompts(ctx context.Context, _ *auth.Identity) ([]vmcp.Prompt, error) {
+// ListPrompts health-filters the registry, aggregates prompts on demand, and
+// returns only those identity is admitted to get.
+func (c *coreVMCP) ListPrompts(ctx context.Context, identity *auth.Identity) ([]vmcp.Prompt, error) {
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return agg.Prompts, nil
+	return c.admission.FilterPrompts(ctx, identity, agg.Prompts)
 }
 
 // LookupTool resolves an advertised tool name (incl. composite tools) to its
-// capability without invoking it. It applies the same health/advertising view as
-// ListTools and returns vmcp.ErrNotFound for an unknown or unadvertised name.
+// capability without invoking it. It delegates to ListTools, so it applies the
+// same health/advertising AND admission view: a name that is unknown, unadvertised,
+// or denied to identity returns vmcp.ErrNotFound (a denied tool is never resolved).
 func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Tool, error) {
 	tools, err := c.ListTools(ctx, identity)
 	if err != nil {
@@ -246,7 +264,8 @@ func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name
 }
 
 // LookupResource resolves an advertised resource URI to its capability without
-// reading it. Returns vmcp.ErrNotFound for an unknown or unadvertised URI.
+// reading it. Delegates to ListResources, so a URI that is unknown, unadvertised,
+// or denied to identity returns vmcp.ErrNotFound.
 func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.Resource, error) {
 	resources, err := c.ListResources(ctx, identity)
 	if err != nil {
@@ -262,7 +281,8 @@ func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, 
 }
 
 // LookupPrompt resolves an advertised prompt name to its capability without
-// retrieving it. Returns vmcp.ErrNotFound for an unknown or unadvertised name.
+// retrieving it. Delegates to ListPrompts, so a name that is unknown, unadvertised,
+// or denied to identity returns vmcp.ErrNotFound.
 func (c *coreVMCP) LookupPrompt(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Prompt, error) {
 	prompts, err := c.ListPrompts(ctx, identity)
 	if err != nil {

@@ -20,15 +20,16 @@ import (
 // CallTool invokes the named tool. Composite tools (those defined as workflows)
 // execute through a per-call composer bound to the freshly aggregated routing
 // table; all other names route to a single backend via a session router built
-// from the same table. Returns vmcp.ErrNotFound for an unadvertised name.
+// from the same table. Returns vmcp.ErrNotFound for an unadvertised name and
+// vmcp.ErrAuthorizationFailed when admission denies identity the call.
 //
 // args and meta are treated as read-only and copied before being forwarded
-// (go-style: copy before mutating caller input). identity is accepted for the
-// admission seam (#5438); the core performs no identity-based filtering yet and
-// never logs identity. See ListTools for the nil/anonymous semantics.
+// (go-style: copy before mutating caller input). The admission decision enforces
+// the same policy ListTools filters on. identity is never logged. See ListTools
+// for the nil/anonymous semantics.
 func (c *coreVMCP) CallTool(
 	ctx context.Context,
-	_ *auth.Identity,
+	identity *auth.Identity,
 	name string,
 	args map[string]any,
 	meta map[string]any,
@@ -39,6 +40,21 @@ func (c *coreVMCP) CallTool(
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Admission deny: enforce the same decision ListTools filters on, sourcing the
+	// tool's annotations from the advertised set (mirroring the annotation cache the
+	// HTTP middleware populates from tools/list) so annotation-gated policies
+	// evaluate. A name absent from the advertised set carries no annotations;
+	// routing below remains the authority on whether the call resolves.
+	tool := findAdvertisedTool(c.advertisedTools(agg), name)
+	if tool == nil {
+		tool = &vmcp.Tool{Name: name}
+	}
+	if allowed, err := c.admission.AllowToolCall(ctx, identity, tool, argsCopy); err != nil {
+		return nil, err
+	} else if !allowed {
+		return nil, fmt.Errorf("%w: tool %q", vmcp.ErrAuthorizationFailed, name)
 	}
 
 	// Composite tool: execute only when the workflow is actually advertised in the
@@ -65,15 +81,24 @@ func (c *coreVMCP) CallTool(
 }
 
 // ReadResource reads the resource at uri from its backend. Returns
-// vmcp.ErrNotFound for an unadvertised URI. See ListTools for identity semantics.
+// vmcp.ErrNotFound for an unadvertised URI and vmcp.ErrAuthorizationFailed when
+// admission denies identity the read. See ListTools for identity semantics.
 func (c *coreVMCP) ReadResource(
 	ctx context.Context,
-	_ *auth.Identity,
+	identity *auth.Identity,
 	uri string,
 ) (*vmcp.ResourceReadResult, error) {
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Admission deny: mirror ListResources' filter for the single read. Resources
+	// carry no annotations, so the URI alone identifies the decision.
+	if allowed, err := c.admission.AllowResourceRead(ctx, identity, &vmcp.Resource{URI: uri}); err != nil {
+		return nil, err
+	} else if !allowed {
+		return nil, fmt.Errorf("%w: resource %q", vmcp.ErrAuthorizationFailed, uri)
 	}
 
 	target, err := router.NewSessionRouter(agg.RoutingTable).RouteResource(ctx, uri)
@@ -90,16 +115,25 @@ func (c *coreVMCP) ReadResource(
 
 // GetPrompt retrieves the named prompt from its backend. args is treated as
 // read-only and copied before being forwarded. Returns vmcp.ErrNotFound for an
-// unadvertised name. See ListTools for identity semantics.
+// unadvertised name and vmcp.ErrAuthorizationFailed when admission denies identity
+// the get. See ListTools for identity semantics.
 func (c *coreVMCP) GetPrompt(
 	ctx context.Context,
-	_ *auth.Identity,
+	identity *auth.Identity,
 	name string,
 	args map[string]any,
 ) (*vmcp.PromptGetResult, error) {
 	agg, err := c.aggregatedView(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	// Admission deny: mirror ListPrompts' filter for the single get. Prompts carry
+	// no annotations, so the name alone identifies the decision.
+	if allowed, err := c.admission.AllowPromptGet(ctx, identity, &vmcp.Prompt{Name: name}); err != nil {
+		return nil, err
+	} else if !allowed {
+		return nil, fmt.Errorf("%w: prompt %q", vmcp.ErrAuthorizationFailed, name)
 	}
 
 	target, err := router.NewSessionRouter(agg.RoutingTable).RoutePrompt(ctx, name)

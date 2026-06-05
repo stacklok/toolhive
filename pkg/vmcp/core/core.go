@@ -133,9 +133,23 @@ type Config struct {
 	// WorkflowDefs holds the composite-tool workflow definitions, keyed by name.
 	WorkflowDefs map[string]*composer.WorkflowDefinition
 
-	// Authz feeds the admission seam (wired in a later change). A nil Authz
-	// means authorization is unconfigured (allow-all).
+	// Authz feeds the admission seam New builds. A nil Authz means authorization
+	// is unconfigured (allow-all), matching today's `AuthzMiddleware != nil` guard:
+	// the composition root only populates this when Cedar policies exist (mirroring
+	// newCedarAuthzMiddleware's `len(Policies) > 0` check).
 	Authz *authz.Config
+
+	// ServerName is the VirtualMCPServer name used as the Cedar resource entity
+	// name in authorization policy evaluation — parity with the serverName threaded
+	// into the HTTP authz middleware (factory/incoming.go:94). Consulted only when
+	// Authz is set.
+	ServerName string
+
+	// PassThroughTools names the optimizer meta-tools (find_tool/call_tool) that are
+	// exempt from admission filtering and denial, mirroring how they bypass the HTTP
+	// authz response filter today (cli/serve.go:356-362). Nil when the optimizer is
+	// disabled.
+	PassThroughTools map[string]struct{}
 
 	// TelemetryProvider is the cross-cutting telemetry provider (also consumed by Serve).
 	TelemetryProvider *telemetry.Provider

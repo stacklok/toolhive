@@ -58,6 +58,9 @@ type Admission interface {
 // normalization the live path performs at construction time (e.g. defaulting an
 // empty EntitiesJSON to "[]", incoming.go:128) belongs to whoever builds
 // authzCfg, not to this generic factory path, which consumes RawConfig as-is.
+// newCedarAuthzMiddleware (incoming.go:114) is the sibling construction path; the
+// two must stay in lockstep (notably the empty-serverName check below) until #5441
+// collapses them into a single shared constructor.
 func newAdmission(
 	authzCfg *authorizers.Config, serverName string, passThroughTools map[string]struct{},
 ) (Admission, error) {
@@ -111,7 +114,10 @@ func (a *cedarAdmission) FilterTools(
 	ctx context.Context, identity *auth.Identity, tools []vmcp.Tool,
 ) ([]vmcp.Tool, error) {
 	ctx = auth.WithIdentity(ctx, identity)
-	// Instantiate so an empty result marshals as [] rather than null on the wire.
+	// A filter returns a subset, so build a fresh non-nil slice — mirroring
+	// pkg/authz filterToolsByPolicy (its configured-authorizer path is also
+	// non-nil; its nil-authorizer no-op, like the allow-all seam here, returns the
+	// input as-is). nil-vs-[] wire normalization is the Serve layer's concern.
 	filtered := make([]vmcp.Tool, 0, len(tools))
 	for i := range tools {
 		tool := &tools[i]

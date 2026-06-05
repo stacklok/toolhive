@@ -241,7 +241,9 @@ func TestCedarAdmission_AllowToolCall(t *testing.T) {
 
 // TestCedarAdmission_PassThroughExempt covers R1(4): optimizer meta-tools
 // (find_tool/call_tool) are never denied by the seam, matching their exemption
-// through the HTTP middleware today.
+// through the HTTP middleware today. Exemption is the seam's contract here; the
+// inner-tool authorization the HTTP middleware performs for call_tool is a #5441
+// call-path wiring concern (see AllowToolCall's doc), not the seam's.
 func TestCedarAdmission_PassThroughExempt(t *testing.T) {
 	t.Parallel()
 
@@ -451,7 +453,7 @@ func TestNewAdmission(t *testing.T) {
 		t.Parallel()
 		adm, err := newAdmission(
 			cedarAuthzConfig(t, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`),
-			"", nil)
+			"test-vmcp", nil)
 		require.NoError(t, err)
 
 		ok, err := adm.AllowToolCall(context.Background(), cedarIdentity(), &vmcp.Tool{Name: "weather"}, nil)
@@ -460,6 +462,15 @@ func TestNewAdmission(t *testing.T) {
 		ok, err = adm.AllowToolCall(context.Background(), cedarIdentity(), &vmcp.Tool{Name: "calculator"}, nil)
 		require.NoError(t, err)
 		assert.False(t, ok)
+	})
+
+	t.Run("empty server name with authz errors", func(t *testing.T) {
+		t.Parallel()
+		_, err := newAdmission(
+			cedarAuthzConfig(t, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`),
+			"", nil)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, vmcp.ErrInvalidConfig)
 	})
 
 	t.Run("unsupported authz type errors", func(t *testing.T) {
@@ -482,6 +493,7 @@ func TestNewAdmission(t *testing.T) {
 func TestAdmission_ListCallLookupEnforceSameDecision(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)
+	cfg.ServerName = "test-vmcp"
 	cfg.Authz = cedarAuthzConfig(t,
 		`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`)
 
@@ -524,12 +536,60 @@ func TestAdmission_ListCallLookupEnforceSameDecision(t *testing.T) {
 	assert.Equal(t, "weather", tool.Name)
 }
 
+// TestAdmission_AnnotationGatedDecisionMatchesListAndCall confirms (MEDIUM follow-up)
+// that an annotation-gated policy (resource.readOnlyHint) reaches the same verdict
+// for ListTools and CallTool through the core: CallTool sources the tool's
+// annotations from the advertised set (findAdvertisedTool), so the read-only tool is
+// both advertised and callable while the writable tool is both filtered and denied.
+func TestAdmission_AnnotationGatedDecisionMatchesListAndCall(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	cfg.ServerName = "test-vmcp"
+	cfg.Authz = cedarAuthzConfig(t,
+		`permit(principal, action == Action::"call_tool", resource) when { resource.readOnlyHint == true };`)
+
+	ro := backendTool("ro")
+	ro.Annotations = &vmcp.ToolAnnotations{ReadOnlyHint: boolPtr(true)}
+	rw := backendTool("rw")
+	rw.Annotations = &vmcp.ToolAnnotations{ReadOnlyHint: boolPtr(false)}
+
+	rt := &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{"ro": backendTarget(), "rw": backendTarget()}}
+	m.reg.EXPECT().List(gomock.Any()).
+		Return([]vmcp.Backend{{ID: testBackendID, HealthStatus: vmcp.BackendHealthy}}).AnyTimes()
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
+		Tools:        []vmcp.Tool{ro, rw},
+		RoutingTable: rt,
+	}, nil).AnyTimes()
+
+	// Only the read-only tool is callable, so only it reaches the backend.
+	want := &vmcp.ToolCallResult{StructuredContent: map[string]any{"ok": true}}
+	m.client.EXPECT().CallTool(gomock.Any(), gomock.Any(), "ro", gomock.Any(), gomock.Any()).Return(want, nil)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := context.Background()
+	id := cedarIdentity()
+
+	tools, err := c.ListTools(ctx, id)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"ro"}, toolNames(tools), "only the read-only tool is advertised")
+
+	got, err := c.CallTool(ctx, id, "ro", nil, nil)
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "the read-only tool is callable — annotations flow through CallTool")
+
+	_, err = c.CallTool(ctx, id, "rw", nil, nil)
+	assert.ErrorIs(t, err, vmcp.ErrAuthorizationFailed, "the writable tool is denied identically to the list filter")
+}
+
 // TestAdmission_ResourceAndPromptDenyThroughCore confirms the deny wiring is
 // present on the resource and prompt call paths (the seam refuses before routing,
 // so no backend client call is made).
 func TestAdmission_ResourceAndPromptDenyThroughCore(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)
+	cfg.ServerName = "test-vmcp"
 	cfg.Authz = cedarAuthzConfig(t,
 		`permit(principal, action == Action::"read_resource", resource == Resource::"res-a");`,
 		`permit(principal, action == Action::"get_prompt", resource == Prompt::"p-a");`,

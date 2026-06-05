@@ -53,11 +53,27 @@ type Admission interface {
 // HTTP middleware uses (authorizers.GetFactory + CreateAuthorizer, the
 // construction inside newCedarAuthzMiddleware). The Cedar factory is registered by
 // pkg/authz's blank import, which the core package already pulls in.
+//
+// authzCfg is an already-built, authorizer-agnostic config: the cedar-specific
+// normalization the live path performs at construction time (e.g. defaulting an
+// empty EntitiesJSON to "[]", incoming.go:128) belongs to whoever builds
+// authzCfg, not to this generic factory path, which consumes RawConfig as-is.
 func newAdmission(
 	authzCfg *authorizers.Config, serverName string, passThroughTools map[string]struct{},
 ) (Admission, error) {
 	if authzCfg == nil {
 		return allowAllAdmission{}, nil
+	}
+
+	// Fail loudly on an empty server name, mirroring the live factory
+	// (incoming.go:120). Cedar attaches the MCP::"<serverName>" parent UID to
+	// resource entities only when serverName is non-empty
+	// (cedar/entity.go:170-174), so an empty name silently changes resource-scoped
+	// policy semantics rather than erroring (go-style: fail loudly on invalid input).
+	if serverName == "" {
+		return nil, fmt.Errorf(
+			"%w: ServerName must not be empty when Authz is set (Cedar resource-scoped policies require it)",
+			vmcp.ErrInvalidConfig)
 	}
 
 	factory := authorizers.GetFactory(string(authzCfg.Type))
@@ -122,8 +138,16 @@ func (a *cedarAdmission) FilterTools(
 }
 
 // AllowToolCall mirrors pkg/authz authorizeToolCall (tool_filter.go:64). Pass-through
-// meta-tools are exempt: their inner backend tool is authorized by the optimizer
-// decorator, matching their exemption through the HTTP middleware today.
+// meta-tools are exempt from the seam's decision, matching how they bypass the HTTP
+// authz path's tool checks today (#5438 AC: "passThroughTools remain exempt").
+//
+// call_tool parity note: the HTTP middleware's handleToolsCall (middleware.go:276)
+// additionally RE-TARGETS authorization at the inner backend tool wrapped inside a
+// call_tool request (reading args["tool_name"]). This seam deliberately does NOT
+// replicate that inner-tool authorization — it only exempts the meta-tool name, per
+// this task's scope. Ensuring the unwrapped inner call is authorized is a call-path
+// wiring requirement for #5441 (which removes the HTTP middleware): that wiring must
+// route the inner call through a path that consults this seam with the real tool name.
 func (a *cedarAdmission) AllowToolCall(
 	ctx context.Context, identity *auth.Identity, tool *vmcp.Tool, args map[string]any,
 ) (bool, error) {
@@ -240,11 +264,16 @@ func (allowAllAdmission) AllowPromptGet(_ context.Context, _ *auth.Identity, _ *
 
 // convertAnnotations maps vmcp.ToolAnnotations to authorizers.ToolAnnotations,
 // returning nil when no hint field is set so the adapter only writes annotation
-// ctx when a hint exists (matching the existing hasAnyHint gate). It mirrors
-// server.convertAnnotations (annotation_enrichment.go:92): an intentional,
-// temporary duplication — the server-side middleware copy is retired on the
-// domain path in #5441. Only authorization-relevant hints are mapped;
-// informational fields like Title are not used in policy evaluation.
+// ctx when a hint exists (matching the existing hasAnyHint gate). Only
+// authorization-relevant hints are mapped; informational fields like Title are not
+// used in policy evaluation.
+//
+// This duplicates server.convertAnnotations (annotation_enrichment.go:92) rather
+// than reusing it: that copy lives in package server, which imports this core
+// package, so importing it here would create a cycle (server -> core). Like the
+// filterHealthyBackends C2 duplication in this package, it is intentional and
+// temporary — #5441 retires the server-side middleware (and its copy) on the domain
+// path. Keep the two in sync until then.
 func convertAnnotations(ann *vmcp.ToolAnnotations) *authorizers.ToolAnnotations {
 	if ann == nil {
 		return nil

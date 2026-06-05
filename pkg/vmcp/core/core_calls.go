@@ -45,8 +45,10 @@ func (c *coreVMCP) CallTool(
 	// Admission deny: enforce the same decision ListTools filters on, sourcing the
 	// tool's annotations from the advertised set (mirroring the annotation cache the
 	// HTTP middleware populates from tools/list) so annotation-gated policies
-	// evaluate. A name absent from the advertised set carries no annotations;
-	// routing below remains the authority on whether the call resolves.
+	// evaluate. advertisedTools includes composites, so their annotations are sourced
+	// too. A name absent from the recomputed advertised set carries no annotations:
+	// an annotation-gated decision then evaluates with no hints (and may deny) — but
+	// such a name is also unroutable below, so it would not resolve regardless.
 	tool := findAdvertisedTool(c.advertisedTools(agg), name)
 	if tool == nil {
 		tool = &vmcp.Tool{Name: name}

@@ -10,12 +10,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/composer/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
 func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
@@ -24,11 +24,12 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 	tests := []struct {
 		name        string
 		config      *ElicitationConfig
-		mockSetup   func(*mocks.MockSDKElicitationRequester)
+		mockSetup   func(*mocks.MockElicitationRequester)
 		wantErr     bool
 		errType     error
 		errContains string
 		wantAction  string
+		wantContent map[string]any
 	}{
 		{
 			name: "success_accept",
@@ -42,16 +43,15 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 				},
 				Timeout: 1 * time.Minute,
 			},
-			mockSetup: func(m *mocks.MockSDKElicitationRequester) {
-				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&mcp.ElicitationResult{
-					ElicitationResponse: mcp.ElicitationResponse{
-						Action:  mcp.ElicitationResponseActionAccept,
-						Content: map[string]any{"confirmed": true},
-					},
+			mockSetup: func(m *mocks.MockElicitationRequester) {
+				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&vmcp.ElicitationResult{
+					Action:  "accept",
+					Content: map[string]any{"confirmed": true},
 				}, nil)
 			},
-			wantErr:    false,
-			wantAction: "accept",
+			wantErr:     false,
+			wantAction:  "accept",
+			wantContent: map[string]any{"confirmed": true},
 		},
 		{
 			name: "success_decline",
@@ -59,11 +59,9 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 				Message: "Proceed?",
 				Schema:  map[string]any{"type": "object"},
 			},
-			mockSetup: func(m *mocks.MockSDKElicitationRequester) {
-				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&mcp.ElicitationResult{
-					ElicitationResponse: mcp.ElicitationResponse{
-						Action: mcp.ElicitationResponseActionDecline,
-					},
+			mockSetup: func(m *mocks.MockElicitationRequester) {
+				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&vmcp.ElicitationResult{
+					Action: "decline",
 				}, nil)
 			},
 			wantErr:    false,
@@ -75,11 +73,9 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 				Message: "Continue?",
 				Schema:  map[string]any{"type": "object"},
 			},
-			mockSetup: func(m *mocks.MockSDKElicitationRequester) {
-				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&mcp.ElicitationResult{
-					ElicitationResponse: mcp.ElicitationResponse{
-						Action: mcp.ElicitationResponseActionCancel,
-					},
+			mockSetup: func(m *mocks.MockElicitationRequester) {
+				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&vmcp.ElicitationResult{
+					Action: "cancel",
 				}, nil)
 			},
 			wantErr:    false,
@@ -88,7 +84,7 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 		{
 			name:        "nil_config",
 			config:      nil,
-			mockSetup:   func(_ *mocks.MockSDKElicitationRequester) {},
+			mockSetup:   func(_ *mocks.MockElicitationRequester) {},
 			wantErr:     true,
 			errContains: "elicitation config cannot be nil",
 		},
@@ -97,7 +93,7 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 			config: &ElicitationConfig{
 				Schema: map[string]any{"type": "object"},
 			},
-			mockSetup:   func(_ *mocks.MockSDKElicitationRequester) {},
+			mockSetup:   func(_ *mocks.MockElicitationRequester) {},
 			wantErr:     true,
 			errContains: "elicitation message is required",
 		},
@@ -106,7 +102,7 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 			config: &ElicitationConfig{
 				Message: "Confirm?",
 			},
-			mockSetup:   func(_ *mocks.MockSDKElicitationRequester) {},
+			mockSetup:   func(_ *mocks.MockElicitationRequester) {},
 			wantErr:     true,
 			errContains: "elicitation schema is required",
 		},
@@ -116,7 +112,7 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 				Message: "Confirm?",
 				Schema:  map[string]any{"type": "object"},
 			},
-			mockSetup: func(m *mocks.MockSDKElicitationRequester) {
+			mockSetup: func(m *mocks.MockElicitationRequester) {
 				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(nil, errors.New("network error"))
 			},
 			wantErr:     true,
@@ -129,29 +125,29 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 				Schema:  map[string]any{"type": "object"},
 				Timeout: 100 * time.Millisecond,
 			},
-			mockSetup: func(m *mocks.MockSDKElicitationRequester) {
+			mockSetup: func(m *mocks.MockElicitationRequester) {
 				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(nil, context.DeadlineExceeded)
 			},
 			wantErr: true,
 			errType: ErrElicitationTimeout,
 		},
 		{
-			name: "timeout_capped_to_max",
+			// Non-map Content must be treated as nil (warn-logged) so the
+			// composer never hands a non-map value to template expansion.
+			name: "accept_with_non_map_content",
 			config: &ElicitationConfig{
 				Message: "Confirm?",
 				Schema:  map[string]any{"type": "object"},
-				Timeout: 1 * time.Hour, // Exceeds max (10 minutes)
 			},
-			mockSetup: func(m *mocks.MockSDKElicitationRequester) {
-				// Mock should be called with 10 minute timeout context
-				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&mcp.ElicitationResult{
-					ElicitationResponse: mcp.ElicitationResponse{
-						Action: mcp.ElicitationResponseActionAccept,
-					},
+			mockSetup: func(m *mocks.MockElicitationRequester) {
+				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&vmcp.ElicitationResult{
+					Action:  "accept",
+					Content: "not-a-map",
 				}, nil)
 			},
-			wantErr:    false,
-			wantAction: "accept",
+			wantErr:     false,
+			wantAction:  "accept",
+			wantContent: nil,
 		},
 		{
 			name: "schema_too_large",
@@ -167,7 +163,7 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 					},
 				},
 			},
-			mockSetup:   func(_ *mocks.MockSDKElicitationRequester) {},
+			mockSetup:   func(_ *mocks.MockElicitationRequester) {},
 			wantErr:     true,
 			errType:     ErrSchemaTooLarge,
 			errContains: "schema too large",
@@ -178,12 +174,10 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 				Message: "Confirm?",
 				Schema:  map[string]any{"type": "object"},
 			},
-			mockSetup: func(m *mocks.MockSDKElicitationRequester) {
-				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&mcp.ElicitationResult{
-					ElicitationResponse: mcp.ElicitationResponse{
-						Action:  mcp.ElicitationResponseActionAccept,
-						Content: map[string]any{"huge": strings.Repeat("A", 2*1024*1024)}, // 2MB
-					},
+			mockSetup: func(m *mocks.MockElicitationRequester) {
+				m.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&vmcp.ElicitationResult{
+					Action:  "accept",
+					Content: map[string]any{"huge": strings.Repeat("A", 2*1024*1024)}, // 2MB
 				}, nil)
 			},
 			wantErr: true,
@@ -196,7 +190,7 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			mockSDK := mocks.NewMockSDKElicitationRequester(ctrl)
+			mockSDK := mocks.NewMockElicitationRequester(ctrl)
 			tt.mockSetup(mockSDK)
 
 			handler := NewDefaultElicitationHandler(mockSDK)
@@ -218,9 +212,45 @@ func TestDefaultElicitationHandler_RequestElicitation(t *testing.T) {
 				if tt.wantAction != "" {
 					assert.Equal(t, tt.wantAction, response.Action)
 				}
+				assert.Equal(t, tt.wantContent, response.Content)
 			}
 		})
 	}
+}
+
+// TestDefaultElicitationHandler_TimeoutCappedToMax verifies that a configured
+// timeout exceeding maxElicitationTimeout is capped (timeout-bomb protection),
+// not honored verbatim. It captures the context the handler passes to the
+// requester and asserts the deadline is ~now+maxElicitationTimeout, well below
+// the requested 1h. This would fail if the capping logic were removed.
+func TestDefaultElicitationHandler_TimeoutCappedToMax(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	mockRequester := mocks.NewMockElicitationRequester(ctrl)
+
+	mockRequester.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, _ vmcp.ElicitationRequest) (*vmcp.ElicitationResult, error) {
+			deadline, ok := ctx.Deadline()
+			require.True(t, ok, "handler must apply a deadline")
+			assert.WithinDuration(t, time.Now().Add(maxElicitationTimeout), deadline, 5*time.Second)
+			assert.Less(t, deadline, time.Now().Add(1*time.Hour), "deadline must be capped below the requested timeout")
+			return &vmcp.ElicitationResult{Action: "accept"}, nil
+		},
+	)
+
+	handler := NewDefaultElicitationHandler(mockRequester)
+
+	config := &ElicitationConfig{
+		Message: "Confirm?",
+		Schema:  map[string]any{"type": "object"},
+		Timeout: 1 * time.Hour, // Exceeds max (10 minutes)
+	}
+
+	response, err := handler.RequestElicitation(context.Background(), "workflow-1", "step-1", config)
+	require.NoError(t, err)
+	require.NotNil(t, response)
+	assert.Equal(t, "accept", response.Action)
 }
 
 func TestValidateSchemaSize(t *testing.T) {

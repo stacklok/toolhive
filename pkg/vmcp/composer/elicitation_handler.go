@@ -4,8 +4,6 @@
 // Package composer provides composite tool workflow execution for Virtual MCP Server.
 package composer
 
-//go:generate mockgen -destination=mocks/mock_sdk_elicitation_requester.go -package=mocks github.com/stacklok/toolhive/pkg/vmcp/composer SDKElicitationRequester
-
 import (
 	"context"
 	"encoding/json"
@@ -14,7 +12,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
 const (
@@ -69,20 +67,6 @@ var (
 	ErrContentTooLarge = errors.New("response content too large")
 )
 
-// SDKElicitationRequester is an abstraction for the underlying MCP SDK's elicitation functionality.
-//
-// This interface wraps the SDK's RequestElicitation method, enabling:
-//   - Migration from mark3labs SDK to official SDK without changing workflow code
-//   - Mocking for unit tests
-//   - Custom implementations for testing
-//
-// The SDK handles JSON-RPC ID correlation internally - our wrapper doesn't need to track IDs.
-type SDKElicitationRequester interface {
-	// RequestElicitation sends an elicitation request via the SDK and blocks for response.
-	// This wraps the SDK's synchronous RequestElicitation method.
-	RequestElicitation(ctx context.Context, request mcp.ElicitationRequest) (*mcp.ElicitationResult, error)
-}
-
 // DefaultElicitationHandler implements ElicitationProtocolHandler as a thin wrapper around the MCP SDK.
 //
 // This handler provides:
@@ -98,19 +82,20 @@ type SDKElicitationRequester interface {
 //
 // Thread-safety: Safe for concurrent calls. The underlying SDK session must be thread-safe.
 type DefaultElicitationHandler struct {
-	// sdkRequester wraps the MCP SDK's elicitation functionality.
-	// This abstraction enables migration to official SDK without changing our code.
-	sdkRequester SDKElicitationRequester
+	// requester drives elicitation through the domain seam. All translation
+	// to/from the underlying SDK happens inside the requester implementation,
+	// so this handler never references SDK types.
+	requester vmcp.ElicitationRequester
 }
 
 // NewDefaultElicitationHandler creates a new SDK-agnostic elicitation handler.
 //
-// The sdkRequester parameter wraps the underlying MCP SDK's RequestElicitation functionality.
-// For mark3labs SDK, this would be the MCPServer instance.
-// For a future official SDK, this would be replaced without changing workflow code.
-func NewDefaultElicitationHandler(sdkRequester SDKElicitationRequester) *DefaultElicitationHandler {
+// The requester parameter is the domain ElicitationRequester; the transport
+// adapter (pkg/vmcp/server) implements it and is the sole point that translates
+// to/from the underlying MCP SDK. Swapping SDKs requires no change here.
+func NewDefaultElicitationHandler(requester vmcp.ElicitationRequester) *DefaultElicitationHandler {
 	return &DefaultElicitationHandler{
-		sdkRequester: sdkRequester,
+		requester: requester,
 	}
 }
 
@@ -118,10 +103,10 @@ func NewDefaultElicitationHandler(sdkRequester SDKElicitationRequester) *Default
 //
 // This is a synchronous blocking call that:
 //  1. Validates configuration and enforces security limits (timeout, schema size/depth, content size)
-//  2. Applies timeout constraints (default 5min, max 1hour)
-//  3. Delegates to SDK's RequestElicitation (which handles JSON-RPC ID correlation)
+//  2. Applies timeout constraints (default 5min, max 10min)
+//  3. Delegates to the domain requester (the adapter handles JSON-RPC ID correlation via the SDK)
 //  4. Validates response content size
-//  5. Transforms SDK response to domain type
+//  5. Transforms the requester result into the composer's response type
 //
 // Per security review: Enforces max timeout (10 minutes), schema size (100KB), schema depth (10 levels),
 // and response content size (1MB) to prevent resource exhaustion attacks.
@@ -163,20 +148,19 @@ func (h *DefaultElicitationHandler) RequestElicitation(
 	reqCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	// Create MCP elicitation request per 2025-06-18 spec
-	// The SDK will assign JSON-RPC ID and handle correlation internally
-	mcpReq := mcp.ElicitationRequest{
-		Params: mcp.ElicitationParams{
-			Message:         config.Message,
-			RequestedSchema: config.Schema,
-		},
+	// Build the domain elicitation request (form-mode only).
+	// The adapter translates this to the SDK request and the SDK assigns the
+	// JSON-RPC ID and handles correlation internally.
+	req := vmcp.ElicitationRequest{
+		Message:         config.Message,
+		RequestedSchema: config.Schema,
 	}
 
 	slog.Debug("sending elicitation request", "step", stepID)
 
-	// Call SDK (synchronous - blocks until response received or timeout)
-	// The SDK handles all JSON-RPC ID correlation internally
-	result, err := h.sdkRequester.RequestElicitation(reqCtx, mcpReq)
+	// Call the requester (synchronous - blocks until response received or timeout).
+	// The underlying SDK handles all JSON-RPC ID correlation internally.
+	result, err := h.requester.RequestElicitation(reqCtx, req)
 	if err != nil {
 		// Check if timeout
 		if errors.Is(err, context.DeadlineExceeded) {
@@ -198,7 +182,7 @@ func (h *DefaultElicitationHandler) RequestElicitation(
 
 	slog.Debug("received elicitation response", "step", stepID, "action", result.Action)
 
-	// Transform SDK response to domain type
+	// Transform the requester result into the composer's response type.
 	// Note: result.Content is of type 'any', convert to map[string]any if present
 	var content map[string]any
 	if result.Content != nil {
@@ -211,7 +195,7 @@ func (h *DefaultElicitationHandler) RequestElicitation(
 	}
 
 	response := &ElicitationResponse{
-		Action:     string(result.Action),
+		Action:     result.Action,
 		Content:    content,
 		ReceivedAt: time.Now(),
 	}

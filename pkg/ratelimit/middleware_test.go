@@ -224,6 +224,28 @@ func TestRateLimitMiddlewareHandlerReturnsConfiguredHandler(t *testing.T) {
 	assert.NotNil(t, mw.Handler())
 }
 
+func TestNewMiddlewareReturnsUsableMiddleware(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t)
+	middleware, err := NewMiddleware(MiddlewareParams{
+		Namespace:  "default",
+		ServerName: "server",
+		RedisAddr:  mr.Addr(),
+		Config: &v1beta1.RateLimitConfig{
+			Shared: &v1beta1.RateLimitBucket{
+				MaxTokens:    1,
+				RefillPeriod: metav1.Duration{Duration: time.Minute},
+			},
+		},
+	})
+
+	require.NoError(t, err)
+	require.NotNil(t, middleware)
+	require.NotNil(t, middleware.Handler())
+	require.NoError(t, middleware.Close())
+}
+
 func TestCreateMiddlewareRegistersUsableMiddleware(t *testing.T) {
 	t.Parallel()
 

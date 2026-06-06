@@ -9,11 +9,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
-	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
-	transporttypes "github.com/stacklok/toolhive/pkg/transport/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -40,7 +37,7 @@ func NewMiddleware(
 		return nil, nil, fmt.Errorf("rate limiting requires Redis session storage address")
 	}
 
-	middlewareConfig, err := transporttypes.NewMiddlewareConfig(ratelimit.MiddlewareType, ratelimit.MiddlewareParams{
+	middleware, err := ratelimit.NewMiddleware(ratelimit.MiddlewareParams{
 		Namespace:  cfg.Namespace,
 		ServerName: cfg.ServerName,
 		Config:     cfg.RateLimiting,
@@ -48,43 +45,11 @@ func NewMiddleware(
 		RedisDB:    cfg.SessionStorage.DB,
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("failed to create rate limit middleware config: %w", err)
-	}
-
-	runner := &captureRunner{}
-	if err := ratelimit.CreateMiddleware(middlewareConfig, runner); err != nil {
 		return nil, nil, err
-	}
-	if runner.middleware == nil {
-		return nil, nil, fmt.Errorf("rate limit middleware factory did not register middleware")
 	}
 
 	cleanup := func(context.Context) error {
-		return runner.middleware.Close()
+		return middleware.Close()
 	}
-	return runner.middleware.Handler(), cleanup, nil
-}
-
-type captureRunner struct {
-	middleware transporttypes.Middleware
-}
-
-func (r *captureRunner) AddMiddleware(_ string, middleware transporttypes.Middleware) {
-	r.middleware = middleware
-}
-
-func (*captureRunner) SetAuthInfoHandler(http.Handler) {}
-
-func (*captureRunner) SetPrometheusHandler(http.Handler) {}
-
-func (*captureRunner) GetConfig() transporttypes.RunnerConfig {
-	return nil
-}
-
-func (*captureRunner) GetUpstreamTokenReader() upstreamtoken.TokenReader {
-	return nil
-}
-
-func (*captureRunner) GetKeyProvider() keys.PublicKeyProvider {
-	return nil
+	return middleware.Handler(), cleanup, nil
 }

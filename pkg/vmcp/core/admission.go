@@ -44,23 +44,27 @@ type Admission interface {
 // newAdmission builds the admission seam New wires into the core.
 //
 // A nil authzCfg means authorization is unconfigured and the seam is allow-all,
-// preserving today's `cfg.AuthzMiddleware != nil` guard (server.go:606): the
-// composition root only populates Authz when Cedar policies exist (mirroring
-// newCedarAuthzMiddleware's `len(Policies) > 0` check), so "no policies" reaches
-// the core as a nil Authz, not an empty authorizer.
+// preserving today's `AuthzMiddleware != nil` guard: the composition root only
+// populates Authz when Cedar policies exist (mirroring newCedarAuthzMiddleware's
+// `len(Policies) > 0` check), so "no policies" reaches the core as a nil Authz.
+//
+// A non-nil authzCfg with zero policies is NOT treated as allow-all here: it falls
+// through to CreateAuthorizer, which returns ErrNoPolicies, so the core fails
+// CLOSED. This is a deliberate divergence from the live HTTP path, which allows-all
+// for the same input. Fail-closed is the safer default; #5441 reconciles the two
+// when it collapses the construction paths into one shared constructor.
 //
 // When authzCfg is set, the authorizer is built via the same registry path the
-// HTTP middleware uses (authorizers.GetFactory + CreateAuthorizer, the
-// construction inside newCedarAuthzMiddleware). The Cedar factory is registered by
-// pkg/authz's blank import, which the core package already pulls in.
+// HTTP middleware uses (authorizers.GetFactory + CreateAuthorizer, the construction
+// inside newCedarAuthzMiddleware). The Cedar factory is registered by pkg/authz's
+// blank import, which the core package already pulls in.
 //
 // authzCfg is an already-built, authorizer-agnostic config: the cedar-specific
-// normalization the live path performs at construction time (e.g. defaulting an
-// empty EntitiesJSON to "[]", incoming.go:128) belongs to whoever builds
-// authzCfg, not to this generic factory path, which consumes RawConfig as-is.
-// newCedarAuthzMiddleware (incoming.go:114) is the sibling construction path; the
-// two must stay in lockstep (notably the empty-serverName check below) until #5441
-// collapses them into a single shared constructor.
+// normalization newCedarAuthzMiddleware performs at construction time (e.g.
+// defaulting an empty EntitiesJSON to "[]") belongs to whoever builds authzCfg, not
+// to this generic factory path, which consumes RawConfig as-is. newCedarAuthzMiddleware
+// is the sibling construction path; the two must stay in lockstep (notably the
+// empty-serverName check below) until #5441 collapses them.
 func newAdmission(
 	authzCfg *authorizers.Config, serverName string, passThroughTools map[string]struct{},
 ) (Admission, error) {
@@ -68,11 +72,11 @@ func newAdmission(
 		return allowAllAdmission{}, nil
 	}
 
-	// Fail loudly on an empty server name, mirroring the live factory
-	// (incoming.go:120). Cedar attaches the MCP::"<serverName>" parent UID to
-	// resource entities only when serverName is non-empty
-	// (cedar/entity.go:170-174), so an empty name silently changes resource-scoped
-	// policy semantics rather than erroring (go-style: fail loudly on invalid input).
+	// Fail loudly on an empty server name, mirroring newCedarAuthzMiddleware's check.
+	// The Cedar entity factory attaches the MCP::"<serverName>" parent UID to resource
+	// entities only when serverName is non-empty, so an empty name silently changes
+	// resource-scoped policy semantics rather than erroring (go-style: fail loudly on
+	// invalid input).
 	if serverName == "" {
 		return nil, fmt.Errorf(
 			"%w: ServerName must not be empty when Authz is set (Cedar resource-scoped policies require it)",
@@ -85,7 +89,10 @@ func newAdmission(
 	}
 	authorizer, err := factory.CreateAuthorizer(authzCfg.RawConfig(), serverName)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build admission authorizer: %w", err)
+		// Classify with ErrInvalidConfig so callers (errors.Is) treat a bad policy /
+		// malformed RawConfig the same as the unsupported-type and empty-serverName
+		// failures above — all are invalid-config conditions.
+		return nil, fmt.Errorf("%w: failed to build admission authorizer: %w", vmcp.ErrInvalidConfig, err)
 	}
 	return newCedarAdmission(authorizer, passThroughTools), nil
 }
@@ -97,13 +104,33 @@ func newAdmission(
 type cedarAdmission struct {
 	authorizer       authorizers.Authorizer
 	passThroughTools map[string]struct{}
+	// logger receives the per-item "skipping" warnings. It defaults to
+	// slog.Default(); tests inject a buffer-backed logger (via withLogger) so they
+	// can assert on output WITHOUT swapping the process-global slog default — that
+	// global swap races (-race) against parallel sibling tests that also log.
+	logger *slog.Logger
+}
+
+// cedarOption configures a cedarAdmission at construction.
+type cedarOption func(*cedarAdmission)
+
+// withLogger overrides the logger the seam emits skip warnings to. Used by tests
+// to capture log output without mutating the global slog default.
+func withLogger(logger *slog.Logger) cedarOption {
+	return func(c *cedarAdmission) { c.logger = logger }
 }
 
 // newCedarAdmission wraps an already-built authorizer. Separated from newAdmission
 // so tests can inject a stub authorizer (or a real cedar.NewCedarAuthorizer)
 // without round-tripping through the config/factory.
-func newCedarAdmission(a authorizers.Authorizer, passThroughTools map[string]struct{}) *cedarAdmission {
-	return &cedarAdmission{authorizer: a, passThroughTools: passThroughTools}
+func newCedarAdmission(
+	a authorizers.Authorizer, passThroughTools map[string]struct{}, opts ...cedarOption,
+) *cedarAdmission {
+	adm := &cedarAdmission{authorizer: a, passThroughTools: passThroughTools, logger: slog.Default()}
+	for _, opt := range opts {
+		opt(adm)
+	}
+	return adm
 }
 
 // FilterTools mirrors pkg/authz filterToolsByPolicy (tool_filter.go:19) and the
@@ -133,7 +160,7 @@ func (a *cedarAdmission) FilterTools(
 		allowed, err := a.authorizer.AuthorizeWithJWTClaims(
 			toolCtx, authorizers.MCPFeatureTool, authorizers.MCPOperationCall, tool.Name, nil)
 		if err != nil {
-			slog.Warn("admission: tool authorization check failed, skipping", "tool", tool.Name, "error", err)
+			a.logger.Warn("admission: tool authorization check failed, skipping", "tool", tool.Name, "error", err)
 			continue
 		}
 		if allowed {
@@ -147,7 +174,7 @@ func (a *cedarAdmission) FilterTools(
 // meta-tools are exempt from the seam's decision, matching how they bypass the HTTP
 // authz path's tool checks today (#5438 AC: "passThroughTools remain exempt").
 //
-// call_tool parity note: the HTTP middleware's handleToolsCall (middleware.go:276)
+// call_tool parity note: the HTTP middleware's handleToolsCall (pkg/authz/middleware.go)
 // additionally RE-TARGETS authorization at the inner backend tool wrapped inside a
 // call_tool request (reading args["tool_name"]). This seam deliberately does NOT
 // replicate that inner-tool authorization — it only exempts the meta-tool name, per
@@ -179,7 +206,7 @@ func (a *cedarAdmission) FilterResources(
 		allowed, err := a.authorizer.AuthorizeWithJWTClaims(
 			ctx, authorizers.MCPFeatureResource, authorizers.MCPOperationRead, resources[i].URI, nil)
 		if err != nil {
-			slog.Warn("admission: resource authorization check failed, skipping",
+			a.logger.Warn("admission: resource authorization check failed, skipping",
 				"resource", resources[i].URI, "error", err)
 			continue
 		}
@@ -210,7 +237,7 @@ func (a *cedarAdmission) FilterPrompts(
 		allowed, err := a.authorizer.AuthorizeWithJWTClaims(
 			ctx, authorizers.MCPFeaturePrompt, authorizers.MCPOperationGet, prompts[i].Name, nil)
 		if err != nil {
-			slog.Warn("admission: prompt authorization check failed, skipping",
+			a.logger.Warn("admission: prompt authorization check failed, skipping",
 				"prompt", prompts[i].Name, "error", err)
 			continue
 		}

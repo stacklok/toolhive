@@ -136,19 +136,21 @@ type Config struct {
 	// Authz feeds the admission seam New builds. A nil Authz means authorization
 	// is unconfigured (allow-all), matching today's `AuthzMiddleware != nil` guard:
 	// the composition root only populates this when Cedar policies exist (mirroring
-	// newCedarAuthzMiddleware's `len(Policies) > 0` check).
+	// newCedarAuthzMiddleware's `len(Policies) > 0` check). When Authz is non-nil,
+	// ServerName is REQUIRED (New fails fast with vmcp.ErrInvalidConfig otherwise).
 	Authz *authz.Config
 
-	// ServerName is the VirtualMCPServer name used as the Cedar resource entity
-	// name in authorization policy evaluation — parity with the serverName threaded
-	// into the HTTP authz middleware (factory/incoming.go:94). Consulted only when
-	// Authz is set.
+	// ServerName is the VirtualMCPServer name used as the Cedar resource entity name
+	// in authorization policy evaluation — parity with the serverName threaded into
+	// the HTTP authz middleware. It is REQUIRED when Authz is non-nil (New returns
+	// vmcp.ErrInvalidConfig on an empty value, since Cedar resource-scoped policies
+	// depend on it) and ignored when Authz is nil.
 	ServerName string
 
 	// PassThroughTools names the optimizer meta-tools (find_tool/call_tool) that are
 	// exempt from admission filtering and denial, mirroring how they bypass the HTTP
-	// authz response filter today (cli/serve.go:356-362). Nil when the optimizer is
-	// disabled.
+	// authz response filter today. Nil when the optimizer is disabled; ignored when
+	// Authz is nil (the allow-all seam exempts everything).
 	PassThroughTools map[string]struct{}
 
 	// TelemetryProvider is the cross-cutting telemetry provider (also consumed by Serve).

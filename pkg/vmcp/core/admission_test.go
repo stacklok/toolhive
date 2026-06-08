@@ -40,6 +40,7 @@ type mockCall struct {
 	feature         authorizers.MCPFeature
 	operation       authorizers.MCPOperation
 	resourceID      string
+	args            map[string]interface{}
 	identitySubject string // "" when no identity was present in ctx
 	identityPresent bool
 	annotations     *authorizers.ToolAnnotations
@@ -50,13 +51,14 @@ func (m *mockAuthorizer) AuthorizeWithJWTClaims(
 	feature authorizers.MCPFeature,
 	operation authorizers.MCPOperation,
 	resourceID string,
-	_ map[string]interface{},
+	args map[string]interface{},
 ) (bool, error) {
 	id, present := auth.IdentityFromContext(ctx)
 	call := mockCall{
 		feature:         feature,
 		operation:       operation,
 		resourceID:      resourceID,
+		args:            args,
 		identityPresent: present,
 		annotations:     authorizers.ToolAnnotationsFromContext(ctx),
 	}
@@ -235,6 +237,71 @@ func TestCedarAdmission_AllowToolCall(t *testing.T) {
 			assert.Equal(t, authorizers.MCPFeatureTool, mock.calls[0].feature)
 			assert.Equal(t, authorizers.MCPOperationCall, mock.calls[0].operation)
 			assert.True(t, mock.calls[0].identityPresent)
+		})
+	}
+}
+
+// TestCedarAdmission_AllowToolCall_ForwardsArgs asserts the call's args reach the
+// authorizer (the arg-gated-policy input path), both via the mock and against a
+// real Cedar arg-gated policy (mirroring pkg/authz TestAuthorizeToolCall_WithArguments).
+func TestCedarAdmission_AllowToolCall_ForwardsArgs(t *testing.T) {
+	t.Parallel()
+
+	t.Run("args reach the authorizer", func(t *testing.T) {
+		t.Parallel()
+		mock := &mockAuthorizer{results: map[string]mockResult{"deploy": {authorized: true}}}
+		adm := newCedarAdmission(mock, nil)
+		args := map[string]any{"mode": "safe"}
+
+		_, err := adm.AllowToolCall(context.Background(), cedarIdentity(), &vmcp.Tool{Name: "deploy"}, args)
+		require.NoError(t, err)
+		require.Len(t, mock.calls, 1)
+		assert.Equal(t, args, mock.calls[0].args, "call args must flow through to the authorizer")
+	})
+
+	t.Run("cedar arg-gated policy evaluates the args", func(t *testing.T) {
+		t.Parallel()
+		// Cedar sees args under an "arg_" prefix (preprocessed by the authorizer);
+		// permit only when arg_mode == "safe".
+		adm := cedarAdmissionWith(t,
+			`permit(principal, action == Action::"call_tool", resource == Tool::"deploy") when { context.arg_mode == "safe" };`)
+		id := cedarIdentity()
+
+		ok, err := adm.AllowToolCall(context.Background(), id, &vmcp.Tool{Name: "deploy"}, map[string]any{"mode": "safe"})
+		require.NoError(t, err)
+		assert.True(t, ok, "permitted when args satisfy the policy")
+
+		ok, _ = adm.AllowToolCall(context.Background(), id, &vmcp.Tool{Name: "deploy"}, map[string]any{"mode": "dangerous"})
+		assert.False(t, ok, "denied when args do not satisfy the policy")
+	})
+}
+
+func TestFindAdvertisedTool(t *testing.T) {
+	t.Parallel()
+	tools := []vmcp.Tool{{Name: "a"}, {Name: "b"}}
+
+	tests := []struct {
+		name      string
+		tools     []vmcp.Tool
+		find      string
+		wantFound bool
+	}{
+		{"present first", tools, "a", true},
+		{"present last", tools, "b", true},
+		{"absent", tools, "missing", false},
+		{"empty list", nil, "a", false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := findAdvertisedTool(tc.tools, tc.find)
+			if tc.wantFound {
+				require.NotNil(t, got)
+				assert.Equal(t, tc.find, got.Name)
+			} else {
+				assert.Nil(t, got)
+			}
 		})
 	}
 }
@@ -625,29 +692,96 @@ func TestAdmission_ResourceAndPromptDenyThroughCore(t *testing.T) {
 	assert.ErrorIs(t, err, vmcp.ErrAuthorizationFailed)
 }
 
+// TestAdmission_CallToolForwardsArgsToAuthorizer proves call arguments flow the full
+// chain CallTool -> AllowToolCall -> authorizer: an arg-gated Cedar policy permits the
+// call only when the args satisfy it, so the permitted args route to the backend and
+// the failing args are denied with ErrAuthorizationFailed.
+func TestAdmission_CallToolForwardsArgsToAuthorizer(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	cfg.ServerName = "test-vmcp"
+	cfg.Authz = cedarAuthzConfig(t,
+		`permit(principal, action == Action::"call_tool", resource == Tool::"deploy") when { context.arg_mode == "safe" };`)
+
+	rt := &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{"deploy": backendTarget()}}
+	m.reg.EXPECT().List(gomock.Any()).
+		Return([]vmcp.Backend{{ID: testBackendID, HealthStatus: vmcp.BackendHealthy}}).AnyTimes()
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
+		Tools:        []vmcp.Tool{backendTool("deploy")},
+		RoutingTable: rt,
+	}, nil).AnyTimes()
+
+	// Only the args-satisfying call reaches the backend.
+	want := &vmcp.ToolCallResult{StructuredContent: map[string]any{"ok": true}}
+	m.client.EXPECT().CallTool(gomock.Any(), gomock.Any(), "deploy", gomock.Any(), gomock.Any()).Return(want, nil)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := context.Background()
+	id := cedarIdentity()
+
+	got, err := c.CallTool(ctx, id, "deploy", map[string]any{"mode": "safe"}, nil)
+	require.NoError(t, err)
+	assert.Equal(t, want, got, "args satisfying the policy flow through and the call routes")
+
+	_, err = c.CallTool(ctx, id, "deploy", map[string]any{"mode": "dangerous"}, nil)
+	assert.ErrorIs(t, err, vmcp.ErrAuthorizationFailed, "args failing the policy deny the call — args reached the authorizer")
+}
+
+// TestAdmission_CallToolNilAdvertisedToolDeniesUnderAnnotationPolicy exercises
+// findAdvertisedTool's nil branch end-to-end: a name that is routable but absent from
+// the advertised Tools is called with a synthesized bare Tool{Name} carrying no
+// annotations, so an annotation-gated policy evaluates with no hints and denies —
+// proving routing is not reached (no backend client call) and correcting the prior
+// "unroutable" assumption.
+func TestAdmission_CallToolNilAdvertisedToolDeniesUnderAnnotationPolicy(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	cfg.ServerName = "test-vmcp"
+	cfg.Authz = cedarAuthzConfig(t,
+		`permit(principal, action == Action::"call_tool", resource) when { resource.readOnlyHint == true };`)
+
+	// "ghost" is in the routing table but NOT in the advertised Tools.
+	rt := &vmcp.RoutingTable{Tools: map[string]*vmcp.BackendTarget{"ghost": backendTarget()}}
+	m.reg.EXPECT().List(gomock.Any()).
+		Return([]vmcp.Backend{{ID: testBackendID, HealthStatus: vmcp.BackendHealthy}}).AnyTimes()
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
+		Tools:        nil,
+		RoutingTable: rt,
+	}, nil).AnyTimes()
+	// No client.CallTool expectation: the call is denied before routing.
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	_, err = c.CallTool(context.Background(), cedarIdentity(), "ghost", nil, nil)
+	assert.ErrorIs(t, err, vmcp.ErrAuthorizationFailed,
+		"a routable name absent from the advertised set is evaluated with no hints and denied")
+}
+
 // TestAdmission_IdentityNeverLogged covers R1(5): the seam passes *auth.Identity
 // through unchanged and never logs identity/token material, even on the per-tool
-// skip path. Serial: it swaps the global slog default into a non-thread-safe buffer.
-//
-//nolint:paralleltest // installs a global slog default + non-thread-safe buffer; must not run in parallel
+// skip path. The seam logs through an injected logger (withLogger), so the test
+// captures output WITHOUT swapping the process-global slog default — that global
+// swap raced (-race) against parallel sibling tests that also log.
 func TestAdmission_IdentityNeverLogged(t *testing.T) {
+	t.Parallel()
 	const secret = "super-secret-token-value"
 
 	// An erroring authorizer drives the FilterTools skip-warning so the assertion
 	// is not vacuous.
 	mock := &mockAuthorizer{results: map[string]mockResult{"boom": {err: errors.New("policy eval failed")}}}
-	adm := newCedarAdmission(mock, nil)
+	var buf bytes.Buffer
+	adm := newCedarAdmission(mock, nil,
+		withLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))))
 
 	id := &auth.Identity{
 		PrincipalInfo:  auth.PrincipalInfo{Subject: "user", Claims: map[string]interface{}{"secret": secret}},
 		Token:          secret,
 		UpstreamTokens: map[string]string{"github": secret},
 	}
-
-	var buf bytes.Buffer
-	prev := slog.Default()
-	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	_, _ = adm.FilterTools(context.Background(), id, []vmcp.Tool{{Name: "boom"}})
 

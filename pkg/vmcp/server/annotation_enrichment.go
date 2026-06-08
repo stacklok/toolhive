@@ -88,8 +88,15 @@ func findToolAnnotations(toolName string, caps *aggregator.AggregatedCapabilitie
 // convertAnnotations converts vmcp.ToolAnnotations to authorizers.ToolAnnotations.
 // Only authorization-relevant hint fields are mapped; informational fields like
 // Title are intentionally omitted since they are not used in policy evaluation.
-// Returns nil if the source annotations contain no hint fields.
+// Returns nil if the source annotations are nil or contain no hint fields.
+//
+// Kept identical to core.convertAnnotations (pkg/vmcp/core/admission.go), including
+// the nil guard below — the two are intentional, temporary duplicates (the core
+// cannot import this package: server imports core) and #5441 deletes this copy.
 func convertAnnotations(ann *vmcp.ToolAnnotations) *authorizers.ToolAnnotations {
+	if ann == nil {
+		return nil
+	}
 	if ann.ReadOnlyHint == nil && ann.DestructiveHint == nil &&
 		ann.IdempotentHint == nil && ann.OpenWorldHint == nil {
 		return nil

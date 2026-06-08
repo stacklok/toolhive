@@ -152,6 +152,7 @@ type Config struct {
 	// consumed by the composer's elicitation handler during composite-tool
 	// workflows. The composition root supplies the SDK-backed adapter; the core
 	// only forwards it to the workflow engine. May be nil when no configured
-	// workflow performs elicitation.
+	// workflow performs elicitation; New rejects a nil Elicitation when any
+	// configured workflow contains an elicitation step.
 	Elicitation vmcp.ElicitationRequester
 }

@@ -155,6 +155,57 @@ func TestNew_ValidatesWorkflows(t *testing.T) {
 	}
 }
 
+func TestNew_ElicitationRequiredWhenWorkflowElicits(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		steps   []composer.WorkflowStep
+		wantErr bool
+	}{
+		{
+			name:    "elicitation step requires a requester",
+			steps:   []composer.WorkflowStep{{ID: "s1", Type: composer.StepTypeElicitation}},
+			wantErr: true,
+		},
+		{
+			name: "forEach inner elicitation step requires a requester",
+			steps: []composer.WorkflowStep{{
+				ID:        "s1",
+				Type:      composer.StepTypeForEach,
+				InnerStep: &composer.WorkflowStep{ID: "inner", Type: composer.StepTypeElicitation},
+			}},
+			wantErr: true,
+		},
+		{
+			name:    "tool-only workflow needs no requester",
+			steps:   []composer.WorkflowStep{{ID: "s1", Type: composer.StepTypeTool, Tool: "be1.tool"}},
+			wantErr: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, _ := baseConfig(t)
+			cfg.Elicitation = nil // explicit: no requester wired
+			cfg.WorkflowDefs = map[string]*composer.WorkflowDefinition{
+				"wf": {Name: "wf", Steps: tt.steps},
+			}
+
+			c, err := New(cfg)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+				assert.Nil(t, c)
+				return
+			}
+			require.NoError(t, err)
+			require.NoError(t, c.Close())
+		})
+	}
+}
+
 func TestListTools_AggregatesOnDemand(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)

@@ -96,6 +96,14 @@ func New(cfg *Config) (VMCP, error) {
 	if cfg.BackendClient == nil {
 		return nil, fmt.Errorf("%w: BackendClient is required", vmcp.ErrInvalidConfig)
 	}
+	// Fail fast on the elicitation contract: a workflow with an elicitation step run
+	// against a nil Elicitation would nil-deref deep inside the engine at call time
+	// (the legacy server.New path always wired a non-nil adapter). Reject it at
+	// construction so the misconfiguration surfaces at startup, not mid-workflow.
+	if cfg.Elicitation == nil && workflowsRequireElicitation(cfg.WorkflowDefs) {
+		return nil, fmt.Errorf(
+			"%w: Elicitation is required when a workflow contains an elicitation step", vmcp.ErrInvalidConfig)
+	}
 
 	backendClient := cfg.BackendClient
 
@@ -361,6 +369,25 @@ func validateWorkflowDefs(
 	}
 	slog.Info("loaded valid composite tool workflows", "count", len(validDefs))
 	return validDefs, nil
+}
+
+// workflowsRequireElicitation reports whether any workflow definition contains an
+// elicitation step, directly or as a forEach inner step. New uses it to enforce
+// that a non-nil Elicitation is supplied whenever a workflow could request it.
+func workflowsRequireElicitation(defs map[string]*composer.WorkflowDefinition) bool {
+	for _, def := range defs {
+		for i := range def.Steps {
+			step := &def.Steps[i]
+			if step.Type == composer.StepTypeElicitation {
+				return true
+			}
+			if step.Type == composer.StepTypeForEach && step.InnerStep != nil &&
+				step.InnerStep.Type == composer.StepTypeElicitation {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // filterHealthyBackends filters backends to only include those that are healthy

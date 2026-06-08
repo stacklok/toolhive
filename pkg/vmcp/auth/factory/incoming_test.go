@@ -135,7 +135,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			authMw, authzMw, authInfo, err := NewIncomingAuthMiddleware(t.Context(), tt.cfg, "test-server", nil, nil, nil)
+			authMw, authzMw, authInfo, err := NewIncomingAuthMiddleware(t.Context(), tt.cfg, "test-server", nil, nil, nil, nil)
 
 			if tt.wantErr {
 				require.Error(t, err)

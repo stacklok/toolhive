@@ -48,7 +48,7 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			},
 		}
 
-		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, "test-server", nil, nil, nil)
+		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, "test-server", nil, nil, nil, nil)
 		require.NoError(t, err, "middleware creation should succeed")
 		require.NotNil(t, authMw, "auth middleware should not be nil")
 		require.NotNil(t, authzMw, "authz middleware should not be nil")
@@ -106,7 +106,7 @@ func TestNewIncomingAuthMiddleware_AuthzEnforced(t *testing.T) {
 			},
 		}
 
-		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, "test-server", nil, nil, nil)
+		authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, "test-server", nil, nil, nil, nil)
 		require.NoError(t, err, "middleware creation should succeed")
 		require.NotNil(t, authMw, "auth middleware should not be nil")
 		require.NotNil(t, authzMw, "authz middleware should not be nil")
@@ -164,7 +164,7 @@ func TestNewIncomingAuthMiddleware_AuthzApproveAndBlock(t *testing.T) {
 		},
 	}
 
-	authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, "test-server", nil, nil, nil)
+	authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, "test-server", nil, nil, nil, nil)
 	require.NoError(t, err, "middleware creation should succeed")
 	require.NotNil(t, authMw, "auth middleware should not be nil")
 	require.NotNil(t, authzMw, "authz middleware should not be nil")
@@ -383,7 +383,7 @@ func TestNewIncomingAuthMiddleware_ServerNameThreaded(t *testing.T) {
 		},
 	}
 
-	authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, actualServerName, nil, nil, nil)
+	authMw, authzMw, _, err := NewIncomingAuthMiddleware(t.Context(), cfg, actualServerName, nil, nil, nil, nil)
 	require.NoError(t, err, "middleware creation should succeed")
 	require.NotNil(t, authMw, "auth middleware should not be nil")
 	require.NotNil(t, authzMw, "authz middleware should not be nil")
@@ -437,7 +437,7 @@ func TestNewIncomingAuthMiddleware_ServerNameThreaded(t *testing.T) {
 			},
 		}
 
-		wrongAuthMw, wrongAuthzMw, _, err := NewIncomingAuthMiddleware(t.Context(), wrongCfg, "wrong-server", nil, nil, nil)
+		wrongAuthMw, wrongAuthzMw, _, err := NewIncomingAuthMiddleware(t.Context(), wrongCfg, "wrong-server", nil, nil, nil, nil)
 		require.NoError(t, err, "middleware creation should succeed")
 
 		handlerCalled := false

@@ -65,6 +65,11 @@ var (
 
 	// ErrContentTooLarge is returned when response content exceeds size limits.
 	ErrContentTooLarge = errors.New("response content too large")
+
+	// ErrElicitationNotConfigured is returned when a workflow reaches an elicitation
+	// step but the handler was constructed without a requester (nil). It converts
+	// what would be a nil-pointer dereference into a clean, recoverable error.
+	ErrElicitationNotConfigured = errors.New("elicitation requester not configured")
 )
 
 // DefaultElicitationHandler implements ElicitationProtocolHandler as a thin wrapper around the MCP SDK.
@@ -122,6 +127,12 @@ func (h *DefaultElicitationHandler) RequestElicitation(
 	config *ElicitationConfig,
 ) (*ElicitationResponse, error) {
 	slog.Debug("requesting elicitation", "workflow", workflowID, "step", stepID)
+
+	// A nil requester means elicitation was never wired (e.g. the core was built
+	// with a nil ElicitationRequester). Fail cleanly instead of dereferencing nil.
+	if h.requester == nil {
+		return nil, fmt.Errorf("%w: step %s", ErrElicitationNotConfigured, stepID)
+	}
 
 	// Validate configuration
 	if err := validateConfig(config); err != nil {

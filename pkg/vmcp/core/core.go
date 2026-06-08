@@ -147,9 +147,12 @@ type Config struct {
 	// composition root. Nil means no health filtering (all backends included).
 	HealthStatusProvider health.StatusProvider
 
-	// Elicitation (the domain-typed ElicitationRequester) is added once that
-	// domain type is introduced; it is intentionally omitted here.
-
-	// The exact field set is finalized when New is implemented; this change
-	// declares the shape (typed fields), not the construction logic.
+	// Elicitation sends MCP elicitation requests to the client and blocks for the
+	// response. It is the domain-typed seam (vmcp anti-pattern #5: no mcp-go types)
+	// consumed by the composer's elicitation handler during composite-tool
+	// workflows. The composition root supplies the SDK-backed adapter; the core
+	// only forwards it to the workflow engine. May be nil when no configured
+	// workflow performs elicitation; New rejects a nil Elicitation when any
+	// configured workflow contains an elicitation step.
+	Elicitation vmcp.ElicitationRequester
 }

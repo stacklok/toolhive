@@ -253,6 +253,24 @@ func TestDefaultElicitationHandler_TimeoutCappedToMax(t *testing.T) {
 	assert.Equal(t, "accept", response.Action)
 }
 
+func TestDefaultElicitationHandler_NilRequester(t *testing.T) {
+	t.Parallel()
+
+	// A handler built without a requester (e.g. a core constructed with a nil
+	// ElicitationRequester) must fail cleanly rather than nil-dereference when a
+	// workflow reaches an elicitation step.
+	handler := NewDefaultElicitationHandler(nil)
+
+	resp, err := handler.RequestElicitation(context.Background(), "workflow-1", "step-1", &ElicitationConfig{
+		Message: "Confirm?",
+		Schema:  map[string]any{"type": "object"},
+	})
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.ErrorIs(t, err, ErrElicitationNotConfigured)
+	assert.Contains(t, err.Error(), "step-1")
+}
+
 func TestValidateSchemaSize(t *testing.T) {
 	t.Parallel()
 

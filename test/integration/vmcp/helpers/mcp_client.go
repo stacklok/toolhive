@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/mark3labs/mcp-go/client"
+	mcptransport "github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -39,6 +40,22 @@ type MCPClientOption func(*mcpClientConfig)
 type mcpClientConfig struct {
 	clientName    string
 	clientVersion string
+	extraHeaders  map[string]string
+}
+
+// WithClientHeader adds a static HTTP request header that the client sends on
+// every outbound request to the vMCP server.  Call multiple times to set
+// multiple headers.
+//
+// This is used by header-passthrough tests to inject caller-side headers so
+// the capture middleware can forward them to the backend.
+func WithClientHeader(name, value string) MCPClientOption {
+	return func(c *mcpClientConfig) {
+		if c.extraHeaders == nil {
+			c.extraHeaders = make(map[string]string)
+		}
+		c.extraHeaders[name] = value
+	}
 }
 
 // NewMCPClient creates and initializes a new MCP client for testing.
@@ -73,8 +90,15 @@ func NewMCPClient(ctx context.Context, tb testing.TB, serverURL string, opts ...
 		opt(config)
 	}
 
+	// Build transport options. WithHTTPHeaders injects static headers on every
+	// request — used for header-passthrough tests.
+	transportOpts := []mcptransport.StreamableHTTPCOption{}
+	if len(config.extraHeaders) > 0 {
+		transportOpts = append(transportOpts, mcptransport.WithHTTPHeaders(config.extraHeaders))
+	}
+
 	// Create streamable-http client (vMCP only supports streamable-http)
-	mcpClient, err := client.NewStreamableHttpClient(serverURL)
+	mcpClient, err := client.NewStreamableHttpClient(serverURL, transportOpts...)
 	require.NoError(tb, err, "failed to create MCP client with streamable-http transport")
 
 	// Start the transport

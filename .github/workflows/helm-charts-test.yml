@@ -53,13 +53,12 @@ jobs:
       - name: Run chart-testing (lint)
         run: ct lint --config ct.yaml
 
-      - name: Run helm-unittest (operator-crds toggles)
-        # Renders the operator-crds chart with default / crds.install=false
-        # / crds.keep=false and asserts the rendered output (CRD count, keep
-        # annotation presence). Catches silent regressions in the toggle
-        # wrappers that `ct install` cannot — `helm install` succeeds even
-        # when the install gate has been removed. The plugin version is
-        # pinned in the Taskfile's `helm-unittest` task.
+      - name: Run helm-unittest
+        # helm-unittest renders the charts and asserts on the resulting
+        # Kubernetes manifests, catching template regressions that `ct lint`
+        # and `ct install` do not — `helm install` can succeed even when the
+        # rendered output is subtly wrong. The plugin version is pinned in
+        # the Taskfile's `helm-unittest` task.
         run: task helm-unittest
 
       - name: Create KIND cluster

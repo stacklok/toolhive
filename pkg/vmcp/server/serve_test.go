@@ -7,14 +7,23 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
+	"time"
 
+	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 )
 
 // stubVMCP is a no-op core.VMCP for Serve tests. The Serve skeleton never invokes
@@ -54,6 +63,20 @@ func (*stubVMCP) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Pr
 	return nil, nil
 }
 func (s *stubVMCP) Close() error { s.closed = true; return nil }
+
+// stubWatcher is a non-nil Watcher for the drift-guard test; its behavior is not
+// exercised there.
+type stubWatcher struct{}
+
+func (stubWatcher) WaitForCacheSync(context.Context) bool { return true }
+
+// stubServeReporter is a non-nil vmcpstatus.Reporter for the drift-guard test.
+type stubServeReporter struct{}
+
+func (stubServeReporter) ReportStatus(context.Context, *vmcp.Status) error { return nil }
+func (stubServeReporter) Start(context.Context) (func(context.Context) error, error) {
+	return func(context.Context) error { return nil }, nil
+}
 
 func TestServeAppliesTransportDefaults(t *testing.T) {
 	t.Parallel()
@@ -180,5 +203,57 @@ func TestServeValidation(t *testing.T) {
 			assert.ErrorIs(t, err, vmcp.ErrInvalidConfig)
 			assert.Nil(t, srv)
 		})
+	}
+}
+
+// TestBuildServeConfigMapsSharedFields guards the ServerConfig -> Config mapping
+// against silent drift: every Config field except the documented intentionally-
+// unmapped set must be populated by buildServeConfig. If a future field is added to
+// Config and forgotten in buildServeConfig, this test fails (the field is zero).
+// When a field is deliberately not mapped, add it to intentionallyUnmapped with a
+// reason, mirroring the buildServeConfig doc comment.
+func TestBuildServeConfigMapsSharedFields(t *testing.T) {
+	t.Parallel()
+
+	intentionallyUnmapped := map[string]struct{}{
+		"AuthzMiddleware":     {}, // authenticated/authz chain relocated by #5441
+		"HealthMonitorConfig": {}, // monitor injected pre-built via ServerConfig.HealthMonitor (A2)
+	}
+
+	// Every field set to a non-zero value so a dropped mapping surfaces as a zero
+	// field on the resulting Config.
+	src := &ServerConfig{
+		Name:                    "n",
+		Version:                 "v",
+		GroupRef:                "g",
+		Host:                    "h",
+		Port:                    1,
+		EndpointPath:            "/e",
+		SessionTTL:              time.Second,
+		AuthMiddleware:          func(h http.Handler) http.Handler { return h },
+		AuthInfoHandler:         http.NewServeMux(),
+		AuthServer:              &asrunner.EmbeddedAuthServer{},
+		HealthMonitor:           &health.Monitor{},
+		StatusReportingInterval: time.Second,
+		StatusReporter:          stubServeReporter{},
+		Watcher:                 stubWatcher{},
+		SessionFactory:          testMinimalFactory(),
+		SessionStorage:          &vmcpconfig.SessionStorageConfig{},
+		OptimizerFactory: func(context.Context, []server.ServerTool) (optimizer.Optimizer, error) {
+			return nil, nil
+		},
+		OptimizerConfig:   &optimizer.Config{},
+		TelemetryProvider: &telemetry.Provider{},
+		AuditConfig:       &audit.Config{},
+	}
+
+	got := reflect.ValueOf(*buildServeConfig(src))
+	gotType := got.Type()
+	for i := range gotType.NumField() {
+		name := gotType.Field(i).Name
+		if _, skip := intentionallyUnmapped[name]; skip {
+			continue
+		}
+		assert.Falsef(t, got.Field(i).IsZero(), "Config.%s was not populated by buildServeConfig", name)
 	}
 }

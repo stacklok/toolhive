@@ -112,16 +112,16 @@ type ServerConfig struct {
 	AuditConfig *audit.Config
 }
 
-// Serve builds the mcp-go server and HTTP transport skeleton around an
-// already-constructed core [core.VMCP], returning the existing *Server.
+// Serve is the transport-side entry point of the New/Serve split: it wraps an
+// already-constructed core [core.VMCP] and returns the existing *Server.
 //
-// This is the transport-side entry point of the New/Serve split. At this phase it
-// performs only the self-contained transport construction: applying the transport
-// defaults (mirroring server.New), building the mcp-go server, and wiring the core's
-// Close into the server's shutdown sequence. The route mux and HTTP lifecycle are
-// provided by the carried-forward (*Server).Handler/Start/Stop, which register the
-// unauthenticated routes (/health, /ping, /readyz, /status, /api/backends/health,
-// the metrics and .well-known endpoints, and any embedded auth-server routes).
+// At this phase Serve constructs only the self-contained transport pieces: it
+// applies the transport defaults (mirroring server.New), builds the mcp-go server,
+// and wires the core's Close into the server's shutdown sequence. It does NOT build
+// the route mux or the HTTP lifecycle here — those remain in the carried-forward
+// (*Server).Handler/Start/Stop, which register the unauthenticated routes (/health,
+// /ping, /readyz, /status, /api/backends/health, the metrics and .well-known
+// endpoints, and any embedded auth-server routes) when Serve's *Server is served.
 //
 // The remaining transport concerns — the SDK session hooks and two-phase session
 // creation, the authenticated middleware chain, the direct VMCP request path, and
@@ -181,6 +181,14 @@ func Serve(_ context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error) {
 // defaults server.New applies today. Defaults are applied here rather than by
 // mutating the caller's ServerConfig (go-style: copy before mutating caller input).
 // Port 0 is left untouched to mean "OS-assigned".
+//
+// Two Config fields are deliberately NOT mapped at this phase (see
+// TestBuildServeConfigMapsSharedFields, which guards this list against drift):
+//   - AuthzMiddleware: the authenticated/authz middleware chain is relocated under
+//     Serve by #5441, after which authorization moves to the core admission seam.
+//   - HealthMonitorConfig: Serve receives the already-built *health.Monitor via
+//     ServerConfig.HealthMonitor (A2) and assigns it to the Server directly, so it
+//     never needs the monitor's construction config.
 func buildServeConfig(cfg *ServerConfig) *Config {
 	return &Config{
 		Name:                    cmp.Or(cfg.Name, "toolhive-vmcp"),

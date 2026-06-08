@@ -87,28 +87,8 @@ var _ VMCP = (*coreVMCP)(nil)
 // cfg.ServerName and cfg.PassThroughTools); a nil cfg.Authz yields an allow-all
 // seam.
 func New(cfg *Config) (VMCP, error) {
-	if cfg == nil {
-		return nil, fmt.Errorf("%w: nil core config", vmcp.ErrInvalidConfig)
-	}
-	if cfg.Aggregator == nil {
-		return nil, fmt.Errorf("%w: Aggregator is required", vmcp.ErrInvalidConfig)
-	}
-	if cfg.Router == nil {
-		return nil, fmt.Errorf("%w: Router is required", vmcp.ErrInvalidConfig)
-	}
-	if cfg.BackendRegistry == nil {
-		return nil, fmt.Errorf("%w: BackendRegistry is required", vmcp.ErrInvalidConfig)
-	}
-	if cfg.BackendClient == nil {
-		return nil, fmt.Errorf("%w: BackendClient is required", vmcp.ErrInvalidConfig)
-	}
-	// Fail fast on the elicitation contract: a workflow with an elicitation step run
-	// against a nil Elicitation would nil-deref deep inside the engine at call time
-	// (the legacy server.New path always wired a non-nil adapter). Reject it at
-	// construction so the misconfiguration surfaces at startup, not mid-workflow.
-	if cfg.Elicitation == nil && workflowsRequireElicitation(cfg.WorkflowDefs) {
-		return nil, fmt.Errorf(
-			"%w: Elicitation is required when a workflow contains an elicitation step", vmcp.ErrInvalidConfig)
+	if err := validateConfig(cfg); err != nil {
+		return nil, err
 	}
 
 	// Build the admission seam before acquiring resources so a bad policy fails
@@ -363,6 +343,36 @@ func (c *coreVMCP) accessibleComposites(
 		return nil
 	}
 	return defs
+}
+
+// validateConfig checks New's required inputs and the elicitation contract,
+// keeping New itself within the cyclomatic-complexity budget. Returns a
+// vmcp.ErrInvalidConfig-wrapped error on the first violation.
+func validateConfig(cfg *Config) error {
+	if cfg == nil {
+		return fmt.Errorf("%w: nil core config", vmcp.ErrInvalidConfig)
+	}
+	if cfg.Aggregator == nil {
+		return fmt.Errorf("%w: Aggregator is required", vmcp.ErrInvalidConfig)
+	}
+	if cfg.Router == nil {
+		return fmt.Errorf("%w: Router is required", vmcp.ErrInvalidConfig)
+	}
+	if cfg.BackendRegistry == nil {
+		return fmt.Errorf("%w: BackendRegistry is required", vmcp.ErrInvalidConfig)
+	}
+	if cfg.BackendClient == nil {
+		return fmt.Errorf("%w: BackendClient is required", vmcp.ErrInvalidConfig)
+	}
+	// Fail fast on the elicitation contract: a workflow with an elicitation step run
+	// against a nil Elicitation would nil-deref deep inside the engine at call time
+	// (the legacy server.New path always wired a non-nil adapter). Reject it at
+	// construction so the misconfiguration surfaces at startup, not mid-workflow.
+	if cfg.Elicitation == nil && workflowsRequireElicitation(cfg.WorkflowDefs) {
+		return fmt.Errorf(
+			"%w: Elicitation is required when a workflow contains an elicitation step", vmcp.ErrInvalidConfig)
+	}
+	return nil
 }
 
 // validateWorkflowDefs validates each workflow definition, returning only the

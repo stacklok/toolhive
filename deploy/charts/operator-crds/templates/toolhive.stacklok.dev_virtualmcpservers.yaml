@@ -2118,6 +2118,16 @@ spec:
                     required:
                     - source
                     type: object
+                  passthroughHeaders:
+                    description: |-
+                      PassthroughHeaders is an allowlist of incoming client request header names
+                      forwarded verbatim to all backends. Resolved per-request at the auth
+                      boundary and baked into the per-session backend client. Names must not be
+                      in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                   rateLimiting:
                     description: |-
                       RateLimiting defines rate limiting configuration for the Virtual MCP server.
@@ -2685,6 +2695,17 @@ spec:
                     - inline
                     type: string
                 type: object
+              passthroughHeaders:
+                description: |-
+                  PassthroughHeaders is an allowlist of incoming client request header names
+                  forwarded verbatim to all backends (e.g. an API key the backend resolves to
+                  a user). Takes precedence over config.PassthroughHeaders. Names must not be
+                  restricted headers (Host, hop-by-hop, X-Forwarded-*). Forwarded headers are
+                  attacker-influenceable unless a trusted upstream sets them.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
               podTemplateSpec:
                 description: |-
                   PodTemplateSpec defines the pod template to use for the Virtual MCP server
@@ -5072,6 +5093,16 @@ spec:
                     required:
                     - source
                     type: object
+                  passthroughHeaders:
+                    description: |-
+                      PassthroughHeaders is an allowlist of incoming client request header names
+                      forwarded verbatim to all backends. Resolved per-request at the auth
+                      boundary and baked into the per-session backend client. Names must not be
+                      in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                   rateLimiting:
                     description: |-
                       RateLimiting defines rate limiting configuration for the Virtual MCP server.
@@ -5639,6 +5670,17 @@ spec:
                     - inline
                     type: string
                 type: object
+              passthroughHeaders:
+                description: |-
+                  PassthroughHeaders is an allowlist of incoming client request header names
+                  forwarded verbatim to all backends (e.g. an API key the backend resolves to
+                  a user). Takes precedence over config.PassthroughHeaders. Names must not be
+                  restricted headers (Host, hop-by-hop, X-Forwarded-*). Forwarded headers are
+                  attacker-influenceable unless a trusted upstream sets them.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
               podTemplateSpec:
                 description: |-
                   PodTemplateSpec defines the pod template to use for the Virtual MCP server

@@ -4,9 +4,11 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"testing"
 
@@ -95,6 +97,21 @@ func TestListenURL(t *testing.T) {
 // downstream repositories that this module's analyzer cannot see. Without
 // this test, a future deadcode pass would flag them as unreachable (as
 // happened in #5355) even though external callers depend on them.
+func TestSecurityHeaders(t *testing.T) {
+	t.Parallel()
+
+	b := NewServerBuilder()
+	router, err := b.Build(context.Background())
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+	assert.Equal(t, "same-origin", rec.Header().Get("Cross-Origin-Resource-Policy"))
+}
+
 func TestServerBuilderExtensionPoints(t *testing.T) {
 	t.Parallel()
 

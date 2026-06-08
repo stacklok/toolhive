@@ -388,7 +388,7 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 		assert.Contains(t, metrics, "toolhive_mcp_request_duration",
 			"Should record request duration histogram")
 
-		// --- Backend metrics (from monitorBackends in vmcp/server/telemetry.go) ---
+		// --- Backend metrics (from backendtelemetry.MonitorBackends) ---
 
 		// Backend request counter — recorded when the tool call was routed to the backend
 		assert.Contains(t, metrics, "toolhive_vmcp_backend_requests",

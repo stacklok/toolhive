@@ -178,6 +178,91 @@ func TestTeardown_NoPurge_LeavesTokenRefsIntact(t *testing.T) {
 	assert.Equal(t, expiry, provider.cfg.OIDC.CachedTokenExpiry)
 }
 
+// ── Setup --lazy path ─────────────────────────────────────────────────────────
+
+// setupGatewayManager reports one or more detected clients and patches them
+// successfully, for Setup-level tests. mode is returned by LLMGatewayModeFor;
+// use "proxy" to avoid the direct-mode Anthropic-prefix probe.
+type setupGatewayManager struct {
+	detected []string
+	mode     string
+}
+
+func (g *setupGatewayManager) DetectedLLMGatewayClients() []string { return g.detected }
+func (*setupGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
+	return "/tmp/settings.json", nil
+}
+func (g *setupGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
+func (*setupGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
+	return "", nil
+}
+func (*setupGatewayManager) RevertEnvFile(_, _ string) error    { return nil }
+func (*setupGatewayManager) RevertLLMGateway(_, _ string) error { return nil }
+
+// configuredSetupProvider returns a ConfigUpdater whose config satisfies
+// IsConfigured()/Validate() so Setup proceeds past its configuration checks.
+func configuredSetupProvider() *stubConfigUpdater {
+	return &stubConfigUpdater{cfg: Config{
+		GatewayURL: "https://llm.example.com",
+		OIDC: OIDCConfig{
+			Issuer:   "https://auth.example.com",
+			ClientID: "test-client",
+		},
+	}}
+}
+
+func TestSetup_Lazy_SkipsLoginAndPersistsTools(t *testing.T) {
+	t.Parallel()
+
+	gm := &setupGatewayManager{detected: []string{"cursor"}, mode: "proxy"}
+	provider := configuredSetupProvider()
+
+	loginCalled := false
+	login := func(_ context.Context, _ *Config) error {
+		loginCalled = true
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	// anthropicPathPrefixSet=true skips the network probe; lazy=true.
+	err := Setup(
+		context.Background(), &stdout, &stderr, gm, provider, login,
+		SetOptions{}, "", true, "", true,
+	)
+	require.NoError(t, err)
+
+	assert.False(t, loginCalled, "lazy mode must not invoke the OIDC login")
+	// Tool config must still be persisted even though login was skipped.
+	require.Len(t, provider.cfg.ConfiguredTools, 1)
+	assert.Equal(t, "cursor", provider.cfg.ConfiguredTools[0].Tool)
+	// User must be told that login is deferred to the first request.
+	assert.Contains(t, stdout.String(), "Lazy mode")
+	assert.Contains(t, stdout.String(), "first")
+}
+
+func TestSetup_NonLazy_InvokesLogin(t *testing.T) {
+	t.Parallel()
+
+	gm := &setupGatewayManager{detected: []string{"cursor"}, mode: "proxy"}
+	provider := configuredSetupProvider()
+
+	loginCalled := false
+	login := func(_ context.Context, _ *Config) error {
+		loginCalled = true
+		return nil
+	}
+
+	var stdout, stderr bytes.Buffer
+	err := Setup(
+		context.Background(), &stdout, &stderr, gm, provider, login,
+		SetOptions{}, "", true, "", false,
+	)
+	require.NoError(t, err)
+
+	assert.True(t, loginCalled, "non-lazy mode must invoke the OIDC login")
+	require.Len(t, provider.cfg.ConfiguredTools, 1)
+}
+
 // ── AnthropicPathPrefix / configureDetectedTools ──────────────────────────────
 
 // capturingGatewayManager records the ApplyConfig passed to ConfigureLLMGateway.

@@ -60,8 +60,14 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // buildStatusResponse builds the StatusResponse from server state.
 // Uses the provided context for request cancellation and tracing propagation.
 func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
-	// Get current backends from registry (supports dynamic backend changes)
-	backends := s.backendRegistry.List(ctx)
+	// Get current backends from registry (supports dynamic backend changes).
+	// The registry is owned by the core and may not be wired into the transport
+	// yet (the Serve skeleton, before later Phase 2 tasks relocate it); a nil
+	// registry yields an empty backend view rather than a panic.
+	var backends []vmcp.Backend
+	if s.backendRegistry != nil {
+		backends = s.backendRegistry.List(ctx)
+	}
 	backendStatuses := make([]BackendStatus, 0, len(backends))
 
 	// Get live health states from the health monitor (if enabled) so that

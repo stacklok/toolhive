@@ -1972,7 +1972,11 @@ _Appears in:_
 
 
 
-MCPRegistry is the Schema for the mcpregistries API
+MCPRegistry is the Schema for the mcpregistries API.
+
+The MCPRegistry CRD is deprecated and will be removed in a future release.
+Install the ToolHive registry server via the toolhive-registry-server Helm chart
+instead: https://github.com/stacklok/toolhive-registry-server
 
 
 

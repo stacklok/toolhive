@@ -33,3 +33,27 @@ tests:
     documentSelector: { path: kind, value: RoleBinding }
     asserts:
       - equal: { path: 'subjects[0].name', value: my-sa }
+
+  # When the name is left empty, all references fall back to the generated name
+  # (fullname) via the helper — the leader-election subject must not render empty.
+  - it: creates the SA under the generated name when serviceAccount.name is empty
+    template: serviceaccount.yaml
+    set:
+      operator.serviceAccount.name: ""
+    asserts:
+      - equal: { path: metadata.name, value: toolhive-operator }
+
+  - it: binds the cluster subject to the generated name when name is empty
+    template: clusterrole/rolebinding.yaml
+    set:
+      operator.serviceAccount.name: ""
+    asserts:
+      - equal: { path: 'subjects[0].name', value: toolhive-operator }
+
+  - it: binds the leader-election subject to the generated name when name is empty
+    template: leader-election-role.yaml
+    documentSelector: { path: kind, value: RoleBinding }
+    set:
+      operator.serviceAccount.name: ""
+    asserts:
+      - equal: { path: 'subjects[0].name', value: toolhive-operator }

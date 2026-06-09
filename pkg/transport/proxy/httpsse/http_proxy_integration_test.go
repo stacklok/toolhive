@@ -6,6 +6,7 @@ package httpsse
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -378,4 +379,46 @@ func extractSessionID(body io.Reader) (string, error) {
 	}
 
 	return string(buf[start:end]), nil
+}
+
+// TestHTTPSSEProxy_StartMountsAuthDiscoveryEndpoint is an integration test that
+// starts a real SSE proxy with an authInfoHandler and verifies the RFC 9728
+// discovery endpoint responds correctly.
+func TestHTTPSSEProxy_StartMountsAuthDiscoveryEndpoint(t *testing.T) {
+	t.Parallel()
+
+	const wantBody = `{"resource":"https://example.com"}`
+
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(wantBody))
+	})
+
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil, WithAuthInfoHandler(sentinel))
+	ctx := context.Background()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	// Poll until the server is ready (Start returns before the goroutine binds).
+	url := fmt.Sprintf("http://%s/.well-known/oauth-protected-resource", proxy.server.Addr)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
+
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "https://example.com", body["resource"])
 }

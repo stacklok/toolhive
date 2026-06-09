@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // MockHTTPProxy is a mock implementation of types.Proxy
@@ -1035,4 +1037,197 @@ func TestStdioTransport_ShouldRestart(t *testing.T) {
 			assert.Equal(t, tt.expectedResult, result)
 		})
 	}
+}
+
+// TestNewStdioTransport_PreservesAuthInfoHandler verifies that SetAuthInfoHandler
+// stores the handler on the struct (no networking required).
+func TestNewStdioTransport_PreservesAuthInfoHandler(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	tr := NewStdioTransport("localhost", 8080, nil, false, false, nil)
+	tr.SetAuthInfoHandler(handler)
+
+	// authInfoHandler is unexported but accessible within the same package.
+	require.NotNil(t, tr.authInfoHandler)
+}
+
+// TestNewStdioTransport_PreservesPrefixHandlers verifies that SetPrefixHandlers
+// stores the map on the struct (no networking required).
+func TestNewStdioTransport_PreservesPrefixHandlers(t *testing.T) {
+	t.Parallel()
+
+	handlers := map[string]http.Handler{
+		"/oauth/token": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	tr := NewStdioTransport("localhost", 8080, nil, false, false, nil)
+	tr.SetPrefixHandlers(handlers)
+
+	require.Len(t, tr.prefixHandlers, 1)
+	require.Contains(t, tr.prefixHandlers, "/oauth/token")
+}
+
+// TestFactory_Create_StdioPreservesAuthInfoHandler verifies that the factory
+// forwards AuthInfoHandler from Config to the StdioTransport it creates.
+func TestFactory_Create_StdioPreservesAuthInfoHandler(t *testing.T) {
+	t.Parallel()
+
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	cfg := types.Config{
+		Type:            types.TransportTypeStdio,
+		Host:            "localhost",
+		ProxyPort:       8080,
+		AuthInfoHandler: sentinel,
+	}
+
+	factory := NewFactory()
+	tr, err := factory.Create(cfg)
+	require.NoError(t, err)
+
+	stdio, ok := tr.(*StdioTransport)
+	require.True(t, ok, "expected *StdioTransport")
+	require.NotNil(t, stdio.authInfoHandler)
+}
+
+// TestFactory_Create_StdioPreservesPrefixHandlers verifies that the factory
+// forwards PrefixHandlers from Config to the StdioTransport it creates.
+func TestFactory_Create_StdioPreservesPrefixHandlers(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	cfg := types.Config{
+		Type:      types.TransportTypeStdio,
+		Host:      "localhost",
+		ProxyPort: 8080,
+		PrefixHandlers: map[string]http.Handler{
+			"/oauth/token": handler,
+		},
+	}
+
+	factory := NewFactory()
+	tr, err := factory.Create(cfg)
+	require.NoError(t, err)
+
+	stdio, ok := tr.(*StdioTransport)
+	require.True(t, ok, "expected *StdioTransport")
+	require.Len(t, stdio.prefixHandlers, 1)
+	require.Contains(t, stdio.prefixHandlers, "/oauth/token")
+}
+
+// TestFactory_Create_SSEPreservesAuthInfoHandler verifies that the factory
+// forwards AuthInfoHandler from Config to the HTTPTransport it creates for SSE.
+func TestFactory_Create_SSEPreservesAuthInfoHandler(t *testing.T) {
+	t.Parallel()
+
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	cfg := types.Config{
+		Type:            types.TransportTypeSSE,
+		Host:            "localhost",
+		ProxyPort:       8080,
+		AuthInfoHandler: sentinel,
+	}
+
+	factory := NewFactory()
+	tr, err := factory.Create(cfg)
+	require.NoError(t, err)
+
+	ht, ok := tr.(*HTTPTransport)
+	require.True(t, ok, "expected *HTTPTransport")
+	require.NotNil(t, ht.authInfoHandler)
+}
+
+// TestFactory_Create_SSEPreservesPrefixHandlers verifies that the factory
+// forwards PrefixHandlers from Config to the HTTPTransport it creates for SSE.
+func TestFactory_Create_SSEPreservesPrefixHandlers(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	cfg := types.Config{
+		Type:      types.TransportTypeSSE,
+		Host:      "localhost",
+		ProxyPort: 8080,
+		PrefixHandlers: map[string]http.Handler{
+			"/oauth/token": handler,
+		},
+	}
+
+	factory := NewFactory()
+	tr, err := factory.Create(cfg)
+	require.NoError(t, err)
+
+	ht, ok := tr.(*HTTPTransport)
+	require.True(t, ok, "expected *HTTPTransport")
+	require.Len(t, ht.prefixHandlers, 1)
+	require.Contains(t, ht.prefixHandlers, "/oauth/token")
+}
+
+// TestFactory_Create_StreamableHTTPPreservesAuthInfoHandler verifies that the factory
+// forwards AuthInfoHandler from Config to the HTTPTransport it creates for StreamableHTTP.
+func TestFactory_Create_StreamableHTTPPreservesAuthInfoHandler(t *testing.T) {
+	t.Parallel()
+
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	cfg := types.Config{
+		Type:            types.TransportTypeStreamableHTTP,
+		Host:            "localhost",
+		ProxyPort:       8080,
+		AuthInfoHandler: sentinel,
+	}
+
+	factory := NewFactory()
+	tr, err := factory.Create(cfg)
+	require.NoError(t, err)
+
+	ht, ok := tr.(*HTTPTransport)
+	require.True(t, ok, "expected *HTTPTransport")
+	require.NotNil(t, ht.authInfoHandler)
+}
+
+// TestFactory_Create_StreamableHTTPPreservesPrefixHandlers verifies that the factory
+// forwards PrefixHandlers from Config to the HTTPTransport it creates for StreamableHTTP.
+func TestFactory_Create_StreamableHTTPPreservesPrefixHandlers(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	cfg := types.Config{
+		Type:      types.TransportTypeStreamableHTTP,
+		Host:      "localhost",
+		ProxyPort: 8080,
+		PrefixHandlers: map[string]http.Handler{
+			"/oauth/token": handler,
+		},
+	}
+
+	factory := NewFactory()
+	tr, err := factory.Create(cfg)
+	require.NoError(t, err)
+
+	ht, ok := tr.(*HTTPTransport)
+	require.True(t, ok, "expected *HTTPTransport")
+	require.Len(t, ht.prefixHandlers, 1)
+	require.Contains(t, ht.prefixHandlers, "/oauth/token")
 }

@@ -87,9 +87,12 @@ require go.starlark.net v0.0.0-20260522144826-ec58d4b459e2
 
 require (
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.26 // indirect
+	github.com/containerd/stargz-snapshotter/estargz v0.18.2 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
+	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	github.com/vbatts/tar-split v0.12.2 // indirect
 )
 
 require (
@@ -347,3 +350,10 @@ require (
 	golang.org/x/sys v0.45.0
 	k8s.io/client-go v0.35.3
 )
+
+// go-containerregistry v0.21.6 introduced a semaphore leak that never releases
+// its acquired slots, causing image pulls of 5+ layers to hang indefinitely.
+// The fix is merged upstream (google/go-containerregistry#2308) but not yet
+// released. Pin to the last known-good release until a fixed version ships.
+// TODO: remove this replace once go-containerregistry > v0.21.6 is released.
+replace github.com/google/go-containerregistry => github.com/google/go-containerregistry v0.21.5

@@ -91,7 +91,7 @@ type testStorageState struct {
 	authCodeSessions   map[string]fosite.Requester          // authorize code sessions for token exchange
 	pkceSessions       map[string]fosite.Requester          // PKCE sessions for token exchange
 	idpTokenCount      int
-	renewedClients     []string                             // client IDs passed to RenewClientTTL
+	renewedClients     []string // client IDs passed to RenewClientTTL
 }
 
 // baseTestSetupOption configures optional behavior overrides for baseTestSetup.

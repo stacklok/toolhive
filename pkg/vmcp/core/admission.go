@@ -24,6 +24,15 @@ import (
 // parameter (never read from ctx, vmcp anti-pattern #1); the adapter re-injects it
 // into the ctx the wrapped authorizer reads. A seam can only SUBTRACT reachability
 // (filter list output / refuse a call), never widen it ([VMCP] contract).
+//
+// The seam is optimizer-agnostic: it authorizes every capability uniformly by name
+// and has no special handling for the optimizer's meta-tools (find_tool/call_tool).
+// The optimizer-admission integration the HTTP path performs today — call_tool
+// inner-target authorization, find_tool response filtering, and inner-target
+// annotation sourcing — is deliberately NOT in this seam; it is deferred to its own
+// focused PR. Until then the optimizer keeps the HTTP middleware, and #5441's
+// composition root fails fast (vmcp.ErrInvalidConfig) when Authz is set together
+// with the optimizer, so the combination can never silently route through this seam.
 type Admission interface {
 	// FilterTools returns the subset of tools the identity may call. Mirrors
 	// pkg/authz filterToolsByPolicy: a per-tool AuthorizeWithJWTClaims(call) using
@@ -65,9 +74,7 @@ type Admission interface {
 // to this generic factory path, which consumes RawConfig as-is. newCedarAuthzMiddleware
 // is the sibling construction path; the two must stay in lockstep (notably the
 // empty-serverName check below) until #5441 collapses them.
-func newAdmission(
-	authzCfg *authorizers.Config, serverName string, passThroughTools map[string]struct{},
-) (Admission, error) {
+func newAdmission(authzCfg *authorizers.Config, serverName string) (Admission, error) {
 	if authzCfg == nil {
 		return allowAllAdmission{}, nil
 	}
@@ -94,16 +101,15 @@ func newAdmission(
 		// failures above — all are invalid-config conditions.
 		return nil, fmt.Errorf("%w: failed to build admission authorizer: %w", vmcp.ErrInvalidConfig, err)
 	}
-	return newCedarAdmission(authorizer, passThroughTools), nil
+	return newCedarAdmission(authorizer), nil
 }
 
 // cedarAdmission enforces the wrapped [authorizers.Authorizer]'s decision. It is
 // named for the Cedar authorizer it backs in the vMCP path, but wraps the
-// single-method Authorizer interface generically. passThroughTools (optimizer
-// meta-tools) bypass the decision exactly as they do in the HTTP response filter.
+// single-method Authorizer interface generically. It authorizes every capability
+// uniformly — no optimizer meta-tool carve-out (see the [Admission] doc).
 type cedarAdmission struct {
-	authorizer       authorizers.Authorizer
-	passThroughTools map[string]struct{}
+	authorizer authorizers.Authorizer
 	// logger receives the per-item "skipping" warnings. It defaults to
 	// slog.Default(); tests inject a buffer-backed logger (via withLogger) so they
 	// can assert on output WITHOUT swapping the process-global slog default — that
@@ -123,20 +129,17 @@ func withLogger(logger *slog.Logger) cedarOption {
 // newCedarAdmission wraps an already-built authorizer. Separated from newAdmission
 // so tests can inject a stub authorizer (or a real cedar.NewCedarAuthorizer)
 // without round-tripping through the config/factory.
-func newCedarAdmission(
-	a authorizers.Authorizer, passThroughTools map[string]struct{}, opts ...cedarOption,
-) *cedarAdmission {
-	adm := &cedarAdmission{authorizer: a, passThroughTools: passThroughTools, logger: slog.Default()}
+func newCedarAdmission(a authorizers.Authorizer, opts ...cedarOption) *cedarAdmission {
+	adm := &cedarAdmission{authorizer: a, logger: slog.Default()}
 	for _, opt := range opts {
 		opt(adm)
 	}
 	return adm
 }
 
-// FilterTools mirrors pkg/authz filterToolsByPolicy (tool_filter.go:19) and the
-// response filter's tool split (response_filter.go:306): pass-through tools are
-// kept unconditionally; every other tool is authorized for call with its
-// annotations injected, and a per-tool authorizer error skips that tool.
+// FilterTools mirrors pkg/authz filterToolsByPolicy: each tool is authorized for
+// call with its annotations injected, and a per-tool authorizer error skips that
+// tool (log-and-continue).
 func (a *cedarAdmission) FilterTools(
 	ctx context.Context, identity *auth.Identity, tools []vmcp.Tool,
 ) ([]vmcp.Tool, error) {
@@ -148,11 +151,6 @@ func (a *cedarAdmission) FilterTools(
 	filtered := make([]vmcp.Tool, 0, len(tools))
 	for i := range tools {
 		tool := &tools[i]
-		if _, passThrough := a.passThroughTools[tool.Name]; passThrough {
-			filtered = append(filtered, *tool)
-			continue
-		}
-
 		toolCtx := ctx
 		if ann := convertAnnotations(tool.Annotations); ann != nil {
 			toolCtx = authorizers.WithToolAnnotations(toolCtx, ann)
@@ -170,23 +168,15 @@ func (a *cedarAdmission) FilterTools(
 	return filtered, nil
 }
 
-// AllowToolCall mirrors pkg/authz authorizeToolCall (tool_filter.go:64). Pass-through
-// meta-tools are exempt from the seam's decision, matching how they bypass the HTTP
-// authz path's tool checks today (#5438 AC: "passThroughTools remain exempt").
-//
-// call_tool parity note: the HTTP middleware's handleToolsCall (pkg/authz/middleware.go)
-// additionally RE-TARGETS authorization at the inner backend tool wrapped inside a
-// call_tool request (reading args["tool_name"]). This seam deliberately does NOT
-// replicate that inner-tool authorization — it only exempts the meta-tool name, per
-// this task's scope. Ensuring the unwrapped inner call is authorized is a call-path
-// wiring requirement for #5441 (which removes the HTTP middleware): that wiring must
-// route the inner call through a path that consults this seam with the real tool name.
+// AllowToolCall mirrors pkg/authz authorizeToolCall (MCPFeatureTool/Call), sourcing
+// the tool's annotations for when-clause evaluation. It authorizes the tool named in
+// `tool.Name` — there is no optimizer meta-tool special-casing here (see the
+// [Admission] doc): the optimizer's call_tool inner-target authorization is deferred
+// to a dedicated optimizer-admission PR, and #5441 fails fast on (Authz + optimizer)
+// so that combination never reaches this seam in the meantime.
 func (a *cedarAdmission) AllowToolCall(
 	ctx context.Context, identity *auth.Identity, tool *vmcp.Tool, args map[string]any,
 ) (bool, error) {
-	if _, passThrough := a.passThroughTools[tool.Name]; passThrough {
-		return true, nil
-	}
 	ctx = auth.WithIdentity(ctx, identity)
 	if ann := convertAnnotations(tool.Annotations); ann != nil {
 		ctx = authorizers.WithToolAnnotations(ctx, ann)

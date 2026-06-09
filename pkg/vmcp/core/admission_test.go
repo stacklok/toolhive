@@ -87,12 +87,12 @@ func cedarIdentity() *auth.Identity {
 }
 
 // cedarAdmissionWith builds a cedarAdmission backed by a real Cedar authorizer
-// compiled from the given policies (no pass-through tools).
+// compiled from the given policies.
 func cedarAdmissionWith(t *testing.T, policies ...string) *cedarAdmission {
 	t.Helper()
 	a, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{Policies: policies, EntitiesJSON: "[]"}, "")
 	require.NoError(t, err)
-	return newCedarAdmission(a, nil)
+	return newCedarAdmission(a)
 }
 
 // cedarAuthzConfig builds the generic authz.Config New consumes, wrapping the
@@ -169,7 +169,7 @@ func TestCedarAdmission_FilterTools(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			adm := newCedarAdmission(&mockAuthorizer{results: tc.results}, nil)
+			adm := newCedarAdmission(&mockAuthorizer{results: tc.results})
 			got, err := adm.FilterTools(context.Background(), cedarIdentity(), tc.tools)
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantNames, toolNames(got))
@@ -181,7 +181,7 @@ func TestCedarAdmission_InvokesToolAuthorizerCorrectly(t *testing.T) {
 	t.Parallel()
 
 	mock := &mockAuthorizer{results: map[string]mockResult{"hinted": {authorized: true}, "plain": {authorized: true}}}
-	adm := newCedarAdmission(mock, nil)
+	adm := newCedarAdmission(mock)
 
 	tools := []vmcp.Tool{
 		{Name: "hinted", Annotations: &vmcp.ToolAnnotations{ReadOnlyHint: boolPtr(true)}},
@@ -225,7 +225,7 @@ func TestCedarAdmission_AllowToolCall(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			mock := &mockAuthorizer{results: tc.results}
-			adm := newCedarAdmission(mock, nil)
+			adm := newCedarAdmission(mock)
 			ok, err := adm.AllowToolCall(context.Background(), cedarIdentity(), &vmcp.Tool{Name: tc.tool}, nil)
 			assert.Equal(t, tc.wantOK, ok)
 			if tc.wantErr != nil {
@@ -250,7 +250,7 @@ func TestCedarAdmission_AllowToolCall_ForwardsArgs(t *testing.T) {
 	t.Run("args reach the authorizer", func(t *testing.T) {
 		t.Parallel()
 		mock := &mockAuthorizer{results: map[string]mockResult{"deploy": {authorized: true}}}
-		adm := newCedarAdmission(mock, nil)
+		adm := newCedarAdmission(mock)
 		args := map[string]any{"mode": "safe"}
 
 		_, err := adm.AllowToolCall(context.Background(), cedarIdentity(), &vmcp.Tool{Name: "deploy"}, args)
@@ -306,35 +306,6 @@ func TestFindAdvertisedTool(t *testing.T) {
 	}
 }
 
-// TestCedarAdmission_PassThroughExempt covers R1(4): optimizer meta-tools
-// (find_tool/call_tool) are never denied by the seam, matching their exemption
-// through the HTTP middleware today. Exemption is the seam's contract here; the
-// inner-tool authorization the HTTP middleware performs for call_tool is a #5441
-// call-path wiring concern (see AllowToolCall's doc), not the seam's.
-func TestCedarAdmission_PassThroughExempt(t *testing.T) {
-	t.Parallel()
-
-	passThrough := map[string]struct{}{"find_tool": {}, "call_tool": {}}
-	// Authorizer denies everything (empty results -> default deny).
-	mock := &mockAuthorizer{results: map[string]mockResult{}}
-	adm := newCedarAdmission(mock, passThrough)
-
-	got, err := adm.FilterTools(context.Background(), cedarIdentity(),
-		[]vmcp.Tool{{Name: "find_tool"}, {Name: "call_tool"}, {Name: "regular"}})
-	require.NoError(t, err)
-	assert.Equal(t, []string{"find_tool", "call_tool"}, toolNames(got),
-		"pass-through tools survive; the regular tool is denied")
-
-	ok, err := adm.AllowToolCall(context.Background(), cedarIdentity(), &vmcp.Tool{Name: "find_tool"}, nil)
-	require.NoError(t, err)
-	assert.True(t, ok, "pass-through tool call is exempt")
-
-	// The authorizer is never consulted for pass-through tools.
-	for _, c := range mock.calls {
-		assert.Equal(t, "regular", c.resourceID)
-	}
-}
-
 func TestCedarAdmission_FilterResourcesAndPrompts(t *testing.T) {
 	t.Parallel()
 
@@ -345,7 +316,7 @@ func TestCedarAdmission_FilterResourcesAndPrompts(t *testing.T) {
 			"res-b": {authorized: false},
 			"res-c": {err: errors.New("boom")}, // skipped
 		}}
-		adm := newCedarAdmission(mock, nil)
+		adm := newCedarAdmission(mock)
 		got, err := adm.FilterResources(context.Background(), cedarIdentity(),
 			[]vmcp.Resource{{URI: "res-a"}, {URI: "res-b"}, {URI: "res-c"}})
 		require.NoError(t, err)
@@ -361,7 +332,7 @@ func TestCedarAdmission_FilterResourcesAndPrompts(t *testing.T) {
 			"p-a": {authorized: true},
 			"p-b": {authorized: false},
 		}}
-		adm := newCedarAdmission(mock, nil)
+		adm := newCedarAdmission(mock)
 		got, err := adm.FilterPrompts(context.Background(), cedarIdentity(),
 			[]vmcp.Prompt{{Name: "p-a"}, {Name: "p-b"}})
 		require.NoError(t, err)
@@ -379,7 +350,7 @@ func TestCedarAdmission_AllowResourceReadAndPromptGet(t *testing.T) {
 		"res-a": {authorized: true},
 		"p-a":   {authorized: false},
 	}}
-	adm := newCedarAdmission(mock, nil)
+	adm := newCedarAdmission(mock)
 
 	ok, err := adm.AllowResourceRead(context.Background(), cedarIdentity(), &vmcp.Resource{URI: "res-a"})
 	require.NoError(t, err)
@@ -486,7 +457,7 @@ func TestNewAdmission(t *testing.T) {
 
 	t.Run("nil config is allow-all", func(t *testing.T) {
 		t.Parallel()
-		adm, err := newAdmission(nil, "", nil)
+		adm, err := newAdmission(nil, "")
 		require.NoError(t, err)
 		ctx := context.Background()
 
@@ -520,7 +491,7 @@ func TestNewAdmission(t *testing.T) {
 		t.Parallel()
 		adm, err := newAdmission(
 			cedarAuthzConfig(t, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`),
-			"test-vmcp", nil)
+			"test-vmcp")
 		require.NoError(t, err)
 
 		ok, err := adm.AllowToolCall(context.Background(), cedarIdentity(), &vmcp.Tool{Name: "weather"}, nil)
@@ -535,7 +506,7 @@ func TestNewAdmission(t *testing.T) {
 		t.Parallel()
 		_, err := newAdmission(
 			cedarAuthzConfig(t, `permit(principal, action == Action::"call_tool", resource == Tool::"weather");`),
-			"", nil)
+			"")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, vmcp.ErrInvalidConfig)
 	})
@@ -548,7 +519,7 @@ func TestNewAdmission(t *testing.T) {
 		}{Version: "1.0", Type: "definitely-not-registered"})
 		require.NoError(t, err)
 
-		_, err = newAdmission(bad, "", nil)
+		_, err = newAdmission(bad, "")
 		require.Error(t, err)
 		assert.ErrorIs(t, err, vmcp.ErrInvalidConfig)
 	})
@@ -774,7 +745,7 @@ func TestAdmission_IdentityNeverLogged(t *testing.T) {
 	// is not vacuous.
 	mock := &mockAuthorizer{results: map[string]mockResult{"boom": {err: errors.New("policy eval failed")}}}
 	var buf bytes.Buffer
-	adm := newCedarAdmission(mock, nil,
+	adm := newCedarAdmission(mock,
 		withLogger(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug}))))
 
 	id := &auth.Identity{

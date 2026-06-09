@@ -147,12 +147,6 @@ type Config struct {
 	// depend on it) and ignored when Authz is nil.
 	ServerName string
 
-	// PassThroughTools names the optimizer meta-tools (find_tool/call_tool) that are
-	// exempt from admission filtering and denial, mirroring how they bypass the HTTP
-	// authz response filter today. Nil when the optimizer is disabled; ignored when
-	// Authz is nil (the allow-all seam exempts everything).
-	PassThroughTools map[string]struct{}
-
 	// TelemetryProvider is the cross-cutting telemetry provider (also consumed by Serve).
 	TelemetryProvider *telemetry.Provider
 

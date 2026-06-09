@@ -84,8 +84,7 @@ var _ VMCP = (*coreVMCP)(nil)
 // with server.New); the core does not route through it at request time. cfg's
 // Aggregator, BackendRegistry, and BackendClient are required and New fails
 // loudly when any is nil. The admission seam is built here from cfg.Authz (with
-// cfg.ServerName and cfg.PassThroughTools); a nil cfg.Authz yields an allow-all
-// seam.
+// cfg.ServerName); a nil cfg.Authz yields an allow-all seam.
 func New(cfg *Config) (VMCP, error) {
 	if err := validateConfig(cfg); err != nil {
 		return nil, err
@@ -93,7 +92,7 @@ func New(cfg *Config) (VMCP, error) {
 
 	// Build the admission seam before acquiring resources so a bad policy fails
 	// fast without leaking the state store's cleanup goroutine.
-	admission, err := newAdmission(cfg.Authz, cfg.ServerName, cfg.PassThroughTools)
+	admission, err := newAdmission(cfg.Authz, cfg.ServerName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build admission seam: %w", err)
 	}

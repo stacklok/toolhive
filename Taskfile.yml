@@ -26,6 +26,18 @@ tasks:
       - command -v helm-docs >/dev/null 2>&1 || go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
       - helm-docs --chart-search-root=deploy/charts
 
+  helm-unittest:
+    desc: Run helm-unittest suites against the Helm charts
+    vars:
+      # Pinned version — bump deliberately alongside the matching pin in
+      # .github/workflows/helm-charts-test.yml.
+      HELM_UNITTEST_VERSION: v1.0.3
+    cmds:
+      - >-
+        helm plugin list | grep -q unittest ||
+        helm plugin install https://github.com/helm-unittest/helm-unittest --version {{.HELM_UNITTEST_VERSION}}
+      - helm unittest deploy/charts/operator-crds
+
   mock-install:
     desc: Install the mockgen tool for mock generation
     status:

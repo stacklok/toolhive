@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -23,7 +22,7 @@ import (
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 )
 
 // stubVMCP is a no-op core.VMCP for Serve tests. The Serve skeleton never invokes
@@ -78,14 +77,23 @@ func (stubServeReporter) Start(context.Context) (func(context.Context) error, er
 	return func(context.Context) error { return nil }, nil
 }
 
+// testMinimalSessionManagerConfig returns a minimal valid SessionManagerConfig for
+// Serve tests that need a non-nil session-manager config but do not exercise session
+// creation. Base is the only required FactoryConfig field; the minimal factory's
+// MakeSessionWithID returns an error if a test accidentally triggers registration.
+func testMinimalSessionManagerConfig() *sessionmanager.FactoryConfig {
+	return &sessionmanager.FactoryConfig{Base: testMinimalFactory()}
+}
+
 func TestServeAppliesTransportDefaults(t *testing.T) {
 	t.Parallel()
 
 	// Empty transport fields exercise every default; Port is left zero.
-	cfg := &ServerConfig{SessionFactory: testMinimalFactory()}
+	cfg := &ServerConfig{SessionManagerConfig: testMinimalSessionManagerConfig()}
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
 	require.NotNil(t, srv)
 	require.NotNil(t, srv.MCPServer())
 
@@ -120,11 +128,12 @@ func TestServePreservesExplicitConfig(t *testing.T) {
 		GroupRef:                "my-group",
 		SessionTTL:              7 * time.Minute,
 		StatusReportingInterval: 11 * time.Second,
-		SessionFactory:          testMinimalFactory(),
+		SessionManagerConfig:    testMinimalSessionManagerConfig(),
 	}
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
 
 	assert.Equal(t, "custom", srv.config.Name)
 	assert.Equal(t, "9.9.9", srv.config.Version)
@@ -139,9 +148,10 @@ func TestServePreservesExplicitConfig(t *testing.T) {
 func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
 	t.Parallel()
 
-	cfg := &ServerConfig{SessionFactory: testMinimalFactory()}
+	cfg := &ServerConfig{SessionManagerConfig: testMinimalSessionManagerConfig()}
 	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
 
 	handler, err := srv.Handler(context.Background())
 	require.NoError(t, err)
@@ -186,10 +196,11 @@ func TestServeHandlerRegistersMetricsWhenTelemetryEnabled(t *testing.T) {
 	t.Cleanup(func() { _ = provider.Shutdown(ctx) })
 
 	srv, err := Serve(ctx, &stubVMCP{}, &ServerConfig{
-		SessionFactory:    testMinimalFactory(),
-		TelemetryProvider: provider,
+		SessionManagerConfig: testMinimalSessionManagerConfig(),
+		TelemetryProvider:    provider,
 	})
 	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
 
 	handler, err := srv.Handler(ctx)
 	require.NoError(t, err)
@@ -204,7 +215,7 @@ func TestServeStopClosesCore(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubVMCP{}
-	srv, err := Serve(context.Background(), stub, &ServerConfig{SessionFactory: testMinimalFactory()})
+	srv, err := Serve(context.Background(), stub, &ServerConfig{SessionManagerConfig: testMinimalSessionManagerConfig()})
 	require.NoError(t, err)
 
 	// Stop on a never-started server still runs the shutdown funcs, which release
@@ -229,10 +240,10 @@ func TestServeValidation(t *testing.T) {
 		{
 			name: "nil vmcp",
 			v:    nil,
-			cfg:  &ServerConfig{SessionFactory: testMinimalFactory()},
+			cfg:  &ServerConfig{SessionManagerConfig: testMinimalSessionManagerConfig()},
 		},
 		{
-			name: "nil session factory",
+			name: "nil session manager config",
 			v:    &stubVMCP{},
 			cfg:  &ServerConfig{},
 		},
@@ -275,10 +286,15 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		"AuthzMiddleware":     {}, // authenticated/authz chain relocated by #5441
 		"HealthMonitorConfig": {}, // monitor injected pre-built via ServerConfig.HealthMonitor (A2)
 		"StatusReporter":      {}, // set directly on Server; Config.StatusReporter only read by New
+		"SessionFactory":      {}, // session manager built in Serve from ServerConfig.SessionManagerConfig
+		"OptimizerFactory":    {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
+		"OptimizerConfig":     {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
 	}
 
 	// Every field set to a non-zero value so a dropped mapping surfaces as a zero
-	// field on the resulting Config.
+	// field on the resulting Config. SessionManagerConfig and BackendRegistry are
+	// ServerConfig-only (consumed directly by Serve, not mapped into Config), so they
+	// are set for completeness but are not part of this destination-field assertion.
 	src := &ServerConfig{
 		Name:                    "n",
 		Version:                 "v",
@@ -294,14 +310,11 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		StatusReportingInterval: time.Second,
 		StatusReporter:          stubServeReporter{},
 		Watcher:                 stubWatcher{},
-		SessionFactory:          testMinimalFactory(),
+		BackendRegistry:         vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 		SessionStorage:          &vmcpconfig.SessionStorageConfig{},
-		OptimizerFactory: func(context.Context, []server.ServerTool) (optimizer.Optimizer, error) {
-			return nil, nil
-		},
-		OptimizerConfig:   &optimizer.Config{},
-		TelemetryProvider: &telemetry.Provider{},
-		AuditConfig:       &audit.Config{},
+		SessionManagerConfig:    testMinimalSessionManagerConfig(),
+		TelemetryProvider:       &telemetry.Provider{},
+		AuditConfig:             &audit.Config{},
 	}
 
 	got := reflect.ValueOf(*buildServeConfig(src))

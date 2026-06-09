@@ -261,6 +261,52 @@ func TestRedisStorage_RegisterClient(t *testing.T) {
 	})
 }
 
+// TestRedisStorage_GetClientTTLRenewal verifies that GetClient renews the
+// registration TTL for public (DCR) clients on use — making expiry a sliding
+// window of inactivity — while leaving confidential clients (which have no TTL)
+// untouched. Without renewal an actively-used public client is evicted
+// DefaultPublicClientTTL after registration and the client then fails with
+// invalid_client on its next token request.
+func TestRedisStorage_GetClientTTLRenewal(t *testing.T) {
+	t.Parallel()
+
+	t.Run("public client TTL is renewed on read", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "public-client")
+			require.NoError(t, s.RegisterClient(ctx, &mockClient{id: "public-client", public: true}))
+
+			// Age the registration so only a small slice of the TTL remains.
+			mr.FastForward(DefaultPublicClientTTL - time.Hour)
+			ttlBefore := mr.TTL(key)
+			require.Positive(t, ttlBefore)
+			require.Less(t, ttlBefore, 2*time.Hour, "precondition: TTL should be near expiry")
+
+			client, err := s.GetClient(ctx, "public-client")
+			require.NoError(t, err)
+			assert.Equal(t, "public-client", client.GetID())
+
+			ttlAfter := mr.TTL(key)
+			assert.Greater(t, ttlAfter, ttlBefore, "GetClient should renew the public client TTL")
+			assert.InDelta(t, DefaultPublicClientTTL.Seconds(), ttlAfter.Seconds(), 60,
+				"renewed TTL should be ~DefaultPublicClientTTL")
+		})
+	})
+
+	t.Run("confidential client stays persistent on read", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "conf-client")
+			require.NoError(t, s.RegisterClient(ctx, &mockClient{id: "conf-client", public: false}))
+			require.Equal(t, time.Duration(0), mr.TTL(key), "confidential clients must not have a TTL")
+
+			_, err := s.GetClient(ctx, "conf-client")
+			require.NoError(t, err)
+
+			assert.Equal(t, time.Duration(0), mr.TTL(key),
+				"GetClient must not introduce a TTL on a confidential client")
+		})
+	})
+}
+
 func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 	t.Parallel()
 

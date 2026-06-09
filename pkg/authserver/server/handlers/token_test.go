@@ -176,6 +176,35 @@ func TestTokenHandler_Success(t *testing.T) {
 	assert.Contains(t, body, "expires_in")
 }
 
+// TestTokenHandler_Success_RenewsClientTTL asserts that a successful token
+// exchange renews the registration TTL of the public client — the proven-use
+// signal that keeps an active client from being evicted and forced to
+// re-register. Renewal must run on the token path, not the unauthenticated
+// authorize read.
+func TestTokenHandler_Success_RenewsClientTTL(t *testing.T) {
+	t.Parallel()
+	handler, storState, _ := handlerTestSetup(t)
+
+	authorizeCode := simulateAuthorizeFlow(t, handler, storState)
+
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"client_id":     {testAuthClientID},
+		"redirect_uri":  {testAuthRedirectURI},
+		"code":          {authorizeCode},
+		"code_verifier": {testPKCEVerifier},
+	}
+	req := httptest.NewRequest(http.MethodPost, "/oauth/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+
+	handler.TokenHandler(rec, req)
+
+	require.Equal(t, http.StatusOK, rec.Code, "got %d: %s", rec.Code, rec.Body.String())
+	assert.Contains(t, storState.renewedClients, testAuthClientID,
+		"successful token exchange should renew the public client's registration TTL")
+}
+
 func TestTokenHandler_AudienceClaim(t *testing.T) {
 	t.Parallel()
 

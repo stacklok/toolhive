@@ -133,6 +133,12 @@ type ServerConfig struct {
 // Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or
 // a nil required collaborator (SessionFactory). The ctx parameter is reserved for
 // the transport wiring relocated by later phases.
+//
+// Contract: the returned *Server has nil session manager, discovery manager, and
+// backend registry at this phase. It must NOT be Start()ed or served on the "/" MCP
+// route until #5440/#5441/#5442 wire those fields — the carried-forward Handler
+// passes them to WithSessionIdManager and discovery.Middleware, which would nil-deref.
+// The unauthenticated routes (registered as direct mux entries) are safe to serve.
 func Serve(_ context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("%w: nil server config", vmcp.ErrInvalidConfig)
@@ -182,21 +188,24 @@ func Serve(_ context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error) {
 // mutating the caller's ServerConfig (go-style: copy before mutating caller input).
 // Port 0 is left untouched to mean "OS-assigned".
 //
-// Two Config fields are deliberately NOT mapped at this phase (see
+// Three Config fields are deliberately NOT mapped at this phase (see
 // TestBuildServeConfigMapsSharedFields, which guards this list against drift):
 //   - AuthzMiddleware: the authenticated/authz middleware chain is relocated under
 //     Serve by #5441, after which authorization moves to the core admission seam.
 //   - HealthMonitorConfig: Serve receives the already-built *health.Monitor via
 //     ServerConfig.HealthMonitor (A2) and assigns it to the Server directly, so it
 //     never needs the monitor's construction config.
+//   - StatusReporter: Serve assigns ServerConfig.StatusReporter to the Server field
+//     directly (like HealthMonitor); nothing reads Config.StatusReporter on the Serve
+//     path, so mapping it here would be dead.
 func buildServeConfig(cfg *ServerConfig) *Config {
 	return &Config{
-		Name:                    cmp.Or(cfg.Name, "toolhive-vmcp"),
-		Version:                 cmp.Or(cfg.Version, "0.1.0"),
+		Name:                    cmp.Or(cfg.Name, defaultServerName),
+		Version:                 cmp.Or(cfg.Version, defaultServerVersion),
 		GroupRef:                cfg.GroupRef,
-		Host:                    cmp.Or(cfg.Host, "127.0.0.1"),
+		Host:                    cmp.Or(cfg.Host, defaultHost),
 		Port:                    cfg.Port,
-		EndpointPath:            cmp.Or(cfg.EndpointPath, "/mcp"),
+		EndpointPath:            cmp.Or(cfg.EndpointPath, defaultEndpointPath),
 		SessionTTL:              cmp.Or(cfg.SessionTTL, defaultSessionTTL),
 		AuthMiddleware:          cfg.AuthMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
@@ -207,7 +216,6 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		Watcher:                 cfg.Watcher,
 		OptimizerFactory:        cfg.OptimizerFactory,
 		OptimizerConfig:         cfg.OptimizerConfig,
-		StatusReporter:          cfg.StatusReporter,
 		SessionFactory:          cfg.SessionFactory,
 		SessionStorage:          cfg.SessionStorage,
 	}

@@ -90,31 +90,37 @@ func TestServeAppliesTransportDefaults(t *testing.T) {
 	require.NotNil(t, srv.MCPServer())
 
 	// Defaults mirror server.New and are applied to the server's own config,
-	// leaving the caller's ServerConfig untouched.
-	assert.Equal(t, "toolhive-vmcp", srv.config.Name)
-	assert.Equal(t, "0.1.0", srv.config.Version)
-	assert.Equal(t, "127.0.0.1", srv.config.Host)
-	assert.Equal(t, "/mcp", srv.config.EndpointPath)
+	// leaving the caller's ServerConfig untouched. Asserting against the shared
+	// consts (not literals) keeps this test from being a third copy that can drift.
+	assert.Equal(t, defaultServerName, srv.config.Name)
+	assert.Equal(t, defaultServerVersion, srv.config.Version)
+	assert.Equal(t, defaultHost, srv.config.Host)
+	assert.Equal(t, defaultEndpointPath, srv.config.EndpointPath)
 	assert.Equal(t, defaultSessionTTL, srv.config.SessionTTL)
 	assert.Equal(t, 0, srv.config.Port) // Port 0 => OS-assigned
 
 	assert.Empty(t, cfg.Host, "caller config must not be mutated")
 
 	// Address reflects the defaulted host and unassigned port (no listener yet).
-	assert.Equal(t, "127.0.0.1:0", srv.Address())
+	assert.Equal(t, defaultHost+":0", srv.Address())
 }
 
 func TestServePreservesExplicitConfig(t *testing.T) {
 	t.Parallel()
 
+	// Distinct values per scalar field so a wrong-source mapping (e.g. Host:
+	// cfg.GroupRef) is caught here — this test carries value-correctness for the
+	// pass-through scalars that the presence-only drift guard cannot.
 	cfg := &ServerConfig{
-		Name:           "custom",
-		Version:        "9.9.9",
-		Host:           "0.0.0.0",
-		Port:           8080,
-		EndpointPath:   "/rpc",
-		GroupRef:       "my-group",
-		SessionFactory: testMinimalFactory(),
+		Name:                    "custom",
+		Version:                 "9.9.9",
+		Host:                    "0.0.0.0",
+		Port:                    8080,
+		EndpointPath:            "/rpc",
+		GroupRef:                "my-group",
+		SessionTTL:              7 * time.Minute,
+		StatusReportingInterval: 11 * time.Second,
+		SessionFactory:          testMinimalFactory(),
 	}
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
@@ -126,6 +132,8 @@ func TestServePreservesExplicitConfig(t *testing.T) {
 	assert.Equal(t, 8080, srv.config.Port)
 	assert.Equal(t, "/rpc", srv.config.EndpointPath)
 	assert.Equal(t, "my-group", srv.config.GroupRef)
+	assert.Equal(t, 7*time.Minute, srv.config.SessionTTL)
+	assert.Equal(t, 11*time.Second, srv.config.StatusReportingInterval)
 }
 
 func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
@@ -138,8 +146,9 @@ func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
 	handler, err := srv.Handler(context.Background())
 	require.NoError(t, err)
 
-	// The unauthenticated routes are direct mux entries and respond without the
-	// not-yet-relocated authenticated MCP chain or its dependencies.
+	// These routes are registered as direct mux entries, so they bypass the
+	// authenticated middleware chain that Handler still builds and mounts at "/"
+	// (the chain itself is relocated under Serve by a later phase).
 	for _, path := range []string{"/health", "/ping", "/readyz", "/status", "/api/backends/health"} {
 		req := httptest.NewRequest(http.MethodGet, path, nil)
 		rec := httptest.NewRecorder()
@@ -147,13 +156,48 @@ func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
 		assert.Equalf(t, http.StatusOK, rec.Code, "route %s", path)
 	}
 
+	// .well-known is always registered; with no AuthInfoHandler it returns a clean
+	// JSON 404, distinct from the catch-all MCP handler's 406 on a bare GET.
+	req := httptest.NewRequest(http.MethodGet, "/.well-known/oauth-protected-resource", nil)
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.Equal(t, http.StatusNotFound, rec.Code)
+	assert.Contains(t, rec.Header().Get("Content-Type"), "application/json")
+
 	// /metrics is only registered when a telemetry provider with a Prometheus
 	// handler is configured; absent here the request falls through to the catch-all
 	// MCP handler and must not return 200.
+	req = httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	assert.NotEqual(t, http.StatusOK, rec.Code)
+}
+
+func TestServeHandlerRegistersMetricsWhenTelemetryEnabled(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	provider, err := telemetry.NewProvider(ctx, telemetry.Config{
+		ServiceName:                 "vmcp-serve-test",
+		ServiceVersion:              "0.0.0",
+		EnablePrometheusMetricsPath: true,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = provider.Shutdown(ctx) })
+
+	srv, err := Serve(ctx, &stubVMCP{}, &ServerConfig{
+		SessionFactory:    testMinimalFactory(),
+		TelemetryProvider: provider,
+	})
+	require.NoError(t, err)
+
+	handler, err := srv.Handler(ctx)
+	require.NoError(t, err)
+
 	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	assert.NotEqual(t, http.StatusOK, rec.Code)
+	assert.Equal(t, http.StatusOK, rec.Code)
 }
 
 func TestServeStopClosesCore(t *testing.T) {
@@ -192,6 +236,13 @@ func TestServeValidation(t *testing.T) {
 			v:    &stubVMCP{},
 			cfg:  &ServerConfig{},
 		},
+		{
+			// Both nil: cfg is checked first, so this must fail cleanly (no panic
+			// from dereferencing the nil cfg) rather than depending on check order.
+			name: "nil config and nil vmcp",
+			v:    nil,
+			cfg:  nil,
+		},
 	}
 
 	for _, tc := range tests {
@@ -212,12 +263,18 @@ func TestServeValidation(t *testing.T) {
 // Config and forgotten in buildServeConfig, this test fails (the field is zero).
 // When a field is deliberately not mapped, add it to intentionallyUnmapped with a
 // reason, mirroring the buildServeConfig doc comment.
+//
+// This is a PRESENCE check only — with every source field non-zero it cannot catch a
+// wrong-source mapping or default-value drift. Value correctness is carried by
+// TestServePreservesExplicitConfig (pass-through scalars) and
+// TestServeAppliesTransportDefaults (the cmp.Or defaults).
 func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 	t.Parallel()
 
 	intentionallyUnmapped := map[string]struct{}{
 		"AuthzMiddleware":     {}, // authenticated/authz chain relocated by #5441
 		"HealthMonitorConfig": {}, // monitor injected pre-built via ServerConfig.HealthMonitor (A2)
+		"StatusReporter":      {}, // set directly on Server; Config.StatusReporter only read by New
 	}
 
 	// Every field set to a non-zero value so a dropped mapping surfaces as a zero

@@ -171,20 +171,22 @@ func TestServeClosesStorageOnSessionManagerError(t *testing.T) {
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, &ServerConfig{
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: testMinimalFactory(), CacheCapacity: -1},
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
 	require.Error(t, err)
 	assert.Nil(t, srv)
-	// Construction failure, not a config-validation error.
+	// Construction failure from sessionmanager.New (after the storage is built, so the
+	// closeStorageOnErr guard runs) — not a config-validation error.
 	assert.NotErrorIs(t, err, vmcp.ErrInvalidConfig)
 	assert.ErrorContains(t, err, "CacheCapacity")
 }
 
 // TestBuildSessionDataStorage verifies provider selection: nil/empty/"memory"
-// (case-insensitive) yields in-process storage; "redis" takes the Redis path
-// (reading THV_SESSION_REDIS_PASSWORD); any other provider is rejected.
+// (case-insensitive) yields in-process storage; any unknown provider is rejected.
+// The "redis" path is covered separately by TestBuildSessionDataStorageRedis, which
+// cannot be parallel (it uses t.Setenv).
 func TestBuildSessionDataStorage(t *testing.T) {
-	// Not parallel: the redis subtest uses t.Setenv, which Go forbids in tests with
-	// a parallel ancestor.
+	t.Parallel()
 
 	t.Run("in-process providers", func(t *testing.T) {
 		t.Parallel()
@@ -212,24 +214,6 @@ func TestBuildSessionDataStorage(t *testing.T) {
 		}
 	})
 
-	t.Run("redis provider takes the redis path", func(t *testing.T) {
-		// No t.Parallel: t.Setenv is incompatible with parallel tests.
-		t.Setenv(vmcpconfig.RedisPasswordEnvVar, "test-password")
-		// Unreachable address so the construction-time Ping fails fast, proving the
-		// redis branch was taken (in-process storage would not error here).
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		ds, err := buildSessionDataStorage(ctx, &Config{
-			SessionTTL: time.Minute,
-			SessionStorage: &vmcpconfig.SessionStorageConfig{
-				Provider: "redis",
-				Address:  "127.0.0.1:1",
-			},
-		})
-		require.Error(t, err)
-		assert.Nil(t, ds)
-	})
-
 	t.Run("unsupported provider is rejected", func(t *testing.T) {
 		t.Parallel()
 		ds, err := buildSessionDataStorage(context.Background(), &Config{
@@ -240,6 +224,26 @@ func TestBuildSessionDataStorage(t *testing.T) {
 		assert.Nil(t, ds)
 		assert.ErrorContains(t, err, "unsupported session storage provider")
 	})
+}
+
+// TestBuildSessionDataStorageRedis verifies the "redis" provider takes the Redis path
+// (reading THV_SESSION_REDIS_PASSWORD). It is a separate, non-parallel test because
+// t.Setenv is incompatible with parallel tests (and any parallel ancestor).
+func TestBuildSessionDataStorageRedis(t *testing.T) {
+	t.Setenv(vmcpconfig.RedisPasswordEnvVar, "test-password")
+	// Unreachable address so the construction-time Ping fails fast, proving the redis
+	// branch was taken (in-process storage would not error here).
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	ds, err := buildSessionDataStorage(ctx, &Config{
+		SessionTTL: time.Minute,
+		SessionStorage: &vmcpconfig.SessionStorageConfig{
+			Provider: "redis",
+			Address:  "127.0.0.1:1",
+		},
+	})
+	require.Error(t, err)
+	assert.Nil(t, ds)
 }
 
 // postServeMCP sends a JSON-RPC POST to the given Streamable HTTP base URL. It is the

@@ -113,6 +113,12 @@ type ServerConfig struct {
 	// Required; Serve returns an error when it is nil. The composition root assembles
 	// it because the ComposerFactory closes over the core-owned router and backend
 	// client.
+	//
+	// Caller responsibility: unlike server.New, Serve does NOT run validateWorkflows on
+	// FactoryConfig.WorkflowDefs — the composition root must validate composite-tool
+	// definitions before assembling this config (sessionmanager.New only checks the
+	// WorkflowDefs/ComposerFactory pairing). This responsibility moves here with the
+	// relocation and matters when server.New is routed through Serve in Phase 3.
 	SessionManagerConfig *sessionmanager.FactoryConfig
 
 	// TelemetryProvider is the cross-cutting telemetry provider (also consumed by
@@ -146,8 +152,9 @@ type ServerConfig struct {
 // is unchanged.
 //
 // Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
-// nil required collaborator (SessionManagerConfig). The session hooks close over the
-// constructed *Server, so they are registered after it is assembled.
+// nil required collaborator (SessionManagerConfig or BackendRegistry). The session
+// hooks close over the constructed *Server, so they are registered after it is
+// assembled.
 //
 // Contract: the returned *Server now has a live session manager and backend registry,
 // but a nil discovery manager, router, and backend client at this phase. It must NOT
@@ -164,6 +171,12 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	}
 	if cfg.SessionManagerConfig == nil {
 		return nil, fmt.Errorf("%w: SessionManagerConfig is required", vmcp.ErrInvalidConfig)
+	}
+	if cfg.BackendRegistry == nil {
+		// Required: the OnRegisterSession hook enumerates the registry to open the
+		// session's backend connections, so a nil registry would nil-panic inside the
+		// hook goroutine (where the error is swallowed) rather than here. Fail loudly.
+		return nil, fmt.Errorf("%w: BackendRegistry is required", vmcp.ErrInvalidConfig)
 	}
 
 	serveCfg := buildServeConfig(cfg)

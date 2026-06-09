@@ -85,11 +85,21 @@ func testMinimalSessionManagerConfig() *sessionmanager.FactoryConfig {
 	return &sessionmanager.FactoryConfig{Base: testMinimalFactory()}
 }
 
+// testMinimalServeConfig returns a minimal valid ServerConfig for Serve tests that do
+// not exercise session creation: a non-nil SessionManagerConfig and an empty
+// BackendRegistry, the two required collaborators Serve validates.
+func testMinimalServeConfig() *ServerConfig {
+	return &ServerConfig{
+		SessionManagerConfig: testMinimalSessionManagerConfig(),
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+	}
+}
+
 func TestServeAppliesTransportDefaults(t *testing.T) {
 	t.Parallel()
 
 	// Empty transport fields exercise every default; Port is left zero.
-	cfg := &ServerConfig{SessionManagerConfig: testMinimalSessionManagerConfig()}
+	cfg := testMinimalServeConfig()
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
 	require.NoError(t, err)
@@ -129,6 +139,7 @@ func TestServePreservesExplicitConfig(t *testing.T) {
 		SessionTTL:              7 * time.Minute,
 		StatusReportingInterval: 11 * time.Second,
 		SessionManagerConfig:    testMinimalSessionManagerConfig(),
+		BackendRegistry:         vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	}
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
@@ -148,7 +159,7 @@ func TestServePreservesExplicitConfig(t *testing.T) {
 func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
 	t.Parallel()
 
-	cfg := &ServerConfig{SessionManagerConfig: testMinimalSessionManagerConfig()}
+	cfg := testMinimalServeConfig()
 	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
@@ -197,6 +208,7 @@ func TestServeHandlerRegistersMetricsWhenTelemetryEnabled(t *testing.T) {
 
 	srv, err := Serve(ctx, &stubVMCP{}, &ServerConfig{
 		SessionManagerConfig: testMinimalSessionManagerConfig(),
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 		TelemetryProvider:    provider,
 	})
 	require.NoError(t, err)
@@ -215,7 +227,7 @@ func TestServeStopClosesCore(t *testing.T) {
 	t.Parallel()
 
 	stub := &stubVMCP{}
-	srv, err := Serve(context.Background(), stub, &ServerConfig{SessionManagerConfig: testMinimalSessionManagerConfig()})
+	srv, err := Serve(context.Background(), stub, testMinimalServeConfig())
 	require.NoError(t, err)
 
 	// Stop on a never-started server still runs the shutdown funcs, which release
@@ -240,12 +252,17 @@ func TestServeValidation(t *testing.T) {
 		{
 			name: "nil vmcp",
 			v:    nil,
-			cfg:  &ServerConfig{SessionManagerConfig: testMinimalSessionManagerConfig()},
+			cfg:  testMinimalServeConfig(),
 		},
 		{
 			name: "nil session manager config",
 			v:    &stubVMCP{},
-			cfg:  &ServerConfig{},
+			cfg:  &ServerConfig{BackendRegistry: vmcp.NewImmutableRegistry([]vmcp.Backend{})},
+		},
+		{
+			name: "nil backend registry",
+			v:    &stubVMCP{},
+			cfg:  &ServerConfig{SessionManagerConfig: testMinimalSessionManagerConfig()},
 		},
 		{
 			// Both nil: cfg is checked first, so this must fail cleanly (no panic

@@ -1,12 +1,14 @@
 # Upgrade walkthrough — v1alpha1 → v1beta1 with StorageVersionMigrator
 
-End-to-end manual walkthrough that replays a real user upgrade against a local kind cluster: install the previous v0.21.0 release, create a CR of each of the 12 toolhive CRD kinds at `v1alpha1`, upgrade to the new multi-version chart, deploy this branch's operator with the migrator **disabled**, re-apply the CRs at `v1beta1`, and confirm `status.storedVersions` is stuck at `[v1alpha1, v1beta1]` on every CRD. Then enable the `StorageVersionMigrator` and confirm it converges every CRD to `[v1beta1]`.
+End-to-end manual walkthrough that replays a real user upgrade against a local kind cluster: install the previous v0.21.0 release, create a CR of each of the 12 toolhive CRD kinds that graduated from `v1alpha1` to `v1beta1`, upgrade to the new multi-version chart, deploy this branch's operator with the migrator **disabled**, re-apply the CRs at `v1beta1`, and confirm `status.storedVersions` is stuck at `[v1alpha1, v1beta1]` on every graduated CRD. Then enable the `StorageVersionMigrator` and confirm it converges every graduated CRD to `[v1beta1]`.
+
+> **Scope note**: the chart actually ships **13** labeled toolhive CRDs, but the 13th — `mcpwebhookconfigs` — never graduated (its only version is `v1alpha1`, which is also its storage version). The migrator's `isMigrationNeeded` check is a no-op on it. This walkthrough scopes every verification loop to the 12 graduated CRDs and excludes `mcpwebhookconfigs`; we'll note where this matters.
 
 Total run time: ~30 minutes. The slow part is the first `ko build` of the operator + proxyrunner + vmcp images (~3 min); subsequent runs use the build cache and finish in ~30s.
 
 This guide is the canonical reproducible verification for the migrator. Companion reading:
 
-- [`docs/operator/storage-version-migration.md`](../storage-version-migration.md) — reference docs for the controller itself (label contract, opt-out, mechanism).
+- [`docs/operator/storage-version-migration.md`](../storage-version-migration.md) — reference docs for the controller itself (label contract, opt-in model, mechanism).
 - [Issue #4969](https://github.com/stacklok/toolhive/issues/4969) — the motivating problem.
 
 ## Prerequisites
@@ -17,7 +19,7 @@ This guide is the canonical reproducible verification for the migrator. Companio
 
 The CR fixtures used below ship alongside this doc:
 
-- [`crs-v1alpha1.yaml`](./crs-v1alpha1.yaml) — one CR of each of the 12 kinds at `v1alpha1`
+- [`crs-v1alpha1.yaml`](./crs-v1alpha1.yaml) — one CR of each of the 12 graduated kinds at `v1alpha1`
 - [`crs-v1beta1.yaml`](./crs-v1beta1.yaml) — byte-identical to the v1alpha1 file except for `apiVersion`, simulating what `sed -i 's/v1alpha1/v1beta1/g'` would produce
 
 ---
@@ -51,9 +53,27 @@ kubectl get crd mcpservers.toolhive.stacklok.dev -o jsonpath='{.spec.versions[*]
 kubectl wait --for=condition=Available deployment -n toolhive-system --all --timeout=180s
 ```
 
-## 2 · Create one CR of each of the 12 kinds at v1alpha1
+## 2 · Create one CR of each of the 12 graduated kinds at v1alpha1
 
 ```bash
+# The 12 graduated CRDs. Excludes mcpwebhookconfigs (single-version v1alpha1).
+# Used by every verification loop in steps 8–11 so the walkthrough doesn't drift
+# if a future PR adds a 14th CRD.
+GRADUATED_CRDS=(
+  embeddingservers.toolhive.stacklok.dev
+  mcpexternalauthconfigs.toolhive.stacklok.dev
+  mcpgroups.toolhive.stacklok.dev
+  mcpoidcconfigs.toolhive.stacklok.dev
+  mcpregistries.toolhive.stacklok.dev
+  mcpremoteproxies.toolhive.stacklok.dev
+  mcpservers.toolhive.stacklok.dev
+  mcpserverentries.toolhive.stacklok.dev
+  mcptelemetryconfigs.toolhive.stacklok.dev
+  mcptoolconfigs.toolhive.stacklok.dev
+  virtualmcpcompositetooldefinitions.toolhive.stacklok.dev
+  virtualmcpservers.toolhive.stacklok.dev
+)
+
 kubectl create namespace upgrade-test
 kubectl apply -f docs/operator/upgrade-guide/crs-v1alpha1.yaml
 
@@ -123,10 +143,12 @@ helm upgrade toolhive-operator deploy/charts/operator \
 
 kubectl rollout status deployment -n toolhive-system --timeout=180s
 
-# Confirm flag took effect
-NEW_POD=$(kubectl get pods -n toolhive-system --no-headers | grep "toolhive-operator-" | awk '{print $1}' | head -1)
-kubectl get pod "$NEW_POD" -n toolhive-system -o yaml | grep -A1 TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR
-# expected: value: "false"
+# Confirm flag took effect — read off the Deployment spec directly, not a pod.
+# A pod-based check races with the old pod's Terminating state and can return
+# the pre-upgrade env value, which looks like a feature-flag bug but isn't.
+kubectl get deploy -n toolhive-system toolhive-operator \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR")].value}'
+# expected: false
 
 # The "disabled" log is emitted at V(1); at default verbosity it is not
 # visible. Setting LOG_LEVEL=DEBUG on the operator would surface:
@@ -153,18 +175,17 @@ kubectl apply -f docs/operator/upgrade-guide/crs-v1beta1.yaml
 sleep 10
 ```
 
-## 8 · Confirm storedVersions is stuck at `[v1alpha1, v1beta1]` on all 12 CRDs (migrator is OFF)
+## 8 · Confirm storedVersions is stuck at `[v1alpha1, v1beta1]` on the 12 graduated CRDs (migrator is OFF)
 
 ```bash
-echo "=== storedVersions on ALL 12 CRDs (migrator OFF) ==="
-for crd in $(kubectl get crd -o name | grep toolhive.stacklok.dev | sort); do
-  name=$(echo $crd | sed 's|.*/||')
-  stored=$(kubectl get $crd -o jsonpath='{.status.storedVersions}')
-  printf "  %-55s %s\n" "$name" "$stored"
+echo "=== storedVersions on the 12 graduated CRDs (migrator OFF) ==="
+for crd in "${GRADUATED_CRDS[@]}"; do
+  stored=$(kubectl get crd "$crd" -o jsonpath='{.status.storedVersions}')
+  printf "  %-55s %s\n" "$crd" "$stored"
 done
 ```
 
-Expected: every line ends with `["v1alpha1","v1beta1"]`. This is the "post-graduation, pre-migration" state every cluster lands in after the v0.21.0 → multi-version upgrade. **Without the migrator, this state is permanent** — any future operator release that drops `v1alpha1` from `spec.versions` would fail with:
+Expected: every line ends with `["v1alpha1","v1beta1"]`. This is the "post-graduation, pre-migration" state every cluster lands in after the v0.21.0 → multi-version upgrade. (The 13th labeled CRD, `mcpwebhookconfigs`, is excluded from this loop because it's single-version and reads `["v1alpha1"]` — see the scope note at the top.) **Without the migrator, this state is permanent** — any future operator release that drops `v1alpha1` from `spec.versions` would fail with:
 
 ```
 status.storedVersions[0]: Invalid value: "v1alpha1": must appear in spec.versions
@@ -187,27 +208,39 @@ helm upgrade toolhive-operator deploy/charts/operator \
 
 kubectl rollout status deployment -n toolhive-system --timeout=180s
 
-# Confirm flag is now true
-NEW_POD=$(kubectl get pods -n toolhive-system --no-headers | grep "toolhive-operator-" | awk '{print $1}' | head -1)
-kubectl get pod "$NEW_POD" -n toolhive-system -o yaml | grep -A1 TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR
-# expected: value: "true"
+# Confirm flag is now true — read off the Deployment spec directly (see step 5
+# for why a pod-based check races with the old pod's Terminating state).
+kubectl get deploy -n toolhive-system toolhive-operator \
+  -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR")].value}'
+# expected: true
 ```
 
 Wait for convergence:
 
 ```bash
-echo "=== waiting up to 60s for all 12 CRDs to converge ==="
+expected="${#GRADUATED_CRDS[@]}"   # 12 today; the loop tracks the array, so a future PR that adds a CRD won't drift.
+echo "=== waiting up to 60s for ${expected} graduated CRDs to converge ==="
 for i in $(seq 1 60); do
-  count=$(for c in $(kubectl get crd -o name | grep toolhive.stacklok.dev); do
-    kubectl get $c -o jsonpath='{.status.storedVersions}'
-    echo
-  done | grep -c '^\["v1beta1"\]$')
-  if [ "$count" = "12" ]; then
-    echo "All 12 CRDs converged after ${i}s"
+  count=0
+  for c in "${GRADUATED_CRDS[@]}"; do
+    if [ "$(kubectl get crd "$c" -o jsonpath='{.status.storedVersions}')" = '["v1beta1"]' ]; then
+      count=$((count + 1))
+    fi
+  done
+  if [ "$count" = "$expected" ]; then
+    echo "All ${expected} graduated CRDs converged after ${i}s"
     break
   fi
   sleep 1
 done
+
+# If the loop exited without converging, surface what's outstanding so the
+# reader has something actionable to investigate (operator logs, *Failed
+# events, admission-policy rejections).
+if [ "$count" != "$expected" ]; then
+  echo "TIMEOUT: only ${count}/${expected} converged. Check operator logs and"
+  echo "        StorageVersionMigrationFailed events on the CRDs."
+fi
 ```
 
 In practice this completes in ~1-2 seconds once the new pod is ready.
@@ -215,17 +248,18 @@ In practice this completes in ~1-2 seconds once the new pod is ready.
 Verify:
 
 ```bash
-echo "=== storedVersions on ALL 12 CRDs (migrator ON, post-converge) ==="
-for crd in $(kubectl get crd -o name | grep toolhive.stacklok.dev | sort); do
-  name=$(echo $crd | sed 's|.*/||')
-  stored=$(kubectl get $crd -o jsonpath='{.status.storedVersions}')
-  printf "  %-55s %s\n" "$name" "$stored"
+echo "=== storedVersions on the ${expected} graduated CRDs (migrator ON, post-converge) ==="
+for crd in "${GRADUATED_CRDS[@]}"; do
+  stored=$(kubectl get crd "$crd" -o jsonpath='{.status.storedVersions}')
+  printf "  %-55s %s\n" "$crd" "$stored"
 done
 # expected: every line ends with ["v1beta1"]
 
 echo "=== StorageVersionMigrationSucceeded events ==="
 kubectl get events -A --field-selector reason=StorageVersionMigrationSucceeded --no-headers | wc -l
-# expected: 12 — one event per CRD
+# expected: ${expected} — one event per graduated CRD. The 13th (mcpwebhookconfigs)
+# is a no-op for the migrator (storedVersions already == [storageVersion]) so it
+# emits no event.
 
 echo "=== StorageVersionMigrationFailed events (should be 0) ==="
 kubectl get events -A --field-selector reason=StorageVersionMigrationFailed --no-headers | wc -l
@@ -243,10 +277,14 @@ kubectl get \
 
 ## 10 · (Optional) Inspect migrator logs
 
+Pod-selection is needed here (logs aren't readable off a Deployment), but filter to Running pods so a still-Terminating old pod from the helm upgrade can't be picked up:
+
 ```bash
-NEW_POD=$(kubectl get pods -n toolhive-system --no-headers | grep "toolhive-operator-" | awk '{print $1}' | head -1)
+NEW_POD=$(kubectl get pods -n toolhive-system \
+  --field-selector=status.phase=Running --no-headers \
+  | grep "toolhive-operator-" | awk '{print $1}' | head -1)
 kubectl logs "$NEW_POD" -n toolhive-system | grep "storage version migration complete" | wc -l
-# expected: 12 lines — one per CRD
+# expected: ${expected} lines — one per graduated CRD
 ```
 
 **If this prints 0**, the migration may have happened in a previous container instance (the operator pod can restart for unrelated reasons in a kind cluster — leases, OOM, etc.). Try the previous container's logs:
@@ -262,13 +300,15 @@ The migration is complete in either case — the events on the CRDs in step 9 ar
 Once `storedVersions` is `[v1beta1]` everywhere, the apiserver will accept removal of `v1alpha1` from `spec.versions` — the safety interlock the migrator exists to satisfy. To demonstrate:
 
 ```bash
-# Direct apiserver patch — the same end state a future "drop v1alpha1" chart would produce.
-for crd in $(kubectl get crd -o name | grep toolhive.stacklok.dev); do
-  name=$(echo $crd | sed 's|.*/||')
-  newversions=$(kubectl get $crd -o json | jq '.spec.versions | map(select(.name != "v1alpha1"))')
+# Direct apiserver patch — the same end state a future "drop v1alpha1" chart
+# would produce. Scoped to the 12 graduated CRDs: mcpwebhookconfigs is
+# single-version v1alpha1, so removing v1alpha1 from its spec.versions would
+# leave it with zero versions and the apiserver would reject the patch.
+for crd in "${GRADUATED_CRDS[@]}"; do
+  newversions=$(kubectl get crd "$crd" -o json | jq '.spec.versions | map(select(.name != "v1alpha1"))')
   patch=$(jq -n --argjson v "$newversions" '{spec:{versions:$v}}')
-  printf "  %-55s " "$name"
-  kubectl patch $crd --type=merge -p "$patch" 2>&1 | tail -1
+  printf "  %-55s " "$crd"
+  kubectl patch crd "$crd" --type=merge -p "$patch" 2>&1 | tail -1
 done
 ```
 
@@ -308,8 +348,8 @@ rm -f kconfig.yaml /tmp/before-upgrade.txt /tmp/after-upgrade.txt \
 | Zero-downtime upgrade across operator chart upgrade | The PR's operator changes don't recreate any managed workload | 6 |
 | `storedVersions` is `[v1alpha1, v1beta1]` after re-apply with migrator OFF | Migrator did not run; baseline state is correctly preserved | 8 |
 | Helm-upgrade flip enables the migrator | Feature flag round-trips correctly | 9 |
-| `storedVersions` converges to `[v1beta1]` on all 12 CRDs | The actual migration logic works against real ToolHive CRDs | 9 |
-| 12 `StorageVersionMigrationSucceeded` events on the CRDs | The Recorder is correctly wired and per-CRD migrations are observable | 9 |
+| `storedVersions` converges to `[v1beta1]` on all 12 graduated CRDs | The actual migration logic works against real ToolHive CRDs | 9 |
+| 12 `StorageVersionMigrationSucceeded` events on the graduated CRDs | The Recorder is correctly wired and per-CRD migrations are observable | 9 |
 | 0 `StorageVersionMigrationFailed` events | No CRD's per-CR Update loop returned a non-retriable error | 9 |
 | All 12 CRs still healthy after migration | Validating admission webhooks (MCPServer / MCPGroup / VirtualMCPServer) tolerate the per-CR Updates | 9 |
 | RBAC permits storedVersions trim | The ClusterRole has the correct verbs for `customresourcedefinitions/status` and `*.toolhive.stacklok.dev/*` | implicit — trim succeeds in step 9 |

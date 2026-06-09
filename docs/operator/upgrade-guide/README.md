@@ -204,12 +204,17 @@ helm upgrade toolhive-operator deploy/charts/operator \
   --set operator.image="$OP" \
   --set operator.toolhiveRunnerImage="$PR" \
   --set operator.vmcpImage="$VM" \
+  --set operator.features.storageVersionMigrator=true \
   --namespace toolhive-system
 
 kubectl rollout status deployment -n toolhive-system --timeout=180s
 
 # Confirm flag is now true — read off the Deployment spec directly (see step 5
 # for why a pod-based check races with the old pod's Terminating state).
+# NOTE: the flag must be set explicitly. The chart default is
+# storageVersionMigrator=false (the feature is opt-in), and `helm upgrade` does
+# not reuse the previous release's --set values, so omitting it here renders the
+# env var as false and the migrator never runs.
 kubectl get deploy -n toolhive-system toolhive-operator \
   -o jsonpath='{.spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR")].value}'
 # expected: true

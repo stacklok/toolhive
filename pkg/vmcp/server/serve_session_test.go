@@ -10,11 +10,11 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -41,8 +41,6 @@ import (
 // toolSessionState tracks observable behaviour of the mock session factory below.
 type toolSessionState struct {
 	makeWithIDCalled atomic.Bool
-	mu               sync.Mutex
-	lastSession      *sessionmocks.MockMultiSession
 }
 
 // newToolSessionFactory creates a MockMultiSessionFactory whose MakeSessionWithID
@@ -87,9 +85,6 @@ func newToolSessionFactory(
 			mock.EXPECT().CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
 				Return(&vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "ok"}}}, nil).AnyTimes()
 			mock.EXPECT().Close().Return(nil).AnyTimes()
-			state.mu.Lock()
-			state.lastSession = mock
-			state.mu.Unlock()
 			return mock, nil
 		}).AnyTimes()
 	return factory, state
@@ -162,11 +157,100 @@ func TestServeRegistersSessionHooks(t *testing.T) {
 		"tools/list should advertise the tool injected by the OnRegisterSession hook")
 }
 
-// TestServeClosesStorageOnSessionManagerError verifies the closeStorageOnErr guard:
-// when sessionmanager.New fails after the session data storage is built, Serve
-// returns the error (so the deferred guard closes the storage and its cleanup
-// goroutine does not leak). A negative CacheCapacity is the cheapest forced failure.
-func TestServeClosesStorageOnSessionManagerError(t *testing.T) {
+// fakeSDKSession is a minimal server.ClientSession + server.SessionWithTools used to
+// drive lazyInjectSessionTools directly (the SDK's session-context plumbing is otherwise
+// only reachable over HTTP, via MCPServer.WithContext). Its tool store is the observable
+// surface the injection asserts against.
+type fakeSDKSession struct {
+	id    string
+	tools map[string]server.ServerTool
+}
+
+var (
+	_ server.ClientSession    = (*fakeSDKSession)(nil)
+	_ server.SessionWithTools = (*fakeSDKSession)(nil)
+)
+
+func (f *fakeSDKSession) SessionID() string                                 { return f.id }
+func (*fakeSDKSession) Initialize()                                         {}
+func (*fakeSDKSession) Initialized() bool                                   { return true }
+func (*fakeSDKSession) NotificationChannel() chan<- mcp.JSONRPCNotification { return nil }
+func (f *fakeSDKSession) GetSessionTools() map[string]server.ServerTool     { return f.tools }
+func (f *fakeSDKSession) SetSessionTools(t map[string]server.ServerTool)    { f.tools = t }
+
+// TestServeLazyInjectsToolsForRehydratedSession exercises the cross-pod re-injection
+// branch of lazyInjectSessionTools that TestServeRegistersSessionHooks does not reach:
+// a session exists in the vMCP session manager, but a fresh SDK ClientSession (as on a
+// second pod, where OnRegisterSession never fired) has an empty per-session tool store.
+// The before-list/before-call hooks must re-inject the tools from the session manager.
+func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	testTool := vmcp.Tool{Name: "serve-tool", Description: "a relocated-wiring test tool"}
+	factory, _ := newToolSessionFactory(t, ctrl, []vmcp.Tool{testTool})
+
+	srv, err := Serve(context.Background(), &stubVMCP{}, &ServerConfig{
+		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+	// Register a session in the vMCP session manager via the SDK initialize path.
+	streamable := server.NewStreamableHTTPServer(
+		srv.mcpServer,
+		server.WithEndpointPath("/mcp"),
+		server.WithSessionIdManager(srv.vmcpSessionMgr),
+	)
+	ts := httptest.NewServer(streamable)
+	t.Cleanup(ts.Close)
+
+	initResp := postServeMCP(t, ts.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	require.Equal(t, http.StatusOK, initResp.StatusCode)
+	sessionID := initResp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+
+	// Wait until the session is fully registered with adapted tools in the manager.
+	require.Eventually(t, func() bool {
+		tools, gErr := srv.vmcpSessionMgr.GetAdaptedTools(sessionID)
+		return gErr == nil && len(tools) > 0
+	}, 2*time.Second, 10*time.Millisecond, "session should be registered with adapted tools")
+
+	// Empty-store (cross-pod) branch: a fresh SDK session with no tools gets them injected.
+	rehydrated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{}}
+	srv.lazyInjectSessionTools(srv.mcpServer.WithContext(context.Background(), rehydrated))
+	assert.Contains(t, rehydrated.tools, testTool.Name,
+		"an empty per-session store should be re-injected from the vMCP session manager")
+
+	// No-op branch: a populated store is left untouched (early return before GetAdaptedTools).
+	populated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{
+		"preexisting": {Tool: mcp.Tool{Name: "preexisting"}},
+	}}
+	srv.lazyInjectSessionTools(srv.mcpServer.WithContext(context.Background(), populated))
+	assert.NotContains(t, populated.tools, testTool.Name, "a populated store must not be modified (no-op)")
+	assert.Contains(t, populated.tools, "preexisting")
+}
+
+// TestServeReturnsErrorWhenSessionManagerConstructionFails verifies Serve surfaces a
+// sessionmanager.New failure — the path the closeStorageOnErr guard protects. It
+// confirms the guarded path is reached (the failure occurs AFTER session data storage
+// is built, distinct from config validation: ErrorContains("CacheCapacity") +
+// NotErrorIs(ErrInvalidConfig)). It does NOT directly observe sessionDataStorage.Close()
+// — the storage is constructed internally and the test holds no handle to it; the
+// close itself is the same defer-guard pattern carried over verbatim from server.New.
+// A negative CacheCapacity is the cheapest forced failure.
+func TestServeReturnsErrorWhenSessionManagerConstructionFails(t *testing.T) {
 	t.Parallel()
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, &ServerConfig{
@@ -244,6 +328,10 @@ func TestBuildSessionDataStorageRedis(t *testing.T) {
 	})
 	require.Error(t, err)
 	assert.Nil(t, ds)
+	// Bind to the Redis connection-failure wrap so a future config/unsupported-provider
+	// error can't satisfy this test. ("redis" alone is unsuitable — the unsupported-
+	// provider error text also lists "redis".)
+	assert.ErrorContains(t, err, "redis: failed to connect")
 }
 
 // postServeMCP sends a JSON-RPC POST to the given Streamable HTTP base URL. It is the

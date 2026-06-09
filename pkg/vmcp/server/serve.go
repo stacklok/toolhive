@@ -198,13 +198,11 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		server.WithHooks(hooks),
 	)
 
-	// Two-phase session-creation wiring (relocated from server.New). The transport
-	// session manager holds the lightweight Streamable HTTP placeholders; the
-	// pluggable data storage holds serialisable session metadata (memory or Redis,
-	// reading THV_SESSION_REDIS_PASSWORD); the vMCP session manager owns the live,
-	// node-local MultiSessions.
-	sessionManager := transportsession.NewManager(serveCfg.SessionTTL, transportsession.NewStreamableSession)
-
+	// Two-phase session-creation wiring (relocated from server.New). The pluggable
+	// data storage holds serialisable session metadata (memory or Redis, reading
+	// THV_SESSION_REDIS_PASSWORD); the vMCP session manager owns the live, node-local
+	// MultiSessions; the transport session manager (built last, below) holds the
+	// lightweight Streamable HTTP placeholders.
 	sessionDataStorage, err := buildSessionDataStorage(ctx, serveCfg)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create session data storage: %w", err)
@@ -223,6 +221,11 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	if err != nil {
 		return nil, err
 	}
+
+	// Built last — after the fallible calls above — because NewManager starts a cleanup
+	// goroutine on construction (released only by Stop), so an early error return cannot
+	// leak it (mirroring the closeStorageOnErr guard on the sibling sessionDataStorage).
+	sessionManager := transportsession.NewManager(serveCfg.SessionTTL, transportsession.NewStreamableSession)
 
 	srv := &Server{
 		config:             serveCfg,

@@ -120,7 +120,8 @@ var _ = BeforeSuite(func() {
 		// Set up MCPRegistry controller
 		By("setting up MCPRegistry controller")
 		err = controllers.NewMCPRegistryReconciler(
-			testMgr.GetClient(), testMgr.GetScheme(), imagepullsecrets.Defaults{},
+			testMgr.GetClient(), testMgr.GetScheme(),
+			testMgr.GetEventRecorder("mcpregistry-controller"), imagepullsecrets.Defaults{},
 		).SetupWithManager(testMgr)
 		Expect(err).NotTo(HaveOccurred())
 

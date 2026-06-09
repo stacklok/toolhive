@@ -53,6 +53,14 @@ jobs:
       - name: Run chart-testing (lint)
         run: ct lint --config ct.yaml
 
+      - name: Run helm-unittest
+        # helm-unittest renders the charts and asserts on the resulting
+        # Kubernetes manifests, catching template regressions that `ct lint`
+        # and `ct install` do not — `helm install` can succeed even when the
+        # rendered output is subtly wrong. The plugin version is pinned in
+        # the Taskfile's `helm-unittest` task.
+        run: task helm-unittest
+
       - name: Create KIND cluster
         uses: helm/kind-action@ef37e7f390d99f746eb8b610417061a60e82a6cc # v1.14.0
 

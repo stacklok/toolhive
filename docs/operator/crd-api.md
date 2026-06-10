@@ -1700,7 +1700,7 @@ _Appears in:_
 | `embeddedAuthServer` _[api.v1beta1.EmbeddedAuthServerConfig](#apiv1beta1embeddedauthserverconfig)_ | EmbeddedAuthServer configures an embedded OAuth2/OIDC authorization server<br />Only used when Type is "embeddedAuthServer" |  | Optional: \{\} <br /> |
 | `awsSts` _[api.v1beta1.AWSStsConfig](#apiv1beta1awsstsconfig)_ | AWSSts configures AWS STS authentication with SigV4 request signing<br />Only used when Type is "awsSts" |  | Optional: \{\} <br /> |
 | `upstreamInject` _[api.v1beta1.UpstreamInjectSpec](#apiv1beta1upstreaminjectspec)_ | UpstreamInject configures upstream token injection for backend requests.<br />Only used when Type is "upstreamInject". |  | Optional: \{\} <br /> |
-| `obo` _[api.v1beta1.OBOConfig](#apiv1beta1oboconfig)_ | OBO configures On-Behalf-Of (OBO) authentication.<br />Only used when Type is "obo". The inner schema is intentionally empty in<br />this revision; sub-fields land in a follow-up. Setting this field on an<br />upstream-only build will cause the MCPExternalAuthConfig to transition to<br />status.conditions[Valid] = False with Reason: EnterpriseRequired. |  | Optional: \{\} <br /> |
+| `obo` _[api.v1beta1.OBOConfig](#apiv1beta1oboconfig)_ | OBO configures On-Behalf-Of (OBO) authentication.<br />Only used when Type is "obo". Setting this field on an upstream-only build<br />causes the MCPExternalAuthConfig to transition to<br />status.conditions[Valid] = False with Reason: EnterpriseRequired, because<br />no OBO handler is registered. See OBOConfig for the field-to-runtime<br />contract mapping. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPExternalAuthConfigStatus
@@ -2778,19 +2778,47 @@ _Appears in:_
 
 
 
-OBOConfig is a placeholder for On-Behalf-Of (OBO) external auth configuration.
-The inner schema is intentionally empty in this revision; sub-fields land in a
-follow-up RFC. The struct exists so OBO *OBOConfig compiles and the CRD
-schema admits `spec.obo: {}` — the CEL rule "obo configuration must be set
-if and only if type is 'obo'" requires has(self.obo), which evaluates true
-for an empty object. Stored objects with `obo: {}` will round-trip cleanly
-when sub-fields land, because Go zero values fill in.
+OBOConfig holds configuration for the On-Behalf-Of (OBO) external auth type.
+Only used when Type is "obo".
+
+This is the user-facing CRD surface for the Microsoft Entra OBO flow. It is
+structurally valid in upstream (OSS) builds but inert: an upstream-only build
+returns obo.ErrEnterpriseRequired at reconcile (Valid=False, Reason:
+EnterpriseRequired) because no OBO handler is registered via
+controllerutil.RegisterOBOHandler. A build with the enterprise OBO handler
+translates these fields into the runtime wire contract obo.MiddlewareParameters,
+so the field names and semantics here track that contract rather than the
+upstream TokenExchangeConfig (which uses different names, e.g.
+subjectProviderName / externalTokenHeaderName). In particular there is no
+externalTokenHeaderName: the OBO subject is sourced from the authenticated
+Identity, never from an inbound request header.
+
+Field-to-contract mapping performed by the operator (#1581):
+  - tenantId (+ optional authority) → tokenUrl
+    (https://login.microsoftonline.com/<tenantId>/oauth2/v2.0/token, or the
+    authority host for sovereign clouds)
+  - clientSecretRef → resolved into a pod env var; only the env var name
+    travels in the contract, as clientSecretEnvVar
+  - audience / scopes → collapsed to a single exchange target by
+    obo.MiddlewareParameters.ExchangeTarget() (space-joined scopes win,
+    otherwise audience)
+  - cacheSkew → the contract's integer-seconds cacheSkewSeconds
 
 
 
 _Appears in:_
 - [api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)
 
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `tenantId` _string_ | TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier.<br />Accepts a tenant GUID, a verified domain name (e.g.<br />contoso.onmicrosoft.com), or one of the well-known values "common",<br />"organizations", "consumers". The operator interpolates it into the Entra<br />token endpoint (https://login.microsoftonline.com/<tenantId>/oauth2/v2.0/token)<br />emitted as the runtime contract's tokenUrl, so the value is constrained to<br />a single safe path segment (no slashes, whitespace, query, or fragment). |  | MaxLength: 253 <br />MinLength: 1 <br />Pattern: `^[a-zA-Z0-9][a-zA-Z0-9.-]*$` <br />Required: \{\} <br /> |
+| `authority` _string_ | Authority overrides the default Entra login host<br />(https://login.microsoftonline.com) for sovereign or national clouds, e.g.<br />https://login.microsoftonline.us (US Gov) or<br />https://login.partner.microsoftonline.cn (China). When set, the operator<br />builds the token endpoint as <authority>/<tenantId>/oauth2/v2.0/token.<br />Must be an HTTPS URL with no path, query, fragment, or trailing slash: the<br />OBO exchange POSTs the client secret and the end-user assertion to this<br />host, so it is a trust boundary and HTTPS is required. |  | Pattern: `^https://[^\s?#]+[^/\s?#]$` <br />Optional: \{\} <br /> |
+| `clientId` _string_ | ClientID is the confidential client's application (client) ID registered<br />in Entra. Emitted verbatim as the runtime contract's clientId. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the confidential<br />client's secret. v1 supports a shared client secret only. The operator<br />injects the resolved value into the proxyrunner pod as an environment<br />variable and emits only that variable's name in the runtime contract, as<br />clientSecretEnvVar — the secret value never travels in the contract. |  | Required: \{\} <br /> |
+| `audience` _string_ | Audience is the backend target identifier requested in the exchanged<br />token. Used as the exchange target when Scopes is empty. At least one of<br />audience or scopes must be set. |  | Optional: \{\} <br /> |
+| `scopes` _string array_ | Scopes are the delegated scopes to request for the exchanged token, e.g.<br />["api://<backend>/.default"]. When non-empty they take precedence over<br />Audience. At least one of audience or scopes must be set. |  | Optional: \{\} <br /> |
+| `subjectTokenProviderName` _string_ | SubjectTokenProviderName selects the source of the OBO subject (assertion)<br />token from the request's authenticated Identity:<br />  - Omitted: use the inbound end-user token the client presented<br />    (Identity.Token) — the deployment with no embedded auth server, where<br />    the client holds an Entra token directly.<br />  - Set: use the named upstream provider's token<br />    (Identity.UpstreamTokens[<name>]) — the embedded-auth-server<br />    deployment, where the inbound token is the proxy's own session token.<br />    The value must match a configured upstream provider name.<br />The subject is always sourced from the authenticated Identity, never from<br />an inbound request header, so the upstream auth middleware must run first. |  | MaxLength: 63 <br />MinLength: 1 <br />Pattern: `^[a-z0-9]([a-z0-9-]*[a-z0-9])?$` <br />Optional: \{\} <br /> |
+| `cacheSkew` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | CacheSkew overrides the OBO token cache's default expiry skew (the margin<br />by which a cached token is treated as expired before its real expiry),<br />e.g. "30s". The operator converts it to the runtime contract's<br />integer-seconds cacheSkewSeconds. Must not be negative; a negative value<br />is rejected by the registered OBO handler at reconcile time<br />(Valid=False, Reason: InvalidConfig in enterprise builds). When omitted,<br />the cache default applies. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.OIDCUpstreamConfig
@@ -3139,6 +3167,7 @@ _Appears in:_
 - [api.v1beta1.HeaderInjectionConfig](#apiv1beta1headerinjectionconfig)
 - [api.v1beta1.InlineOIDCSharedConfig](#apiv1beta1inlineoidcsharedconfig)
 - [api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)
+- [api.v1beta1.OBOConfig](#apiv1beta1oboconfig)
 - [api.v1beta1.OIDCUpstreamConfig](#apiv1beta1oidcupstreamconfig)
 - [api.v1beta1.RedisACLUserConfig](#apiv1beta1redisacluserconfig)
 - [api.v1beta1.RedisTLSConfig](#apiv1beta1redistlsconfig)

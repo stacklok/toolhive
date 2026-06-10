@@ -1079,11 +1079,112 @@ spec:
               obo:
                 description: |-
                   OBO configures On-Behalf-Of (OBO) authentication.
-                  Only used when Type is "obo". The inner schema is intentionally empty in
-                  this revision; sub-fields land in a follow-up. Setting this field on an
-                  upstream-only build will cause the MCPExternalAuthConfig to transition to
-                  status.conditions[Valid] = False with Reason: EnterpriseRequired.
+                  Only used when Type is "obo". Setting this field on an upstream-only build
+                  causes the MCPExternalAuthConfig to transition to
+                  status.conditions[Valid] = False with Reason: EnterpriseRequired, because
+                  no OBO handler is registered. See OBOConfig for the field-to-runtime
+                  contract mapping.
+                properties:
+                  audience:
+                    description: |-
+                      Audience is the backend target identifier requested in the exchanged
+                      token. Used as the exchange target when Scopes is empty. At least one of
+                      audience or scopes must be set.
+                    type: string
+                  authority:
+                    description: |-
+                      Authority overrides the default Entra login host
+                      (https://login.microsoftonline.com) for sovereign or national clouds, e.g.
+                      https://login.microsoftonline.us (US Gov) or
+                      https://login.partner.microsoftonline.cn (China). When set, the operator
+                      builds the token endpoint as <authority>/<tenantId>/oauth2/v2.0/token.
+                      Must be an HTTPS URL with no path, query, fragment, or trailing slash: the
+                      OBO exchange POSTs the client secret and the end-user assertion to this
+                      host, so it is a trust boundary and HTTPS is required.
+                    pattern: ^https://[^\s?#]+[^/\s?#]$
+                    type: string
+                  cacheSkew:
+                    description: |-
+                      CacheSkew overrides the OBO token cache's default expiry skew (the margin
+                      by which a cached token is treated as expired before its real expiry),
+                      e.g. "30s". The operator converts it to the runtime contract's
+                      integer-seconds cacheSkewSeconds. Must not be negative; a negative value
+                      is rejected by the registered OBO handler at reconcile time
+                      (Valid=False, Reason: InvalidConfig in enterprise builds). When omitted,
+                      the cache default applies.
+                    type: string
+                  clientId:
+                    description: |-
+                      ClientID is the confidential client's application (client) ID registered
+                      in Entra. Emitted verbatim as the runtime contract's clientId.
+                    minLength: 1
+                    type: string
+                  clientSecretRef:
+                    description: |-
+                      ClientSecretRef references a Kubernetes Secret containing the confidential
+                      client's secret. v1 supports a shared client secret only. The operator
+                      injects the resolved value into the proxyrunner pod as an environment
+                      variable and emits only that variable's name in the runtime contract, as
+                      clientSecretEnvVar — the secret value never travels in the contract.
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  scopes:
+                    description: |-
+                      Scopes are the delegated scopes to request for the exchanged token, e.g.
+                      ["api://<backend>/.default"]. When non-empty they take precedence over
+                      Audience. At least one of audience or scopes must be set.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  subjectTokenProviderName:
+                    description: |-
+                      SubjectTokenProviderName selects the source of the OBO subject (assertion)
+                      token from the request's authenticated Identity:
+                        - Omitted: use the inbound end-user token the client presented
+                          (Identity.Token) — the deployment with no embedded auth server, where
+                          the client holds an Entra token directly.
+                        - Set: use the named upstream provider's token
+                          (Identity.UpstreamTokens[<name>]) — the embedded-auth-server
+                          deployment, where the inbound token is the proxy's own session token.
+                          The value must match a configured upstream provider name.
+                      The subject is always sourced from the authenticated Identity, never from
+                      an inbound request header, so the upstream auth middleware must run first.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                    type: string
+                  tenantId:
+                    description: |-
+                      TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier.
+                      Accepts a tenant GUID, a verified domain name (e.g.
+                      contoso.onmicrosoft.com), or one of the well-known values "common",
+                      "organizations", "consumers". The operator interpolates it into the Entra
+                      token endpoint (https://login.microsoftonline.com/<tenantId>/oauth2/v2.0/token)
+                      emitted as the runtime contract's tokenUrl, so the value is constrained to
+                      a single safe path segment (no slashes, whitespace, query, or fragment).
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-zA-Z0-9][a-zA-Z0-9.-]*$
+                    type: string
+                required:
+                - clientId
+                - clientSecretRef
+                - tenantId
                 type: object
+                x-kubernetes-validations:
+                - message: at least one of audience or scopes must be set
+                  rule: (has(self.audience) && size(self.audience) > 0) || (has(self.scopes)
+                    && size(self.scopes) > 0)
               tokenExchange:
                 description: |-
                   TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange
@@ -2388,11 +2489,112 @@ spec:
               obo:
                 description: |-
                   OBO configures On-Behalf-Of (OBO) authentication.
-                  Only used when Type is "obo". The inner schema is intentionally empty in
-                  this revision; sub-fields land in a follow-up. Setting this field on an
-                  upstream-only build will cause the MCPExternalAuthConfig to transition to
-                  status.conditions[Valid] = False with Reason: EnterpriseRequired.
+                  Only used when Type is "obo". Setting this field on an upstream-only build
+                  causes the MCPExternalAuthConfig to transition to
+                  status.conditions[Valid] = False with Reason: EnterpriseRequired, because
+                  no OBO handler is registered. See OBOConfig for the field-to-runtime
+                  contract mapping.
+                properties:
+                  audience:
+                    description: |-
+                      Audience is the backend target identifier requested in the exchanged
+                      token. Used as the exchange target when Scopes is empty. At least one of
+                      audience or scopes must be set.
+                    type: string
+                  authority:
+                    description: |-
+                      Authority overrides the default Entra login host
+                      (https://login.microsoftonline.com) for sovereign or national clouds, e.g.
+                      https://login.microsoftonline.us (US Gov) or
+                      https://login.partner.microsoftonline.cn (China). When set, the operator
+                      builds the token endpoint as <authority>/<tenantId>/oauth2/v2.0/token.
+                      Must be an HTTPS URL with no path, query, fragment, or trailing slash: the
+                      OBO exchange POSTs the client secret and the end-user assertion to this
+                      host, so it is a trust boundary and HTTPS is required.
+                    pattern: ^https://[^\s?#]+[^/\s?#]$
+                    type: string
+                  cacheSkew:
+                    description: |-
+                      CacheSkew overrides the OBO token cache's default expiry skew (the margin
+                      by which a cached token is treated as expired before its real expiry),
+                      e.g. "30s". The operator converts it to the runtime contract's
+                      integer-seconds cacheSkewSeconds. Must not be negative; a negative value
+                      is rejected by the registered OBO handler at reconcile time
+                      (Valid=False, Reason: InvalidConfig in enterprise builds). When omitted,
+                      the cache default applies.
+                    type: string
+                  clientId:
+                    description: |-
+                      ClientID is the confidential client's application (client) ID registered
+                      in Entra. Emitted verbatim as the runtime contract's clientId.
+                    minLength: 1
+                    type: string
+                  clientSecretRef:
+                    description: |-
+                      ClientSecretRef references a Kubernetes Secret containing the confidential
+                      client's secret. v1 supports a shared client secret only. The operator
+                      injects the resolved value into the proxyrunner pod as an environment
+                      variable and emits only that variable's name in the runtime contract, as
+                      clientSecretEnvVar — the secret value never travels in the contract.
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  scopes:
+                    description: |-
+                      Scopes are the delegated scopes to request for the exchanged token, e.g.
+                      ["api://<backend>/.default"]. When non-empty they take precedence over
+                      Audience. At least one of audience or scopes must be set.
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  subjectTokenProviderName:
+                    description: |-
+                      SubjectTokenProviderName selects the source of the OBO subject (assertion)
+                      token from the request's authenticated Identity:
+                        - Omitted: use the inbound end-user token the client presented
+                          (Identity.Token) — the deployment with no embedded auth server, where
+                          the client holds an Entra token directly.
+                        - Set: use the named upstream provider's token
+                          (Identity.UpstreamTokens[<name>]) — the embedded-auth-server
+                          deployment, where the inbound token is the proxy's own session token.
+                          The value must match a configured upstream provider name.
+                      The subject is always sourced from the authenticated Identity, never from
+                      an inbound request header, so the upstream auth middleware must run first.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
+                    type: string
+                  tenantId:
+                    description: |-
+                      TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier.
+                      Accepts a tenant GUID, a verified domain name (e.g.
+                      contoso.onmicrosoft.com), or one of the well-known values "common",
+                      "organizations", "consumers". The operator interpolates it into the Entra
+                      token endpoint (https://login.microsoftonline.com/<tenantId>/oauth2/v2.0/token)
+                      emitted as the runtime contract's tokenUrl, so the value is constrained to
+                      a single safe path segment (no slashes, whitespace, query, or fragment).
+                    maxLength: 253
+                    minLength: 1
+                    pattern: ^[a-zA-Z0-9][a-zA-Z0-9.-]*$
+                    type: string
+                required:
+                - clientId
+                - clientSecretRef
+                - tenantId
                 type: object
+                x-kubernetes-validations:
+                - message: at least one of audience or scopes must be set
+                  rule: (has(self.audience) && size(self.audience) > 0) || (has(self.scopes)
+                    && size(self.scopes) > 0)
               tokenExchange:
                 description: |-
                   TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange

@@ -90,26 +90,16 @@ var _ = Describe("MCPExternalAuthConfig OBOConfig CEL validation", Label("k8s", 
 			Expect(err.Error()).To(ContainSubstring("tenantId"))
 		})
 
-		It("should reject a missing clientId", func() {
-			cfg := makeOBOConfig("obo-no-client", &mcpv1beta1.OBOConfig{
-				TenantID:        "72f988bf-86f1-41af-91ab-2d7cd011db47",
-				ClientSecretRef: secretRef,
-				Audience:        "api://backend",
-			})
-			err := k8sClient.Create(ctx, cfg)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("clientId"))
-		})
-
-		It("should reject a missing clientSecretRef", func() {
-			cfg := makeOBOConfig("obo-no-secret", &mcpv1beta1.OBOConfig{
+		It("should accept a config without clientId or clientSecretRef (operator enforces per auth mode)", func() {
+			// clientId/clientSecretRef are optional at the CRD level so future
+			// client-auth methods (certificate, workload identity) need no
+			// breaking schema change; the operator enforces the v1 shared-secret
+			// combination. Admission must therefore accept their absence.
+			cfg := makeOBOConfig("obo-no-client-auth", &mcpv1beta1.OBOConfig{
 				TenantID: "72f988bf-86f1-41af-91ab-2d7cd011db47",
-				ClientID: "app-client-id",
 				Audience: "api://backend",
 			})
-			err := k8sClient.Create(ctx, cfg)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("clientSecretRef"))
+			Expect(k8sClient.Create(ctx, cfg)).Should(Succeed())
 		})
 	})
 
@@ -135,6 +125,30 @@ var _ = Describe("MCPExternalAuthConfig OBOConfig CEL validation", Label("k8s", 
 			err := k8sClient.Create(ctx, cfg)
 			Expect(err).To(HaveOccurred())
 			Expect(err.Error()).To(ContainSubstring("at least one of audience or scopes must be set"))
+		})
+
+		It("should reject a whitespace-only audience (mirrors ExchangeTarget trimming)", func() {
+			cfg := makeOBOConfig("obo-blank-audience", &mcpv1beta1.OBOConfig{
+				TenantID:        "72f988bf-86f1-41af-91ab-2d7cd011db47",
+				ClientID:        "app-client-id",
+				ClientSecretRef: secretRef,
+				Audience:        "   ",
+			})
+			err := k8sClient.Create(ctx, cfg)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("non-blank value"))
+		})
+
+		It("should reject scopes containing only blank entries", func() {
+			cfg := makeOBOConfig("obo-blank-scopes", &mcpv1beta1.OBOConfig{
+				TenantID:        "72f988bf-86f1-41af-91ab-2d7cd011db47",
+				ClientID:        "app-client-id",
+				ClientSecretRef: secretRef,
+				Scopes:          []string{"   "},
+			})
+			err := k8sClient.Create(ctx, cfg)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("non-blank value"))
 		})
 	})
 
@@ -169,6 +183,27 @@ var _ = Describe("MCPExternalAuthConfig OBOConfig CEL validation", Label("k8s", 
 				Audience:        "api://backend",
 			})
 			Expect(k8sClient.Create(ctx, cfg)).ShouldNot(Succeed())
+		})
+
+		It("should reject a tenantId well-known alias like 'common' (OBO needs a specific tenant)", func() {
+			cfg := makeOBOConfig("obo-tenant-common", &mcpv1beta1.OBOConfig{
+				TenantID:        "common",
+				ClientID:        "app-client-id",
+				ClientSecretRef: secretRef,
+				Audience:        "api://backend",
+			})
+			Expect(k8sClient.Create(ctx, cfg)).ShouldNot(Succeed())
+		})
+
+		It("should accept an authority with a path (B2C/CIAM/sovereign clouds use token paths)", func() {
+			cfg := makeOBOConfig("obo-authority-path", &mcpv1beta1.OBOConfig{
+				TenantID:        "contoso.onmicrosoft.com",
+				Authority:       "https://contoso.ciamlogin.com/contoso.onmicrosoft.com",
+				ClientID:        "app-client-id",
+				ClientSecretRef: secretRef,
+				Audience:        "api://backend",
+			})
+			Expect(k8sClient.Create(ctx, cfg)).Should(Succeed())
 		})
 
 		It("should reject an uppercase subjectTokenProviderName", func() {

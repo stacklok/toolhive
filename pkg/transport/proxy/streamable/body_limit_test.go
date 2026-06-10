@@ -46,6 +46,44 @@ func TestHTTPProxy_RejectsOversizedBody(t *testing.T) {
 	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
 }
 
+// TestHTTPProxy_RejectsOversizedChunkedBodyWith413 verifies that an oversized
+// body sent WITHOUT a Content-Length (chunked) — which bypasses the early
+// Content-Length rejection and instead trips http.MaxBytesReader inside the
+// handler's io.ReadAll — is reported as 413, not 500. Regression guard for the
+// handler's MaxBytesError handling.
+//
+//nolint:paralleltest // starts an HTTP server
+func TestHTTPProxy_RejectsOversizedChunkedBodyWith413(t *testing.T) {
+	const limit = 1024
+
+	chain := []types.NamedMiddleware{
+		{Name: bodylimit.MiddlewareType, Function: bodylimit.Middleware(limit)},
+	}
+
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("127.0.0.1", port, nil, chain)
+	ctx := t.Context()
+	require.NoError(t, proxy.Start(ctx))
+	defer proxy.Stop(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+
+	// io.NopCloser hides the concrete reader type so net/http omits Content-Length
+	// and uses chunked transfer, bypassing the middleware's early-reject path.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url,
+		io.NopCloser(bytes.NewReader(make([]byte, limit*8))))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+	assert.NotEqual(t, http.StatusInternalServerError, resp.StatusCode)
+}
+
 // TestHTTPProxy_BodyLimitBoundsDownstreamReader verifies that the body-limit
 // middleware, placed first in the chain (as PopulateMiddlewareConfigs does),
 // caps the bytes a downstream middleware can read — proving it executes before

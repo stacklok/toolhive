@@ -234,9 +234,12 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		return err
 	}
 
-	// Recovery middleware (always present, added last to be outermost wrapper)
-	// Middleware is applied in reverse order, so adding last means it executes first
-	// and catches panics from all other middleware and handlers.
+	// Recovery middleware (always present, added last). The proxy transports
+	// apply this slice in reverse order (see applyMiddlewares), so the
+	// last-appended entry becomes the INNERMOST wrapper and executes closest to
+	// the handler. Recovery therefore catches panics from the handler and the
+	// inner middleware; panics raised in middleware that wrap it (earlier
+	// entries, such as body-limit and auth) are not caught here.
 	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create recovery middleware config: %w", err)

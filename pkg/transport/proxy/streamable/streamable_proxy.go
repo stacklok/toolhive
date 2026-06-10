@@ -344,6 +344,14 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		// A body that exceeds the configured limit without a Content-Length
+		// (e.g. chunked) trips http.MaxBytesReader here rather than at the
+		// early Content-Length check. Surface it as 413, not 500.
+		var maxBytesErr *http.MaxBytesError
+		if errors.As(err, &maxBytesErr) {
+			writeHTTPError(w, http.StatusRequestEntityTooLarge, "Request Entity Too Large")
+			return
+		}
 		writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Error reading request body: %v", err))
 		return
 	}

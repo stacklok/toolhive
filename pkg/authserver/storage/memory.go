@@ -346,6 +346,13 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 	return nil
 }
 
+// RenewClientTTL is a no-op for the in-memory backend: clients are held for the
+// process lifetime with no TTL, so there is nothing to renew. The behavior that
+// matters for distributed deployments lives in RedisStorage.RenewClientTTL.
+func (*MemoryStorage) RenewClientTTL(_ context.Context, _ fosite.Client) error {
+	return nil
+}
+
 // -----------------------
 // fosite.ClientManager
 // -----------------------

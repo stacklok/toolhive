@@ -3745,6 +3745,10 @@ const docTemplate = `{
                         "description": "RepositoryURL is the URL to the source code repository for the server",
                         "type": "string"
                     },
+                    "stateless": {
+                        "description": "Stateless indicates the server only supports POST (no SSE/GET)",
+                        "type": "boolean"
+                    },
                     "status": {
                         "description": "Status indicates whether the server is currently active or deprecated",
                         "type": "string"
@@ -3956,6 +3960,10 @@ const docTemplate = `{
                     "repository_url": {
                         "description": "RepositoryURL is the URL to the source code repository for the server",
                         "type": "string"
+                    },
+                    "stateless": {
+                        "description": "Stateless indicates the server only supports POST (no SSE/GET)",
+                        "type": "boolean"
                     },
                     "status": {
                         "description": "Status indicates whether the server is currently active or deprecated",

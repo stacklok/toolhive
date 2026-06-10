@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
@@ -21,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -64,6 +66,14 @@ type HTTPProxy struct {
 	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
 	sessionStorage session.Storage
 
+	// authInfoHandler is the optional RFC 9728 OAuth protected resource discovery handler.
+	// When nil, /.well-known/ returns a clean JSON 404. Set via WithAuthInfoHandler.
+	authInfoHandler http.Handler
+
+	// prefixHandlers contains additional HTTP handlers mounted outside the middleware chain.
+	// Keys are URL path prefixes. Set via WithPrefixHandlers.
+	prefixHandlers map[string]http.Handler
+
 	// Waiters keyed by compositeKey(sessID, idKey) -> one-shot channel for response delivery.
 	// The composite key MUST be unique per concurrent request; sharing it across requests
 	// (e.g. with sessID="" for sessionless requests) silently overwrites entries and crosses
@@ -102,6 +112,23 @@ func WithSessionTTL(ttl time.Duration) Option {
 			return
 		}
 		p.sessionTTL = ttl
+	}
+}
+
+// WithAuthInfoHandler sets the handler for RFC 9728 OAuth protected resource discovery.
+// When set, the handler is mounted at /.well-known/ outside the middleware chain.
+// When nil, /.well-known/ returns a clean JSON 404 so OAuth clients parse it cleanly.
+func WithAuthInfoHandler(h http.Handler) Option {
+	return func(p *HTTPProxy) {
+		p.authInfoHandler = h
+	}
+}
+
+// WithPrefixHandlers registers additional HTTP handlers mounted before the MCP endpoint.
+// These are mounted outside the middleware chain (RFC 9728, embedded auth server routes).
+func WithPrefixHandlers(handlers map[string]http.Handler) Option {
+	return func(p *HTTPProxy) {
+		p.prefixHandlers = maps.Clone(handlers)
 	}
 }
 
@@ -158,6 +185,21 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
+	}
+
+	// Mount prefix handlers (e.g. embedded auth server routes) outside the middleware chain.
+	// RFC 9728 requires discovery endpoints to be reachable without authentication.
+	for prefix, h := range p.prefixHandlers {
+		mux.Handle(prefix, h)
+		slog.Debug("mounted prefix handler", "prefix", prefix)
+	}
+
+	// Mount RFC 9728 OAuth protected resource discovery endpoint (no middlewares).
+	// Always register so OAuth discovery gets a clean JSON 404 when auth is off.
+	wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler)
+	mux.Handle("/.well-known/", wellKnownHandler)
+	if p.authInfoHandler != nil {
+		slog.Debug("rfc 9728 OAuth discovery endpoint enabled at /.well-known/oauth-protected-resource")
 	}
 
 	p.server = &http.Server{

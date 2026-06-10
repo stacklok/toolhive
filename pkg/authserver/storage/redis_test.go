@@ -261,6 +261,57 @@ func TestRedisStorage_RegisterClient(t *testing.T) {
 	})
 }
 
+// TestRedisStorage_RenewClientTTL verifies that RenewClientTTL extends the
+// registration TTL for public (DCR) clients — keeping actively-used clients from
+// being evicted mid-lifecycle — while leaving confidential clients (which have no
+// TTL) untouched, and that renewing an unknown/evicted client is a safe no-op.
+func TestRedisStorage_RenewClientTTL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("public client TTL is renewed", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "public-client")
+			client := &mockClient{id: "public-client", public: true}
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			// Age the registration so only a small slice of the TTL remains.
+			mr.FastForward(DefaultPublicClientTTL - time.Hour)
+			ttlBefore := mr.TTL(key)
+			require.Positive(t, ttlBefore)
+			require.Less(t, ttlBefore, 2*time.Hour, "precondition: TTL should be near expiry")
+
+			require.NoError(t, s.RenewClientTTL(ctx, client))
+
+			ttlAfter := mr.TTL(key)
+			assert.Greater(t, ttlAfter, ttlBefore, "RenewClientTTL should extend the public client TTL")
+			assert.InDelta(t, DefaultPublicClientTTL.Seconds(), ttlAfter.Seconds(), 60,
+				"renewed TTL should be ~DefaultPublicClientTTL")
+		})
+	})
+
+	t.Run("confidential client is left without a TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "conf-client")
+			client := &mockClient{id: "conf-client", public: false}
+			require.NoError(t, s.RegisterClient(ctx, client))
+			require.Equal(t, time.Duration(0), mr.TTL(key), "confidential clients must not have a TTL")
+
+			require.NoError(t, s.RenewClientTTL(ctx, client))
+
+			assert.Equal(t, time.Duration(0), mr.TTL(key),
+				"RenewClientTTL must not introduce a TTL on a confidential client")
+		})
+	})
+
+	t.Run("unknown client is a safe no-op", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "ghost")
+			require.NoError(t, s.RenewClientTTL(ctx, &mockClient{id: "ghost", public: true}))
+			assert.False(t, mr.Exists(key), "renewing an unknown client must not create a key")
+		})
+	})
+}
+
 func TestRedisStorage_ClientAssertionJWT(t *testing.T) {
 	t.Parallel()
 

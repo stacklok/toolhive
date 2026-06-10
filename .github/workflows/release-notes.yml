@@ -1,11 +1,18 @@
 # Generate Release Notes workflow
 #
-# When a GitHub Release is published (by create-release-tag.yml after a release
-# PR merges), this workflow runs the `release-notes` Claude skill to produce
-# polished, copy-pasteable release notes:
+# Runs after "Create Release Tag" completes (that workflow creates the git tag
+# and GitHub Release once a release PR merges). It then runs the `release-notes`
+# Claude skill to produce polished, copy-pasteable release notes:
 #   - analyzes every merged PR between the previous tag and this one
 #   - cross-references linked issues
 #   - dispatches expert subagents to assess breaking changes
+#
+# Why workflow_run and not the `release` event: anthropics/claude-code-action
+# only accepts a fixed set of event types (issues, pull_request*, comments,
+# workflow_dispatch, repository_dispatch, schedule, workflow_run). A `release`
+# trigger makes the action fail immediately with "Unsupported event type:
+# release". workflow_run is supported and is not subject to the GITHUB_TOKEN
+# downstream-trigger limitation, so it fires reliably after the tag workflow.
 #
 # Delivery is REVIEW-THEN-PUBLISH: the public release notes are NOT overwritten.
 # The generated markdown is uploaded as a build artifact, written to the job
@@ -17,8 +24,9 @@
 name: Generate Release Notes
 
 on:
-  release:
-    types: [published]
+  workflow_run:
+    workflows: ["Create Release Tag"]
+    types: [completed]
   workflow_dispatch:
     inputs:
       tag:
@@ -36,31 +44,50 @@ jobs:
     name: Generate Release Notes
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # On workflow_run, only proceed if the tag workflow actually succeeded.
+    # Manual dispatch always proceeds.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
     env:
       # Mapped to a job-level env var so the Slack step can gate on it: the
       # `secrets` context is not available in step-level `if:` conditions.
       SLACK_WEBHOOK: ${{ secrets.SLACK_TOOLHIVE_RELEASE_WEBHOOK_URL }}
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          # Always check out the default branch, never the workflow_run head ref.
+          # Checking out an event-supplied ref in a secrets-bearing workflow_run
+          # is the "untrusted checkout" anti-pattern (CodeQL actions/untrusted-
+          # checkout). It is safe here too: "Create Release Tag" only runs on a
+          # VERSION push to main, so main HEAD already is the release commit and
+          # its VERSION matches the tag being announced.
+          #
+          # Full history + tags are required: the skill lists/sorts tags and
+          # compares ranges between the current and previous release.
+          fetch-depth: 0
+
       - name: Resolve release tag
         id: tag
         env:
-          EVENT_TAG: ${{ github.event.release.tag_name }}
           INPUT_TAG: ${{ inputs.tag }}
         run: |
-          TAG="${EVENT_TAG:-$INPUT_TAG}"
-          if [ -z "$TAG" ]; then
-            echo "::error::No release tag resolved from event or input"
+          # Manual runs pass the tag explicitly; workflow_run derives it from the
+          # VERSION file on the default branch (the release commit that triggered
+          # the tag workflow), prefixed with "v".
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            VERSION=$(tr -d '[:space:]' < VERSION)
+            TAG="v$VERSION"
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "v" ]; then
+            echo "::error::No release tag resolved from input or VERSION file"
             exit 1
           fi
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Generating release notes for: $TAG"
-
-      - name: Checkout repository
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          # Full history + tags are required: the skill lists/sorts tags and
-          # compares ranges between the current and previous release.
-          fetch-depth: 0
 
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
         with:
@@ -79,6 +106,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Hand the action a token explicitly so it does not try to mint one via
+          # OIDC (the Claude GitHub App flow), which would require `id-token: write`
+          # and the app installed. We only need the API key for Anthropic auth and
+          # GH_TOKEN for the skill's read-only gh calls.
+          github_token: ${{ github.token }}
           prompt: |
             You are generating GitHub release notes for the ToolHive release ${{ steps.tag.outputs.tag }}.
 

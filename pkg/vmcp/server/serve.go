@@ -119,6 +119,17 @@ type ServerConfig struct {
 	// definitions before assembling this config (sessionmanager.New only checks the
 	// WorkflowDefs/ComposerFactory pairing). This responsibility moves here with the
 	// relocation and matters when server.New is routed through Serve in Phase 3.
+	//
+	// Caller responsibility (AC2, the single-aggregation contract): FactoryConfig.Base
+	// MUST be constructed WITHOUT a session.WithAggregator option on the Serve path. On
+	// this path the core is the single source of truth — session registration sources the
+	// advertised set from core.ListTools/ListResources and routes calls through the core
+	// (handleSessionRegistrationImpl/serve_handlers.go); the factory's role is reduced to
+	// opening the session's backend connections and binding identity. A factory that also
+	// aggregates would produce a second, divergent capability set (drift) whose routing
+	// table this path discards — exactly the double-aggregation AC2 forbids. This is an
+	// unenforced contract today because no production composition root wires the Serve path
+	// yet; it becomes load-bearing when one does.
 	SessionManagerConfig *sessionmanager.FactoryConfig
 
 	// TelemetryProvider is the cross-cutting telemetry provider (also consumed by

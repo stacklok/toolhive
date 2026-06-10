@@ -38,7 +38,14 @@ import (
 // from the core and installs it on the SDK session. It is invoked from
 // handleSessionRegistrationImpl on the Serve path, after the bound session record
 // has been created. The core.ListTools / core.ListResources calls here are the
-// single per-session aggregation point ("called exactly once per session").
+// single CORE aggregation per session.
+//
+// "Single core aggregation" — not "the only backend work per session" — because the
+// preceding CreateSession opens the session's backend connections via the factory.
+// To honor AC2 (no double-aggregation, no drift), the composition root MUST configure
+// the Serve-path session factory WITHOUT its own aggregator (see the contract on
+// ServerConfig.SessionManagerConfig); otherwise the factory would aggregate a second,
+// divergent set whose routing table this path discards.
 //
 // Prompts are intentionally not injected: per-session prompt injection is not yet
 // supported by the SDK (parity with the legacy path, which also omits them).
@@ -202,7 +209,7 @@ func (s *Server) coreResourceHandler(
 		result, err := s.core.ReadResource(ctx, caller, uri)
 		if err != nil {
 			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
-				return nil, fmt.Errorf("read denied by authorization policy")
+				return nil, errors.New("read denied by authorization policy")
 			}
 			return nil, err
 		}

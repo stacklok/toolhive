@@ -1130,6 +1130,13 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 	// core.ListTools for the request identity (the core is stateless, so re-deriving on
 	// pod B is the cache-miss equivalent of the once-per-session registration call); on
 	// the legacy path it reads the factory-built session's tools via GetAdaptedTools.
+	//
+	// Note: on the Serve path this lists under the CURRENT request identity, not the
+	// session's bound identity. For the realistic same-principal load-balanced case they
+	// are equal, so the advertised set is identical across pods. A cross-identity re-hydration
+	// would advertise the requester's own filtered set, but the call-time binding check
+	// (enforceSessionBinding, run before core.CallTool/ReadResource) is the backstop — it
+	// rejects a mismatched caller, so no other principal's capabilities can be invoked.
 	adaptedTools, err := func() ([]server.ServerTool, error) {
 		if s.core != nil {
 			identity, _ := auth.IdentityFromContext(ctx)

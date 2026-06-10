@@ -194,6 +194,32 @@ func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
 	assert.NotEqual(t, http.StatusOK, rec.Code)
 }
 
+// TestServeOmitsAuthzAndAnnotation proves the Serve path produces the MCP middleware
+// chain WITHOUT the authz and annotation-enrichment layers. The mechanism is the shared
+// (*Server).Handler guard `s.config.AuthzMiddleware != nil`: Serve leaves AuthzMiddleware
+// nil (buildServeConfig does not map it — see TestBuildServeConfigMapsSharedFields), so
+// both the authz block (server.go:614) and the AnnotationEnrichmentMiddleware block
+// (:622) are skipped on the Serve path. Authorization instead runs through the core
+// admission seam (#5438). The blocks are NOT deleted here — they stay in the shared
+// Handler so the still-live server.New path keeps enforcing authz; physical removal is
+// Phase 3 (#5445). The companion TestHandlerAppliesAuthzAndAnnotationOnlyWhenConfigured
+// proves the same shared Handler DOES apply both layers when AuthzMiddleware is non-nil.
+func TestServeOmitsAuthzAndAnnotation(t *testing.T) {
+	t.Parallel()
+
+	srv, err := Serve(context.Background(), &stubVMCP{}, testMinimalServeConfig())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+	assert.Nil(t, srv.config.AuthzMiddleware,
+		"Serve must leave AuthzMiddleware nil so the shared Handler omits authz + annotation-enrichment")
+
+	// The Serve path still produces the rest of the chain: Handler builds without error.
+	handler, err := srv.Handler(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, handler)
+}
+
 func TestServeHandlerRegistersMetricsWhenTelemetryEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -300,7 +326,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 	t.Parallel()
 
 	intentionallyUnmapped := map[string]struct{}{
-		"AuthzMiddleware":     {}, // authenticated/authz chain relocated by #5441
+		"AuthzMiddleware":     {}, // intentionally nil on Serve path; authz moves to core admission seam (#5438), shared Handler skips it
 		"HealthMonitorConfig": {}, // monitor injected pre-built via ServerConfig.HealthMonitor (A2)
 		"StatusReporter":      {}, // set directly on Server; Config.StatusReporter only read by New
 		"SessionFactory":      {}, // session manager built in Serve from ServerConfig.SessionManagerConfig

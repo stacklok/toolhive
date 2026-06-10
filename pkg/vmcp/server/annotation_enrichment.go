@@ -92,7 +92,9 @@ func findToolAnnotations(toolName string, caps *aggregator.AggregatedCapabilitie
 //
 // Kept identical to core.convertAnnotations (pkg/vmcp/core/admission.go), including
 // the nil guard below — the two are intentional, temporary duplicates (the core
-// cannot import this package: server imports core) and #5441 deletes this copy.
+// cannot import this package: server imports core). #5441 makes this middleware inert
+// on the Serve path via the AuthzMiddleware nil-guard; physical removal of this copy
+// is deferred to Phase 3 (#5445).
 func convertAnnotations(ann *vmcp.ToolAnnotations) *authorizers.ToolAnnotations {
 	if ann == nil {
 		return nil

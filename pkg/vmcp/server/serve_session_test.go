@@ -33,7 +33,7 @@ import (
 // These tests exercise the session-creation wiring and SDK hooks relocated into
 // Serve (#5440). They drive the SDK session lifecycle through the relocated
 // vmcpSessionMgr + mcpServer directly, mounting the Streamable HTTP server WITHOUT
-// the authenticated discovery middleware (relocated by #5441/#5442). That keeps the
+// the authenticated discovery middleware (relocated by #5442). That keeps the
 // test within this task's scope while proving the hooks fire and two-phase session
 // creation runs identically when Serve is exercised directly. The full HTTP suite
 // stays on server.New (its parity gate) in session_management_integration_test.go.
@@ -110,7 +110,7 @@ func TestServeRegistersSessionHooks(t *testing.T) {
 	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
 
 	// Mount the Streamable HTTP server on the relocated mcpServer + vmcpSessionMgr,
-	// bypassing the not-yet-relocated discovery middleware (#5441/#5442).
+	// bypassing the not-yet-relocated discovery middleware (#5442).
 	streamable := server.NewStreamableHTTPServer(
 		srv.mcpServer,
 		server.WithEndpointPath("/mcp"),

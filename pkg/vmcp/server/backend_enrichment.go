@@ -93,6 +93,21 @@ func (s *Server) resolveBackendName(ctx context.Context, method string, params m
 // The name (not the raw BackendID) is returned for parity with the legacy path,
 // which records BackendTarget.WorkloadName (= backend.Name); recording the same value
 // on both paths keeps audit events correlatable across the Serve and server.New paths.
+//
+// Why the core, not the session's routing table: the core's Lookup* applies conflict
+// resolution and the admission filter, so it resolves the advertised (possibly renamed)
+// name a client actually calls and never resolves a denied capability. The Serve-path
+// session's routing table is built without the core's aggregation (it must not
+// double-aggregate, AC2), so it holds raw pre-resolution names that would miss whenever
+// a tool was renamed — it is not a reliable source here.
+//
+// Cost: Lookup* re-aggregates backend capabilities (the core is intentionally
+// stateless, core_vmcp.go:287-298), so an audited request triggers an aggregation here
+// in addition to the one the call itself performs. This is acceptable for now — the
+// Serve path has no production composition root yet — and is deferred rather than
+// optimized speculatively (vmcp anti-pattern #9: optimize with evidence). When the Serve
+// path goes live, a per-session advertised-set cache ("Serve caches, core is stateless")
+// is the place to remove the second aggregation.
 func (s *Server) coreLookupBackendName(ctx context.Context, method string, params map[string]any) string {
 	identity, _ := auth.IdentityFromContext(ctx)
 	switch method {

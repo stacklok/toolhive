@@ -75,7 +75,8 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 
 	slog.Info("session capabilities injected from core",
 		"session_id", sessionID,
-		"tool_count", len(tools))
+		"tool_count", len(tools),
+		"resource_count", len(resources))
 	return nil
 }
 
@@ -104,6 +105,9 @@ func (s *Server) coreSessionTools(
 			RawInputSchema: schemaJSON,
 			Annotations:    conversion.ToMCPToolAnnotations(domainTool.Annotations),
 		}
+		// Unlike the required InputSchema (a marshal failure aborts registration above),
+		// the optional OutputSchema is best-effort: on failure the tool is still advertised
+		// without it. Mirrors the legacy GetAdaptedTools adapter.
 		if domainTool.OutputSchema != nil {
 			if outputSchemaJSON, marshalErr := json.Marshal(domainTool.OutputSchema); marshalErr != nil {
 				slog.Warn("failed to marshal tool output schema", "tool", domainTool.Name, "error", marshalErr)

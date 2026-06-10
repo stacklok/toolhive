@@ -47,3 +47,6 @@ coverage*
 cmd/vmcp/__debug_bin*
 /vmcp
 .worktrees/
+
+# Superpowers planning artifacts
+docs/superpowers/

@@ -2793,7 +2793,7 @@ subjectProviderName / externalTokenHeaderName). In particular there is no
 externalTokenHeaderName: the OBO subject is sourced from the authenticated
 Identity, never from an inbound request header.
 
-Field-to-contract mapping performed by the operator (#1581):
+Field-to-contract mapping performed by the operator's OBO handler:
   - tenantId (+ optional authority) → tokenUrl
     (https://login.microsoftonline.com/<tenantId>/oauth2/v2.0/token, or the
     configured authority base joined with the tenant for sovereign clouds)

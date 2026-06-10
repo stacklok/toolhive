@@ -198,8 +198,8 @@ func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
 // chain WITHOUT the authz and annotation-enrichment layers. The mechanism is the shared
 // (*Server).Handler guard `s.config.AuthzMiddleware != nil`: Serve leaves AuthzMiddleware
 // nil (buildServeConfig does not map it — see TestBuildServeConfigMapsSharedFields), so
-// both the authz block (server.go:614) and the AnnotationEnrichmentMiddleware block
-// (:622) are skipped on the Serve path. Authorization instead runs through the core
+// both the authz block and the AnnotationEnrichmentMiddleware block — each gated on that
+// guard in Handler — are skipped on the Serve path. Authorization instead runs through the core
 // admission seam (#5438). The blocks are NOT deleted here — they stay in the shared
 // Handler so the still-live server.New path keeps enforcing authz; physical removal is
 // Phase 3 (#5445). The companion TestHandlerAppliesAuthzAndAnnotationOnlyWhenConfigured

@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -104,13 +106,17 @@ func newToolSessionFactory(
 type fakeCore struct {
 	tools     []vmcp.Tool
 	resources []vmcp.Resource
+	prompts   []vmcp.Prompt
 
 	listToolsCalls     atomic.Int32
 	listResourcesCalls atomic.Int32
 	callToolCalls      atomic.Int32
+	readResourceCalls  atomic.Int32
 	lastCallToolName   atomic.Value // string
+	lastReadURI        atomic.Value // string
 
 	callErr error // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
+	readErr error // when set, ReadResource returns it
 }
 
 var _ core.VMCP = (*fakeCore)(nil)
@@ -136,11 +142,18 @@ func (f *fakeCore) ListResources(context.Context, *auth.Identity) ([]vmcp.Resour
 	return f.resources, nil
 }
 
-func (*fakeCore) ReadResource(context.Context, *auth.Identity, string) (*vmcp.ResourceReadResult, error) {
-	return &vmcp.ResourceReadResult{}, nil
+func (f *fakeCore) ReadResource(_ context.Context, _ *auth.Identity, uri string) (*vmcp.ResourceReadResult, error) {
+	f.readResourceCalls.Add(1)
+	f.lastReadURI.Store(uri)
+	if f.readErr != nil {
+		return nil, f.readErr
+	}
+	return &vmcp.ResourceReadResult{Contents: []vmcp.ResourceContent{{URI: uri, Text: "resource-body"}}}, nil
 }
 
-func (*fakeCore) ListPrompts(context.Context, *auth.Identity) ([]vmcp.Prompt, error) { return nil, nil }
+func (f *fakeCore) ListPrompts(context.Context, *auth.Identity) ([]vmcp.Prompt, error) {
+	return f.prompts, nil
+}
 
 func (*fakeCore) GetPrompt(
 	context.Context, *auth.Identity, string, map[string]any,
@@ -551,6 +564,192 @@ func TestServeEnforcesSessionBinding(t *testing.T) {
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller,
 		"a token presented to an anonymous session must be rejected by the session-layer binding check")
+}
+
+// registerServeSession builds a Serve server backed by fc plus a mock session factory,
+// registers one anonymous session via the SDK initialize path, and returns the server,
+// the session ID, and the test HTTP base URL. The mock factory only establishes the
+// (anonymous-bound) session record; capabilities come from fc (the core).
+func registerServeSession(t *testing.T, fc *fakeCore) (*Server, string, string) {
+	t.Helper()
+	ctrl := gomock.NewController(t)
+	factory, _ := newToolSessionFactory(t, ctrl, fc.tools)
+
+	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
+		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+	streamable := server.NewStreamableHTTPServer(
+		srv.mcpServer,
+		server.WithEndpointPath("/mcp"),
+		server.WithSessionIdManager(srv.vmcpSessionMgr),
+	)
+	ts := httptest.NewServer(streamable)
+	t.Cleanup(ts.Close)
+
+	initResp := postServeMCP(t, ts.URL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": "2025-06-18",
+			"capabilities":    map[string]any{},
+			"clientInfo":      map[string]any{"name": "test", "version": "1.0"},
+		},
+	}, "")
+	defer initResp.Body.Close()
+	require.Equal(t, http.StatusOK, initResp.StatusCode)
+	sessionID := initResp.Header.Get("Mcp-Session-Id")
+	require.NotEmpty(t, sessionID)
+	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return ok },
+		2*time.Second, 10*time.Millisecond, "session should be registered")
+	return srv, sessionID, ts.URL
+}
+
+// TestServeCoreToolHandler exercises the Serve tool handler's error/denial branches by
+// invoking the handler closure directly against a registered (anonymous) session:
+// the happy path returns the core result; an ErrAuthorizationFailed is genericized so the
+// underlying authorizer detail never leaks; any other core error is forwarded; and a
+// non-map arguments payload is rejected before the core is reached.
+func TestServeCoreToolHandler(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		args            any
+		callErr         error
+		wantIsError     bool
+		wantContains    string
+		wantNotContains string
+		wantCoreCalled  bool
+	}{
+		{"happy path returns the core result", map[string]any{}, nil, false, "ok", "", true},
+		{
+			"authz denial is genericized", map[string]any{},
+			fmt.Errorf("%w: cedar said no", vmcp.ErrAuthorizationFailed), true,
+			"call denied by authorization policy", "cedar said no", true,
+		},
+		{"non-auth error is forwarded", map[string]any{}, errors.New("backend boom"), true, "backend boom", "", true},
+		{"non-map arguments rejected before the core", "not-an-object", nil, true, "invalid input", "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}, callErr: tc.callErr}
+			srv, sessionID, _ := registerServeSession(t, fc)
+
+			req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: tc.args}}
+			res, err := srv.coreToolHandler(sessionID, "t")(context.Background(), req)
+			// Tool errors/denials surface as IsError results, not Go errors.
+			require.NoError(t, err)
+			require.NotNil(t, res)
+			assert.Equal(t, tc.wantIsError, res.IsError)
+
+			body, mErr := json.Marshal(res)
+			require.NoError(t, mErr)
+			assert.Contains(t, string(body), tc.wantContains)
+			if tc.wantNotContains != "" {
+				assert.NotContains(t, string(body), tc.wantNotContains,
+					"the underlying authorizer error must not leak to the client")
+			}
+
+			want := int32(0)
+			if tc.wantCoreCalled {
+				want = 1
+			}
+			assert.Equal(t, want, fc.callToolCalls.Load())
+		})
+	}
+}
+
+// TestServeToolCallTerminatesOnBindingFailure proves the documented fail-closed side
+// effect: a binding rejection on the Serve call path terminates the session and never
+// reaches the core. The session is anonymous, so a caller presenting a token is a
+// session-upgrade attack.
+func TestServeToolCallTerminatesOnBindingFailure(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
+	srv, sessionID, _ := registerServeSession(t, fc)
+
+	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Token: "attacker-token"})
+	req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+	res, err := srv.coreToolHandler(sessionID, "t")(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.True(t, res.IsError)
+	body, _ := json.Marshal(res)
+	assert.Contains(t, string(body), "Unauthorized")
+	assert.Equal(t, int32(0), fc.callToolCalls.Load(), "core.CallTool must not be reached on a binding failure")
+
+	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return !ok },
+		2*time.Second, 10*time.Millisecond, "a binding failure must terminate the session (fail-closed)")
+}
+
+// TestServeCoreResourceHandler covers the Serve resource path: the core's resource is
+// advertised by the registration builder, the handler routes a read through
+// core.ReadResource, and an ErrAuthorizationFailed is genericized.
+func TestServeCoreResourceHandler(t *testing.T) {
+	t.Parallel()
+
+	const uri = "file:///doc.txt"
+
+	t.Run("advertises and routes the resource through core.ReadResource", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{resources: []vmcp.Resource{{Name: "doc", URI: uri}}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		resources, err := srv.coreSessionResources(context.Background(), sessionID, nil)
+		require.NoError(t, err)
+		require.Len(t, resources, 1)
+		assert.Equal(t, uri, resources[0].Resource.URI)
+
+		contents, err := srv.coreResourceHandler(sessionID, uri)(context.Background(), mcp.ReadResourceRequest{})
+		require.NoError(t, err)
+		require.NotEmpty(t, contents)
+		gotURI, _ := fc.lastReadURI.Load().(string)
+		assert.Equal(t, uri, gotURI, "the handler must route the read through core.ReadResource with the URI")
+	})
+
+	t.Run("authorization denial yields a generic message", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{
+			resources: []vmcp.Resource{{Name: "doc", URI: uri}},
+			readErr:   fmt.Errorf("%w: cedar said no", vmcp.ErrAuthorizationFailed),
+		}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		_, err := srv.coreResourceHandler(sessionID, uri)(context.Background(), mcp.ReadResourceRequest{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "read denied by authorization policy")
+		assert.NotContains(t, err.Error(), "cedar said no", "the underlying authorizer error must not leak")
+	})
+}
+
+// TestServeOmitsPrompts locks in the intentional prompt omission: even when the core
+// advertises a prompt, the Serve path injects only tools/resources (the SDK has no
+// per-session prompt support), so a prompts/list does not surface it.
+func TestServeOmitsPrompts(t *testing.T) {
+	t.Parallel()
+
+	const promptName = "serve-only-prompt"
+	fc := &fakeCore{prompts: []vmcp.Prompt{{Name: promptName}}}
+	_, sessionID, baseURL := registerServeSession(t, fc)
+
+	resp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      2,
+		"method":  "prompts/list",
+		"params":  map[string]any{},
+	}, sessionID)
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	assert.NotContains(t, string(body), promptName,
+		"the Serve path must not advertise prompts even when the core supplies them")
 }
 
 // postServeMCP sends a JSON-RPC POST to the given Streamable HTTP base URL. It is the

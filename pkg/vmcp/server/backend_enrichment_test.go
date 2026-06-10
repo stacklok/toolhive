@@ -562,7 +562,12 @@ func TestBackendEnrichmentMiddleware_ServePath(t *testing.T) {
 			"Serve path must record the backend name, not the raw BackendID")
 	})
 
-	t.Run("no-op for unadvertised or denied tool (LookupTool returns not found)", func(t *testing.T) {
+	// The real core's LookupTool delegates to ListTools, which applies the admission
+	// filter, so BOTH an unadvertised name and an advertised-but-denied capability surface
+	// as ErrNotFound — indistinguishable at this layer. This asserts that ErrNotFound
+	// resolves to no backend name (so a denied capability is never labeled); the admission
+	// deny semantics themselves are covered by the core's admission_test.go.
+	t.Run("no-op when LookupTool returns not-found (unadvertised or admission-denied)", func(t *testing.T) {
 		t.Parallel()
 		nextHandler, handlerCalled := createTestHandler()
 		backendInfo := &audit.BackendInfo{}
@@ -575,7 +580,7 @@ func TestBackendEnrichmentMiddleware_ServePath(t *testing.T) {
 
 		assert.True(t, *handlerCalled)
 		assert.Empty(t, backendInfo.BackendName,
-			"a tool the core does not advertise/admit must not resolve a backend name")
+			"a tool the core does not resolve (unadvertised or denied) must not resolve a backend name")
 	})
 
 	t.Run("ignores the discovery context and resolves via the core", func(t *testing.T) {

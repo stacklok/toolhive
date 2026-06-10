@@ -633,3 +633,90 @@ func TestStartStop(t *testing.T) {
 		t.Fatal("Shutdown channel was not closed")
 	}
 }
+
+// TestBuildMuxOAuthRouting verifies the proxy mux routes OAuth discovery
+// requests and mounted prefix handlers.
+func TestBuildMuxOAuthRouting(t *testing.T) {
+	t.Parallel()
+
+	authHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"resource":"test"}`))
+	})
+	prefixHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"handler":"prefix"}`))
+	})
+
+	tests := []struct {
+		name     string
+		opts     []Option
+		path     string
+		wantCode int
+		wantBody string
+	}{
+		{
+			name:     "well-known returns JSON 404 when auth is not configured",
+			path:     "/.well-known/oauth-protected-resource",
+			wantCode: http.StatusNotFound,
+			wantBody: `{"error":"not_found"}`,
+		},
+		{
+			name:     "auth info handler serves protected-resource metadata",
+			opts:     []Option{WithAuthInfoHandler(authHandler)},
+			path:     "/.well-known/oauth-protected-resource",
+			wantCode: http.StatusOK,
+			wantBody: `{"resource":"test"}`,
+		},
+		{
+			name:     "auth info handler serves protected-resource subpaths",
+			opts:     []Option{WithAuthInfoHandler(authHandler)},
+			path:     "/.well-known/oauth-protected-resource/mcp",
+			wantCode: http.StatusOK,
+			wantBody: `{"resource":"test"}`,
+		},
+		{
+			name:     "prefix handlers are mounted on the mux",
+			opts:     []Option{WithPrefixHandlers(map[string]http.Handler{"/oauth/": prefixHandler})},
+			path:     "/oauth/authorize",
+			wantCode: http.StatusOK,
+			wantBody: `{"handler":"prefix"}`,
+		},
+		{
+			name:     "exact-path prefix handler wins over the well-known subtree",
+			opts:     []Option{WithPrefixHandlers(map[string]http.Handler{"/.well-known/openid-configuration": prefixHandler})},
+			path:     "/.well-known/openid-configuration",
+			wantCode: http.StatusOK,
+			wantBody: `{"handler":"prefix"}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil, tt.opts...)
+
+			rec := httptest.NewRecorder()
+			proxy.buildMux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, tt.path, nil))
+
+			assert.Equal(t, tt.wantCode, rec.Code)
+			assert.JSONEq(t, tt.wantBody, rec.Body.String())
+		})
+	}
+}
+
+// TestBuildMuxKeepsSSEEndpoints verifies the SSE and messages endpoints still
+// route when OAuth discovery and prefix handlers are mounted.
+func TestBuildMuxKeepsSSEEndpoints(t *testing.T) {
+	t.Parallel()
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil,
+		WithAuthInfoHandler(http.NotFoundHandler()),
+		WithPrefixHandlers(map[string]http.Handler{"/oauth/": http.NotFoundHandler()}),
+	)
+	mux := proxy.buildMux()
+
+	for _, endpoint := range []string{ssecommon.HTTPSSEEndpoint, ssecommon.HTTPMessagesEndpoint} {
+		_, pattern := mux.Handler(httptest.NewRequest(http.MethodGet, endpoint, nil))
+		assert.Equal(t, endpoint, pattern)
+	}
+}

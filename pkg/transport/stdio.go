@@ -65,6 +65,15 @@ type StdioTransport struct {
 	sessionStorage    session.Storage
 	sessionTTL        time.Duration
 
+	// authInfoHandler serves RFC 9728 OAuth protected-resource metadata under
+	// /.well-known/oauth-protected-resource on the proxy. Set via SetAuthInfoHandler.
+	authInfoHandler http.Handler
+
+	// prefixHandlers maps path prefixes to handlers mounted on the proxy mux
+	// (e.g. the embedded auth server's discovery and /oauth/ routes).
+	// Set via SetPrefixHandlers.
+	prefixHandlers map[string]http.Handler
+
 	// Mutex for protecting shared state
 	mutex sync.Mutex
 
@@ -149,6 +158,18 @@ func (t *StdioTransport) SetSessionTTL(ttl time.Duration) {
 	t.sessionTTL = ttl
 }
 
+// SetAuthInfoHandler configures the handler for RFC 9728 OAuth protected-resource
+// metadata, served by the underlying proxy under /.well-known/oauth-protected-resource.
+func (t *StdioTransport) SetAuthInfoHandler(handler http.Handler) {
+	t.authInfoHandler = handler
+}
+
+// SetPrefixHandlers configures path-prefix handlers mounted on the underlying
+// proxy's mux (e.g. the embedded auth server's discovery and /oauth/ routes).
+func (t *StdioTransport) SetPrefixHandlers(handlers map[string]http.Handler) {
+	t.prefixHandlers = handlers
+}
+
 // Mode returns the transport mode.
 func (*StdioTransport) Mode() types.TransportType {
 	return types.TransportTypeStdio
@@ -198,33 +219,21 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	// Create and start the correct proxy with middlewares
 	switch t.proxyMode {
 	case types.ProxyModeStreamableHTTP:
-		var streamableOpts []streamable.Option
-		if t.sessionTTL > 0 {
-			streamableOpts = append(streamableOpts, streamable.WithSessionTTL(t.sessionTTL))
-		}
-		if t.sessionStorage != nil {
-			streamableOpts = append(streamableOpts, streamable.WithSessionStorage(t.sessionStorage))
-		}
-		t.httpProxy = streamable.NewHTTPProxy(t.host, t.proxyPort, t.prometheusHandler, t.middlewares, streamableOpts...)
+		t.httpProxy = streamable.NewHTTPProxy(
+			t.host, t.proxyPort, t.prometheusHandler, t.middlewares, t.streamableProxyOptions()...,
+		)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
 		slog.Debug("streamable HTTP proxy started, processing messages")
 	case types.ProxyModeSSE:
-		var sseOpts []httpsse.Option
-		if t.sessionTTL > 0 {
-			sseOpts = append(sseOpts, httpsse.WithSessionTTL(t.sessionTTL))
-		}
-		if t.sessionStorage != nil {
-			sseOpts = append(sseOpts, httpsse.WithSessionStorage(t.sessionStorage))
-		}
 		t.httpProxy = httpsse.NewHTTPSSEProxy(
 			t.host,
 			t.proxyPort,
 			t.trustProxyHeaders,
 			t.prometheusHandler,
 			t.middlewares,
-			sseOpts...,
+			t.sseProxyOptions()...,
 		)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
@@ -254,6 +263,44 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	go t.handleContainerExit(ctx) //nolint:gosec // G118 - background goroutine manages container lifecycle, outlives request
 
 	return nil
+}
+
+// streamableProxyOptions collects the configured options for the streamable
+// HTTP proxy created in Start.
+func (t *StdioTransport) streamableProxyOptions() []streamable.Option {
+	var opts []streamable.Option
+	if t.sessionTTL > 0 {
+		opts = append(opts, streamable.WithSessionTTL(t.sessionTTL))
+	}
+	if t.sessionStorage != nil {
+		opts = append(opts, streamable.WithSessionStorage(t.sessionStorage))
+	}
+	if t.authInfoHandler != nil {
+		opts = append(opts, streamable.WithAuthInfoHandler(t.authInfoHandler))
+	}
+	if len(t.prefixHandlers) > 0 {
+		opts = append(opts, streamable.WithPrefixHandlers(t.prefixHandlers))
+	}
+	return opts
+}
+
+// sseProxyOptions collects the configured options for the SSE proxy created
+// in Start.
+func (t *StdioTransport) sseProxyOptions() []httpsse.Option {
+	var opts []httpsse.Option
+	if t.sessionTTL > 0 {
+		opts = append(opts, httpsse.WithSessionTTL(t.sessionTTL))
+	}
+	if t.sessionStorage != nil {
+		opts = append(opts, httpsse.WithSessionStorage(t.sessionStorage))
+	}
+	if t.authInfoHandler != nil {
+		opts = append(opts, httpsse.WithAuthInfoHandler(t.authInfoHandler))
+	}
+	if len(t.prefixHandlers) > 0 {
+		opts = append(opts, httpsse.WithPrefixHandlers(t.prefixHandlers))
+	}
+	return opts
 }
 
 // Stop gracefully shuts down the transport and the container.

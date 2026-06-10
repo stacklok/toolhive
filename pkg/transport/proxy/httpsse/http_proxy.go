@@ -22,6 +22,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
@@ -70,6 +71,15 @@ type HTTPSSEProxy struct {
 
 	// Optional Prometheus metrics handler
 	prometheusHandler http.Handler
+
+	// authInfoHandler serves RFC 9728 OAuth protected-resource metadata under
+	// /.well-known/oauth-protected-resource. Set via WithAuthInfoHandler.
+	authInfoHandler http.Handler
+
+	// prefixHandlers maps path prefixes to handlers mounted on the proxy mux
+	// (e.g. the embedded auth server's discovery and /oauth/ routes).
+	// Set via WithPrefixHandlers.
+	prefixHandlers map[string]http.Handler
 
 	// Session manager for SSE clients
 	sessionManager *session.Manager
@@ -144,6 +154,23 @@ func WithSessionTTL(ttl time.Duration) Option {
 	}
 }
 
+// WithAuthInfoHandler sets the handler for RFC 9728 OAuth protected-resource
+// metadata, served under /.well-known/oauth-protected-resource (and subpaths).
+func WithAuthInfoHandler(handler http.Handler) Option {
+	return func(p *HTTPSSEProxy) {
+		p.authInfoHandler = handler
+	}
+}
+
+// WithPrefixHandlers mounts the given path-prefix handlers on the proxy mux
+// (e.g. the embedded auth server's discovery and /oauth/ routes). ServeMux
+// longest-match routing resolves precedence against the other endpoints.
+func WithPrefixHandlers(handlers map[string]http.Handler) Option {
+	return func(p *HTTPSSEProxy) {
+		p.prefixHandlers = handlers
+	}
+}
+
 // NewHTTPSSEProxy creates a new HTTP SSE proxy for transports.
 func NewHTTPSSEProxy(
 	host string,
@@ -193,9 +220,10 @@ func applyMiddlewares(handler http.Handler, middlewares ...types.NamedMiddleware
 	return handler
 }
 
-// Start starts the HTTP SSE proxy.
-func (p *HTTPSSEProxy) Start(_ context.Context) error {
-	// Create a new HTTP server
+// buildMux constructs the proxy's HTTP routing table. ServeMux longest-match
+// routing ensures more specific paths take precedence regardless of
+// registration order.
+func (p *HTTPSSEProxy) buildMux() *http.ServeMux {
 	mux := http.NewServeMux()
 
 	// Add handlers for SSE and JSON-RPC with middlewares
@@ -222,6 +250,28 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 		mux.Handle("/metrics", p.prometheusHandler)
 		slog.Debug("prometheus metrics endpoint enabled at /metrics")
 	}
+
+	// Mount prefix handlers (e.g. the embedded auth server's discovery and
+	// /oauth/ routes), mirroring the transparent proxy.
+	for prefix, prefixHandler := range p.prefixHandlers {
+		mux.Handle(prefix, prefixHandler)
+		slog.Debug("mounted prefix handler", "prefix", prefix)
+	}
+
+	// Mount RFC 9728 OAuth Protected Resource discovery endpoint (no middlewares).
+	// Always registered so OAuth discovery clients get a clean JSON 404 when auth
+	// is not configured, matching the transparent proxy's behavior.
+	mux.Handle("/.well-known/", auth.NewWellKnownHandler(p.authInfoHandler))
+	if p.authInfoHandler != nil {
+		slog.Debug("rfc 9728 OAuth discovery endpoint enabled at /.well-known/oauth-protected-resource")
+	}
+
+	return mux
+}
+
+// Start starts the HTTP SSE proxy.
+func (p *HTTPSSEProxy) Start(_ context.Context) error {
+	mux := p.buildMux()
 
 	// Create a listener to get the actual port when using port 0
 	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown

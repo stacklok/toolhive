@@ -21,6 +21,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -47,6 +48,15 @@ type HTTPProxy struct {
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
 	middlewares       []types.NamedMiddleware
+
+	// authInfoHandler serves RFC 9728 OAuth protected-resource metadata under
+	// /.well-known/oauth-protected-resource. Set via WithAuthInfoHandler.
+	authInfoHandler http.Handler
+
+	// prefixHandlers maps path prefixes to handlers mounted on the proxy mux
+	// (e.g. the embedded auth server's discovery and /oauth/ routes).
+	// Set via WithPrefixHandlers.
+	prefixHandlers map[string]http.Handler
 
 	// Message channel for sending JSON-RPC to the container (from HTTP -> runner)
 	messageCh chan jsonrpc2.Message
@@ -105,6 +115,23 @@ func WithSessionTTL(ttl time.Duration) Option {
 	}
 }
 
+// WithAuthInfoHandler sets the handler for RFC 9728 OAuth protected-resource
+// metadata, served under /.well-known/oauth-protected-resource (and subpaths).
+func WithAuthInfoHandler(handler http.Handler) Option {
+	return func(p *HTTPProxy) {
+		p.authInfoHandler = handler
+	}
+}
+
+// WithPrefixHandlers mounts the given path-prefix handlers on the proxy mux
+// (e.g. the embedded auth server's discovery and /oauth/ routes). ServeMux
+// longest-match routing resolves precedence against the other endpoints.
+func WithPrefixHandlers(handlers map[string]http.Handler) Option {
+	return func(p *HTTPProxy) {
+		p.prefixHandlers = handlers
+	}
+}
+
 // NewHTTPProxy creates a new HTTPProxy for streamable HTTP transport.
 func NewHTTPProxy(
 	host string,
@@ -146,8 +173,10 @@ func NewHTTPProxy(
 	return proxy
 }
 
-// Start starts the HTTPProxy server.
-func (p *HTTPProxy) Start(_ context.Context) error {
+// buildMux constructs the proxy's HTTP routing table. ServeMux longest-match
+// routing ensures more specific paths take precedence regardless of
+// registration order.
+func (p *HTTPProxy) buildMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.Handle(StreamableHTTPEndpoint, p.applyMiddlewares(http.HandlerFunc(p.handleStreamableRequest)))
 
@@ -159,6 +188,28 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 	if p.prometheusHandler != nil {
 		mux.Handle("/metrics", p.prometheusHandler)
 	}
+
+	// Mount prefix handlers (e.g. the embedded auth server's discovery and
+	// /oauth/ routes), mirroring the transparent proxy.
+	for prefix, prefixHandler := range p.prefixHandlers {
+		mux.Handle(prefix, prefixHandler)
+		slog.Debug("mounted prefix handler", "prefix", prefix)
+	}
+
+	// Mount RFC 9728 OAuth Protected Resource discovery endpoint (no middlewares).
+	// Always registered so OAuth discovery clients get a clean JSON 404 when auth
+	// is not configured, matching the transparent proxy's behavior.
+	mux.Handle("/.well-known/", auth.NewWellKnownHandler(p.authInfoHandler))
+	if p.authInfoHandler != nil {
+		slog.Debug("rfc 9728 OAuth discovery endpoint enabled at /.well-known/oauth-protected-resource")
+	}
+
+	return mux
+}
+
+// Start starts the HTTPProxy server.
+func (p *HTTPProxy) Start(_ context.Context) error {
+	mux := p.buildMux()
 
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),

@@ -69,6 +69,9 @@ func newToolSessionFactory(
 			mock.EXPECT().GetMetadata().Return(map[string]string{
 				vmcpsession.MetadataKeyIdentityBinding: "unauthenticated",
 			}).AnyTimes()
+			// enforceSessionBinding reads the binding via the single-key accessor.
+			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyIdentityBinding).
+				Return("unauthenticated", true).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			toolsCopy := make([]vmcp.Tool, len(tools))
 			copy(toolsCopy, tools)

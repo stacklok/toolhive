@@ -85,33 +85,52 @@ func (s *Server) resolveBackendName(ctx context.Context, method string, params m
 }
 
 // coreLookupBackendName resolves the backend for an MCP request via the core's
-// Lookup* methods and returns the resolved capability's Tool/Resource/Prompt
-// BackendID (the logical backend identifier). Identity is read from the request
-// context at this transport boundary and passed explicitly to the core. Returns
-// "" when the capability is unknown, unadvertised, or denied to the caller.
+// Lookup* methods, derives the backend from the resolved capability's BackendID,
+// and returns the backend's human-readable name. Identity is read from the request
+// context at this transport boundary and passed explicitly to the core. Returns ""
+// when the capability is unknown, unadvertised, or denied to the caller.
+//
+// The name (not the raw BackendID) is returned for parity with the legacy path,
+// which records BackendTarget.WorkloadName (= backend.Name); recording the same value
+// on both paths keeps audit events correlatable across the Serve and server.New paths.
 func (s *Server) coreLookupBackendName(ctx context.Context, method string, params map[string]any) string {
 	identity, _ := auth.IdentityFromContext(ctx)
 	switch method {
 	case "tools/call":
 		if name, ok := params["name"].(string); ok {
 			if tool, err := s.core.LookupTool(ctx, identity, name); err == nil && tool != nil {
-				return tool.BackendID
+				return s.backendDisplayName(ctx, tool.BackendID)
 			}
 		}
 	case "resources/read":
 		if uri, ok := params["uri"].(string); ok {
 			if res, err := s.core.LookupResource(ctx, identity, uri); err == nil && res != nil {
-				return res.BackendID
+				return s.backendDisplayName(ctx, res.BackendID)
 			}
 		}
 	case "prompts/get":
 		if name, ok := params["name"].(string); ok {
 			if prompt, err := s.core.LookupPrompt(ctx, identity, name); err == nil && prompt != nil {
-				return prompt.BackendID
+				return s.backendDisplayName(ctx, prompt.BackendID)
 			}
 		}
 	}
 	return ""
+}
+
+// backendDisplayName resolves a logical backend ID to its human-readable name via
+// the registry, so the Serve path records the same audit value (backend.Name) the
+// legacy path's WorkloadName carries. It falls back to the ID when the backend is
+// not in the registry (mirroring the aggregator's minimal-target fallback), so audit
+// still records an identifier rather than dropping the backend entirely.
+func (s *Server) backendDisplayName(ctx context.Context, backendID string) string {
+	if backendID == "" {
+		return ""
+	}
+	if backend := s.backendRegistry.Get(ctx, backendID); backend != nil {
+		return backend.Name
+	}
+	return backendID
 }
 
 // lookupBackendName looks up which backend handles a given MCP request.

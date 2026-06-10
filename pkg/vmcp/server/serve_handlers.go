@@ -207,18 +207,25 @@ func (s *Server) coreResourceHandler(
 }
 
 // enforceSessionBinding validates caller against the session's stored identity
-// binding, reproducing the session layer's hijack-prevention check (normally
-// applied by the BindSession decorator on MultiSession.CallTool) for the Serve
-// call path, where requests reach the core directly rather than through that
-// decorator. It fails closed: a missing session record rejects the caller.
+// binding. It is the SOLE identity-binding enforcement point on the Serve call
+// path: requests reach the core directly, bypassing the BindSession decorator that
+// performs this check on MultiSession.CallTool on the legacy path. The SDK's
+// SessionIdManager.Validate only gates session existence/termination, not caller
+// identity, so without this check a different principal could reuse the session ID.
+//
+// It fails closed in two ways: a missing session record (already terminated/expired)
+// rejects the caller, and ValidateCaller rejects an empty/unparsable binding with
+// ErrSessionOwnerUnknown. Unlike the legacy GetAdaptedTools handler, which terminates
+// only on ErrUnauthorizedCaller/ErrNilCaller, terminateOnBindingFailure terminates on
+// any rejection here — intentional fail-closed behavior, not a bug.
 func (s *Server) enforceSessionBinding(sessionID string, caller *auth.Identity) error {
 	sess, ok := s.vmcpSessionMgr.GetMultiSession(sessionID)
 	if !ok {
-		// No live or restorable session record — Validate would normally have
-		// rejected the request already; fail closed rather than allow the call.
 		return sessiontypes.ErrUnauthorizedCaller
 	}
-	return vmcpsession.ValidateCaller(sess.GetMetadata()[vmcpsession.MetadataKeyIdentityBinding], caller)
+	// Single-key read: avoid GetMetadata()'s per-call full-map copy on this hot path.
+	storedBinding, _ := sess.GetMetadataValue(vmcpsession.MetadataKeyIdentityBinding)
+	return vmcpsession.ValidateCaller(storedBinding, caller)
 }
 
 // terminateOnBindingFailure logs the hijack-prevention event and terminates the

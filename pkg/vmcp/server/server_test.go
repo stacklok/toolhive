@@ -832,6 +832,9 @@ func TestHandlerAppliesAuthzAndAnnotationOnlyWhenConfigured(t *testing.T) {
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
 			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 			mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+			// List/Discover stay permissive (AnyTimes) but do not fire on this path: with
+			// WithSessionScopedRouting() and no Mcp-Session-Id, discovery.Middleware returns
+			// before aggregating. Stop fires via srv.Stop in the cleanup below.
 			mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
 			mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 			mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
@@ -865,36 +868,30 @@ func TestHandlerAppliesAuthzAndAnnotationOnlyWhenConfigured(t *testing.T) {
 
 			// Craft a tools/call request. This chain has no auth-parser, so inject the
 			// parsed request and discovered capabilities directly into ctx (as
-			// ParsingMiddleware and the discovery middleware would). With no Mcp-Session-Id
-			// and session-scoped routing, the discovery layer passes through without using
-			// the manager, preserving the injected ctx for annotation-enrichment.
+			// ParsingMiddleware and the discovery middleware would).
+			//
+			// Load-bearing dependency: discovery.Middleware is built with
+			// WithSessionScopedRouting(), so a request with no Mcp-Session-Id passes straight
+			// through without touching the (mock) manager and WITHOUT rewriting ctx —
+			// preserving the injected capabilities for the annotation-enrichment layer. If
+			// that session-scoped pass-through ever changes to overwrite ctx, annotationsSeen
+			// silently goes false; the positive-case assert.True below is the guard.
 			ctx := context.WithValue(t.Context(), mcpparser.MCPRequestContextKey,
 				&mcpparser.ParsedMCPRequest{Method: "tools/call", ResourceID: "my_tool"})
 			ctx = discovery.WithDiscoveredCapabilities(ctx, caps)
-			reqCtx, reqCancel := context.WithCancel(ctx)
-			t.Cleanup(reqCancel)
 
-			req := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(reqCtx)
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx)
+			// Set Content-Type so the nil-authz request reaches a representative chain point
+			// (the inner SDK handler) rather than being rejected during content negotiation;
+			// both cases then exercise the chain identically.
+			req.Header.Set("Content-Type", "application/json")
 			rec := httptest.NewRecorder()
 
-			// The observable authz layer short-circuits; without it the request falls
-			// through to the inner SDK handler, so run in a goroutine and cancel after the
-			// short-circuit window. rec/markers are read only after the goroutine returns.
-			done := make(chan struct{})
-			go func() {
-				defer close(done)
-				handler.ServeHTTP(rec, req)
-			}()
-			select {
-			case <-done:
-			case <-time.After(200 * time.Millisecond):
-				reqCancel()
-				select {
-				case <-done:
-				case <-time.After(2 * time.Second):
-					t.Fatal("handler goroutine did not return after context cancellation")
-				}
-			}
+			// Both paths return synchronously: the configured case short-circuits at the
+			// observable authz layer (sentinel), and the nil case falls through to the inner
+			// SDK handler, which answers this POST without blocking. A direct call suffices —
+			// no goroutine/timeout scaffolding needed.
+			handler.ServeHTTP(rec, req)
 
 			assert.Equal(t, tt.wantAuthzApplied, authzApplied)
 			if tt.wantAuthzApplied {

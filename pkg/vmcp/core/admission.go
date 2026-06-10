@@ -174,8 +174,8 @@ func (a *cedarAdmission) FilterTools(
 // the tool's annotations for when-clause evaluation. It authorizes the tool named in
 // `tool.Name` — there is no optimizer meta-tool special-casing here (see the
 // [Admission] doc): the optimizer's call_tool inner-target authorization is deferred
-// to a dedicated optimizer-admission PR, and the (Authz + optimizer) fail-fast (#5442)
-// keeps that combination from reaching this seam in the meantime.
+// to a dedicated optimizer-admission PR; the (Authz + optimizer) fail-fast that keeps that
+// combination from reaching this seam lands with the core-enforcement switch in #5442.
 func (a *cedarAdmission) AllowToolCall(
 	ctx context.Context, identity *auth.Identity, tool *vmcp.Tool, args map[string]any,
 ) (bool, error) {

@@ -147,22 +147,26 @@ type ServerConfig struct {
 // The authenticated middleware chain is produced by the shared (*Server).Handler that
 // the Serve-built *Server already uses, with the authz and annotation-enrichment layers
 // guarded off via a nil AuthzMiddleware (#5441); authorization moves to the core
-// admission seam (#5438). The remaining transport concerns — the direct VMCP request
-// path (#5442) and the AS runner / status reporter / optimizer / health monitor
-// lifecycle (#5443) — are relocated under Serve by the subsequent Phase 2 tasks.
-// server.New is not yet routed through Serve and keeps its own copy of the session
-// wiring until Phase 3, so this is purely additive and observable behavior is unchanged.
+// admission seam (#5438). The injected core is stored on the *Server, which makes the
+// "/" MCP route serveable: the shared Handler guards the discovery middleware to the
+// legacy path (s.core == nil), and on the Serve path session registration and request
+// handlers call the core directly (#5442). The remaining transport concern — the AS
+// runner / status reporter / optimizer / health monitor lifecycle (#5443) — is
+// relocated under Serve by the next Phase 2 task. server.New is not yet routed through
+// Serve and keeps its own copy of the session wiring until Phase 3, so this is purely
+// additive and observable behavior is unchanged.
 //
 // Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
 // nil required collaborator (SessionManagerConfig or BackendRegistry). The session
 // hooks close over the constructed *Server, so they are registered after it is
 // assembled.
 //
-// Contract: the returned *Server now has a live session manager and backend registry,
-// but a nil discovery manager, router, and backend client at this phase. It must NOT
-// be Start()ed or served on the "/" MCP route until #5442 wires those fields — the
-// carried-forward Handler passes them to discovery.Middleware, which would nil-deref.
-// The unauthenticated routes (registered as direct mux entries) are safe to serve.
+// Contract: the returned *Server has a live session manager, backend registry, and core,
+// but a nil discovery manager, router, and backend client — the request path goes
+// through the core, so those legacy collaborators are unused on the Serve path. The
+// shared Handler skips the discovery middleware when s.core != nil, so serving the "/"
+// MCP route no longer nil-derefs. The AS runner / status reporter / optimizer / health
+// monitor lifecycle is still wired by #5443.
 func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("%w: nil server config", vmcp.ErrInvalidConfig)
@@ -230,6 +234,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 
 	srv := &Server{
 		config:             serveCfg,
+		core:               v,
 		mcpServer:          mcpServer,
 		backendRegistry:    cfg.BackendRegistry,
 		sessionManager:     sessionManager,

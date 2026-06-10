@@ -5,19 +5,26 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 )
 
 // backendEnrichmentMiddleware wraps an HTTP handler to add backend routing information
-// to audit events by parsing MCP requests and looking up backends in the routing table.
-func (*Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
+// to audit events by parsing MCP requests and resolving the target backend.
+//
+// The resolution source depends on the path: on the Serve path (s.core != nil) it
+// asks the core (LookupTool/LookupResource/LookupPrompt) and derives the backend from
+// Tool.BackendID; on the legacy server.New path it reads the routing table the discovery
+// middleware injected into the request context.
+func (s *Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Read and parse the request body to extract MCP method and parameters
 		var requestBody []byte
@@ -43,16 +50,12 @@ func (*Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
 		}
 
 		if len(requestBody) > 0 && json.Unmarshal(requestBody, &mcpRequest) == nil {
-			// Get routing table from discovered capabilities in context
-			caps, ok := discovery.DiscoveredCapabilitiesFromContext(r.Context())
-			if ok && caps != nil && caps.RoutingTable != nil {
-				backendName := lookupBackendName(mcpRequest.Method, mcpRequest.Params, caps.RoutingTable)
+			backendName := s.resolveBackendName(r.Context(), mcpRequest.Method, mcpRequest.Params)
 
-				// Mutate the existing BackendInfo from audit middleware
-				if backendName != "" {
-					if backendInfo, ok := audit.BackendInfoFromContext(r.Context()); ok && backendInfo != nil {
-						backendInfo.BackendName = backendName
-					}
+			// Mutate the existing BackendInfo from audit middleware
+			if backendName != "" {
+				if backendInfo, ok := audit.BackendInfoFromContext(r.Context()); ok && backendInfo != nil {
+					backendInfo.BackendName = backendName
 				}
 			}
 		}
@@ -60,6 +63,55 @@ func (*Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
 		// Call next handler
 		next.ServeHTTP(w, r)
 	})
+}
+
+// resolveBackendName resolves the backend handling an MCP request, dispatching on
+// whether the core is wired (Serve path) or not (legacy path).
+func (s *Server) resolveBackendName(ctx context.Context, method string, params map[string]any) string {
+	// Serve path: the core is the source of truth. Lookup* applies the same admission
+	// filter as List*, so a denied or unadvertised capability resolves to nothing (the
+	// backend name is never derived from a capability the caller cannot reach). The
+	// discovery-into-context seam is not populated on this path.
+	if s.core != nil {
+		return s.coreLookupBackendName(ctx, method, params)
+	}
+
+	// Legacy path: read the routing table the discovery middleware injected into context.
+	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+	if !ok || caps == nil || caps.RoutingTable == nil {
+		return ""
+	}
+	return lookupBackendName(method, params, caps.RoutingTable)
+}
+
+// coreLookupBackendName resolves the backend for an MCP request via the core's
+// Lookup* methods and returns the resolved capability's Tool/Resource/Prompt
+// BackendID (the logical backend identifier). Identity is read from the request
+// context at this transport boundary and passed explicitly to the core. Returns
+// "" when the capability is unknown, unadvertised, or denied to the caller.
+func (s *Server) coreLookupBackendName(ctx context.Context, method string, params map[string]any) string {
+	identity, _ := auth.IdentityFromContext(ctx)
+	switch method {
+	case "tools/call":
+		if name, ok := params["name"].(string); ok {
+			if tool, err := s.core.LookupTool(ctx, identity, name); err == nil && tool != nil {
+				return tool.BackendID
+			}
+		}
+	case "resources/read":
+		if uri, ok := params["uri"].(string); ok {
+			if res, err := s.core.LookupResource(ctx, identity, uri); err == nil && res != nil {
+				return res.BackendID
+			}
+		}
+	case "prompts/get":
+		if name, ok := params["name"].(string); ok {
+			if prompt, err := s.core.LookupPrompt(ctx, identity, name); err == nil && prompt != nil {
+				return prompt.BackendID
+			}
+		}
+	}
+	return ""
 }
 
 // lookupBackendName looks up which backend handles a given MCP request.

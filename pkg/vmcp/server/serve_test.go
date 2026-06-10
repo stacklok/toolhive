@@ -25,9 +25,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 )
 
-// stubVMCP is a no-op core.VMCP for Serve tests. The Serve skeleton never invokes
-// its capability methods; Close records invocation so the shutdown wiring can be
-// asserted.
+// stubVMCP is a no-op core.VMCP for Serve tests that do not drive the request
+// path (construction, config-mapping, and shutdown-wiring tests). Its capability
+// methods return empty; Close records invocation so the shutdown wiring can be
+// asserted. Tests that exercise session registration or request handling use the
+// configurable fakeCore (serve_session_test.go) instead.
 type stubVMCP struct {
 	closed bool
 }

@@ -534,6 +534,68 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 	})
 }
 
+// TestBackendEnrichmentMiddleware_ServePath verifies the Serve path (s.core != nil):
+// backend identity is resolved via the core's Lookup* methods and derived from
+// Tool.BackendID, with no reliance on the discovery-into-context routing table.
+func TestBackendEnrichmentMiddleware_ServePath(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "test-tool", BackendID: "backend-x"}}}
+	srv := &Server{core: fc}
+
+	t.Run("derives backend name from Tool.BackendID via core LookupTool", func(t *testing.T) {
+		t.Parallel()
+		nextHandler, handlerCalled := createTestHandler()
+		backendInfo := &audit.BackendInfo{}
+
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(toolsCallRequest)))
+		req = req.WithContext(audit.WithBackendInfo(req.Context(), backendInfo))
+
+		srv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
+
+		assert.True(t, *handlerCalled)
+		assert.Equal(t, "backend-x", backendInfo.BackendName)
+	})
+
+	t.Run("no-op for unadvertised or denied tool (LookupTool returns not found)", func(t *testing.T) {
+		t.Parallel()
+		nextHandler, handlerCalled := createTestHandler()
+		backendInfo := &audit.BackendInfo{}
+
+		body := `{"method":"tools/call","params":{"name":"unknown-tool"}}`
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(body)))
+		req = req.WithContext(audit.WithBackendInfo(req.Context(), backendInfo))
+
+		srv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
+
+		assert.True(t, *handlerCalled)
+		assert.Empty(t, backendInfo.BackendName,
+			"a tool the core does not advertise/admit must not resolve a backend name")
+	})
+
+	t.Run("ignores the discovery context and resolves via the core", func(t *testing.T) {
+		t.Parallel()
+		nextHandler, handlerCalled := createTestHandler()
+		backendInfo := &audit.BackendInfo{}
+
+		// A legacy routing table is present in context but must be ignored on the Serve
+		// path: resolution comes from the core (BackendID), not the context (WorkloadName).
+		caps := &aggregator.AggregatedCapabilities{RoutingTable: &vmcp.RoutingTable{
+			Tools: map[string]*vmcp.BackendTarget{"test-tool": {WorkloadName: "legacy-backend"}},
+		}}
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(toolsCallRequest)))
+		ctx := discovery.WithDiscoveredCapabilities(req.Context(), caps)
+		ctx = audit.WithBackendInfo(ctx, backendInfo)
+		req = req.WithContext(ctx)
+
+		srv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
+
+		assert.True(t, *handlerCalled)
+		assert.Equal(t, "backend-x", backendInfo.BackendName,
+			"Serve path must resolve via the core (BackendID), not the discovery context (WorkloadName)")
+	})
+}
+
 func TestLookupBackendName(t *testing.T) {
 	t.Parallel()
 

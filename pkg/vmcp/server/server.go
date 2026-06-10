@@ -36,6 +36,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/backendtelemetry"
@@ -195,6 +196,16 @@ type Config struct {
 // Server is the Virtual MCP Server that aggregates multiple backends.
 type Server struct {
 	config *Config
+
+	// core is the domain VMCP, set only on the Serve path (nil on the legacy
+	// server.New path). When non-nil it is the single source of truth for the
+	// advertised capability set and call routing: session registration sources
+	// tools/resources from core.ListTools/ListResources, request handlers
+	// delegate to core.CallTool/ReadResource, and the discovery middleware +
+	// context-based audit enrichment are guarded off (the core applies the
+	// admission filter the legacy authz/discovery path applied). The nil/non-nil
+	// value is the branch selector throughout this file ("s.core == nil" == legacy).
+	core core.VMCP
 
 	// MCP protocol server (mark3labs/mcp-go)
 	mcpServer *server.MCPServer
@@ -631,25 +642,35 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Info("annotation enrichment middleware enabled for MCP endpoints")
 	}
 
-	// Apply discovery middleware (runs after audit/auth middleware)
-	// Discovery middleware performs per-request capability aggregation with user context.
+	// Apply discovery middleware (runs after audit/auth middleware) — legacy path only.
+	// Discovery middleware performs per-request capability aggregation with user context,
+	// injecting the routing table into the request context (the discovery-into-context seam).
 	// vmcpSessionMgr (MultiSessionGetter) is used to retrieve the fully-formed MultiSession
 	// for subsequent requests so the routing table can be injected into context.
 	// The backend registry provides a dynamic backend list (supports DynamicRegistry for K8s).
 	// The health monitor enables filtering based on current health status (respects circuit breaker).
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
+	//
+	// Guarded to the legacy server.New path (s.core == nil). On the Serve path the core is
+	// the single source of truth: session registration aggregates once via core.ListTools and
+	// handlers route through the core (#5442), so discovery is skipped — applying it would
+	// also nil-deref, since a Serve-built server has a nil discoveryMgr. WithSessionScopedRouting's
+	// initialize-skip behavior is preserved here on the legacy path; physical removal of the
+	// middleware and the context seam is deferred to Phase 3 (#5445).
+	if s.core == nil {
+		s.healthMonitorMu.RLock()
+		healthMon := s.healthMonitor
+		s.healthMonitorMu.RUnlock()
 
-	var healthStatusProvider health.StatusProvider
-	if healthMon != nil {
-		healthStatusProvider = healthMon
+		var healthStatusProvider health.StatusProvider
+		if healthMon != nil {
+			healthStatusProvider = healthMon
+		}
+		mcpHandler = discovery.Middleware(
+			s.discoveryMgr, s.backendRegistry, s.vmcpSessionMgr, healthStatusProvider,
+			discovery.WithSessionScopedRouting(),
+		)(mcpHandler)
+		slog.Info("discovery middleware enabled for lazy per-user capability discovery")
 	}
-	mcpHandler = discovery.Middleware(
-		s.discoveryMgr, s.backendRegistry, s.vmcpSessionMgr, healthStatusProvider,
-		discovery.WithSessionScopedRouting(),
-	)(mcpHandler)
-	slog.Info("discovery middleware enabled for lazy per-user capability discovery")
 
 	// Apply audit middleware if configured (runs after auth, before discovery)
 	if s.config.AuditConfig != nil {
@@ -1103,7 +1124,19 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 		return // tools already registered (normal pod-local case)
 	}
 	sessionID := sess.SessionID()
-	adaptedTools, err := s.vmcpSessionMgr.GetAdaptedTools(sessionID)
+
+	// Re-derive the tool set the same way registration did, so cross-pod re-injection
+	// matches the advertised set. On the Serve path (s.core != nil) that means a fresh
+	// core.ListTools for the request identity (the core is stateless, so re-deriving on
+	// pod B is the cache-miss equivalent of the once-per-session registration call); on
+	// the legacy path it reads the factory-built session's tools via GetAdaptedTools.
+	adaptedTools, err := func() ([]server.ServerTool, error) {
+		if s.core != nil {
+			identity, _ := auth.IdentityFromContext(ctx)
+			return s.coreSessionTools(ctx, sessionID, identity)
+		}
+		return s.vmcpSessionMgr.GetAdaptedTools(sessionID)
+	}()
 	if err != nil || len(adaptedTools) == 0 {
 		slog.Debug("lazyInjectSessionTools: no tools available for session", "session_id", sessionID)
 		return
@@ -1177,8 +1210,19 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 		return retErr
 	}
 
-	// Uniform registration — same code path regardless of which decorators are active.
-	// session.Tools() returns the final decorated tool list.
+	// Serve path: the core is the single authoritative aggregation. Source the
+	// advertised tool/resource set from core.ListTools/ListResources (called once
+	// per session here) and install handlers that route through the core; the
+	// session factory's own aggregation is not used. CreateSession above still
+	// establishes the bound session record (identity binding, TTL, Validate). The
+	// returned error becomes retErr (named return), so the defer terminates the
+	// session on failure.
+	if s.core != nil {
+		return s.injectCoreSessionCapabilities(ctx, session)
+	}
+
+	// Legacy server.New path: uniform registration — same code path regardless of
+	// which decorators are active. session.Tools() returns the final decorated tool list.
 	adaptedTools, retErr := s.vmcpSessionMgr.GetAdaptedTools(sessionID)
 	if retErr != nil {
 		slog.Error("failed to get session-scoped tools",

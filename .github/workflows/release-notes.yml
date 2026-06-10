@@ -103,6 +103,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Hand the action a token explicitly so it does not try to mint one via
+          # OIDC (the Claude GitHub App flow), which would require `id-token: write`
+          # and the app installed. We only need the API key for Anthropic auth and
+          # GH_TOKEN for the skill's read-only gh calls.
+          github_token: ${{ github.token }}
           prompt: |
             You are generating GitHub release notes for the ToolHive release ${{ steps.tag.outputs.tag }}.
 

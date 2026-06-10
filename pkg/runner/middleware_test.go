@@ -24,6 +24,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
@@ -622,6 +623,37 @@ func TestPopulateMiddlewareConfigs_AWSStsOrdering(t *testing.T) {
 	require.True(t, ok, "recovery middleware should be present")
 	assert.Less(t, awsStsIdx, recoveryIdx,
 		"awssts must appear before recovery middleware")
+}
+
+// TestPopulateMiddlewareConfigs_BodyLimitIsOutermost verifies that the body
+// size limit middleware is always present and placed first in the config slice.
+// The proxies apply middleware so the first config is the outermost wrapper (it
+// executes first), which is required so oversized request bodies are rejected
+// before the MCP parser or any proxy handler buffers them via io.ReadAll.
+func TestPopulateMiddlewareConfigs_BodyLimitIsOutermost(t *testing.T) {
+	t.Parallel()
+
+	config := &RunConfig{}
+
+	err := PopulateMiddlewareConfigs(config)
+	require.NoError(t, err)
+
+	require.NotEmpty(t, config.MiddlewareConfigs)
+	assert.Equal(t, bodylimit.MiddlewareType, config.MiddlewareConfigs[0].Type,
+		"body limit middleware must be first (outermost) in the chain")
+
+	// It must come before auth, the MCP parser, and recovery.
+	typeIndex := make(map[string]int, len(config.MiddlewareConfigs))
+	for i, mw := range config.MiddlewareConfigs {
+		typeIndex[mw.Type] = i
+	}
+	bodyLimitIdx := typeIndex[bodylimit.MiddlewareType]
+	if authIdx, ok := typeIndex[auth.MiddlewareType]; ok {
+		assert.Less(t, bodyLimitIdx, authIdx, "body limit must precede auth")
+	}
+	if parserIdx, ok := typeIndex[mcp.ParserMiddlewareType]; ok {
+		assert.Less(t, bodyLimitIdx, parserIdx, "body limit must precede the MCP parser")
+	}
 }
 
 // makeCedarAuthzConfig is a helper that creates a valid Cedar authz.Config.

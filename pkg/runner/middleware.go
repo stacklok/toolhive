@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
@@ -35,6 +36,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		upstreamswap.MiddlewareType:           upstreamswap.CreateMiddleware,
 		awssts.MiddlewareType:                 awssts.CreateMiddleware,
 		obo.MiddlewareType:                    obo.CreateMiddleware,
+		bodylimit.MiddlewareType:              bodylimit.CreateMiddleware,
 		mcp.ParserMiddlewareType:              mcp.CreateParserMiddleware,
 		mcp.ToolFilterMiddlewareType:          mcp.CreateToolFilterMiddleware,
 		mcp.ToolCallFilterMiddlewareType:      mcp.CreateToolCallFilterMiddleware,
@@ -57,6 +59,19 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 func PopulateMiddlewareConfigs(config *RunConfig) error {
 	var middlewareConfigs []types.MiddlewareConfig
 	// TODO: Consider extracting other middleware setup into helper functions like addUsageMetricsMiddleware
+
+	// Body size limit middleware (always present, added first to be the outermost
+	// wrapper). Middleware is applied in reverse order, so the first config runs
+	// first and rejects oversized request bodies with 413 before auth, the MCP
+	// parser (pkg/mcp/parser.go), or any proxy handler buffers the body via
+	// io.ReadAll. Defaults to bodylimit.DefaultMaxRequestBodySize.
+	bodyLimitConfig, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
+		MaxBytes: bodylimit.DefaultMaxRequestBodySize,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create body limit middleware config: %w", err)
+	}
+	middlewareConfigs = append(middlewareConfigs, *bodyLimitConfig)
 
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{

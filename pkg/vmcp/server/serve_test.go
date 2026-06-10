@@ -289,6 +289,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		SessionTTL:              time.Second,
 		AuthMiddleware:          func(h http.Handler) http.Handler { return h },
 		AuthInfoHandler:         http.NewServeMux(),
+		PassthroughHeaders:      []string{"x-test"},
 		AuthServer:              &asrunner.EmbeddedAuthServer{},
 		HealthMonitor:           &health.Monitor{},
 		StatusReportingInterval: time.Second,

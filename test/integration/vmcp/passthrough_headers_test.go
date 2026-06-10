@@ -18,12 +18,12 @@ import (
 // TestVMCPServer_PassthroughHeaders verifies the end-to-end header-passthrough
 // chain:
 //
-//	MCP client → vMCP capture middleware → identity.ForwardedHeaders →
+//	MCP client → headerforward.CaptureMiddleware → request-context value →
 //	per-session backend client (mergeForwardedHeaders) → backend HTTP request.
 //
-// The test exercises the real factory.NewIncomingAuthMiddleware path (via
-// helpers.WithPassthroughHeaders) so captureForwardedHeadersMiddleware runs;
-// it does NOT use a stub or reimplementation of the capture logic.
+// The test exercises the real server wiring (via helpers.WithPassthroughHeaders,
+// which sets vmcpserver.Config.PassthroughHeaders) so headerforward.CaptureMiddleware
+// runs; it does NOT use a stub or reimplementation of the capture logic.
 //
 // Two assertions are made:
 //  1. Allowlisted header present: X-Test-Api-Key sent by the client arrives at
@@ -83,11 +83,9 @@ func TestVMCPServer_PassthroughHeaders(t *testing.T) {
 	t.Cleanup(apiBackend.Close)
 
 	// ── vMCP server ───────────────────────────────────────────────────────────
-	// WithPassthroughHeaders causes NewVMCPServer to call
-	// factory.NewIncomingAuthMiddleware(type=anonymous, passthroughHeaders=...)
-	// instead of the bare auth.AnonymousMiddleware, which makes
-	// captureForwardedHeadersMiddleware run and populate
-	// identity.ForwardedHeaders for each request.
+	// WithPassthroughHeaders sets vmcpserver.Config.PassthroughHeaders, which
+	// installs headerforward.CaptureMiddleware so allowlisted headers are captured
+	// into the request context and forwarded to backends for each request.
 	backends := []vmcp.Backend{
 		helpers.NewBackend("api",
 			helpers.WithURL(apiBackend.URL+"/mcp"),

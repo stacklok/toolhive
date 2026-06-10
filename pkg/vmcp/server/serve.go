@@ -66,6 +66,11 @@ type ServerConfig struct {
 	// /.well-known/oauth-protected-resource endpoint.
 	AuthInfoHandler http.Handler
 
+	// PassthroughHeaders is an allowlist of incoming client header names the vMCP
+	// forwards, unchanged, to every backend it calls (see headerforward.CaptureMiddleware).
+	// Empty disables capture.
+	PassthroughHeaders []string
+
 	// AuthServer is the optional embedded authorization server. When non-nil, its
 	// routes are registered on the mux alongside the protected resource metadata.
 	AuthServer *asrunner.EmbeddedAuthServer
@@ -209,6 +214,7 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		SessionTTL:              cmp.Or(cfg.SessionTTL, defaultSessionTTL),
 		AuthMiddleware:          cfg.AuthMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
+		PassthroughHeaders:      cfg.PassthroughHeaders,
 		AuthServer:              cfg.AuthServer,
 		TelemetryProvider:       cfg.TelemetryProvider,
 		AuditConfig:             cfg.AuditConfig,

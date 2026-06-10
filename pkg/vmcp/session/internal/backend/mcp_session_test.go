@@ -11,7 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -33,41 +32,39 @@ func TestMergeForwardedHeaders(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		base     *vmcp.HeaderForwardConfig
-		identity *auth.Identity
-		// wantNil means we expect the returned pointer to equal the base pointer
-		// (i.e., no merge was needed — original passed through unchanged).
+		name string
+		base *vmcp.HeaderForwardConfig
+		// forwarded is the per-request captured header map, as returned by
+		// headerforward.ForwardedHeadersFromContext.
+		forwarded map[string]string
+		// wantSameAsBase means we expect the returned pointer to equal the base
+		// pointer (i.e., no merge was needed — original passed through unchanged).
 		wantSameAsBase bool
 		wantHeaders    map[string]string
 	}{
 		{
-			name:           "nil identity returns base unchanged",
+			name:           "nil forwarded returns base unchanged",
 			base:           &vmcp.HeaderForwardConfig{AddPlaintextHeaders: map[string]string{"X-Static": "static"}},
-			identity:       nil,
+			forwarded:      nil,
 			wantSameAsBase: true,
 		},
 		{
-			name:           "nil identity nil base returns nil",
+			name:           "nil forwarded nil base returns nil",
 			base:           nil,
-			identity:       nil,
+			forwarded:      nil,
 			wantSameAsBase: true,
 		},
 		{
-			// Both nil and empty ForwardedHeaders satisfy len==0 and return base unchanged.
-			name: "empty ForwardedHeaders returns base unchanged",
-			base: &vmcp.HeaderForwardConfig{AddPlaintextHeaders: map[string]string{"X-Static": "static"}},
-			identity: &auth.Identity{
-				ForwardedHeaders: map[string]string{},
-			},
+			// Both nil and empty forwarded maps satisfy len==0 and return base unchanged.
+			name:           "empty forwarded returns base unchanged",
+			base:           &vmcp.HeaderForwardConfig{AddPlaintextHeaders: map[string]string{"X-Static": "static"}},
+			forwarded:      map[string]string{},
 			wantSameAsBase: true,
 		},
 		{
-			name: "forwarded header added to nil base",
-			base: nil,
-			identity: &auth.Identity{
-				ForwardedHeaders: map[string]string{"X-Litellm-Api-Key": "sk-1"},
-			},
+			name:        "forwarded header added to nil base",
+			base:        nil,
+			forwarded:   map[string]string{"X-Litellm-Api-Key": "sk-1"},
 			wantHeaders: map[string]string{"X-Litellm-Api-Key": "sk-1"},
 		},
 		{
@@ -75,9 +72,7 @@ func TestMergeForwardedHeaders(t *testing.T) {
 			base: &vmcp.HeaderForwardConfig{
 				AddPlaintextHeaders: map[string]string{"X-Static": "static-value"},
 			},
-			identity: &auth.Identity{
-				ForwardedHeaders: map[string]string{"X-Litellm-Api-Key": "sk-1"},
-			},
+			forwarded: map[string]string{"X-Litellm-Api-Key": "sk-1"},
 			wantHeaders: map[string]string{
 				"X-Static":          "static-value",
 				"X-Litellm-Api-Key": "sk-1",
@@ -88,12 +83,10 @@ func TestMergeForwardedHeaders(t *testing.T) {
 			// (x-forwarded-for) to verify case-insensitive matching in a single case.
 			name: "restricted headers dropped (canonical and lowercase)",
 			base: nil,
-			identity: &auth.Identity{
-				ForwardedHeaders: map[string]string{
-					"Host":              "evil.example.com",
-					"x-forwarded-for":   "1.2.3.4",
-					"X-Litellm-Api-Key": "sk-2",
-				},
+			forwarded: map[string]string{
+				"Host":              "evil.example.com",
+				"x-forwarded-for":   "1.2.3.4",
+				"X-Litellm-Api-Key": "sk-2",
 			},
 			wantHeaders: map[string]string{"X-Litellm-Api-Key": "sk-2"},
 		},
@@ -102,9 +95,7 @@ func TestMergeForwardedHeaders(t *testing.T) {
 			base: &vmcp.HeaderForwardConfig{
 				AddPlaintextHeaders: map[string]string{"X-Litellm-Api-Key": "static-wins"},
 			},
-			identity: &auth.Identity{
-				ForwardedHeaders: map[string]string{"X-Litellm-Api-Key": "forwarded-loses"},
-			},
+			forwarded:   map[string]string{"X-Litellm-Api-Key": "forwarded-loses"},
 			wantHeaders: map[string]string{"X-Litellm-Api-Key": "static-wins"},
 		},
 		{
@@ -112,9 +103,7 @@ func TestMergeForwardedHeaders(t *testing.T) {
 			base: &vmcp.HeaderForwardConfig{
 				AddHeadersFromSecret: map[string]string{"X-Secret-Header": "my-secret-id"},
 			},
-			identity: &auth.Identity{
-				ForwardedHeaders: map[string]string{"X-Litellm-Api-Key": "sk-4"},
-			},
+			forwarded:   map[string]string{"X-Litellm-Api-Key": "sk-4"},
 			wantHeaders: map[string]string{"X-Litellm-Api-Key": "sk-4"},
 		},
 		{
@@ -122,9 +111,7 @@ func TestMergeForwardedHeaders(t *testing.T) {
 			base: &vmcp.HeaderForwardConfig{
 				AddPlaintextHeaders: map[string]string{"X-Static": "original"},
 			},
-			identity: &auth.Identity{
-				ForwardedHeaders: map[string]string{"X-New": "new-value"},
-			},
+			forwarded: map[string]string{"X-New": "new-value"},
 			// base should not gain X-New
 			wantHeaders: map[string]string{
 				"X-Static": "original",
@@ -143,7 +130,7 @@ func TestMergeForwardedHeaders(t *testing.T) {
 				origBasePlaintext = maps.Clone(tc.base.AddPlaintextHeaders)
 			}
 
-			got := mergeForwardedHeaders(tc.base, tc.identity)
+			got := mergeForwardedHeaders(tc.base, tc.forwarded)
 
 			if tc.wantSameAsBase {
 				assert.Same(t, tc.base, got, "expected the original base pointer to be returned unchanged")

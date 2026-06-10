@@ -63,12 +63,6 @@ type Identity struct {
 	// Redacted in MarshalJSON() to prevent token leakage.
 	// MUST NOT be mutated after the Identity is placed in the request context.
 	UpstreamTokens map[string]string
-
-	// ForwardedHeaders holds incoming request headers explicitly allowlisted for
-	// pass-through to backends. Resolved once at the auth boundary; the session
-	// is identity-bound so these are stable for the session's lifetime. Values
-	// may be sensitive (API keys) and MUST be redacted in MarshalJSON.
-	ForwardedHeaders map[string]string
 }
 
 // String returns a string representation of the Identity with sensitive fields redacted.
@@ -90,16 +84,15 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 
 	// Create a safe representation with lowercase field names and redacted token
 	type SafeIdentity struct {
-		Subject          string            `json:"subject"`
-		Name             string            `json:"name"`
-		Email            string            `json:"email"`
-		Groups           []string          `json:"groups"`
-		Claims           map[string]any    `json:"claims"`
-		Token            string            `json:"token"`
-		TokenType        string            `json:"tokenType"`
-		Metadata         map[string]string `json:"metadata"`
-		UpstreamTokens   map[string]string `json:"upstreamTokens,omitempty"`
-		ForwardedHeaders map[string]string `json:"forwardedHeaders,omitempty"`
+		Subject        string            `json:"subject"`
+		Name           string            `json:"name"`
+		Email          string            `json:"email"`
+		Groups         []string          `json:"groups"`
+		Claims         map[string]any    `json:"claims"`
+		Token          string            `json:"token"`
+		TokenType      string            `json:"tokenType"`
+		Metadata       map[string]string `json:"metadata"`
+		UpstreamTokens map[string]string `json:"upstreamTokens,omitempty"`
 	}
 
 	token := i.Token
@@ -122,32 +115,16 @@ func (i *Identity) MarshalJSON() ([]byte, error) {
 		}
 	}
 
-	// Redact forwarded headers: preserve keys, replace non-empty values.
-	// Guard with len() > 0 (not != nil) so that both nil and empty maps
-	// produce a nil redactedForwardedHeaders, which omitempty then omits.
-	var redactedForwardedHeaders map[string]string
-	if len(i.ForwardedHeaders) > 0 {
-		redactedForwardedHeaders = make(map[string]string, len(i.ForwardedHeaders))
-		for k, v := range i.ForwardedHeaders {
-			if v != "" {
-				redactedForwardedHeaders[k] = "REDACTED"
-			} else {
-				redactedForwardedHeaders[k] = ""
-			}
-		}
-	}
-
 	return json.Marshal(&SafeIdentity{
-		Subject:          i.Subject,
-		Name:             i.Name,
-		Email:            i.Email,
-		Groups:           i.Groups,
-		Claims:           i.Claims,
-		Token:            token,
-		TokenType:        i.TokenType,
-		Metadata:         i.Metadata,
-		UpstreamTokens:   redactedUpstreamTokens,
-		ForwardedHeaders: redactedForwardedHeaders,
+		Subject:        i.Subject,
+		Name:           i.Name,
+		Email:          i.Email,
+		Groups:         i.Groups,
+		Claims:         i.Claims,
+		Token:          token,
+		TokenType:      i.TokenType,
+		Metadata:       i.Metadata,
+		UpstreamTokens: redactedUpstreamTokens,
 	})
 }
 

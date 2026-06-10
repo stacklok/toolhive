@@ -236,14 +236,6 @@ func TestIdentity_GetPrincipalInfo(t *testing.T) {
 	})
 }
 
-// mustUnmarshalJSONMap unmarshals data into a map[string]any, failing the test on error.
-func mustUnmarshalJSONMap(t *testing.T, data []byte) map[string]any {
-	t.Helper()
-	var result map[string]any
-	require.NoError(t, json.Unmarshal(data, &result))
-	return result
-}
-
 func TestIdentity_MarshalJSON(t *testing.T) {
 	t.Parallel()
 
@@ -397,65 +389,6 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 				assert.NotContains(t, string(data), "gho_secret123")
 			},
 		},
-		{
-			name: "redacts_forwarded_header_values",
-			identity: &Identity{
-				PrincipalInfo:    PrincipalInfo{Subject: "user123"},
-				ForwardedHeaders: map[string]string{"X-Litellm-Api-Key": "sk-1"},
-			},
-			wantErr: false,
-			checkFunc: func(t *testing.T, data []byte) {
-				t.Helper()
-				assert.NotContains(t, string(data), "sk-1", "ForwardedHeaders values must be redacted")
-				result := mustUnmarshalJSONMap(t, data)
-				headers, ok := result["forwardedHeaders"].(map[string]any)
-				require.True(t, ok, "forwardedHeaders should be a map")
-				assert.Equal(t, "REDACTED", headers["X-Litellm-Api-Key"])
-			},
-		},
-		{
-			name: "empty_valued_forwarded_header_kept_empty",
-			identity: &Identity{
-				PrincipalInfo:    PrincipalInfo{Subject: "user123"},
-				ForwardedHeaders: map[string]string{"X-Empty": ""},
-			},
-			wantErr: false,
-			checkFunc: func(t *testing.T, data []byte) {
-				t.Helper()
-				result := mustUnmarshalJSONMap(t, data)
-				headers, ok := result["forwardedHeaders"].(map[string]any)
-				require.True(t, ok, "forwardedHeaders should be a map")
-				// An empty value has nothing to redact: the key is preserved
-				// with an empty value rather than the "REDACTED" sentinel.
-				assert.Equal(t, "", headers["X-Empty"])
-			},
-		},
-		{
-			name: "empty_forwarded_headers_omitted",
-			identity: &Identity{
-				PrincipalInfo:    PrincipalInfo{Subject: "user123"},
-				ForwardedHeaders: map[string]string{},
-			},
-			wantErr: false,
-			checkFunc: func(t *testing.T, data []byte) {
-				t.Helper()
-				_, exists := mustUnmarshalJSONMap(t, data)["forwardedHeaders"]
-				assert.False(t, exists, "empty forwardedHeaders should be omitted")
-			},
-		},
-		{
-			name: "nil_forwarded_headers_omitted",
-			identity: &Identity{
-				PrincipalInfo:    PrincipalInfo{Subject: "user123"},
-				ForwardedHeaders: nil,
-			},
-			wantErr: false,
-			checkFunc: func(t *testing.T, data []byte) {
-				t.Helper()
-				_, exists := mustUnmarshalJSONMap(t, data)["forwardedHeaders"]
-				assert.False(t, exists, "nil forwardedHeaders should be omitted")
-			},
-		},
 	}
 
 	for _, tt := range tests {
@@ -474,16 +407,4 @@ func TestIdentity_MarshalJSON(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestIdentity_ForwardedHeaders_Accessible(t *testing.T) {
-	t.Parallel()
-
-	identity := &Identity{
-		PrincipalInfo:    PrincipalInfo{Subject: "user123"},
-		ForwardedHeaders: map[string]string{"X-Litellm-Api-Key": "sk-1"},
-	}
-
-	require.NotNil(t, identity.ForwardedHeaders)
-	assert.Equal(t, "sk-1", identity.ForwardedHeaders["X-Litellm-Api-Key"])
 }

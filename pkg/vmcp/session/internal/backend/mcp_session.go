@@ -320,7 +320,11 @@ func createMCPClient(
 	// refreshed identity placed on the request context by
 	// auth.TokenValidator.Middleware (see issue #5323).
 	base = &identityRoundTripper{base: base, fallbackIdentity: identity}
-	mergedHeaderForward := mergeForwardedHeaders(target.HeaderForward, identity)
+	// Forwarded headers ride the request context (set by headerforward.CaptureMiddleware
+	// at the vMCP server's incoming edge) and are merged into the per-session backend
+	// header-forward config here. The session is created once per request, so the
+	// captured headers are stable for the session's lifetime.
+	mergedHeaderForward := mergeForwardedHeaders(target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx))
 	base, err = headerforward.BuildHeaderForwardTripper(ctx, base, mergedHeaderForward, provider, target.WorkloadID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build header-forward transport for backend %s: %w", target.WorkloadID, err)
@@ -516,12 +520,12 @@ func initAndQueryCapabilities(
 }
 
 // mergeForwardedHeaders returns a HeaderForwardConfig that combines the static
-// backend configuration (base) with any per-session forwarded headers captured
-// from the caller's identity.
+// backend configuration (base) with any per-request forwarded headers captured
+// from the caller's request (see headerforward.CaptureMiddleware).
 //
 // Rules (applied in order):
-//  1. If identity is nil or identity.ForwardedHeaders is empty, base is returned
-//     unchanged (no allocation, same pointer).
+//  1. If forwarded is empty, base is returned unchanged (no allocation, same
+//     pointer).
 //  2. A new HeaderForwardConfig is built from a shallow copy of base so the
 //     shared target.HeaderForward is never mutated.
 //  3. Forwarded header names are canonicalized via http.CanonicalHeaderKey and
@@ -530,8 +534,8 @@ func initAndQueryCapabilities(
 //     guard here too).
 //  4. A forwarded header does NOT overwrite a name already present as an explicit
 //     static value in base.AddPlaintextHeaders (static config wins).
-func mergeForwardedHeaders(base *vmcp.HeaderForwardConfig, identity *auth.Identity) *vmcp.HeaderForwardConfig {
-	if identity == nil || len(identity.ForwardedHeaders) == 0 {
+func mergeForwardedHeaders(base *vmcp.HeaderForwardConfig, forwarded map[string]string) *vmcp.HeaderForwardConfig {
+	if len(forwarded) == 0 {
 		return base
 	}
 
@@ -541,10 +545,10 @@ func mergeForwardedHeaders(base *vmcp.HeaderForwardConfig, identity *auth.Identi
 		staticPlaintext = base.AddPlaintextHeaders
 	}
 
-	merged := make(map[string]string, len(staticPlaintext)+len(identity.ForwardedHeaders))
+	merged := make(map[string]string, len(staticPlaintext)+len(forwarded))
 	maps.Copy(merged, staticPlaintext)
 
-	for name, value := range identity.ForwardedHeaders {
+	for name, value := range forwarded {
 		canonical := http.CanonicalHeaderKey(name)
 		if middleware.RestrictedHeaders[canonical] {
 			slog.Debug("Dropping restricted forwarded header", "header", canonical)

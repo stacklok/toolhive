@@ -46,11 +46,6 @@ import (
 // by name. Authorization for the underlying backend tools is enforced by the
 // middleware's call_tool interception.
 //
-// The passthroughHeaders parameter is an allowlist of incoming client header names
-// (case-insensitive; stored in canonical form) that are captured onto the request
-// identity so they flow into the per-session backend client. Pass nil or an empty
-// slice to disable header capture.
-//
 // Returns:
 //   - authMw: Composed auth + MCP parser middleware (auth runs first, then parser)
 //   - authzMw: Authorization middleware (nil if authz is not configured)
@@ -63,7 +58,6 @@ func NewIncomingAuthMiddleware(
 	passThroughTools map[string]struct{},
 	upstreamReader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
-	passthroughHeaders []string,
 ) (
 	authMw func(http.Handler) http.Handler,
 	authzMw func(http.Handler) http.Handler,
@@ -104,15 +98,12 @@ func NewIncomingAuthMiddleware(
 		slog.Debug("authorization middleware enabled with Cedar policies", "server_name", serverName)
 	}
 
-	// Auth middleware composes auth + header capture + parser.
-	// Order (outermost → innermost): authMiddleware → captureForwardedHeaders → parser.
-	// The capture step runs after auth has placed the identity in context so it can
-	// clone and enrich it; the parser is innermost so downstream middleware (audit,
-	// authz) sees both the identity and the parsed MCP request.
+	// Auth middleware composes auth + MCP parser.
+	// Order (outermost → innermost): authMiddleware → parser. The parser is
+	// innermost so downstream middleware (audit, authz) sees both the identity
+	// and the parsed MCP request.
 	composedAuth := func(next http.Handler) http.Handler {
-		withParser := mcp.ParsingMiddleware(next)
-		captured := captureForwardedHeadersMiddleware(passthroughHeaders)(withParser)
-		return authMiddleware(captured)
+		return authMiddleware(mcp.ParsingMiddleware(next))
 	}
 
 	return composedAuth, authzMiddleware, authInfoHandler, nil

@@ -20,7 +20,6 @@ import (
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -99,14 +98,13 @@ func WithTelemetryProvider(provider *telemetry.Provider) VMCPServerOption {
 	}
 }
 
-// WithPassthroughHeaders installs the real incoming-auth capture middleware
-// (anonymous auth) with the given header allowlist, matching the production
-// wiring in pkg/vmcp/cli/serve.go.
+// WithPassthroughHeaders sets the vMCP server's PassthroughHeaders allowlist,
+// matching the production wiring in pkg/vmcp/cli/serve.go.
 //
-// When this option is used, NewVMCPServer calls factory.NewIncomingAuthMiddleware
-// with type=anonymous and the provided header names instead of the bare
-// auth.AnonymousMiddleware, exercising the genuine capture path so that
-// allowlisted headers are forwarded to backends via identity.ForwardedHeaders.
+// When this option is used, NewVMCPServer passes the header names to
+// vmcpserver.Config.PassthroughHeaders, which installs
+// headerforward.CaptureMiddleware so allowlisted headers are captured into the
+// request context and forwarded to backends.
 func WithPassthroughHeaders(headers ...string) VMCPServerOption {
 	return func(c *vmcpServerConfig) {
 		c.passthroughHeaders = headers
@@ -195,35 +193,20 @@ func NewVMCPServer(
 	// strategy (e.g. prefix format applied by the aggregator).
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, vmcpsession.WithAggregator(agg))
 
-	// Resolve which auth middleware to use.
+	// Create vMCP server with test-specific defaults.
 	//
-	// Default: bare auth.AnonymousMiddleware (fast path, no header capture).
-	// WithPassthroughHeaders: use the real factory.NewIncomingAuthMiddleware so
-	// the capture step runs and populates identity.ForwardedHeaders.
-	authMiddleware := auth.AnonymousMiddleware
-	if len(config.passthroughHeaders) > 0 {
-		authMw, _, _, err := factory.NewIncomingAuthMiddleware(
-			ctx,
-			&vmcpconfig.IncomingAuthConfig{Type: "anonymous"},
-			"test-vmcp",
-			nil, // passThroughTools — not needed for header-passthrough tests
-			nil, // upstreamReader
-			nil, // keyProvider
-			config.passthroughHeaders,
-		)
-		require.NoError(tb, err, "failed to create incoming auth middleware with passthrough headers")
-		authMiddleware = authMw
-	}
-
-	// Create vMCP server with test-specific defaults
+	// PassthroughHeaders wires headerforward.CaptureMiddleware inside the server
+	// (matching pkg/vmcp/cli/serve.go), so allowlisted headers are captured into
+	// the request context and forwarded to backends. Empty disables capture.
 	vmcpServer, err := vmcpserver.New(ctx, &vmcpserver.Config{
-		Name:              "test-vmcp",
-		Version:           "1.0.0",
-		Host:              "127.0.0.1",
-		Port:              getFreePort(tb), // Get a random available port for parallel test execution
-		AuthMiddleware:    authMiddleware,
-		TelemetryProvider: config.telemetryProvider,
-		SessionFactory:    sessionFactory,
+		Name:               "test-vmcp",
+		Version:            "1.0.0",
+		Host:               "127.0.0.1",
+		Port:               getFreePort(tb), // Get a random available port for parallel test execution
+		AuthMiddleware:     auth.AnonymousMiddleware,
+		PassthroughHeaders: config.passthroughHeaders,
+		TelemetryProvider:  config.telemetryProvider,
+		SessionFactory:     sessionFactory,
 	}, rtr, backendClient, discoveryMgr, backendRegistry, config.workflowDefs)
 	require.NoError(tb, err, "failed to create vMCP server")
 

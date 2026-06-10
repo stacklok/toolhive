@@ -37,6 +37,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/backendtelemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -135,6 +136,13 @@ type Config struct {
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
 	AuthInfoHandler http.Handler
+
+	// PassthroughHeaders is an allowlist of incoming client header names that the
+	// vMCP forwards, unchanged, to every backend it calls. They are captured
+	// per-request at the incoming edge (headerforward.CaptureMiddleware) and merged
+	// into the per-session backend client's header-forward config. Empty disables
+	// capture (no middleware is installed).
+	PassthroughHeaders []string
 
 	// AuthServer is the optional embedded authorization server.
 	// When non-nil, the routes returned by Routes() are registered on the mux
@@ -664,6 +672,16 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	if s.config.AuthMiddleware != nil {
 		mcpHandler = s.config.AuthMiddleware(mcpHandler)
 		slog.Info("authentication middleware enabled for MCP endpoints")
+	}
+
+	// Apply forwarded-header capture: copy allowlisted incoming headers into the
+	// request context so the per-session backend client forwards them to backends
+	// (see pkg/vmcp/headerforward). Identity-independent plumbing, so its position
+	// relative to auth is immaterial; it must only run before session creation,
+	// which every handler inner to it satisfies. No-op when the allowlist is empty.
+	if len(s.config.PassthroughHeaders) > 0 {
+		mcpHandler = headerforward.CaptureMiddleware(s.config.PassthroughHeaders)(mcpHandler)
+		slog.Info("forwarded-header capture enabled for MCP endpoints", "headers", s.config.PassthroughHeaders)
 	}
 
 	// Apply Accept header validation (rejects GET requests without Accept: text/event-stream)

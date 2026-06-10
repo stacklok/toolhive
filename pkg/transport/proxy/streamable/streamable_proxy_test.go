@@ -35,7 +35,7 @@ func TestNewHTTPProxy(t *testing.T) {
 //nolint:paralleltest // Test modifies shared proxy state
 func TestProxyChannelCommunication(t *testing.T) {
 	proxy := NewHTTPProxy("localhost", 8080, nil, nil)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Test that we can send a message to the destination
 	request, err := jsonrpc2.NewCall(jsonrpc2.StringID("test"), "test.method", nil)
@@ -115,7 +115,7 @@ func TestSendMessageToDestination_ChannelFull(t *testing.T) {
 //nolint:paralleltest // Test starts/stops HTTP server
 func TestStartStop(t *testing.T) {
 	proxy := NewHTTPProxy("localhost", 0, nil, nil) // Use port 0 for auto-assignment
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Start the proxy
 	err := proxy.Start(ctx)
@@ -228,7 +228,7 @@ func TestNewHTTPProxy_AuthInfoHandlerMounted(t *testing.T) {
 
 	port := getFreePort(t)
 	proxy := NewHTTPProxy("localhost", port, nil, nil, WithAuthInfoHandler(sentinel))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	require.NoError(t, proxy.Start(ctx))
 	t.Cleanup(func() {
@@ -257,7 +257,7 @@ func TestNewHTTPProxy_AuthInfoHandlerMounted(t *testing.T) {
 func TestNewHTTPProxy_AuthInfoHandlerNil(t *testing.T) {
 	port := getFreePort(t)
 	proxy := NewHTTPProxy("localhost", port, nil, nil) // no WithAuthInfoHandler
-	ctx := context.Background()
+	ctx := t.Context()
 
 	require.NoError(t, proxy.Start(ctx))
 	t.Cleanup(func() {
@@ -293,7 +293,7 @@ func TestNewHTTPProxy_PrefixHandlerMounted(t *testing.T) {
 	proxy := NewHTTPProxy("localhost", port, nil, nil,
 		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
 	)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	require.NoError(t, proxy.Start(ctx))
 	t.Cleanup(func() {
@@ -327,7 +327,7 @@ func TestNewHTTPProxy_PrefixHandlerDoesNotShadowMCP(t *testing.T) {
 	proxy := NewHTTPProxy("localhost", port, nil, nil,
 		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
 	)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	require.NoError(t, proxy.Start(ctx))
 	t.Cleanup(func() {
@@ -348,4 +348,52 @@ func TestNewHTTPProxy_PrefixHandlerDoesNotShadowMCP(t *testing.T) {
 	defer resp.Body.Close()
 
 	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+}
+
+// TestNewHTTPProxy_ExactWellKnownBeatsSubtree verifies that Go's http.ServeMux
+// specificity rule causes an exact /.well-known/openid-configuration prefix handler
+// to win over the /.well-known/ subtree authInfoHandler (PRM endpoint), ensuring
+// the two registrations coexist without collision.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPProxy_ExactWellKnownBeatsSubtree(t *testing.T) {
+	oidcHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot) // sentinel: exact match wins
+	})
+	prmHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil,
+		WithPrefixHandlers(map[string]http.Handler{"/.well-known/openid-configuration": oidcHandler}),
+		WithAuthInfoHandler(prmHandler),
+	)
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	// Poll until server is ready.
+	oidcURL := fmt.Sprintf("http://localhost:%d/.well-known/openid-configuration", port)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(oidcURL) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusTeapot, resp.StatusCode, "exact /.well-known/openid-configuration must win")
+
+	prmURL := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	resp2, err := http.Get(prmURL) //nolint:gosec // test-only URL construction
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp2.StatusCode, "/.well-known/ subtree must still reach authInfoHandler")
 }

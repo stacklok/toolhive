@@ -27,8 +27,7 @@ func TestIntegrationSSEProxyStressTest(t *testing.T) {
 
 	// Create proxy with a random port
 	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	// Start the proxy
 	err := proxy.Start(ctx)
@@ -174,8 +173,7 @@ func TestIntegrationConcurrentClientsWithLongRunning(t *testing.T) {
 
 	// Create and start proxy
 	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	err := proxy.Start(ctx)
 	require.NoError(t, err)
@@ -320,7 +318,7 @@ func TestIntegrationConcurrentClientsWithLongRunning(t *testing.T) {
 func TestIntegrationLiveSessionsCleanup(t *testing.T) {
 	t.Parallel()
 	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	err := proxy.Start(ctx)
 	require.NoError(t, err)
@@ -396,7 +394,7 @@ func TestHTTPSSEProxy_StartMountsAuthDiscoveryEndpoint(t *testing.T) {
 	})
 
 	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil, WithAuthInfoHandler(sentinel))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	require.NoError(t, proxy.Start(ctx))
 	t.Cleanup(func() {

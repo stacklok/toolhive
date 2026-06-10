@@ -35,7 +35,7 @@ func TestHTTPRequestIgnoresNotifications(t *testing.T) {
 	// Get an available port dynamically
 	port := getFreePort(t)
 	proxy := NewHTTPProxy("localhost", port, nil, nil)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Start the proxy server
 	err := proxy.Start(ctx)
@@ -123,7 +123,7 @@ func TestHTTPProxy_StartMountsAuthDiscoveryEndpoint(t *testing.T) {
 
 	port := getFreePort(t)
 	proxy := NewHTTPProxy("localhost", port, nil, nil, WithAuthInfoHandler(sentinel))
-	ctx := context.Background()
+	ctx := t.Context()
 
 	require.NoError(t, proxy.Start(ctx))
 	t.Cleanup(func() {

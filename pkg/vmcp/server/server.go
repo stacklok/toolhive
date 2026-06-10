@@ -586,6 +586,13 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Execution order: recovery → header-val → auth+parser → audit →
 	//   discovery → annotation-enrichment → authz → backend-enrichment →
 	//   MCP-parsing → telemetry → handler
+	//
+	// The authz and annotation-enrichment layers are both guarded by
+	// s.config.AuthzMiddleware != nil: applied on the server.New path (authz on) and
+	// omitted on the Serve path, which leaves AuthzMiddleware nil so authorization
+	// moves to the core admission seam (#5438). Both blocks remain in this shared
+	// Handler — physical removal is deferred to Phase 3 (#5445), after server.New is
+	// routed through Serve and the legacy authz path is gone.
 
 	var mcpHandler http.Handler = streamableServer
 

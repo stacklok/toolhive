@@ -290,6 +290,11 @@ type MCPServerSpec struct {
 	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.
 	// Per-server overrides (audience, scopes) are specified here; shared provider config
 	// lives in the MCPOIDCConfig resource.
+	//
+	// SECURITY: if this field is omitted and no other authentication source is configured,
+	// the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and
+	// forwards it to the MCP server under a synthetic local-user identity, with no token or
+	// credential check. Set this field to enforce identity-based access control per request.
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 

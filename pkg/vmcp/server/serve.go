@@ -144,12 +144,14 @@ type ServerConfig struct {
 // .well-known endpoints, and any embedded auth-server routes) when Serve's *Server
 // is served.
 //
-// The remaining transport concerns — the authenticated middleware chain (#5441), the
-// direct VMCP request path (#5442), and the AS runner / status reporter / optimizer /
-// health monitor lifecycle (#5443) — are relocated under Serve by the subsequent
-// Phase 2 tasks. server.New is not yet routed through Serve and keeps its own copy of
-// the session wiring until Phase 3, so this is purely additive and observable behavior
-// is unchanged.
+// The authenticated middleware chain is produced by the shared (*Server).Handler that
+// the Serve-built *Server already uses, with the authz and annotation-enrichment layers
+// guarded off via a nil AuthzMiddleware (#5441); authorization moves to the core
+// admission seam (#5438). The remaining transport concerns — the direct VMCP request
+// path (#5442) and the AS runner / status reporter / optimizer / health monitor
+// lifecycle (#5443) — are relocated under Serve by the subsequent Phase 2 tasks.
+// server.New is not yet routed through Serve and keeps its own copy of the session
+// wiring until Phase 3, so this is purely additive and observable behavior is unchanged.
 //
 // Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
 // nil required collaborator (SessionManagerConfig or BackendRegistry). The session
@@ -158,10 +160,9 @@ type ServerConfig struct {
 //
 // Contract: the returned *Server now has a live session manager and backend registry,
 // but a nil discovery manager, router, and backend client at this phase. It must NOT
-// be Start()ed or served on the "/" MCP route until #5441/#5442 wire those fields —
-// the carried-forward Handler passes them to discovery.Middleware, which would
-// nil-deref. The unauthenticated routes (registered as direct mux entries) are safe
-// to serve.
+// be Start()ed or served on the "/" MCP route until #5442 wires those fields — the
+// carried-forward Handler passes them to discovery.Middleware, which would nil-deref.
+// The unauthenticated routes (registered as direct mux entries) are safe to serve.
 func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("%w: nil server config", vmcp.ErrInvalidConfig)
@@ -277,8 +278,10 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 //
 // Several Config fields are deliberately NOT mapped at this phase (see
 // TestBuildServeConfigMapsSharedFields, which guards this list against drift):
-//   - AuthzMiddleware: the authenticated/authz middleware chain is relocated under
-//     Serve by #5441, after which authorization moves to the core admission seam.
+//   - AuthzMiddleware: intentionally left nil on the Serve path. The shared
+//     (*Server).Handler omits both the authz and annotation-enrichment blocks when
+//     AuthzMiddleware is nil; authorization moves to the core admission seam (#5438).
+//     The inert blocks stay in the shared Handler until Phase 3 (#5445) removes them.
 //   - HealthMonitorConfig: Serve receives the already-built *health.Monitor via
 //     ServerConfig.HealthMonitor (A2) and assigns it to the Server directly, so it
 //     never needs the monitor's construction config.

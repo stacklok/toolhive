@@ -307,6 +307,18 @@ func (mr *MockTransportMockRecorder) SetOnHealthCheckFailed(callback any) *gomoc
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetOnHealthCheckFailed", reflect.TypeOf((*MockTransport)(nil).SetOnHealthCheckFailed), callback)
 }
 
+// SetOnHealthCheckRecovered mocks base method.
+func (m *MockTransport) SetOnHealthCheckRecovered(callback types.HealthCheckRecoveredCallback) {
+	m.ctrl.T.Helper()
+	m.ctrl.Call(m, "SetOnHealthCheckRecovered", callback)
+}
+
+// SetOnHealthCheckRecovered indicates an expected call of SetOnHealthCheckRecovered.
+func (mr *MockTransportMockRecorder) SetOnHealthCheckRecovered(callback any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "SetOnHealthCheckRecovered", reflect.TypeOf((*MockTransport)(nil).SetOnHealthCheckRecovered), callback)
+}
+
 // SetOnUnauthorizedResponse mocks base method.
 func (m *MockTransport) SetOnUnauthorizedResponse(callback types.UnauthorizedResponseCallback) {
 	m.ctrl.T.Helper()

@@ -66,7 +66,6 @@ var _ = Describe("Health Check Zombie Process Prevention", Label("stability", "h
 					"--name", serverName,
 					mockServerURL+"/mcp")
 				thvCmd.Env = append(os.Environ(),
-					"TOOLHIVE_REMOTE_HEALTHCHECKS=true",
 					"TOOLHIVE_HEALTH_CHECK_INTERVAL=1s",
 				)
 				thvCmd.Stdout = GinkgoWriter

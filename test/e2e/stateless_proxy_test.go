@@ -65,9 +65,6 @@ var _ = Describe("Stateless Proxy Mode", Label("proxy", "stateless", "streamable
 					"--name", serverName,
 					"--stateless",
 					mockServerURL+"/mcp")
-				thvCmd.Env = append(os.Environ(),
-					"TOOLHIVE_REMOTE_HEALTHCHECKS=true",
-				)
 				thvCmd.Stdout = GinkgoWriter
 				thvCmd.Stderr = GinkgoWriter
 

@@ -57,10 +57,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
-          # For workflow_run, check out the exact commit the tag workflow ran
-          # against so the VERSION file matches the release being announced. For
-          # workflow_dispatch this is empty and the default branch is used.
-          ref: ${{ github.event.workflow_run.head_sha }}
+          # Always check out the default branch, never the workflow_run head ref.
+          # Checking out an event-supplied ref in a secrets-bearing workflow_run
+          # is the "untrusted checkout" anti-pattern (CodeQL actions/untrusted-
+          # checkout). It is safe here too: "Create Release Tag" only runs on a
+          # VERSION push to main, so main HEAD already is the release commit and
+          # its VERSION matches the tag being announced.
+          #
           # Full history + tags are required: the skill lists/sorts tags and
           # compares ranges between the current and previous release.
           fetch-depth: 0
@@ -71,8 +74,8 @@ jobs:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
           # Manual runs pass the tag explicitly; workflow_run derives it from the
-          # VERSION file at the checked-out commit (same source the tag workflow
-          # uses to create the tag), prefixed with "v".
+          # VERSION file on the default branch (the release commit that triggered
+          # the tag workflow), prefixed with "v".
           if [ -n "$INPUT_TAG" ]; then
             TAG="$INPUT_TAG"
           else

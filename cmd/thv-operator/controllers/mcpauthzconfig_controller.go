@@ -173,9 +173,11 @@ func setValidTrueCondition(c *mcpv1beta1.MCPAuthzConfig) {
 // validation on the type (Validate()), then reconstructs the full authorizer config
 // and delegates backend-specific validation to the factory's ValidateConfig method.
 //
-// Backend validation lives here rather than as a Validate() method on the type because
-// it requires the authorizer factory registry — an external dependency that the API
-// types package must not import.
+// The type's Validate() handles structural checks and verifies that spec.type is
+// a registered backend. Backend-specific schema validation lives here because
+// the factory's ValidateConfig consumes the full reconstructed JSON envelope
+// (version + type + nested config), which it is not the type's responsibility
+// to build.
 func (*MCPAuthzConfigReconciler) validateAuthzConfig(authzConfig *mcpv1beta1.MCPAuthzConfig) error {
 	if err := authzConfig.Validate(); err != nil {
 		return err

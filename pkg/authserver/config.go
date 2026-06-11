@@ -129,10 +129,6 @@ func (c *RunConfig) validateBaselineClientScopes() error {
 }
 
 // CIMDRunConfig controls client_id metadata document (CIMD) support.
-//
-// TODO(cimd): expose these fields in the MCPExternalAuthConfig CRD so Kubernetes
-// operators can configure CIMD through the normal CRD workflow instead of
-// writing RunConfig YAML directly.
 type CIMDRunConfig struct {
 	// Enabled activates CIMD client lookup when true.
 	Enabled bool `json:"enabled" yaml:"enabled"`
@@ -161,8 +157,8 @@ func (c *CIMDRunConfig) Validate() error {
 		if err != nil {
 			return fmt.Errorf("cache_fallback_ttl: %w", err)
 		}
-		if d < 0 {
-			return fmt.Errorf("cache_fallback_ttl must be non-negative when CIMD is enabled, got %s", c.CacheFallbackTTL)
+		if d <= 0 {
+			return fmt.Errorf("cache_fallback_ttl must be positive when CIMD is enabled, got %s", c.CacheFallbackTTL)
 		}
 	}
 	return nil

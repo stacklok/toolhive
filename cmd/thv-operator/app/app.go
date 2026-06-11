@@ -377,7 +377,8 @@ func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepull
 // imagePullSecretsDefaults are merged with mcpRegistry.Spec.ImagePullSecrets
 // when the registry-api workload is constructed.
 func setupRegistryController(mgr ctrl.Manager, imagePullSecretsDefaults imagepullsecrets.Defaults) error {
-	rec := controllers.NewMCPRegistryReconciler(mgr.GetClient(), mgr.GetScheme(), imagePullSecretsDefaults)
+	rec := controllers.NewMCPRegistryReconciler(
+		mgr.GetClient(), mgr.GetScheme(), mgr.GetEventRecorder("mcpregistry-controller"), imagePullSecretsDefaults)
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPRegistry: %w", err)
 	}

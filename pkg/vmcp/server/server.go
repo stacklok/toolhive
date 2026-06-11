@@ -38,6 +38,7 @@ import (
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/backendtelemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
@@ -75,6 +76,13 @@ const (
 	// defaultSessionTTL is the default session time-to-live duration.
 	// Sessions that are inactive for this duration will be automatically cleaned up.
 	defaultSessionTTL = 30 * time.Minute
+
+	// Transport defaults shared by New and Serve (buildServeConfig) so the two
+	// entry points cannot drift while New is not yet routed through Serve.
+	defaultServerName    = "toolhive-vmcp"
+	defaultServerVersion = "0.1.0"
+	defaultHost          = "127.0.0.1"
+	defaultEndpointPath  = "/mcp"
 )
 
 //go:generate mockgen -destination=mocks/mock_watcher.go -package=mocks -source=server.go Watcher
@@ -309,18 +317,18 @@ func New(
 ) (*Server, error) {
 	// Apply defaults
 	if cfg.Host == "" {
-		cfg.Host = "127.0.0.1"
+		cfg.Host = defaultHost
 	}
 	// Note: Port 0 means "let OS assign random port" - intentionally no default applied here.
 	// CLI provides default via flag (4483), so Port is only 0 in tests for dynamic port assignment.
 	if cfg.EndpointPath == "" {
-		cfg.EndpointPath = "/mcp"
+		cfg.EndpointPath = defaultEndpointPath
 	}
 	if cfg.Name == "" {
-		cfg.Name = "toolhive-vmcp"
+		cfg.Name = defaultServerName
 	}
 	if cfg.Version == "" {
-		cfg.Version = "0.1.0"
+		cfg.Version = defaultServerVersion
 	}
 	if cfg.SessionTTL == 0 {
 		cfg.SessionTTL = defaultSessionTTL
@@ -354,7 +362,7 @@ func New(
 		var err error
 		// Get initial backends list from registry for telemetry setup
 		initialBackends := backendRegistry.List(ctx)
-		backendClient, err = monitorBackends(
+		backendClient, err = backendtelemetry.MonitorBackends(
 			ctx,
 			cfg.TelemetryProvider.MeterProvider(),
 			cfg.TelemetryProvider.TracerProvider(),
@@ -577,6 +585,13 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Execution order: recovery → header-val → auth+parser → audit →
 	//   discovery → annotation-enrichment → authz → backend-enrichment →
 	//   MCP-parsing → telemetry → handler
+	//
+	// The authz and annotation-enrichment layers are both guarded by
+	// s.config.AuthzMiddleware != nil: applied on the server.New path (authz on) and
+	// omitted on the Serve path, which leaves AuthzMiddleware nil so authorization
+	// moves to the core admission seam (#5438). Both blocks remain in this shared
+	// Handler — physical removal is deferred to Phase 3 (#5445), after server.New is
+	// routed through Serve and the legacy authz path is gone.
 
 	var mcpHandler http.Handler = streamableServer
 

@@ -60,8 +60,19 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 // buildStatusResponse builds the StatusResponse from server state.
 // Uses the provided context for request cancellation and tracing propagation.
 func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
-	// Get current backends from registry (supports dynamic backend changes)
-	backends := s.backendRegistry.List(ctx)
+	// Get current backends from registry (supports dynamic backend changes).
+	// The registry is owned by the core and may not be wired into the transport
+	// yet (the Serve skeleton, before later Phase 2 tasks relocate it); a nil
+	// registry yields an empty backend view rather than a panic. This is expected
+	// only on a Serve-built skeleton — on the server.New path the registry is a
+	// required arg, so a nil there is a wiring bug; log at Debug so it is
+	// observable when investigating without spamming routine /status polls.
+	var backends []vmcp.Backend
+	if s.backendRegistry != nil {
+		backends = s.backendRegistry.List(ctx)
+	} else {
+		slog.Debug("status: backend registry not wired; reporting empty backend view")
+	}
 	backendStatuses := make([]BackendStatus, 0, len(backends))
 
 	// Get live health states from the health monitor (if enabled) so that

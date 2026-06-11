@@ -59,10 +59,17 @@ type ConfigUpdater interface {
 // It applies inlineOpts in-memory before login so a failed login leaves no
 // persisted state. Tool config files are patched only after login succeeds;
 // on any persistence failure the patches are rolled back.
+//
+// When lazy is true, the interactive OIDC login (login) is skipped entirely:
+// tool detection, config-file patching, and config persistence still run, and a
+// message is printed telling the user that login will occur on first gateway
+// access. lazy is intended for unattended provisioning (e.g. an MDM profile);
+// it is opt-in and does not change behaviour for interactive users.
 func Setup(
 	ctx context.Context, out, errOut io.Writer,
 	gm GatewayManager, provider ConfigUpdater, login LoginFunc,
 	inlineOpts SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
+	lazy bool,
 ) error {
 	llmCfg := provider.GetLLMConfig()
 
@@ -85,8 +92,9 @@ func Setup(
 	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
 
 	// Detect tools before login so we skip the interactive browser flow when
-	// there is nothing to configure. Login still runs before any files are
-	// patched, preserving the guarantee that a failed login leaves no state.
+	// there is nothing to configure. In non-lazy mode login still runs before any
+	// files are patched, preserving the guarantee that a failed login leaves no
+	// state.
 	detected, err := filterDetectedClients(gm.DetectedLLMGatewayClients(), targetClient)
 	if err != nil {
 		return err
@@ -96,11 +104,21 @@ func Setup(
 		return nil
 	}
 
-	_, _ = fmt.Fprintln(out, "Ensuring you are logged in to the LLM gateway…")
-	if err := login(ctx, &llmCfg); err != nil {
-		return fmt.Errorf("OIDC login failed: %s", SanitizeTokenError(err))
+	// In lazy mode the interactive login is deferred until a configured tool
+	// first accesses the gateway (via "thv llm token" or the proxy). Everything
+	// below — tool detection, file patching, config persistence — is
+	// non-interactive and still runs, so the on-disk result is identical to a
+	// normal setup except that no OIDC token is obtained yet.
+	if lazy {
+		_, _ = fmt.Fprintln(out, "Lazy mode: skipping OIDC login. You'll be signed in on the first")
+		_, _ = fmt.Fprintln(out, "request a configured tool makes to the LLM gateway.")
+	} else {
+		_, _ = fmt.Fprintln(out, "Ensuring you are logged in to the LLM gateway…")
+		if err := login(ctx, &llmCfg); err != nil {
+			return fmt.Errorf("OIDC login failed: %s", SanitizeTokenError(err))
+		}
+		_, _ = fmt.Fprintln(out, "Login successful.")
 	}
-	_, _ = fmt.Fprintln(out, "Login successful.")
 
 	// Resolve the effective path prefix for ANTHROPIC_BASE_URL.
 	// If the caller supplied --anthropic-path-prefix, use it directly.

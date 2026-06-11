@@ -1,7 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package server
+// Package backendtelemetry decorates a [vmcp.BackendClient] so each backend MCP
+// call records OpenTelemetry traces and metrics.
+//
+// It lives in pkg/vmcp/internal so that both the transport server (server.New)
+// and the core constructor (core.New) can share a single decorator without an
+// import cycle: server and core both depend on this leaf package, and it depends
+// on neither.
+package backendtelemetry
 
 import (
 	"context"
@@ -23,9 +30,9 @@ const (
 	instrumentationName = "github.com/stacklok/toolhive/pkg/vmcp"
 )
 
-// monitorBackends decorates the backend client so it records telemetry on each method call.
+// MonitorBackends decorates the backend client so it records telemetry on each method call.
 // It also emits a gauge for the number of backends discovered once, since the number of backends is static.
-func monitorBackends(
+func MonitorBackends(
 	ctx context.Context,
 	meterProvider metric.MeterProvider,
 	tracerProvider trace.TracerProvider,

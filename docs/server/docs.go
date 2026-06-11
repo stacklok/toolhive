@@ -1966,6 +1966,130 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult": {
+                "description": "Result is the upgrade-check outcome for the workload. It carries only\nmetadata (status, image references, drift) and never secret values.",
+                "properties": {
+                    "candidate_image": {
+                        "description": "CandidateImage is the image reference the registry currently reports.",
+                        "type": "string"
+                    },
+                    "config_drift": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.ConfigDrift"
+                    },
+                    "current_image": {
+                        "description": "CurrentImage is the image reference the workload is currently running.",
+                        "type": "string"
+                    },
+                    "env_var_drift": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarDrift"
+                    },
+                    "reason": {
+                        "description": "Reason provides additional context, primarily for StatusUnknown.",
+                        "type": "string"
+                    },
+                    "registry_server": {
+                        "description": "RegistryServer is the registry entry name the workload was sourced from.\nEmpty when the workload is not registry-sourced.",
+                        "type": "string"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.UpgradeStatus"
+                    },
+                    "workload_name": {
+                        "description": "WorkloadName is the name of the workload that was checked.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.ConfigDrift": {
+                "description": "ConfigDrift describes posture differences (transport, permission profile)\nbetween the workload and the candidate registry entry.",
+                "properties": {
+                    "permission_profile": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.StringChange"
+                    },
+                    "transport": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.StringChange"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarDrift": {
+                "description": "EnvVarDrift describes environment variables the candidate registry entry\ndeclares that differ from the workload's current configuration.",
+                "properties": {
+                    "added": {
+                        "description": "Added lists environment variables the candidate declares that the\nworkload does not currently supply (via plain env vars or secrets).",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarInfo"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "removed": {
+                        "description": "Removed lists environment variables the workload supplies that the\ncandidate no longer declares. Populated on a best-effort basis; may be\nempty even when removals exist (forward-compatible field).",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarInfo"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarInfo": {
+                "properties": {
+                    "default": {
+                        "description": "Default is the candidate's default value. It is cleared (left empty)\nwhenever Secret is true: a secret env var's default could carry sensitive\ndata, and surfacing it in a drift report (which may be logged or returned\nover the API) would leak it. Non-secret defaults are safe to display.",
+                        "type": "string"
+                    },
+                    "description": {
+                        "description": "Description is the human-readable purpose of the variable.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the environment variable name.",
+                        "type": "string"
+                    },
+                    "required": {
+                        "description": "Required indicates whether the candidate marks the variable as required.",
+                        "type": "boolean"
+                    },
+                    "secret": {
+                        "description": "Secret indicates whether the variable holds sensitive data.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.StringChange": {
+                "description": "PermissionProfile is set when the candidate's permission profile differs\nfrom the workload's current profile.",
+                "properties": {
+                    "from": {
+                        "type": "string"
+                    },
+                    "to": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.UpgradeStatus": {
+                "description": "Status is the upgrade status for the workload.",
+                "enum": [
+                    "up-to-date",
+                    "upgrade-available",
+                    "not-registry-sourced",
+                    "server-not-found",
+                    "unknown"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "StatusUpToDate",
+                    "StatusUpgradeAvailable",
+                    "StatusNotRegistrySourced",
+                    "StatusServerNotFound",
+                    "StatusUnknown"
+                ]
+            },
             "model.Argument": {
                 "properties": {
                     "choices": {
@@ -3386,6 +3510,50 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.upgradeCheckBulkResponse": {
+                "description": "Results of checking multiple workloads for available upgrades",
+                "properties": {
+                    "results": {
+                        "description": "Results holds one upgrade-check outcome per scoped workload, in the order\nthe workloads were enumerated. Each entry carries only metadata and never\nsecret values.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.upgradeCheckResponse": {
+                "description": "Result of checking a single workload for an available upgrade",
+                "properties": {
+                    "result": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.upgradeRequest": {
+                "description": "Request to apply an available upgrade to a workload. All fields are optional; an empty body applies the upgrade preserving the workload's existing configuration.",
+                "properties": {
+                    "env": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "Env holds additional or overriding environment variables to merge into the\nupgraded workload's configuration.",
+                        "type": "object"
+                    },
+                    "secrets": {
+                        "description": "Secrets holds additional secret parameters (` + "`" + `\u003cname\u003e,target=\u003cenv\u003e` + "`" + `) to merge\ninto the upgraded workload's configuration. Only references are accepted;\nno secret values are transmitted in the request.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.validateSkillRequest": {
                 "description": "Request to validate a skill definition",
                 "properties": {
@@ -3576,6 +3744,10 @@ const docTemplate = `{
                     "repository_url": {
                         "description": "RepositoryURL is the URL to the source code repository for the server",
                         "type": "string"
+                    },
+                    "stateless": {
+                        "description": "Stateless indicates the server only supports POST (no SSE/GET)",
+                        "type": "boolean"
                     },
                     "status": {
                         "description": "Status indicates whether the server is currently active or deprecated",
@@ -3788,6 +3960,10 @@ const docTemplate = `{
                     "repository_url": {
                         "description": "RepositoryURL is the URL to the source code repository for the server",
                         "type": "string"
+                    },
+                    "stateless": {
+                        "description": "Stateless indicates the server only supports POST (no SSE/GET)",
+                        "type": "boolean"
                     },
                     "status": {
                         "description": "Status indicates whether the server is currently active or deprecated",
@@ -6487,6 +6663,65 @@ const docTemplate = `{
                 ]
             }
         },
+        "/api/v1beta/workloads/upgrade-check": {
+            "get": {
+                "description": "Check all workloads (optionally filtered by group) for newer\nimages available in their source registries. This is an offline\nmetadata comparison; it does not pull images. Secret values are\nnever returned.",
+                "parameters": [
+                    {
+                        "description": "Include stopped workloads",
+                        "in": "query",
+                        "name": "all",
+                        "schema": {
+                            "type": "boolean"
+                        }
+                    },
+                    {
+                        "description": "Filter workloads by group name",
+                        "in": "query",
+                        "name": "group",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.upgradeCheckBulkResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Group not found"
+                    }
+                },
+                "summary": "Check workloads for available upgrades",
+                "tags": [
+                    "workloads"
+                ]
+            }
+        },
         "/api/v1beta/workloads/{name}": {
             "delete": {
                 "description": "Delete a workload asynchronously. Returns 202 Accepted immediately.\nThe deletion happens in the background. Poll the workload list to confirm deletion.",
@@ -6938,6 +7173,149 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Stop a workload",
+                "tags": [
+                    "workloads"
+                ]
+            }
+        },
+        "/api/v1beta/workloads/{name}/upgrade": {
+            "post": {
+                "description": "Apply a registry-sourced upgrade to a single workload. This\nre-resolves and verifies the candidate image, pulls it, and only\nthen recreates the workload with the new image, preserving the\nexisting configuration. If the workload is already up to date or\nis not registry-sourced, the current check result is returned\nunchanged (no-op). Secret values are never accepted or returned.",
+                "parameters": [
+                    {
+                        "description": "Workload name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.upgradeRequest",
+                                        "summary": "request",
+                                        "description": "Upgrade options"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Upgrade options"
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.upgradeCheckResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "422": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Apply an available upgrade to a workload",
+                "tags": [
+                    "workloads"
+                ]
+            }
+        },
+        "/api/v1beta/workloads/{name}/upgrade-check": {
+            "get": {
+                "description": "Check whether a single workload has a newer image available in\nits source registry. This is an offline metadata comparison; it\ndoes not pull images. Secret values are never returned.",
+                "parameters": [
+                    {
+                        "description": "Workload name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.upgradeCheckResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    }
+                },
+                "summary": "Check a workload for an available upgrade",
                 "tags": [
                     "workloads"
                 ]

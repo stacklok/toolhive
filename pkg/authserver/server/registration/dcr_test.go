@@ -694,3 +694,31 @@ func TestValidateScopeSubset(t *testing.T) {
 		})
 	}
 }
+
+func TestUnionScopes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		req      []string
+		baseline []string
+		want     []string
+	}{
+		{name: "both nil returns nil", req: nil, baseline: nil, want: nil},
+		{name: "both empty returns nil", req: []string{}, baseline: []string{}, want: nil},
+		{name: "requested only preserved unchanged", req: []string{"openid", "profile"}, baseline: nil, want: []string{"openid", "profile"}},
+		{name: "baseline only returned when no requested", req: nil, baseline: []string{"openid", "email"}, want: []string{"openid", "email"}},
+		{name: "requested subset of baseline expands correctly", req: []string{"openid"}, baseline: []string{"openid", "profile", "email"}, want: []string{"openid", "profile", "email"}},
+		{name: "disjoint sets: requested first then baseline", req: []string{"openid", "profile"}, baseline: []string{"email", "offline_access"}, want: []string{"openid", "profile", "email", "offline_access"}},
+		{name: "exact match produces no duplicates", req: []string{"openid", "profile"}, baseline: []string{"openid", "profile"}, want: []string{"openid", "profile"}},
+		{name: "duplicates in requested are deduplicated", req: []string{"openid", "openid", "profile"}, baseline: nil, want: []string{"openid", "profile"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := UnionScopes(tt.req, tt.baseline)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

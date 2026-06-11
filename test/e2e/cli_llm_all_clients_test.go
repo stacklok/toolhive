@@ -990,21 +990,19 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				}
 
 				By("running thv llm token with the expired token in the environment")
-				tokenOut, _, tokenErr := thvCmdWithExpired("llm", "token").Run()
+				// The cached access token is expired and the read-only environment
+				// provider holds no refresh token, so "thv llm token" falls through to
+				// the interactive OIDC browser flow. runWithOIDCCompletion satisfies the
+				// callback so the command obtains a fresh token instead of blocking.
+				tokenOut, stderrOut, tokenErr := runWithOIDCCompletion(thvCmdWithExpired, oidcServer, "llm", "token")
+				Expect(tokenErr).ToNot(HaveOccurred(),
+					"deferred re-auth should succeed; stdout=%q stderr=%q", tokenOut, stderrOut)
 
-				// The expired token must never be printed, regardless of whether
-				// re-auth succeeded or failed (no refresh token is available with
-				// the read-only environment secrets provider).
+				// The expired token must never be printed; a fresh one must be returned.
 				Expect(strings.TrimSpace(tokenOut)).ToNot(Equal(expiredToken),
 					"expired token must not be returned directly")
-
-				if tokenErr == nil {
-					// Re-auth via OIDC browser flow succeeded (mock OIDC auto-completes).
-					Expect(strings.TrimSpace(tokenOut)).ToNot(BeEmpty(),
-						"a fresh token should have been obtained after expiry")
-				}
-				// If tokenErr != nil the command failed (expected when no refresh
-				// token is cached), which is also correct behaviour.
+				Expect(strings.TrimSpace(tokenOut)).ToNot(BeEmpty(),
+					"a fresh token should have been obtained after expiry")
 			})
 		})
 	})

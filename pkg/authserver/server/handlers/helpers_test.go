@@ -91,6 +91,7 @@ type testStorageState struct {
 	authCodeSessions   map[string]fosite.Requester          // authorize code sessions for token exchange
 	pkceSessions       map[string]fosite.Requester          // PKCE sessions for token exchange
 	idpTokenCount      int
+	renewedClients     []string // client IDs passed to RenewClientTTL
 }
 
 // baseTestSetupOption configures optional behavior overrides for baseTestSetup.
@@ -184,6 +185,14 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 		return nil, fosite.ErrNotFound
 	}).AnyTimes()
 	stor.EXPECT().GetClient(gomock.Any(), gomock.Not(testAuthClientID)).Return(nil, fosite.ErrNotFound).AnyTimes()
+
+	// Token issuance renews the public client's registration TTL (best-effort).
+	// Record the calls so tests can assert the renewal fired on success.
+	stor.EXPECT().RenewClientTTL(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, c fosite.Client) error {
+			storState.renewedClients = append(storState.renewedClients, c.GetID())
+			return nil
+		}).AnyTimes()
 
 	// Setup mock expectations for pending authorization storage
 	if setupCfg.storePendingErr != nil {

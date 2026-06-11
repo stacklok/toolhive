@@ -48,8 +48,8 @@ func newNoopMockFactory(t *testing.T) *sessionfactorymocks.MockMultiSessionFacto
 	t.Helper()
 	ctrl := gomock.NewController(t)
 	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
@@ -90,13 +90,12 @@ func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*
 	t.Helper()
 	state := &mockFactoryState{}
 	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
-	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, id string, identity *auth.Identity, allowAnonymous bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+	factory.EXPECT().MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
 			state.makeWithIDCalled.Store(true)
-			tokenHash := ""
-			if identity != nil && identity.Token != "" && !allowAnonymous {
-				tokenHash = "fake-hash-for-testing"
-			}
+			// All sessions carry MetadataKeyIdentityBinding so Terminate takes the
+			// Phase 2 (storage.Delete) path. The sentinel value is sufficient for
+			// tests that don't validate the binding content.
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
@@ -105,7 +104,7 @@ func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*
 			mock.EXPECT().GetData().Return(nil).AnyTimes()
 			mock.EXPECT().SetData(gomock.Any()).AnyTimes()
 			mock.EXPECT().GetMetadata().Return(map[string]string{
-				vmcpsession.MetadataKeyTokenHash: tokenHash,
+				vmcpsession.MetadataKeyIdentityBinding: "unauthenticated",
 			}).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			toolsCopy := make([]vmcp.Tool, len(tools))

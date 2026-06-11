@@ -19,6 +19,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -440,6 +441,80 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			assert.Equal(t, tt.expErr, err)
 			if tt.assertRegistry != nil {
 				tt.assertRegistry(t, fakeClient)
+			}
+		})
+	}
+}
+
+func TestMCPRegistryReconciler_emitDeprecationWarning(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		generation  int64
+		observedGen int64
+		nilRecorder bool
+		wantEvent   bool
+	}{
+		{
+			name:        "emits warning on first reconcile (generation not yet observed)",
+			generation:  1,
+			observedGen: 0,
+			wantEvent:   true,
+		},
+		{
+			name:        "suppresses warning once generation is observed",
+			generation:  1,
+			observedGen: 1,
+			wantEvent:   false,
+		},
+		{
+			name:        "emits warning again after a spec change",
+			generation:  2,
+			observedGen: 1,
+			wantEvent:   true,
+		},
+		{
+			name:        "no-op (no panic) when recorder is nil",
+			generation:  1,
+			observedGen: 0,
+			nilRecorder: true,
+			wantEvent:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := log.IntoContext(t.Context(), log.Log)
+			reg := &mcpv1beta1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-registry",
+					Namespace:  "default",
+					Generation: tt.generation,
+				},
+				Status: mcpv1beta1.MCPRegistryStatus{
+					ObservedGeneration: tt.observedGen,
+				},
+			}
+
+			recorder := events.NewFakeRecorder(10)
+			r := &MCPRegistryReconciler{}
+			if !tt.nilRecorder {
+				r.Recorder = recorder
+			}
+
+			r.emitDeprecationWarning(ctx, reg)
+
+			select {
+			case msg := <-recorder.Events:
+				assert.True(t, tt.wantEvent, "did not expect an event but got: %s", msg)
+				assert.Contains(t, msg, corev1.EventTypeWarning)
+				assert.Contains(t, msg, EventReasonMCPRegistryDeprecated)
+				assert.Contains(t, msg, "toolhive-registry-server")
+			default:
+				assert.False(t, tt.wantEvent, "expected a deprecation event but none was emitted")
 			}
 		})
 	}

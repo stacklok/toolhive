@@ -1,0 +1,149 @@
+# All 12 ToolHive CR kinds at v1alpha1.
+# Apply with:
+#   kubectl create namespace upgrade-test
+#   kubectl apply -f crs-v1alpha1.yaml
+#
+# Note: MCPServerEntry references MCPGroup (groupRef.name: test-group),
+# so MCPGroup must be applied first. kubectl handles ordering within a
+# single file by best-effort, and since all refs here are by name (not
+# UID), no strict ordering is required — missing refs just stay pending.
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPGroup
+metadata:
+  name: test-group
+  namespace: upgrade-test
+spec:
+  description: Test group for upgrade validation
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServer
+metadata:
+  name: test-server
+  namespace: upgrade-test
+spec:
+  image: ghcr.io/github/github-mcp-server
+  transport: stdio
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRemoteProxy
+metadata:
+  name: test-remote-proxy
+  namespace: upgrade-test
+spec:
+  remoteUrl: https://example.com/mcp
+  transport: streamable-http
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPToolConfig
+metadata:
+  name: test-tool-config
+  namespace: upgrade-test
+spec:
+  toolsFilter:
+  - allowed_tool
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: EmbeddingServer
+metadata:
+  name: test-embedding
+  namespace: upgrade-test
+spec:
+  image: ghcr.io/stacklok/test-embedding:latest
+  model: test-model
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPRegistry
+metadata:
+  name: test-registry
+  namespace: upgrade-test
+spec:
+  displayName: Test Registry
+  configYAML: |
+    sources:
+      - name: k8s
+        format: upstream
+        kubernetes: {}
+    registries:
+      - name: default
+        sources: ["k8s"]
+    database:
+      host: postgres
+      port: 5432
+      user: db_app
+      database: registry
+    auth:
+      mode: anonymous
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPOIDCConfig
+metadata:
+  name: test-oidc
+  namespace: upgrade-test
+spec:
+  type: inline
+  inline:
+    issuer: https://auth.example.com
+    jwksUrl: https://auth.example.com/.well-known/jwks.json
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPTelemetryConfig
+metadata:
+  name: test-telemetry
+  namespace: upgrade-test
+spec:
+  openTelemetry:
+    endpoint: http://otel-collector:4317
+    metrics:
+      enabled: true
+    tracing:
+      enabled: true
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPExternalAuthConfig
+metadata:
+  name: test-external-auth
+  namespace: upgrade-test
+spec:
+  type: tokenExchange
+  tokenExchange:
+    tokenUrl: https://auth.example.com/token
+    audience: https://api.example.com
+    clientId: test-client
+    clientSecretRef:
+      name: test-secret
+      key: client-secret
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPServer
+metadata:
+  name: test-virtual-server
+  namespace: upgrade-test
+spec:
+  groupRef:
+    name: test-group
+  incomingAuth:
+    type: anonymous
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: VirtualMCPCompositeToolDefinition
+metadata:
+  name: test-composite-tool
+  namespace: upgrade-test
+spec:
+  name: test_workflow
+  description: Test composite workflow
+  steps:
+  - id: step-1
+    tool: placeholder.tool
+---
+apiVersion: toolhive.stacklok.dev/v1alpha1
+kind: MCPServerEntry
+metadata:
+  name: test-server-entry
+  namespace: upgrade-test
+spec:
+  groupRef:
+    name: test-group
+  transport: streamable-http
+  remoteUrl: https://example.com/mcp

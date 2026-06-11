@@ -1,0 +1,18 @@
+suite: liveness and readiness probes
+# A wrong probe path or port silently disables health gating — the pod looks
+# fine but k8s never restarts a wedged operator or holds traffic during startup.
+# Pin the endpoints and the named port they target.
+templates:
+  - deployment.yaml
+tests:
+  - it: configures the liveness probe against /healthz on the health port
+    template: deployment.yaml
+    asserts:
+      - equal: { path: 'spec.template.spec.containers[0].livenessProbe.httpGet.path', value: /healthz }
+      - equal: { path: 'spec.template.spec.containers[0].livenessProbe.httpGet.port', value: health }
+
+  - it: configures the readiness probe against /readyz on the health port
+    template: deployment.yaml
+    asserts:
+      - equal: { path: 'spec.template.spec.containers[0].readinessProbe.httpGet.path', value: /readyz }
+      - equal: { path: 'spec.template.spec.containers[0].readinessProbe.httpGet.port', value: health }

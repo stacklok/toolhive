@@ -537,3 +537,34 @@ func TestRunner_GetUpstreamTokenReader(t *testing.T) {
 		assert.Equal(t, svc, reader)
 	})
 }
+
+func TestParseProxyTimeout(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		value     string
+		want      time.Duration
+		expectErr bool
+	}{
+		{name: "empty yields zero (use default)", value: "", want: 0},
+		{name: "valid duration", value: "45s", want: 45 * time.Second},
+		{name: "zero string", value: "0s", want: 0},
+		{name: "negative rejected", value: "-1s", expectErr: true},
+		{name: "unparseable rejected", value: "notaduration", expectErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := parseProxyTimeout("proxy_read_timeout", tt.value)
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

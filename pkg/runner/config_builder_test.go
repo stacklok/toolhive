@@ -1540,6 +1540,78 @@ func TestWithSessionTTL(t *testing.T) {
 	}
 }
 
+func TestWithProxyTimeouts(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		option      func(time.Duration) RunConfigBuilderOption
+		get         func(*RunConfig) string
+		value       time.Duration
+		expectErr   bool
+		expectedStr string
+	}{
+		{
+			name:        "read: zero serialized as empty (use proxy default)",
+			option:      WithProxyReadTimeout,
+			get:         func(c *RunConfig) string { return c.ProxyReadTimeout },
+			value:       0,
+			expectedStr: "",
+		},
+		{
+			name:        "read: positive stored as Go duration string",
+			option:      WithProxyReadTimeout,
+			get:         func(c *RunConfig) string { return c.ProxyReadTimeout },
+			value:       45 * time.Second,
+			expectedStr: "45s",
+		},
+		{
+			name:      "read: negative returns an error",
+			option:    WithProxyReadTimeout,
+			get:       func(c *RunConfig) string { return c.ProxyReadTimeout },
+			value:     -1 * time.Second,
+			expectErr: true,
+		},
+		{
+			name:        "write: zero serialized as empty (use proxy default)",
+			option:      WithProxyWriteTimeout,
+			get:         func(c *RunConfig) string { return c.ProxyWriteTimeout },
+			value:       0,
+			expectedStr: "",
+		},
+		{
+			name:        "write: positive stored as Go duration string",
+			option:      WithProxyWriteTimeout,
+			get:         func(c *RunConfig) string { return c.ProxyWriteTimeout },
+			value:       1 * time.Minute,
+			expectedStr: "1m0s",
+		},
+		{
+			name:      "write: negative returns an error",
+			option:    WithProxyWriteTimeout,
+			get:       func(c *RunConfig) string { return c.ProxyWriteTimeout },
+			value:     -1 * time.Second,
+			expectErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := &runConfigBuilder{config: NewRunConfig()}
+			err := tt.option(tt.value)(builder)
+
+			if tt.expectErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expectedStr, tt.get(builder.config))
+		})
+	}
+}
+
 func TestResolveRegistryServerName(t *testing.T) {
 	t.Parallel()
 

@@ -163,6 +163,23 @@ func (c *RunConfig) GetPort() int {
 	return c.Port
 }
 
+// parseProxyTimeout parses an optional Go duration string from RunConfig. An
+// empty string yields 0, which the proxy treats as "use the package default".
+// Negative durations and unparseable values are rejected.
+func parseProxyTimeout(name, value string) (time.Duration, error) {
+	if value == "" {
+		return 0, nil
+	}
+	d, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s %q: %w", name, value, err)
+	}
+	if d < 0 {
+		return 0, fmt.Errorf("%s must be non-negative, got %s", name, d)
+	}
+	return d, nil
+}
+
 // Run runs the MCP server with the provided configuration
 //
 //nolint:gocyclo // This function is complex but manageable
@@ -185,6 +202,17 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Resolve proxy HTTP server timeouts. Empty/zero means "use the proxy
+	// default"; the proxy options ignore non-positive values.
+	proxyReadTimeout, err := parseProxyTimeout("proxy_read_timeout", r.Config.ProxyReadTimeout)
+	if err != nil {
+		return err
+	}
+	proxyWriteTimeout, err := parseProxyTimeout("proxy_write_timeout", r.Config.ProxyWriteTimeout)
+	if err != nil {
+		return err
+	}
+
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:              r.Config.Transport,
@@ -197,6 +225,8 @@ func (r *Runner) Run(ctx context.Context) error {
 		TrustProxyHeaders: r.Config.TrustProxyHeaders,
 		EndpointPrefix:    r.Config.EndpointPrefix,
 		SessionTTL:        effectiveSessionTTL,
+		ReadTimeout:       proxyReadTimeout,
+		WriteTimeout:      proxyWriteTimeout,
 	}
 
 	// Set proxy mode for stdio transport

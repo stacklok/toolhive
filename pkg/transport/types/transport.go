@@ -282,6 +282,17 @@ type Config struct {
 	// Sessions idle for longer than this duration are cleaned up by the session
 	// manager's background worker. Zero uses session.DefaultSessionTTL.
 	SessionTTL time.Duration
+
+	// ReadTimeout bounds reading the entire request (headers + body) on the proxy
+	// http.Server. Zero uses the proxy package default. Applies to all HTTP
+	// transports; it never affects SSE responses, which stream on the response side.
+	ReadTimeout time.Duration
+
+	// WriteTimeout bounds writing the response on the proxy http.Server. Zero uses
+	// the proxy package default. Only the SSE (httpsse) proxy applies it — guarded
+	// by the SSE write-deadline-clearing middleware; the streamable and transparent
+	// proxies ignore it because their long-lived responses cannot be safely bounded.
+	WriteTimeout time.Duration
 }
 
 // ProxyMode represents the proxy mode for stdio transport.

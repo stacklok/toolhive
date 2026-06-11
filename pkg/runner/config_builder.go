@@ -376,6 +376,47 @@ func WithSessionTTL(ttl time.Duration) RunConfigBuilderOption {
 	}
 }
 
+// WithProxyReadTimeout sets http.Server.ReadTimeout on the proxy, bounding how
+// long the server will spend reading a request (headers + body). Zero is valid
+// and means "use the proxy default" (30s). Negative values return an error.
+//
+// The value is stored as a Go duration string on RunConfig so it survives a
+// JSON/YAML round-trip; a time.Duration field would serialize as nanoseconds.
+func WithProxyReadTimeout(d time.Duration) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if d < 0 {
+			return fmt.Errorf("proxy-read-timeout must be non-negative, got %s", d)
+		}
+		if d == 0 {
+			b.config.ProxyReadTimeout = ""
+			return nil
+		}
+		b.config.ProxyReadTimeout = d.String()
+		return nil
+	}
+}
+
+// WithProxyWriteTimeout sets http.Server.WriteTimeout on the proxy, bounding how
+// long the server will spend writing a response. Zero is valid and means "use
+// the proxy default" (30s). Negative values return an error.
+//
+// Only effective for the SSE (sse) transport; the streamable-http and transparent
+// transports do not set a write deadline. Stored as a Go duration string for the
+// same wire-format reason as WithProxyReadTimeout.
+func WithProxyWriteTimeout(d time.Duration) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if d < 0 {
+			return fmt.Errorf("proxy-write-timeout must be non-negative, got %s", d)
+		}
+		if d == 0 {
+			b.config.ProxyWriteTimeout = ""
+			return nil
+		}
+		b.config.ProxyWriteTimeout = d.String()
+		return nil
+	}
+}
+
 // WithNetworkMode sets the network mode for the container.
 // The network mode will be applied to the permission profile after it is loaded.
 func WithNetworkMode(networkMode string) RunConfigBuilderOption {

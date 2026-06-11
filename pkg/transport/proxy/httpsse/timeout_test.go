@@ -93,121 +93,97 @@ func TestHTTPSSEProxy_ServerTimeoutsConfigured(t *testing.T) {
 	}
 }
 
-// TestHTTPSSEProxy_SSEStreamSurvivesWriteTimeout proves that the WriteTimeout
-// middleware mounted on the SSE endpoint clears the connection write deadline, so
-// a server->client write that happens after http.Server.WriteTimeout would have
-// fired still reaches the client instead of severing the stream.
-func TestHTTPSSEProxy_SSEStreamSurvivesWriteTimeout(t *testing.T) {
+// TestHTTPSSEProxy_SSEStreamSurvivesTimeout proves a long-lived SSE GET stream is
+// not severed by the server's read/write deadlines:
+//   - WriteTimeout: the middleware mounted on the SSE endpoint clears the
+//     connection write deadline, so a server->client write that happens after
+//     http.Server.WriteTimeout would have fired still reaches the client.
+//   - ReadTimeout (the issue's no-regression criterion): ReadTimeout bounds the
+//     request read only, so the stream lives on the response side past it (the GET
+//     request itself is read instantly).
+func TestHTTPSSEProxy_SSEStreamSurvivesTimeout(t *testing.T) {
 	t.Parallel()
 
-	const writeTimeout = 200 * time.Millisecond
+	const timeout = 200 * time.Millisecond
 
-	proxy := startProxy(t, WithWriteTimeout(writeTimeout))
-
-	// Open the SSE stream and read the initial endpoint event to confirm the
-	// connection is established and obtain the session ID. The Accept header is
-	// required for the WriteTimeout middleware to recognize this as an SSE
-	// connection and clear the write deadline.
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
-		fmt.Sprintf("http://%s/sse", proxy.server.Addr), nil)
-	require.NoError(t, err)
-	req.Header.Set("Accept", "text/event-stream")
-	sseResp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sseResp.Body.Close() })
-
-	sessionID, err := extractSessionID(sseResp.Body)
-	require.NoError(t, err)
-	require.NotEmpty(t, sessionID)
-
-	// Wait well past the server WriteTimeout. Without the middleware clearing the
-	// write deadline, any subsequent server->client write would fail here.
-	time.Sleep(3 * writeTimeout)
-
-	// Push a message to the live SSE client after the deadline window.
-	msg, err := jsonrpc2.NewCall(
-		jsonrpc2.StringID("after-deadline"),
-		"test.method",
-		map[string]any{"data": "still alive"},
-	)
-	require.NoError(t, err)
-	require.NoError(t, proxy.ForwardResponseToClients(t.Context(), msg))
-
-	// The client must receive the post-deadline message rather than EOF.
-	received := make(chan string, 1)
-	readErr := make(chan error, 1)
-	go func() {
-		buf := make([]byte, 4096)
-		n, err := sseResp.Body.Read(buf)
-		if err != nil {
-			readErr <- err
-			return
-		}
-		received <- string(buf[:n])
-	}()
-
-	select {
-	case data := <-received:
-		assert.Contains(t, data, "after-deadline",
-			"SSE client should receive the message written after WriteTimeout")
-	case err := <-readErr:
-		t.Fatalf("SSE stream was severed (write deadline not cleared): %v", err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for post-deadline SSE message")
+	tests := []struct {
+		name    string
+		opt     Option
+		callID  string
+		severed string
+	}{
+		{
+			name:    "WriteTimeout",
+			opt:     WithWriteTimeout(timeout),
+			callID:  "after-write-timeout",
+			severed: "SSE stream was severed (write deadline not cleared)",
+		},
+		{
+			name:    "ReadTimeout",
+			opt:     WithReadTimeout(timeout),
+			callID:  "after-read-timeout",
+			severed: "SSE stream was severed by ReadTimeout",
+		},
 	}
-}
 
-// TestHTTPSSEProxy_SSEStreamSurvivesReadTimeout is the issue's no-regression
-// criterion: ReadTimeout bounds the request read only, so a long-lived SSE GET
-// stream must survive well past it (the GET request is read instantly; the
-// stream lives on the response side).
-func TestHTTPSSEProxy_SSEStreamSurvivesReadTimeout(t *testing.T) {
-	t.Parallel()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	const readTimeout = 200 * time.Millisecond
+			proxy := startProxy(t, tt.opt)
 
-	proxy := startProxy(t, WithReadTimeout(readTimeout))
+			// Open the SSE stream and read the initial endpoint event to confirm the
+			// connection is established and obtain the session ID. The Accept header is
+			// required for the WriteTimeout middleware to recognize this as an SSE
+			// connection and clear the write deadline.
+			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+				fmt.Sprintf("http://%s/sse", proxy.server.Addr), nil)
+			require.NoError(t, err)
+			req.Header.Set("Accept", "text/event-stream")
+			sseResp, err := http.DefaultClient.Do(req)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = sseResp.Body.Close() })
 
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
-		fmt.Sprintf("http://%s/sse", proxy.server.Addr), nil)
-	require.NoError(t, err)
-	req.Header.Set("Accept", "text/event-stream")
-	sseResp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sseResp.Body.Close() })
+			sessionID, err := extractSessionID(sseResp.Body)
+			require.NoError(t, err)
+			require.NotEmpty(t, sessionID)
 
-	sessionID, err := extractSessionID(sseResp.Body)
-	require.NoError(t, err)
-	require.NotEmpty(t, sessionID)
+			// Wait well past the deadline. Without the stream surviving it, any
+			// subsequent server->client write would fail here.
+			time.Sleep(3 * timeout)
 
-	// Wait well past ReadTimeout, then confirm the stream still delivers.
-	time.Sleep(3 * readTimeout)
+			// Push a message to the live SSE client after the deadline window.
+			msg, err := jsonrpc2.NewCall(
+				jsonrpc2.StringID(tt.callID),
+				"test.method",
+				map[string]any{"data": "still alive"},
+			)
+			require.NoError(t, err)
+			require.NoError(t, proxy.ForwardResponseToClients(t.Context(), msg))
 
-	msg, err := jsonrpc2.NewCall(jsonrpc2.StringID("after-read-timeout"), "test.method",
-		map[string]any{"data": "still alive"})
-	require.NoError(t, err)
-	require.NoError(t, proxy.ForwardResponseToClients(t.Context(), msg))
+			// The client must receive the post-deadline message rather than EOF.
+			received := make(chan string, 1)
+			readErr := make(chan error, 1)
+			go func() {
+				buf := make([]byte, 4096)
+				n, err := sseResp.Body.Read(buf)
+				if err != nil {
+					readErr <- err
+					return
+				}
+				received <- string(buf[:n])
+			}()
 
-	received := make(chan string, 1)
-	readErr := make(chan error, 1)
-	go func() {
-		buf := make([]byte, 4096)
-		n, err := sseResp.Body.Read(buf)
-		if err != nil {
-			readErr <- err
-			return
-		}
-		received <- string(buf[:n])
-	}()
-
-	select {
-	case data := <-received:
-		assert.Contains(t, data, "after-read-timeout",
-			"SSE GET stream should survive past ReadTimeout")
-	case err := <-readErr:
-		t.Fatalf("SSE stream was severed by ReadTimeout: %v", err)
-	case <-time.After(3 * time.Second):
-		t.Fatal("timed out waiting for SSE message after ReadTimeout")
+			select {
+			case data := <-received:
+				assert.Contains(t, data, tt.callID,
+					"SSE client should receive the message written after the deadline")
+			case err := <-readErr:
+				t.Fatalf("%s: %v", tt.severed, err)
+			case <-time.After(3 * time.Second):
+				t.Fatal("timed out waiting for post-deadline SSE message")
+			}
+		})
 	}
 }
 

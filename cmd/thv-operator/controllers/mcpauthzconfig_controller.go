@@ -50,6 +50,7 @@ type MCPAuthzConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpauthzconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpauthzconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpauthzconfigs/finalizers,verbs=update
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch
 

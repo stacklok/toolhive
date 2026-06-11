@@ -1099,24 +1099,30 @@ spec:
                       https://login.microsoftonline.us (US Gov) or
                       https://login.partner.microsoftonline.cn (China). When set, the operator
                       builds the token endpoint by joining <authority>, <tenantId>, and the
-                      v2.0 token path. Must be an HTTPS URL with no query, fragment, or trailing
-                      slash; a path IS permitted and is prefixed before the tenant segment, as
-                      some sovereign / B2C / CIAM endpoints require. The OBO exchange POSTs the
-                      client secret and the end-user assertion to this host, so it is a trust
-                      boundary and HTTPS is required. Mirrors the enterprise exchanger's
-                      authority validation (no query/fragment), which deliberately allows
-                      arbitrary hosts and paths for non-public clouds.
-                    pattern: ^https://[^\s?#]+[^/\s?#]$
+                      v2.0 token path. Must be an HTTPS URL with no userinfo, query, fragment,
+                      or trailing slash; a path IS permitted and is prefixed before the tenant
+                      segment, as some sovereign / B2C / CIAM endpoints require. The OBO exchange
+                      POSTs the client secret and the end-user assertion to this host, so it is a
+                      credential trust boundary: HTTPS is required and userinfo (user@host) is
+                      rejected to prevent host confusion (per RFC 3986 the real host follows the
+                      "@", so https://login.microsoftonline.com@attacker.example targets
+                      attacker.example). This is intentionally stricter than the downstream
+                      exchanger's validateHTTPSURL, which also accepts http for loopback hosts
+                      and tolerates a trailing slash — rejecting those at admission is the safe
+                      direction.
+                    pattern: ^https://[^\s?#@]+[^/\s?#@]$
                     type: string
                   cacheSkew:
                     description: |-
                       CacheSkew overrides the OBO token cache's default expiry skew (the margin
                       by which a cached token is treated as expired before its real expiry),
                       e.g. "30s". The operator converts it to the runtime contract's
-                      integer-seconds cacheSkewSeconds. Must not be negative; a negative value
-                      is rejected by the registered OBO handler at reconcile time
-                      (Valid=False, Reason: InvalidConfig in enterprise builds). When omitted,
-                      the cache default applies.
+                      integer-seconds cacheSkewSeconds. Should not be negative, but the schema
+                      does not enforce that — metav1.Duration carries no numeric minimum — and
+                      upstream builds do not reject it. A negative value is rejected only by an
+                      enterprise build's OBO handler once that handler validates the converted
+                      parameters; it is not enforced at admission or in upstream-only builds.
+                      When omitted, the cache default applies.
                     type: string
                   clientId:
                     description: |-
@@ -2521,24 +2527,30 @@ spec:
                       https://login.microsoftonline.us (US Gov) or
                       https://login.partner.microsoftonline.cn (China). When set, the operator
                       builds the token endpoint by joining <authority>, <tenantId>, and the
-                      v2.0 token path. Must be an HTTPS URL with no query, fragment, or trailing
-                      slash; a path IS permitted and is prefixed before the tenant segment, as
-                      some sovereign / B2C / CIAM endpoints require. The OBO exchange POSTs the
-                      client secret and the end-user assertion to this host, so it is a trust
-                      boundary and HTTPS is required. Mirrors the enterprise exchanger's
-                      authority validation (no query/fragment), which deliberately allows
-                      arbitrary hosts and paths for non-public clouds.
-                    pattern: ^https://[^\s?#]+[^/\s?#]$
+                      v2.0 token path. Must be an HTTPS URL with no userinfo, query, fragment,
+                      or trailing slash; a path IS permitted and is prefixed before the tenant
+                      segment, as some sovereign / B2C / CIAM endpoints require. The OBO exchange
+                      POSTs the client secret and the end-user assertion to this host, so it is a
+                      credential trust boundary: HTTPS is required and userinfo (user@host) is
+                      rejected to prevent host confusion (per RFC 3986 the real host follows the
+                      "@", so https://login.microsoftonline.com@attacker.example targets
+                      attacker.example). This is intentionally stricter than the downstream
+                      exchanger's validateHTTPSURL, which also accepts http for loopback hosts
+                      and tolerates a trailing slash — rejecting those at admission is the safe
+                      direction.
+                    pattern: ^https://[^\s?#@]+[^/\s?#@]$
                     type: string
                   cacheSkew:
                     description: |-
                       CacheSkew overrides the OBO token cache's default expiry skew (the margin
                       by which a cached token is treated as expired before its real expiry),
                       e.g. "30s". The operator converts it to the runtime contract's
-                      integer-seconds cacheSkewSeconds. Must not be negative; a negative value
-                      is rejected by the registered OBO handler at reconcile time
-                      (Valid=False, Reason: InvalidConfig in enterprise builds). When omitted,
-                      the cache default applies.
+                      integer-seconds cacheSkewSeconds. Should not be negative, but the schema
+                      does not enforce that — metav1.Duration carries no numeric minimum — and
+                      upstream builds do not reject it. A negative value is rejected only by an
+                      enterprise build's OBO handler once that handler validates the converted
+                      parameters; it is not enforced at admission or in upstream-only builds.
+                      When omitted, the cache default applies.
                     type: string
                   clientId:
                     description: |-

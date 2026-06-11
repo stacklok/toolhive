@@ -69,6 +69,10 @@ type ServerConfig struct {
 	// If nil, no authentication is required.
 	AuthMiddleware func(http.Handler) http.Handler
 
+	// RateLimitMiddleware is the optional rate-limit middleware to apply after
+	// authentication and MCP request parsing.
+	RateLimitMiddleware func(http.Handler) http.Handler
+
 	// AuthInfoHandler is the optional handler for the
 	// /.well-known/oauth-protected-resource endpoint.
 	AuthInfoHandler http.Handler
@@ -302,6 +306,7 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		EndpointPath:            cmp.Or(cfg.EndpointPath, defaultEndpointPath),
 		SessionTTL:              cmp.Or(cfg.SessionTTL, defaultSessionTTL),
 		AuthMiddleware:          cfg.AuthMiddleware,
+		RateLimitMiddleware:     cfg.RateLimitMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
 		AuthServer:              cfg.AuthServer,
 		TelemetryProvider:       cfg.TelemetryProvider,

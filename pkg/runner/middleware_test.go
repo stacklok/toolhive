@@ -690,6 +690,7 @@ func TestAddBodyLimitMiddleware(t *testing.T) {
 		{
 			name: "pre-populated slice without body limit gets it prepended (CLI/flags path)",
 			input: func(t *testing.T) []types.MiddlewareConfig {
+				t.Helper()
 				return []types.MiddlewareConfig{authConfig(t)}
 			},
 			assert: func(t *testing.T, input, result []types.MiddlewareConfig) {
@@ -704,6 +705,7 @@ func TestAddBodyLimitMiddleware(t *testing.T) {
 		{
 			name: "slice already starting with body limit is unchanged (idempotent)",
 			input: func(t *testing.T) []types.MiddlewareConfig {
+				t.Helper()
 				cfg, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
 					MaxBytes: bodylimit.DefaultMaxRequestBodySize,
 				})

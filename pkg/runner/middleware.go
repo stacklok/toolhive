@@ -323,13 +323,13 @@ func addBodyLimitMiddleware(middlewares []types.MiddlewareConfig) ([]types.Middl
 	if len(middlewares) > 0 && middlewares[0].Type == bodylimit.MiddlewareType {
 		return middlewares, nil
 	}
-	cfg, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
+	bodyLimitConfig, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
 		MaxBytes: bodylimit.DefaultMaxRequestBodySize,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to create body limit middleware config: %w", err)
 	}
-	return append([]types.MiddlewareConfig{*cfg}, middlewares...), nil
+	return append([]types.MiddlewareConfig{*bodyLimitConfig}, middlewares...), nil
 }
 
 // addHeaderForwardMiddleware adds header forward middleware if configured for remote servers

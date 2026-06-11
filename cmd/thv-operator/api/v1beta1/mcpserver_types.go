@@ -387,6 +387,23 @@ type MCPServerSpec struct {
 	// Requires Redis session storage to be configured for distributed rate limiting.
 	// +optional
 	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty"`
+
+	// ProxyReadTimeout bounds how long the proxy spends reading a full request
+	// (headers + body), mitigating slow-upload connection exhaustion. Applies to
+	// all transports. Defaults to 30s if not specified. Example: "1m".
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Format=duration
+	// +optional
+	ProxyReadTimeout *metav1.Duration `json:"proxyReadTimeout,omitempty"`
+
+	// ProxyWriteTimeout bounds how long the proxy spends writing a response.
+	// Only effective for the SSE (sse) transport; the streamable-http and
+	// transparent transports ignore it because their long-lived responses cannot
+	// be safely bounded by a write deadline. Defaults to 30s if not specified.
+	// +kubebuilder:validation:Type=string
+	// +kubebuilder:validation:Format=duration
+	// +optional
+	ProxyWriteTimeout *metav1.Duration `json:"proxyWriteTimeout,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources

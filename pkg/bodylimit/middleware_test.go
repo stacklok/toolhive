@@ -6,9 +6,11 @@ package bodylimit
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -101,6 +103,30 @@ func TestMiddleware(t *testing.T) {
 		assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 	})
 
+	t.Run("Validation 400 on exactly-at-limit body stays 400", func(t *testing.T) {
+		t.Parallel()
+		// A body of EXACTLY the limit is within bounds: http.MaxBytesReader
+		// returns no error, so a genuine handler 400 must NOT be rewritten to
+		// 413. This is the regression guard for the removed byte-counter
+		// heuristic (F1).
+		body := bytes.NewBuffer(make([]byte, maxBodySize))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1beta/test", body)
+		rec := httptest.NewRecorder()
+
+		validateHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Drain the full body so the reader observes the exactly-at-limit
+			// size, then reject for validation reasons.
+			_, err := io.Copy(io.Discard, r.Body)
+			assert.NoError(t, err)
+			http.Error(w, "Validation failed", http.StatusBadRequest)
+		})
+
+		createHandler(validateHandler).ServeHTTP(rec, req)
+
+		assert.Equal(t, http.StatusBadRequest, rec.Code)
+		assert.Contains(t, rec.Body.String(), "Validation failed")
+	})
+
 	t.Run("Empty request body succeeds", func(t *testing.T) {
 		t.Parallel()
 		req := httptest.NewRequest(http.MethodPost, "/test", bytes.NewBuffer([]byte{}))
@@ -170,6 +196,76 @@ func TestMiddleware_NonPositiveLimitFallsBackToDefault(t *testing.T) {
 			assert.Equal(t, http.StatusRequestEntityTooLarge, rec.Code)
 		})
 	}
+}
+
+// deadlineResponseWriter is a fake http.ResponseWriter that also implements
+// SetWriteDeadline so http.ResponseController can reach it through Unwrap.
+type deadlineResponseWriter struct {
+	http.ResponseWriter
+	setWriteDeadlineCalled bool
+}
+
+func (w *deadlineResponseWriter) SetWriteDeadline(time.Time) error {
+	w.setWriteDeadlineCalled = true
+	return nil
+}
+
+// TestBodySizeResponseWriter_UnwrapEnablesResponseController verifies that
+// Unwrap exposes the underlying writer so http.ResponseController can reach
+// SetWriteDeadline — the chain SSE WriteTimeout clearing depends on.
+func TestBodySizeResponseWriter_UnwrapEnablesResponseController(t *testing.T) {
+	t.Parallel()
+
+	fake := &deadlineResponseWriter{ResponseWriter: httptest.NewRecorder()}
+	wrapped := &bodySizeResponseWriter{ResponseWriter: fake, limitExceeded: new(bool)}
+
+	err := http.NewResponseController(wrapped).SetWriteDeadline(time.Time{})
+
+	require.NoError(t, err)
+	assert.NotErrorIs(t, err, http.ErrNotSupported)
+	assert.True(t, fake.setWriteDeadlineCalled, "expected SetWriteDeadline to reach the underlying writer via Unwrap")
+}
+
+// flushResponseWriter is a fake http.ResponseWriter that implements http.Flusher.
+type flushResponseWriter struct {
+	http.ResponseWriter
+	flushCalled bool
+}
+
+func (w *flushResponseWriter) Flush() {
+	w.flushCalled = true
+}
+
+// nonFlusherResponseWriter is a fake http.ResponseWriter that does NOT implement
+// http.Flusher.
+type nonFlusherResponseWriter struct{}
+
+func (nonFlusherResponseWriter) Header() http.Header         { return http.Header{} }
+func (nonFlusherResponseWriter) Write(b []byte) (int, error) { return len(b), nil }
+func (nonFlusherResponseWriter) WriteHeader(int)             {}
+
+// TestBodySizeResponseWriter_FlushForwards verifies Flush forwards to a
+// Flusher-capable underlying writer (needed for SSE) and is a safe no-op
+// otherwise.
+func TestBodySizeResponseWriter_FlushForwards(t *testing.T) {
+	t.Parallel()
+
+	t.Run("forwards to underlying Flusher", func(t *testing.T) {
+		t.Parallel()
+		fake := &flushResponseWriter{ResponseWriter: httptest.NewRecorder()}
+		wrapped := &bodySizeResponseWriter{ResponseWriter: fake, limitExceeded: new(bool)}
+
+		wrapped.Flush()
+
+		assert.True(t, fake.flushCalled, "expected Flush to forward to the underlying Flusher")
+	})
+
+	t.Run("no panic when underlying writer is not a Flusher", func(t *testing.T) {
+		t.Parallel()
+		wrapped := &bodySizeResponseWriter{ResponseWriter: nonFlusherResponseWriter{}, limitExceeded: new(bool)}
+
+		assert.NotPanics(t, wrapped.Flush)
+	})
 }
 
 // fakeRunner is a minimal types.MiddlewareRunner that records added middleware.

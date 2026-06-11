@@ -77,7 +77,6 @@ func Middleware(maxBytes int64) func(http.Handler) http.Handler {
 
 			// Track if MaxBytesReader's limit is exceeded.
 			limitExceeded := false
-			bytesRead := int64(0)
 
 			// Wrap ResponseWriter to intercept only MaxBytesReader errors.
 			wrappedWriter := &bodySizeResponseWriter{
@@ -89,11 +88,10 @@ func Middleware(maxBytes int64) func(http.Handler) http.Handler {
 			// Set MaxBytesReader as a safety net for requests without Content-Length.
 			limitedBody := http.MaxBytesReader(wrappedWriter, r.Body, maxBytes)
 
-			// Wrap the limited body to detect when the size limit is exceeded.
+			// Wrap the limited body to detect when the size limit is actually
+			// exceeded (signalled by an *http.MaxBytesError on Read).
 			tracker := &maxBytesTracker{
 				ReadCloser:    limitedBody,
-				bytesRead:     &bytesRead,
-				limit:         maxBytes,
 				limitExceeded: &limitExceeded,
 			}
 			r.Body = tracker
@@ -119,30 +117,24 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	return nil
 }
 
-// maxBytesTracker wraps an io.ReadCloser to track bytes read and detect size
-// limit violations from http.MaxBytesReader.
+// maxBytesTracker wraps an io.ReadCloser to detect when http.MaxBytesReader
+// rejects an oversized body. It flags only genuine overflows so that
+// bodySizeResponseWriter rewrites a handler 400 to 413 exclusively when the
+// body actually exceeded the limit — a body of exactly the limit is within
+// bounds and never sets the flag.
 type maxBytesTracker struct {
 	io.ReadCloser
-	bytesRead     *int64
-	limit         int64
 	limitExceeded *bool
 }
 
 func (t *maxBytesTracker) Read(p []byte) (n int, err error) {
 	n, err = t.ReadCloser.Read(p)
-	*t.bytesRead += int64(n)
 
-	// Check if we've reached/exceeded the limit or if this is a MaxBytesError.
-	// Use >= because MaxBytesReader stops AT the limit, not after it.
-	if *t.bytesRead >= t.limit {
+	// http.MaxBytesReader returns an *http.MaxBytesError only once the body
+	// has grown past the limit; reading exactly the limit returns no error.
+	var maxBytesErr *http.MaxBytesError
+	if errors.As(err, &maxBytesErr) {
 		*t.limitExceeded = true
-	}
-
-	if err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			*t.limitExceeded = true
-		}
 	}
 
 	return n, err

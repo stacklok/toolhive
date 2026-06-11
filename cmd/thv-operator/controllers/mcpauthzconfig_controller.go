@@ -129,7 +129,9 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	canonicalSpec := canonicalizeSpecForHash(authzConfig.Spec)
 	configHash := ctrlutil.CalculateConfigHash(canonicalSpec)
 	if authzConfig.Status.ConfigHash != configHash {
-		logger.Info("MCPAuthzConfig configuration changed",
+		// Routine spec transitions log at DEBUG per the silent-success rule
+		// in .claude/rules/go-style.md.
+		logger.V(1).Info("MCPAuthzConfig configuration changed",
 			"oldHash", authzConfig.Status.ConfigHash,
 			"newHash", configHash)
 	}

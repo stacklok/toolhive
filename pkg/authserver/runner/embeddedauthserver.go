@@ -37,14 +37,8 @@ const (
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	RedisPasswordEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD"
 
-	// maxAuthServerBodySize caps request bodies accepted by the auth-server
-	// endpoints (e.g. POST /oauth/token). OAuth form posts are small, so the
-	// cap is derived from handlers.MaxDCRBodySize (64KB) rather than a separate
-	// literal: that constant is the single source of truth for the auth-server
-	// body limit, so this bound cannot drift from the DCR endpoint's cap. These
-	// endpoints are mounted outside the MCP middleware chain, so they need their
-	// own bound to avoid memory-exhaustion DoS on the unauthenticated token
-	// endpoint.
+	// maxAuthServerBodySize caps auth-server request bodies; shared with the DCR
+	// endpoint via handlers.MaxDCRBodySize so the two bounds cannot drift.
 	maxAuthServerBodySize = handlers.MaxDCRBodySize
 )
 

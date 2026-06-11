@@ -101,6 +101,15 @@ func Middleware(maxBytes int64) func(http.Handler) http.Handler {
 	}
 }
 
+// IsRequestTooLarge reports whether err is the *http.MaxBytesError that
+// http.MaxBytesReader returns when a request body exceeds the configured limit.
+// Handlers that read the body directly use this to translate the read error
+// into a 413 instead of a generic 500.
+func IsRequestTooLarge(err error) bool {
+	var maxBytesErr *http.MaxBytesError
+	return errors.As(err, &maxBytesErr)
+}
+
 // CreateMiddleware is the types.MiddlewareFactory registered in the runner's
 // GetSupportedMiddlewareFactories. It unmarshals MiddlewareParams, builds the
 // handler via Middleware, and registers it with the runner.

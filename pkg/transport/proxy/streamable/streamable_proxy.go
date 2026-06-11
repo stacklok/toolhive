@@ -23,6 +23,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -347,8 +348,7 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 		// A body that exceeds the configured limit without a Content-Length
 		// (e.g. chunked) trips http.MaxBytesReader here rather than at the
 		// early Content-Length check. Surface it as 413, not 500.
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
+		if bodylimit.IsRequestTooLarge(err) {
 			writeHTTPError(w, http.StatusRequestEntityTooLarge, "Request Entity Too Large")
 			return
 		}

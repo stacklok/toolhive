@@ -145,3 +145,19 @@ func TestServerBuilderExtensionPoints(t *testing.T) {
 		assert.NotNil(t, b)
 	})
 }
+
+// TestNewServer_ReadTimeoutConfigured verifies the management API http.Server is
+// created with ReadTimeout set (bounding slow uploads) and WriteTimeout left
+// unset, since the workload router serves multi-minute responses (image pulls).
+func TestNewServer_ReadTimeoutConfigured(t *testing.T) {
+	t.Parallel()
+
+	b := NewServerBuilder().WithAddress("127.0.0.1:0")
+	s, err := NewServer(context.Background(), b)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.listener.Close() })
+
+	require.NotNil(t, s.httpServer)
+	assert.Equal(t, readTimeout, s.httpServer.ReadTimeout)
+	assert.Zero(t, s.httpServer.WriteTimeout)
+}

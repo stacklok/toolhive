@@ -56,7 +56,7 @@ func newAuthzTestReconciler(t *testing.T, objs ...client.Object) (*MCPAuthzConfi
 	return &MCPAuthzConfigReconciler{Client: fakeClient, Scheme: scheme}, fakeClient
 }
 
-func TestBuildFullAuthzConfigJSON(t *testing.T) {
+func Test_buildFullAuthzConfigJSON(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -101,7 +101,7 @@ func TestBuildFullAuthzConfigJSON(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := BuildFullAuthzConfigJSON(tt.spec)
+			result, err := buildFullAuthzConfigJSON(tt.spec)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -127,7 +127,7 @@ func TestBuildFullAuthzConfigJSON(t *testing.T) {
 	}
 }
 
-func TestBuildFullAuthzConfigJSON_EmptyConfigRaw(t *testing.T) {
+func Test_buildFullAuthzConfigJSON_EmptyConfigRaw(t *testing.T) {
 	t.Parallel()
 
 	spec := mcpv1beta1.MCPAuthzConfigSpec{
@@ -135,7 +135,7 @@ func TestBuildFullAuthzConfigJSON_EmptyConfigRaw(t *testing.T) {
 		Config: runtime.RawExtension{Raw: []byte{}},
 	}
 
-	result, err := BuildFullAuthzConfigJSON(spec)
+	result, err := buildFullAuthzConfigJSON(spec)
 	require.Error(t, err)
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "config field is empty")

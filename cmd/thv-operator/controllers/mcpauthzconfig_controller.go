@@ -180,7 +180,7 @@ func (*MCPAuthzConfigReconciler) validateAuthzConfig(authzConfig *mcpv1beta1.MCP
 		return err
 	}
 
-	fullConfigJSON, err := BuildFullAuthzConfigJSON(authzConfig.Spec)
+	fullConfigJSON, err := buildFullAuthzConfigJSON(authzConfig.Spec)
 	if err != nil {
 		return err
 	}
@@ -209,10 +209,10 @@ type authzConfigEnvelope struct {
 	Type    string `json:"type"`
 }
 
-// BuildFullAuthzConfigJSON reconstructs the full authorizer config JSON from a
+// buildFullAuthzConfigJSON reconstructs the full authorizer config JSON from a
 // MCPAuthzConfig spec. The result is the same format accepted by authorizers.Config
 // and used in ConfigMaps: {"version": "1.0", "type": "<type>", "<configKey>": {<config>}}.
-func BuildFullAuthzConfigJSON(spec mcpv1beta1.MCPAuthzConfigSpec) ([]byte, error) {
+func buildFullAuthzConfigJSON(spec mcpv1beta1.MCPAuthzConfigSpec) ([]byte, error) {
 	factory := authorizers.GetFactory(spec.Type)
 	if factory == nil {
 		return nil, fmt.Errorf("unsupported authorizer type: %s (registered types: %v)",

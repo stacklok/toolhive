@@ -542,7 +542,23 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req.Host = req.URL.Host
 	}
 
-	reqBody := readRequestBody(req)
+	reqBody, err := readRequestBody(req)
+	if err != nil {
+		// Oversized request body (chunked / no Content-Length) tripped the
+		// body-size limit; reject with 413 rather than forwarding a truncated body.
+		hdr := make(http.Header)
+		hdr.Set("Content-Type", "text/plain; charset=utf-8")
+		return &http.Response{
+			StatusCode: http.StatusRequestEntityTooLarge,
+			Status:     fmt.Sprintf("%d %s", http.StatusRequestEntityTooLarge, http.StatusText(http.StatusRequestEntityTooLarge)),
+			Proto:      "HTTP/1.1",
+			ProtoMajor: 1,
+			ProtoMinor: 1,
+			Header:     hdr,
+			Body:       io.NopCloser(strings.NewReader("Request Entity Too Large\n")),
+			Request:    req,
+		}, nil
+	}
 
 	// thv proxy does not provide the transport type, so we need to detect it from the request
 	path := req.URL.Path
@@ -709,18 +725,25 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
-func readRequestBody(req *http.Request) []byte {
+func readRequestBody(req *http.Request) ([]byte, error) {
 	reqBody := []byte{}
 	if req.Body != nil {
 		buf, err := io.ReadAll(req.Body)
 		if err != nil {
+			// An oversized body (without Content-Length, e.g. chunked) trips
+			// http.MaxBytesReader here. Surface it so the caller can return 413
+			// instead of silently forwarding a truncated/empty body.
+			var maxBytesErr *http.MaxBytesError
+			if errors.As(err, &maxBytesErr) {
+				return nil, err
+			}
 			slog.Warn("failed to read request body", "error", err)
 		} else {
 			reqBody = buf
 		}
 		req.Body = io.NopCloser(bytes.NewReader(reqBody))
 	}
-	return reqBody
+	return reqBody, nil
 }
 
 func (t *tracingTransport) detectInitialize(body []byte) bool {

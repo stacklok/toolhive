@@ -183,71 +183,53 @@ func (*MCPAuthzConfigReconciler) validateAuthzConfig(authzConfig *mcpv1beta1.MCP
 		return err
 	}
 
-	fullConfigJSON, err := buildFullAuthzConfigJSON(authzConfig.Spec)
+	// buildFullAuthzConfigJSON returns the registered factory alongside the
+	// envelope, so we don't have to re-Unmarshal the JSON or re-look-up the
+	// factory just to dispatch ValidateConfig.
+	fullConfigJSON, factory, err := buildFullAuthzConfigJSON(authzConfig.Spec)
 	if err != nil {
 		return err
 	}
-
-	// Parse and validate via the authorizer factory
-	var cfg authzConfigEnvelope
-	if err := json.Unmarshal(fullConfigJSON, &cfg); err != nil {
-		return fmt.Errorf("failed to parse reconstructed authz config: %w", err)
-	}
-	if cfg.Version == "" || cfg.Type == "" {
-		return fmt.Errorf("reconstructed config missing version or type")
-	}
-
-	factory := authorizers.GetFactory(cfg.Type)
-	if factory == nil {
-		return fmt.Errorf("unsupported authorizer type: %s (registered types: %v)",
-			cfg.Type, authorizers.RegisteredTypes())
-	}
-
 	return factory.ValidateConfig(fullConfigJSON)
 }
 
-// authzConfigEnvelope is a minimal struct for extracting version and type from reconstructed JSON.
-type authzConfigEnvelope struct {
-	Version string `json:"version"`
-	Type    string `json:"type"`
-}
-
 // buildFullAuthzConfigJSON reconstructs the full authorizer config JSON from a
-// MCPAuthzConfig spec. The result is the same format accepted by authorizers.Config
-// and used in ConfigMaps: {"version": "1.0", "type": "<type>", "<configKey>": {<config>}}.
-func buildFullAuthzConfigJSON(spec mcpv1beta1.MCPAuthzConfigSpec) ([]byte, error) {
+// MCPAuthzConfig spec and returns it alongside the resolved factory. The JSON
+// shape is the same one accepted by authorizers.Config and stored in
+// ConfigMaps: {"version": "1.0", "type": "<type>", "<configKey>": {<config>}}.
+// Returning the factory together with the JSON lets callers (notably
+// validateAuthzConfig) skip a second registry lookup.
+func buildFullAuthzConfigJSON(spec mcpv1beta1.MCPAuthzConfigSpec) ([]byte, authorizers.AuthorizerFactory, error) {
 	factory := authorizers.GetFactory(spec.Type)
 	if factory == nil {
-		return nil, fmt.Errorf("unsupported authorizer type: %s (registered types: %v)",
+		return nil, nil, fmt.Errorf("unsupported authorizer type: %s (registered types: %v)",
 			spec.Type, authorizers.RegisteredTypes())
 	}
 
-	configKey := factory.ConfigKey()
-
 	if len(spec.Config.Raw) == 0 {
-		return nil, fmt.Errorf("config field is empty")
+		return nil, nil, fmt.Errorf("config field is empty")
 	}
 
 	versionJSON, err := marshalJSONString(authzConfigVersion)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal version: %w", err)
+		return nil, nil, fmt.Errorf("failed to marshal version: %w", err)
 	}
 	typeJSON, err := marshalJSONString(spec.Type)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal type: %w", err)
+		return nil, nil, fmt.Errorf("failed to marshal type: %w", err)
 	}
 
 	fullConfig := map[string]json.RawMessage{
-		"version": versionJSON,
-		"type":    typeJSON,
-		configKey: spec.Config.Raw,
+		"version":           versionJSON,
+		"type":              typeJSON,
+		factory.ConfigKey(): spec.Config.Raw,
 	}
 
 	result, err := json.Marshal(fullConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to marshal full authz config: %w", err)
+		return nil, nil, fmt.Errorf("failed to marshal full authz config: %w", err)
 	}
-	return result, nil
+	return result, factory, nil
 }
 
 // marshalJSONString marshals a string value to JSON, returning an error instead of panicking.

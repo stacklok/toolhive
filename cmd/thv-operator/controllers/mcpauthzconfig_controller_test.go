@@ -101,14 +101,18 @@ func Test_buildFullAuthzConfigJSON(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result, err := buildFullAuthzConfigJSON(tt.spec)
+			result, factory, err := buildFullAuthzConfigJSON(tt.spec)
 
 			if tt.expectError {
 				require.Error(t, err)
+				assert.Nil(t, factory, "factory must be nil when buildFullAuthzConfigJSON errors")
 				return
 			}
 
 			require.NoError(t, err)
+			require.NotNil(t, factory, "factory must accompany a successful build")
+			assert.Equal(t, tt.expectKey, factory.ConfigKey(),
+				"returned factory's ConfigKey must match the nested envelope key")
 
 			var parsed map[string]json.RawMessage
 			require.NoError(t, json.Unmarshal(result, &parsed), "Output must be valid JSON")
@@ -135,9 +139,10 @@ func Test_buildFullAuthzConfigJSON_EmptyConfigRaw(t *testing.T) {
 		Config: runtime.RawExtension{Raw: []byte{}},
 	}
 
-	result, err := buildFullAuthzConfigJSON(spec)
+	result, factory, err := buildFullAuthzConfigJSON(spec)
 	require.Error(t, err)
 	assert.Nil(t, result)
+	assert.Nil(t, factory, "factory must be nil when buildFullAuthzConfigJSON errors")
 	assert.Contains(t, err.Error(), "config field is empty")
 }
 

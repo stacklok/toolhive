@@ -111,8 +111,13 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		ObservedGeneration: authzConfig.Generation,
 	})
 
-	// Calculate the hash of the current configuration
-	configHash := ctrlutil.CalculateConfigHash(authzConfig.Spec)
+	// Calculate the hash of the current configuration.
+	// The spec is canonicalized first so that two semantically-equal configs
+	// that differ only in whitespace or JSON key order produce the same hash —
+	// otherwise a noop kubectl-apply round trip can re-emit Spec.Config.Raw
+	// with different bytes and flip the hash, causing spurious status writes.
+	canonicalSpec := canonicalizeSpecForHash(authzConfig.Spec)
+	configHash := ctrlutil.CalculateConfigHash(canonicalSpec)
 
 	// Check if the hash has changed
 	hashChanged := authzConfig.Status.ConfigHash != configHash
@@ -239,6 +244,33 @@ func marshalJSONString(v string) (json.RawMessage, error) {
 		return nil, fmt.Errorf("failed to marshal %q: %w", v, err)
 	}
 	return b, nil
+}
+
+// canonicalizeSpecForHash returns a copy of spec whose Config.Raw has been
+// re-marshalled into canonical JSON form (sorted keys, no extra whitespace).
+// The returned value is suitable for ctrlutil.CalculateConfigHash and produces
+// the same hash for two specs that are semantically equal even if their raw
+// bytes differ (whitespace, key ordering, duplicate keys collapsed by Go's
+// encoder).
+//
+// If Config.Raw cannot be unmarshalled (malformed JSON), the original spec is
+// returned unchanged — Validate() / validateAuthzConfig will surface the real
+// error on the next reconcile path. The Spec passed in is never mutated.
+func canonicalizeSpecForHash(spec mcpv1beta1.MCPAuthzConfigSpec) mcpv1beta1.MCPAuthzConfigSpec {
+	if len(spec.Config.Raw) == 0 {
+		return spec
+	}
+	var parsed any
+	if err := json.Unmarshal(spec.Config.Raw, &parsed); err != nil {
+		return spec
+	}
+	canonical, err := json.Marshal(parsed)
+	if err != nil {
+		return spec
+	}
+	out := spec
+	out.Config = runtime.RawExtension{Raw: canonical}
+	return out
 }
 
 // handleDeletion handles the deletion of a MCPAuthzConfig.

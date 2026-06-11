@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	// Import authorizer backends so they register with the factory registry.
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/http"
@@ -137,6 +138,59 @@ func TestBuildFullAuthzConfigJSON_EmptyConfigRaw(t *testing.T) {
 	require.Error(t, err)
 	assert.Nil(t, result)
 	assert.Contains(t, err.Error(), "config field is empty")
+}
+
+func TestCanonicalizeSpecForHash(t *testing.T) {
+	t.Parallel()
+
+	mkSpec := func(raw string) mcpv1beta1.MCPAuthzConfigSpec {
+		return mcpv1beta1.MCPAuthzConfigSpec{
+			Type:   "cedarv1",
+			Config: runtime.RawExtension{Raw: []byte(raw)},
+		}
+	}
+
+	// All three variants are the same logical JSON object — they differ
+	// only in whitespace and key order. The canonical hash must collapse
+	// them to a single value.
+	variants := []struct {
+		name string
+		raw  string
+	}{
+		{name: "compact", raw: `{"a":1,"b":2,"c":3}`},
+		{name: "indented", raw: "{\n  \"a\": 1,\n  \"b\": 2,\n  \"c\": 3\n}"},
+		{name: "reordered keys", raw: `{"c":3,"a":1,"b":2}`},
+	}
+
+	hashes := make(map[string]string, len(variants))
+	for _, v := range variants {
+		canonical := canonicalizeSpecForHash(mkSpec(v.raw))
+		hashes[v.name] = ctrlutil.CalculateConfigHash(canonical)
+	}
+
+	for i := 1; i < len(variants); i++ {
+		assert.Equal(t, hashes[variants[0].name], hashes[variants[i].name],
+			"canonical hash for %q must match %q (whitespace/key-order only)",
+			variants[i].name, variants[0].name)
+	}
+
+	// Empty Raw must be a stable no-op (no panic, original spec back).
+	emptySpec := mcpv1beta1.MCPAuthzConfigSpec{Type: "cedarv1"}
+	assert.Equal(t, emptySpec, canonicalizeSpecForHash(emptySpec))
+
+	// Malformed JSON must not crash; returns spec unchanged so the upstream
+	// validator can surface the real error.
+	bad := mkSpec(`{not-json`)
+	got := canonicalizeSpecForHash(bad)
+	assert.Equal(t, bad.Config.Raw, got.Config.Raw,
+		"malformed JSON must round-trip unchanged for the validator to report it")
+
+	// Caller's spec must not be mutated in place.
+	original := mkSpec(`{"b":2,"a":1}`)
+	originalRaw := append([]byte(nil), original.Config.Raw...)
+	_ = canonicalizeSpecForHash(original)
+	assert.Equal(t, originalRaw, original.Config.Raw,
+		"canonicalizeSpecForHash must not mutate the caller's Config.Raw")
 }
 
 func TestMCPAuthzConfigReconciler_validateAuthzConfig(t *testing.T) {

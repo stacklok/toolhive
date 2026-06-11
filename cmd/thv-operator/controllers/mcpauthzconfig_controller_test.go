@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -492,6 +493,85 @@ func TestMCPAuthzConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	assert.NotEmpty(t, finalConfig.Status.ConfigHash, "Config hash should still be set")
 	assert.NotEqual(t, firstHash, finalConfig.Status.ConfigHash, "Hash should change when spec changes")
 	assert.Equal(t, int64(2), finalConfig.Status.ObservedGeneration, "ObservedGeneration should be updated")
+}
+
+func TestMCPAuthzConfigReconciler_HashAndRefsLandInOneReconcile(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	authzConfig := &mcpv1beta1.MCPAuthzConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "default", Generation: 1},
+		Spec:       mcpv1beta1.MCPAuthzConfigSpec{Type: "cedarv1", Config: validCedarConfig()},
+	}
+	server := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "ref-server", Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
+		},
+	}
+	r, fakeClient := newAuthzTestReconciler(t, authzConfig, server)
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: authzConfig.Name, Namespace: authzConfig.Namespace}}
+
+	// First reconcile adds the finalizer; second runs the success path.
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var after mcpv1beta1.MCPAuthzConfig
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &after))
+
+	// F4 regression: hash AND references must be set after a single
+	// success-path reconcile. The previous shape returned early on
+	// hashChanged and left ReferenceCount at zero until the next event.
+	assert.NotEmpty(t, after.Status.ConfigHash, "ConfigHash should be set")
+	assert.Equal(t, int32(1), after.Status.ReferenceCount,
+		"ReferenceCount must match the referencing workload list in the same reconcile that wrote the hash")
+	require.Len(t, after.Status.ReferencingWorkloads, 1)
+	assert.Equal(t, "ref-server", after.Status.ReferencingWorkloads[0].Name)
+}
+
+func TestMCPAuthzConfigReconciler_ClearsDeletionBlockedOnSuccessPath(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	// Seed the resource with a stale DeletionBlocked=True condition from a
+	// previous (cancelled) deletion attempt. The next non-deleting reconcile
+	// must clear it so operators don't see a stale block warning.
+	authzConfig := &mcpv1beta1.MCPAuthzConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-config",
+			Namespace:  "default",
+			Generation: 1,
+			Finalizers: []string{AuthzConfigFinalizerName},
+		},
+		Spec: mcpv1beta1.MCPAuthzConfigSpec{Type: "cedarv1", Config: validCedarConfig()},
+		Status: mcpv1beta1.MCPAuthzConfigStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
+					Status:             metav1.ConditionTrue,
+					Reason:             "ReferencedByWorkloads",
+					Message:            "Cannot delete: referenced by workloads",
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+	r, fakeClient := newAuthzTestReconciler(t, authzConfig)
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: authzConfig.Name, Namespace: authzConfig.Namespace}}
+
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var after mcpv1beta1.MCPAuthzConfig
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &after))
+
+	assert.Nil(t, meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked),
+		"DeletionBlocked condition must be removed on the non-deletion success path")
+	assert.Equal(t, metav1.ConditionTrue,
+		meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeAuthzConfigValid).Status,
+		"Valid=True condition must remain")
 }
 
 func TestMCPAuthzConfigReconciler_ValidationRecovery(t *testing.T) {

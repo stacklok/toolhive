@@ -107,6 +107,18 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 	}
 
+	// Refresh the referencing workloads list. If the lookup fails we must
+	// requeue with backoff rather than continuing with a stale slice — a
+	// silent swallow would let ReferencingWorkloads / ReferenceCount drift
+	// permanently out of sync with the cluster on a transient apiserver
+	// hiccup.
+	referencingWorkloads, err := r.findReferencingWorkloads(ctx, authzConfig)
+	if err != nil {
+		logger.Error(err, "Failed to find referencing workloads")
+		return ctrl.Result{}, err
+	}
+	newRefCount := workloadReferenceCount(referencingWorkloads)
+
 	// Calculate the hash of the current configuration.
 	// The spec is canonicalized first so that two semantically-equal configs
 	// that differ only in whitespace or JSON key order produce the same hash —
@@ -114,45 +126,25 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// with different bytes and flip the hash, causing spurious status writes.
 	canonicalSpec := canonicalizeSpecForHash(authzConfig.Spec)
 	configHash := ctrlutil.CalculateConfigHash(canonicalSpec)
-	hashChanged := authzConfig.Status.ConfigHash != configHash
-	if hashChanged {
+	if authzConfig.Status.ConfigHash != configHash {
 		logger.Info("MCPAuthzConfig configuration changed",
 			"oldHash", authzConfig.Status.ConfigHash,
 			"newHash", configHash)
-
-		if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
-			setValidTrueCondition(c)
-			c.Status.ConfigHash = configHash
-			c.Status.ObservedGeneration = c.Generation
-		}); err != nil {
-			logger.Error(err, "Failed to update MCPAuthzConfig status")
-			return ctrl.Result{}, err
-		}
-		return ctrl.Result{}, nil
 	}
 
-	// Refresh ReferencingWorkloads list
-	referencingWorkloads, err := r.findReferencingWorkloads(ctx, authzConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing workloads")
-		// Fall through: status patch below is best-effort. Stage 4 of the
-		// review-feedback PR will make this return the error so
-		// controller-runtime requeues with backoff.
-	}
-
-	// Single status patch covering the steady-state success path: ensure the
-	// Valid=True condition is set, and refresh the references list if it
-	// changed. MutateAndPatchStatus short-circuits on an empty diff so the
-	// no-op case still skips the wire call (SteadyStateNoOp behaviour is
+	// Single status patch covering the steady-state success path: Valid=True,
+	// fresh hash + observedGeneration, fresh references, and DeletionBlocked
+	// cleared (we only reach this path when DeletionTimestamp is zero).
+	// MutateAndPatchStatus short-circuits on an empty diff, so a no-op
+	// reconcile still produces no wire call (SteadyStateNoOp behaviour
 	// preserved).
 	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
 		setValidTrueCondition(c)
-		if referencingWorkloads != nil &&
-			(!ctrlutil.WorkloadRefsEqual(c.Status.ReferencingWorkloads, referencingWorkloads) ||
-				c.Status.ReferenceCount != workloadReferenceCount(referencingWorkloads)) {
-			c.Status.ReferencingWorkloads = referencingWorkloads
-			c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-		}
+		meta.RemoveStatusCondition(&c.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked)
+		c.Status.ConfigHash = configHash
+		c.Status.ObservedGeneration = c.Generation
+		c.Status.ReferencingWorkloads = referencingWorkloads
+		c.Status.ReferenceCount = newRefCount
 	}); err != nil {
 		logger.Error(err, "Failed to update MCPAuthzConfig status")
 		return ctrl.Result{}, err

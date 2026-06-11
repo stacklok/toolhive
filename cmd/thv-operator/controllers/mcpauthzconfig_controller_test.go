@@ -500,12 +500,19 @@ func TestMCPAuthzConfigReconciler_FinalizerRemovedAfterLastRefDropped(t *testing
 
 // TestMCPAuthzConfigReconciler_PreservesForeignConditions locks in the
 // property the MutateAndPatchStatus migration is meant to protect: the
-// controller does not erase Status.Conditions entries it doesn't own. JSON
-// merge-patch on CRDs replaces the conditions array wholesale (the
-// +listType=map marker is honoured only by strategic-merge-patch), so a
-// regression that re-introduces r.Status().Update or that mutates conditions
-// outside the helper closure would clobber any concurrently-set foreign
-// condition. This test is the canary.
+// controller's snapshot-and-diff machinery does not erase Status.Conditions
+// entries it doesn't own when building its patch body.
+//
+// The test fails if anyone mutates conditions outside the MutateAndPatchStatus
+// closure (the snapshot would already contain the in-memory mutation, the
+// diff would be empty, and the controller-owned Valid condition would never
+// land — the assertion at the bottom catches that).
+//
+// It does NOT catch a regression to r.Status().Update on its own: under the
+// fake client there is no concurrent writer between Get and Patch, so a full
+// PUT of the in-memory object (which still includes the foreign condition)
+// would persist successfully. Exercising the merge-patch-vs-PUT difference
+// for concurrent writers requires a WithInterceptorFuncs-backed scenario.
 func TestMCPAuthzConfigReconciler_PreservesForeignConditions(t *testing.T) {
 	t.Parallel()
 
@@ -607,6 +614,7 @@ func TestMCPAuthzConfigReconciler_HashAndRefsLandInOneReconcile(t *testing.T) {
 	server := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "ref-server", Namespace: "default"},
 		Spec: mcpv1beta1.MCPServerSpec{
+			Image:          "example/mcp:latest",
 			AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
 		},
 	}
@@ -622,14 +630,16 @@ func TestMCPAuthzConfigReconciler_HashAndRefsLandInOneReconcile(t *testing.T) {
 	var after mcpv1beta1.MCPAuthzConfig
 	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &after))
 
-	// F4 regression: hash AND references must be set after a single
-	// success-path reconcile. The previous shape returned early on
-	// hashChanged and left ReferenceCount at zero until the next event.
+	// F4 regression: hash, references, AND ObservedGeneration must all land
+	// in the same success-path reconcile. The previous shape returned early
+	// on hashChanged and left ReferenceCount at zero until the next event.
 	assert.NotEmpty(t, after.Status.ConfigHash, "ConfigHash should be set")
 	assert.Equal(t, int32(1), after.Status.ReferenceCount,
 		"ReferenceCount must match the referencing workload list in the same reconcile that wrote the hash")
 	require.Len(t, after.Status.ReferencingWorkloads, 1)
 	assert.Equal(t, "ref-server", after.Status.ReferencingWorkloads[0].Name)
+	assert.Equal(t, int64(1), after.Status.ObservedGeneration,
+		"ObservedGeneration must land in the same patch as the hash")
 }
 
 func TestMCPAuthzConfigReconciler_ClearsDeletionBlockedOnSuccessPath(t *testing.T) {

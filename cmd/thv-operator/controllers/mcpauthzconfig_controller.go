@@ -75,10 +75,14 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return r.handleDeletion(ctx, authzConfig)
 	}
 
-	// Add finalizer if it doesn't exist
+	// Add finalizer if it doesn't exist.
+	// MutateAndPatchSpec wraps an optimistic-lock merge patch: any concurrent
+	// finalizer additions land on the live object via the apiserver, and our
+	// patch only carries the field we changed. See .claude/rules/operator.md.
 	if !controllerutil.ContainsFinalizer(authzConfig, AuthzConfigFinalizerName) {
-		controllerutil.AddFinalizer(authzConfig, AuthzConfigFinalizerName)
-		if err := r.Update(ctx, authzConfig); err != nil {
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
+			controllerutil.AddFinalizer(c, AuthzConfigFinalizerName)
+		}); err != nil {
 			logger.Error(err, "Failed to add finalizer")
 			return ctrl.Result{}, err
 		}
@@ -89,27 +93,19 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// method, then backend-specific validation via the authorizer factory registry.
 	if err := r.validateAuthzConfig(authzConfig); err != nil {
 		logger.Error(err, "MCPAuthzConfig spec validation failed")
-		meta.SetStatusCondition(&authzConfig.Status.Conditions, metav1.Condition{
-			Type:               mcpv1beta1.ConditionTypeAuthzConfigValid,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1beta1.ConditionReasonAuthzConfigInvalid,
-			Message:            err.Error(),
-			ObservedGeneration: authzConfig.Generation,
-		})
-		if updateErr := r.Status().Update(ctx, authzConfig); updateErr != nil {
+		if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
+			meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeAuthzConfigValid,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonAuthzConfigInvalid,
+				Message:            err.Error(),
+				ObservedGeneration: c.Generation,
+			})
+		}); updateErr != nil {
 			logger.Error(updateErr, "Failed to update status after validation error")
 		}
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 	}
-
-	// Validation succeeded - set Valid=True condition
-	conditionChanged := meta.SetStatusCondition(&authzConfig.Status.Conditions, metav1.Condition{
-		Type:               mcpv1beta1.ConditionTypeAuthzConfigValid,
-		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1beta1.ConditionReasonAuthzConfigValid,
-		Message:            "Spec validation passed",
-		ObservedGeneration: authzConfig.Generation,
-	})
 
 	// Calculate the hash of the current configuration.
 	// The spec is canonicalized first so that two semantically-equal configs
@@ -118,18 +114,17 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// with different bytes and flip the hash, causing spurious status writes.
 	canonicalSpec := canonicalizeSpecForHash(authzConfig.Spec)
 	configHash := ctrlutil.CalculateConfigHash(canonicalSpec)
-
-	// Check if the hash has changed
 	hashChanged := authzConfig.Status.ConfigHash != configHash
 	if hashChanged {
 		logger.Info("MCPAuthzConfig configuration changed",
 			"oldHash", authzConfig.Status.ConfigHash,
 			"newHash", configHash)
 
-		authzConfig.Status.ConfigHash = configHash
-		authzConfig.Status.ObservedGeneration = authzConfig.Generation
-
-		if err := r.Status().Update(ctx, authzConfig); err != nil {
+		if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
+			setValidTrueCondition(c)
+			c.Status.ConfigHash = configHash
+			c.Status.ObservedGeneration = c.Generation
+		}); err != nil {
 			logger.Error(err, "Failed to update MCPAuthzConfig status")
 			return ctrl.Result{}, err
 		}
@@ -140,22 +135,45 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	referencingWorkloads, err := r.findReferencingWorkloads(ctx, authzConfig)
 	if err != nil {
 		logger.Error(err, "Failed to find referencing workloads")
-	} else if !ctrlutil.WorkloadRefsEqual(authzConfig.Status.ReferencingWorkloads, referencingWorkloads) ||
-		authzConfig.Status.ReferenceCount != workloadReferenceCount(referencingWorkloads) {
-		authzConfig.Status.ReferencingWorkloads = referencingWorkloads
-		authzConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-		conditionChanged = true
+		// Fall through: status patch below is best-effort. Stage 4 of the
+		// review-feedback PR will make this return the error so
+		// controller-runtime requeues with backoff.
 	}
 
-	// Update condition if it changed (even without hash change)
-	if conditionChanged {
-		if err := r.Status().Update(ctx, authzConfig); err != nil {
-			logger.Error(err, "Failed to update MCPAuthzConfig status after condition change")
-			return ctrl.Result{}, err
+	// Single status patch covering the steady-state success path: ensure the
+	// Valid=True condition is set, and refresh the references list if it
+	// changed. MutateAndPatchStatus short-circuits on an empty diff so the
+	// no-op case still skips the wire call (SteadyStateNoOp behaviour is
+	// preserved).
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
+		setValidTrueCondition(c)
+		if referencingWorkloads != nil &&
+			(!ctrlutil.WorkloadRefsEqual(c.Status.ReferencingWorkloads, referencingWorkloads) ||
+				c.Status.ReferenceCount != workloadReferenceCount(referencingWorkloads)) {
+			c.Status.ReferencingWorkloads = referencingWorkloads
+			c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
 		}
+	}); err != nil {
+		logger.Error(err, "Failed to update MCPAuthzConfig status")
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// setValidTrueCondition stamps ConditionTypeAuthzConfigValid=True onto the
+// supplied object. It is callable inside a MutateAndPatchStatus closure: the
+// closure receives the freshly-snapshotted object, and SetStatusCondition
+// only mutates Conditions when the desired state differs, so a no-op
+// reconcile produces an empty patch body that the helper skips.
+func setValidTrueCondition(c *mcpv1beta1.MCPAuthzConfig) {
+	meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeAuthzConfigValid,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonAuthzConfigValid,
+		Message:            "Spec validation passed",
+		ObservedGeneration: c.Generation,
+	})
 }
 
 // validateAuthzConfig validates the MCPAuthzConfig. It first runs the structural
@@ -296,16 +314,17 @@ func (r *MCPAuthzConfigReconciler) handleDeletion(
 				"authzConfig", authzConfig.Name,
 				"referencingWorkloads", referencingWorkloads)
 
-			meta.SetStatusCondition(&authzConfig.Status.Conditions, metav1.Condition{
-				Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
-				Status:             metav1.ConditionTrue,
-				Reason:             "ReferencedByWorkloads",
-				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
-				ObservedGeneration: authzConfig.Generation,
-			})
-			authzConfig.Status.ReferencingWorkloads = referencingWorkloads
-			authzConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-			if updateErr := r.Status().Update(ctx, authzConfig); updateErr != nil {
+			if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
+				meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+					Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
+					Status:             metav1.ConditionTrue,
+					Reason:             "ReferencedByWorkloads",
+					Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
+					ObservedGeneration: c.Generation,
+				})
+				c.Status.ReferencingWorkloads = referencingWorkloads
+				c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
+			}); updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
 			}
 
@@ -313,8 +332,9 @@ func (r *MCPAuthzConfigReconciler) handleDeletion(
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 
-		controllerutil.RemoveFinalizer(authzConfig, AuthzConfigFinalizerName)
-		if err := r.Update(ctx, authzConfig); err != nil {
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
+			controllerutil.RemoveFinalizer(c, AuthzConfigFinalizerName)
+		}); err != nil {
 			logger.Error(err, "Failed to remove finalizer")
 			return ctrl.Result{}, err
 		}

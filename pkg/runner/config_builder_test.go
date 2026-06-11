@@ -1540,49 +1540,6 @@ func TestWithSessionTTL(t *testing.T) {
 	}
 }
 
-func TestWithProxyReadTimeout(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name        string
-		value       time.Duration
-		expectErr   bool
-		expectedStr string
-	}{
-		{
-			name:        "zero serialized as empty (use proxy default)",
-			value:       0,
-			expectedStr: "",
-		},
-		{
-			name:        "positive stored as Go duration string",
-			value:       45 * time.Second,
-			expectedStr: "45s",
-		},
-		{
-			name:      "negative returns an error",
-			value:     -1 * time.Second,
-			expectErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			builder := &runConfigBuilder{config: NewRunConfig()}
-			err := WithProxyReadTimeout(tt.value)(builder)
-
-			if tt.expectErr {
-				require.Error(t, err)
-				return
-			}
-			require.NoError(t, err)
-			assert.Equal(t, tt.expectedStr, builder.config.ProxyReadTimeout)
-		})
-	}
-}
-
 func TestResolveRegistryServerName(t *testing.T) {
 	t.Parallel()
 

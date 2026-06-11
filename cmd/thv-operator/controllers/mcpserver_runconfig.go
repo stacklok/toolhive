@@ -270,11 +270,6 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		options = append(options, runner.WithRateLimitConfig(m.Namespace, m.Spec.RateLimiting))
 	}
 
-	// Add proxy HTTP server read timeout if specified
-	if m.Spec.ProxyReadTimeout != nil {
-		options = append(options, runner.WithProxyReadTimeout(m.Spec.ProxyReadTimeout.Duration))
-	}
-
 	// Use the RunConfigBuilder for operator context with full builder pattern
 	runConfig, err := runner.NewOperatorRunConfigBuilder(
 		context.Background(),

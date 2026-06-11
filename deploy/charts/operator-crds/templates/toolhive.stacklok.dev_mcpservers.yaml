@@ -378,13 +378,6 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
-              proxyReadTimeout:
-                description: |-
-                  ProxyReadTimeout bounds how long the proxy spends reading a full request
-                  (headers + body), mitigating slow-upload connection exhaustion. Applies to
-                  all transports. Defaults to 30s if not specified. Example: "1m".
-                format: duration
-                type: string
               rateLimiting:
                 description: |-
                   RateLimiting defines rate limiting configuration for the MCP server.
@@ -1307,13 +1300,6 @@ spec:
                 maximum: 65535
                 minimum: 1
                 type: integer
-              proxyReadTimeout:
-                description: |-
-                  ProxyReadTimeout bounds how long the proxy spends reading a full request
-                  (headers + body), mitigating slow-upload connection exhaustion. Applies to
-                  all transports. Defaults to 30s if not specified. Example: "1m".
-                format: duration
-                type: string
               rateLimiting:
                 description: |-
                   RateLimiting defines rate limiting configuration for the MCP server.

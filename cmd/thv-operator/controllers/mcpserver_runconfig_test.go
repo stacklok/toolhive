@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -84,43 +83,6 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				assert.Equal(t, "test-image:latest", config.Image)
 				assert.Equal(t, transporttypes.TransportTypeStdio, config.Transport)
 				assert.Equal(t, 8080, config.Port)
-			},
-		},
-		{
-			name: "with proxy read timeout",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "timeout-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:            testImage,
-					Transport:        stdioTransport,
-					ProxyPort:        8080,
-					ProxyReadTimeout: &metav1.Duration{Duration: time.Minute},
-				},
-			},
-			//nolint:thelper // We want to see the error at the specific line
-			expected: func(t *testing.T, config *runner.RunConfig) {
-				assert.Equal(t, "1m0s", config.ProxyReadTimeout)
-			},
-		},
-		{
-			name: "without proxy read timeout leaves it empty",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "no-timeout-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					ProxyPort: 8080,
-				},
-			},
-			//nolint:thelper // We want to see the error at the specific line
-			expected: func(t *testing.T, config *runner.RunConfig) {
-				assert.Empty(t, config.ProxyReadTimeout)
 			},
 		},
 		{

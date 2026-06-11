@@ -8,6 +8,8 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	runtime "k8s.io/apimachinery/pkg/runtime"
+
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
 // Condition type and reasons for MCPAuthzConfig status (RFC-0023)
@@ -112,16 +114,23 @@ type MCPAuthzConfigReference struct {
 // Validate performs structural validation on the MCPAuthzConfig spec.
 // This method is called by the controller during reconciliation.
 //
-// Note: This provides defense-in-depth alongside CEL validation rules. CEL catches
+// Validate provides defense-in-depth alongside CEL validation rules: CEL catches
 // issues at API admission time, but this method also validates stored objects to
 // catch any that bypassed CEL or were stored before CEL rules were added.
 //
-// Backend-specific validation (delegating to the authorizer factory registry) lives
-// in the controller rather than here, because the API types package must not import
-// the authorizer backends.
+// Validate consults the authorizer factory registry (pkg/authz/authorizers) to
+// reject spec.type values that no backend has registered. Backend-specific
+// schema validation (interpreting spec.config) still lives in the controller,
+// where the registered factory's ValidateConfig is invoked.
 func (r *MCPAuthzConfig) Validate() error {
 	if r.Spec.Type == "" {
 		return fmt.Errorf("type must not be empty")
+	}
+	if !authorizers.IsRegistered(r.Spec.Type) {
+		return fmt.Errorf(
+			"type %q is not a registered authorizer backend (registered: %v)",
+			r.Spec.Type, authorizers.RegisteredTypes(),
+		)
 	}
 	if len(r.Spec.Config.Raw) == 0 {
 		return fmt.Errorf("config must not be empty")

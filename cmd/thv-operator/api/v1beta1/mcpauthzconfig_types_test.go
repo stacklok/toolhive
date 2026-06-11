@@ -8,6 +8,11 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	runtime "k8s.io/apimachinery/pkg/runtime"
+
+	// Blank-imported so authorizers.IsRegistered("cedarv1") returns true
+	// inside Validate(). Without this, every test case using a real backend
+	// type would hit the unregistered-type branch.
+	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 )
 
 func TestMCPAuthzConfig_Validate(t *testing.T) {
@@ -17,6 +22,7 @@ func TestMCPAuthzConfig_Validate(t *testing.T) {
 		name        string
 		spec        MCPAuthzConfigSpec
 		expectError bool
+		errContains string
 	}{
 		{
 			name: "valid spec passes",
@@ -33,6 +39,16 @@ func TestMCPAuthzConfig_Validate(t *testing.T) {
 				Config: runtime.RawExtension{Raw: []byte(`{}`)},
 			},
 			expectError: true,
+			errContains: "type must not be empty",
+		},
+		{
+			name: "unregistered type fails",
+			spec: MCPAuthzConfigSpec{
+				Type:   "nope",
+				Config: runtime.RawExtension{Raw: []byte(`{"policies":[]}`)},
+			},
+			expectError: true,
+			errContains: `"nope" is not a registered authorizer backend`,
 		},
 		{
 			name: "empty config raw fails",
@@ -41,6 +57,16 @@ func TestMCPAuthzConfig_Validate(t *testing.T) {
 				Config: runtime.RawExtension{Raw: []byte{}},
 			},
 			expectError: true,
+			errContains: "config must not be empty",
+		},
+		{
+			name: "nil config raw fails",
+			spec: MCPAuthzConfigSpec{
+				Type:   "cedarv1",
+				Config: runtime.RawExtension{Raw: nil},
+			},
+			expectError: true,
+			errContains: "config must not be empty",
 		},
 	}
 
@@ -52,6 +78,9 @@ func TestMCPAuthzConfig_Validate(t *testing.T) {
 			err := cfg.Validate()
 			if tt.expectError {
 				assert.Error(t, err)
+				if tt.errContains != "" {
+					assert.ErrorContains(t, err, tt.errContains)
+				}
 			} else {
 				assert.NoError(t, err)
 			}

@@ -243,6 +243,15 @@ type RunConfig struct {
 	// and the configuration for each middleware.
 	MiddlewareConfigs []types.MiddlewareConfig `json:"middleware_configs,omitempty" yaml:"middleware_configs,omitempty"`
 
+	// AdditionalMiddlewareConfigs carries pre-built middleware configs injected by
+	// external-auth handlers (reached via *[]RunConfigBuilderOption) rather than
+	// derived from typed RunConfig fields. PopulateMiddlewareConfigs splices these
+	// into the chain in the backend-egress group — after auth and before recovery —
+	// instead of discarding them. Upstream carries these configs verbatim and never
+	// inspects their parameters; the middleware type identity (e.g. an enterprise
+	// auth type) is supplied by the caller via types.MiddlewareConfig.Type.
+	AdditionalMiddlewareConfigs []types.MiddlewareConfig `json:"additional_middleware_configs,omitempty" yaml:"additional_middleware_configs,omitempty"` //nolint:lll
+
 	// ValidatingWebhooks contains the configuration for validating webhook middleware.
 	ValidatingWebhooks []webhook.Config `json:"validating_webhooks,omitempty" yaml:"validating_webhooks,omitempty"`
 

@@ -4,6 +4,7 @@
 package runner
 
 import (
+	"bytes"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -180,6 +182,179 @@ func TestPopulateMiddlewareConfigs_HeaderForward(t *testing.T) {
 				"header-forward middleware presence mismatch")
 		})
 	}
+}
+
+// indexOfMiddleware returns the index of the first middleware of the given type
+// in the chain, failing the test if it is absent.
+func indexOfMiddleware(t *testing.T, mws []types.MiddlewareConfig, mwType string) int {
+	t.Helper()
+	for i, mw := range mws {
+		if mw.Type == mwType {
+			return i
+		}
+	}
+	t.Fatalf("middleware type %q not found in chain", mwType)
+	return -1
+}
+
+// TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs verifies that
+// configs injected via AdditionalMiddlewareConfigs survive
+// PopulateMiddlewareConfigs (which previously overwrote the slice) and land in
+// the backend-egress group: after auth and after header-forward, and
+// immediately before recovery.
+func TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs(t *testing.T) {
+	t.Parallel()
+
+	mkInjected := func(t *testing.T, mwType string) types.MiddlewareConfig {
+		t.Helper()
+		mc, err := types.NewMiddlewareConfig(mwType, map[string]string{"marker": mwType})
+		require.NoError(t, err)
+		return *mc
+	}
+
+	t.Run("injected entry preserved, after auth and before recovery", func(t *testing.T) {
+		t.Parallel()
+		injected := mkInjected(t, obo.MiddlewareType)
+		cfg := &RunConfig{
+			AdditionalMiddlewareConfigs: []types.MiddlewareConfig{injected},
+		}
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+		mws := cfg.MiddlewareConfigs
+		require.NotEmpty(t, mws)
+		// body-limit is the outermost entry (slice index 0), auth runs next, and
+		// recovery is always the last (innermost) entry.
+		assert.Equal(t, bodylimit.MiddlewareType, mws[0].Type)
+		assert.Equal(t, recovery.MiddlewareType, mws[len(mws)-1].Type)
+
+		oboIdx := indexOfMiddleware(t, mws, obo.MiddlewareType)
+		assert.Greater(t, oboIdx, indexOfMiddleware(t, mws, auth.MiddlewareType),
+			"injected middleware must come after auth")
+		assert.Equal(t, len(mws)-2, oboIdx,
+			"injected middleware must be spliced immediately before recovery")
+		// The opaque parameters are carried verbatim.
+		assert.Equal(t, injected.Parameters, mws[oboIdx].Parameters)
+	})
+
+	t.Run("injected entry ordered after header-forward", func(t *testing.T) {
+		t.Parallel()
+		injected := mkInjected(t, obo.MiddlewareType)
+		cfg := &RunConfig{
+			RemoteURL: "https://example.com",
+			HeaderForward: &HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{"X-Key": "val"},
+			},
+			AdditionalMiddlewareConfigs: []types.MiddlewareConfig{injected},
+		}
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+		mws := cfg.MiddlewareConfigs
+		oboIdx := indexOfMiddleware(t, mws, obo.MiddlewareType)
+		hfIdx := indexOfMiddleware(t, mws, headerfwd.HeaderForwardMiddlewareName)
+		assert.Greater(t, oboIdx, hfIdx, "injected middleware must come after header-forward")
+		assert.Equal(t, len(mws)-2, oboIdx, "injected middleware must be immediately before recovery")
+		assert.Equal(t, recovery.MiddlewareType, mws[len(mws)-1].Type)
+	})
+
+	t.Run("multiple injected entries keep order before recovery", func(t *testing.T) {
+		t.Parallel()
+		cfg := &RunConfig{
+			AdditionalMiddlewareConfigs: []types.MiddlewareConfig{
+				mkInjected(t, "type-a"),
+				mkInjected(t, "type-b"),
+			},
+		}
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+		mws := cfg.MiddlewareConfigs
+		n := len(mws)
+		require.GreaterOrEqual(t, n, 4)
+		assert.Equal(t, recovery.MiddlewareType, mws[n-1].Type)
+		assert.Equal(t, "type-a", mws[n-3].Type)
+		assert.Equal(t, "type-b", mws[n-2].Type)
+	})
+
+	t.Run("no injected configs leaves the chain unchanged", func(t *testing.T) {
+		t.Parallel()
+		base := &RunConfig{}
+		require.NoError(t, PopulateMiddlewareConfigs(base))
+
+		withEmpty := &RunConfig{AdditionalMiddlewareConfigs: nil}
+		require.NoError(t, PopulateMiddlewareConfigs(withEmpty))
+
+		require.Len(t, withEmpty.MiddlewareConfigs, len(base.MiddlewareConfigs))
+		for i := range base.MiddlewareConfigs {
+			assert.Equal(t, base.MiddlewareConfigs[i].Type, withEmpty.MiddlewareConfigs[i].Type)
+		}
+	})
+}
+
+// TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs_RoundTrip exercises
+// the full operator path (NewOperatorRunConfigBuilder + PopulateMiddlewareConfigs)
+// and confirms an injected obo-typed config survives JSON/YAML serialization so
+// the proxyrunner loads it and dispatches obo.MiddlewareType to a registered
+// factory.
+func TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs_RoundTrip(t *testing.T) {
+	t.Parallel()
+
+	oboParams := map[string]string{"token_url": "https://login.example.com/token"}
+	injected, err := types.NewMiddlewareConfig(obo.MiddlewareType, oboParams)
+	require.NoError(t, err)
+
+	cfg, err := NewOperatorRunConfigBuilder(
+		t.Context(),
+		nil,
+		nil,
+		nil,
+		WithName("obo-test"),
+		WithAdditionalMiddlewareConfigs(injected),
+	)
+	require.NoError(t, err)
+
+	// The builder records the injected config but does not apply it; the
+	// applied chain is populated separately by PopulateMiddlewareConfigs.
+	require.Len(t, cfg.AdditionalMiddlewareConfigs, 1)
+	require.Empty(t, cfg.MiddlewareConfigs)
+
+	require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+	findOBO := func(t *testing.T, c *RunConfig) types.MiddlewareConfig {
+		t.Helper()
+		return c.MiddlewareConfigs[indexOfMiddleware(t, c.MiddlewareConfigs, obo.MiddlewareType)]
+	}
+
+	original := findOBO(t, cfg)
+	require.JSONEq(t, string(injected.Parameters), string(original.Parameters))
+
+	t.Run("json", func(t *testing.T) {
+		t.Parallel()
+		// JSON is the proxyrunner's ConfigMap read path (WriteJSON/ReadJSON).
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+
+		roundTripped := findOBO(t, got)
+		assert.Equal(t, obo.MiddlewareType, roundTripped.Type)
+		assert.JSONEq(t, string(original.Parameters), string(roundTripped.Parameters))
+	})
+
+	t.Run("yaml", func(t *testing.T) {
+		t.Parallel()
+		data, err := yaml.Marshal(cfg)
+		require.NoError(t, err)
+
+		var got RunConfig
+		require.NoError(t, yaml.Unmarshal(data, &got))
+
+		roundTripped := findOBO(t, &got)
+		assert.Equal(t, obo.MiddlewareType, roundTripped.Type)
+		assert.JSONEq(t, string(original.Parameters), string(roundTripped.Parameters))
+	})
+
+	// The proxyrunner dispatches by middleware type; the obo factory is wired.
+	_, ok := GetSupportedMiddlewareFactories()[obo.MiddlewareType]
+	assert.True(t, ok, "obo middleware type must dispatch to a registered factory")
 }
 
 // TestWithMiddlewareFromFlags_ExcludesHeaderForward verifies that WithMiddlewareFromFlags

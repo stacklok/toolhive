@@ -1233,6 +1233,14 @@ const docTemplate = `{
             },
             "github_com_stacklok_toolhive_pkg_runner.RunConfig": {
                 "properties": {
+                    "additional_middleware_configs": {
+                        "description": "AdditionalMiddlewareConfigs carries pre-built middleware configs injected by\nexternal-auth handlers (reached via *[]RunConfigBuilderOption) rather than\nderived from typed RunConfig fields. PopulateMiddlewareConfigs splices these\ninto the chain in the backend-egress group — after auth and before recovery —\ninstead of discarding them. Upstream carries these configs verbatim and never\ninspects their parameters; the middleware type identity (e.g. an enterprise\nauth type) is supplied by the caller via types.MiddlewareConfig.Type.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "allow_docker_gateway": {
                         "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.",
                         "type": "boolean"

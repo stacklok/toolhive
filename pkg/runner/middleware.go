@@ -227,6 +227,16 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		return err
 	}
 
+	// Additional middleware configs injected by external-auth handlers via
+	// WithAdditionalMiddlewareConfigs (e.g. the enterprise OBO handler). Upstream
+	// carries these pre-built configs verbatim and does not interpret their
+	// parameters. They are spliced into the backend-egress group here: after auth
+	// (so the authenticated identity is available) and after the awssts /
+	// header-forward middleware, and before recovery — giving an injected egress
+	// middleware the final say on the outbound request to the backend. Appending an
+	// empty slice is a no-op, so this is harmless when nothing was injected.
+	middlewareConfigs = append(middlewareConfigs, config.AdditionalMiddlewareConfigs...)
+
 	// Recovery middleware (always present, added last). The proxy transports
 	// apply this slice in reverse order (see applyMiddlewares), so the
 	// last-appended entry becomes the INNERMOST wrapper and executes closest to

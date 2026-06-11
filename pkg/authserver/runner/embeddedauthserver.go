@@ -18,6 +18,7 @@ import (
 	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -34,6 +35,13 @@ const (
 	// RedisPasswordEnvVar is the environment variable for the Redis ACL password.
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	RedisPasswordEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD"
+
+	// maxAuthServerBodySize caps request bodies accepted by the auth-server
+	// endpoints (e.g. POST /oauth/token). OAuth form posts are small; 64KB
+	// matches the DCR endpoint's existing cap. These endpoints are mounted
+	// outside the MCP middleware chain, so they need their own bound to avoid
+	// memory-exhaustion DoS on the unauthenticated token endpoint.
+	maxAuthServerBodySize = 64 * 1024
 )
 
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.
@@ -214,7 +222,12 @@ func newEmbeddedAuthServerWithStorage(
 //   - /oauth/authorize, /oauth/callback, /oauth/token, /oauth/register
 //   - /.well-known/jwks.json, /.well-known/oauth-authorization-server, /.well-known/openid-configuration
 func (e *EmbeddedAuthServer) Handler() http.Handler {
-	return e.server.Handler()
+	// Cap request bodies on all auth-server endpoints (e.g. POST /oauth/token,
+	// /oauth/register) so they cannot be used for memory-exhaustion DoS. These
+	// routes are mounted outside the MCP middleware chain (the proxies and vMCP
+	// mount them via Routes()/RegisterHandlers, which derive from this handler),
+	// so the cap is applied here to cover every consumer.
+	return bodylimit.Middleware(maxAuthServerBodySize)(e.server.Handler())
 }
 
 // Close releases resources held by the EmbeddedAuthServer.

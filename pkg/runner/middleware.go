@@ -60,18 +60,11 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	var middlewareConfigs []types.MiddlewareConfig
 	// TODO: Consider extracting other middleware setup into helper functions like addUsageMetricsMiddleware
 
-	// Body size limit middleware (always present, added first to be the outermost
-	// wrapper). Middleware is applied in reverse order, so the first config runs
-	// first and rejects oversized request bodies with 413 before auth, the MCP
-	// parser (pkg/mcp/parser.go), or any proxy handler buffers the body via
-	// io.ReadAll. Defaults to bodylimit.DefaultMaxRequestBodySize.
-	bodyLimitConfig, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
-		MaxBytes: bodylimit.DefaultMaxRequestBodySize,
-	})
+	// Body size limit middleware (always present, outermost). See addBodyLimitMiddleware.
+	middlewareConfigs, err := addBodyLimitMiddleware(middlewareConfigs)
 	if err != nil {
-		return fmt.Errorf("failed to create body limit middleware config: %w", err)
+		return err
 	}
-	middlewareConfigs = append(middlewareConfigs, *bodyLimitConfig)
 
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
@@ -316,6 +309,27 @@ func addTokenExchangeMiddleware(
 		return nil, fmt.Errorf("failed to create token exchange middleware config: %w", err)
 	}
 	return append(middlewares, *tokenExchangeMwConfig), nil
+}
+
+// addBodyLimitMiddleware ensures the body-size-limit middleware is present as the
+// outermost entry (index 0) of the chain. It is the symmetric counterpart to recovery
+// ("always present, innermost"): body-limit is "always present, outermost", so an
+// oversized request body is rejected with 413 before auth, the MCP parser, or any
+// handler buffers it via io.ReadAll — regardless of which builder assembled the chain.
+//
+// Idempotent: if the chain already starts with body-limit, the slice is returned
+// unchanged. Defaults to bodylimit.DefaultMaxRequestBodySize.
+func addBodyLimitMiddleware(middlewares []types.MiddlewareConfig) ([]types.MiddlewareConfig, error) {
+	if len(middlewares) > 0 && middlewares[0].Type == bodylimit.MiddlewareType {
+		return middlewares, nil
+	}
+	cfg, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
+		MaxBytes: bodylimit.DefaultMaxRequestBodySize,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create body limit middleware config: %w", err)
+	}
+	return append([]types.MiddlewareConfig{*cfg}, middlewares...), nil
 }
 
 // addHeaderForwardMiddleware adds header forward middleware if configured for remote servers

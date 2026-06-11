@@ -656,6 +656,87 @@ func TestPopulateMiddlewareConfigs_BodyLimitIsOutermost(t *testing.T) {
 	}
 }
 
+// TestAddBodyLimitMiddleware verifies the shared helper that guarantees the
+// body-size-limit middleware is the outermost (index 0) entry of the chain. This
+// is the regression guard for the gap where pre-populated MiddlewareConfigs (e.g.
+// via WithMiddlewareFromFlags on the `thv run`/management API path) bypassed
+// PopulateMiddlewareConfigs and so never received a body cap.
+func TestAddBodyLimitMiddleware(t *testing.T) {
+	t.Parallel()
+
+	// authConfig builds a non-body-limit middleware config to seed pre-populated chains.
+	authConfig := func(t *testing.T) types.MiddlewareConfig {
+		t.Helper()
+		cfg, err := types.NewMiddlewareConfig(auth.MiddlewareType, auth.MiddlewareParams{})
+		require.NoError(t, err)
+		return *cfg
+	}
+
+	tests := []struct {
+		name  string
+		input func(t *testing.T) []types.MiddlewareConfig
+		// assert receives the result and the (possibly nil) input for comparison.
+		assert func(t *testing.T, input, result []types.MiddlewareConfig)
+	}{
+		{
+			name:  "empty slice gets body limit at index 0",
+			input: func(*testing.T) []types.MiddlewareConfig { return nil },
+			assert: func(t *testing.T, _, result []types.MiddlewareConfig) {
+				t.Helper()
+				require.Len(t, result, 1)
+				assert.Equal(t, bodylimit.MiddlewareType, result[0].Type)
+			},
+		},
+		{
+			name: "pre-populated slice without body limit gets it prepended (CLI/flags path)",
+			input: func(t *testing.T) []types.MiddlewareConfig {
+				return []types.MiddlewareConfig{authConfig(t)}
+			},
+			assert: func(t *testing.T, input, result []types.MiddlewareConfig) {
+				t.Helper()
+				require.Len(t, result, 2)
+				assert.Equal(t, bodylimit.MiddlewareType, result[0].Type,
+					"body limit must be prepended as the outermost entry")
+				assert.Equal(t, input[0].Type, result[1].Type,
+					"original entries must follow body limit, in order")
+			},
+		},
+		{
+			name: "slice already starting with body limit is unchanged (idempotent)",
+			input: func(t *testing.T) []types.MiddlewareConfig {
+				cfg, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
+					MaxBytes: bodylimit.DefaultMaxRequestBodySize,
+				})
+				require.NoError(t, err)
+				return []types.MiddlewareConfig{*cfg, authConfig(t)}
+			},
+			assert: func(t *testing.T, input, result []types.MiddlewareConfig) {
+				t.Helper()
+				require.Len(t, result, len(input), "no duplicate body limit should be added")
+				assert.Equal(t, bodylimit.MiddlewareType, result[0].Type)
+				// Exactly one body limit entry remains.
+				count := 0
+				for _, mw := range result {
+					if mw.Type == bodylimit.MiddlewareType {
+						count++
+					}
+				}
+				assert.Equal(t, 1, count, "body limit must not be duplicated")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			input := tt.input(t)
+			result, err := addBodyLimitMiddleware(input)
+			require.NoError(t, err)
+			tt.assert(t, input, result)
+		})
+	}
+}
+
 // makeCedarAuthzConfig is a helper that creates a valid Cedar authz.Config.
 func makeCedarAuthzConfig(t *testing.T) *authz.Config {
 	t.Helper()

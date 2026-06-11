@@ -220,6 +220,8 @@ spec:
                   The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.
                   Mutually exclusive with authzConfig.
 
+                  resolve AuthzConfigRef into a runtime authz config.
+
                   NOTE: this field is consumed by workload controllers in a follow-up PR.
                   Until that lands, AuthzConfigRef is reference-tracked by the
                   MCPAuthzConfig controller (deletion protection, status.referenceCount)
@@ -1165,6 +1167,8 @@ spec:
                   AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
                   The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.
                   Mutually exclusive with authzConfig.
+
+                  resolve AuthzConfigRef into a runtime authz config.
 
                   NOTE: this field is consumed by workload controllers in a follow-up PR.
                   Until that lands, AuthzConfigRef is reference-tracked by the

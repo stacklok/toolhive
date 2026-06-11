@@ -179,7 +179,6 @@ type IncomingAuthConfig struct {
 
 	// AuthzConfig defines authorization policy configuration.
 	// Reuses MCPServer authz patterns.
-	// Deprecated: Use AuthzConfigRef to reference a shared MCPAuthzConfig resource instead.
 	// AuthzConfig and AuthzConfigRef are mutually exclusive.
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
@@ -187,6 +186,12 @@ type IncomingAuthConfig struct {
 	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
 	// The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
 	// Mutually exclusive with authzConfig.
+	//
+	// NOTE: this field is consumed by workload controllers in a follow-up PR.
+	// Until that lands, AuthzConfigRef is reference-tracked by the
+	// MCPAuthzConfig controller (deletion protection, status.referenceCount)
+	// but does NOT apply authorization to this VirtualMCPServer. Use the
+	// inline AuthzConfig field in the meantime.
 	// +optional
 	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 }

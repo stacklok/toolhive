@@ -15,6 +15,9 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
+
+	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 )
 
 func TestGenerateNonce(t *testing.T) {
@@ -152,7 +155,12 @@ func TestServerBuilderExtensionPoints(t *testing.T) {
 func TestNewServer_ReadTimeoutConfigured(t *testing.T) {
 	t.Parallel()
 
+	// Inject a skill manager so Build() skips creating the default SQLite skill
+	// store, which is shared on disk and races under parallel tests (SQLITE_BUSY).
+	ctrl := gomock.NewController(t)
 	b := NewServerBuilder().WithAddress("127.0.0.1:0")
+	b.skillManager = skillsmocks.NewMockSkillService(ctrl)
+
 	s, err := NewServer(context.Background(), b)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.listener.Close() })

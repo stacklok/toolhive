@@ -137,6 +137,10 @@ type Config struct {
 	// Exposes OIDC discovery information about the protected resource.
 	AuthInfoHandler http.Handler
 
+	// RateLimitMiddleware is the optional rate-limit middleware to apply after
+	// authentication and MCP request parsing.
+	RateLimitMiddleware func(http.Handler) http.Handler
+
 	// AuthServer is the optional embedded authorization server.
 	// When non-nil, the routes returned by Routes() are registered on the mux
 	// alongside the protected resource metadata endpoint.
@@ -581,9 +585,9 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth+parser → audit → discovery → annotation-enrichment →
+	// Code wraps: auth+parser → rate-limit → audit → discovery → annotation-enrichment →
 	//   authz → backend-enrichment → MCP-parsing → telemetry
-	// Execution order: recovery → header-val → auth+parser → audit →
+	// Execution order: recovery → header-val → auth+parser → rate-limit → audit →
 	//   discovery → annotation-enrichment → authz → backend-enrichment →
 	//   MCP-parsing → telemetry → handler
 	//
@@ -668,6 +672,8 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Info("audit middleware enabled for MCP endpoints")
 	}
 
+	mcpHandler = s.applyRateLimiting(mcpHandler)
+
 	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {
 		mcpHandler = s.config.AuthMiddleware(mcpHandler)
@@ -697,6 +703,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	mux.Handle("/", mcpHandler)
 
 	return mux, nil
+}
+
+func (s *Server) applyRateLimiting(next http.Handler) http.Handler {
+	if s.config.RateLimitMiddleware == nil {
+		return next
+	}
+	slog.Info("rate limit middleware enabled for MCP endpoints")
+	return s.config.RateLimitMiddleware(next)
 }
 
 // Start starts the Virtual MCP Server and begins serving requests.

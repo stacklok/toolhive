@@ -1089,7 +1089,8 @@ spec:
                     description: |-
                       Audience is the backend target identifier requested in the exchanged
                       token. Used as the exchange target when Scopes is empty. At least one of
-                      audience or scopes must be set.
+                      audience or scopes must be set; the operator enforces that at reconcile
+                      (it is not an admission-time rule — see the type doc).
                     type: string
                   authority:
                     description: |-
@@ -1151,9 +1152,9 @@ spec:
                     description: |-
                       Scopes are the delegated scopes to request for the exchanged token, e.g.
                       ["api://<backend>/.default"]. When non-empty they take precedence over
-                      Audience. At least one of audience or scopes must be set. The MaxItems and
-                      per-item length caps are defensive bounds that also keep the
-                      audience-or-scopes CEL rule within the apiserver's per-rule cost budget.
+                      Audience. At least one of audience or scopes must be set; the operator
+                      enforces that at reconcile. The MaxItems and per-item length caps are
+                      defensive bounds on an otherwise unbounded list.
                     items:
                       maxLength: 256
                       minLength: 1
@@ -1180,28 +1181,22 @@ spec:
                     type: string
                   tenantId:
                     description: |-
-                      TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier,
-                      in one of the two forms the Entra v2.0 token endpoint addresses: a
-                      directory GUID, or a verified domain name (e.g. contoso.onmicrosoft.com).
-                      Well-known aliases such as "common", "organizations", and "consumers" are
-                      NOT accepted — an OBO confidential-client exchange must target a specific
-                      tenant. The operator interpolates it into the token endpoint
+                      TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier.
+                      Optional at the CRD level (see the type doc); the operator enforces its
+                      presence, since an OBO confidential-client exchange must target a specific
+                      tenant. When set, it must be one of the two forms the Entra v2.0 token
+                      endpoint addresses: a directory GUID, or a verified domain name (e.g.
+                      contoso.onmicrosoft.com). Well-known aliases such as "common",
+                      "organizations", and "consumers" are NOT accepted. The operator
+                      interpolates it into the token endpoint
                       (<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to
-                      the GUID/domain shape (no path metacharacters). The pattern and 253-char
+                      the GUID/domain shape (no path metacharacters); the pattern and 253-char
                       cap mirror the enterprise exchanger's validateTenant, so any tenantId
                       admitted here is one the runtime can consume.
                     maxLength: 253
-                    minLength: 1
                     pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})$
                     type: string
-                required:
-                - tenantId
                 type: object
-                x-kubernetes-validations:
-                - message: at least one of audience or scopes must be set to a non-blank
-                    value
-                  rule: (has(self.audience) && self.audience.trim().size() > 0) ||
-                    (has(self.scopes) && self.scopes.exists(s, s.trim().size() > 0))
               tokenExchange:
                 description: |-
                   TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange
@@ -2516,7 +2511,8 @@ spec:
                     description: |-
                       Audience is the backend target identifier requested in the exchanged
                       token. Used as the exchange target when Scopes is empty. At least one of
-                      audience or scopes must be set.
+                      audience or scopes must be set; the operator enforces that at reconcile
+                      (it is not an admission-time rule — see the type doc).
                     type: string
                   authority:
                     description: |-
@@ -2578,9 +2574,9 @@ spec:
                     description: |-
                       Scopes are the delegated scopes to request for the exchanged token, e.g.
                       ["api://<backend>/.default"]. When non-empty they take precedence over
-                      Audience. At least one of audience or scopes must be set. The MaxItems and
-                      per-item length caps are defensive bounds that also keep the
-                      audience-or-scopes CEL rule within the apiserver's per-rule cost budget.
+                      Audience. At least one of audience or scopes must be set; the operator
+                      enforces that at reconcile. The MaxItems and per-item length caps are
+                      defensive bounds on an otherwise unbounded list.
                     items:
                       maxLength: 256
                       minLength: 1
@@ -2607,28 +2603,22 @@ spec:
                     type: string
                   tenantId:
                     description: |-
-                      TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier,
-                      in one of the two forms the Entra v2.0 token endpoint addresses: a
-                      directory GUID, or a verified domain name (e.g. contoso.onmicrosoft.com).
-                      Well-known aliases such as "common", "organizations", and "consumers" are
-                      NOT accepted — an OBO confidential-client exchange must target a specific
-                      tenant. The operator interpolates it into the token endpoint
+                      TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier.
+                      Optional at the CRD level (see the type doc); the operator enforces its
+                      presence, since an OBO confidential-client exchange must target a specific
+                      tenant. When set, it must be one of the two forms the Entra v2.0 token
+                      endpoint addresses: a directory GUID, or a verified domain name (e.g.
+                      contoso.onmicrosoft.com). Well-known aliases such as "common",
+                      "organizations", and "consumers" are NOT accepted. The operator
+                      interpolates it into the token endpoint
                       (<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to
-                      the GUID/domain shape (no path metacharacters). The pattern and 253-char
+                      the GUID/domain shape (no path metacharacters); the pattern and 253-char
                       cap mirror the enterprise exchanger's validateTenant, so any tenantId
                       admitted here is one the runtime can consume.
                     maxLength: 253
-                    minLength: 1
                     pattern: ^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})$
                     type: string
-                required:
-                - tenantId
                 type: object
-                x-kubernetes-validations:
-                - message: at least one of audience or scopes must be set to a non-blank
-                    value
-                  rule: (has(self.audience) && self.audience.trim().size() > 0) ||
-                    (has(self.scopes) && self.scopes.exists(s, s.trim().size() > 0))
               tokenExchange:
                 description: |-
                   TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange

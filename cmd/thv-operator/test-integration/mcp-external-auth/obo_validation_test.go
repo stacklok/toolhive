@@ -11,14 +11,15 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
-// These tests exercise the kubebuilder validation on OBOConfig (required
-// fields, field patterns, and the "at least one of audience or scopes" CEL
-// rule) through the real apiserver (envtest). They are the admission-time half
-// of the OBOConfig validation contract: the upstream Go Validate() arm
-// intentionally defers field-level validation to these markers and to the
-// registered enterprise OBO handler, so the apiserver is where a malformed
-// obo spec must be rejected.
-var _ = Describe("MCPExternalAuthConfig OBOConfig CEL validation", Label("k8s", "cel", "validation"), func() {
+// These tests exercise the kubebuilder schema validation on OBOConfig through
+// the real apiserver (envtest). OBOConfig has no required field and no
+// cross-field rule: spec.obo shipped as an empty placeholder ({}) in an earlier
+// release, so the schema must keep admitting {} (and any subset of fields), and
+// presence/combination requirements are enforced by the registered OBO handler
+// at reconcile, not at admission. Admission only validates per-field shape
+// (patterns, length/item bounds) for values that are present — that is what
+// these tests pin down.
+var _ = Describe("MCPExternalAuthConfig OBOConfig schema validation", Label("k8s", "validation"), func() {
 	const namespace = "default"
 
 	// makeOBOConfig returns an MCPExternalAuthConfig of type "obo" whose only
@@ -73,82 +74,43 @@ var _ = Describe("MCPExternalAuthConfig OBOConfig CEL validation", Label("k8s", 
 		})
 	})
 
-	Context("required fields", func() {
-		It("should reject an empty OBOConfig (missing required fields)", func() {
+	Context("permissive schema (no required fields, no cross-field rule)", func() {
+		// spec.obo shipped as an empty placeholder in v0.29.3, so the schema must
+		// keep admitting {} and any subset of fields; the operator enforces
+		// presence/combination requirements at reconcile.
+		It("should accept an empty OBOConfig (the v0.29.3 {} placeholder must still round-trip)", func() {
 			cfg := makeOBOConfig("obo-empty", &mcpv1beta1.OBOConfig{})
-			Expect(k8sClient.Create(ctx, cfg)).ShouldNot(Succeed())
+			Expect(k8sClient.Create(ctx, cfg)).Should(Succeed())
 		})
 
-		It("should reject a missing tenantId", func() {
+		It("should accept a config without tenantId (operator enforces presence at reconcile)", func() {
 			cfg := makeOBOConfig("obo-no-tenant", &mcpv1beta1.OBOConfig{
 				ClientID:        "app-client-id",
 				ClientSecretRef: secretRef,
 				Audience:        "api://backend",
 			})
-			err := k8sClient.Create(ctx, cfg)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("tenantId"))
+			Expect(k8sClient.Create(ctx, cfg)).Should(Succeed())
 		})
 
 		It("should accept a config without clientId or clientSecretRef (operator enforces per auth mode)", func() {
-			// clientId/clientSecretRef are optional at the CRD level so future
-			// client-auth methods (certificate, workload identity) need no
-			// breaking schema change; the operator enforces the v1 shared-secret
-			// combination. Admission must therefore accept their absence.
+			// All presence/combination requirements (a tenant, a client-auth
+			// credential, an exchange target) are enforced by the operator handler
+			// at reconcile, not at admission, so future client-auth methods
+			// (certificate, workload identity) need no breaking schema change.
 			cfg := makeOBOConfig("obo-no-client-auth", &mcpv1beta1.OBOConfig{
 				TenantID: "72f988bf-86f1-41af-91ab-2d7cd011db47",
 				Audience: "api://backend",
 			})
 			Expect(k8sClient.Create(ctx, cfg)).Should(Succeed())
 		})
-	})
 
-	Context("at least one of audience or scopes", func() {
-		It("should reject when neither audience nor scopes is set", func() {
+		It("should accept a config with neither audience nor scopes (operator enforces at reconcile)", func() {
 			cfg := makeOBOConfig("obo-no-target", &mcpv1beta1.OBOConfig{
 				TenantID:        "72f988bf-86f1-41af-91ab-2d7cd011db47",
 				ClientID:        "app-client-id",
 				ClientSecretRef: secretRef,
 			})
-			err := k8sClient.Create(ctx, cfg)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("at least one of audience or scopes must be set"))
-		})
-
-		It("should reject when scopes is an empty list and audience is unset", func() {
-			cfg := makeOBOConfig("obo-empty-scopes", &mcpv1beta1.OBOConfig{
-				TenantID:        "72f988bf-86f1-41af-91ab-2d7cd011db47",
-				ClientID:        "app-client-id",
-				ClientSecretRef: secretRef,
-				Scopes:          []string{},
-			})
-			err := k8sClient.Create(ctx, cfg)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("at least one of audience or scopes must be set"))
-		})
-
-		It("should reject a whitespace-only audience (mirrors ExchangeTarget trimming)", func() {
-			cfg := makeOBOConfig("obo-blank-audience", &mcpv1beta1.OBOConfig{
-				TenantID:        "72f988bf-86f1-41af-91ab-2d7cd011db47",
-				ClientID:        "app-client-id",
-				ClientSecretRef: secretRef,
-				Audience:        "   ",
-			})
-			err := k8sClient.Create(ctx, cfg)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("non-blank value"))
-		})
-
-		It("should reject scopes containing only blank entries", func() {
-			cfg := makeOBOConfig("obo-blank-scopes", &mcpv1beta1.OBOConfig{
-				TenantID:        "72f988bf-86f1-41af-91ab-2d7cd011db47",
-				ClientID:        "app-client-id",
-				ClientSecretRef: secretRef,
-				Scopes:          []string{"   "},
-			})
-			err := k8sClient.Create(ctx, cfg)
-			Expect(err).To(HaveOccurred())
-			Expect(err.Error()).To(ContainSubstring("non-blank value"))
+			Expect(k8sClient.Create(ctx, cfg)).Should(Succeed())
 		})
 	})
 

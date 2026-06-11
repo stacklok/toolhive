@@ -141,33 +141,34 @@ type MCPExternalAuthConfigSpec struct {
 //     otherwise audience)
 //   - cacheSkew → the contract's integer-seconds cacheSkewSeconds
 //
-// The XValidation rule mirrors the emptiness semantics of
-// obo.MiddlewareParameters.ExchangeTarget() (which TrimSpaces both fields):
-// it requires a non-blank audience or at least one non-blank scope, so a
-// present-but-whitespace value is rejected at admission rather than collapsing
-// to an empty exchange target only at reconcile. It checks presence, not the
-// scopes-win-over-audience preference — that collapse stays the single
-// responsibility of ExchangeTarget().
+// Every field is optional at the CRD level, and the schema deliberately carries
+// no required field and no cross-field CEL rule. spec.obo shipped as an empty
+// placeholder ({}) in earlier releases, so adding a required field or an
+// admission rule that rejects {} would be a backward-incompatible narrowing of
+// an already-stored, round-trippable object. Presence and combination
+// requirements — a tenant, a client-auth credential, and at least one of
+// audience/scopes — are therefore enforced by the registered OBO handler at
+// reconcile, which reports a violation as Valid=False / Reason=InvalidConfig.
+// The per-field patterns below still apply, but only to a value that is present.
 //
-// +kubebuilder:validation:XValidation:rule="(has(self.audience) && self.audience.trim().size() > 0) || (has(self.scopes) && self.scopes.exists(s, s.trim().size() > 0))",message="at least one of audience or scopes must be set to a non-blank value"
-//
-//nolint:lll // CEL validation rules exceed line length limit
+//nolint:lll // the tenantId GUID/domain pattern exceeds the line length limit
 type OBOConfig struct {
-	// TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier,
-	// in one of the two forms the Entra v2.0 token endpoint addresses: a
-	// directory GUID, or a verified domain name (e.g. contoso.onmicrosoft.com).
-	// Well-known aliases such as "common", "organizations", and "consumers" are
-	// NOT accepted — an OBO confidential-client exchange must target a specific
-	// tenant. The operator interpolates it into the token endpoint
+	// TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier.
+	// Optional at the CRD level (see the type doc); the operator enforces its
+	// presence, since an OBO confidential-client exchange must target a specific
+	// tenant. When set, it must be one of the two forms the Entra v2.0 token
+	// endpoint addresses: a directory GUID, or a verified domain name (e.g.
+	// contoso.onmicrosoft.com). Well-known aliases such as "common",
+	// "organizations", and "consumers" are NOT accepted. The operator
+	// interpolates it into the token endpoint
 	// (<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to
-	// the GUID/domain shape (no path metacharacters). The pattern and 253-char
+	// the GUID/domain shape (no path metacharacters); the pattern and 253-char
 	// cap mirror the enterprise exchanger's validateTenant, so any tenantId
 	// admitted here is one the runtime can consume.
-	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=253
 	// +kubebuilder:validation:Pattern=`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})$`
-	TenantID string `json:"tenantId"`
+	// +optional
+	TenantID string `json:"tenantId,omitempty"`
 
 	// Authority overrides the default Entra login host
 	// (https://login.microsoftonline.com) for sovereign or national clouds, e.g.
@@ -207,15 +208,16 @@ type OBOConfig struct {
 
 	// Audience is the backend target identifier requested in the exchanged
 	// token. Used as the exchange target when Scopes is empty. At least one of
-	// audience or scopes must be set.
+	// audience or scopes must be set; the operator enforces that at reconcile
+	// (it is not an admission-time rule — see the type doc).
 	// +optional
 	Audience string `json:"audience,omitempty"`
 
 	// Scopes are the delegated scopes to request for the exchanged token, e.g.
 	// ["api://<backend>/.default"]. When non-empty they take precedence over
-	// Audience. At least one of audience or scopes must be set. The MaxItems and
-	// per-item length caps are defensive bounds that also keep the
-	// audience-or-scopes CEL rule within the apiserver's per-rule cost budget.
+	// Audience. At least one of audience or scopes must be set; the operator
+	// enforces that at reconcile. The MaxItems and per-item length caps are
+	// defensive bounds on an otherwise unbounded list.
 	// +kubebuilder:validation:MaxItems=20
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:MaxLength=256
@@ -1340,15 +1342,16 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		// has already run via r.validateTypeConfigConsistency() at the top
 		// of this method, so this arm is reached only when the structural
 		// invariant holds — and the matching CEL rule on the spec catches
-		// it at admission time. Field-level validation of OBOConfig
-		// (required tenantId, at-least-one-of audience/scopes, authority/
-		// tenantId shape, duration format of cacheSkew) is enforced by the
-		// kubebuilder markers and the OBOConfig CEL rule at admission, not here:
-		// OBOConfig is a brand-new field set with no pre-CEL stored objects to
-		// backfill, and the semantic/protocol validation that would justify a
-		// reconcile-time backstop (clientId/clientSecretRef presence for the
-		// chosen client-auth mode, rejecting a negative cacheSkew) is owned by
-		// the registered handler, not the upstream type. That handler runs at reconcile
+		// it at admission time. OBOConfig carries no required field and no
+		// cross-field CEL rule: spec.obo shipped as an empty placeholder in an
+		// earlier release, so a required field or a rule rejecting {} would be a
+		// backward-incompatible narrowing. The kubebuilder markers check only
+		// per-field shape (tenantId GUID/domain, authority URL,
+		// subjectTokenProviderName, scopes/cacheSkew bounds) at admission, and
+		// only for values that are present. All presence and combination
+		// requirements (a tenant, a client-auth credential, at least one of
+		// audience/scopes) and protocol-level checks are owned by the registered
+		// handler, not the upstream type. That handler runs at reconcile
 		// time via the controllerutil.OBOValidate function-pointer hook:
 		// upstream-only builds return obo.ErrEnterpriseRequired, which the
 		// reconciler maps to status.conditions[Valid] = False / Reason:

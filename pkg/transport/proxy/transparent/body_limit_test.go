@@ -54,7 +54,6 @@ func TestTransparentProxy_RejectsOversizedBody(t *testing.T) {
 		_ = proxy.Stop(stopCtx)
 	})
 	require.NoError(t, proxy.Start(ctx))
-	time.Sleep(100 * time.Millisecond)
 
 	url := fmt.Sprintf("http://%s/", proxy.listener.Addr().String())
 	resp, err := http.Post(url, "application/json", bytes.NewReader(make([]byte, limit+1)))

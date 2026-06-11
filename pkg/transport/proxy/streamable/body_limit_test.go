@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"sync/atomic"
 	"testing"
@@ -18,6 +19,25 @@ import (
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+// waitForReady polls addr until a TCP connection succeeds or a deadline elapses.
+// The streamable proxy binds its listener asynchronously (ListenAndServe runs in
+// a goroutine on a pre-allocated port), so callers must wait for the listener to
+// accept connections before issuing requests.
+func waitForReady(t *testing.T, addr string) {
+	t.Helper()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			_ = conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	require.FailNowf(t, "proxy not ready", "proxy did not become reachable at %s within deadline", addr)
+}
 
 // TestHTTPProxy_RejectsOversizedBody verifies that a body-limit middleware in
 // the proxy chain rejects an oversized request body with 413 (the chain wires
@@ -36,7 +56,7 @@ func TestHTTPProxy_RejectsOversizedBody(t *testing.T) {
 	ctx := t.Context()
 	require.NoError(t, proxy.Start(ctx))
 	defer proxy.Stop(ctx)
-	time.Sleep(100 * time.Millisecond)
+	waitForReady(t, fmt.Sprintf("127.0.0.1:%d", port))
 
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
 	resp, err := http.Post(url, "application/json", bytes.NewReader(make([]byte, limit+1)))
@@ -65,7 +85,7 @@ func TestHTTPProxy_RejectsOversizedChunkedBodyWith413(t *testing.T) {
 	ctx := t.Context()
 	require.NoError(t, proxy.Start(ctx))
 	defer proxy.Stop(ctx)
-	time.Sleep(100 * time.Millisecond)
+	waitForReady(t, fmt.Sprintf("127.0.0.1:%d", port))
 
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
 
@@ -121,7 +141,7 @@ func TestHTTPProxy_BodyLimitBoundsDownstreamReader(t *testing.T) {
 	ctx := t.Context()
 	require.NoError(t, proxy.Start(ctx))
 	defer proxy.Stop(ctx)
-	time.Sleep(100 * time.Millisecond)
+	waitForReady(t, fmt.Sprintf("127.0.0.1:%d", port))
 
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
 

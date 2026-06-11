@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -34,7 +33,6 @@ func TestHTTPSSEProxy_RejectsOversizedBody(t *testing.T) {
 	ctx := t.Context()
 	require.NoError(t, proxy.Start(ctx))
 	t.Cleanup(func() { _ = proxy.Stop(ctx) })
-	time.Sleep(100 * time.Millisecond)
 
 	url := fmt.Sprintf("http://%s%s", proxy.server.Addr, ssecommon.HTTPMessagesEndpoint)
 	resp, err := http.Post(url, "application/json", bytes.NewReader(make([]byte, limit+1)))

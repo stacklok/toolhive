@@ -39,6 +39,12 @@ const (
 	// proxyRequestTimeoutEnv is the environment variable that overrides the
 	// default proxy request timeout.
 	proxyRequestTimeoutEnv = "TOOLHIVE_PROXY_REQUEST_TIMEOUT"
+
+	// defaultReadTimeout bounds reading the entire request (headers + body) on
+	// the proxy http.Server, mitigating slow-upload connection exhaustion. It
+	// does not affect responses, so SSE response streams are unaffected. Matches
+	// the vMCP server default.
+	defaultReadTimeout = 30 * time.Second
 )
 
 // HTTPProxy implements a proxy for streamable HTTP transport.
@@ -46,6 +52,7 @@ type HTTPProxy struct {
 	host              string
 	port              int
 	requestTimeout    time.Duration
+	readTimeout       time.Duration
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
 	middlewares       []types.NamedMiddleware
@@ -115,6 +122,18 @@ func WithSessionTTL(ttl time.Duration) Option {
 	}
 }
 
+// WithReadTimeout overrides http.Server.ReadTimeout for this proxy, which bounds
+// reading the entire request (headers + body). Zero or negative values are
+// ignored so the constructor's default (defaultReadTimeout) is preserved.
+func WithReadTimeout(d time.Duration) Option {
+	return func(p *HTTPProxy) {
+		if d <= 0 {
+			return
+		}
+		p.readTimeout = d
+	}
+}
+
 // WithAuthInfoHandler sets the handler for RFC 9728 OAuth protected resource discovery.
 // When set, the handler is mounted at /.well-known/ outside the middleware chain.
 // When nil, /.well-known/ returns a clean JSON 404 so OAuth clients parse it cleanly.
@@ -147,6 +166,7 @@ func NewHTTPProxy(
 		host:              host,
 		port:              port,
 		requestTimeout:    resolveRequestTimeout(),
+		readTimeout:       defaultReadTimeout,
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
 		middlewares:       middlewares,
@@ -206,6 +226,7 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       p.readTimeout,
 	}
 
 	// Route container responses to matching waiter channels

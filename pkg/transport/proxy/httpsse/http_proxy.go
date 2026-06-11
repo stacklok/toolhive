@@ -25,10 +25,25 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
+	transportmiddleware "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+)
+
+const (
+	// defaultReadTimeout bounds reading the entire request (headers + body) on
+	// the proxy http.Server, mitigating slow-upload connection exhaustion. It
+	// does not affect SSE responses, which stream on the response side. Matches
+	// the vMCP server default.
+	defaultReadTimeout = 30 * time.Second
+
+	// defaultWriteTimeout bounds writing the response on the proxy http.Server.
+	// The long-lived SSE GET stream is exempted per-connection by
+	// transportmiddleware.WriteTimeout, which clears the write deadline so the
+	// stream is not severed (golang/go#16100). Matches the vMCP server default.
+	defaultWriteTimeout = 30 * time.Second
 )
 
 // Proxy defines the interface for proxying messages between clients and destinations.
@@ -79,6 +94,16 @@ type HTTPSSEProxy struct {
 	// sessionTTL is the resolved inactivity timeout for the session manager.
 	// Defaults to session.DefaultSessionTTL; overridable via WithSessionTTL.
 	sessionTTL time.Duration
+
+	// readTimeout is the resolved http.Server.ReadTimeout for this proxy.
+	// Defaults to defaultReadTimeout; overridable via WithReadTimeout.
+	readTimeout time.Duration
+
+	// writeTimeout is the resolved http.Server.WriteTimeout for this proxy.
+	// Defaults to defaultWriteTimeout; overridable via WithWriteTimeout. The
+	// long-lived SSE GET stream is protected from it by the WriteTimeout
+	// middleware mounted on the SSE endpoint.
+	writeTimeout time.Duration
 
 	// sessionStorage is the optional custom storage backend for the session manager.
 	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
@@ -154,6 +179,31 @@ func WithSessionTTL(ttl time.Duration) Option {
 	}
 }
 
+// WithReadTimeout overrides http.Server.ReadTimeout for this proxy, which bounds
+// reading the entire request (headers + body). Zero or negative values are
+// ignored so the constructor's default (defaultReadTimeout) is preserved.
+func WithReadTimeout(d time.Duration) Option {
+	return func(p *HTTPSSEProxy) {
+		if d <= 0 {
+			return
+		}
+		p.readTimeout = d
+	}
+}
+
+// WithWriteTimeout overrides http.Server.WriteTimeout for this proxy, which bounds
+// writing the response. The long-lived SSE GET stream is exempted per-connection
+// by the WriteTimeout middleware mounted on the SSE endpoint. Zero or negative
+// values are ignored so the constructor's default (defaultWriteTimeout) is preserved.
+func WithWriteTimeout(d time.Duration) Option {
+	return func(p *HTTPSSEProxy) {
+		if d <= 0 {
+			return
+		}
+		p.writeTimeout = d
+	}
+}
+
 // WithAuthInfoHandler sets the RFC 9728 OAuth protected resource discovery handler.
 // When nil (the default), requests to /.well-known/ return a clean JSON 404.
 func WithAuthInfoHandler(h http.Handler) Option {
@@ -187,6 +237,8 @@ func NewHTTPSSEProxy(
 		shutdownCh:        make(chan struct{}),
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		sessionTTL:        session.DefaultSessionTTL,
+		readTimeout:       defaultReadTimeout,
+		writeTimeout:      defaultWriteTimeout,
 		pendingMessages:   []*ssecommon.PendingSSEMessage{},
 		prometheusHandler: prometheusHandler,
 	}
@@ -242,7 +294,11 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Add handlers for SSE and JSON-RPC with middlewares
 	// At some point we should add support for Streamable HTTP transport here
 	// https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http
-	mux.Handle(ssecommon.HTTPSSEEndpoint, applyMiddlewares(
+	// The SSE endpoint serves a long-lived GET stream. http.Server.WriteTimeout
+	// would sever it, so wrap the handler with the WriteTimeout middleware, which
+	// clears the write deadline for qualifying SSE GET connections on this path
+	// (golang/go#16100). The request-read phase is still bounded by ReadTimeout.
+	mux.Handle(ssecommon.HTTPSSEEndpoint, transportmiddleware.WriteTimeout(ssecommon.HTTPSSEEndpoint)(applyMiddlewares(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
 				http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -251,7 +307,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 			p.handleSSEConnection(w, r)
 		}),
 		p.middlewares...,
-	))
+	)))
 
 	mux.Handle(ssecommon.HTTPMessagesEndpoint, applyMiddlewares(http.HandlerFunc(p.handlePostRequest), p.middlewares...))
 
@@ -280,6 +336,8 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	p.server = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
+		ReadTimeout:       p.readTimeout,    // Bound slow body uploads
+		WriteTimeout:      p.writeTimeout,   // SSE stream exempted by WriteTimeout middleware
 	}
 
 	// Store the actual address

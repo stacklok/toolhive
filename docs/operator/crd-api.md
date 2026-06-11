@@ -2410,7 +2410,6 @@ _Appears in:_
 | `sessionStorage` _[api.v1beta1.SessionStorageConfig](#apiv1beta1sessionstorageconfig)_ | SessionStorage configures session storage for stateful horizontal scaling.<br />When nil, no session storage is configured. |  | Optional: \{\} <br /> |
 | `rateLimiting` _[ratelimit.types.RateLimitConfig](#ratelimittypesratelimitconfig)_ | RateLimiting defines rate limiting configuration for the MCP server.<br />Requires Redis session storage to be configured for distributed rate limiting. |  | Optional: \{\} <br /> |
 | `proxyReadTimeout` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | ProxyReadTimeout bounds how long the proxy spends reading a full request<br />(headers + body), mitigating slow-upload connection exhaustion. Applies to<br />all transports. Defaults to 30s if not specified. Example: "1m". |  | Format: duration <br />Type: string <br />Optional: \{\} <br /> |
-| `proxyWriteTimeout` _[Duration](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#duration-v1-meta)_ | ProxyWriteTimeout bounds how long the proxy spends writing a response.<br />Only effective for the SSE (sse) transport; the streamable-http and<br />transparent transports ignore it because their long-lived responses cannot<br />be safely bounded by a write deadline. Defaults to 30s if not specified. |  | Format: duration <br />Type: string <br />Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPServerStatus

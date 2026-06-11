@@ -157,7 +157,6 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --proxy-mode string                           Proxy mode for stdio (streamable-http or sse (deprecated, will be removed)) (default "streamable-http")
       --proxy-port int                              Port for the HTTP proxy to listen on (host port)
       --proxy-read-timeout duration                 Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)
-      --proxy-write-timeout duration                Maximum time to write a response on the proxy (e.g., 30s); only applies to the SSE transport; zero uses the default (30s)
   -p, --publish stringArray                         Publish a container's port(s) to the host (format: hostPort:containerPort)
       --remote-auth                                 Enable OAuth/OIDC authentication to remote MCP server (default false)
       --remote-auth-authorize-url string            OAuth authorization endpoint URL (alternative to --remote-auth-issuer for non-OIDC OAuth)

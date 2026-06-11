@@ -218,14 +218,6 @@ type RunConfig struct {
 	// String (not time.Duration) keeps the wire format unit-explicit.
 	ProxyReadTimeout string `json:"proxy_read_timeout,omitempty" yaml:"proxy_read_timeout,omitempty" example:"30s"`
 
-	// ProxyWriteTimeout bounds writing the response on the proxy HTTP server,
-	// expressed as a Go duration string (e.g. "30s", "1m"). Empty uses the proxy
-	// default (30s). Negative durations and values that fail time.ParseDuration
-	// are rejected at runtime. Only effective for the SSE (sse) transport; the
-	// streamable-http and transparent transports ignore it because their
-	// long-lived responses cannot be safely bounded by a write deadline.
-	ProxyWriteTimeout string `json:"proxy_write_timeout,omitempty" yaml:"proxy_write_timeout,omitempty" example:"30s"`
-
 	// ProxyMode is the effective HTTP protocol the proxy uses.
 	// For stdio transports, this is the configured mode (sse or streamable-http).
 	// For direct transports (sse/streamable-http), this matches the transport type.

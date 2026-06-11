@@ -202,13 +202,9 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
-	// Resolve proxy HTTP server timeouts. Empty/zero means "use the proxy
-	// default"; the proxy options ignore non-positive values.
+	// Resolve the proxy HTTP server read timeout. Empty/zero means "use the proxy
+	// default"; the proxy option ignores non-positive values.
 	proxyReadTimeout, err := parseProxyTimeout("proxy_read_timeout", r.Config.ProxyReadTimeout)
-	if err != nil {
-		return err
-	}
-	proxyWriteTimeout, err := parseProxyTimeout("proxy_write_timeout", r.Config.ProxyWriteTimeout)
 	if err != nil {
 		return err
 	}
@@ -226,7 +222,6 @@ func (r *Runner) Run(ctx context.Context) error {
 		EndpointPrefix:    r.Config.EndpointPrefix,
 		SessionTTL:        effectiveSessionTTL,
 		ReadTimeout:       proxyReadTimeout,
-		WriteTimeout:      proxyWriteTimeout,
 	}
 
 	// Set proxy mode for stdio transport

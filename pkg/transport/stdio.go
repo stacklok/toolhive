@@ -66,7 +66,6 @@ type StdioTransport struct {
 	sessionStorage    session.Storage
 	sessionTTL        time.Duration
 	readTimeout       time.Duration
-	writeTimeout      time.Duration
 	authInfoHandler   http.Handler
 	prefixHandlers    map[string]http.Handler
 
@@ -158,13 +157,6 @@ func (t *StdioTransport) SetSessionTTL(ttl time.Duration) {
 // Zero is valid and means "use the proxy's default".
 func (t *StdioTransport) SetReadTimeout(d time.Duration) {
 	t.readTimeout = d
-}
-
-// SetWriteTimeout configures http.Server.WriteTimeout on the underlying proxy.
-// Zero is valid and means "use the proxy's default". Only the SSE proxy applies
-// it; the streamable-http proxy does not set a write deadline.
-func (t *StdioTransport) SetWriteTimeout(d time.Duration) {
-	t.writeTimeout = d
 }
 
 // SetAuthInfoHandler sets the RFC 9728 OAuth protected resource discovery handler.
@@ -295,9 +287,6 @@ func (t *StdioTransport) sseProxyOptions() []httpsse.Option {
 	}
 	if t.readTimeout > 0 {
 		opts = append(opts, httpsse.WithReadTimeout(t.readTimeout))
-	}
-	if t.writeTimeout > 0 {
-		opts = append(opts, httpsse.WithWriteTimeout(t.writeTimeout))
 	}
 	if t.sessionStorage != nil {
 		opts = append(opts, httpsse.WithSessionStorage(t.sessionStorage))

@@ -87,28 +87,26 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			},
 		},
 		{
-			name: "with proxy timeouts",
+			name: "with proxy read timeout",
 			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "timeout-server",
 					Namespace: "test-ns",
 				},
 				Spec: mcpv1beta1.MCPServerSpec{
-					Image:             testImage,
-					Transport:         stdioTransport,
-					ProxyPort:         8080,
-					ProxyReadTimeout:  &metav1.Duration{Duration: time.Minute},
-					ProxyWriteTimeout: &metav1.Duration{Duration: 45 * time.Second},
+					Image:            testImage,
+					Transport:        stdioTransport,
+					ProxyPort:        8080,
+					ProxyReadTimeout: &metav1.Duration{Duration: time.Minute},
 				},
 			},
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "1m0s", config.ProxyReadTimeout)
-				assert.Equal(t, "45s", config.ProxyWriteTimeout)
 			},
 		},
 		{
-			name: "without proxy timeouts leaves them empty",
+			name: "without proxy read timeout leaves it empty",
 			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "no-timeout-server",
@@ -123,7 +121,6 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Empty(t, config.ProxyReadTimeout)
-				assert.Empty(t, config.ProxyWriteTimeout)
 			},
 		},
 		{

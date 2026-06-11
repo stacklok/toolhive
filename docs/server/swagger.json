@@ -1365,11 +1365,6 @@
                         "example": "30s",
                         "type": "string"
                     },
-                    "proxy_write_timeout": {
-                        "description": "ProxyWriteTimeout bounds writing the response on the proxy HTTP server,\nexpressed as a Go duration string (e.g. \"30s\", \"1m\"). Empty uses the proxy\ndefault (30s). Negative durations and values that fail time.ParseDuration\nare rejected at runtime. Only effective for the SSE (sse) transport; the\nstreamable-http and transparent transports ignore it because their\nlong-lived responses cannot be safely bounded by a write deadline.",
-                        "example": "30s",
-                        "type": "string"
-                    },
                     "publish": {
                         "description": "Publish lists ports to publish to the host in format \"hostPort:containerPort\"",
                         "items": {

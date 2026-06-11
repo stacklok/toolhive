@@ -111,10 +111,6 @@ type RunFlags struct {
 	// ProxyReadTimeout bounds reading a full request on the proxy. Zero uses the default.
 	ProxyReadTimeout time.Duration
 
-	// ProxyWriteTimeout bounds writing a response on the proxy. Zero uses the default.
-	// Only effective for the SSE transport.
-	ProxyWriteTimeout time.Duration
-
 	// Network mode
 	Network string
 
@@ -279,8 +275,6 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Session inactivity timeout (e.g., 30m, 2h); zero uses the default (2h)")
 	cmd.Flags().DurationVar(&config.ProxyReadTimeout, "proxy-read-timeout", 0,
 		"Maximum time to read a full request on the proxy (e.g., 30s, 1m); zero uses the default (30s)")
-	cmd.Flags().DurationVar(&config.ProxyWriteTimeout, "proxy-write-timeout", 0,
-		"Maximum time to write a response on the proxy (e.g., 30s); only applies to the SSE transport; zero uses the default (30s)")
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
@@ -684,7 +678,6 @@ func buildRunnerConfig(
 		runner.WithStateless(runFlags.Stateless),
 		runner.WithSessionTTL(runFlags.SessionTTL),
 		runner.WithProxyReadTimeout(runFlags.ProxyReadTimeout),
-		runner.WithProxyWriteTimeout(runFlags.ProxyWriteTimeout),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),

@@ -57,7 +57,6 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 		}
 		stdio.SetSessionTTL(config.SessionTTL)
 		stdio.SetReadTimeout(config.ReadTimeout)
-		stdio.SetWriteTimeout(config.WriteTimeout)
 		if config.AuthInfoHandler != nil {
 			stdio.SetAuthInfoHandler(config.AuthInfoHandler)
 		}

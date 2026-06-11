@@ -385,14 +385,6 @@ spec:
                   all transports. Defaults to 30s if not specified. Example: "1m".
                 format: duration
                 type: string
-              proxyWriteTimeout:
-                description: |-
-                  ProxyWriteTimeout bounds how long the proxy spends writing a response.
-                  Only effective for the SSE (sse) transport; the streamable-http and
-                  transparent transports ignore it because their long-lived responses cannot
-                  be safely bounded by a write deadline. Defaults to 30s if not specified.
-                format: duration
-                type: string
               rateLimiting:
                 description: |-
                   RateLimiting defines rate limiting configuration for the MCP server.
@@ -1320,14 +1312,6 @@ spec:
                   ProxyReadTimeout bounds how long the proxy spends reading a full request
                   (headers + body), mitigating slow-upload connection exhaustion. Applies to
                   all transports. Defaults to 30s if not specified. Example: "1m".
-                format: duration
-                type: string
-              proxyWriteTimeout:
-                description: |-
-                  ProxyWriteTimeout bounds how long the proxy spends writing a response.
-                  Only effective for the SSE (sse) transport; the streamable-http and
-                  transparent transports ignore it because their long-lived responses cannot
-                  be safely bounded by a write deadline. Defaults to 30s if not specified.
                 format: duration
                 type: string
               rateLimiting:

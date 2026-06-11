@@ -395,15 +395,6 @@ type MCPServerSpec struct {
 	// +kubebuilder:validation:Format=duration
 	// +optional
 	ProxyReadTimeout *metav1.Duration `json:"proxyReadTimeout,omitempty"`
-
-	// ProxyWriteTimeout bounds how long the proxy spends writing a response.
-	// Only effective for the SSE (sse) transport; the streamable-http and
-	// transparent transports ignore it because their long-lived responses cannot
-	// be safely bounded by a write deadline. Defaults to 30s if not specified.
-	// +kubebuilder:validation:Type=string
-	// +kubebuilder:validation:Format=duration
-	// +optional
-	ProxyWriteTimeout *metav1.Duration `json:"proxyWriteTimeout,omitempty"`
 }
 
 // ResourceOverrides defines overrides for annotations and labels on created resources

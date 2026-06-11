@@ -449,6 +449,102 @@ func TestMCPAuthzConfigReconciler_handleDeletion(t *testing.T) {
 	}
 }
 
+// TestMCPAuthzConfigReconciler_FinalizerRemovedAfterLastRefDropped exercises the
+// transition that flips deletion-protection state: a config blocked by a
+// workload, then the workload disappears, then handleDeletion runs again and
+// the finalizer is removed. The static-state cases above only cover the
+// "blocked" and "no refs" endpoints; the transition between them is the
+// behaviour users actually rely on.
+func TestMCPAuthzConfigReconciler_FinalizerRemovedAfterLastRefDropped(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	authzConfig := &mcpv1beta1.MCPAuthzConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "test-config",
+			Namespace:         "default",
+			Finalizers:        []string{AuthzConfigFinalizerName},
+			DeletionTimestamp: &metav1.Time{Time: time.Now()},
+		},
+		Spec: mcpv1beta1.MCPAuthzConfigSpec{Type: "cedarv1", Config: validCedarConfig()},
+	}
+	workload := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "ref-server", Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:          "example/mcp:latest",
+			AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
+		},
+	}
+	r, fakeClient := newAuthzTestReconciler(t, authzConfig, workload)
+
+	// First call: workload references the config — finalizer stays.
+	result, err := r.handleDeletion(ctx, authzConfig)
+	require.NoError(t, err)
+	assert.Greater(t, result.RequeueAfter, time.Duration(0), "first call should requeue")
+	assert.Contains(t, authzConfig.Finalizers, AuthzConfigFinalizerName, "finalizer should remain on block")
+
+	// Drop the only referencing workload, then re-run handleDeletion.
+	require.NoError(t, fakeClient.Delete(ctx, workload))
+
+	result, err = r.handleDeletion(ctx, authzConfig)
+	require.NoError(t, err)
+	assert.Equal(t, time.Duration(0), result.RequeueAfter, "no refs remain — should not requeue")
+	assert.NotContains(t, authzConfig.Finalizers, AuthzConfigFinalizerName,
+		"finalizer must be removed when the last referencing workload disappears")
+}
+
+// TestMCPAuthzConfigReconciler_PreservesForeignConditions locks in the
+// property the MutateAndPatchStatus migration is meant to protect: the
+// controller does not erase Status.Conditions entries it doesn't own. JSON
+// merge-patch on CRDs replaces the conditions array wholesale (the
+// +listType=map marker is honoured only by strategic-merge-patch), so a
+// regression that re-introduces r.Status().Update or that mutates conditions
+// outside the helper closure would clobber any concurrently-set foreign
+// condition. This test is the canary.
+func TestMCPAuthzConfigReconciler_PreservesForeignConditions(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	authzConfig := &mcpv1beta1.MCPAuthzConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "default", Generation: 1},
+		Spec:       mcpv1beta1.MCPAuthzConfigSpec{Type: "cedarv1", Config: validCedarConfig()},
+		Status: mcpv1beta1.MCPAuthzConfigStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               "ForeignControllerSays",
+					Status:             metav1.ConditionTrue,
+					Reason:             "ExternallySet",
+					Message:            "set by a hypothetical sibling owner of this resource",
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+	r, fakeClient := newAuthzTestReconciler(t, authzConfig)
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: authzConfig.Name, Namespace: authzConfig.Namespace}}
+
+	// First reconcile adds the finalizer; second runs the success path and
+	// writes Valid=True without touching any foreign condition.
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var after mcpv1beta1.MCPAuthzConfig
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &after))
+
+	foreign := meta.FindStatusCondition(after.Status.Conditions, "ForeignControllerSays")
+	require.NotNil(t, foreign,
+		"foreign condition must survive an MCPAuthzConfig reconcile — otherwise merge-patch is replacing the conditions array wholesale")
+	assert.Equal(t, metav1.ConditionTrue, foreign.Status, "foreign condition value must not be modified")
+	assert.Equal(t, "ExternallySet", foreign.Reason)
+
+	// And our own Valid=True landed.
+	own := meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeAuthzConfigValid)
+	require.NotNil(t, own, "controller-owned Valid condition must land")
+	assert.Equal(t, metav1.ConditionTrue, own.Status)
+}
+
 func TestMCPAuthzConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 	t.Parallel()
 

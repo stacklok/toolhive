@@ -165,7 +165,7 @@ func (c *RunConfig) GetPort() int {
 
 // parseProxyTimeout parses an optional Go duration string from RunConfig. An
 // empty string yields 0, which the proxy treats as "use the package default".
-// Negative durations and unparseable values are rejected.
+// Negative durations and unparsable values are rejected.
 func parseProxyTimeout(name, value string) (time.Duration, error) {
 	if value == "" {
 		return 0, nil

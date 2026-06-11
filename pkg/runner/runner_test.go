@@ -551,7 +551,7 @@ func TestParseProxyTimeout(t *testing.T) {
 		{name: "valid duration", value: "45s", want: 45 * time.Second},
 		{name: "zero string", value: "0s", want: 0},
 		{name: "negative rejected", value: "-1s", expectErr: true},
-		{name: "unparseable rejected", value: "notaduration", expectErr: true},
+		{name: "unparsable rejected", value: "notaduration", expectErr: true},
 	}
 
 	for _, tt := range tests {

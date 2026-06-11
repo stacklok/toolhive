@@ -287,6 +287,27 @@ func TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs(t *testing.T) {
 			assert.Equal(t, base.MiddlewareConfigs[i].Type, withEmpty.MiddlewareConfigs[i].Type)
 		}
 	})
+
+	t.Run("re-running population keeps the injected entry exactly once", func(t *testing.T) {
+		t.Parallel()
+		cfg := &RunConfig{
+			AdditionalMiddlewareConfigs: []types.MiddlewareConfig{mkInjected(t, obo.MiddlewareType)},
+		}
+		// PopulateMiddlewareConfigs overwrites MiddlewareConfigs (it rebuilds a fresh
+		// local slice) rather than appending in place, so re-running it must not
+		// accumulate duplicate injected entries. This invariant is what makes the
+		// operator→proxyrunner path safe.
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+		require.NoError(t, PopulateMiddlewareConfigs(cfg))
+
+		count := 0
+		for _, mw := range cfg.MiddlewareConfigs {
+			if mw.Type == obo.MiddlewareType {
+				count++
+			}
+		}
+		assert.Equal(t, 1, count, "injected middleware must appear exactly once after re-population")
+	})
 }
 
 // TestPopulateMiddlewareConfigs_AdditionalMiddlewareConfigs_RoundTrip exercises

@@ -235,6 +235,16 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	// header-forward middleware, and before recovery — giving an injected egress
 	// middleware the final say on the outbound request to the backend. Appending an
 	// empty slice is a no-op, so this is harmless when nothing was injected.
+	//
+	// config.AdditionalMiddlewareConfigs is intentionally NOT cleared after the
+	// splice. Two reasons: (1) this overwrite-based build is idempotent — re-running
+	// PopulateMiddlewareConfigs rebuilds the local slice from scratch and re-reads
+	// the carrier, so the injected entry appears exactly once each time rather than
+	// accumulating; and (2) the carrier stays serialized as a fallback, so a config
+	// persisted before population (empty MiddlewareConfigs) still gets the entry when
+	// the proxyrunner re-populates via the len(MiddlewareConfigs)==0 guard. The cost
+	// is that a fully-populated ConfigMap carries the entry in both slices; the
+	// duplicate is inert because the proxyrunner reads MiddlewareConfigs.
 	middlewareConfigs = append(middlewareConfigs, config.AdditionalMiddlewareConfigs...)
 
 	// Recovery middleware (always present, added last). The proxy transports

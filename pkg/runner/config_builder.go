@@ -691,6 +691,11 @@ func WithMiddlewareFromFlags(
 // interprets their parameters; the middleware type identity is supplied by the
 // caller via the config's Type. Multiple calls and multiple arguments are
 // additive; nil entries are skipped.
+//
+// NOTE: the injected configs are consumed only by PopulateMiddlewareConfigs (the
+// operator build path). The CLI flag path (WithMiddlewareFromFlags) builds
+// MiddlewareConfigs directly and never reads AdditionalMiddlewareConfigs, so
+// combining this option with that path would silently drop the injected config.
 func WithAdditionalMiddlewareConfigs(configs ...*types.MiddlewareConfig) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		for _, c := range configs {

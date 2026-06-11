@@ -250,6 +250,13 @@ type RunConfig struct {
 	// instead of discarding them. Upstream carries these configs verbatim and never
 	// inspects their parameters; the middleware type identity (e.g. an enterprise
 	// auth type) is supplied by the caller via types.MiddlewareConfig.Type.
+	//
+	// Each entry's Type is expected to be a NEW egress middleware type (e.g. OBO),
+	// not one already produced from a typed RunConfig field (auth, authz, audit,
+	// tokenExchange, awssts, …). Dispatch in the proxyrunner is purely by Type
+	// string, so an injected Type that shadows a typed-field type would add a
+	// second instance of that middleware to the chain; the seam does not validate
+	// against this.
 	AdditionalMiddlewareConfigs []types.MiddlewareConfig `json:"additional_middleware_configs,omitempty" yaml:"additional_middleware_configs,omitempty"` //nolint:lll
 
 	// ValidatingWebhooks contains the configuration for validating webhook middleware.

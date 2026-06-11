@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -210,18 +211,13 @@ func buildFullAuthzConfigJSON(spec mcpv1beta1.MCPAuthzConfigSpec) ([]byte, autho
 		return nil, nil, fmt.Errorf("config field is empty")
 	}
 
-	versionJSON, err := marshalJSONString(authzConfigVersion)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal version: %w", err)
-	}
-	typeJSON, err := marshalJSONString(spec.Type)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal type: %w", err)
-	}
-
+	// strconv.Quote produces the same JSON-encoded form as json.Marshal on a
+	// Go string, without an error return: encoding/json's stringEncoder has
+	// no failure path for a valid Go string, which authzConfigVersion (a
+	// constant) and spec.Type (validated upstream) both are.
 	fullConfig := map[string]json.RawMessage{
-		"version":           versionJSON,
-		"type":              typeJSON,
+		"version":           json.RawMessage(strconv.Quote(authzConfigVersion)),
+		"type":              json.RawMessage(strconv.Quote(spec.Type)),
 		factory.ConfigKey(): spec.Config.Raw,
 	}
 
@@ -230,15 +226,6 @@ func buildFullAuthzConfigJSON(spec mcpv1beta1.MCPAuthzConfigSpec) ([]byte, autho
 		return nil, nil, fmt.Errorf("failed to marshal full authz config: %w", err)
 	}
 	return result, factory, nil
-}
-
-// marshalJSONString marshals a string value to JSON, returning an error instead of panicking.
-func marshalJSONString(v string) (json.RawMessage, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return nil, fmt.Errorf("failed to marshal %q: %w", v, err)
-	}
-	return b, nil
 }
 
 // canonicalizeSpecForHash returns a copy of spec whose Config.Raw has been

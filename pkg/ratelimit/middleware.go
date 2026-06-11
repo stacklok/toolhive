@@ -65,15 +65,10 @@ func (m *rateLimitMiddleware) Close() error {
 	return nil
 }
 
-// CreateMiddleware is the factory function for rate limit middleware.
-func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
-	var params MiddlewareParams
-	if err := json.Unmarshal(config.Parameters, &params); err != nil {
-		return fmt.Errorf("failed to unmarshal rate limit middleware parameters: %w", err)
-	}
-
+// NewMiddleware creates a Redis-backed rate limit middleware from typed params.
+func NewMiddleware(params MiddlewareParams) (types.Middleware, error) {
 	if params.RedisAddr == "" {
-		return fmt.Errorf("rate limit middleware requires a Redis address")
+		return nil, fmt.Errorf("rate limit middleware requires a Redis address")
 	}
 
 	// TODO: share a Redis client builder with session storage to get TLS,
@@ -89,18 +84,31 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	defer pingCancel()
 	if err := client.Ping(pingCtx).Err(); err != nil {
 		_ = client.Close()
-		return fmt.Errorf("rate limit middleware: failed to connect to Redis at %s: %w", params.RedisAddr, err)
+		return nil, fmt.Errorf("rate limit middleware: failed to connect to Redis at %s: %w", params.RedisAddr, err)
 	}
 
 	limiter, err := NewLimiter(client, params.Namespace, params.ServerName, params.Config)
 	if err != nil {
 		_ = client.Close()
-		return fmt.Errorf("failed to create rate limiter: %w", err)
+		return nil, fmt.Errorf("failed to create rate limiter: %w", err)
 	}
 
-	mw := &rateLimitMiddleware{
+	return &rateLimitMiddleware{
 		handler: rateLimitHandler(limiter),
 		client:  client,
+	}, nil
+}
+
+// CreateMiddleware is the factory function for rate limit middleware.
+func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
+	var params MiddlewareParams
+	if err := json.Unmarshal(config.Parameters, &params); err != nil {
+		return fmt.Errorf("failed to unmarshal rate limit middleware parameters: %w", err)
+	}
+
+	mw, err := NewMiddleware(params)
+	if err != nil {
+		return err
 	}
 	runner.AddMiddleware(MiddlewareType, mw)
 	return nil

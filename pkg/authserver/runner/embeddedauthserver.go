@@ -18,11 +18,11 @@ import (
 	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
-	"github.com/stacklok/toolhive/pkg/bodylimit"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 )
 
 // Redis ACL credential environment variable names.

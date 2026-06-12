@@ -507,6 +507,11 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	assert.Equal(t, "test-vmcp-vmcp-config", cm.Name)
 	assert.Contains(t, cm.Data, "config.yaml")
 	assert.NotEmpty(t, cm.Annotations["toolhive.stacklok.dev/content-checksum"])
+
+	var cfg vmcpconfig.Config
+	require.NoError(t, yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &cfg))
+	assert.Equal(t, "test-vmcp", cfg.Name)
+	assert.Equal(t, "test-group", cfg.Group)
 }
 
 // TestSetAuthConfigConditions tests that auth config conditions reflect the current state
@@ -922,6 +927,70 @@ func TestSetAuthConfigConditions(t *testing.T) {
 						"ConversionSucceeded",
 						"Backend auth config is valid",
 						metav1.ConditionTrue,
+					).
+					Times(1)
+			},
+		},
+		{
+			// Mirror added for #5347: when an AuthConfigError carries a
+			// non-empty Reason (set by buildOutgoingAuthConfig/
+			// discoverExternalAuthConfigs when the referenced
+			// MCPExternalAuthConfig surfaced Valid=False), the per-backend
+			// condition must use that reason instead of the generic
+			// ConversionFailed. Covers default + discovered + inline paths.
+			name:                   "mirrored Reason propagates to default/discovered/inline conditions",
+			backendsWithAuthConfig: []string{"discovered-backend"},
+			inlineBackendNames:     []string{"inline-backend"},
+			allAuthErrors: []AuthConfigError{
+				{
+					Context:     "default",
+					BackendName: "",
+					Error:       fmt.Errorf("on-behalf-of (OBO) external auth type requires an enterprise build"),
+					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+				},
+				{
+					Context:     "discovered:discovered-backend",
+					BackendName: "discovered-backend",
+					Error:       fmt.Errorf("obo enterprise required"),
+					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+				},
+				{
+					Context:     "backend:inline-backend",
+					BackendName: "inline-backend",
+					Error:       fmt.Errorf("obo enterprise required"),
+					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+				},
+			},
+			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
+				t.Helper()
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{"DiscoveredAuthConfig-discovered-backend"}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{"BackendAuthConfig-inline-backend"}).
+					Times(1)
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DefaultAuthConfig",
+						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						gomock.Any(),
+						metav1.ConditionFalse,
+					).
+					Times(1)
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DiscoveredAuthConfig-discovered-backend",
+						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						gomock.Any(),
+						metav1.ConditionFalse,
+					).
+					Times(1)
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"BackendAuthConfig-inline-backend",
+						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						gomock.Any(),
+						metav1.ConditionFalse,
 					).
 					Times(1)
 			},

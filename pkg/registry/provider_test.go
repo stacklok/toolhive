@@ -219,11 +219,11 @@ func TestRemoteRegistryProvider_ValidateConnectivity(t *testing.T) {
 			errorContains:  "invalid upstream JSON",
 		},
 		{
-			name:           "upstream format with empty servers and groups",
+			name:           "upstream format with empty servers and skills",
 			responseBody:   `{"$schema": "x", "version": "1.0", "meta": {}, "data": {"servers": []}}`,
 			responseStatus: 200,
 			expectError:    true,
-			errorContains:  "no servers or groups",
+			errorContains:  "no servers or skills",
 		},
 		{
 			name:           "legacy format surfaces migration hint",

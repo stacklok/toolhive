@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -26,9 +27,6 @@ import (
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
-
-// hmacSecret is a fixed 32-byte secret used across all integration tests.
-var hmacSecret = []byte("test-hmac-secret-32bytes-exactly")
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,10 +48,10 @@ func newSharedRedisStorage(t *testing.T, mr *miniredis.Miniredis) transportsessi
 	t.Helper()
 	storage, err := transportsession.NewRedisSessionDataStorage(
 		context.Background(),
-		transportsession.RedisConfig{
-			Addr:      mr.Addr(),
-			KeyPrefix: "test:vmcp:session:",
+		tcredis.Config{
+			Addr: mr.Addr(),
 		},
+		"test:vmcp:session:",
 		time.Hour,
 	)
 	require.NoError(t, err)
@@ -62,9 +60,8 @@ func newSharedRedisStorage(t *testing.T, mr *miniredis.Miniredis) transportsessi
 }
 
 // newTestManagerWithSharedStorage creates a Manager backed by the given
-// DataStorage, a real session factory with the package-level hmacSecret, and
-// an ImmutableRegistry containing backends. Cleanup is registered via
-// t.Cleanup.
+// DataStorage, a real session factory, and an ImmutableRegistry containing
+// backends. Cleanup is registered via t.Cleanup.
 func newTestManagerWithSharedStorage(t *testing.T, storage transportsession.DataStorage, backends []*vmcp.Backend) *Manager {
 	t.Helper()
 	backendList := make([]vmcp.Backend, len(backends))
@@ -74,7 +71,6 @@ func newTestManagerWithSharedStorage(t *testing.T, storage transportsession.Data
 	registry := vmcp.NewImmutableRegistry(backendList)
 	factory := vmcpsession.NewSessionFactory(
 		newUnauthenticatedAuthRegistry(t),
-		vmcpsession.WithHMACSecret(hmacSecret),
 	)
 	sm, cleanup, err := New(storage, &FactoryConfig{Base: factory}, registry)
 	require.NoError(t, err)
@@ -214,13 +210,26 @@ func TestHorizontalScaling_CrossPodHijackPrevention(t *testing.T) {
 	storage := newSharedRedisStorage(t, mr)
 	backend := startMCPBackend(t, "backend-alpha", "echo")
 
+	// Both alice and eve need Claims with iss+sub so the identity-binding
+	// decorator can extract their (iss, sub) pairs (Token is not used for binding
+	// in the #5306 model; Claims are the canonical source).
 	identity := &auth.Identity{
-		PrincipalInfo: auth.PrincipalInfo{Subject: "alice"},
-		Token:         "alice-bearer-token",
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "alice",
+			Claims: map[string]any{
+				"iss": "https://idp.example",
+				"sub": "alice",
+			},
+		},
 	}
 	wrongCaller := &auth.Identity{
-		PrincipalInfo: auth.PrincipalInfo{Subject: "eve"},
-		Token:         "eve-bearer-token",
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "eve",
+			Claims: map[string]any{
+				"iss": "https://idp.example",
+				"sub": "eve",
+			},
+		},
 	}
 
 	// Pod A: create session bound to alice.

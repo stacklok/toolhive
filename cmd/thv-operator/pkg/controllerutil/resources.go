@@ -174,13 +174,6 @@ func CreateProxyServiceName(resourceName string) string {
 	return fmt.Sprintf("mcp-%s-proxy", resourceName)
 }
 
-// CreateProxyServiceURL generates the full cluster-local service URL
-// Shared between MCPServer and MCPRemoteProxy
-func CreateProxyServiceURL(resourceName, namespace string, port int32) string {
-	serviceName := CreateProxyServiceName(resourceName)
-	return fmt.Sprintf("http://%s.%s.svc.cluster.local:%d", serviceName, namespace, port)
-}
-
 // ProxyRunnerServiceAccountName generates the service account name for the proxy runner
 // Shared between MCPServer and MCPRemoteProxy
 func ProxyRunnerServiceAccountName(resourceName string) string {

@@ -190,8 +190,11 @@ func createNewConfigWithDefaults() Config {
 	}
 }
 
-// applyBackwardCompatibility applies backward compatibility fixes to existing configs
-func applyBackwardCompatibility(config *Config) error {
+// applyBackwardCompatibility applies backward compatibility fixes to existing configs.
+// Any migration that needs to be persisted is written back to configPath, the same
+// path the config was loaded from, so that path-based loads (e.g. PathProvider) stay
+// isolated. An empty configPath falls back to the default path via saveToPath.
+func applyBackwardCompatibility(config *Config, configPath string) error {
 	// Hack - if the secrets provider type is set to the old `basic` type,
 	// just change it to `encrypted`.
 	if config.Secrets.ProviderType == "basic" {
@@ -202,7 +205,7 @@ func applyBackwardCompatibility(config *Config) error {
 			_ = os.Remove(oldPath)
 		}
 		config.Secrets.ProviderType = string(secrets.EncryptedType)
-		err = config.save()
+		err = config.saveToPath(configPath)
 		if err != nil {
 			return fmt.Errorf("error updating config: %w", err)
 		}
@@ -212,7 +215,7 @@ func applyBackwardCompatibility(config *Config) error {
 	// consider it as setup completed (for existing users)
 	if config.Secrets.ProviderType != "" && !config.Secrets.SetupCompleted {
 		config.Secrets.SetupCompleted = true
-		err := config.save()
+		err := config.saveToPath(configPath)
 		if err != nil {
 			return fmt.Errorf("error updating config for backward compatibility: %w", err)
 		}
@@ -291,19 +294,15 @@ func LoadOrCreateConfigFromPath(configPath string) (*Config, error) {
 			return nil, fmt.Errorf("failed to parse config file yaml: %w", err)
 		}
 
-		// Apply backward compatibility fixes
-		err = applyBackwardCompatibility(&config)
+		// Apply backward compatibility fixes, persisting any migration back to the
+		// same path the config was loaded from.
+		err = applyBackwardCompatibility(&config, configPath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to apply backward compatibility fixes: %w", err)
 		}
 	}
 
 	return &config, nil
-}
-
-// Save serializes the config struct and writes it to disk.
-func (c *Config) save() error {
-	return c.saveToPath("")
 }
 
 // saveToPath serializes the config struct and writes it to a specific path.

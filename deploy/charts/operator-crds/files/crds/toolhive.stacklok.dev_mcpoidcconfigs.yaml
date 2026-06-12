@@ -4,6 +4,8 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.3
+  labels:
+    toolhive.stacklok.dev/auto-migrate-storage-version: "true"
   name: mcpoidcconfigs.toolhive.stacklok.dev
 spec:
   group: toolhive.stacklok.dev
@@ -25,9 +27,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Valid
       type: string
-    - jsonPath: .status.referencingWorkloads
+    - jsonPath: .status.referenceCount
       name: References
-      type: string
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -279,6 +281,11 @@ spec:
                   for this MCPOIDCConfig.
                 format: int64
                 type: integer
+              referenceCount:
+                description: ReferenceCount is the number of workloads referencing
+                  this config.
+                format: int32
+                type: integer
               referencingWorkloads:
                 description: |-
                   ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
@@ -320,9 +327,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Valid
       type: string
-    - jsonPath: .status.referencingWorkloads
+    - jsonPath: .status.referenceCount
       name: References
-      type: string
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -574,6 +581,11 @@ spec:
                 description: ObservedGeneration is the most recent generation observed
                   for this MCPOIDCConfig.
                 format: int64
+                type: integer
+              referenceCount:
+                description: ReferenceCount is the number of workloads referencing
+                  this config.
+                format: int32
                 type: integer
               referencingWorkloads:
                 description: |-

@@ -530,6 +530,7 @@ func BuildAuthServerRunConfig(
 		AuthorizationEndpointBaseURL: authConfig.AuthorizationEndpointBaseURL,
 		AllowedAudiences:             allowedAudiences,
 		ScopesSupported:              scopesSupported,
+		BaselineClientScopes:         authConfig.BaselineClientScopes,
 	}
 
 	// Build signing key configuration
@@ -583,6 +584,16 @@ func BuildAuthServerRunConfig(
 
 	// Wire through upstream token injection flag
 	config.DisableUpstreamTokenInjection = authConfig.DisableUpstreamTokenInjection
+
+	// Build CIMD configuration. CacheFallbackTTL is passed as-is (string);
+	// resolveCIMDConfig in the runner parses it to time.Duration at startup.
+	if authConfig.CIMD != nil && authConfig.CIMD.Enabled {
+		config.CIMD = &authserver.CIMDRunConfig{
+			Enabled:          authConfig.CIMD.Enabled,
+			CacheMaxSize:     authConfig.CIMD.CacheMaxSize,
+			CacheFallbackTTL: authConfig.CIMD.CacheFallbackTTL,
+		}
+	}
 
 	return config, nil
 }
@@ -834,6 +845,14 @@ func buildOAuth2UpstreamRunConfig(
 			ScopePath:        m.ScopePath,
 			RefreshTokenPath: m.RefreshTokenPath,
 			ExpiresInPath:    m.ExpiresInPath,
+		}
+	}
+	if cfg.IdentityFromToken != nil {
+		ift := cfg.IdentityFromToken
+		runConfig.IdentityFromToken = &authserver.IdentityFromTokenRunConfig{
+			SubjectPath: ift.SubjectPath,
+			NamePath:    ift.NamePath,
+			EmailPath:   ift.EmailPath,
 		}
 	}
 	if cfg.DCRConfig != nil {

@@ -21,6 +21,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
+// tokenFetchTimeout bounds the per-request token fetch. It is deliberately
+// generous: the first request after a lazy setup ("thv llm setup --lazy") drives
+// the interactive OIDC browser login through the token source, and a human needs
+// time to complete it. Once a token is cached, subsequent requests are served
+// from cache and return well within this bound, so the only request that ever
+// approaches it is the initial login.
+const tokenFetchTimeout = 3 * time.Minute
+
 // TokenSource obtains fresh OIDC access tokens for the LLM gateway.
 // *llm.TokenSource satisfies this interface.
 type TokenSource interface {
@@ -159,7 +167,7 @@ func (p *Proxy) handler() http.Handler {
 			return
 		}
 
-		tokenCtx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		tokenCtx, cancel := context.WithTimeout(r.Context(), tokenFetchTimeout)
 		defer cancel()
 		token, err := p.tokenSource.Token(tokenCtx)
 		if err != nil {

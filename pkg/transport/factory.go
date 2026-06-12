@@ -55,6 +55,13 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 		if config.SessionStorage != nil {
 			stdio.SetSessionStorage(config.SessionStorage)
 		}
+		stdio.SetSessionTTL(config.SessionTTL)
+		if config.AuthInfoHandler != nil {
+			stdio.SetAuthInfoHandler(config.AuthInfoHandler)
+		}
+		if len(config.PrefixHandlers) > 0 {
+			stdio.SetPrefixHandlers(config.PrefixHandlers)
+		}
 		tr = stdio
 	case types.TransportTypeSSE:
 		httpTransport := NewHTTPTransport(
@@ -73,6 +80,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.Middlewares...,
 		)
 		httpTransport.sessionStorage = config.SessionStorage
+		httpTransport.sessionTTL = config.SessionTTL
 		tr = httpTransport
 	case types.TransportTypeStreamableHTTP:
 		httpTransport := NewHTTPTransport(
@@ -91,6 +99,7 @@ func (*Factory) Create(config types.Config, opts ...Option) (types.Transport, er
 			config.Middlewares...,
 		)
 		httpTransport.sessionStorage = config.SessionStorage
+		httpTransport.sessionTTL = config.SessionTTL
 		tr = httpTransport
 	case types.TransportTypeInspector:
 		// HTTP transport is not implemented yet

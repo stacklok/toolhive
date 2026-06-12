@@ -168,7 +168,6 @@ jobs:
           echo "Using toolhive-core version: $CORE_VERSION"
           gh release download "$CORE_VERSION" \
             --repo stacklok/toolhive-core \
-            --pattern "toolhive-legacy-registry.schema.json" \
             --pattern "upstream-registry.schema.json" \
             --pattern "publisher-provided.schema.json" \
             --pattern "skill.schema.json" \
@@ -187,7 +186,7 @@ jobs:
 
       - name: Run GoReleaser
         id: run-goreleaser
-        uses: goreleaser/goreleaser-action@ec59f474b9834571250b370d4735c50f8e2d1e29 # v7
+        uses: goreleaser/goreleaser-action@5daf1e915a5f0af01ddbcd89a43b8061ff4f1a89 # v7
         with:
           distribution: goreleaser
           version: "~> v2"
@@ -308,7 +307,7 @@ jobs:
     permissions: {}
     steps:
       - name: Send Slack Notification
-        uses: slackapi/slack-github-action@91efab103c0de0a537f72a35f6b8cda0ee76bf0a # v2.1.1
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
         with:
           webhook: ${{ secrets.SLACK_TOOLHIVE_RELEASE_WEBHOOK_URL }}
           webhook-type: incoming-webhook

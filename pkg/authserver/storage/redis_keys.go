@@ -108,6 +108,14 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // rejects an empty ScopesHash, and callers are required to compute the hash
 // via storage.ScopesHash. Length-prefix collision-safety is preserved on
 // the leading segments either way.
+//
+// The public-vs-confidential client distinction is intentionally NOT
+// encoded here — see DCRKey's doc for the rationale. Today's two consumers
+// register on disjoint RedirectURI address spaces (AS-origin vs RFC 8252
+// loopback) so the persisted key cannot collide across profiles. A future
+// consumer that defaults its RedirectURI into either space would need to
+// add the distinguishing component back to the key format alongside an
+// explicit migration story for existing Redis-cached entries.
 func redisDCRKey(prefix string, key DCRKey) string {
 	return fmt.Sprintf("%s%s:%d:%s:%d:%s:%s",
 		prefix, KeyTypeDCR,

@@ -167,8 +167,11 @@ func runConfigToMCPServer(config *runner.RunConfig) (*v1beta1.MCPServer, error) 
 // parseVolumeString parses a volume string in the format "host-path:container-path[:ro]"
 func parseVolumeString(volStr string, index int) (v1beta1.Volume, error) {
 	parts := strings.Split(volStr, ":")
-	if len(parts) < 2 {
+	if len(parts) < 2 || len(parts) > 3 {
 		return v1beta1.Volume{}, fmt.Errorf("invalid volume format, expected 'host-path:container-path[:ro]'")
+	}
+	if len(parts) == 3 && parts[2] != "ro" {
+		return v1beta1.Volume{}, fmt.Errorf("invalid volume mode %q, expected 'ro'", parts[2])
 	}
 
 	volume := v1beta1.Volume{

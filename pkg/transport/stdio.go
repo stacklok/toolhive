@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"strings"
@@ -63,6 +64,9 @@ type StdioTransport struct {
 	prometheusHandler http.Handler
 	trustProxyHeaders bool
 	sessionStorage    session.Storage
+	sessionTTL        time.Duration
+	authInfoHandler   http.Handler
+	prefixHandlers    map[string]http.Handler
 
 	// Mutex for protecting shared state
 	mutex sync.Mutex
@@ -142,6 +146,22 @@ func (t *StdioTransport) SetSessionStorage(storage session.Storage) {
 	t.sessionStorage = storage
 }
 
+// SetSessionTTL configures the inactivity timeout for sessions managed by the
+// underlying proxy. Zero is valid and means "use the proxy's default".
+func (t *StdioTransport) SetSessionTTL(ttl time.Duration) {
+	t.sessionTTL = ttl
+}
+
+// SetAuthInfoHandler sets the RFC 9728 OAuth protected resource discovery handler.
+func (t *StdioTransport) SetAuthInfoHandler(h http.Handler) {
+	t.authInfoHandler = h
+}
+
+// SetPrefixHandlers sets additional HTTP handlers mounted outside the middleware chain.
+func (t *StdioTransport) SetPrefixHandlers(m map[string]http.Handler) {
+	t.prefixHandlers = maps.Clone(m)
+}
+
 // Mode returns the transport mode.
 func (*StdioTransport) Mode() types.TransportType {
 	return types.TransportTypeStdio
@@ -192,9 +212,16 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	switch t.proxyMode {
 	case types.ProxyModeStreamableHTTP:
 		var streamableOpts []streamable.Option
+		if t.sessionTTL > 0 {
+			streamableOpts = append(streamableOpts, streamable.WithSessionTTL(t.sessionTTL))
+		}
 		if t.sessionStorage != nil {
 			streamableOpts = append(streamableOpts, streamable.WithSessionStorage(t.sessionStorage))
 		}
+		streamableOpts = append(streamableOpts,
+			streamable.WithAuthInfoHandler(t.authInfoHandler),
+			streamable.WithPrefixHandlers(t.prefixHandlers),
+		)
 		t.httpProxy = streamable.NewHTTPProxy(t.host, t.proxyPort, t.prometheusHandler, t.middlewares, streamableOpts...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
@@ -202,9 +229,16 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 		slog.Debug("streamable HTTP proxy started, processing messages")
 	case types.ProxyModeSSE:
 		var sseOpts []httpsse.Option
+		if t.sessionTTL > 0 {
+			sseOpts = append(sseOpts, httpsse.WithSessionTTL(t.sessionTTL))
+		}
 		if t.sessionStorage != nil {
 			sseOpts = append(sseOpts, httpsse.WithSessionStorage(t.sessionStorage))
 		}
+		sseOpts = append(sseOpts,
+			httpsse.WithAuthInfoHandler(t.authInfoHandler),
+			httpsse.WithPrefixHandlers(t.prefixHandlers),
+		)
 		t.httpProxy = httpsse.NewHTTPSSEProxy(
 			t.host,
 			t.proxyPort,

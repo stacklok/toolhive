@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -217,10 +218,46 @@ func TestGetSupportedMiddlewareFactories(t *testing.T) {
 		headerfwd.HeaderForwardMiddlewareName,
 		upstreamswap.MiddlewareType,
 		awssts.MiddlewareType,
+		obo.MiddlewareType,
 	} {
 		_, ok := factories[key]
 		assert.True(t, ok, "factory map should contain %q", key)
 	}
+}
+
+// TestGetSupportedMiddlewareFactories_OBODispatchesToCurrentFactory locks the
+// contract that obo.CreateMiddleware is a stable redirector: the literal map
+// in GetSupportedMiddlewareFactories captures CreateMiddleware once, but each
+// invocation reads obo's currentFactory under the package-level RWMutex, so
+// registrations that happen AFTER the map is built still take effect. The
+// register-then-call ordering exercises the production hot path; the
+// call-after-register ordering exercises hot-reload / re-registration.
+//
+//nolint:paralleltest // Mutates package-level obo currentFactory; must not race other tests.
+func TestGetSupportedMiddlewareFactories_OBODispatchesToCurrentFactory(t *testing.T) {
+	// Build the factory map first so we capture the redirector before any
+	// out-of-test registration happens.
+	factories := GetSupportedMiddlewareFactories()
+	factory, ok := factories[obo.MiddlewareType]
+	require.True(t, ok, "obo factory should be present in the map")
+
+	sentinel := []byte("custom-obo-factory")
+	var observed []byte
+	replacement := func(cfg *types.MiddlewareConfig, _ types.MiddlewareRunner) error {
+		// Capture the marker the caller passes to prove which factory ran.
+		observed = cfg.Parameters
+		return nil
+	}
+
+	// Register AFTER the map was built. Because CreateMiddleware is a stable
+	// redirector, dispatching through the map must still hit the replacement.
+	obo.RegisterFactory(replacement)
+	t.Cleanup(func() { obo.RegisterFactory(obo.DefaultFactory) })
+
+	cfg := &types.MiddlewareConfig{Type: obo.MiddlewareType, Parameters: sentinel}
+	require.NoError(t, factory(cfg, nil))
+	assert.Equal(t, sentinel, observed,
+		"obo.CreateMiddleware must redirect through the current factory, including after the runner map is built")
 }
 
 func TestWithHeaderForwardSecretsBuilderOption(t *testing.T) {

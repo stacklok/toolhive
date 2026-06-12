@@ -18,7 +18,6 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/networking"
-	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const wellKnownOAuthPath = "/.well-known/oauth-protected-resource"
@@ -1286,43 +1285,57 @@ func TestTryWellKnownDiscovery_ErrorPaths(t *testing.T) {
 	})
 }
 
-// TestRegisterDynamicClient_MissingRegistrationEndpoint tests that registerDynamicClient
-// returns a clear error message when the OIDC discovery document doesn't include
-// a registration_endpoint (provider doesn't support DCR).
-func TestRegisterDynamicClient_MissingRegistrationEndpoint(t *testing.T) {
+// TestHandleDynamicRegistration_MissingRegistrationEndpoint pins the CLI's
+// behaviour when the OIDC discovery document does not advertise a
+// registration_endpoint (provider does not support DCR). The CLI surfaces
+// a clear error directing the operator to the manual --remote-auth-client-*
+// fallback flags.
+//
+// The check runs before the resolver is invoked: with no
+// registration_endpoint there is no upstream URL to register against, so
+// the CLI cannot proceed regardless of the resolver's S256 PKCE / synthesis
+// behaviour. This keeps the error message stable across both code paths
+// (this branch and any future resolver-side synthesis disable).
+func TestHandleDynamicRegistration_MissingRegistrationEndpoint(t *testing.T) {
 	t.Parallel()
 
-	ctx := context.Background()
-
-	// Create a discovery document without registration_endpoint
-	discoveredDoc := &oauthproto.OIDCDiscoveryDocument{
-		AuthorizationServerMetadata: oauthproto.AuthorizationServerMetadata{
-			Issuer:                "https://auth.example.com",
-			AuthorizationEndpoint: "https://auth.example.com/oauth/authorize",
-			TokenEndpoint:         "https://auth.example.com/oauth/token",
-			JWKSURI:               "https://auth.example.com/oauth/jwks",
-			// Note: RegistrationEndpoint is intentionally omitted (empty string)
-			RegistrationEndpoint: "",
-		},
-	}
+	// Mount a metadata document that intentionally omits registration_endpoint.
+	// The CLI flow's getDiscoveryDocument short-circuit reads AuthorizeURL /
+	// TokenURL off OAuthFlowConfig and skips network discovery — we set
+	// AuthorizeURL and TokenURL but leave RegistrationEndpoint empty, which
+	// falls through to oauth.DiscoverOIDCEndpoints against the httptest
+	// server below.
+	var server *httptest.Server
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// registration_endpoint intentionally omitted.
+		_, _ = w.Write([]byte(`{
+			"issuer": "` + server.URL + `",
+			"authorization_endpoint": "` + server.URL + `/authorize",
+			"token_endpoint": "` + server.URL + `/token",
+			"jwks_uri": "` + server.URL + `/jwks",
+			"response_types_supported": ["code"],
+			"subject_types_supported": ["public"],
+			"id_token_signing_alg_values_supported": ["RS256"]
+		}`))
+	})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
 
 	config := &OAuthFlowConfig{
 		Scopes:       []string{"openid", "profile"},
 		CallbackPort: 8765,
 	}
 
-	// Call registerDynamicClient with a discovery document missing registration_endpoint
-	result, err := registerDynamicClient(ctx, config, discoveredDoc)
-
-	// Should return an error
+	err := handleDynamicRegistration(context.Background(), server.URL, config)
 	require.Error(t, err)
-	assert.Nil(t, result)
 
-	// Error message should clearly indicate DCR is not supported
+	// The CLI-flag fallback hint MUST be preserved verbatim — it is the
+	// load-bearing operator guidance for upstreams that do not advertise
+	// registration_endpoint.
 	assert.Contains(t, err.Error(), "does not support Dynamic Client Registration")
 	assert.Contains(t, err.Error(), "DCR")
-
-	// Error message should provide actionable guidance
 	assert.Contains(t, err.Error(), "--remote-auth-client-id")
 	assert.Contains(t, err.Error(), "--remote-auth-client-secret")
 }

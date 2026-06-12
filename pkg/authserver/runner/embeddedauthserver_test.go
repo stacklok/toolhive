@@ -286,6 +286,15 @@ func TestParseTokenLifespans(t *testing.T) {
 	})
 }
 
+// TestResolveSecret pins the observable contract of the runner-package
+// resolveSecret helper: file-precedence, whitespace-trimming, and the
+// explicit error modes for missing-file / unset-env. resolveSecret is
+// the single authoritative implementation in the codebase; the
+// pkg/auth/dcr package no longer carries a parallel copy (removed in
+// #5219 sub-issue 4b, when the resolver's input was neutralised and the
+// embedded-authserver adapter took responsibility for resolving the
+// file-or-env reference into Request.InitialAccessToken at the call
+// site).
 func TestResolveSecret(t *testing.T) {
 	t.Parallel()
 
@@ -611,6 +620,73 @@ func TestBuildPureOAuth2ConfigWithEnvVar(t *testing.T) {
 		require.NotNil(t, cfg)
 
 		assert.Equal(t, "env-client-secret", cfg.ClientSecret)
+	})
+}
+
+func TestBuildPureOAuth2ConfigIdentityFromToken(t *testing.T) {
+	t.Parallel()
+
+	baseRC := func() *authserver.UpstreamRunConfig {
+		return &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				ClientID:              "my-client-id",
+				RedirectURI:           "https://my-app.com/callback",
+			},
+		}
+	}
+
+	t.Run("nil IdentityFromToken produces nil in runtime config", func(t *testing.T) {
+		t.Parallel()
+
+		rc := baseRC()
+		// IdentityFromToken is not set
+
+		cfg, err := buildPureOAuth2Config(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.Nil(t, cfg.IdentityFromToken, "IdentityFromToken must be nil when not configured")
+	})
+
+	t.Run("all three paths round-trip correctly", func(t *testing.T) {
+		t.Parallel()
+
+		rc := baseRC()
+		rc.OAuth2Config.IdentityFromToken = &authserver.IdentityFromTokenRunConfig{
+			SubjectPath: "username",
+			NamePath:    "display_name",
+			EmailPath:   "email",
+		}
+
+		cfg, err := buildPureOAuth2Config(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		require.NotNil(t, cfg.IdentityFromToken)
+		assert.Equal(t, "username", cfg.IdentityFromToken.SubjectPath)
+		assert.Equal(t, "display_name", cfg.IdentityFromToken.NamePath)
+		assert.Equal(t, "email", cfg.IdentityFromToken.EmailPath)
+	})
+
+	t.Run("only SubjectPath set, name and email empty", func(t *testing.T) {
+		t.Parallel()
+
+		rc := baseRC()
+		rc.OAuth2Config.IdentityFromToken = &authserver.IdentityFromTokenRunConfig{
+			SubjectPath: "authed_user.id",
+		}
+
+		cfg, err := buildPureOAuth2Config(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		require.NotNil(t, cfg.IdentityFromToken)
+		assert.Equal(t, "authed_user.id", cfg.IdentityFromToken.SubjectPath)
+		assert.Empty(t, cfg.IdentityFromToken.NamePath)
+		assert.Empty(t, cfg.IdentityFromToken.EmailPath)
 	})
 }
 
@@ -1090,24 +1166,11 @@ func TestCreateStorage(t *testing.T) {
 		assert.Contains(t, err.Error(), "redis config is required")
 	})
 
-	t.Run("redis type with missing sentinel config returns error", func(t *testing.T) {
-		t.Parallel()
-
-		_, err := createStorage(ctx, &storage.RunConfig{
-			Type: string(storage.TypeRedis),
-			RedisConfig: &storage.RedisRunConfig{
-				KeyPrefix: "test:",
-				ACLUserConfig: &storage.ACLUserRunConfig{
-					UsernameEnvVar: "REDIS_USER",
-					PasswordEnvVar: "REDIS_PASS",
-				},
-			},
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "one of addr (standalone or cluster) or sentinel_config (sentinel) is required")
-	})
 }
 
+// TestConvertRedisRunConfig covers the runner-owned conversion steps: nil
+// guard and ACL credential resolution. Connection-mode topology validation is
+// owned by the shared toolhive-core redis package and exercised in its tests.
 func TestConvertRedisRunConfig(t *testing.T) {
 	t.Parallel()
 
@@ -1116,19 +1179,6 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		_, err := convertRedisRunConfig(nil)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "redis config is required")
-	})
-
-	t.Run("missing sentinel config returns error", func(t *testing.T) {
-		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
-			KeyPrefix: "test:",
-			ACLUserConfig: &storage.ACLUserRunConfig{
-				UsernameEnvVar: "USER",
-				PasswordEnvVar: "PASS",
-			},
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "one of addr (standalone or cluster) or sentinel_config (sentinel) is required")
 	})
 
 	t.Run("missing ACL user config returns error", func(t *testing.T) {
@@ -1160,54 +1210,6 @@ func TestConvertRedisRunConfig(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to resolve Redis username")
 	})
-
-	t.Run("addr and sentinel config both set returns error", func(t *testing.T) {
-		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
-			Addr: "redis.example.com:6379",
-			SentinelConfig: &storage.SentinelRunConfig{
-				MasterName:    "mymaster",
-				SentinelAddrs: []string{"sentinel:26379"},
-			},
-			ACLUserConfig: &storage.ACLUserRunConfig{
-				UsernameEnvVar: "USER",
-				PasswordEnvVar: "PASS",
-			},
-			KeyPrefix: "thv:",
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "mutually exclusive")
-	})
-
-	t.Run("neither addr nor sentinel config returns error", func(t *testing.T) {
-		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
-			ACLUserConfig: &storage.ACLUserRunConfig{
-				UsernameEnvVar: "USER",
-				PasswordEnvVar: "PASS",
-			},
-			KeyPrefix: "thv:",
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "one of addr")
-	})
-
-	t.Run("cluster mode with sentinel also set returns error", func(t *testing.T) {
-		t.Parallel()
-		_, err := convertRedisRunConfig(&storage.RedisRunConfig{
-			ClusterMode: true,
-			SentinelConfig: &storage.SentinelRunConfig{
-				MasterName:    "mymaster",
-				SentinelAddrs: []string{"sentinel:26379"},
-			},
-			ACLUserConfig: &storage.ACLUserRunConfig{
-				PasswordEnvVar: "PASS",
-			},
-			KeyPrefix: "thv:",
-		})
-		require.Error(t, err)
-		assert.Contains(t, err.Error(), "cluster mode cannot be used with sentinel")
-	})
 }
 
 // TestConvertRedisRunConfig_WithEnvVars tests convertRedisRunConfig with environment variables.
@@ -1233,16 +1235,13 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 			WriteTimeout: "3s",
 		})
 		require.NoError(t, err)
-		require.NotNil(t, cfg)
 
-		assert.Equal(t, "thv:auth:ns:name:", cfg.KeyPrefix)
 		require.NotNil(t, cfg.SentinelConfig)
 		assert.Equal(t, "mymaster", cfg.SentinelConfig.MasterName)
 		assert.Equal(t, []string{"10.0.0.1:26379", "10.0.0.2:26379"}, cfg.SentinelConfig.SentinelAddrs)
-		assert.Equal(t, 3, cfg.SentinelConfig.DB)
-		require.NotNil(t, cfg.ACLUserConfig)
-		assert.Equal(t, "myuser", cfg.ACLUserConfig.Username)
-		assert.Equal(t, "mypass", cfg.ACLUserConfig.Password)
+		assert.Equal(t, 3, cfg.DB)
+		assert.Equal(t, "myuser", cfg.Username)
+		assert.Equal(t, "mypass", cfg.Password)
 		assert.Equal(t, 10*time.Second, cfg.DialTimeout)
 		assert.Equal(t, 5*time.Second, cfg.ReadTimeout)
 		assert.Equal(t, 3*time.Second, cfg.WriteTimeout)
@@ -1318,9 +1317,8 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 			},
 		})
 		require.NoError(t, err)
-		require.NotNil(t, cfg.ACLUserConfig)
-		assert.Empty(t, cfg.ACLUserConfig.Username)
-		assert.Equal(t, "mypass", cfg.ACLUserConfig.Password)
+		assert.Empty(t, cfg.Username)
+		assert.Equal(t, "mypass", cfg.Password)
 	})
 
 	t.Run("cluster mode resolves correctly", func(t *testing.T) {
@@ -1337,14 +1335,11 @@ func TestConvertRedisRunConfig_WithEnvVars(t *testing.T) {
 			KeyPrefix: "thv:auth:ns:name:",
 		})
 		require.NoError(t, err)
-		require.NotNil(t, cfg)
 		assert.Equal(t, "discovery.example.com:6379", cfg.Addr)
 		assert.True(t, cfg.ClusterMode)
 		assert.Nil(t, cfg.SentinelConfig)
-		require.NotNil(t, cfg.ACLUserConfig)
-		assert.Equal(t, "clusteruser", cfg.ACLUserConfig.Username)
-		assert.Equal(t, "clusterpass", cfg.ACLUserConfig.Password)
-		assert.Equal(t, "thv:auth:ns:name:", cfg.KeyPrefix)
+		assert.Equal(t, "clusteruser", cfg.Username)
+		assert.Equal(t, "clusterpass", cfg.Password)
 	})
 }
 
@@ -1580,16 +1575,16 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)
 		assert.Equal(t, "dcr-client-secret", got[0].OAuth2Config.ClientSecret)
 
-		// Store now contains the resolution under the canonical DCRKey.
+		// Store now contains the resolution under the canonical storage.DCRKey.
 		redirectURI := server.URL + "/oauth/callback"
-		key := DCRKey{
+		key := storage.DCRKey{
 			Issuer:      server.URL,
 			RedirectURI: redirectURI,
 			ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 		}
 		cached, ok, err := store.Get(context.Background(), key)
 		require.NoError(t, err)
-		require.True(t, ok, "store should contain the DCR resolution keyed by DCRKey")
+		require.True(t, ok, "store should contain the DCR resolution keyed by storage.DCRKey")
 		assert.Equal(t, "dcr-client-id", cached.ClientID)
 
 		// First call must have hit the mock AS at least once (metadata +
@@ -1663,10 +1658,12 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 // TestNewEmbeddedAuthServer_DCRBoot drives the full NewEmbeddedAuthServer
 // boot path against a mock upstream AS: signing keys are generated
 // ephemerally, storage defaults to memory, and the DCR resolver runs
-// inside the constructor. It verifies that (a) the constructor plumbs a
-// dcrStore onto EmbeddedAuthServer, (b) that store is populated with the
-// canonical DCRKey after boot, and (c) the caller's original
-// RunConfig.Upstreams[i] slice element is unchanged.
+// inside the constructor. It verifies that (a) the constructor wires
+// the shared storage.DCRCredentialStore into the DCR resolver (via the
+// dcr.CredentialStore adapter passed to buildUpstreamConfigs), (b) that
+// store is populated with the canonical storage.DCRKey after boot, and
+// (c) the caller's original RunConfig.Upstreams[i] slice element is
+// unchanged.
 //
 // This complements TestBuildUpstreamConfigs_DCR by exercising the full
 // wiring — signing-key creation, HMAC secret defaults, storage
@@ -1715,13 +1712,13 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 	assert.Greater(t, atomic.LoadInt32(requestCount), int32(0),
 		"DCR boot should have issued network I/O to the mock AS")
 
-	// The store on the EmbeddedAuthServer contains the canonical DCRKey
-	// for this upstream — the accessor delegates to the same
-	// storage.DCRCredentialStore createStorage produced, so a successful
-	// boot persisted the resolution there directly (no separate in-memory
-	// store was created).
+	// The store on the EmbeddedAuthServer contains the canonical
+	// storage.DCRKey for this upstream — the accessor delegates to the
+	// same storage.DCRCredentialStore createStorage produced, so a
+	// successful boot persisted the resolution there directly (no
+	// separate in-memory store was created).
 	redirectURI := server.URL + "/oauth/callback"
-	key := DCRKey{
+	key := storage.DCRKey{
 		Issuer:      server.URL,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
@@ -1901,7 +1898,7 @@ func TestEmbeddedAuthServer_DCRStorePersistsAcrossClose(t *testing.T) {
 	// replica and cross-restart reuse paths depend on: that the
 	// resolution lives in storage, not in process-local cache state.
 	redirectURI := server.URL + "/oauth/callback"
-	key := DCRKey{
+	key := storage.DCRKey{
 		Issuer:      server.URL,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
@@ -1926,7 +1923,7 @@ func TestEmbeddedAuthServer_DCRStorePersistsAcrossClose(t *testing.T) {
 // URL-bearing error from Close. It exists so
 // TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog can verify that the
 // deferred-cleanup gate routes both closeErr and retErr through
-// sanitizeErrorForLog, scrubbing any query / userinfo / fragment that might
+// dcr.SanitizeErrorForLog, scrubbing any query / userinfo / fragment that might
 // carry credentials in a future regression.
 type urlErrorOnCloseStorage struct {
 	storage.Storage
@@ -1944,7 +1941,7 @@ func (s *urlErrorOnCloseStorage) Close() error {
 // TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog pins the post-#5196
 // invariant that the deferred-cleanup slog.Warn at the top of
 // newEmbeddedAuthServerWithStorage routes both closeErr and retErr through
-// sanitizeErrorForLog, so a future regression that drops the call (or that
+// dcr.SanitizeErrorForLog, so a future regression that drops the call (or that
 // changes the error chain to inline an upstream response body containing a
 // userinfo/query/fragment) cannot silently leak secrets to operator logs.
 //
@@ -2037,4 +2034,29 @@ func TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog(t *testing.T) {
 	// context to correlate the failure with upstream logs.
 	assert.Contains(t, logged, "redis.example.com",
 		"closeErr host must remain in the Warn record after sanitisation")
+}
+
+func TestResolveCIMDConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil input returns zero values", func(t *testing.T) {
+		t.Parallel()
+		enabled, size, ttl := resolveCIMDConfig(nil)
+		assert.False(t, enabled)
+		assert.Zero(t, size)
+		assert.Zero(t, ttl)
+	})
+
+	t.Run("non-nil input passes values through", func(t *testing.T) {
+		t.Parallel()
+		cfg := &authserver.CIMDRunConfig{
+			Enabled:          true,
+			CacheMaxSize:     128,
+			CacheFallbackTTL: "10m",
+		}
+		enabled, size, ttl := resolveCIMDConfig(cfg)
+		assert.True(t, enabled)
+		assert.Equal(t, 128, size)
+		assert.Equal(t, 10*time.Minute, ttl)
+	})
 }

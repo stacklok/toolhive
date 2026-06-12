@@ -38,6 +38,7 @@ import (
 // testSetupOptions allows customizing the test handler setup.
 type testSetupOptions struct {
 	AuthorizationEndpointBaseURL string
+	CIMDEnabled                  bool
 }
 
 // testSetup creates a Handler with all dependencies for testing.
@@ -66,6 +67,7 @@ func testSetupWithOptions(t *testing.T, opts testSetupOptions) *Handler {
 	cfg := &server.AuthorizationServerParams{
 		Issuer:                       "https://auth.example.com",
 		AuthorizationEndpointBaseURL: opts.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                  opts.CIMDEnabled,
 		AccessTokenLifespan:          time.Hour,
 		RefreshTokenLifespan:         time.Hour * 24,
 		AuthCodeLifespan:             time.Minute * 10,
@@ -340,3 +342,61 @@ func TestWellKnownRoutes(t *testing.T) {
 }
 
 // TODO: Add TestOAuthRoutes once OAuth handlers are implemented
+
+func TestDiscoveryHandlers_CIMDEnabled_AdvertisesSupport(t *testing.T) {
+	t.Parallel()
+
+	handler := testSetupWithOptions(t, testSetupOptions{CIMDEnabled: true})
+
+	for _, tc := range []struct {
+		name string
+		fn   func(http.ResponseWriter, *http.Request)
+	}{
+		{"OAuth AS metadata", handler.OAuthDiscoveryHandler},
+		{"OIDC discovery", handler.OIDCDiscoveryHandler},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			tc.fn(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var meta sharedobauth.AuthorizationServerMetadata
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&meta))
+			assert.True(t, meta.ClientIDMetadataDocumentSupported,
+				"client_id_metadata_document_supported must be true when CIMD is enabled")
+		})
+	}
+}
+
+func TestDiscoveryHandlers_CIMDDisabled_OmitsFlag(t *testing.T) {
+	t.Parallel()
+
+	handler := testSetupWithOptions(t, testSetupOptions{CIMDEnabled: false})
+
+	for _, tc := range []struct {
+		name string
+		fn   func(http.ResponseWriter, *http.Request)
+	}{
+		{"OAuth AS metadata", handler.OAuthDiscoveryHandler},
+		{"OIDC discovery", handler.OIDCDiscoveryHandler},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			rec := httptest.NewRecorder()
+			tc.fn(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			// Decode to raw map to verify the field is truly absent from the JSON
+			// output (omitempty), not merely false — a struct decode cannot
+			// distinguish between an omitted field and an explicit false value.
+			var raw map[string]interface{}
+			require.NoError(t, json.NewDecoder(rec.Body).Decode(&raw))
+			_, present := raw["client_id_metadata_document_supported"]
+			assert.False(t, present,
+				"client_id_metadata_document_supported must be omitted from JSON when CIMD is disabled")
+		})
+	}
+}

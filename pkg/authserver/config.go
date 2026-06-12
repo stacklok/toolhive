@@ -71,6 +71,17 @@ type RunConfig struct {
 	// If empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).
 	ScopesSupported []string `json:"scopes_supported,omitempty" yaml:"scopes_supported,omitempty"`
 
+	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every
+	// DCR registration. All values must appear in ScopesSupported; the auth server
+	// rejects this RunConfig at startup otherwise. Empty means current behavior is
+	// preserved (registered scope = client-requested, or DefaultScopes if empty).
+	// When ScopesSupported is empty, the subset check uses registration.DefaultScopes
+	// (the same set applyDefaults would substitute at startup) — so
+	// BaselineClientScopes containing standard OIDC scopes works without enumerating
+	// ScopesSupported explicitly.
+	//nolint:lll // field tags require full JSON+YAML names
+	BaselineClientScopes []string `json:"baseline_client_scopes,omitempty" yaml:"baseline_client_scopes,omitempty"`
+
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
 	// Per RFC 8707, the "resource" parameter in authorization and token requests is
 	// validated against this list. Required for MCP compliance.
@@ -85,6 +96,78 @@ type RunConfig struct {
 	// inject upstream IdP tokens into requests forwarded to the backend MCP server.
 	//nolint:lll // field tags require full JSON+YAML names
 	DisableUpstreamTokenInjection bool `json:"disable_upstream_token_injection,omitempty" yaml:"disable_upstream_token_injection,omitempty"`
+
+	// CIMD controls client_id metadata document support. When enabled, the
+	// embedded authorization server accepts HTTPS URLs as client_id values
+	// and resolves them via the CIMD protocol instead of requiring DCR.
+	CIMD *CIMDRunConfig `json:"cimd,omitempty" yaml:"cimd,omitempty"`
+}
+
+// Validate checks that the on-disk RunConfig is internally consistent. Called
+// by the runner before resolving secrets and building the runtime Config; it
+// catches operator-supplied misconfiguration early so server startup fails
+// loudly instead of degrading silently at runtime.
+func (c *RunConfig) Validate() error {
+	if c.CIMD != nil {
+		if err := c.CIMD.Validate(); err != nil {
+			return fmt.Errorf("cimd: %w", err)
+		}
+	}
+	return c.validateBaselineClientScopes()
+}
+
+// validateBaselineClientScopes ensures every entry in BaselineClientScopes is
+// also present in ScopesSupported. If a baseline scope is not advertised by
+// ScopesSupported, the embedded DCR handler would later try to register a
+// client with a scope the server does not support, which fosite rejects at
+// /oauth/authorize with invalid_scope.
+//
+// When ScopesSupported is empty, the check uses registration.DefaultScopes as
+// the superset (matching what applyDefaults would substitute at startup), so
+// operators can omit ScopesSupported and still configure standard OIDC scopes
+// as baseline without error.
+func (c *RunConfig) validateBaselineClientScopes() error {
+	effective := c.ScopesSupported
+	if len(effective) == 0 {
+		effective = registration.DefaultScopes
+	}
+	return registration.ValidateScopeSubset(c.BaselineClientScopes, effective, "baseline_client_scopes")
+}
+
+// CIMDRunConfig controls client_id metadata document (CIMD) support.
+type CIMDRunConfig struct {
+	// Enabled activates CIMD client lookup when true.
+	Enabled bool `json:"enabled" yaml:"enabled"`
+
+	// CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+	// Defaults to 256 when Enabled is true and this field is zero.
+	CacheMaxSize int `json:"cache_max_size,omitempty" yaml:"cache_max_size,omitempty"`
+
+	// CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+	// Cache-Control header parsing is not yet implemented; all entries use this value.
+	// Format: Go duration string (e.g. "5m", "10m", "1h").
+	// Defaults to 5 minutes when Enabled is true and this field is omitted.
+	CacheFallbackTTL string `json:"cache_fallback_ttl,omitempty" yaml:"cache_fallback_ttl,omitempty" example:"5m"`
+}
+
+// Validate checks that the CIMDRunConfig fields are internally consistent.
+func (c *CIMDRunConfig) Validate() error {
+	if !c.Enabled {
+		return nil
+	}
+	if c.CacheMaxSize < 0 {
+		return fmt.Errorf("cache_max_size must be non-negative when CIMD is enabled, got %d", c.CacheMaxSize)
+	}
+	if c.CacheFallbackTTL != "" {
+		d, err := time.ParseDuration(c.CacheFallbackTTL)
+		if err != nil {
+			return fmt.Errorf("cache_fallback_ttl: %w", err)
+		}
+		if d <= 0 {
+			return fmt.Errorf("cache_fallback_ttl must be positive when CIMD is enabled, got %s", c.CacheFallbackTTL)
+		}
+	}
+	return nil
 }
 
 // SigningKeyRunConfig configures where to load signing keys from.
@@ -249,6 +332,14 @@ type OAuth2UpstreamRunConfig struct {
 	//nolint:lll // field tags require full JSON+YAML names
 	TokenResponseMapping *TokenResponseMappingRunConfig `json:"token_response_mapping,omitempty" yaml:"token_response_mapping,omitempty"`
 
+	// IdentityFromToken extracts user identity (subject, name, email) directly from the
+	// OAuth2 token-endpoint response body using gjson dot-notation paths. When set, the
+	// embedded auth server skips the userinfo HTTP call entirely. Mirrors the CRD type
+	// (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative
+	// trust-model and uniqueness documentation lives there.
+	//nolint:lll // field tags require full JSON+YAML names
+	IdentityFromToken *IdentityFromTokenRunConfig `json:"identity_from_token,omitempty" yaml:"identity_from_token,omitempty"`
+
 	// AdditionalAuthorizationParams are extra query parameters to include in
 	// authorization requests. Useful for provider-specific parameters like
 	// Google's access_type=offline.
@@ -350,6 +441,22 @@ type TokenResponseMappingRunConfig struct {
 
 	// ExpiresInPath is the dot-notation path to the expires_in value. Defaults to "expires_in".
 	ExpiresInPath string `json:"expires_in_path,omitempty" yaml:"expires_in_path,omitempty"`
+}
+
+// IdentityFromTokenRunConfig configures extracting user identity claims directly from
+// the token-endpoint response body. Mirrors the CRD type
+// (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative
+// trust-model and uniqueness documentation lives there.
+type IdentityFromTokenRunConfig struct {
+	// SubjectPath is the dot-notation path to the subject (user ID) field.
+	// Required when IdentityFromToken is set.
+	SubjectPath string `json:"subject_path" yaml:"subject_path"`
+
+	// NamePath is the dot-notation path to the display name field.
+	NamePath string `json:"name_path,omitempty" yaml:"name_path,omitempty"`
+
+	// EmailPath is the dot-notation path to the email address field.
+	EmailPath string `json:"email_path,omitempty" yaml:"email_path,omitempty"`
 }
 
 // UserInfoRunConfig contains UserInfo endpoint configuration.
@@ -462,6 +569,16 @@ type Config struct {
 	// /.well-known/oauth-authorization-server discovery endpoints.
 	ScopesSupported []string
 
+	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes the embedded
+	// DCR handler unions into every newly registered client's scope set. Empty
+	// means current behavior is preserved (DCR registers exactly what the client
+	// requested, or registration.DefaultScopes if the client requested none).
+	// All entries must also be present in ScopesSupported. When ScopesSupported
+	// is empty, the validation gate uses registration.DefaultScopes as the
+	// superset — so standard OIDC scopes (e.g. "offline_access") work without
+	// enumerating ScopesSupported explicitly.
+	BaselineClientScopes []string
+
 	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
 	// Per RFC 8707, the "resource" parameter in authorization and token requests is
 	// validated against this list. MCP clients are required to include the resource
@@ -472,6 +589,20 @@ type Config struct {
 	// When empty, any request with a "resource" parameter will be rejected with
 	// "invalid_target". Configure this for proper MCP specification compliance.
 	AllowedAudiences []string
+
+	// CIMDEnabled enables the CIMD storage decorator so the authorization server
+	// accepts HTTPS URLs as client_id values without prior DCR registration.
+	CIMDEnabled bool
+
+	// CIMDCacheMaxSize is the maximum number of CIMD documents held in the LRU
+	// cache. Zero is replaced by a default (256) in applyDefaults when CIMDEnabled
+	// is true.
+	CIMDCacheMaxSize int
+
+	// CIMDCacheFallbackTTL is the fixed TTL applied to all cached CIMD documents
+	// (Cache-Control header parsing is not yet implemented). Zero is replaced by
+	// a default (5 minutes) in applyDefaults when CIMDEnabled is true.
+	CIMDCacheFallbackTTL time.Duration
 }
 
 // Validate checks that the Config is valid.
@@ -506,6 +637,29 @@ func (c *Config) Validate() error {
 	// which requires the server to have configured allowed audiences to validate against.
 	if len(c.AllowedAudiences) == 0 {
 		return fmt.Errorf("at least one allowed audience is required for MCP compliance (RFC 8707 resource parameter validation)")
+	}
+
+	// BaselineClientScopes must be a subset of ScopesSupported. RunConfig.Validate
+	// catches this for the YAML-loaded path, but a caller that constructs Config
+	// directly bypasses that; failing here gives them a clearer call stack than
+	// the inner validateParams in the provider layer.
+	// When ScopesSupported is empty, use DefaultScopes as the superset (matching
+	// what applyDefaults substitutes at startup).
+	{
+		effective := c.ScopesSupported
+		if len(effective) == 0 {
+			effective = registration.DefaultScopes
+		}
+		if err := registration.ValidateScopeSubset(c.BaselineClientScopes, effective, "baseline_client_scopes"); err != nil {
+			return err
+		}
+	}
+
+	if c.CIMDEnabled && c.CIMDCacheMaxSize < 1 {
+		return fmt.Errorf("cimd.cache_max_size must be >= 1 when CIMD is enabled")
+	}
+	if c.CIMDEnabled && c.CIMDCacheFallbackTTL < 0 {
+		return fmt.Errorf("cimd.cache_fallback_ttl must be non-negative when CIMD is enabled")
 	}
 
 	slog.Debug("authserver config validation passed",
@@ -559,6 +713,10 @@ func (c *OAuth2UpstreamRunConfig) Validate() error {
 						"when dcr_config.registration_endpoint is set (no discovery to populate them)")
 			}
 		}
+	}
+
+	if c.IdentityFromToken != nil && c.IdentityFromToken.SubjectPath == "" {
+		return fmt.Errorf("oauth2 upstream: identity_from_token.subject_path must not be empty when identity_from_token is configured")
 	}
 
 	return nil
@@ -733,6 +891,14 @@ func (c *Config) applyDefaults() error {
 	if len(c.ScopesSupported) == 0 {
 		c.ScopesSupported = registration.DefaultScopes
 		slog.Debug("applied default scopes_supported", "scopes", c.ScopesSupported)
+	}
+	if c.CIMDEnabled && c.CIMDCacheMaxSize == 0 {
+		c.CIMDCacheMaxSize = 256
+		slog.Debug("applied default cimd cache_max_size", "size", c.CIMDCacheMaxSize)
+	}
+	if c.CIMDEnabled && c.CIMDCacheFallbackTTL == 0 {
+		c.CIMDCacheFallbackTTL = 5 * time.Minute
+		slog.Debug("applied default cimd cache_fallback_ttl", "ttl", c.CIMDCacheFallbackTTL)
 	}
 	return nil
 }

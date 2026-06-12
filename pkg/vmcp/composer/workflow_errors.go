@@ -39,44 +39,6 @@ var (
 	ErrToolCallFailed = errors.New("tool call failed")
 )
 
-// WorkflowError wraps workflow execution errors with context.
-type WorkflowError struct {
-	// WorkflowID is the workflow execution ID.
-	WorkflowID string
-
-	// StepID is the step that caused the error (if applicable).
-	StepID string
-
-	// Message is the error message.
-	Message string
-
-	// Cause is the underlying error.
-	Cause error
-}
-
-// Error implements the error interface.
-func (e *WorkflowError) Error() string {
-	if e.StepID != "" {
-		return fmt.Sprintf("workflow %s, step %s: %s: %v", e.WorkflowID, e.StepID, e.Message, e.Cause)
-	}
-	return fmt.Sprintf("workflow %s: %s: %v", e.WorkflowID, e.Message, e.Cause)
-}
-
-// Unwrap returns the underlying error for errors.Is and errors.As.
-func (e *WorkflowError) Unwrap() error {
-	return e.Cause
-}
-
-// NewWorkflowError creates a new workflow error.
-func NewWorkflowError(workflowID, stepID, message string, cause error) *WorkflowError {
-	return &WorkflowError{
-		WorkflowID: workflowID,
-		StepID:     stepID,
-		Message:    message,
-		Cause:      cause,
-	}
-}
-
 // ValidationError wraps workflow validation errors.
 type ValidationError struct {
 	// Field is the field that failed validation.

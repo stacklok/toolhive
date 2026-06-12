@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
@@ -105,6 +108,18 @@ func TestConfigValidate(t *testing.T) {
 		{name: "unsupported upstream type", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderType("saml")}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "unsupported provider type"},
 		{name: "OIDC with oauth2_config set rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOIDC, OIDCConfig: validOIDCUpstream, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "oauth2_config must not be set"},
 		{name: "OAuth2 with oidc_config set rejects", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream, OIDCConfig: validOIDCUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}, wantErr: true, errMsg: "oidc_config must not be set"},
+
+		// BaselineClientScopes subset gate (mirrors RunConfig.Validate but on the
+		// runtime Config — catches direct constructors that bypass YAML loading).
+		{name: "baseline scope not in scopes_supported", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"offline_access"}}, wantErr: true, errMsg: `baseline_client_scopes contains "offline_access"`},
+		{name: "nil supported with baseline in DefaultScopes passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: nil, BaselineClientScopes: []string{"offline_access"}}},
+
+		// CIMD validation
+		{name: "CIMD enabled zero cache_max_size rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 0}, wantErr: true, errMsg: "cache_max_size must be >= 1"},
+		{name: "CIMD enabled negative cache_max_size rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: -1}, wantErr: true, errMsg: "cache_max_size must be >= 1"},
+		{name: "CIMD enabled negative cache_fallback_ttl rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: -time.Second}, wantErr: true, errMsg: "cache_fallback_ttl must be non-negative"},
+		{name: "CIMD disabled ignores invalid cache fields", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: false, CIMDCacheMaxSize: -1, CIMDCacheFallbackTTL: -time.Second}},
+		{name: "CIMD enabled with valid bounds passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: 5 * time.Minute}},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -339,6 +354,98 @@ func TestOAuth2UpstreamRunConfigValidate(t *testing.T) {
 				},
 			},
 		},
+
+		// IdentityFromToken subject_path requirement.
+		{
+			name: "IdentityFromToken with empty SubjectPath rejects",
+			config: OAuth2UpstreamRunConfig{
+				ClientID:          "c",
+				IdentityFromToken: &IdentityFromTokenRunConfig{},
+			},
+			wantErr: true,
+			errMsg:  "identity_from_token.subject_path must not be empty",
+		},
+		{
+			name: "IdentityFromToken with non-empty SubjectPath is valid",
+			config: OAuth2UpstreamRunConfig{
+				ClientID: "c",
+				IdentityFromToken: &IdentityFromTokenRunConfig{
+					SubjectPath: "username",
+				},
+			},
+		},
+		{
+			name: "nil IdentityFromToken is valid",
+			config: OAuth2UpstreamRunConfig{
+				ClientID: "c",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := tt.config.Validate()
+			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+func TestRunConfigValidate(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		config  RunConfig
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			name:   "nil baseline scopes passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile"}, BaselineClientScopes: nil},
+		},
+		{
+			name:   "empty baseline scopes passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile"}, BaselineClientScopes: []string{}},
+		},
+		{
+			name:   "single baseline entry in supported set passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile", "email"}, BaselineClientScopes: []string{"openid"}},
+		},
+		{
+			name:   "all baseline entries in supported set passes",
+			config: RunConfig{ScopesSupported: []string{"openid", "profile", "email", "offline_access"}, BaselineClientScopes: []string{"openid", "offline_access"}},
+		},
+		{
+			name:    "baseline contains scope not in supported rejects with specific error",
+			config:  RunConfig{ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"openid", "offline_access"}},
+			wantErr: true,
+			errMsg:  `"offline_access" which is not in scopes_supported`,
+		},
+		{
+			name:   "nil supported with baseline in DefaultScopes passes",
+			config: RunConfig{ScopesSupported: nil, BaselineClientScopes: []string{"offline_access"}},
+		},
+		{
+			name:    "nil supported with baseline outside DefaultScopes rejects",
+			config:  RunConfig{ScopesSupported: nil, BaselineClientScopes: []string{"custom_scope"}},
+			wantErr: true,
+			errMsg:  `"custom_scope"`,
+		},
+		{
+			name:    "first missing scope is reported when multiple are missing",
+			config:  RunConfig{ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"foo", "bar"}},
+			wantErr: true,
+			errMsg:  "foo",
+		},
+		// CIMD RunConfig validation
+		{name: "CIMD nil passes", config: RunConfig{CIMD: nil}},
+		{name: "CIMD disabled passes even with invalid fields", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: false, CacheMaxSize: -1, CacheFallbackTTL: "-1s"}}},
+		{name: "CIMD enabled negative cache_max_size rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheMaxSize: -1}}, wantErr: true, errMsg: "cache_max_size"},
+		{name: "CIMD enabled invalid TTL string rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheFallbackTTL: "not-a-duration"}}, wantErr: true, errMsg: "cache_fallback_ttl"},
+		{name: "CIMD enabled negative TTL rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheFallbackTTL: "-5m"}}, wantErr: true, errMsg: "cache_fallback_ttl"},
+		{name: "CIMD enabled valid passes", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheMaxSize: 64, CacheFallbackTTL: "5m"}}},
+		{name: "CIMD enabled omitted optional fields pass", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true}}},
 	}
 
 	for _, tt := range tests {
@@ -436,6 +543,110 @@ func TestDCRUpstreamConfigValidate(t *testing.T) {
 			t.Parallel()
 			err := tt.config.Validate()
 			assertError(t, err, tt.wantErr, tt.errMsg)
+		})
+	}
+}
+
+func TestConfigApplyDefaults_BaselineClientScopes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                 string
+		scopesSupported      []string
+		baselineClientScopes []string
+		wantErr              bool
+		errMsg               string
+		wantDefaultScopes    bool
+	}{
+		{
+			name:              "empty scopes_supported and empty baseline — defaults substituted",
+			wantDefaultScopes: true,
+		},
+		{
+			name:            "scopes_supported set and empty baseline — no substitution",
+			scopesSupported: []string{"openid", "profile"},
+		},
+		{
+			name:                 "scopes_supported set and baseline non-empty — no substitution no error",
+			scopesSupported:      []string{"openid", "profile"},
+			baselineClientScopes: []string{"openid"},
+		},
+		{
+			name:                 "empty scopes_supported with non-empty baseline applies DefaultScopes",
+			baselineClientScopes: []string{"openid"},
+			wantDefaultScopes:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &Config{
+				ScopesSupported:      tt.scopesSupported,
+				BaselineClientScopes: tt.baselineClientScopes,
+			}
+
+			err := cfg.applyDefaults()
+
+			if tt.wantErr {
+				require.Error(t, err)
+				require.Contains(t, err.Error(), tt.errMsg)
+				return
+			}
+
+			require.NoError(t, err)
+			if tt.wantDefaultScopes {
+				require.Equal(t, registration.DefaultScopes, cfg.ScopesSupported)
+			} else {
+				require.Equal(t, tt.scopesSupported, cfg.ScopesSupported)
+			}
+		})
+	}
+}
+
+func TestConfigApplyDefaults_CIMD(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		cfg             Config
+		wantMaxSize     int
+		wantFallbackTTL time.Duration
+	}{
+		{
+			name:            "CIMD enabled with zero fields applies defaults",
+			cfg:             Config{Issuer: "https://example.com", CIMDEnabled: true},
+			wantMaxSize:     256,
+			wantFallbackTTL: 5 * time.Minute,
+		},
+		{
+			name: "CIMD enabled preserves non-zero values",
+			cfg: Config{
+				Issuer:               "https://example.com",
+				CIMDEnabled:          true,
+				CIMDCacheMaxSize:     128,
+				CIMDCacheFallbackTTL: 10 * time.Minute,
+			},
+			wantMaxSize:     128,
+			wantFallbackTTL: 10 * time.Minute,
+		},
+		{
+			name:            "CIMD disabled leaves zero fields unchanged",
+			cfg:             Config{Issuer: "https://example.com", CIMDEnabled: false},
+			wantMaxSize:     0,
+			wantFallbackTTL: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := tt.cfg
+			err := cfg.applyDefaults()
+			require.NoError(t, err)
+			require.Equal(t, tt.wantMaxSize, cfg.CIMDCacheMaxSize)
+			require.Equal(t, tt.wantFallbackTTL, cfg.CIMDCacheFallbackTTL)
 		})
 	}
 }

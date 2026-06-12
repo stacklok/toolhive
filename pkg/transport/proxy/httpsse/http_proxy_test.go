@@ -181,7 +181,7 @@ func TestConcurrentClientRemoval(t *testing.T) {
 //nolint:paralleltest // Test modifies shared proxy state
 func TestForwardResponseToClients(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Create a client session
 	clientID := testClientID
@@ -220,7 +220,7 @@ func TestForwardResponseToClients(t *testing.T) {
 //nolint:paralleltest // Test modifies shared proxy state
 func TestForwardResponseToClients_NoClients(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 8080, false, nil, nil)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Create a test response
 	response, err := jsonrpc2.NewResponse(jsonrpc2.StringID("test"), "test result", nil)
@@ -603,12 +603,153 @@ func TestNewHTTPSSEProxyWithSessionStorage(t *testing.T) {
 	require.NotNil(t, proxy.sessionManager)
 }
 
+// TestNewHTTPSSEProxy_AuthInfoHandlerNil verifies that when no authInfoHandler is set,
+// requests to /.well-known/oauth-protected-resource return a JSON 404.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPSSEProxy_AuthInfoHandlerNil(t *testing.T) {
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil) // no WithAuthInfoHandler
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	url := fmt.Sprintf("http://%s/.well-known/oauth-protected-resource", proxy.server.Addr)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
+}
+
+// TestNewHTTPSSEProxy_PrefixHandlerMounted verifies that a handler registered via
+// WithPrefixHandlers is reachable at its declared path prefix.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPSSEProxy_PrefixHandlerMounted(t *testing.T) {
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil,
+		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
+	)
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	url := fmt.Sprintf("http://%s/oauth/token", proxy.server.Addr)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestNewHTTPSSEProxy_PrefixHandlerDoesNotShadowSSE verifies that registering prefix
+// handlers does not prevent the /sse endpoint from being reachable.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPSSEProxy_PrefixHandlerDoesNotShadowSSE(t *testing.T) {
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil,
+		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
+	)
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	// /sse returns text/event-stream for GET requests, which proves it is registered.
+	url := fmt.Sprintf("http://%s/sse", proxy.server.Addr)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+}
+
+// TestNewHTTPSSEProxy_ExactWellKnownBeatsSubtree verifies that Go ServeMux
+// specificity applies: an exact path registered via WithPrefixHandlers wins
+// over the /.well-known/ subtree mount used by WithAuthInfoHandler.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPSSEProxy_ExactWellKnownBeatsSubtree(t *testing.T) {
+	exactHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot)
+	})
+	authInfoHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil,
+		WithPrefixHandlers(map[string]http.Handler{"/.well-known/openid-configuration": exactHandler}),
+		WithAuthInfoHandler(authInfoHandler),
+	)
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	base := fmt.Sprintf("http://%s", proxy.server.Addr)
+
+	// Poll until the server is ready.
+	var oidcResp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		oidcResp, err = http.Get(base + "/.well-known/openid-configuration") //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer oidcResp.Body.Close()
+
+	assert.Equal(t, http.StatusTeapot, oidcResp.StatusCode, "exact handler must win over subtree mount")
+
+	prmResp, err := http.Get(base + "/.well-known/oauth-protected-resource") //nolint:gosec // test-only URL construction
+	require.NoError(t, err)
+	defer prmResp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, prmResp.StatusCode, "subtree handler must serve other /.well-known/ paths")
+}
+
 // TestStartStop tests starting and stopping the proxy
 //
 //nolint:paralleltest // Test starts/stops HTTP server
 func TestStartStop(t *testing.T) {
 	proxy := NewHTTPSSEProxy("localhost", 0, false, nil, nil) // Use port 0 for auto-assignment
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Start the proxy
 	err := proxy.Start(ctx)

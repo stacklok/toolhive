@@ -59,7 +59,7 @@ type MCPRemoteProxyReconciler struct {
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=rolebindings,verbs=create;delete;get;list;patch;update;watch
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
@@ -460,42 +460,34 @@ func (*MCPRemoteProxyReconciler) validateAuthzPolicySyntax(
 }
 
 // validateK8sRefs validates that referenced ConfigMaps and Secrets exist.
+// Authz ConfigMap references are validated through the shared loader so a malformed
+// payload surfaces as AuthzConfigMapInvalid here instead of crashing the runner pod.
 func (r *MCPRemoteProxyReconciler) validateK8sRefs(
 	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
 ) error {
-	// Check authz ConfigMap reference
+	// Check authz ConfigMap reference.
 	if proxy.Spec.AuthzConfig != nil &&
 		proxy.Spec.AuthzConfig.Type == mcpv1beta1.AuthzConfigTypeConfigMap &&
 		proxy.Spec.AuthzConfig.ConfigMap != nil {
-		cm := &corev1.ConfigMap{}
 		cmName := proxy.Spec.AuthzConfig.ConfigMap.Name
-		err := r.Get(ctx, types.NamespacedName{
-			Name: cmName, Namespace: proxy.Namespace,
-		}, cm)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				msg := fmt.Sprintf(
-					"authorization ConfigMap %q not found in namespace %q",
-					cmName, proxy.Namespace,
-				)
-				r.recordValidationEvent(
-					proxy,
-					mcpv1beta1.ConditionReasonAuthzConfigMapNotFound,
-					msg,
-				)
-				setConfigurationInvalidCondition(
-					proxy,
-					mcpv1beta1.ConditionReasonAuthzConfigMapNotFound,
-					msg,
-				)
-				return stderrors.New(msg)
+		cfg, err := ctrlutil.LoadAuthzConfigFromConfigMap(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig)
+		if err == nil {
+			if _, cerr := ctrlutil.ExtractCedarAuthzOptions(cfg); cerr != nil {
+				err = fmt.Errorf("authz ConfigMap %q is not a Cedar config: %w", cmName, cerr)
 			}
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to fetch authorization ConfigMap", "name", cmName, "namespace", proxy.Namespace)
-			genericMsg := fmt.Sprintf("failed to fetch authorization ConfigMap %q", cmName)
-			r.recordValidationEvent(proxy, mcpv1beta1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
-			setConfigurationInvalidCondition(proxy, mcpv1beta1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
-			return stderrors.New(genericMsg)
+		}
+		if err != nil {
+			reason := mcpv1beta1.ConditionReasonAuthzConfigMapInvalid
+			msg := fmt.Sprintf("authorization ConfigMap %q is invalid: %v", cmName, err)
+			if errors.IsNotFound(err) {
+				reason = mcpv1beta1.ConditionReasonAuthzConfigMapNotFound
+				msg = fmt.Sprintf("authorization ConfigMap %q not found in namespace %q", cmName, proxy.Namespace)
+			} else {
+				log.FromContext(ctx).Error(err, "Authz ConfigMap validation failed", "name", cmName, "namespace", proxy.Namespace)
+			}
+			r.recordValidationEvent(proxy, reason, msg)
+			setConfigurationInvalidCondition(proxy, reason, msg)
+			return stderrors.New(msg)
 		}
 	}
 
@@ -733,6 +725,14 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 			ObservedGeneration: proxy.Generation,
 		})
 		return fmt.Errorf("failed to fetch MCPExternalAuthConfig: %w", err)
+	}
+
+	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
+	// the MCPRemoteProxy so the failure is visible on the consumer CR (e.g.
+	// obo-typed configs surface Valid=False/EnterpriseRequired here without the
+	// user having to inspect the referenced MCPExternalAuthConfig).
+	if mirrored, err := mirrorInvalidOnRemoteProxy(proxy, externalAuthConfig); mirrored {
+		return err
 	}
 
 	// MCPRemoteProxy supports only single-upstream embedded auth server configs.
@@ -1030,6 +1030,7 @@ func (r *MCPRemoteProxyReconciler) updateOIDCConfigReferencingWorkloads(
 
 	// Add the workload reference
 	oidcConfig.Status.ReferencingWorkloads = append(oidcConfig.Status.ReferencingWorkloads, ref)
+	oidcConfig.Status.ReferenceCount = workloadReferenceCount(oidcConfig.Status.ReferencingWorkloads)
 	if err := r.Status().Update(ctx, oidcConfig); err != nil {
 		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingWorkloads: %w", err)
 	}
@@ -1090,7 +1091,7 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 // Mirrors the validateGroupRef convention: this only sets/removes the
 // condition; the caller is responsible for persisting status.
 func (*MCPRemoteProxyReconciler) validateAuthzPrimaryUpstreamProviderIgnored(proxy *mcpv1beta1.MCPRemoteProxy) {
-	provider := proxy.Spec.AuthzConfig.ExplicitPrimaryUpstreamProvider()
+	provider := proxy.Spec.AuthzConfig.DeprecatedInlinePrimaryUpstreamProvider()
 	conditionType := mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored
 	if provider == "" {
 		meta.RemoveStatusCondition(&proxy.Status.Conditions, conditionType)

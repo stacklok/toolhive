@@ -311,8 +311,10 @@ func TestTokenExchangeStrategy_Authenticate(t *testing.T) {
 			strategy: func(server *httptest.Server) *authtypes.BackendAuthStrategy {
 				return createTokenExchangeStrategy(server.URL)
 			},
-			expectError:   true,
-			errorContains: "empty access_token",
+			expectError: true,
+			// oauth.ParseTokenResponse enforces RFC 6749 Section 5.1 centrally;
+			// the tokenexchange call site no longer duplicates the check.
+			errorContains: "missing access_token",
 		},
 		{
 			name: "exchanges upstream token when SubjectProviderName is set",

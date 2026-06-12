@@ -16,6 +16,8 @@ import (
 	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	tcredis "github.com/stacklok/toolhive-core/redis"
 )
 
 // --- Test Helpers ---
@@ -44,65 +46,60 @@ func withRedisStorage(t *testing.T, fn func(context.Context, *RedisStorage, *min
 }
 
 // --- Config Validation Tests ---
+//
+// Connection-mode topology, TLS plumbing, and timeout defaults are validated by
+// the shared toolhive-core redis package and are exercised in its own test
+// suite. The cases below cover only the session-specific invariants enforced
+// by NewRedisStorage (key prefix conventions, TTL bounds, ACL pass-through).
 
-func TestValidateRedisConfig(t *testing.T) {
+func TestNewRedisStorageInvariants(t *testing.T) {
 	t.Parallel()
 
+	// These cases fail in validateSessionInvariants before any Redis call, so
+	// the Addr below is never dialed.
 	tests := []struct {
-		name    string
-		cfg     RedisConfig
-		wantErr string
+		name      string
+		keyPrefix string
+		ttl       time.Duration
+		wantErr   string
 	}{
 		{
-			name:    "both Addr and SentinelConfig set",
-			cfg:     RedisConfig{Addr: "localhost:6379", SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{"s:26379"}}, KeyPrefix: "p:"},
-			wantErr: "mutually exclusive",
+			name:      "empty key prefix",
+			keyPrefix: "",
+			ttl:       time.Minute,
+			wantErr:   "key prefix is required",
 		},
 		{
-			name:    "neither Addr nor SentinelConfig set",
-			cfg:     RedisConfig{KeyPrefix: "p:"},
-			wantErr: "one of Addr",
+			name:      "key prefix without trailing colon",
+			keyPrefix: "thvsession",
+			ttl:       time.Minute,
+			wantErr:   "must end with ':'",
 		},
 		{
-			name:    "Sentinel missing MasterName",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{SentinelAddrs: []string{"s:26379"}}, KeyPrefix: "p:"},
-			wantErr: "MasterName",
+			name:      "zero ttl",
+			keyPrefix: "test:",
+			ttl:       0,
+			wantErr:   "ttl",
 		},
 		{
-			name:    "Sentinel missing SentinelAddrs",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "m"}, KeyPrefix: "p:"},
-			wantErr: "SentinelAddrs",
-		},
-		{
-			name:    "empty KeyPrefix",
-			cfg:     RedisConfig{Addr: "localhost:6379"},
-			wantErr: "KeyPrefix",
-		},
-		{
-			name:    "KeyPrefix without trailing colon",
-			cfg:     RedisConfig{Addr: "localhost:6379", KeyPrefix: "thvsession"},
-			wantErr: "must end with ':'",
-		},
-		{
-			name: "valid standalone",
-			cfg:  RedisConfig{Addr: "localhost:6379", KeyPrefix: "thv:vmcp:session:"},
-		},
-		{
-			name: "valid sentinel",
-			cfg:  RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{"s:26379"}}, KeyPrefix: "thv:vmcp:session:"},
+			name:      "negative ttl",
+			keyPrefix: "test:",
+			ttl:       -1 * time.Second,
+			wantErr:   "ttl",
 		},
 	}
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateRedisConfig(&tc.cfg)
-			if tc.wantErr == "" {
-				assert.NoError(t, err)
-			} else {
-				require.Error(t, err)
-				assert.Contains(t, err.Error(), tc.wantErr)
-			}
+			_, err := NewRedisStorage(
+				context.Background(),
+				tcredis.Config{Addr: "localhost:0"},
+				tc.keyPrefix,
+				tc.ttl,
+			)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.wantErr)
 		})
 	}
 }
@@ -116,12 +113,11 @@ func TestNewRedisStorageACLAuth(t *testing.T) {
 		defer mr.Close()
 		mr.RequireUserAuth("alice", "secret")
 
-		storage, err := NewRedisStorage(context.Background(), RedisConfig{
-			Addr:      mr.Addr(),
-			KeyPrefix: "test:acl:",
-			Username:  "alice",
-			Password:  "secret",
-		}, time.Minute)
+		storage, err := NewRedisStorage(context.Background(), tcredis.Config{
+			Addr:     mr.Addr(),
+			Username: "alice",
+			Password: "secret",
+		}, "test:acl:", time.Minute)
 		require.NoError(t, err)
 		defer storage.Close()
 
@@ -139,30 +135,14 @@ func TestNewRedisStorageACLAuth(t *testing.T) {
 		defer mr.Close()
 		mr.RequireUserAuth("alice", "secret")
 
-		_, err := NewRedisStorage(context.Background(), RedisConfig{
-			Addr:      mr.Addr(),
-			KeyPrefix: "test:acl:",
-			Username:  "alice",
-			Password:  "wrong",
-		}, time.Minute)
+		_, err := NewRedisStorage(context.Background(), tcredis.Config{
+			Addr:     mr.Addr(),
+			Username: "alice",
+			Password: "wrong",
+		}, "test:acl:", time.Minute)
 		require.Error(t, err)
-		assert.Contains(t, err.Error(), "failed to connect to redis")
+		assert.Contains(t, err.Error(), "failed to connect")
 	})
-}
-
-func TestNewRedisStorageTTLValidation(t *testing.T) {
-	t.Parallel()
-	mr := miniredis.RunT(t)
-	defer mr.Close()
-	cfg := RedisConfig{Addr: mr.Addr(), KeyPrefix: "test:"}
-
-	_, err := NewRedisStorage(context.Background(), cfg, 0)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ttl")
-
-	_, err = NewRedisStorage(context.Background(), cfg, -1*time.Second)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "ttl")
 }
 
 // redisTestIDs holds fixed UUIDs for use across Redis storage tests.

@@ -4,6 +4,8 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.3
+  labels:
+    toolhive.stacklok.dev/auto-migrate-storage-version: "true"
   name: virtualmcpservers.toolhive.stacklok.dev
 spec:
   group: toolhive.stacklok.dev
@@ -87,6 +89,59 @@ spec:
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  baselineClientScopes:
+                    description: |-
+                      BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+                      included in every client registration. The embedded auth server unions these
+                      scopes into the registered set returned by RFC 7591 Dynamic Client
+                      Registration, so a client that narrows the `scope` field at /oauth/register
+                      can still request the baseline scopes at /oauth/authorize. All values must
+                      be present in the upstream-derived scopesSupported set; the auth server
+                      fails to start if any value is missing.
+
+                      Security: every client registered via /oauth/register will gain the
+                      ability to request these scopes at /oauth/authorize, regardless of what
+                      the client itself requested. Keep the baseline narrow (typically
+                      "openid" and "offline_access"). Adding a privileged scope here — e.g.
+                      "admin:read" — would grant it to every DCR-registered client, including
+                      public clients like Claude Code, Cursor, and VS Code.
+                      When cimd.enabled is true, every dynamically resolved CIMD client will
+                      also gain the ability to request these scopes, including third-party
+                      clients resolved from arbitrary HTTPS URLs.
+                    items:
+                      minLength: 1
+                      pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  cimd:
+                    description: CIMD configures Client ID Metadata Document support.
+                      When omitted, CIMD is disabled.
+                    properties:
+                      cacheFallbackTtl:
+                        description: |-
+                          CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+                          Cache-Control header parsing is not yet implemented; all entries use this value.
+                          Format: Go duration string (e.g. "5m", "10m", "1h").
+                          Defaults to 5 minutes when Enabled is true and this field is omitted.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      cacheMaxSize:
+                        description: |-
+                          CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+                          Defaults to 256 when Enabled is true and this field is omitted.
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled activates CIMD client lookup. When false (the default), the AS only
+                          accepts client_id values that were registered via DCR.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
                   disableUpstreamTokenInjection:
                     default: false
                     description: |-
@@ -126,6 +181,26 @@ spec:
                       This will be included in the "iss" claim of issued tokens.
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
+                    type: string
+                  primaryUpstreamProvider:
+                    description: |-
+                      PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
+                      should read claims from when authorising a request. Must match the name
+                      of one of the entries in UpstreamProviders. When empty, the controller
+                      auto-selects the first entry of UpstreamProviders.
+
+                      Only meaningful on VirtualMCPServer, where multiple upstream providers
+                      can be configured and Cedar needs to pick which token's claims to
+                      evaluate. The VirtualMCPServer controller validates this field against
+                      UpstreamProviders at admission and rejects unresolvable values.
+
+                      On MCPServer and MCPRemoteProxy this field is structurally present (the
+                      EmbeddedAuthServerConfig struct is shared) but has no runtime effect:
+                      those CRDs are restricted to a single upstream so there is no choice to
+                      make. Setting it on those CRDs is silently ignored.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                     type: string
                   signingKeySecretRefs:
                     description: |-
@@ -297,7 +372,7 @@ spec:
                             type: object
                           tls:
                             description: |-
-                              TLS configures TLS for connections to the Redis/Valkey master.
+                              TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
                               Presence of this field enables TLS. Omit to use plaintext.
                             properties:
                               caCertSecretRef:
@@ -532,6 +607,45 @@ spec:
                               - message: exactly one of discoveryUrl or registrationEndpoint
                                   must be set
                                 rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
+                            identityFromToken:
+                              description: |-
+                                IdentityFromToken extracts user identity (subject, name, email) directly
+                                from the OAuth2 token-endpoint response body using gjson dot-notation paths.
+                                When set, the embedded auth server skips the userinfo HTTP call entirely
+                                and resolves identity from the token response. See IdentityFromTokenConfig
+                                for trust-model and uniqueness considerations.
+                              properties:
+                                emailPath:
+                                  description: |-
+                                    EmailPath is the dot-notation path to the email address field in the token response.
+                                    If not specified or if the path does not resolve to a string, the email is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                namePath:
+                                  description: |-
+                                    NamePath is the dot-notation path to the display name field in the token response.
+                                    If not specified or if the path does not resolve to a string, the display name is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                subjectPath:
+                                  description: |-
+                                    SubjectPath is the dot-notation path to the subject (user ID) field in the token response.
+                                    Warning: claims read from the token response are trusted only via TLS, not
+                                    cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.
+                                    Example: "authed_user.id" for Slack (top-level token-response field). For providers
+                                    whose token response embeds the access token as a JWT (e.g. Snowflake), use the
+                                    "@upstreamjwt" modifier to decode the payload, e.g. "access_token|@upstreamjwt|sub".
+                                    The "@upstreamjwt" modifier performs no signature verification either.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - subjectPath
+                              type: object
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -557,6 +671,7 @@ spec:
                                 instead of returning them at the top level. When set, ToolHive performs the token
                                 exchange HTTP call directly and extracts fields using the configured dot-notation paths.
                                 If nil, standard OAuth 2.0 token response parsing is used.
+                                For extracting user identity from the token response, see IdentityFromToken.
                               properties:
                                 accessTokenPath:
                                   description: |-
@@ -585,10 +700,13 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                When omitted, the embedded auth server runs in synthesis mode for this
-                                upstream: a non-PII subject derived from the access token, no Name/Email.
-                                Use this shape for upstreams with no userinfo surface (e.g., MCP
-                                authorization servers per the MCP spec).
+                                When omitted and IdentityFromToken is also unset, the embedded auth server runs in
+                                synthesis mode for this upstream: a non-PII subject derived from the access token, no
+                                Name/Email. Use this shape for upstreams with no userinfo surface and no identity in
+                                the token response (e.g., MCP authorization servers per the MCP spec). When
+                                IdentityFromToken is set instead, identity is resolved from the token response body
+                                (e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call
+                                is skipped entirely.
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -1367,6 +1485,29 @@ spec:
                       authz:
                         description: Authz contains authorization configuration (optional).
                         properties:
+                          entitiesJson:
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required for
+                              enterprise policies that rely on transitive relationships (e.g.
+                              `ClaimGroup → PlatformRole`) — without it the Cedar authorizer is
+                              constructed with an empty entity store and `in` checks against absent
+                              entities silently evaluate to false. Defaults to "[]" when empty.
+                            type: string
+                          groupClaimName:
+                            description: |-
+                              GroupClaimName is the JWT claim key that contains group membership for
+                              the principal. When set, takes priority over the well-known defaults
+                              ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                              groups under a URI-style claim (e.g. "https://example.com/groups").
+                              When empty, only the well-known claim names are checked.
+                            type: string
+                          groupEntityType:
+                            description: |-
+                              GroupEntityType is the Cedar entity type name used for principal parent
+                              UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                              empty. Must match the entity type used in EntitiesJSON for transitive
+                              `in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported.
+                            type: string
                           policies:
                             description: Policies contains Cedar policy definitions
                               (when Type = "cedar").
@@ -1380,6 +1521,13 @@ spec:
                               When empty, claims from the ToolHive-issued token are used.
                               Must match an upstream provider name configured in the embedded auth server
                               (e.g. "default", "github"). Only relevant when the embedded auth server is active.
+                            type: string
+                          roleClaimName:
+                            description: |-
+                              RoleClaimName is the JWT claim key that contains role membership for the
+                              principal. When set, the claim is extracted separately from GroupClaimName
+                              and both are mapped to the configured group entity type. When empty, no
+                              role extraction is performed.
                             type: string
                           type:
                             description: 'Type is the authz type: "cedar", "none"'
@@ -1779,7 +1927,7 @@ spec:
                             type:
                               description: 'Type is the auth strategy: "unauthenticated",
                                 "header_injection", "token_exchange", "upstream_inject",
-                                "aws_sts"'
+                                "aws_sts", "obo"'
                               type: string
                             upstreamInject:
                               description: |-
@@ -1950,7 +2098,7 @@ spec:
                           type:
                             description: 'Type is the auth strategy: "unauthenticated",
                               "header_injection", "token_exchange", "upstream_inject",
-                              "aws_sts"'
+                              "aws_sts", "obo"'
                             type: string
                           upstreamInject:
                             description: |-
@@ -1977,6 +2125,131 @@ spec:
                     required:
                     - source
                     type: object
+                  rateLimiting:
+                    description: |-
+                      RateLimiting defines rate limiting configuration for the Virtual MCP server.
+                      Requires Redis session storage to be configured for distributed rate limiting.
+                    properties:
+                      perUser:
+                        description: |-
+                          PerUser is a token bucket applied independently to each authenticated user
+                          at the server level. Requires authentication to be enabled.
+                          Each unique userID creates Redis keys that expire after 2x refillPeriod.
+                          Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys.
+                        properties:
+                          maxTokens:
+                            description: |-
+                              MaxTokens is the maximum number of tokens (bucket capacity).
+                              This is also the burst size: the maximum number of requests that can be served
+                              instantaneously before the bucket is depleted.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          refillPeriod:
+                            description: |-
+                              RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                              The effective refill rate is maxTokens / refillPeriod tokens per second.
+                              Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                            type: string
+                        required:
+                        - maxTokens
+                        - refillPeriod
+                        type: object
+                      shared:
+                        description: Shared is a token bucket shared across all users
+                          for the entire server.
+                        properties:
+                          maxTokens:
+                            description: |-
+                              MaxTokens is the maximum number of tokens (bucket capacity).
+                              This is also the burst size: the maximum number of requests that can be served
+                              instantaneously before the bucket is depleted.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          refillPeriod:
+                            description: |-
+                              RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                              The effective refill rate is maxTokens / refillPeriod tokens per second.
+                              Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                            type: string
+                        required:
+                        - maxTokens
+                        - refillPeriod
+                        type: object
+                      tools:
+                        description: |-
+                          Tools defines per-tool rate limit overrides.
+                          Each entry applies additional rate limits to calls targeting a specific tool name.
+                          A request must pass both the server-level limit and the per-tool limit.
+                        items:
+                          description: |-
+                            ToolRateLimitConfig defines rate limits for a specific tool.
+                            At least one of shared or perUser must be configured.
+                          properties:
+                            name:
+                              description: Name is the MCP tool name this limit applies
+                                to.
+                              minLength: 1
+                              type: string
+                            perUser:
+                              description: PerUser token bucket configuration for
+                                this tool.
+                              properties:
+                                maxTokens:
+                                  description: |-
+                                    MaxTokens is the maximum number of tokens (bucket capacity).
+                                    This is also the burst size: the maximum number of requests that can be served
+                                    instantaneously before the bucket is depleted.
+                                  format: int32
+                                  minimum: 1
+                                  type: integer
+                                refillPeriod:
+                                  description: |-
+                                    RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                    The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                    Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                                  type: string
+                              required:
+                              - maxTokens
+                              - refillPeriod
+                              type: object
+                            shared:
+                              description: Shared token bucket for this specific tool.
+                              properties:
+                                maxTokens:
+                                  description: |-
+                                    MaxTokens is the maximum number of tokens (bucket capacity).
+                                    This is also the burst size: the maximum number of requests that can be served
+                                    instantaneously before the bucket is depleted.
+                                  format: int32
+                                  minimum: 1
+                                  type: integer
+                                refillPeriod:
+                                  description: |-
+                                    RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                    The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                    Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                                  type: string
+                              required:
+                              - maxTokens
+                              - refillPeriod
+                              type: object
+                          required:
+                          - name
+                          type: object
+                          x-kubernetes-validations:
+                          - message: at least one of shared or perUser must be configured
+                            rule: has(self.shared) || has(self.perUser)
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                    type: object
+                    x-kubernetes-validations:
+                    - message: at least one of shared, perUser, or tools must be configured
+                      rule: has(self.shared) || has(self.perUser) || (has(self.tools)
+                        && size(self.tools) > 0)
                   sessionStorage:
                     description: |-
                       SessionStorage configures session storage for stateful horizontal scaling.
@@ -2186,8 +2459,9 @@ spec:
                 properties:
                   authzConfig:
                     description: |-
-                      AuthzConfig defines authorization policy configuration
-                      Reuses MCPServer authz patterns
+                      AuthzConfig defines authorization policy configuration.
+                      Reuses MCPServer authz patterns.
+                      AuthzConfig and AuthzConfigRef are mutually exclusive.
                     properties:
                       configMap:
                         description: |-
@@ -2205,6 +2479,28 @@ spec:
                         required:
                         - name
                         type: object
+                      groupClaimName:
+                        description: |-
+                          GroupClaimName is the JWT claim key that contains group membership for the
+                          principal. When set, takes priority over the well-known defaults
+                          ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                          groups under a URI-style claim (e.g. "https://example.com/groups"). When
+                          Type is "configMap", a group_claim_name entry in the referenced ConfigMap
+                          is overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
+                      groupEntityType:
+                        description: |-
+                          GroupEntityType is the Cedar entity type name used for principal parent
+                          UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                          empty. Must match the entity type used in the static entity store for
+                          transitive `in` checks (e.g. `ClaimGroup → PlatformRole`) to resolve.
+                          Namespaced names (`Foo::Bar`) are not yet supported. When Type is
+                          "configMap", a group_entity_type entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 63
+                        pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                        type: string
                       inline:
                         description: |-
                           Inline contains direct authorization configuration
@@ -2212,8 +2508,10 @@ spec:
                         properties:
                           entitiesJson:
                             default: '[]'
-                            description: EntitiesJSON is a JSON string representing
-                              Cedar entities
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required when
+                              transitive policies (e.g. `ClaimGroup → PlatformRole`) need a static
+                              entity store; defaults to "[]".
                             type: string
                           policies:
                             description: Policies is a list of Cedar policy strings
@@ -2224,17 +2522,20 @@ spec:
                             x-kubernetes-list-type: atomic
                           primaryUpstreamProvider:
                             description: |-
-                              PrimaryUpstreamProvider names the upstream IDP whose access token's claims
-                              Cedar should evaluate. Currently honored only when the parent
-                              AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
-                              this in a future release (see #5208). Only meaningful for VirtualMCPServer
-                              with an embedded auth server. When empty and an embedded auth server has
-                              upstreams configured, the controller defaults to the first upstream
-                              provider. The name must match one of the upstreams declared on
-                              spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
-                              rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
-                              have no embedded auth server; setting this field on those CRs surfaces an
-                              AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+                              PrimaryUpstreamProvider names the upstream IDP whose access token's
+                              claims Cedar should evaluate.
+
+                              Deprecated: on VirtualMCPServer this field has moved to
+                              spec.authServerConfig.primaryUpstreamProvider. The old location is
+                              still read for one release for backward compatibility; the
+                              VirtualMCPServer controller emits an AuthzPrimaryUpstreamProviderDeprecated
+                              Warning event whenever it is consumed, and removal is planned for the
+                              release after the deprecation cycle.
+
+                              On MCPServer and MCPRemoteProxy this field has always been a structural
+                              no-op (those CRDs do not run an embedded auth server). Setting it
+                              continues to surface the AuthzPrimaryUpstreamProviderIgnored advisory
+                              condition; the deprecation does not change that behaviour.
                             maxLength: 63
                             minLength: 1
                             pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
@@ -2242,6 +2543,15 @@ spec:
                         required:
                         - policies
                         type: object
+                      roleClaimName:
+                        description: |-
+                          RoleClaimName is the JWT claim key that contains role membership for the
+                          principal. When set, the claim is extracted separately from GroupClaimName
+                          and both are mapped to the configured GroupEntityType. When Type is
+                          "configMap", a role_claim_name entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
                       type:
                         default: configMap
                         description: Type is the type of authorization configuration
@@ -2259,6 +2569,28 @@ spec:
                     - message: inline must be set when type is 'inline', and must
                         not be set otherwise
                       rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+                  authzConfigRef:
+                    description: |-
+                      AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                      The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+                      Mutually exclusive with authzConfig.
+
+                      resolve AuthzConfigRef into a runtime authz config.
+
+                      NOTE: this field is consumed by workload controllers in a follow-up PR.
+                      Until that lands, AuthzConfigRef is reference-tracked by the
+                      MCPAuthzConfig controller (deletion protection, status.referenceCount)
+                      but does NOT apply authorization to this VirtualMCPServer. Use the
+                      inline AuthzConfig field in the meantime.
+                    properties:
+                      name:
+                        description: Name is the name of the MCPAuthzConfig resource
+                          in the same namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
                   oidcConfigRef:
                     description: |-
                       OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
@@ -2310,6 +2642,9 @@ spec:
                 - message: spec.incomingAuth.oidcConfigRef is required when type is
                     oidc
                   rule: 'self.type == ''oidc'' ? has(self.oidcConfigRef) : true'
+                - message: authzConfig and authzConfigRef are mutually exclusive;
+                    use authzConfigRef to reference a shared MCPAuthzConfig
+                  rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
@@ -2497,6 +2832,17 @@ spec:
             - groupRef
             - incomingAuth
             type: object
+            x-kubernetes-validations:
+            - message: config.rateLimiting requires sessionStorage with provider 'redis'
+              rule: '!has(self.config) || !has(self.config.rateLimiting) || (has(self.sessionStorage)
+                && self.sessionStorage.provider == ''redis'')'
+            - message: config.rateLimiting.perUser requires incomingAuth.type oidc
+              rule: '!(has(self.config) && has(self.config.rateLimiting) && has(self.config.rateLimiting.perUser))
+                || (has(self.incomingAuth) && self.incomingAuth.type == ''oidc'')'
+            - message: per-tool perUser rate limiting requires incomingAuth.type oidc
+              rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
+                || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
+                && self.incomingAuth.type == ''oidc'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
@@ -2733,6 +3079,59 @@ spec:
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  baselineClientScopes:
+                    description: |-
+                      BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+                      included in every client registration. The embedded auth server unions these
+                      scopes into the registered set returned by RFC 7591 Dynamic Client
+                      Registration, so a client that narrows the `scope` field at /oauth/register
+                      can still request the baseline scopes at /oauth/authorize. All values must
+                      be present in the upstream-derived scopesSupported set; the auth server
+                      fails to start if any value is missing.
+
+                      Security: every client registered via /oauth/register will gain the
+                      ability to request these scopes at /oauth/authorize, regardless of what
+                      the client itself requested. Keep the baseline narrow (typically
+                      "openid" and "offline_access"). Adding a privileged scope here — e.g.
+                      "admin:read" — would grant it to every DCR-registered client, including
+                      public clients like Claude Code, Cursor, and VS Code.
+                      When cimd.enabled is true, every dynamically resolved CIMD client will
+                      also gain the ability to request these scopes, including third-party
+                      clients resolved from arbitrary HTTPS URLs.
+                    items:
+                      minLength: 1
+                      pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  cimd:
+                    description: CIMD configures Client ID Metadata Document support.
+                      When omitted, CIMD is disabled.
+                    properties:
+                      cacheFallbackTtl:
+                        description: |-
+                          CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+                          Cache-Control header parsing is not yet implemented; all entries use this value.
+                          Format: Go duration string (e.g. "5m", "10m", "1h").
+                          Defaults to 5 minutes when Enabled is true and this field is omitted.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      cacheMaxSize:
+                        description: |-
+                          CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+                          Defaults to 256 when Enabled is true and this field is omitted.
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled activates CIMD client lookup. When false (the default), the AS only
+                          accepts client_id values that were registered via DCR.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
                   disableUpstreamTokenInjection:
                     default: false
                     description: |-
@@ -2772,6 +3171,26 @@ spec:
                       This will be included in the "iss" claim of issued tokens.
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
+                    type: string
+                  primaryUpstreamProvider:
+                    description: |-
+                      PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
+                      should read claims from when authorising a request. Must match the name
+                      of one of the entries in UpstreamProviders. When empty, the controller
+                      auto-selects the first entry of UpstreamProviders.
+
+                      Only meaningful on VirtualMCPServer, where multiple upstream providers
+                      can be configured and Cedar needs to pick which token's claims to
+                      evaluate. The VirtualMCPServer controller validates this field against
+                      UpstreamProviders at admission and rejects unresolvable values.
+
+                      On MCPServer and MCPRemoteProxy this field is structurally present (the
+                      EmbeddedAuthServerConfig struct is shared) but has no runtime effect:
+                      those CRDs are restricted to a single upstream so there is no choice to
+                      make. Setting it on those CRDs is silently ignored.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                     type: string
                   signingKeySecretRefs:
                     description: |-
@@ -2943,7 +3362,7 @@ spec:
                             type: object
                           tls:
                             description: |-
-                              TLS configures TLS for connections to the Redis/Valkey master.
+                              TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
                               Presence of this field enables TLS. Omit to use plaintext.
                             properties:
                               caCertSecretRef:
@@ -3178,6 +3597,45 @@ spec:
                               - message: exactly one of discoveryUrl or registrationEndpoint
                                   must be set
                                 rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
+                            identityFromToken:
+                              description: |-
+                                IdentityFromToken extracts user identity (subject, name, email) directly
+                                from the OAuth2 token-endpoint response body using gjson dot-notation paths.
+                                When set, the embedded auth server skips the userinfo HTTP call entirely
+                                and resolves identity from the token response. See IdentityFromTokenConfig
+                                for trust-model and uniqueness considerations.
+                              properties:
+                                emailPath:
+                                  description: |-
+                                    EmailPath is the dot-notation path to the email address field in the token response.
+                                    If not specified or if the path does not resolve to a string, the email is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                namePath:
+                                  description: |-
+                                    NamePath is the dot-notation path to the display name field in the token response.
+                                    If not specified or if the path does not resolve to a string, the display name is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                subjectPath:
+                                  description: |-
+                                    SubjectPath is the dot-notation path to the subject (user ID) field in the token response.
+                                    Warning: claims read from the token response are trusted only via TLS, not
+                                    cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.
+                                    Example: "authed_user.id" for Slack (top-level token-response field). For providers
+                                    whose token response embeds the access token as a JWT (e.g. Snowflake), use the
+                                    "@upstreamjwt" modifier to decode the payload, e.g. "access_token|@upstreamjwt|sub".
+                                    The "@upstreamjwt" modifier performs no signature verification either.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - subjectPath
+                              type: object
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -3203,6 +3661,7 @@ spec:
                                 instead of returning them at the top level. When set, ToolHive performs the token
                                 exchange HTTP call directly and extracts fields using the configured dot-notation paths.
                                 If nil, standard OAuth 2.0 token response parsing is used.
+                                For extracting user identity from the token response, see IdentityFromToken.
                               properties:
                                 accessTokenPath:
                                   description: |-
@@ -3231,10 +3690,13 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                When omitted, the embedded auth server runs in synthesis mode for this
-                                upstream: a non-PII subject derived from the access token, no Name/Email.
-                                Use this shape for upstreams with no userinfo surface (e.g., MCP
-                                authorization servers per the MCP spec).
+                                When omitted and IdentityFromToken is also unset, the embedded auth server runs in
+                                synthesis mode for this upstream: a non-PII subject derived from the access token, no
+                                Name/Email. Use this shape for upstreams with no userinfo surface and no identity in
+                                the token response (e.g., MCP authorization servers per the MCP spec). When
+                                IdentityFromToken is set instead, identity is resolved from the token response body
+                                (e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call
+                                is skipped entirely.
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -4013,6 +4475,29 @@ spec:
                       authz:
                         description: Authz contains authorization configuration (optional).
                         properties:
+                          entitiesJson:
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required for
+                              enterprise policies that rely on transitive relationships (e.g.
+                              `ClaimGroup → PlatformRole`) — without it the Cedar authorizer is
+                              constructed with an empty entity store and `in` checks against absent
+                              entities silently evaluate to false. Defaults to "[]" when empty.
+                            type: string
+                          groupClaimName:
+                            description: |-
+                              GroupClaimName is the JWT claim key that contains group membership for
+                              the principal. When set, takes priority over the well-known defaults
+                              ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                              groups under a URI-style claim (e.g. "https://example.com/groups").
+                              When empty, only the well-known claim names are checked.
+                            type: string
+                          groupEntityType:
+                            description: |-
+                              GroupEntityType is the Cedar entity type name used for principal parent
+                              UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                              empty. Must match the entity type used in EntitiesJSON for transitive
+                              `in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported.
+                            type: string
                           policies:
                             description: Policies contains Cedar policy definitions
                               (when Type = "cedar").
@@ -4026,6 +4511,13 @@ spec:
                               When empty, claims from the ToolHive-issued token are used.
                               Must match an upstream provider name configured in the embedded auth server
                               (e.g. "default", "github"). Only relevant when the embedded auth server is active.
+                            type: string
+                          roleClaimName:
+                            description: |-
+                              RoleClaimName is the JWT claim key that contains role membership for the
+                              principal. When set, the claim is extracted separately from GroupClaimName
+                              and both are mapped to the configured group entity type. When empty, no
+                              role extraction is performed.
                             type: string
                           type:
                             description: 'Type is the authz type: "cedar", "none"'
@@ -4425,7 +4917,7 @@ spec:
                             type:
                               description: 'Type is the auth strategy: "unauthenticated",
                                 "header_injection", "token_exchange", "upstream_inject",
-                                "aws_sts"'
+                                "aws_sts", "obo"'
                               type: string
                             upstreamInject:
                               description: |-
@@ -4596,7 +5088,7 @@ spec:
                           type:
                             description: 'Type is the auth strategy: "unauthenticated",
                               "header_injection", "token_exchange", "upstream_inject",
-                              "aws_sts"'
+                              "aws_sts", "obo"'
                             type: string
                           upstreamInject:
                             description: |-
@@ -4623,6 +5115,131 @@ spec:
                     required:
                     - source
                     type: object
+                  rateLimiting:
+                    description: |-
+                      RateLimiting defines rate limiting configuration for the Virtual MCP server.
+                      Requires Redis session storage to be configured for distributed rate limiting.
+                    properties:
+                      perUser:
+                        description: |-
+                          PerUser is a token bucket applied independently to each authenticated user
+                          at the server level. Requires authentication to be enabled.
+                          Each unique userID creates Redis keys that expire after 2x refillPeriod.
+                          Memory formula: unique_users_per_TTL_window * (1 + num_tools_with_per_user_limits) keys.
+                        properties:
+                          maxTokens:
+                            description: |-
+                              MaxTokens is the maximum number of tokens (bucket capacity).
+                              This is also the burst size: the maximum number of requests that can be served
+                              instantaneously before the bucket is depleted.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          refillPeriod:
+                            description: |-
+                              RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                              The effective refill rate is maxTokens / refillPeriod tokens per second.
+                              Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                            type: string
+                        required:
+                        - maxTokens
+                        - refillPeriod
+                        type: object
+                      shared:
+                        description: Shared is a token bucket shared across all users
+                          for the entire server.
+                        properties:
+                          maxTokens:
+                            description: |-
+                              MaxTokens is the maximum number of tokens (bucket capacity).
+                              This is also the burst size: the maximum number of requests that can be served
+                              instantaneously before the bucket is depleted.
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          refillPeriod:
+                            description: |-
+                              RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                              The effective refill rate is maxTokens / refillPeriod tokens per second.
+                              Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                            type: string
+                        required:
+                        - maxTokens
+                        - refillPeriod
+                        type: object
+                      tools:
+                        description: |-
+                          Tools defines per-tool rate limit overrides.
+                          Each entry applies additional rate limits to calls targeting a specific tool name.
+                          A request must pass both the server-level limit and the per-tool limit.
+                        items:
+                          description: |-
+                            ToolRateLimitConfig defines rate limits for a specific tool.
+                            At least one of shared or perUser must be configured.
+                          properties:
+                            name:
+                              description: Name is the MCP tool name this limit applies
+                                to.
+                              minLength: 1
+                              type: string
+                            perUser:
+                              description: PerUser token bucket configuration for
+                                this tool.
+                              properties:
+                                maxTokens:
+                                  description: |-
+                                    MaxTokens is the maximum number of tokens (bucket capacity).
+                                    This is also the burst size: the maximum number of requests that can be served
+                                    instantaneously before the bucket is depleted.
+                                  format: int32
+                                  minimum: 1
+                                  type: integer
+                                refillPeriod:
+                                  description: |-
+                                    RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                    The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                    Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                                  type: string
+                              required:
+                              - maxTokens
+                              - refillPeriod
+                              type: object
+                            shared:
+                              description: Shared token bucket for this specific tool.
+                              properties:
+                                maxTokens:
+                                  description: |-
+                                    MaxTokens is the maximum number of tokens (bucket capacity).
+                                    This is also the burst size: the maximum number of requests that can be served
+                                    instantaneously before the bucket is depleted.
+                                  format: int32
+                                  minimum: 1
+                                  type: integer
+                                refillPeriod:
+                                  description: |-
+                                    RefillPeriod is the duration to fully refill the bucket from zero to maxTokens.
+                                    The effective refill rate is maxTokens / refillPeriod tokens per second.
+                                    Format: Go duration string (e.g., "1m0s", "30s", "1h0m0s").
+                                  type: string
+                              required:
+                              - maxTokens
+                              - refillPeriod
+                              type: object
+                          required:
+                          - name
+                          type: object
+                          x-kubernetes-validations:
+                          - message: at least one of shared or perUser must be configured
+                            rule: has(self.shared) || has(self.perUser)
+                        type: array
+                        x-kubernetes-list-map-keys:
+                        - name
+                        x-kubernetes-list-type: map
+                    type: object
+                    x-kubernetes-validations:
+                    - message: at least one of shared, perUser, or tools must be configured
+                      rule: has(self.shared) || has(self.perUser) || (has(self.tools)
+                        && size(self.tools) > 0)
                   sessionStorage:
                     description: |-
                       SessionStorage configures session storage for stateful horizontal scaling.
@@ -4832,8 +5449,9 @@ spec:
                 properties:
                   authzConfig:
                     description: |-
-                      AuthzConfig defines authorization policy configuration
-                      Reuses MCPServer authz patterns
+                      AuthzConfig defines authorization policy configuration.
+                      Reuses MCPServer authz patterns.
+                      AuthzConfig and AuthzConfigRef are mutually exclusive.
                     properties:
                       configMap:
                         description: |-
@@ -4851,6 +5469,28 @@ spec:
                         required:
                         - name
                         type: object
+                      groupClaimName:
+                        description: |-
+                          GroupClaimName is the JWT claim key that contains group membership for the
+                          principal. When set, takes priority over the well-known defaults
+                          ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                          groups under a URI-style claim (e.g. "https://example.com/groups"). When
+                          Type is "configMap", a group_claim_name entry in the referenced ConfigMap
+                          is overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
+                      groupEntityType:
+                        description: |-
+                          GroupEntityType is the Cedar entity type name used for principal parent
+                          UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                          empty. Must match the entity type used in the static entity store for
+                          transitive `in` checks (e.g. `ClaimGroup → PlatformRole`) to resolve.
+                          Namespaced names (`Foo::Bar`) are not yet supported. When Type is
+                          "configMap", a group_entity_type entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 63
+                        pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                        type: string
                       inline:
                         description: |-
                           Inline contains direct authorization configuration
@@ -4858,8 +5498,10 @@ spec:
                         properties:
                           entitiesJson:
                             default: '[]'
-                            description: EntitiesJSON is a JSON string representing
-                              Cedar entities
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required when
+                              transitive policies (e.g. `ClaimGroup → PlatformRole`) need a static
+                              entity store; defaults to "[]".
                             type: string
                           policies:
                             description: Policies is a list of Cedar policy strings
@@ -4870,17 +5512,20 @@ spec:
                             x-kubernetes-list-type: atomic
                           primaryUpstreamProvider:
                             description: |-
-                              PrimaryUpstreamProvider names the upstream IDP whose access token's claims
-                              Cedar should evaluate. Currently honored only when the parent
-                              AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
-                              this in a future release (see #5208). Only meaningful for VirtualMCPServer
-                              with an embedded auth server. When empty and an embedded auth server has
-                              upstreams configured, the controller defaults to the first upstream
-                              provider. The name must match one of the upstreams declared on
-                              spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
-                              rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
-                              have no embedded auth server; setting this field on those CRs surfaces an
-                              AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+                              PrimaryUpstreamProvider names the upstream IDP whose access token's
+                              claims Cedar should evaluate.
+
+                              Deprecated: on VirtualMCPServer this field has moved to
+                              spec.authServerConfig.primaryUpstreamProvider. The old location is
+                              still read for one release for backward compatibility; the
+                              VirtualMCPServer controller emits an AuthzPrimaryUpstreamProviderDeprecated
+                              Warning event whenever it is consumed, and removal is planned for the
+                              release after the deprecation cycle.
+
+                              On MCPServer and MCPRemoteProxy this field has always been a structural
+                              no-op (those CRDs do not run an embedded auth server). Setting it
+                              continues to surface the AuthzPrimaryUpstreamProviderIgnored advisory
+                              condition; the deprecation does not change that behaviour.
                             maxLength: 63
                             minLength: 1
                             pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
@@ -4888,6 +5533,15 @@ spec:
                         required:
                         - policies
                         type: object
+                      roleClaimName:
+                        description: |-
+                          RoleClaimName is the JWT claim key that contains role membership for the
+                          principal. When set, the claim is extracted separately from GroupClaimName
+                          and both are mapped to the configured GroupEntityType. When Type is
+                          "configMap", a role_claim_name entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
                       type:
                         default: configMap
                         description: Type is the type of authorization configuration
@@ -4905,6 +5559,28 @@ spec:
                     - message: inline must be set when type is 'inline', and must
                         not be set otherwise
                       rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+                  authzConfigRef:
+                    description: |-
+                      AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                      The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+                      Mutually exclusive with authzConfig.
+
+                      resolve AuthzConfigRef into a runtime authz config.
+
+                      NOTE: this field is consumed by workload controllers in a follow-up PR.
+                      Until that lands, AuthzConfigRef is reference-tracked by the
+                      MCPAuthzConfig controller (deletion protection, status.referenceCount)
+                      but does NOT apply authorization to this VirtualMCPServer. Use the
+                      inline AuthzConfig field in the meantime.
+                    properties:
+                      name:
+                        description: Name is the name of the MCPAuthzConfig resource
+                          in the same namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
                   oidcConfigRef:
                     description: |-
                       OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
@@ -4956,6 +5632,9 @@ spec:
                 - message: spec.incomingAuth.oidcConfigRef is required when type is
                     oidc
                   rule: 'self.type == ''oidc'' ? has(self.oidcConfigRef) : true'
+                - message: authzConfig and authzConfigRef are mutually exclusive;
+                    use authzConfigRef to reference a shared MCPAuthzConfig
+                  rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
@@ -5143,6 +5822,17 @@ spec:
             - groupRef
             - incomingAuth
             type: object
+            x-kubernetes-validations:
+            - message: config.rateLimiting requires sessionStorage with provider 'redis'
+              rule: '!has(self.config) || !has(self.config.rateLimiting) || (has(self.sessionStorage)
+                && self.sessionStorage.provider == ''redis'')'
+            - message: config.rateLimiting.perUser requires incomingAuth.type oidc
+              rule: '!(has(self.config) && has(self.config.rateLimiting) && has(self.config.rateLimiting.perUser))
+                || (has(self.incomingAuth) && self.incomingAuth.type == ''oidc'')'
+            - message: per-tool perUser rate limiting requires incomingAuth.type oidc
+              rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
+                || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
+                && self.incomingAuth.type == ''oidc'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:

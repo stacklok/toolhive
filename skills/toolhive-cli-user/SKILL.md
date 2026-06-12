@@ -220,8 +220,11 @@ thv inspector filesystem                        # MCP Inspector UI
 thv mcp list tools --server filesystem
 thv mcp list resources --server filesystem
 thv mcp list prompts --server filesystem
+thv mcp call read_file --server filesystem --args '{"path":"/etc/hosts"}'  # Invoke a tool
 thv runtime check                               # Verify container runtime
 ```
+
+For tool invocation patterns (file args, stdin, JSON output, error handling), see [EXAMPLES.md](references/EXAMPLES.md#invoke-a-tool).
 
 ## Guardrails
 

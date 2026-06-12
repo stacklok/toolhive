@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/Microsoft/go-winio"
-	"github.com/docker/docker/client"
+	mobyclient "github.com/moby/moby/client"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
@@ -35,7 +35,7 @@ const (
 const pipeConnectionTimeout = 2 * time.Second
 
 // newPlatformClient creates a Docker client using Windows named pipes
-func newPlatformClient(pipePath string) (*http.Client, []client.Opt) {
+func newPlatformClient(pipePath string) (*http.Client, []mobyclient.Opt) {
 	// Create a custom HTTP client that uses Windows named pipes
 	httpClient := &http.Client{
 		Transport: &http.Transport{
@@ -48,18 +48,21 @@ func newPlatformClient(pipePath string) (*http.Client, []client.Opt) {
 		},
 	}
 
-	// Create Docker client options
-	opts := []client.Opt{
-		client.WithAPIVersionNegotiation(),
-		client.WithHTTPClient(httpClient),
-		client.WithHost("npipe://" + pipePath),
+	// Create Docker client options. API-version negotiation is enabled by
+	// default in the new client, so it no longer needs to be requested
+	// explicitly.
+	opts := []mobyclient.Opt{
+		mobyclient.WithHTTPClient(httpClient),
+		mobyclient.WithHost("npipe://" + pipePath),
 	}
 
 	return httpClient, opts
 }
 
-// findPlatformContainerSocket finds a container socket path on Windows
-func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) {
+// findPlatformContainerSocket finds container pipe paths on Windows. Returns
+// a slice for parity with the Unix implementation, but Windows only ever has
+// one candidate per runtime type (the well-known named pipe).
+func findPlatformContainerSocket(rt runtime.Type) ([]string, runtime.Type, error) {
 	// First check for custom socket paths via environment variables
 	if customPipePath := os.Getenv(PodmanSocketEnv); customPipePath != "" {
 		//nolint:gosec // G706: pipe path from trusted environment variable
@@ -69,10 +72,10 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 		defer cancel()
 		conn, err := winio.DialPipeContext(ctx, customPipePath)
 		if err != nil {
-			return "", runtime.TypePodman, fmt.Errorf("invalid Podman pipe path: %w", err)
+			return nil, runtime.TypePodman, fmt.Errorf("invalid Podman pipe path: %w", err)
 		}
 		conn.Close()
-		return customPipePath, runtime.TypePodman, nil
+		return []string{customPipePath}, runtime.TypePodman, nil
 	}
 
 	if customPipePath := os.Getenv(DockerSocketEnv); customPipePath != "" {
@@ -83,10 +86,10 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 		defer cancel()
 		conn, err := winio.DialPipeContext(ctx, customPipePath)
 		if err != nil {
-			return "", runtime.TypeDocker, fmt.Errorf("invalid Docker pipe path: %w", err)
+			return nil, runtime.TypeDocker, fmt.Errorf("invalid Docker pipe path: %w", err)
 		}
 		conn.Close()
-		return customPipePath, runtime.TypeDocker, nil
+		return []string{customPipePath}, runtime.TypeDocker, nil
 	}
 
 	if rt == runtime.TypePodman {
@@ -97,7 +100,7 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 		if err == nil {
 			slog.Debug("found Podman pipe", "path", PodmanDesktopWindowsPipePath)
 			conn.Close()
-			return PodmanDesktopWindowsPipePath, runtime.TypePodman, nil
+			return []string{PodmanDesktopWindowsPipePath}, runtime.TypePodman, nil
 		}
 		slog.Debug("failed to connect to Podman pipe", "path", PodmanDesktopWindowsPipePath, "error", err)
 	}
@@ -110,10 +113,10 @@ func findPlatformContainerSocket(rt runtime.Type) (string, runtime.Type, error) 
 		if err == nil {
 			slog.Debug("found Docker pipe", "path", DockerDesktopWindowsPipePath)
 			conn.Close()
-			return DockerDesktopWindowsPipePath, runtime.TypeDocker, nil
+			return []string{DockerDesktopWindowsPipePath}, runtime.TypeDocker, nil
 		}
 		slog.Debug("failed to connect to Docker pipe", "path", DockerDesktopWindowsPipePath, "error", err)
 	}
 
-	return "", "", ErrRuntimeNotFound
+	return nil, "", ErrRuntimeNotFound
 }

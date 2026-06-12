@@ -1,4 +1,4 @@
-{{- if or .Values.crds.install.server .Values.crds.install.virtualMcp }}
+{{- if .Values.crds.install }}
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -7,6 +7,8 @@ metadata:
     helm.sh/resource-policy: keep
     {{- end }}
     controller-gen.kubebuilder.io/version: v0.17.3
+  labels:
+    toolhive.stacklok.dev/auto-migrate-storage-version: "true"
   name: mcpexternalauthconfigs.toolhive.stacklok.dev
 spec:
   group: toolhive.stacklok.dev
@@ -29,9 +31,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Valid
       type: string
-    - jsonPath: .status.referencingWorkloads
+    - jsonPath: .status.referenceCount
       name: References
-      type: string
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -217,6 +219,59 @@ spec:
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  baselineClientScopes:
+                    description: |-
+                      BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+                      included in every client registration. The embedded auth server unions these
+                      scopes into the registered set returned by RFC 7591 Dynamic Client
+                      Registration, so a client that narrows the `scope` field at /oauth/register
+                      can still request the baseline scopes at /oauth/authorize. All values must
+                      be present in the upstream-derived scopesSupported set; the auth server
+                      fails to start if any value is missing.
+
+                      Security: every client registered via /oauth/register will gain the
+                      ability to request these scopes at /oauth/authorize, regardless of what
+                      the client itself requested. Keep the baseline narrow (typically
+                      "openid" and "offline_access"). Adding a privileged scope here — e.g.
+                      "admin:read" — would grant it to every DCR-registered client, including
+                      public clients like Claude Code, Cursor, and VS Code.
+                      When cimd.enabled is true, every dynamically resolved CIMD client will
+                      also gain the ability to request these scopes, including third-party
+                      clients resolved from arbitrary HTTPS URLs.
+                    items:
+                      minLength: 1
+                      pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  cimd:
+                    description: CIMD configures Client ID Metadata Document support.
+                      When omitted, CIMD is disabled.
+                    properties:
+                      cacheFallbackTtl:
+                        description: |-
+                          CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+                          Cache-Control header parsing is not yet implemented; all entries use this value.
+                          Format: Go duration string (e.g. "5m", "10m", "1h").
+                          Defaults to 5 minutes when Enabled is true and this field is omitted.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      cacheMaxSize:
+                        description: |-
+                          CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+                          Defaults to 256 when Enabled is true and this field is omitted.
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled activates CIMD client lookup. When false (the default), the AS only
+                          accepts client_id values that were registered via DCR.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
                   disableUpstreamTokenInjection:
                     default: false
                     description: |-
@@ -256,6 +311,26 @@ spec:
                       This will be included in the "iss" claim of issued tokens.
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
+                    type: string
+                  primaryUpstreamProvider:
+                    description: |-
+                      PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
+                      should read claims from when authorising a request. Must match the name
+                      of one of the entries in UpstreamProviders. When empty, the controller
+                      auto-selects the first entry of UpstreamProviders.
+
+                      Only meaningful on VirtualMCPServer, where multiple upstream providers
+                      can be configured and Cedar needs to pick which token's claims to
+                      evaluate. The VirtualMCPServer controller validates this field against
+                      UpstreamProviders at admission and rejects unresolvable values.
+
+                      On MCPServer and MCPRemoteProxy this field is structurally present (the
+                      EmbeddedAuthServerConfig struct is shared) but has no runtime effect:
+                      those CRDs are restricted to a single upstream so there is no choice to
+                      make. Setting it on those CRDs is silently ignored.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                     type: string
                   signingKeySecretRefs:
                     description: |-
@@ -427,7 +502,7 @@ spec:
                             type: object
                           tls:
                             description: |-
-                              TLS configures TLS for connections to the Redis/Valkey master.
+                              TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
                               Presence of this field enables TLS. Omit to use plaintext.
                             properties:
                               caCertSecretRef:
@@ -662,6 +737,45 @@ spec:
                               - message: exactly one of discoveryUrl or registrationEndpoint
                                   must be set
                                 rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
+                            identityFromToken:
+                              description: |-
+                                IdentityFromToken extracts user identity (subject, name, email) directly
+                                from the OAuth2 token-endpoint response body using gjson dot-notation paths.
+                                When set, the embedded auth server skips the userinfo HTTP call entirely
+                                and resolves identity from the token response. See IdentityFromTokenConfig
+                                for trust-model and uniqueness considerations.
+                              properties:
+                                emailPath:
+                                  description: |-
+                                    EmailPath is the dot-notation path to the email address field in the token response.
+                                    If not specified or if the path does not resolve to a string, the email is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                namePath:
+                                  description: |-
+                                    NamePath is the dot-notation path to the display name field in the token response.
+                                    If not specified or if the path does not resolve to a string, the display name is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                subjectPath:
+                                  description: |-
+                                    SubjectPath is the dot-notation path to the subject (user ID) field in the token response.
+                                    Warning: claims read from the token response are trusted only via TLS, not
+                                    cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.
+                                    Example: "authed_user.id" for Slack (top-level token-response field). For providers
+                                    whose token response embeds the access token as a JWT (e.g. Snowflake), use the
+                                    "@upstreamjwt" modifier to decode the payload, e.g. "access_token|@upstreamjwt|sub".
+                                    The "@upstreamjwt" modifier performs no signature verification either.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - subjectPath
+                              type: object
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -687,6 +801,7 @@ spec:
                                 instead of returning them at the top level. When set, ToolHive performs the token
                                 exchange HTTP call directly and extracts fields using the configured dot-notation paths.
                                 If nil, standard OAuth 2.0 token response parsing is used.
+                                For extracting user identity from the token response, see IdentityFromToken.
                               properties:
                                 accessTokenPath:
                                   description: |-
@@ -715,10 +830,13 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                When omitted, the embedded auth server runs in synthesis mode for this
-                                upstream: a non-PII subject derived from the access token, no Name/Email.
-                                Use this shape for upstreams with no userinfo surface (e.g., MCP
-                                authorization servers per the MCP spec).
+                                When omitted and IdentityFromToken is also unset, the embedded auth server runs in
+                                synthesis mode for this upstream: a non-PII subject derived from the access token, no
+                                Name/Email. Use this shape for upstreams with no userinfo surface and no identity in
+                                the token response (e.g., MCP authorization servers per the MCP spec). When
+                                IdentityFromToken is set instead, identity is resolved from the token response body
+                                (e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call
+                                is skipped entirely.
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -971,6 +1089,14 @@ spec:
                 - headerName
                 - valueSecretRef
                 type: object
+              obo:
+                description: |-
+                  OBO configures On-Behalf-Of (OBO) authentication.
+                  Only used when Type is "obo". The inner schema is intentionally empty in
+                  this revision; sub-fields land in a follow-up. Setting this field on an
+                  upstream-only build will cause the MCPExternalAuthConfig to transition to
+                  status.conditions[Valid] = False with Reason: EnterpriseRequired.
+                type: object
               tokenExchange:
                 description: |-
                   TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange
@@ -1041,7 +1167,12 @@ spec:
                 - tokenUrl
                 type: object
               type:
-                description: Type is the type of external authentication to configure
+                description: |-
+                  Type is the type of external authentication to configure.
+                  When set to "obo", the cluster must run a build that has registered an
+                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
+                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
+                  for obo-typed configs.
                 enum:
                 - tokenExchange
                 - headerInjection
@@ -1050,6 +1181,7 @@ spec:
                 - embeddedAuthServer
                 - awsSts
                 - upstreamInject
+                - obo
                 type: string
               upstreamInject:
                 description: |-
@@ -1089,10 +1221,13 @@ spec:
                 is 'upstreamInject'
               rule: 'self.type == ''upstreamInject'' ? has(self.upstreamInject) :
                 !has(self.upstreamInject)'
+            - message: obo configuration must be set if and only if type is 'obo'
+              rule: 'self.type == ''obo'' ? has(self.obo) : !has(self.obo)'
             - message: no configuration must be set when type is 'unauthenticated'
               rule: 'self.type == ''unauthenticated'' ? (!has(self.tokenExchange)
                 && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)
-                && !has(self.awsSts) && !has(self.upstreamInject)) : true'
+                && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo))
+                : true'
           status:
             description: MCPExternalAuthConfigStatus defines the observed state of
               MCPExternalAuthConfig
@@ -1168,6 +1303,11 @@ spec:
                   It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server.
                 format: int64
                 type: integer
+              referenceCount:
+                description: ReferenceCount is the number of workloads referencing
+                  this config.
+                format: int32
+                type: integer
               referencingWorkloads:
                 description: |-
                   ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
@@ -1209,9 +1349,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Valid
       type: string
-    - jsonPath: .status.referencingWorkloads
+    - jsonPath: .status.referenceCount
       name: References
-      type: string
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -1398,6 +1538,59 @@ spec:
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
+                  baselineClientScopes:
+                    description: |-
+                      BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+                      included in every client registration. The embedded auth server unions these
+                      scopes into the registered set returned by RFC 7591 Dynamic Client
+                      Registration, so a client that narrows the `scope` field at /oauth/register
+                      can still request the baseline scopes at /oauth/authorize. All values must
+                      be present in the upstream-derived scopesSupported set; the auth server
+                      fails to start if any value is missing.
+
+                      Security: every client registered via /oauth/register will gain the
+                      ability to request these scopes at /oauth/authorize, regardless of what
+                      the client itself requested. Keep the baseline narrow (typically
+                      "openid" and "offline_access"). Adding a privileged scope here — e.g.
+                      "admin:read" — would grant it to every DCR-registered client, including
+                      public clients like Claude Code, Cursor, and VS Code.
+                      When cimd.enabled is true, every dynamically resolved CIMD client will
+                      also gain the ability to request these scopes, including third-party
+                      clients resolved from arbitrary HTTPS URLs.
+                    items:
+                      minLength: 1
+                      pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
+                      type: string
+                    maxItems: 10
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  cimd:
+                    description: CIMD configures Client ID Metadata Document support.
+                      When omitted, CIMD is disabled.
+                    properties:
+                      cacheFallbackTtl:
+                        description: |-
+                          CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+                          Cache-Control header parsing is not yet implemented; all entries use this value.
+                          Format: Go duration string (e.g. "5m", "10m", "1h").
+                          Defaults to 5 minutes when Enabled is true and this field is omitted.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      cacheMaxSize:
+                        description: |-
+                          CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+                          Defaults to 256 when Enabled is true and this field is omitted.
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled activates CIMD client lookup. When false (the default), the AS only
+                          accepts client_id values that were registered via DCR.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
                   disableUpstreamTokenInjection:
                     default: false
                     description: |-
@@ -1437,6 +1630,26 @@ spec:
                       This will be included in the "iss" claim of issued tokens.
                       Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
+                    type: string
+                  primaryUpstreamProvider:
+                    description: |-
+                      PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
+                      should read claims from when authorising a request. Must match the name
+                      of one of the entries in UpstreamProviders. When empty, the controller
+                      auto-selects the first entry of UpstreamProviders.
+
+                      Only meaningful on VirtualMCPServer, where multiple upstream providers
+                      can be configured and Cedar needs to pick which token's claims to
+                      evaluate. The VirtualMCPServer controller validates this field against
+                      UpstreamProviders at admission and rejects unresolvable values.
+
+                      On MCPServer and MCPRemoteProxy this field is structurally present (the
+                      EmbeddedAuthServerConfig struct is shared) but has no runtime effect:
+                      those CRDs are restricted to a single upstream so there is no choice to
+                      make. Setting it on those CRDs is silently ignored.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                     type: string
                   signingKeySecretRefs:
                     description: |-
@@ -1608,7 +1821,7 @@ spec:
                             type: object
                           tls:
                             description: |-
-                              TLS configures TLS for connections to the Redis/Valkey master.
+                              TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
                               Presence of this field enables TLS. Omit to use plaintext.
                             properties:
                               caCertSecretRef:
@@ -1843,6 +2056,45 @@ spec:
                               - message: exactly one of discoveryUrl or registrationEndpoint
                                   must be set
                                 rule: has(self.discoveryUrl) != has(self.registrationEndpoint)
+                            identityFromToken:
+                              description: |-
+                                IdentityFromToken extracts user identity (subject, name, email) directly
+                                from the OAuth2 token-endpoint response body using gjson dot-notation paths.
+                                When set, the embedded auth server skips the userinfo HTTP call entirely
+                                and resolves identity from the token response. See IdentityFromTokenConfig
+                                for trust-model and uniqueness considerations.
+                              properties:
+                                emailPath:
+                                  description: |-
+                                    EmailPath is the dot-notation path to the email address field in the token response.
+                                    If not specified or if the path does not resolve to a string, the email is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                namePath:
+                                  description: |-
+                                    NamePath is the dot-notation path to the display name field in the token response.
+                                    If not specified or if the path does not resolve to a string, the display name is omitted.
+                                    Omit the field entirely rather than setting it to an empty string.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                                subjectPath:
+                                  description: |-
+                                    SubjectPath is the dot-notation path to the subject (user ID) field in the token response.
+                                    Warning: claims read from the token response are trusted only via TLS, not
+                                    cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.
+                                    Example: "authed_user.id" for Slack (top-level token-response field). For providers
+                                    whose token response embeds the access token as a JWT (e.g. Snowflake), use the
+                                    "@upstreamjwt" modifier to decode the payload, e.g. "access_token|@upstreamjwt|sub".
+                                    The "@upstreamjwt" modifier performs no signature verification either.
+                                  maxLength: 256
+                                  minLength: 1
+                                  type: string
+                              required:
+                              - subjectPath
+                              type: object
                             redirectUri:
                               description: |-
                                 RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -1868,6 +2120,7 @@ spec:
                                 instead of returning them at the top level. When set, ToolHive performs the token
                                 exchange HTTP call directly and extracts fields using the configured dot-notation paths.
                                 If nil, standard OAuth 2.0 token response parsing is used.
+                                For extracting user identity from the token response, see IdentityFromToken.
                               properties:
                                 accessTokenPath:
                                   description: |-
@@ -1896,10 +2149,13 @@ spec:
                             userInfo:
                               description: |-
                                 UserInfo contains configuration for fetching user information from the upstream provider.
-                                When omitted, the embedded auth server runs in synthesis mode for this
-                                upstream: a non-PII subject derived from the access token, no Name/Email.
-                                Use this shape for upstreams with no userinfo surface (e.g., MCP
-                                authorization servers per the MCP spec).
+                                When omitted and IdentityFromToken is also unset, the embedded auth server runs in
+                                synthesis mode for this upstream: a non-PII subject derived from the access token, no
+                                Name/Email. Use this shape for upstreams with no userinfo surface and no identity in
+                                the token response (e.g., MCP authorization servers per the MCP spec). When
+                                IdentityFromToken is set instead, identity is resolved from the token response body
+                                (e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call
+                                is skipped entirely.
                               properties:
                                 additionalHeaders:
                                   additionalProperties:
@@ -2152,6 +2408,14 @@ spec:
                 - headerName
                 - valueSecretRef
                 type: object
+              obo:
+                description: |-
+                  OBO configures On-Behalf-Of (OBO) authentication.
+                  Only used when Type is "obo". The inner schema is intentionally empty in
+                  this revision; sub-fields land in a follow-up. Setting this field on an
+                  upstream-only build will cause the MCPExternalAuthConfig to transition to
+                  status.conditions[Valid] = False with Reason: EnterpriseRequired.
+                type: object
               tokenExchange:
                 description: |-
                   TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange
@@ -2222,7 +2486,12 @@ spec:
                 - tokenUrl
                 type: object
               type:
-                description: Type is the type of external authentication to configure
+                description: |-
+                  Type is the type of external authentication to configure.
+                  When set to "obo", the cluster must run a build that has registered an
+                  OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
+                  surface status.conditions[Valid] = False with Reason: EnterpriseRequired
+                  for obo-typed configs.
                 enum:
                 - tokenExchange
                 - headerInjection
@@ -2231,6 +2500,7 @@ spec:
                 - embeddedAuthServer
                 - awsSts
                 - upstreamInject
+                - obo
                 type: string
               upstreamInject:
                 description: |-
@@ -2270,10 +2540,13 @@ spec:
                 is 'upstreamInject'
               rule: 'self.type == ''upstreamInject'' ? has(self.upstreamInject) :
                 !has(self.upstreamInject)'
+            - message: obo configuration must be set if and only if type is 'obo'
+              rule: 'self.type == ''obo'' ? has(self.obo) : !has(self.obo)'
             - message: no configuration must be set when type is 'unauthenticated'
               rule: 'self.type == ''unauthenticated'' ? (!has(self.tokenExchange)
                 && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)
-                && !has(self.awsSts) && !has(self.upstreamInject)) : true'
+                && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo))
+                : true'
           status:
             description: MCPExternalAuthConfigStatus defines the observed state of
               MCPExternalAuthConfig
@@ -2348,6 +2621,11 @@ spec:
                   ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.
                   It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server.
                 format: int64
+                type: integer
+              referenceCount:
+                description: ReferenceCount is the number of workloads referencing
+                  this config.
+                format: int32
                 type: integer
               referencingWorkloads:
                 description: |-

@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -44,23 +45,29 @@ var (
 type MCPRegistryReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
+	// Recorder emits Kubernetes events (e.g. the CRD deprecation warning).
+	// May be nil in tests; all uses must nil-guard.
+	Recorder events.EventRecorder
 	// Registry API manager handles API deployment operations
 	registryAPIManager registryapi.Manager
 }
 
 // NewMCPRegistryReconciler creates a new MCPRegistryReconciler with required
-// dependencies. imagePullSecretsDefaults are cluster-wide pull-secret defaults
-// from the operator chart that are merged with the per-CR list at registry-api
-// workload-construction time.
+// dependencies. recorder emits Kubernetes events such as the MCPRegistry
+// deprecation warning. imagePullSecretsDefaults are cluster-wide pull-secret
+// defaults from the operator chart that are merged with the per-CR list at
+// registry-api workload-construction time.
 func NewMCPRegistryReconciler(
 	k8sClient client.Client,
 	scheme *runtime.Scheme,
+	recorder events.EventRecorder,
 	imagePullSecretsDefaults imagepullsecrets.Defaults,
 ) *MCPRegistryReconciler {
 	registryAPIManager := registryapi.NewManager(k8sClient, scheme, imagePullSecretsDefaults)
 	return &MCPRegistryReconciler{
 		Client:             k8sClient,
 		Scheme:             scheme,
+		Recorder:           recorder,
 		registryAPIManager: registryAPIManager,
 	}
 }
@@ -70,7 +77,7 @@ func NewMCPRegistryReconciler(
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpregistries/finalizers,verbs=update
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 //
 // For creating registry-api deployment and service
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
@@ -109,6 +116,10 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 
 	ctxLogger.Info("Reconciling MCPRegistry", "MCPRegistry.Name", mcpRegistry.Name,
 		"phase", mcpRegistry.Status.Phase, "url", mcpRegistry.Status.URL)
+
+	// The MCPRegistry CRD is deprecated; warn the user (once per spec change)
+	// and steer them to the toolhive-registry-server Helm chart.
+	r.emitDeprecationWarning(ctx, mcpRegistry)
 
 	// Validate PodTemplateSpec early - before other operations
 	var podTemplateCondition *metav1.Condition
@@ -218,6 +229,34 @@ func (r *MCPRegistryReconciler) Reconcile(ctx context.Context, req ctrl.Request)
 	}
 
 	return result, reconcileErr
+}
+
+// EventReasonMCPRegistryDeprecated is the reason used for the Warning event that
+// announces the deprecation of the MCPRegistry CRD.
+const EventReasonMCPRegistryDeprecated = "MCPRegistryDeprecated"
+
+// emitDeprecationWarning logs and emits a Warning event telling the user the
+// MCPRegistry CRD is deprecated and to install the toolhive-registry-server Helm
+// chart instead. It only emits when the spec has changed since the last observed
+// generation, so the event fires once per spec change rather than on every
+// reconcile (K8s event aggregation would dedupe within its window anyway, but
+// spec changes are the signal users care about). No-op when Recorder is nil.
+func (r *MCPRegistryReconciler) emitDeprecationWarning(ctx context.Context, mcpRegistry *mcpv1beta1.MCPRegistry) {
+	const message = "The MCPRegistry CRD is deprecated and will be removed in a future release; " +
+		"install the ToolHive registry server via the toolhive-registry-server Helm chart " +
+		"(https://github.com/stacklok/toolhive-registry-server) instead"
+
+	if mcpRegistry.Generation == mcpRegistry.Status.ObservedGeneration {
+		return
+	}
+
+	log.FromContext(ctx).Info(message, "MCPRegistry.Name", mcpRegistry.Name)
+
+	if r.Recorder == nil {
+		return
+	}
+	r.Recorder.Eventf(mcpRegistry, nil, corev1.EventTypeWarning,
+		EventReasonMCPRegistryDeprecated, "Reconcile", message)
 }
 
 // SetupWithManager sets up the controller with the Manager.

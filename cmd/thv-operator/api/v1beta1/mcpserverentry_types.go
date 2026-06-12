@@ -101,6 +101,11 @@ const (
 	// ConditionTypeMCPServerEntryRemoteURLValidated indicates whether the RemoteURL passes
 	// format and SSRF safety checks.
 	ConditionTypeMCPServerEntryRemoteURLValidated = "RemoteURLValidated"
+
+	// ConditionTypeMCPServerEntryHeaderSecretRefsValidated indicates whether every Kubernetes
+	// Secret referenced by spec.headerForward.addHeadersFromSecret exists. Absent when the
+	// entry declares no header Secret refs.
+	ConditionTypeMCPServerEntryHeaderSecretRefsValidated = "HeaderSecretRefsValidated"
 )
 
 // Condition reasons for MCPServerEntry.
@@ -146,11 +151,20 @@ const (
 	// ConditionReasonMCPServerEntryRemoteURLInvalid indicates the RemoteURL is malformed or
 	// targets a blocked internal/metadata endpoint.
 	ConditionReasonMCPServerEntryRemoteURLInvalid = ConditionReasonRemoteURLInvalid
+
+	// ConditionReasonMCPServerEntryHeaderSecretsValid indicates every referenced header Secret exists.
+	ConditionReasonMCPServerEntryHeaderSecretsValid = "HeaderSecretsValid"
+
+	// ConditionReasonMCPServerEntryHeaderSecretNotFound indicates a Secret referenced by
+	// spec.headerForward.addHeadersFromSecret was not found in the entry's namespace.
+	// Reuses the string value used by MCPRemoteProxy for parity.
+	ConditionReasonMCPServerEntryHeaderSecretNotFound = ConditionReasonHeaderSecretNotFound
 )
 
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
+//+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 //+kubebuilder:resource:shortName=mcpentry,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Transport",type="string",JSONPath=".spec.transport"

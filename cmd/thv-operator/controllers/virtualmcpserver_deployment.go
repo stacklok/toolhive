@@ -28,7 +28,9 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -358,6 +360,17 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// Mount outgoing auth secrets
 	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, typedWorkloads)...)
 
+	// Mount per-(entry, header) env vars for MCPServerEntry headerForward.
+	// Plaintext entries are emitted as literal-value env vars; secret entries
+	// as valueFrom.secretKeyRef. The vMCP runtime walks the well-known prefixes
+	// at startup to reconstruct the per-backend HeaderForwardConfig in static
+	// mode (issue #4996).
+	headerEnv, err := r.buildHeaderForwardEnvVarsForEntries(ctx, vmcp.Namespace, typedWorkloads)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build header forward env vars: %w", err)
+	}
+	env = append(env, headerEnv...)
+
 	// Always mount HMAC secret for session token binding.
 	env = append(env, r.buildHMACSecretEnvVar(vmcp))
 
@@ -491,6 +504,152 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 	}
 
 	return env
+}
+
+// buildHeaderForwardEnvVarsForEntries iterates entry-type workloads and emits
+// header-forward env vars on the vMCP pod for each entry that declares
+// spec.headerForward.
+//
+// One JSON-encoded manifest env var per backend carries the full
+// HeaderForwardConfig with original header names preserved
+// (TOOLHIVE_HEADER_FORWARD_<NORMALIZED_ENTRY>). Plaintext header values
+// appear inline in the JSON; secret-backed entries carry only the secret
+// identifier — the Secret value rides a sibling
+// TOOLHIVE_SECRET_HEADER_FORWARD_<HEADER>_<ENTRY> env var emitted via
+// valueFrom.secretKeyRef so the value never enters the operator's view of
+// the world and resolves at request time inside resolveHeaderForward via
+// secrets.EnvironmentProvider.
+//
+// Scoping by entry name prevents collisions when multiple entries in the
+// group declare the same header name.
+//
+// Returns (nil, nil) when no entries declare any HeaderForward — the common
+// case, producing no env-var churn on the Deployment spec.
+func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
+	ctx context.Context,
+	namespace string,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]corev1.EnvVar, error) {
+	// Early return if no MCPServerEntry workloads to avoid unnecessary API calls.
+	hasEntries := false
+	for _, workload := range typedWorkloads {
+		if workload.Type == workloads.WorkloadTypeMCPServerEntry {
+			hasEntries = true
+			break
+		}
+	}
+	if !hasEntries {
+		return nil, nil
+	}
+
+	entryMap, err := r.listMCPServerEntriesAsMap(ctx, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPServerEntries: %w", err)
+	}
+
+	var envVars []corev1.EnvVar
+	for _, workload := range typedWorkloads {
+		if workload.Type != workloads.WorkloadTypeMCPServerEntry {
+			continue
+		}
+		entry, found := entryMap[workload.Name]
+		if !found || entry.Spec.HeaderForward == nil {
+			continue
+		}
+
+		manifest, err := buildHeaderForwardManifestForEntry(entry)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build header-forward manifest for entry %q: %w", entry.Name, err)
+		}
+		if manifest != "" {
+			manifestVarName, _ := wirefmt.ManifestEnvVarName(entry.Name)
+			envVars = append(envVars, corev1.EnvVar{
+				Name:  manifestVarName,
+				Value: manifest,
+			})
+		}
+
+		// Secret-backed headers — emit valueFrom.secretKeyRef env vars so
+		// the resolved Secret value never enters the operator's view of the
+		// world. AddHeadersFromSecret is a slice in the v1beta1 API so the
+		// order is already deterministic from the user's manifest.
+		for _, ref := range entry.Spec.HeaderForward.AddHeadersFromSecret {
+			if ref.ValueSecretRef == nil {
+				continue
+			}
+			envVarName, _ := wirefmt.SecretEnvVarName(entry.Name, ref.HeaderName)
+			envVars = append(envVars, corev1.EnvVar{
+				Name: envVarName,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: ref.ValueSecretRef.Name,
+						},
+						Key: ref.ValueSecretRef.Key,
+					},
+				},
+			})
+		}
+	}
+
+	// Sort the resulting env vars by Name. The Kubernetes informer cache
+	// returns items in non-deterministic order (Go map iteration), so
+	// without sorting the env vars appear in a different sequence on each
+	// reconcile. reflect.DeepEqual in containerNeedsUpdate is order-
+	// sensitive, so non-deterministic ordering causes a continuous
+	// deployment update loop. Mirrors the pattern in
+	// discoverExternalAuthConfigSecrets / discoverInlineExternalAuthConfigSecrets.
+	sort.Slice(envVars, func(i, j int) bool {
+		return envVars[i].Name < envVars[j].Name
+	})
+
+	return envVars, nil
+}
+
+// buildHeaderForwardManifestForEntry builds the JSON-encoded manifest for
+// a single MCPServerEntry. AddHeadersFromSecret values carry the secret
+// identifier (HEADER_FORWARD_<H>_<OWNER>) the runtime hands to
+// secrets.EnvironmentProvider at request time; the resolved Secret value
+// itself never appears in the JSON.
+//
+// Returns the empty string when the entry has no plaintext or
+// secret-backed entries — the caller skips emitting the env var in that
+// case to keep Deployment specs minimal.
+func buildHeaderForwardManifestForEntry(entry *mcpv1beta1.MCPServerEntry) (string, error) {
+	if entry == nil || entry.Spec.HeaderForward == nil {
+		return "", nil
+	}
+	src := entry.Spec.HeaderForward
+
+	// Build vmcp.HeaderForwardConfig directly so the JSON shape is the
+	// runtime contract — there is no intermediate operator-side type to
+	// drift away from it. Header keys preserve original casing.
+	manifest := vmcptypes.HeaderForwardConfig{
+		AddPlaintextHeaders: src.AddPlaintextHeaders,
+	}
+	for _, ref := range src.AddHeadersFromSecret {
+		if ref.ValueSecretRef == nil {
+			continue
+		}
+		_, identifier := wirefmt.SecretEnvVarName(entry.Name, ref.HeaderName)
+		if manifest.AddHeadersFromSecret == nil {
+			manifest.AddHeadersFromSecret = make(map[string]string)
+		}
+		manifest.AddHeadersFromSecret[ref.HeaderName] = identifier
+	}
+
+	if len(manifest.AddPlaintextHeaders) == 0 && len(manifest.AddHeadersFromSecret) == 0 {
+		return "", nil
+	}
+
+	// json.Marshal sorts map keys alphabetically by default, giving
+	// deterministic Deployment-spec rendering across reconciles regardless
+	// of Go's randomized map iteration.
+	out, err := json.Marshal(manifest)
+	if err != nil {
+		return "", fmt.Errorf("marshal manifest: %w", err)
+	}
+	return string(out), nil
 }
 
 // discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from workloads in the group
@@ -672,6 +831,9 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		// No secrets to mount via env vars
 		return nil, nil
 
+	case mcpv1beta1.ExternalAuthTypeOBO:
+		return firstOBOSecretEnvVar(externalAuthConfig)
+
 	default:
 		return nil, nil // Not applicable
 	}
@@ -687,6 +849,20 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 			},
 		},
 	}, nil
+}
+
+// firstOBOSecretEnvVar dispatches through the registered OBO handler and
+// returns the first env var (if any) or the dispatch error. In upstream-only
+// builds the default handler returns obo.ErrEnterpriseRequired; an out-of-tree
+// build registers a real handler via controllerutil.RegisterOBOHandler.
+// Extracted from getExternalAuthConfigSecretEnvVar to keep its cyclomatic
+// complexity below the project threshold.
+func firstOBOSecretEnvVar(cfg *mcpv1beta1.MCPExternalAuthConfig) (*corev1.EnvVar, error) {
+	envVars, err := ctrlutil.OBOSecretEnvVars(cfg)
+	if err != nil || len(envVars) == 0 {
+		return nil, err
+	}
+	return &envVars[0], nil
 }
 
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
@@ -927,6 +1103,40 @@ func (*VirtualMCPServerReconciler) validateBackendAuthSecrets(
 	_ string,
 ) error {
 	// No backend auth types currently require secret validation
+	return nil
+}
+
+// validateAuthzConfigMapRef pre-validates the referenced authz ConfigMap when
+// spec.incomingAuth.authzConfig.type is "configMap". It uses the same shared loader
+// as the converter so the diagnostic surfaces the same parse/validation errors the
+// converter would later produce, but earlier in the reconcile and as a status condition
+// rather than as a generic conversion failure. Inline and absent authzConfig are no-ops.
+//
+// Also runs ExtractCedarAuthzOptions on the loaded payload so a configMap that
+// parses as a valid authz.Config but isn't Cedar-flavoured (wrong "type" field,
+// or a future HTTP authorizer) is rejected here with AuthzConfigMapInvalid
+// rather than passing pre-validation and then failing opaquely at convert time.
+//
+// Mirrors the pattern in mcpremoteproxy_controller.go's validateK8sRefs.
+func (r *VirtualMCPServerReconciler) validateAuthzConfigMapRef(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) error {
+	if vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.AuthzConfig == nil ||
+		vmcp.Spec.IncomingAuth.AuthzConfig.Type != mcpv1beta1.AuthzConfigTypeConfigMap {
+		return nil
+	}
+	cfg, err := ctrlutil.LoadAuthzConfigFromConfigMap(
+		ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.AuthzConfig,
+	)
+	if err != nil {
+		return err
+	}
+	if _, err := ctrlutil.ExtractCedarAuthzOptions(cfg); err != nil {
+		return fmt.Errorf("authz ConfigMap %s/%s is not a Cedar config: %w",
+			vmcp.Namespace, vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name, err)
+	}
 	return nil
 }
 

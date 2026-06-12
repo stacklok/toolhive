@@ -88,8 +88,19 @@ func findToolAnnotations(toolName string, caps *aggregator.AggregatedCapabilitie
 // convertAnnotations converts vmcp.ToolAnnotations to authorizers.ToolAnnotations.
 // Only authorization-relevant hint fields are mapped; informational fields like
 // Title are intentionally omitted since they are not used in policy evaluation.
-// Returns nil if the source annotations contain no hint fields.
+// Returns nil if the source annotations are nil or contain no hint fields.
+//
+// Kept identical to core.convertAnnotations (pkg/vmcp/core/admission.go), including
+// the nil guard below — the two are intentional, temporary duplicates (the core
+// cannot import this package: server imports core). #5441 makes this middleware inert
+// on the Serve path via the AuthzMiddleware nil-guard; physical removal of this copy
+// is deferred to Phase 3 (#5445). Do NOT delete it early on the import-cycle reasoning
+// alone: the core admission seam (#5438) reuses the conversion logic, so this copy must
+// stay in lockstep with core.convertAnnotations until the middleware itself is retired.
 func convertAnnotations(ann *vmcp.ToolAnnotations) *authorizers.ToolAnnotations {
+	if ann == nil {
+		return nil
+	}
 	if ann.ReadOnlyHint == nil && ann.DestructiveHint == nil &&
 		ann.IdempotentHint == nil && ann.OpenWorldHint == nil {
 		return nil

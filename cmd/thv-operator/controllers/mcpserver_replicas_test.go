@@ -19,6 +19,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
 func TestReplicaBehavior(t *testing.T) {
@@ -1162,4 +1163,181 @@ func TestRateLimitConfigValidation(t *testing.T) {
 			assert.True(t, found, "ConditionRateLimitConfigValid condition should be set")
 		})
 	}
+}
+
+// TestMCPServerBuildRedisPasswordEnvVar tests conditional Redis password env var injection.
+func TestMCPServerBuildRedisPasswordEnvVar(t *testing.T) {
+	t.Parallel()
+
+	r := &MCPServerReconciler{}
+	passwordRef := &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+
+	tests := []struct {
+		name        string
+		storage     *mcpv1beta1.SessionStorageConfig
+		expectEnVar bool
+	}{
+		{
+			name:        "nil sessionStorage produces no env var",
+			storage:     nil,
+			expectEnVar: false,
+		},
+		{
+			name:        "memory provider produces no env var",
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: "memory"},
+			expectEnVar: false,
+		},
+		{
+			name:        "redis without passwordRef produces no env var",
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: mcpv1beta1.SessionStorageProviderRedis, Address: "redis:6379"},
+			expectEnVar: false,
+		},
+		{
+			name:        "redis with passwordRef produces THV_SESSION_REDIS_PASSWORD",
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: mcpv1beta1.SessionStorageProviderRedis, Address: "redis:6379", PasswordRef: passwordRef},
+			expectEnVar: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-mcp", Namespace: "default"},
+				Spec:       mcpv1beta1.MCPServerSpec{SessionStorage: tc.storage},
+			}
+			env := r.buildRedisPasswordEnvVar(m)
+			if tc.expectEnVar {
+				require.Len(t, env, 1)
+				assert.Equal(t, session.RedisPasswordEnvVar, env[0].Name)
+				assert.Empty(t, env[0].Value, "must not use plaintext Value")
+				require.NotNil(t, env[0].ValueFrom)
+				require.NotNil(t, env[0].ValueFrom.SecretKeyRef)
+				assert.Equal(t, passwordRef.Name, env[0].ValueFrom.SecretKeyRef.Name)
+				assert.Equal(t, passwordRef.Key, env[0].ValueFrom.SecretKeyRef.Key)
+			} else {
+				assert.Empty(t, env)
+			}
+		})
+	}
+}
+
+// TestMCPServerDeploymentInjectsRedisPasswordEnvVar asserts the rendered proxy
+// Deployment carries the THV_SESSION_REDIS_PASSWORD env var with a SecretKeyRef.
+func TestMCPServerDeploymentInjectsRedisPasswordEnvVar(t *testing.T) {
+	t.Parallel()
+
+	passwordRef := &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-mcp-redis",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "streamable-http",
+			ProxyPort: 8080,
+			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider:    mcpv1beta1.SessionStorageProviderRedis,
+				Address:     "redis:6379",
+				PasswordRef: passwordRef,
+			},
+		},
+	}
+
+	testScheme := createTestScheme()
+	r := newTestMCPServerReconciler(nil, testScheme, kubernetes.PlatformKubernetes)
+
+	deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err)
+	require.NotNil(t, deployment)
+	require.NotEmpty(t, deployment.Spec.Template.Spec.Containers)
+
+	// The proxy runner container is the toolhive container — scan its env.
+	var proxyContainer *corev1.Container
+	for i, c := range deployment.Spec.Template.Spec.Containers {
+		if c.Name == "toolhive" {
+			proxyContainer = &deployment.Spec.Template.Spec.Containers[i]
+			break
+		}
+	}
+	require.NotNil(t, proxyContainer, "deployment must contain the toolhive proxy container")
+
+	var found bool
+	for _, e := range proxyContainer.Env {
+		if e.Name == session.RedisPasswordEnvVar {
+			found = true
+			assert.Empty(t, e.Value, "password must not appear as plaintext")
+			require.NotNil(t, e.ValueFrom)
+			require.NotNil(t, e.ValueFrom.SecretKeyRef)
+			assert.Equal(t, passwordRef.Name, e.ValueFrom.SecretKeyRef.Name)
+			assert.Equal(t, passwordRef.Key, e.ValueFrom.SecretKeyRef.Key)
+		}
+	}
+	assert.True(t, found, "deployment proxy container should contain %s env var", session.RedisPasswordEnvVar)
+}
+
+// TestMCPServerDeploymentRedisPasswordOverridesUserEnvOnCollision asserts the
+// secretRef-backed env var wins over a plaintext ResourceOverrides override
+// with the same name (last-wins kubelet ordering).
+func TestMCPServerDeploymentRedisPasswordOverridesUserEnvOnCollision(t *testing.T) {
+	t.Parallel()
+
+	passwordRef := &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-mcp-redis-collision",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:     "test-image:latest",
+			Transport: "streamable-http",
+			ProxyPort: 8080,
+			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider:    mcpv1beta1.SessionStorageProviderRedis,
+				Address:     "redis:6379",
+				PasswordRef: passwordRef,
+			},
+			ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+				ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+					Env: []mcpv1beta1.EnvVar{
+						{Name: session.RedisPasswordEnvVar, Value: "user-supplied-plaintext"},
+					},
+				},
+			},
+		},
+	}
+
+	testScheme := createTestScheme()
+	r := newTestMCPServerReconciler(nil, testScheme, kubernetes.PlatformKubernetes)
+
+	deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err)
+	require.NotNil(t, deployment)
+
+	var proxyContainer *corev1.Container
+	for i, c := range deployment.Spec.Template.Spec.Containers {
+		if c.Name == "toolhive" {
+			proxyContainer = &deployment.Spec.Template.Spec.Containers[i]
+			break
+		}
+	}
+	require.NotNil(t, proxyContainer)
+
+	// Find the LAST occurrence — kubelet's duplicate-name resolution is
+	// last-wins, so that's the one that actually applies to the container.
+	var last *corev1.EnvVar
+	for i, e := range proxyContainer.Env {
+		if e.Name == session.RedisPasswordEnvVar {
+			last = &proxyContainer.Env[i]
+		}
+	}
+	require.NotNil(t, last, "deployment proxy container should contain %s env var", session.RedisPasswordEnvVar)
+	assert.Empty(t, last.Value, "final occurrence must be the secretRef-backed one (no plaintext)")
+	require.NotNil(t, last.ValueFrom)
+	require.NotNil(t, last.ValueFrom.SecretKeyRef)
+	assert.Equal(t, passwordRef.Name, last.ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, passwordRef.Key, last.ValueFrom.SecretKeyRef.Key)
 }

@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,6 +23,7 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
@@ -74,6 +76,22 @@ type HTTPSSEProxy struct {
 	// Session manager for SSE clients
 	sessionManager *session.Manager
 
+	// sessionTTL is the resolved inactivity timeout for the session manager.
+	// Defaults to session.DefaultSessionTTL; overridable via WithSessionTTL.
+	sessionTTL time.Duration
+
+	// sessionStorage is the optional custom storage backend for the session manager.
+	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
+	sessionStorage session.Storage
+
+	// authInfoHandler is the optional RFC 9728 OAuth protected resource discovery handler.
+	// When nil, /.well-known/ returns a clean JSON 404. Set via WithAuthInfoHandler.
+	authInfoHandler http.Handler
+
+	// prefixHandlers contains additional HTTP handlers mounted outside the middleware chain.
+	// Keys are URL path prefixes. Set via WithPrefixHandlers.
+	prefixHandlers map[string]http.Handler
+
 	// liveSSESessions tracks active SSE connections local to this instance.
 	// Keys are clientID strings; values are *session.SSESession.
 	// This is separate from sessionManager so that distributed storage backends
@@ -121,11 +139,34 @@ func WithSessionStorage(storage session.Storage) Option {
 		if storage == nil {
 			return
 		}
-		if p.sessionManager != nil {
-			_ = p.sessionManager.Stop()
+		p.sessionStorage = storage
+	}
+}
+
+// WithSessionTTL overrides the session inactivity timeout used by this proxy.
+// Zero or negative values are ignored so the constructor's default is preserved.
+func WithSessionTTL(ttl time.Duration) Option {
+	return func(p *HTTPSSEProxy) {
+		if ttl <= 0 {
+			return
 		}
-		sseFactory := func(id string) session.Session { return session.NewSSESession(id) }
-		p.sessionManager = session.NewManagerWithStorage(session.DefaultSessionTTL, sseFactory, storage)
+		p.sessionTTL = ttl
+	}
+}
+
+// WithAuthInfoHandler sets the RFC 9728 OAuth protected resource discovery handler.
+// When nil (the default), requests to /.well-known/ return a clean JSON 404.
+func WithAuthInfoHandler(h http.Handler) Option {
+	return func(p *HTTPSSEProxy) {
+		p.authInfoHandler = h
+	}
+}
+
+// WithPrefixHandlers sets additional HTTP handlers that are mounted outside the
+// middleware chain, keyed by URL path prefix.
+func WithPrefixHandlers(handlers map[string]http.Handler) Option {
+	return func(p *HTTPSSEProxy) {
+		p.prefixHandlers = maps.Clone(handlers)
 	}
 }
 
@@ -138,11 +179,6 @@ func NewHTTPSSEProxy(
 	middlewares []types.NamedMiddleware,
 	opts ...Option,
 ) *HTTPSSEProxy {
-	// Create a factory for SSE sessions
-	sseFactory := func(id string) session.Session {
-		return session.NewSSESession(id)
-	}
-
 	proxy := &HTTPSSEProxy{
 		middlewares:       middlewares,
 		host:              host,
@@ -150,13 +186,21 @@ func NewHTTPSSEProxy(
 		trustProxyHeaders: trustProxyHeaders,
 		shutdownCh:        make(chan struct{}),
 		messageCh:         make(chan jsonrpc2.Message, 100),
-		sessionManager:    session.NewManager(session.DefaultSessionTTL, sseFactory),
+		sessionTTL:        session.DefaultSessionTTL,
 		pendingMessages:   []*ssecommon.PendingSSEMessage{},
 		prometheusHandler: prometheusHandler,
 	}
 
 	for _, opt := range opts {
 		opt(proxy)
+	}
+
+	// Construct the session manager once, after options have resolved sessionTTL and sessionStorage.
+	sseFactory := func(id string) session.Session { return session.NewSSESession(id) }
+	if proxy.sessionStorage != nil {
+		proxy.sessionManager = session.NewManagerWithStorage(proxy.sessionTTL, sseFactory, proxy.sessionStorage)
+	} else {
+		proxy.sessionManager = session.NewManager(proxy.sessionTTL, sseFactory)
 	}
 
 	// Create MCP pinger and health checker
@@ -179,6 +223,21 @@ func applyMiddlewares(handler http.Handler, middlewares ...types.NamedMiddleware
 func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Create a new HTTP server
 	mux := http.NewServeMux()
+
+	// Mount prefix handlers (e.g. embedded auth server routes) outside the middleware chain.
+	// RFC 9728 requires discovery endpoints to be reachable without authentication.
+	for prefix, h := range p.prefixHandlers {
+		mux.Handle(prefix, h)
+		slog.Debug("mounted prefix handler", "prefix", prefix)
+	}
+
+	// Mount RFC 9728 OAuth protected resource discovery endpoint (no middlewares).
+	// Always register so OAuth discovery gets a clean JSON 404 when auth is off.
+	wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler)
+	mux.Handle("/.well-known/", wellKnownHandler)
+	if p.authInfoHandler != nil {
+		slog.Debug("rfc 9728 OAuth discovery endpoint enabled at /.well-known/oauth-protected-resource")
+	}
 
 	// Add handlers for SSE and JSON-RPC with middlewares
 	// At some point we should add support for Streamable HTTP transport here
@@ -429,7 +488,9 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 			}
 			flusher.Flush()
 		case <-keepAliveTicker.C:
-			// Send SSE comment as keep-alive
+			// Refresh session TTL while the SSE socket is open so the cleanup
+			// goroutine does not evict clients that haven't sent a POST recently.
+			p.sessionManager.Get(clientID)
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
 				slog.Debug("failed to write keep-alive", "error", err)
 				return

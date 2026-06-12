@@ -39,6 +39,13 @@ const (
 	// ExternalAuthTypeUpstreamInject is the type for upstream token injection
 	// This injects an upstream IDP access token as the Authorization: Bearer header
 	ExternalAuthTypeUpstreamInject ExternalAuthType = "upstreamInject"
+
+	// ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.
+	// This type requires a build with an OBO handler registered via
+	// controllerutil.RegisterOBOHandler; an upstream-only build surfaces
+	// status.conditions[Valid] = False with Reason: EnterpriseRequired
+	// when an obo-typed MCPExternalAuthConfig is applied.
+	ExternalAuthTypeOBO ExternalAuthType = "obo"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -54,12 +61,17 @@ type ExternalAuthType string
 // +kubebuilder:validation:XValidation:rule="self.type == 'embeddedAuthServer' ? has(self.embeddedAuthServer) : !has(self.embeddedAuthServer)",message="embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'awsSts' ? has(self.awsSts) : !has(self.awsSts)",message="awsSts configuration must be set if and only if type is 'awsSts'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'upstreamInject' ? has(self.upstreamInject) : !has(self.upstreamInject)",message="upstreamInject configuration must be set if and only if type is 'upstreamInject'"
-// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts) && !has(self.upstreamInject)) : true",message="no configuration must be set when type is 'unauthenticated'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'obo' ? has(self.obo) : !has(self.obo)",message="obo configuration must be set if and only if type is 'obo'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo)) : true",message="no configuration must be set when type is 'unauthenticated'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
-	// Type is the type of external authentication to configure
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject
+	// Type is the type of external authentication to configure.
+	// When set to "obo", the cluster must run a build that has registered an
+	// OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
+	// surface status.conditions[Valid] = False with Reason: EnterpriseRequired
+	// for obo-typed configs.
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject;obo
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 
@@ -92,12 +104,29 @@ type MCPExternalAuthConfigSpec struct {
 	// Only used when Type is "upstreamInject".
 	// +optional
 	UpstreamInject *UpstreamInjectSpec `json:"upstreamInject,omitempty"`
+
+	// OBO configures On-Behalf-Of (OBO) authentication.
+	// Only used when Type is "obo". The inner schema is intentionally empty in
+	// this revision; sub-fields land in a follow-up. Setting this field on an
+	// upstream-only build will cause the MCPExternalAuthConfig to transition to
+	// status.conditions[Valid] = False with Reason: EnterpriseRequired.
+	// +optional
+	OBO *OBOConfig `json:"obo,omitempty"`
 }
+
+// OBOConfig is a placeholder for On-Behalf-Of (OBO) external auth configuration.
+// The inner schema is intentionally empty in this revision; sub-fields land in a
+// follow-up RFC. The struct exists so OBO *OBOConfig compiles and the CRD
+// schema admits `spec.obo: {}` — the CEL rule "obo configuration must be set
+// if and only if type is 'obo'" requires has(self.obo), which evaluates true
+// for an empty object. Stored objects with `obo: {}` will round-trip cleanly
+// when sub-fields land, because Go zero values fill in.
+type OBOConfig struct{}
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
 // This configuration is used to exchange incoming authentication tokens for tokens
 // that can be used with external services.
-// The structure matches the tokenexchange.Config from pkg/auth/tokenexchange/middleware.go
+// The structure matches the tokenexchange.Config from pkg/oauthproto/tokenexchange/middleware.go
 type TokenExchangeConfig struct {
 	// TokenURL is the OAuth 2.0 token endpoint URL for token exchange
 	// +kubebuilder:validation:Required
@@ -225,6 +254,26 @@ type EmbeddedAuthServerConfig struct {
 	// +listMapKey=name
 	UpstreamProviders []UpstreamProviderConfig `json:"upstreamProviders"`
 
+	// PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
+	// should read claims from when authorising a request. Must match the name
+	// of one of the entries in UpstreamProviders. When empty, the controller
+	// auto-selects the first entry of UpstreamProviders.
+	//
+	// Only meaningful on VirtualMCPServer, where multiple upstream providers
+	// can be configured and Cedar needs to pick which token's claims to
+	// evaluate. The VirtualMCPServer controller validates this field against
+	// UpstreamProviders at admission and rejects unresolvable values.
+	//
+	// On MCPServer and MCPRemoteProxy this field is structurally present (the
+	// EmbeddedAuthServerConfig struct is shared) but has no runtime effect:
+	// those CRDs are restricted to a single upstream so there is no choice to
+	// make. Setting it on those CRDs is silently ignored.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	PrimaryUpstreamProvider string `json:"primaryUpstreamProvider,omitempty"`
+
 	// Storage configures the storage backend for the embedded auth server.
 	// If not specified, defaults to in-memory storage.
 	// +optional
@@ -240,11 +289,33 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	DisableUpstreamTokenInjection bool `json:"disableUpstreamTokenInjection,omitempty"`
 
-	// AllowedAudiences is the list of valid resource URIs that tokens can be issued for.
-	// For an embedded auth server, this can be determined by the servers (MCP or vMCP) it serves.
+	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
+	// included in every client registration. The embedded auth server unions these
+	// scopes into the registered set returned by RFC 7591 Dynamic Client
+	// Registration, so a client that narrows the `scope` field at /oauth/register
+	// can still request the baseline scopes at /oauth/authorize. All values must
+	// be present in the upstream-derived scopesSupported set; the auth server
+	// fails to start if any value is missing.
+	//
+	// Security: every client registered via /oauth/register will gain the
+	// ability to request these scopes at /oauth/authorize, regardless of what
+	// the client itself requested. Keep the baseline narrow (typically
+	// "openid" and "offline_access"). Adding a privileged scope here — e.g.
+	// "admin:read" — would grant it to every DCR-registered client, including
+	// public clients like Claude Code, Cursor, and VS Code.
+	// When cimd.enabled is true, every dynamically resolved CIMD client will
+	// also gain the ability to request these scopes, including third-party
+	// clients resolved from arbitrary HTTPS URLs.
+	// +kubebuilder:validation:MaxItems=10
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:Pattern=`^[\x21\x23-\x5B\x5D-\x7E]+$`
+	// +listType=atomic
+	// +optional
+	BaselineClientScopes []string `json:"baselineClientScopes,omitempty"`
 
-	// ScopesSupported is the list of OAuth 2.0 scopes that this authorization server supports.
-	// For an embedded auth server, this can be derived from the server's (MCP or vMCP) OIDC configuration.
+	// CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled.
+	// +optional
+	CIMD *EmbeddedAuthServerCIMDConfig `json:"cimd,omitempty"`
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.
@@ -269,6 +340,31 @@ type TokenLifespanConfig struct {
 	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 	// +optional
 	AuthCodeLifespan string `json:"authCodeLifespan,omitempty"`
+}
+
+// EmbeddedAuthServerCIMDConfig configures Client ID Metadata Document (CIMD) support
+// on the embedded authorization server. When enabled, the AS accepts HTTPS URLs as
+// client_id values and resolves them via the CIMD protocol, allowing clients such as
+// VS Code to authenticate without prior Dynamic Client Registration.
+type EmbeddedAuthServerCIMDConfig struct {
+	// Enabled activates CIMD client lookup. When false (the default), the AS only
+	// accepts client_id values that were registered via DCR.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+	// Defaults to 256 when Enabled is true and this field is omitted.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	CacheMaxSize int `json:"cacheMaxSize,omitempty"`
+
+	// CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+	// Cache-Control header parsing is not yet implemented; all entries use this value.
+	// Format: Go duration string (e.g. "5m", "10m", "1h").
+	// Defaults to 5 minutes when Enabled is true and this field is omitted.
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +optional
+	CacheFallbackTTL string `json:"cacheFallbackTtl,omitempty"`
 }
 
 // UpstreamProviderType identifies the type of upstream Identity Provider.
@@ -417,10 +513,13 @@ type OAuth2UpstreamConfig struct {
 	TokenEndpoint string `json:"tokenEndpoint"`
 
 	// UserInfo contains configuration for fetching user information from the upstream provider.
-	// When omitted, the embedded auth server runs in synthesis mode for this
-	// upstream: a non-PII subject derived from the access token, no Name/Email.
-	// Use this shape for upstreams with no userinfo surface (e.g., MCP
-	// authorization servers per the MCP spec).
+	// When omitted and IdentityFromToken is also unset, the embedded auth server runs in
+	// synthesis mode for this upstream: a non-PII subject derived from the access token, no
+	// Name/Email. Use this shape for upstreams with no userinfo surface and no identity in
+	// the token response (e.g., MCP authorization servers per the MCP spec). When
+	// IdentityFromToken is set instead, identity is resolved from the token response body
+	// (e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call
+	// is skipped entirely.
 	// +optional
 	UserInfo *UserInfoConfig `json:"userInfo,omitempty"`
 
@@ -451,8 +550,17 @@ type OAuth2UpstreamConfig struct {
 	// instead of returning them at the top level. When set, ToolHive performs the token
 	// exchange HTTP call directly and extracts fields using the configured dot-notation paths.
 	// If nil, standard OAuth 2.0 token response parsing is used.
+	// For extracting user identity from the token response, see IdentityFromToken.
 	// +optional
 	TokenResponseMapping *TokenResponseMapping `json:"tokenResponseMapping,omitempty"`
+
+	// IdentityFromToken extracts user identity (subject, name, email) directly
+	// from the OAuth2 token-endpoint response body using gjson dot-notation paths.
+	// When set, the embedded auth server skips the userinfo HTTP call entirely
+	// and resolves identity from the token response. See IdentityFromTokenConfig
+	// for trust-model and uniqueness considerations.
+	// +optional
+	IdentityFromToken *IdentityFromTokenConfig `json:"identityFromToken,omitempty"`
 
 	// AdditionalAuthorizationParams are extra query parameters to include in
 	// authorization requests sent to the upstream provider.
@@ -557,9 +665,56 @@ type DCRUpstreamConfig struct {
 	SoftwareStatement string `json:"softwareStatement,omitempty"`
 }
 
+// IdentityFromTokenConfig extracts user identity (subject, name, email) directly from the
+// OAuth2 token-endpoint response body using gjson dot-notation paths. When configured on an
+// OAuth2UpstreamConfig, the embedded auth server skips the userinfo HTTP call entirely and
+// resolves identity from the token response.
+//
+// Paths use gjson dot-notation, where each segment is a JSON object key. For example,
+// "username" extracts a top-level field, and "authed_user.id" extracts a nested field.
+//
+// Trust-model warning: Identity claims extracted via this block are not cryptographically
+// verified — they are trusted only via the TLS connection to the token endpoint. Prefer
+// OIDC + ID token validation when verifiable claims are required.
+//
+// Subject uniqueness is scoped to the upstream provider entry. To keep identity namespaces
+// separate across multiple instances of the same provider (e.g., two Snowflake accounts),
+// use distinct upstream provider entries.
+type IdentityFromTokenConfig struct {
+	// SubjectPath is the dot-notation path to the subject (user ID) field in the token response.
+	// Warning: claims read from the token response are trusted only via TLS, not
+	// cryptographically verified; prefer OIDC ID tokens when verifiable claims are required.
+	// Example: "authed_user.id" for Slack (top-level token-response field). For providers
+	// whose token response embeds the access token as a JWT (e.g. Snowflake), use the
+	// "@upstreamjwt" modifier to decode the payload, e.g. "access_token|@upstreamjwt|sub".
+	// The "@upstreamjwt" modifier performs no signature verification either.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	SubjectPath string `json:"subjectPath"`
+
+	// NamePath is the dot-notation path to the display name field in the token response.
+	// If not specified or if the path does not resolve to a string, the display name is omitted.
+	// Omit the field entirely rather than setting it to an empty string.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	NamePath string `json:"namePath,omitempty"`
+
+	// EmailPath is the dot-notation path to the email address field in the token response.
+	// If not specified or if the path does not resolve to a string, the email is omitted.
+	// Omit the field entirely rather than setting it to an empty string.
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=256
+	EmailPath string `json:"emailPath,omitempty"`
+}
+
 // TokenResponseMapping maps non-standard token response fields to standard OAuth 2.0 fields
 // using dot-notation JSON paths. This supports upstream providers like GovSlack that nest
 // the access token under paths like "authed_user.access_token".
+//
+// For extracting user identity from the token response, see IdentityFromToken.
 type TokenResponseMapping struct {
 	// AccessTokenPath is the dot-notation path to the access token in the response.
 	// Example: "authed_user.access_token"
@@ -585,7 +740,9 @@ type TokenResponseMapping struct {
 
 // UserInfoConfig contains configuration for fetching user information from an upstream provider.
 // This supports both standard OIDC UserInfo endpoints and custom provider-specific endpoints
-// like GitHub's /user API.
+// like GitHub's /user API. For providers that do not expose a usable userinfo endpoint but
+// include identity in the OAuth2 token response, use IdentityFromToken on OAuth2UpstreamConfig
+// instead.
 type UserInfoConfig struct {
 	// EndpointURL is the URL of the userinfo endpoint.
 	// +kubebuilder:validation:Required
@@ -722,7 +879,7 @@ type RedisStorageConfig struct {
 	// +optional
 	WriteTimeout string `json:"writeTimeout,omitempty"`
 
-	// TLS configures TLS for connections to the Redis/Valkey master.
+	// TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
 	// Presence of this field enables TLS. Omit to use plaintext.
 	// +optional
 	TLS *RedisTLSConfig `json:"tls,omitempty"`
@@ -931,10 +1088,11 @@ type UpstreamInjectSpec struct {
 // auth server config it shares with VirtualMCPServer.
 const (
 	// ConditionTypeIdentitySynthesized is an advisory set to True when at
-	// least one OAuth2 upstream has no userInfo endpoint configured (the
-	// embedded auth server synthesizes its subject from the access token,
-	// no Name/Email claims). Surfaces on resources that own the upstream
-	// declaration so a missing userInfo block is visible in
+	// least one OAuth2 upstream has no real-identity source configured
+	// (neither userInfo nor identityFromToken). The embedded auth server
+	// then synthesizes its subject from the access token, with no
+	// Name/Email claims. Surfaces on resources that own the upstream
+	// declaration so a missing identity source is visible in
 	// `kubectl describe` instead of only in proxyrunner logs.
 	ConditionTypeIdentitySynthesized = "IdentitySynthesized"
 )
@@ -942,12 +1100,31 @@ const (
 // Condition reasons for ConditionTypeIdentitySynthesized.
 const (
 	// ConditionReasonIdentitySynthesizedActive: one or more OAuth2 upstreams
-	// have nil userInfo. The condition message names the affected upstream(s).
+	// have neither userInfo nor identityFromToken configured. The condition
+	// message names the affected upstream(s).
 	ConditionReasonIdentitySynthesizedActive = "OAuth2UpstreamWithoutUserInfo"
 
-	// ConditionReasonIdentitySynthesizedInactive: every upstream has userInfo;
-	// real identity is being resolved.
+	// ConditionReasonIdentitySynthesizedInactive: every OAuth2 upstream has
+	// a real-identity source (userInfo or identityFromToken); real identity
+	// is being resolved.
 	ConditionReasonIdentitySynthesizedInactive = "AllUpstreamsHaveUserInfo"
+)
+
+// Condition reasons for ConditionTypeValid on OBO-typed configs. These
+// literals are part of the user-facing contract — external consumers and
+// downstream tooling pattern-match on them.
+const (
+	// ConditionReasonEnterpriseRequired: an obo-typed MCPExternalAuthConfig
+	// requires an enterprise build that has registered an OBO handler via
+	// controllerutil.RegisterOBOHandler. Upstream-only builds surface this
+	// reason for every obo-typed config.
+	ConditionReasonEnterpriseRequired = "EnterpriseRequired"
+
+	// ConditionReasonInvalidConfig: an obo-typed MCPExternalAuthConfig is
+	// well-formed at the CRD level but fails the registered OBO handler's
+	// Validate() with an error other than the enterprise-required sentinel.
+	// Used by out-of-tree handlers; unreachable in upstream-only builds.
+	ConditionReasonInvalidConfig = "InvalidConfig"
 )
 
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
@@ -967,6 +1144,10 @@ type MCPExternalAuthConfigStatus struct {
 	// +optional
 	ConfigHash string `json:"configHash,omitempty"`
 
+	// ReferenceCount is the number of workloads referencing this config.
+	// +optional
+	ReferenceCount int32 `json:"referenceCount,omitempty"`
+
 	// ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
 	// Each entry identifies the workload by kind and name.
 	// +listType=map
@@ -978,10 +1159,11 @@ type MCPExternalAuthConfigStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 // +kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-// +kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+// +kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 // +kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPExternalAuthConfig is the Schema for the mcpexternalauthconfigs API.
@@ -1008,7 +1190,8 @@ type MCPExternalAuthConfigList struct {
 // Validate performs validation on the MCPExternalAuthConfig spec.
 // This method is called by the controller during reconciliation.
 //
-// Note: These validations provide defense-in-depth alongside CEL validation rules (lines 44-49).
+// Note: These validations provide defense-in-depth alongside the
+// +kubebuilder:validation:XValidation markers on MCPExternalAuthConfigSpec.
 // CEL catches issues at API admission time, but this method also validates stored objects
 // to catch any that bypassed CEL or were stored before CEL rules were added.
 func (r *MCPExternalAuthConfig) Validate() error {
@@ -1034,6 +1217,22 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		ExternalAuthTypeUnauthenticated:
 		// No complex validation needed for these types
 		return nil
+	case ExternalAuthTypeOBO:
+		// Structural validation (the OBO field is set iff Type is "obo")
+		// has already run via r.validateTypeConfigConsistency() at the top
+		// of this method, so this arm is reached only when the structural
+		// invariant holds — and the matching CEL rule on the spec catches
+		// it at admission time. The remaining semantic validation
+		// (e.g., whether the cluster has an OBO handler registered) runs
+		// at reconcile time via the controllerutil.OBOValidate
+		// function-pointer hook: upstream-only builds return
+		// obo.ErrEnterpriseRequired, which the reconciler maps to
+		// status.conditions[Valid] = False / Reason: EnterpriseRequired.
+		// Out-of-tree builds that register a handler via
+		// controllerutil.RegisterOBOHandler short-circuit the sentinel and
+		// run their own protocol-level checks. Splitting the tiers this
+		// way keeps the upstream CRD schema stable across builds.
+		return nil
 	default:
 		// Unknown type - should be caught by enum validation, but handle defensively
 		return fmt.Errorf("unsupported auth type: %s", r.Spec.Type)
@@ -1042,6 +1241,20 @@ func (r *MCPExternalAuthConfig) Validate() error {
 
 // validateTypeConfigConsistency validates that the correct config is set for the selected type.
 // This mirrors the CEL validation rules but provides defense-in-depth for stored objects.
+// The per-type `if` shape is intentional: each row reads one-to-one against
+// the corresponding CEL XValidation rule on the spec, so a reviewer can
+// audit the structural-validation contract by skimming this function.
+//
+// The gocyclo suppression is a confirmed false positive: every new
+// ExternalAuthType adds one biconditional row and one disjunct to the
+// unauthenticated guard, which the analyzer counts as branches even though
+// the rows are syntactically uniform. Collapsing the rows into a
+// table-driven loop would reduce the score but obscure the one-to-one
+// correspondence with the CEL rules on MCPExternalAuthConfigSpec, which is
+// the property reviewers rely on to audit the structural-validation
+// contract. See issue #5329 for the broader discussion.
+//
+//nolint:gocyclo // one if per ExternalAuthType mirrors CEL rules; collapsing would obscure parity — see doc comment
 func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	// Check that each type has its corresponding config
 	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {
@@ -1062,15 +1275,22 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	if (r.Spec.UpstreamInject == nil) == (r.Spec.Type == ExternalAuthTypeUpstreamInject) {
 		return fmt.Errorf("upstreamInject configuration must be set if and only if type is 'upstreamInject'")
 	}
+	if (r.Spec.OBO == nil) == (r.Spec.Type == ExternalAuthTypeOBO) {
+		return fmt.Errorf("obo configuration must be set if and only if type is 'obo'")
+	}
 
-	// Check that unauthenticated has no config
+	// Redundant with the per-type biconditionals above — each fires first for
+	// Type=Unauthenticated with any non-nil field — but retained as a single
+	// readable invariant so a contributor adding a new ExternalAuthType extends
+	// the "no configuration must be set" check here too.
 	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
 		if r.Spec.TokenExchange != nil ||
 			r.Spec.HeaderInjection != nil ||
 			r.Spec.BearerToken != nil ||
 			r.Spec.EmbeddedAuthServer != nil ||
 			r.Spec.AWSSts != nil ||
-			r.Spec.UpstreamInject != nil {
+			r.Spec.UpstreamInject != nil ||
+			r.Spec.OBO != nil {
 			return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
 		}
 	}
@@ -1127,10 +1347,13 @@ func (*MCPExternalAuthConfig) validateUpstreamProvider(index int, provider *Upst
 			"and oauth2Config must be set when type is 'oauth2' (and the other must not be set)", prefix)
 	}
 
-	// Validate OAuth2-specific DCR / ClientID constraints (defense-in-depth with CEL).
+	// Validate OAuth2-specific constraints (defense-in-depth with CEL).
 	// The discriminator above guarantees OAuth2Config != nil when type is oauth2.
 	if provider.Type == UpstreamProviderTypeOAuth2 {
 		if err := ValidateOAuth2DCRConfig(provider.OAuth2Config); err != nil {
+			return fmt.Errorf("%s: %w", prefix, err)
+		}
+		if err := validateOAuth2UpstreamConfig(provider.OAuth2Config); err != nil {
 			return fmt.Errorf("%s: %w", prefix, err)
 		}
 	}
@@ -1207,6 +1430,18 @@ func ValidateOAuth2DCRConfig(cfg *OAuth2UpstreamConfig) error {
 	return nil
 }
 
+// validateOAuth2UpstreamConfig validates OAuth2-specific upstream provider configuration
+// beyond the DCR / ClientID constraints handled by ValidateOAuth2DCRConfig. Errors are
+// scoped to "oauth2Config[.field]" so callers can wrap with their own outer scope (e.g.
+// "upstreamProviders[i]: %w") without duplicating the field name, matching the contract
+// of ValidateOAuth2DCRConfig.
+func validateOAuth2UpstreamConfig(cfg *OAuth2UpstreamConfig) error {
+	if cfg.IdentityFromToken != nil && cfg.IdentityFromToken.SubjectPath == "" {
+		return fmt.Errorf("oauth2Config.identityFromToken.subjectPath must not be empty when identityFromToken is set")
+	}
+	return nil
+}
+
 // AdditionalAuthorizationParams returns the additional authorization parameters
 // from whichever upstream config is set, or nil if none.
 func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]string {
@@ -1220,9 +1455,11 @@ func (p *UpstreamProviderConfig) AdditionalAuthorizationParams() map[string]stri
 }
 
 // SyntheticIdentityUpstreams returns the names of OAuth2 upstreams running
-// in synthesis mode (no userInfo configured), sorted lexically for
-// deterministic condition messages. OIDC upstreams are skipped — they always
-// have an ID-token-derived subject. Source of truth for the
+// in synthesis mode (neither userInfo nor identityFromToken configured),
+// sorted lexically for deterministic condition messages. OIDC upstreams are
+// skipped — they always have an ID-token-derived subject. Upstreams with
+// identityFromToken are also skipped — the subject is extracted from the
+// token response, not synthesized. Source of truth for the
 // ConditionTypeIdentitySynthesized advisory.
 func (c *EmbeddedAuthServerConfig) SyntheticIdentityUpstreams() []string {
 	if c == nil {
@@ -1234,7 +1471,7 @@ func (c *EmbeddedAuthServerConfig) SyntheticIdentityUpstreams() []string {
 		if p.Type != UpstreamProviderTypeOAuth2 || p.OAuth2Config == nil {
 			continue
 		}
-		if p.OAuth2Config.UserInfo == nil {
+		if p.OAuth2Config.UserInfo == nil && p.OAuth2Config.IdentityFromToken == nil {
 			names = append(names, p.Name)
 		}
 	}

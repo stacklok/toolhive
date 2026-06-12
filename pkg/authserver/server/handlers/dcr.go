@@ -7,12 +7,14 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // maxDCRBodySize is the maximum allowed size for DCR request bodies (64KB).
@@ -39,8 +41,10 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	// Parse request body
-	var dcrReq registration.DCRRequest
+	// Parse request body. oauthproto.ScopeList.UnmarshalJSON handles both
+	// RFC 7591 wire formats for "scope" (space-delimited string or JSON
+	// array) so we accept either shape transparently here.
+	var dcrReq oauthproto.DynamicClientRegistrationRequest
 	if err := json.NewDecoder(req.Body).Decode(&dcrReq); err != nil {
 		writeDCRError(w, http.StatusBadRequest, &registration.DCRError{
 			Error:            registration.DCRErrorInvalidClientMetadata,
@@ -57,10 +61,37 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	}
 
 	// Validate requested scopes against server's supported scopes
-	scopes, dcrErr := registration.ValidateScopes(dcrReq.Scope, h.config.ScopesSupported)
+	scopes, dcrErr := registration.ValidateScopes(dcrReq.Scopes, h.config.ScopesSupported)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
+	}
+
+	// Union with the operator-configured scope baseline. RFC 7591 §3.2.1 permits
+	// the AS to replace requested client metadata values during registration; we
+	// use that to expand the registered scope set so a client whose DCR request
+	// narrowed the scope field can still request the baseline at /oauth/authorize.
+	// h.config.BaselineClientScopes is validated at startup to be a subset of
+	// ScopesSupported, so the union is guaranteed to be a subset of advertised
+	// scopes. Operators should keep the baseline narrow (e.g. openid,
+	// offline_access) — every DCR-registered client gains the ability to request
+	// these scopes at /oauth/authorize regardless of what they registered with.
+	if len(h.config.BaselineClientScopes) > 0 {
+		effective := registration.UnionScopes(scopes, h.config.BaselineClientScopes)
+		if !slices.Equal(effective, scopes) {
+			// Baseline-driven expansion is the intended behavior whenever
+			// baseline_client_scopes is configured, so per-registration
+			// audit lives at Debug rather than Warn. Operator-visible
+			// signal that the baseline is in effect comes from a one-time
+			// Info log at server startup (NewAuthorizationServerConfig).
+			slog.Debug("DCR registered scope set expanded by baseline_client_scopes",
+				"client_name", validated.ClientName,
+				"requested", scopes,
+				"effective", effective,
+				"baseline", h.config.BaselineClientScopes,
+			)
+			scopes = effective
+		}
 	}
 
 	// Generate client ID
@@ -106,7 +137,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// ToolHive-embedded AS that is performing the registration), not the
 	// upstream AS being registered against. That distinction is important
 	// when correlating these logs with the resolver's logs in
-	// pkg/authserver/runner/dcr.go, which use "issuer" to mean the
+	// pkg/auth/dcr/resolver.go, which use "issuer" to mean the
 	// upstream AS. The two uses live at opposite ends of the DCR flow.
 	// No "upstream" attribute is emitted because the /oauth/register
 	// endpoint has no upstream concept.
@@ -123,10 +154,14 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	slog.Debug("registered new DCR client", logAttrs...)
 
 	// Build response per RFC 7591 Section 3.2.1.
-	// Scope reflects the scopes actually granted to this client (from
-	// ValidateScopes above), not all server-supported scopes. This lets
-	// the client know exactly which scopes it can request.
-	response := registration.DCRResponse{
+	// Scopes reflects the scopes actually granted to this client: the
+	// client-supplied scope set was validated against ScopesSupported by
+	// ValidateScopes above, then (if configured) unioned with
+	// BaselineClientScopes — which is itself guaranteed by startup-time
+	// validation to be a subset of ScopesSupported. The unioned set is NOT
+	// re-validated here. ScopeList.MarshalJSON emits the RFC 7591 §2
+	// space-delimited wire form on the way out.
+	response := oauthproto.DynamicClientRegistrationResponse{
 		ClientID:                clientID,
 		ClientIDIssuedAt:        time.Now().Unix(),
 		RedirectURIs:            validated.RedirectURIs,
@@ -134,7 +169,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
 		GrantTypes:              validated.GrantTypes,
 		ResponseTypes:           validated.ResponseTypes,
-		Scope:                   registration.FormatScopes(scopes),
+		Scopes:                  oauthproto.ScopeList(scopes),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

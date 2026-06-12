@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
@@ -22,7 +23,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
-	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -176,14 +177,6 @@ func WithRemoteAuth(config *remote.Config) RunConfigBuilderOption {
 func WithName(name string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.Name = name
-		return nil
-	}
-}
-
-// WithMiddlewareConfig sets the middleware configuration
-func WithMiddlewareConfig(middlewareConfig []types.MiddlewareConfig) RunConfigBuilderOption {
-	return func(b *runConfigBuilder) error {
-		b.config.MiddlewareConfigs = middlewareConfig
 		return nil
 	}
 }
@@ -358,6 +351,27 @@ func WithStateless(stateless bool) RunConfigBuilderOption {
 func WithEndpointPrefix(prefix string) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		b.config.EndpointPrefix = prefix
+		return nil
+	}
+}
+
+// WithSessionTTL sets the inactivity timeout for proxy sessions.
+// Zero is valid and means "use the transport default" (2h).
+// Negative values return an error.
+//
+// The value is stored as a Go duration string on RunConfig so it survives a
+// JSON/YAML round-trip in the runconfig API contract; a time.Duration field
+// would serialize as nanoseconds.
+func WithSessionTTL(ttl time.Duration) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		if ttl < 0 {
+			return fmt.Errorf("session-ttl must be non-negative, got %s", ttl)
+		}
+		if ttl == 0 {
+			b.config.SessionTTL = ""
+			return nil
+		}
+		b.config.SessionTTL = ttl.String()
 		return nil
 	}
 }

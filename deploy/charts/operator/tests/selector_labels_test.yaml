@@ -1,0 +1,29 @@
+suite: deployment selector labels
+# A Deployment's spec.selector is immutable. If the selectorLabels helper ever
+# changes, `helm upgrade` on an existing release fails outright. Pin the exact
+# selector set so any change to it is caught before release rather than on a
+# user's upgrade. Release name is fixed so the instance label is deterministic.
+release:
+  name: toolhive-operator
+templates:
+  - deployment.yaml
+tests:
+  - it: uses the exact stable selector label set
+    template: deployment.yaml
+    asserts:
+      - equal:
+          path: spec.selector.matchLabels
+          value:
+            app.kubernetes.io/name: toolhive-operator
+            app.kubernetes.io/instance: toolhive-operator
+            app.kubernetes.io/part-of: toolhive-operator
+
+  - it: keeps the selector labels a subset of the pod template labels
+    template: deployment.yaml
+    asserts:
+      - isSubset:
+          path: spec.template.metadata.labels
+          content:
+            app.kubernetes.io/name: toolhive-operator
+            app.kubernetes.io/instance: toolhive-operator
+            app.kubernetes.io/part-of: toolhive-operator

@@ -36,6 +36,10 @@ type HeaderFromSecret struct {
 }
 
 // MCPRemoteProxySpec defines the desired state of MCPRemoteProxy
+//
+// +kubebuilder:validation:XValidation:rule="!(has(self.authzConfig) && has(self.authzConfigRef))",message="authzConfig and authzConfigRef are mutually exclusive; use authzConfigRef to reference a shared MCPAuthzConfig"
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type MCPRemoteProxySpec struct {
 	// RemoteURL is the URL of the remote MCP server to proxy
 	// +kubebuilder:validation:Required
@@ -57,6 +61,12 @@ type MCPRemoteProxySpec struct {
 	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
 	// Per-server overrides (audience, scopes) are specified here; shared provider config
 	// lives in the MCPOIDCConfig resource.
+	//
+	// SECURITY: if this field is omitted and no other authentication source is configured,
+	// the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and
+	// forwards it to the remote MCP server under a synthetic local-user identity, with no
+	// token or credential check. Set this field to enforce identity-based access control
+	// per request.
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
@@ -77,9 +87,25 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	HeaderForward *HeaderForwardConfig `json:"headerForward,omitempty"`
 
-	// AuthzConfig defines authorization policy configuration for the proxy
+	// AuthzConfig defines authorization policy configuration for the proxy.
+	// AuthzConfig and AuthzConfigRef are mutually exclusive.
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
+
+	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+	// The referenced MCPAuthzConfig must exist in the same namespace as this MCPRemoteProxy.
+	// Mutually exclusive with authzConfig.
+	//
+	// TODO(#4778): remove the staging NOTE below once workload controllers
+	// resolve AuthzConfigRef into a runtime authz config.
+	//
+	// NOTE: this field is consumed by workload controllers in a follow-up PR.
+	// Until that lands, AuthzConfigRef is reference-tracked by the
+	// MCPAuthzConfig controller (deletion protection, status.referenceCount)
+	// but does NOT apply authorization to this MCPRemoteProxy. Use the
+	// inline AuthzConfig field in the meantime.
+	// +optional
+	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 
 	// Audit defines audit logging configuration for the proxy
 	// +optional
@@ -332,8 +358,16 @@ const (
 	// ConditionReasonAuthzPolicySyntaxInvalid indicates an inline Cedar policy has a syntax error
 	ConditionReasonAuthzPolicySyntaxInvalid = "AuthzPolicySyntaxInvalid"
 
-	// ConditionReasonAuthzConfigMapNotFound indicates the referenced authz ConfigMap was not found
+	// ConditionReasonAuthzConfigMapNotFound indicates the referenced authz ConfigMap was not found.
+	// Shared with VirtualMCPServer (see virtualmcpserver_types.go); both reconcilers use this
+	// reason when the ConfigMap itself is absent.
 	ConditionReasonAuthzConfigMapNotFound = "AuthzConfigMapNotFound"
+
+	// ConditionReasonAuthzConfigMapInvalid indicates the referenced authz ConfigMap was found
+	// but its payload is missing/empty/malformed, fails validation, or does not contain a
+	// Cedar-flavoured config. Shared with VirtualMCPServer; both reconcilers use this reason
+	// to distinguish a malformed payload from a missing ConfigMap.
+	ConditionReasonAuthzConfigMapInvalid = "AuthzConfigMapInvalid"
 
 	// ConditionReasonHeaderSecretNotFound indicates a referenced header Secret was not found
 	ConditionReasonHeaderSecretNotFound = "HeaderSecretNotFound"
@@ -348,6 +382,7 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
+//+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 //+kubebuilder:resource:shortName=rp;mcprp,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteUrl"

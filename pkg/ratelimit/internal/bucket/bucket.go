@@ -90,7 +90,7 @@ type TokenBucket struct {
 }
 
 // New creates a TokenBucket. The Redis key is derived from namespace, server
-// name, and suffix (e.g., "global" or "global:tool:search").
+// name, and suffix (e.g., "shared" or "shared:tool:search").
 func New(namespace, serverName, suffix string, maxTokens int32, refillPeriod time.Duration) *TokenBucket {
 	refillSec := refillPeriod.Seconds()
 	return &TokenBucket{

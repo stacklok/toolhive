@@ -534,6 +534,96 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 	})
 }
 
+// TestBackendEnrichmentMiddleware_ServePath verifies the Serve path (s.core != nil):
+// backend identity is resolved via the core's Lookup* methods (derived from
+// Tool.BackendID) and recorded as the backend's human-readable name — matching the
+// legacy path's WorkloadName — with no reliance on the discovery-into-context table.
+func TestBackendEnrichmentMiddleware_ServePath(t *testing.T) {
+	t.Parallel()
+
+	// BackendID ("backend-x") differs from the human-readable Name ("github-mcp") so the
+	// test proves the Serve path resolves the ID to the name (audit parity), not the raw ID.
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "test-tool", BackendID: "backend-x"}}}
+	reg := vmcp.NewImmutableRegistry([]vmcp.Backend{{ID: "backend-x", Name: "github-mcp"}})
+	srv := &Server{core: fc, backendRegistry: reg}
+
+	t.Run("resolves Tool.BackendID to the backend name (parity with legacy WorkloadName)", func(t *testing.T) {
+		t.Parallel()
+		nextHandler, handlerCalled := createTestHandler()
+		backendInfo := &audit.BackendInfo{}
+
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(toolsCallRequest)))
+		req = req.WithContext(audit.WithBackendInfo(req.Context(), backendInfo))
+
+		srv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
+
+		assert.True(t, *handlerCalled)
+		assert.Equal(t, "github-mcp", backendInfo.BackendName,
+			"Serve path must record the backend name, not the raw BackendID")
+	})
+
+	// The real core's LookupTool delegates to ListTools, which applies the admission
+	// filter, so BOTH an unadvertised name and an advertised-but-denied capability surface
+	// as ErrNotFound — indistinguishable at this layer. This asserts that ErrNotFound
+	// resolves to no backend name (so a denied capability is never labeled); the admission
+	// deny semantics themselves are covered by the core's admission_test.go.
+	t.Run("no-op when LookupTool returns not-found (unadvertised or admission-denied)", func(t *testing.T) {
+		t.Parallel()
+		nextHandler, handlerCalled := createTestHandler()
+		backendInfo := &audit.BackendInfo{}
+
+		body := `{"method":"tools/call","params":{"name":"unknown-tool"}}`
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(body)))
+		req = req.WithContext(audit.WithBackendInfo(req.Context(), backendInfo))
+
+		srv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
+
+		assert.True(t, *handlerCalled)
+		assert.Empty(t, backendInfo.BackendName,
+			"a tool the core does not resolve (unadvertised or denied) must not resolve a backend name")
+	})
+
+	t.Run("ignores the discovery context and resolves via the core", func(t *testing.T) {
+		t.Parallel()
+		nextHandler, handlerCalled := createTestHandler()
+		backendInfo := &audit.BackendInfo{}
+
+		// A legacy routing table is present in context but must be ignored on the Serve
+		// path: resolution comes from the core (BackendID), not the context (WorkloadName).
+		caps := &aggregator.AggregatedCapabilities{RoutingTable: &vmcp.RoutingTable{
+			Tools: map[string]*vmcp.BackendTarget{"test-tool": {WorkloadName: "legacy-backend"}},
+		}}
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(toolsCallRequest)))
+		ctx := discovery.WithDiscoveredCapabilities(req.Context(), caps)
+		ctx = audit.WithBackendInfo(ctx, backendInfo)
+		req = req.WithContext(ctx)
+
+		srv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
+
+		assert.True(t, *handlerCalled)
+		assert.Equal(t, "github-mcp", backendInfo.BackendName,
+			"Serve path must resolve via the core/registry (BackendID→name), not the discovery context (legacy-backend)")
+	})
+
+	t.Run("falls back to the BackendID when the backend is not in the registry", func(t *testing.T) {
+		t.Parallel()
+		// "ghost" is advertised by the core but absent from reg; audit still records an identifier.
+		orphanCore := &fakeCore{tools: []vmcp.Tool{{Name: "orphan-tool", BackendID: "ghost"}}}
+		orphanSrv := &Server{core: orphanCore, backendRegistry: reg}
+		nextHandler, handlerCalled := createTestHandler()
+		backendInfo := &audit.BackendInfo{}
+
+		body := `{"method":"tools/call","params":{"name":"orphan-tool"}}`
+		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(body)))
+		req = req.WithContext(audit.WithBackendInfo(req.Context(), backendInfo))
+
+		orphanSrv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
+
+		assert.True(t, *handlerCalled)
+		assert.Equal(t, "ghost", backendInfo.BackendName)
+	})
+}
+
 func TestLookupBackendName(t *testing.T) {
 	t.Parallel()
 

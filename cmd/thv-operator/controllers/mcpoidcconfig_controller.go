@@ -122,22 +122,22 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return ctrl.Result{}, nil
 	}
 
-	// Refresh ReferencingWorkloads list
-	referencingWorkloads, err := r.findReferencingWorkloads(ctx, oidcConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing workloads")
-		// Fall through: the status patch below is best-effort and still ensures
-		// the Valid=True condition is set even when the reference refresh fails.
+	// Refresh ReferencingWorkloads list. On error, fall through with the lookup
+	// result skipped: the status patch below is best-effort and still ensures
+	// the Valid=True condition is set even when the reference refresh fails.
+	referencingWorkloads, findErr := r.findReferencingWorkloads(ctx, oidcConfig)
+	if findErr != nil {
+		logger.Error(findErr, "Failed to find referencing workloads")
 	}
 
 	// Single status patch covering the steady-state success path: ensure the
-	// Valid=True condition is set, and refresh the references list if it
-	// changed. MutateAndPatchStatus short-circuits on an empty diff so the
-	// no-op case still skips the wire call (SteadyStateNoOp behaviour is
-	// preserved).
+	// Valid=True condition is set, and refresh the references list when the
+	// lookup succeeded and the list changed. MutateAndPatchStatus short-circuits
+	// on an empty diff so the no-op case still skips the wire call
+	// (SteadyStateNoOp behaviour is preserved).
 	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
 		setOIDCConfigValidTrueCondition(c)
-		if referencingWorkloads != nil &&
+		if findErr == nil &&
 			(!ctrlutil.WorkloadRefsEqual(c.Status.ReferencingWorkloads, referencingWorkloads) ||
 				c.Status.ReferenceCount != workloadReferenceCount(referencingWorkloads)) {
 			c.Status.ReferencingWorkloads = referencingWorkloads

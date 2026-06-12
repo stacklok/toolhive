@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -1842,14 +1843,14 @@ func TestMCPExternalAuthConfigReconciler_PreservesForeignConditions(t *testing.T
 	var after mcpv1beta1.MCPExternalAuthConfig
 	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &after))
 
-	foreign := findCondition(after.Status.Conditions, "ForeignControllerSays")
+	foreign := meta.FindStatusCondition(after.Status.Conditions, "ForeignControllerSays")
 	require.NotNil(t, foreign,
 		"foreign condition must survive an MCPExternalAuthConfig reconcile — otherwise merge-patch is replacing the conditions array wholesale")
 	assert.Equal(t, metav1.ConditionTrue, foreign.Status, "foreign condition value must not be modified")
 	assert.Equal(t, "ExternallySet", foreign.Reason)
 
 	// And our own Valid=True landed.
-	own := findCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	own := meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeValid)
 	require.NotNil(t, own, "controller-owned Valid condition must land")
 	assert.Equal(t, metav1.ConditionTrue, own.Status)
 }

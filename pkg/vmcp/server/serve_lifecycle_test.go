@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -30,11 +31,17 @@ import (
 // status_reporting_test.go, and server_test.go). server.New behavior is unchanged.
 
 // startServeInBackground starts srv on a fresh cancelable context and waits for it to
-// become ready, failing fast on early error or timeout. It returns the cancel func and
-// the error channel carrying Start's eventual return value (Start blocks until the
-// context is cancelled, then returns Stop's result). Mirrors the start/ready dance the
-// New-path lifecycle tests use.
-func startServeInBackground(t *testing.T, srv *Server) (context.CancelFunc, <-chan error) {
+// become ready, failing fast on early error or timeout. It returns an idempotent stop
+// function that cancels the server and waits for Start to return, yielding Start's result
+// (Stop's error) so callers can assert a clean shutdown with require.NoError(t, stop()).
+//
+// stop is also registered with t.Cleanup, so the Start goroutine and the bound HTTP
+// listener are always torn down even when a mid-test require aborts via runtime.Goexit
+// before the test reaches its explicit stop (testing.md: tie resource teardown for a
+// started server in a parallel test to t.Cleanup, not to a code path a failing require can
+// skip). The sync.Once lets the explicit call and the cleanup safety net coexist without
+// double-draining errCh.
+func startServeInBackground(t *testing.T, srv *Server) (stop func() error) {
 	t.Helper()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -50,20 +57,22 @@ func startServeInBackground(t *testing.T, srv *Server) (context.CancelFunc, <-ch
 		cancel()
 		t.Fatal("timeout waiting for server to become ready")
 	}
-	return cancel, errCh
-}
 
-// stopAndWait cancels the server and waits for Start to return, asserting a clean stop.
-func stopAndWait(t *testing.T, cancel context.CancelFunc, errCh <-chan error) {
-	t.Helper()
-
-	cancel()
-	select {
-	case err := <-errCh:
-		require.NoError(t, err)
-	case <-time.After(2 * time.Second):
-		t.Fatal("timeout waiting for server to stop")
+	var once sync.Once
+	var stopErr error
+	stop = func() error {
+		once.Do(func() {
+			cancel()
+			select {
+			case stopErr = <-errCh:
+			case <-time.After(2 * time.Second):
+				stopErr = errors.New("timeout waiting for server to stop")
+			}
+		})
+		return stopErr
 	}
+	t.Cleanup(func() { _ = stop() })
+	return stop
 }
 
 // TestServeHealthMonitorDisabledWhenNil verifies that a nil ServerConfig.HealthMonitor
@@ -122,14 +131,14 @@ func TestServeStartsAndStopsInjectedHealthMonitor(t *testing.T) {
 	// call health.NewMonitor).
 	assert.Same(t, mon, srv.healthMonitor)
 
-	cancel, errCh := startServeInBackground(t, srv)
+	stop := startServeInBackground(t, srv)
 
 	require.Eventually(t, func() bool {
 		status, statusErr := srv.GetBackendHealthStatus("backend-1")
 		return statusErr == nil && status == vmcp.BackendHealthy
 	}, 2*time.Second, 10*time.Millisecond, "backend-1 should become healthy via the Serve-started monitor")
 
-	stopAndWait(t, cancel, errCh)
+	require.NoError(t, stop())
 
 	// The monitor is stopped but the struct is retained (pointer stays valid).
 	srv.healthMonitorMu.RLock()
@@ -168,7 +177,7 @@ func TestServeDisablesHealthMonitorOnStartFailure(t *testing.T) {
 	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
 	require.NoError(t, err)
 
-	cancel, errCh := startServeInBackground(t, srv)
+	stop := startServeInBackground(t, srv)
 
 	// Start must not fail; the un-restartable monitor is disabled (set to nil) instead.
 	require.Eventually(t, func() bool {
@@ -180,7 +189,7 @@ func TestServeDisablesHealthMonitorOnStartFailure(t *testing.T) {
 	_, getErr := srv.GetBackendHealthStatus("backend-1")
 	assert.ErrorContains(t, getErr, "health monitoring is disabled")
 
-	stopAndWait(t, cancel, errCh)
+	require.NoError(t, stop())
 }
 
 // recordingReporter is a vmcpstatus.Reporter that records whether Start and its returned
@@ -233,24 +242,29 @@ func TestServeStartsAndStopsStatusReporter(t *testing.T) {
 	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
 	require.NoError(t, err)
 
-	cancel, errCh := startServeInBackground(t, srv)
+	stop := startServeInBackground(t, srv)
 
 	require.Eventually(t, func() bool {
 		started, _, count := reporter.snapshot()
 		return started && count >= 1
 	}, 2*time.Second, 10*time.Millisecond, "Start must run the reporter and emit at least one status report")
 
-	stopAndWait(t, cancel, errCh)
+	require.NoError(t, stop())
 
 	_, shutdownCalled, _ := reporter.snapshot()
 	assert.True(t, shutdownCalled, "the status reporter shutdown func must run on Stop via shutdownFuncs")
 }
 
-// TestServeStopClosesOptimizerStore verifies that the optimizer cleanup returned by
-// sessionmanager.New is appended to shutdownFuncs on the Serve path and runs cleanly on
-// Stop. Mirrors the New-path TestServerStopClosesOptimizerStore: an empty optimizer
-// config builds a (shared in-memory) SQLite store whose Close runs during shutdown.
-func TestServeStopClosesOptimizerStore(t *testing.T) {
+// TestServeWithOptimizerStartsAndStopsCleanly exercises the optimizer-configured Serve
+// path end to end: a non-nil OptimizerConfig drives sessionmanager.New into building a
+// real SQLite-backed optimizer factory whose cleanup (store.Close, not the no-op) Serve
+// appends to shutdownFuncs, and Start/Stop runs that construct→teardown path without
+// error. The cleanup's store.Close is internal to sessionmanager/optimizer, so it is not
+// observed here (asserting it would reach across the package boundary, see testing.md
+// "Test Scope"); that shutdownFuncs are drained on Stop is proven observably by
+// TestServeStopClosesCore. This test guards that configuring an optimizer does not break
+// Serve construction or shutdown — which the no-optimizer path would not exercise.
+func TestServeWithOptimizerStartsAndStopsCleanly(t *testing.T) {
 	t.Parallel()
 
 	cfg := testMinimalServeConfig()
@@ -262,10 +276,8 @@ func TestServeStopClosesOptimizerStore(t *testing.T) {
 	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
 	require.NoError(t, err)
 
-	cancel, errCh := startServeInBackground(t, srv)
-
-	// Stop must drain shutdownFuncs (including the optimizer store cleanup) without error.
-	stopAndWait(t, cancel, errCh)
+	stop := startServeInBackground(t, srv)
+	require.NoError(t, stop())
 }
 
 // TestServeWiresAuthServerIntoConfig verifies the embedded AS runner wiring on the Serve

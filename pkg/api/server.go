@@ -59,8 +59,13 @@ import (
 
 // Not sure if these values need to be configurable.
 const (
-	middlewareTimeout  = 60 * time.Second
-	readHeaderTimeout  = 10 * time.Second
+	middlewareTimeout = 60 * time.Second
+	readHeaderTimeout = 10 * time.Second
+	// readTimeout bounds reading the entire request (headers + body), mitigating
+	// slow-upload connection exhaustion. WriteTimeout is intentionally NOT set:
+	// the workload router serves multi-minute responses (image pulls) that a
+	// server-level write deadline would sever (see setupDefaultRoutes).
+	readTimeout        = 30 * time.Second
 	idleTimeout        = 120 * time.Second
 	shutdownTimeout    = 30 * time.Second
 	nonceBytes         = 16
@@ -547,6 +552,9 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 		Addr:              builder.address,
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
+		// ReadTimeout bounds reading the entire request (headers + body) so a
+		// slow client upload cannot hold a connection open indefinitely.
+		ReadTimeout: readTimeout,
 		// IdleTimeout caps how long a keep-alive connection can sit idle.
 		// On Windows named pipes winio.MaxInstances defaults to 255, so a
 		// slow client cannot hold an instance forever and starve new

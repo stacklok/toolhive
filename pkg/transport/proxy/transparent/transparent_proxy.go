@@ -82,6 +82,10 @@ type TransparentProxy struct {
 	// Defaults to session.DefaultSessionTTL; overridable via WithSessionTTL.
 	sessionTTL time.Duration
 
+	// readTimeout is the resolved http.Server.ReadTimeout for this proxy.
+	// Defaults to defaultReadTimeout; overridable via WithReadTimeout.
+	readTimeout time.Duration
+
 	// sessionStorage is the optional custom storage backend for the session manager.
 	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
 	sessionStorage session.Storage
@@ -160,6 +164,12 @@ const (
 	// defaultIdleTimeout is the maximum time to wait for the next request on a
 	// keep-alive connection. Matches the value used by the vMCP server.
 	defaultIdleTimeout = 120 * time.Second
+
+	// defaultReadTimeout bounds reading the entire request (headers + body) on
+	// the proxy http.Server, mitigating slow-upload connection exhaustion. It
+	// does not affect responses, so streamed backend responses are unaffected.
+	// Matches the value used by the vMCP server.
+	defaultReadTimeout = 30 * time.Second
 
 	// HealthCheckIntervalEnvVar is the environment variable name for configuring health check interval.
 	HealthCheckIntervalEnvVar = "TOOLHIVE_HEALTH_CHECK_INTERVAL"
@@ -313,6 +323,18 @@ func WithSessionTTL(ttl time.Duration) Option {
 	}
 }
 
+// WithReadTimeout overrides http.Server.ReadTimeout for this proxy, which bounds
+// reading the entire request (headers + body). Zero or negative values are
+// ignored so the constructor's default (defaultReadTimeout) is preserved.
+func WithReadTimeout(d time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if d <= 0 {
+			return
+		}
+		p.readTimeout = d
+	}
+}
+
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
 // The endpointPrefix parameter specifies an explicit prefix to prepend to SSE endpoint URLs.
 // The trustProxyHeaders parameter indicates whether to trust X-Forwarded-* headers from reverse proxies.
@@ -439,6 +461,7 @@ func NewTransparentProxyWithOptions(
 		authInfoHandler:             authInfoHandler,
 		prefixHandlers:              prefixHandlers,
 		sessionTTL:                  session.DefaultSessionTTL,
+		readTimeout:                 defaultReadTimeout,
 		isRemote:                    isRemote,
 		transportType:               transportType,
 		onHealthCheckFailed:         onHealthCheckFailed,
@@ -1162,6 +1185,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,   // Prevent Slowloris attacks
+		ReadTimeout:       p.readTimeout,      // Bound slow body uploads
 		IdleTimeout:       defaultIdleTimeout, // Prevent idle keep-alive connections from blocking Shutdown()
 	}
 

@@ -1833,7 +1833,7 @@ _Appears in:_
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPExternalAuthConfig.<br />It corresponds to the MCPExternalAuthConfig's generation, which is updated on mutation by the API Server. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
 | `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
+| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.<br />Each entry identifies the workload by kind and name. The map key is the<br />(kind, name) pair so two workloads of different kinds that share a name<br />(e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct<br />entries rather than colliding under merge-patch semantics. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPGroup
@@ -2078,7 +2078,7 @@ _Appears in:_
 | `observedGeneration` _integer_ | ObservedGeneration is the most recent generation observed for this MCPOIDCConfig. |  | Optional: \{\} <br /> |
 | `configHash` _string_ | ConfigHash is a hash of the current configuration for change detection |  | Optional: \{\} <br /> |
 | `referenceCount` _integer_ | ReferenceCount is the number of workloads referencing this config. |  | Optional: \{\} <br /> |
-| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.<br />Each entry identifies the workload by kind and name. |  | Optional: \{\} <br /> |
+| `referencingWorkloads` _[api.v1beta1.WorkloadReference](#apiv1beta1workloadreference) array_ | ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.<br />Each entry identifies the workload by kind and name. The map key is the<br />(kind, name) pair so two workloads of different kinds that share a name<br />(e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct<br />entries rather than colliding under merge-patch semantics. |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPRegistry

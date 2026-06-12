@@ -50,36 +50,20 @@ func startProxy(t *testing.T, opts ...Option) *HTTPSSEProxy {
 	return proxy
 }
 
-// TestHTTPSSEProxy_ServerTimeoutsConfigured verifies that the read/write timeout
-// options are wired onto the proxy's http.Server, and that non-positive values
-// preserve the package defaults.
-func TestHTTPSSEProxy_ServerTimeoutsConfigured(t *testing.T) {
+// TestHTTPSSEProxy_ReadTimeoutConfigured verifies the read timeout option is wired
+// onto the proxy's http.Server (non-positive values keep the default), and that
+// WriteTimeout stays unset so long-lived SSE response streams are not severed.
+func TestHTTPSSEProxy_ReadTimeoutConfigured(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name      string
-		opts      []Option
-		wantRead  time.Duration
-		wantWrite time.Duration
+		name     string
+		opts     []Option
+		wantRead time.Duration
 	}{
-		{
-			name:      "defaults",
-			opts:      nil,
-			wantRead:  defaultReadTimeout,
-			wantWrite: defaultWriteTimeout,
-		},
-		{
-			name:      "overrides applied",
-			opts:      []Option{WithReadTimeout(5 * time.Second), WithWriteTimeout(7 * time.Second)},
-			wantRead:  5 * time.Second,
-			wantWrite: 7 * time.Second,
-		},
-		{
-			name:      "non-positive ignored",
-			opts:      []Option{WithReadTimeout(0), WithWriteTimeout(-time.Second)},
-			wantRead:  defaultReadTimeout,
-			wantWrite: defaultWriteTimeout,
-		},
+		{"default", nil, defaultReadTimeout},
+		{"override applied", []Option{WithReadTimeout(5 * time.Second)}, 5 * time.Second},
+		{"non-positive ignored", []Option{WithReadTimeout(0)}, defaultReadTimeout},
 	}
 
 	for _, tt := range tests {
@@ -88,102 +72,61 @@ func TestHTTPSSEProxy_ServerTimeoutsConfigured(t *testing.T) {
 			proxy := startProxy(t, tt.opts...)
 			require.NotNil(t, proxy.server)
 			assert.Equal(t, tt.wantRead, proxy.server.ReadTimeout)
-			assert.Equal(t, tt.wantWrite, proxy.server.WriteTimeout)
+			assert.Zero(t, proxy.server.WriteTimeout)
 		})
 	}
 }
 
-// TestHTTPSSEProxy_SSEStreamSurvivesTimeout proves a long-lived SSE GET stream is
-// not severed by the server's read/write deadlines:
-//   - WriteTimeout: the middleware mounted on the SSE endpoint clears the
-//     connection write deadline, so a server->client write that happens after
-//     http.Server.WriteTimeout would have fired still reaches the client.
-//   - ReadTimeout (the issue's no-regression criterion): ReadTimeout bounds the
-//     request read only, so the stream lives on the response side past it (the GET
-//     request itself is read instantly).
-func TestHTTPSSEProxy_SSEStreamSurvivesTimeout(t *testing.T) {
+// TestHTTPSSEProxy_SSEStreamSurvivesReadTimeout is the issue's no-regression
+// criterion: ReadTimeout bounds the request read only, so a long-lived SSE GET
+// stream must survive well past it (the GET request is read instantly; the stream
+// lives on the response side).
+func TestHTTPSSEProxy_SSEStreamSurvivesReadTimeout(t *testing.T) {
 	t.Parallel()
 
-	const timeout = 200 * time.Millisecond
+	const readTimeout = 200 * time.Millisecond
+	proxy := startProxy(t, WithReadTimeout(readTimeout))
 
-	tests := []struct {
-		name    string
-		opt     Option
-		callID  string
-		severed string
-	}{
-		{
-			name:    "WriteTimeout",
-			opt:     WithWriteTimeout(timeout),
-			callID:  "after-write-timeout",
-			severed: "SSE stream was severed (write deadline not cleared)",
-		},
-		{
-			name:    "ReadTimeout",
-			opt:     WithReadTimeout(timeout),
-			callID:  "after-read-timeout",
-			severed: "SSE stream was severed by ReadTimeout",
-		},
-	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
+		fmt.Sprintf("http://%s/sse", proxy.server.Addr), nil)
+	require.NoError(t, err)
+	req.Header.Set("Accept", "text/event-stream")
+	sseResp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = sseResp.Body.Close() })
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
+	sessionID, err := extractSessionID(sseResp.Body)
+	require.NoError(t, err)
+	require.NotEmpty(t, sessionID)
 
-			proxy := startProxy(t, tt.opt)
+	// Wait well past ReadTimeout, then confirm the stream still delivers.
+	time.Sleep(3 * readTimeout)
 
-			// Open the SSE stream and read the initial endpoint event to confirm the
-			// connection is established and obtain the session ID. The Accept header is
-			// required for the WriteTimeout middleware to recognize this as an SSE
-			// connection and clear the write deadline.
-			req, err := http.NewRequestWithContext(t.Context(), http.MethodGet,
-				fmt.Sprintf("http://%s/sse", proxy.server.Addr), nil)
-			require.NoError(t, err)
-			req.Header.Set("Accept", "text/event-stream")
-			sseResp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			t.Cleanup(func() { _ = sseResp.Body.Close() })
+	msg, err := jsonrpc2.NewCall(jsonrpc2.StringID("after-read-timeout"), "test.method",
+		map[string]any{"data": "still alive"})
+	require.NoError(t, err)
+	require.NoError(t, proxy.ForwardResponseToClients(t.Context(), msg))
 
-			sessionID, err := extractSessionID(sseResp.Body)
-			require.NoError(t, err)
-			require.NotEmpty(t, sessionID)
+	received := make(chan string, 1)
+	readErr := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 4096)
+		n, err := sseResp.Body.Read(buf)
+		if err != nil {
+			readErr <- err
+			return
+		}
+		received <- string(buf[:n])
+	}()
 
-			// Wait well past the deadline. Without the stream surviving it, any
-			// subsequent server->client write would fail here.
-			time.Sleep(3 * timeout)
-
-			// Push a message to the live SSE client after the deadline window.
-			msg, err := jsonrpc2.NewCall(
-				jsonrpc2.StringID(tt.callID),
-				"test.method",
-				map[string]any{"data": "still alive"},
-			)
-			require.NoError(t, err)
-			require.NoError(t, proxy.ForwardResponseToClients(t.Context(), msg))
-
-			// The client must receive the post-deadline message rather than EOF.
-			received := make(chan string, 1)
-			readErr := make(chan error, 1)
-			go func() {
-				buf := make([]byte, 4096)
-				n, err := sseResp.Body.Read(buf)
-				if err != nil {
-					readErr <- err
-					return
-				}
-				received <- string(buf[:n])
-			}()
-
-			select {
-			case data := <-received:
-				assert.Contains(t, data, tt.callID,
-					"SSE client should receive the message written after the deadline")
-			case err := <-readErr:
-				t.Fatalf("%s: %v", tt.severed, err)
-			case <-time.After(3 * time.Second):
-				t.Fatal("timed out waiting for post-deadline SSE message")
-			}
-		})
+	select {
+	case data := <-received:
+		assert.Contains(t, data, "after-read-timeout",
+			"SSE GET stream should survive past ReadTimeout")
+	case err := <-readErr:
+		t.Fatalf("SSE stream was severed by ReadTimeout: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for SSE message after ReadTimeout")
 	}
 }
 

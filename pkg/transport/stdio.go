@@ -268,8 +268,7 @@ func (t *StdioTransport) streamableProxyOptions() []streamable.Option {
 }
 
 // sseProxyOptions assembles the options for the SSE proxy from the transport's
-// configured settings. Zero-valued timeouts/TTL are omitted so the proxy keeps
-// its own defaults. The SSE proxy is the only one that applies WriteTimeout.
+// configured settings. Zero-valued TTL is omitted so the proxy keeps its default.
 func (t *StdioTransport) sseProxyOptions() []httpsse.Option {
 	var opts []httpsse.Option
 	if t.sessionTTL > 0 {

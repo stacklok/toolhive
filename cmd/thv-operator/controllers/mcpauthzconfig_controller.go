@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -44,7 +46,8 @@ const (
 // reference tracking, and deletion protection when workloads reference this config.
 type MCPAuthzConfigReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpauthzconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -53,6 +56,7 @@ type MCPAuthzConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -94,6 +98,10 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// method, then backend-specific validation via the authorizer factory registry.
 	if err := r.validateAuthzConfig(authzConfig); err != nil {
 		logger.Error(err, "MCPAuthzConfig spec validation failed")
+		// Capture the transition before MutateAndPatchStatus mutates conditions
+		// in place, so the Warning fires only when entering the invalid state.
+		wasInvalid := conditionStatusIs(authzConfig.Status.Conditions,
+			mcpv1beta1.ConditionTypeAuthzConfigValid, metav1.ConditionFalse)
 		if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
 			meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 				Type:               mcpv1beta1.ConditionTypeAuthzConfigValid,
@@ -105,8 +113,18 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		}); updateErr != nil {
 			logger.Error(updateErr, "Failed to update status after validation error")
 		}
+		if !wasInvalid {
+			emitConfigEvent(r.Recorder, authzConfig, corev1.EventTypeWarning,
+				eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", err.Error())
+		}
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 	}
+
+	// Whether we are recovering from a prior validation failure. Captured before
+	// the success patch below sets Valid=True so a single Normal event fires on
+	// the False->True transition.
+	wasInvalid := conditionStatusIs(authzConfig.Status.Conditions,
+		mcpv1beta1.ConditionTypeAuthzConfigValid, metav1.ConditionFalse)
 
 	// Refresh the referencing workloads list. If the lookup fails we must
 	// requeue with backoff rather than continuing with a stale slice — a
@@ -153,6 +171,7 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	emitConfigRecoveryEvent(r.Recorder, authzConfig, wasInvalid)
 	return ctrl.Result{}, nil
 }
 
@@ -277,6 +296,10 @@ func (r *MCPAuthzConfigReconciler) handleDeletion(
 				"authzConfig", authzConfig.Name,
 				"referencingWorkloads", referencingWorkloads)
 
+			// Capture the transition before the patch mutates conditions in
+			// place: emit the Warning only when entering the blocked state.
+			wasBlocked := conditionStatusIs(authzConfig.Status.Conditions,
+				mcpv1beta1.ConditionTypeDeletionBlocked, metav1.ConditionTrue)
 			if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
 				meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 					Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
@@ -289,6 +312,11 @@ func (r *MCPAuthzConfigReconciler) handleDeletion(
 				c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
 			}); updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
+			}
+			if !wasBlocked {
+				emitConfigEvent(r.Recorder, authzConfig, corev1.EventTypeWarning,
+					eventReasonDeletionBlocked, eventActionDelete,
+					"deletion blocked while still referenced by workloads: %v", referencingWorkloads)
 			}
 
 			// Requeue to check again later

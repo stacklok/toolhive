@@ -303,24 +303,27 @@ func setupServerControllers(mgr ctrl.Manager, imagePullSecretsDefaults imagepull
 
 	// Set up MCPExternalAuthConfig controller
 	if err := (&controllers.MCPExternalAuthConfigReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("mcpexternalauthconfig-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPExternalAuthConfig: %w", err)
 	}
 
 	// Set up MCPOIDCConfig controller
 	if err := (&controllers.MCPOIDCConfigReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("mcpoidcconfig-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPOIDCConfig: %w", err)
 	}
 
 	// Set up MCPAuthzConfig controller
 	if err := (&controllers.MCPAuthzConfigReconciler{
-		Client: mgr.GetClient(),
-		Scheme: mgr.GetScheme(),
+		Client:   mgr.GetClient(),
+		Scheme:   mgr.GetScheme(),
+		Recorder: mgr.GetEventRecorder("mcpauthzconfig-controller"),
 	}).SetupWithManager(mgr); err != nil {
 		return fmt.Errorf("unable to create controller MCPAuthzConfig: %w", err)
 	}

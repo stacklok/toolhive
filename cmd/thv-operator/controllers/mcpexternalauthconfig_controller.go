@@ -168,27 +168,30 @@ func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1beta1.MCPE
 // applyIdentitySynthesizedCondition sets ConditionTypeIdentitySynthesized
 // True when any OAuth2 upstream has nil userInfo, False when every upstream
 // has userInfo configured, and removes it for non-embeddedAuthServer types
-// where the question is moot. Returns true if the in-memory condition list
-// changed so the caller can fold this into the next status write.
+// where the question is moot. It is idempotent on the same spec and is called
+// inside the status-write closures so the advisory is recomputed on every
+// status patch.
 func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
-) bool {
+) {
 	if cfg.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer || cfg.Spec.EmbeddedAuthServer == nil {
-		return meta.RemoveStatusCondition(&cfg.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+		meta.RemoveStatusCondition(&cfg.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+		return
 	}
 
 	syntheticUpstreams := cfg.Spec.EmbeddedAuthServer.SyntheticIdentityUpstreams()
 	if len(syntheticUpstreams) == 0 {
-		return meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
+		meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeIdentitySynthesized,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1beta1.ConditionReasonIdentitySynthesizedInactive,
 			Message:            "All OAuth2 upstreams have userInfo configured; user identity is resolved from the upstream",
 			ObservedGeneration: cfg.Generation,
 		})
+		return
 	}
 
-	return meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
+	meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
 		Type:   mcpv1beta1.ConditionTypeIdentitySynthesized,
 		Status: metav1.ConditionTrue,
 		Reason: mcpv1beta1.ConditionReasonIdentitySynthesizedActive,

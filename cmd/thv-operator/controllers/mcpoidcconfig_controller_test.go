@@ -638,11 +638,21 @@ func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T
 	assert.EqualValues(t, 0, updatedConfig.Status.ReferenceCount)
 }
 
-// TestMCPOIDCConfigReconciler_PreservesForeignConditions guards the
-// MutateAndPatchStatus migration: a condition owned by a hypothetical disjoint
-// writer of this resource's Status.Conditions must survive a reconcile. A raw
-// r.Status().Update sends a full PUT that would clobber the conditions array;
-// the merge-patch helper carries only the controller's own condition diff.
+// TestMCPOIDCConfigReconciler_PreservesForeignConditions locks in the property
+// the MutateAndPatchStatus migration is meant to protect: the controller's
+// snapshot-and-diff machinery does not erase Status.Conditions entries it
+// doesn't own when building its patch body.
+//
+// The test fails if anyone mutates conditions outside the MutateAndPatchStatus
+// closure (the snapshot would already contain the in-memory mutation, the diff
+// would be empty, and the controller-owned Valid condition would never land —
+// the assertion at the bottom catches that).
+//
+// It does NOT catch a regression to r.Status().Update on its own: under the
+// fake client there is no concurrent writer between Get and Patch, so a full
+// PUT of the in-memory object (which still includes the foreign condition)
+// would persist successfully. Exercising the merge-patch-vs-PUT difference for
+// concurrent writers requires a WithInterceptorFuncs-backed scenario.
 func TestMCPOIDCConfigReconciler_PreservesForeignConditions(t *testing.T) {
 	t.Parallel()
 

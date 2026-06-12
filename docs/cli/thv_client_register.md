@@ -28,6 +28,7 @@ Valid clients:
   - cline: VS Code Cline extension
   - codex: OpenAI Codex CLI
   - continue: Continue.dev IDE plugins
+  - copilot-cli: GitHub Copilot CLI
   - cursor: Cursor editor
   - factory: Factory.ai Droid CLI
   - gemini-cli: Google Gemini CLI
@@ -37,7 +38,7 @@ Valid clients:
   - lm-studio: LM Studio application
   - mistral-vibe: Mistral Vibe IDE
   - opencode: OpenCode editor
-  - roo-code: VS Code Roo Code extension
+  - roo-code: VS Code Roo Code extension (deprecated)
   - trae: Trae IDE
   - vscode: Visual Studio Code
   - vscode-insider: Visual Studio Code Insiders

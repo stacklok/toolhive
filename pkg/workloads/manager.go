@@ -45,7 +45,7 @@ type CompletionFunc func() error
 // NOTE: This interface may be split up in future PRs, in particular, operations
 // which are only relevant to the CLI/API use case will be split out.
 //
-//go:generate mockgen -destination=mocks/mock_manager.go -package=mocks -source=manager.go Manager
+//go:generate mockgen -destination=mocks/mock_manager.go -package=mocks github.com/stacklok/toolhive/pkg/workloads Manager
 type Manager interface {
 	// GetWorkload retrieves details of the named workload including its status.
 	GetWorkload(ctx context.Context, workloadName string) (core.Workload, error)
@@ -97,6 +97,94 @@ type DefaultManager struct {
 	runtime        rt.Runtime
 	statuses       statuses.StatusManager
 	configProvider config.Provider
+
+	retryConfig     *retryConfig
+	newRunner       mcpRunnerFactory
+	detachedSpawner detachedProcessSpawner
+}
+
+// mcpRunner is the subset of *runner.Runner that RunWorkload's retry loop
+// depends on. It exists only to make the retry loop unit-testable; it is
+// not part of the workloads package's public API.
+type mcpRunner interface {
+	Run(ctx context.Context) error
+}
+
+// mcpRunnerFactory constructs an mcpRunner for one attempt of the retry loop.
+type mcpRunnerFactory func(*runner.RunConfig, statuses.StatusManager) mcpRunner
+
+// detachedProcessSpawner starts the detached process that backs
+// RunWorkloadDetached and returns its PID. In production it re-execs the
+// current binary (os.Executable) with `start <basename> --foreground` and
+// detaches the child via getSysProcAttr (setsid on Unix, a detached process
+// group on Windows) — that detachment is what makes orphaned children
+// possible under `go test`, which is the bug this seam exists to defuse.
+// Tests override this with a no-op so the test binary does not re-exec
+// itself.
+type detachedProcessSpawner func(ctx context.Context, runConfig *runner.RunConfig) (pid int, err error)
+
+// retryConfig bundles the RunWorkload retry loop's tunable parameters.
+type retryConfig struct {
+	maxRetries         int
+	initialDelay       time.Duration
+	maxBackoff         time.Duration
+	stableRunThreshold time.Duration
+}
+
+// defaultRetryConfig returns the production retry parameters.
+func defaultRetryConfig() retryConfig {
+	return retryConfig{
+		maxRetries:         10,
+		initialDelay:       5 * time.Second,
+		maxBackoff:         60 * time.Second,
+		stableRunThreshold: 30 * time.Second,
+	}
+}
+
+// managerOption configures a DefaultManager.
+type managerOption func(*DefaultManager)
+
+// withRetryConfig overrides the retry loop's tunable parameters.
+func withRetryConfig(cfg retryConfig) managerOption {
+	return func(d *DefaultManager) { d.retryConfig = &cfg }
+}
+
+// withRunnerFactory overrides the per-attempt runner constructor.
+func withRunnerFactory(f mcpRunnerFactory) managerOption {
+	return func(d *DefaultManager) { d.newRunner = f }
+}
+
+// withDetachedSpawner overrides the function used to start the detached
+// workload process. Intended for tests so they do not re-exec the test binary.
+func withDetachedSpawner(s detachedProcessSpawner) managerOption {
+	return func(d *DefaultManager) { d.detachedSpawner = s }
+}
+
+// retryConfigOrDefault returns the manager's retryConfig if set, otherwise defaults.
+func (d *DefaultManager) retryConfigOrDefault() retryConfig {
+	if d.retryConfig == nil {
+		return defaultRetryConfig()
+	}
+	return *d.retryConfig
+}
+
+// newRunnerOrDefault returns the manager's runner factory if set, otherwise wraps runner.NewRunner.
+func (d *DefaultManager) newRunnerOrDefault() mcpRunnerFactory {
+	if d.newRunner != nil {
+		return d.newRunner
+	}
+	return func(rc *runner.RunConfig, sm statuses.StatusManager) mcpRunner {
+		return runner.NewRunner(rc, sm)
+	}
+}
+
+// detachedSpawnerOrDefault returns the manager's detached spawner if set,
+// otherwise the production default that re-execs the current binary.
+func (d *DefaultManager) detachedSpawnerOrDefault() detachedProcessSpawner {
+	if d.detachedSpawner != nil {
+		return d.detachedSpawner
+	}
+	return d.spawnDetached
 }
 
 // ErrWorkloadNotRunning is returned when a container cannot be found by name.
@@ -416,29 +504,35 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 	}
 
 	// Retry loop with exponential backoff for container restarts
-	maxRetries := 10 // Allow many retries for transient issues
-	retryDelay := 5 * time.Second
+	cfg := d.retryConfigOrDefault()
+	maxRetries := cfg.maxRetries
+	newRunner := d.newRunnerOrDefault()
+	retryDelay := cfg.initialDelay
 
-	for attempt := 1; attempt <= maxRetries; attempt++ {
+	attempt := 1
+	for attempt <= maxRetries {
 		if attempt > 1 {
 			slog.Info("restart attempt", "attempt", attempt, "maxRetries", maxRetries, "workload", runConfig.BaseName, "delay", retryDelay)
 			time.Sleep(retryDelay)
 
 			// Exponential backoff: 5s, 10s, 20s, 40s, 60s (capped)
 			retryDelay *= 2
-			if retryDelay > 60*time.Second {
-				retryDelay = 60 * time.Second
+			if retryDelay > cfg.maxBackoff {
+				retryDelay = cfg.maxBackoff
 			}
 		}
 
-		mcpRunner := runner.NewRunner(runConfig, d.statuses)
+		mcpRunner := newRunner(runConfig, d.statuses)
+		runStartTime := time.Now()
 		err := mcpRunner.Run(ctx)
+		runDuration := time.Since(runStartTime)
 
 		if err != nil {
 			// Check if this is a "container exited, restart needed" error
 			if errors.Is(err, runner.ErrContainerExitedRestartNeeded) {
 				slog.Warn("workload exited unexpectedly, restarting",
-					"workload", runConfig.BaseName, "attempt", attempt, "maxRetries", maxRetries)
+					"workload", runConfig.BaseName, "attempt", attempt, "maxRetries", maxRetries,
+					"runDuration", runDuration)
 
 				// Remove from client config so clients notice the restart
 				clientManager, clientErr := client.NewManager(ctx)
@@ -449,19 +543,42 @@ func (d *DefaultManager) RunWorkload(ctx context.Context, runConfig *runner.RunC
 					}
 				}
 
+				// A "stable" run reached at least stableRunThreshold of runtime before
+				// failing — long enough that we treat the next attempt as a fresh
+				// failure rather than another tick of the current retry sequence.
+				stable := runDuration >= cfg.stableRunThreshold
+
 				// Set status to starting (since we're restarting)
+				statusReason := "Container exited, restarting"
+				if stable {
+					statusReason = "Container exited after stable run, restarting"
+				}
 				statusErr := d.statuses.SetWorkloadStatus(
 					ctx,
 					runConfig.BaseName,
 					rt.WorkloadStatusStarting,
-					"Container exited, restarting",
+					statusReason,
 				)
 				if statusErr != nil {
 					slog.Warn("failed to set workload status to starting", "workload", runConfig.BaseName, "error", statusErr)
 				}
 
+				// Without this reset of the attempt count, sustained external
+				// disruption (Docker daemon flap, host sleep/wake) exhausts the
+				// retry budget through repeated short healthy restarts, and the
+				// manager gives up on a workload that would have recovered once
+				// the disruption ended.
+				if stable {
+					slog.Debug("resetting retry counter after stable run",
+						"workload", runConfig.BaseName, "duration", runDuration)
+					attempt = 1
+					retryDelay = cfg.initialDelay
+					continue
+				}
+
 				// If we haven't exhausted retries, continue the loop
 				if attempt < maxRetries {
+					attempt++
 					continue
 				}
 
@@ -526,21 +643,54 @@ func (d *DefaultManager) validateSecretParameters(ctx context.Context, runConfig
 // RunWorkloadDetached runs a workload in the background.
 func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *runner.RunConfig) error {
 	// before running, validate the parameters for the workload
-	err := d.validateSecretParameters(ctx, runConfig)
-	if err != nil {
+	if err := d.validateSecretParameters(ctx, runConfig); err != nil {
 		return fmt.Errorf("failed to validate workload parameters: %w", err)
 	}
 
+	// Start the detached process via the spawner seam. The spawner owns the
+	// commit point: it sets WorkloadStatus to Starting immediately before
+	// actually spawning, and rolls it back to Error if the spawn fails. Errors
+	// returned here mean the spawn was attempted and failed (or could not be
+	// set up); callers should not observe a status change for pre-spawn
+	// failures such as os.Executable() returning an error.
+	pid, err := d.detachedSpawnerOrDefault()(ctx, runConfig)
+	if err != nil {
+		return fmt.Errorf("failed to start detached process: %w", err)
+	}
+
+	// Write the PID to a file so the stop command can kill the process
+	if err := d.statuses.SetWorkloadPID(ctx, runConfig.BaseName, pid); err != nil {
+		slog.Warn("failed to set workload PID", "workload", runConfig.BaseName, "error", err)
+	}
+
+	slog.Debug("mcp server is running in the background", "pid", pid)
+
+	return nil
+}
+
+// spawnDetached is the production implementation of detachedProcessSpawner.
+// It re-execs the current binary with `start <basename> --foreground` and
+// detaches it from the calling process via setsid (Unix) or a detached
+// process group (Windows). It also owns the WorkloadStatus transitions:
+// Starting is set just before the actual exec, and Error is set if that
+// exec fails — failures during pre-exec setup return without any status
+// change, matching the original behavior of RunWorkloadDetached.
+//
+// ctx is intentionally not propagated to exec.Command: the spawned process
+// must outlive the parent (that is the point of "detached"), so using
+// exec.CommandContext here would kill the child on parent cancellation.
+// ctx is still used for status manager calls.
+func (d *DefaultManager) spawnDetached(ctx context.Context, runConfig *runner.RunConfig) (int, error) {
 	// Get the current executable path
 	execPath, err := os.Executable()
 	if err != nil {
-		return fmt.Errorf("failed to get executable path: %w", err)
+		return 0, fmt.Errorf("failed to get executable path: %w", err)
 	}
 
 	// Create a log file for the detached process
 	logFilePath, err := xdg.DataFile(fmt.Sprintf("toolhive/logs/%s.log", runConfig.BaseName))
 	if err != nil {
-		return fmt.Errorf("failed to create log file path: %w", err)
+		return 0, fmt.Errorf("failed to create log file path: %w", err)
 	}
 	// #nosec G304 - This is safe as baseName is generated by the application
 	logFile, err := os.OpenFile(logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0600)
@@ -559,7 +709,6 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	// Use the start command to start the detached process
 	// The config has already been saved to disk, so start can load it
 	detachedArgs := []string{"start", runConfig.BaseName, "--foreground"}
-
 	if runConfig.Debug {
 		detachedArgs = append(detachedArgs, "--debug")
 	}
@@ -581,7 +730,7 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 		// wrong passwords before validation.
 		password, _, err := secrets.GetSecretsPassword("")
 		if err != nil {
-			return fmt.Errorf("failed to get secrets password: %w", err)
+			return 0, fmt.Errorf("failed to get secrets password: %w", err)
 		}
 		detachedCmd.Env = append(detachedCmd.Env, fmt.Sprintf("%s=%s", secrets.PasswordEnvVar, password))
 	}
@@ -600,29 +749,21 @@ func (d *DefaultManager) RunWorkloadDetached(ctx context.Context, runConfig *run
 	detachedCmd.Stdin = nil
 	detachedCmd.SysProcAttr = getSysProcAttr()
 
-	// Ensure that the workload has a status entry before starting the process.
-	if err = d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusStarting, ""); err != nil {
+	// Commit point: signal Starting only when we are about to actually spawn.
+	// Failures above this line return without changing workload status.
+	if err := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusStarting, ""); err != nil {
 		// Failure to create the initial state is a fatal error.
-		return fmt.Errorf("failed to create workload status: %w", err)
+		return 0, fmt.Errorf("failed to create workload status: %w", err)
 	}
 
-	// Start the detached process
 	if err := detachedCmd.Start(); err != nil {
-		// If the start failed, we need to set the status to error before returning.
-		if err := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, ""); err != nil {
-			slog.Warn("Failed to set workload status to error", "workload", runConfig.BaseName, "error", err)
+		if statusErr := d.statuses.SetWorkloadStatus(ctx, runConfig.BaseName, rt.WorkloadStatusError, ""); statusErr != nil {
+			slog.Warn("Failed to set workload status to error", "workload", runConfig.BaseName, "error", statusErr)
 		}
-		return fmt.Errorf("failed to start detached process: %w", err)
+		return 0, err
 	}
 
-	// Write the PID to a file so the stop command can kill the process
-	if err := d.statuses.SetWorkloadPID(ctx, runConfig.BaseName, detachedCmd.Process.Pid); err != nil {
-		slog.Warn("failed to set workload PID", "workload", runConfig.BaseName, "error", err)
-	}
-
-	slog.Debug("mcp server is running in the background", "pid", detachedCmd.Process.Pid)
-
-	return nil
+	return detachedCmd.Process.Pid, nil
 }
 
 // GetLogs retrieves the logs of a container.

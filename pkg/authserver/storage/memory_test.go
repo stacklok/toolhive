@@ -221,6 +221,19 @@ func TestMemoryStorage_RegisterClient(t *testing.T) {
 	})
 }
 
+func TestMemoryStorage_RenewClientTTL_NoOp(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		// In-memory clients have no TTL, so renewal is a documented no-op: it must
+		// not error and must leave the client retrievable.
+		client := &mockClient{id: "public-client", public: true}
+		require.NoError(t, s.RegisterClient(ctx, client))
+		require.NoError(t, s.RenewClientTTL(ctx, client))
+		retrieved, err := s.GetClient(ctx, "public-client")
+		require.NoError(t, err)
+		assert.Equal(t, "public-client", retrieved.GetID())
+	})
+}
+
 func TestMemoryStorage_ClientAssertionJWT(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

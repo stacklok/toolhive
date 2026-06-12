@@ -1601,6 +1601,51 @@ func TestConverter_SessionStorage(t *testing.T) {
 	}
 }
 
+func TestConverter_RateLimitingPassThrough(t *testing.T) {
+	t.Parallel()
+
+	vmcpServer := &mcpv1beta1.VirtualMCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-vmcp",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+			Config: vmcpconfig.Config{
+				RateLimiting: &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
+						MaxTokens:    2,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+					Tools: []mcpv1beta1.ToolRateLimitConfig{
+						{
+							Name: "backend_a_echo",
+							Shared: &mcpv1beta1.RateLimitBucket{
+								MaxTokens:    5,
+								RefillPeriod: metav1.Duration{Duration: 30 * time.Second},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	converter := newTestConverter(t, newNoOpMockResolver(t))
+	ctx := log.IntoContext(context.Background(), logr.Discard())
+
+	config, _, err := converter.Convert(ctx, vmcpServer, nil)
+	require.NoError(t, err)
+	require.NotNil(t, config)
+	require.NotNil(t, config.RateLimiting)
+
+	assert.EqualValues(t, 2, config.RateLimiting.PerUser.MaxTokens)
+	require.Len(t, config.RateLimiting.Tools, 1)
+	assert.Equal(t, "backend_a_echo", config.RateLimiting.Tools[0].Name)
+	require.NotNil(t, config.RateLimiting.Tools[0].Shared)
+	assert.EqualValues(t, 5, config.RateLimiting.Tools[0].Shared.MaxTokens)
+}
+
 func TestDeriveAllowedAudiences(t *testing.T) {
 	t.Parallel()
 
@@ -1899,21 +1944,17 @@ func TestConverter_TelemetryConfigRef(t *testing.T) {
 // evaluates claims from the upstream IDP token rather than the ToolHive-issued
 // AS token. Without this, policies referencing upstream claims (e.g. "department")
 // fail at runtime because Cedar reads the wrong token. Also verifies that the
-// user-supplied spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
-// overrides the auto-selected first upstream when set.
+// user-supplied spec.authServerConfig.primaryUpstreamProvider overrides the
+// auto-selected first upstream when set.
 func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 	t.Parallel()
 
-	authzWith := func(primary string) *mcpv1beta1.AuthzConfigRef {
-		return &mcpv1beta1.AuthzConfigRef{
-			Type: "inline",
-			Inline: &mcpv1beta1.InlineAuthzConfig{
-				Policies:                []string{`permit(principal, action, resource);`},
-				PrimaryUpstreamProvider: primary,
-			},
-		}
+	inlineAuthzRef := &mcpv1beta1.AuthzConfigRef{
+		Type: "inline",
+		Inline: &mcpv1beta1.InlineAuthzConfig{
+			Policies: []string{`permit(principal, action, resource);`},
+		},
 	}
-	inlineAuthzRef := authzWith("")
 
 	tests := []struct {
 		name             string
@@ -2002,8 +2043,9 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "okta",
 			},
-			authzConfig:      authzWith("okta"),
+			authzConfig:      inlineAuthzRef,
 			expectedProvider: "okta",
 		},
 		{
@@ -2017,8 +2059,9 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 					{Name: "github", Type: mcpv1beta1.UpstreamProviderTypeOAuth2},
 					{Name: "google", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "github",
 			},
-			authzConfig:      authzWith("github"),
+			authzConfig:      inlineAuthzRef,
 			expectedProvider: "github",
 		},
 		{
@@ -2035,8 +2078,9 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 					{Name: "", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "default",
 			},
-			authzConfig:      authzWith("default"),
+			authzConfig:      inlineAuthzRef,
 			expectedProvider: "default",
 		},
 		{
@@ -2044,11 +2088,19 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 			// (CLI dry-run, webhook, test harness), Convert refuses to produce
 			// an unresolvable PrimaryUpstreamProvider. The validator rejection
 			// is the primary user-facing fail-loud point; this case locks the
-			// converter-side defense in.
+			// converter-side defense in. The provider is on the deprecated
+			// location to keep the rejection wired through ExplicitPrimaryUpstream
+			// Provider's fallback path.
 			name:             "explicit primary provider without auth server is rejected",
 			authServerConfig: nil,
-			authzConfig:      authzWith("okta"),
-			expectError:      true,
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: "inline",
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies:                []string{`permit(principal, action, resource);`},
+					PrimaryUpstreamProvider: "okta",
+				},
+			},
+			expectError: true,
 		},
 		{
 			name: "explicit primary provider that doesn't match any upstream is rejected",
@@ -2057,9 +2109,53 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
 					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
 				},
+				PrimaryUpstreamProvider: "ping",
 			},
-			authzConfig: authzWith("ping"),
+			authzConfig: inlineAuthzRef,
 			expectError: true,
+		},
+		{
+			// Backward-compatibility: the deprecated inline field is read when
+			// the canonical location is empty, with no auth server set this is
+			// rejected by the defense-in-depth check above; this case validates
+			// the deprecated value flows through when the canonical is empty and
+			// matches a declared upstream.
+			name: "deprecated inline primary provider is honored when canonical is empty",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "github", Type: mcpv1beta1.UpstreamProviderTypeOAuth2},
+				},
+			},
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: "inline",
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies:                []string{`permit(principal, action, resource);`},
+					PrimaryUpstreamProvider: "github",
+				},
+			},
+			expectedProvider: "github",
+		},
+		{
+			// Canonical location overrides the deprecated one when both are set.
+			name: "canonical primary provider overrides deprecated inline value",
+			authServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://authserver.example.com",
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{Name: "okta", Type: mcpv1beta1.UpstreamProviderTypeOIDC},
+					{Name: "github", Type: mcpv1beta1.UpstreamProviderTypeOAuth2},
+				},
+				PrimaryUpstreamProvider: "github",
+			},
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: "inline",
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies:                []string{`permit(principal, action, resource);`},
+					PrimaryUpstreamProvider: "okta",
+				},
+			},
+			expectedProvider: "github",
 		},
 	}
 

@@ -170,16 +170,26 @@ func isValidRegistryJSON(client *http.Client, url string) error {
 		return fmt.Errorf("%w: failed to read response body: %v", ErrRegistryValidationFailed, err)
 	}
 
-	if legacyhint.Looks(data) {
-		return fmt.Errorf("%w: %s", ErrRegistryValidationFailed, legacyhint.MigrationMessage)
+	if err := parseAndValidateUpstreamRegistry(data); err != nil {
+		return fmt.Errorf("%w: %v", ErrRegistryValidationFailed, err)
 	}
+	return nil
+}
 
+// parseAndValidateUpstreamRegistry parses data as an UpstreamRegistry and
+// verifies that it contains at least one server or skill. If the data looks
+// like the legacy ToolHive registry format, returns an error containing the
+// migration hint message.
+func parseAndValidateUpstreamRegistry(data []byte) error {
+	if legacyhint.Looks(data) {
+		return errors.New(legacyhint.MigrationMessage)
+	}
 	var upstream registrytypes.UpstreamRegistry
 	if err := json.Unmarshal(data, &upstream); err != nil {
-		return fmt.Errorf("%w: invalid upstream JSON format: %v", ErrRegistryValidationFailed, err)
+		return fmt.Errorf("invalid upstream registry format: %w", err)
 	}
-	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Groups) == 0 {
-		return fmt.Errorf("%w: upstream registry contains no servers", ErrRegistryValidationFailed)
+	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Skills) == 0 {
+		return errors.New("upstream registry contains no servers or skills")
 	}
 	return nil
 }
@@ -333,18 +343,7 @@ func validateRegistryFileStructure(path string) error {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
 
-	if legacyhint.Looks(data) {
-		return errors.New(legacyhint.MigrationMessage)
-	}
-
-	var upstream registrytypes.UpstreamRegistry
-	if err := json.Unmarshal(data, &upstream); err != nil {
-		return fmt.Errorf("invalid upstream registry format: %w", err)
-	}
-	if len(upstream.Data.Servers) == 0 && len(upstream.Data.Groups) == 0 {
-		return fmt.Errorf("upstream registry contains no servers or groups")
-	}
-	return nil
+	return parseAndValidateUpstreamRegistry(data)
 }
 
 // setRegistryAPI validates and sets an MCP Registry API URL using the provided provider

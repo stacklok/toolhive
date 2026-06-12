@@ -57,6 +57,12 @@ type MCPRemoteProxySpec struct {
 	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
 	// Per-server overrides (audience, scopes) are specified here; shared provider config
 	// lives in the MCPOIDCConfig resource.
+	//
+	// SECURITY: if this field is omitted and no other authentication source is configured,
+	// the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and
+	// forwards it to the remote MCP server under a synthetic local-user identity, with no
+	// token or credential check. Set this field to enforce identity-based access control
+	// per request.
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
@@ -348,8 +354,16 @@ const (
 	// ConditionReasonAuthzPolicySyntaxInvalid indicates an inline Cedar policy has a syntax error
 	ConditionReasonAuthzPolicySyntaxInvalid = "AuthzPolicySyntaxInvalid"
 
-	// ConditionReasonAuthzConfigMapNotFound indicates the referenced authz ConfigMap was not found
+	// ConditionReasonAuthzConfigMapNotFound indicates the referenced authz ConfigMap was not found.
+	// Shared with VirtualMCPServer (see virtualmcpserver_types.go); both reconcilers use this
+	// reason when the ConfigMap itself is absent.
 	ConditionReasonAuthzConfigMapNotFound = "AuthzConfigMapNotFound"
+
+	// ConditionReasonAuthzConfigMapInvalid indicates the referenced authz ConfigMap was found
+	// but its payload is missing/empty/malformed, fails validation, or does not contain a
+	// Cedar-flavoured config. Shared with VirtualMCPServer; both reconcilers use this reason
+	// to distinguish a malformed payload from a missing ConfigMap.
+	ConditionReasonAuthzConfigMapInvalid = "AuthzConfigMapInvalid"
 
 	// ConditionReasonHeaderSecretNotFound indicates a referenced header Secret was not found
 	ConditionReasonHeaderSecretNotFound = "HeaderSecretNotFound"
@@ -364,6 +378,7 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
+//+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 //+kubebuilder:resource:shortName=rp;mcprp,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Remote URL",type="string",JSONPath=".spec.remoteUrl"

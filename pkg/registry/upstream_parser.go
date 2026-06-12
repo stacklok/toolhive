@@ -5,7 +5,6 @@ package registry
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	v0 "github.com/modelcontextprotocol/registry/pkg/api/v0"
@@ -18,9 +17,13 @@ import (
 // registry format. Without this check, Go's JSON decoder silently produces an
 // empty UpstreamRegistry (the legacy top-level "servers" field does not match
 // upstream's "data.servers" path), leaving the caller with an empty registry
-// and no actionable error. The error wording carries the migration step so
-// consumers can surface it without a typed match.
-var errLegacyFormat = errors.New(legacyhint.MigrationMessage)
+// and no actionable error.
+//
+// It's an instance of *LegacyFormatError so the API layer can detect it via
+// errors.As and emit a structured "registry_legacy_format" response. The Is
+// method on LegacyFormatError keeps errors.Is(err, errLegacyFormat) working
+// even when the returned error carries a populated URL.
+var errLegacyFormat = &LegacyFormatError{}
 
 // parseRegistryData parses raw JSON in the upstream MCP registry format and
 // converts it into the internal types.Registry plus any embedded skills.

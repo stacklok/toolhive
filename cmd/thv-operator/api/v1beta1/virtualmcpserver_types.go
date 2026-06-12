@@ -16,6 +16,10 @@ import (
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
 //
+// +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="config.rateLimiting requires sessionStorage with provider 'redis'"
+// +kubebuilder:validation:XValidation:rule="!(has(self.config) && has(self.config.rateLimiting) && has(self.config.rateLimiting.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="config.rateLimiting.perUser requires incomingAuth.type oidc"
+// +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools) || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="per-tool perUser rate limiting requires incomingAuth.type oidc"
+//
 //nolint:lll // CEL validation rules exceed line length limit
 type VirtualMCPServerSpec struct {
 	// IncomingAuth configures authentication for clients connecting to the Virtual MCP server.
@@ -334,6 +338,9 @@ const (
 	// ConditionReasonIncomingAuthInvalid indicates incoming auth is invalid
 	ConditionReasonIncomingAuthInvalid = "IncomingAuthInvalid"
 
+	// Note: ConditionReasonAuthzConfigMapNotFound and ConditionReasonAuthzConfigMapInvalid
+	// are shared with MCPRemoteProxy and are declared in mcpremoteproxy_types.go.
+
 	// ConditionReasonGroupRefValid indicates the GroupRef is valid
 	ConditionReasonVirtualMCPServerGroupRefValid = "GroupRefValid"
 
@@ -460,6 +467,7 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
+//+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 //+kubebuilder:resource:shortName=vmcp;virtualmcp,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of the VirtualMCPServer"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url",description="Virtual MCP server URL"
@@ -495,6 +503,28 @@ func (*VirtualMCPServer) GetProxyPort() int32 {
 // ResolveGroupName returns the group name from spec.groupRef.
 func (r *VirtualMCPServer) ResolveGroupName() string {
 	return r.Spec.GroupRef.GetName()
+}
+
+// ExplicitPrimaryUpstreamProvider returns the user-configured primary upstream
+// provider name and a flag indicating whether the value came from the
+// deprecated spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
+// location (fromDeprecated=true) or the canonical
+// spec.authServerConfig.primaryUpstreamProvider location (fromDeprecated=false).
+// Returns ("", false) when neither location is set.
+//
+// Precedence: the canonical location wins if set; the deprecated location is
+// read only as a backward-compatibility fallback. Callers should emit a
+// Warning event when fromDeprecated is true.
+func (r *VirtualMCPServer) ExplicitPrimaryUpstreamProvider() (name string, fromDeprecated bool) {
+	if r.Spec.AuthServerConfig != nil && r.Spec.AuthServerConfig.PrimaryUpstreamProvider != "" {
+		return r.Spec.AuthServerConfig.PrimaryUpstreamProvider, false
+	}
+	if r.Spec.IncomingAuth != nil {
+		if dep := r.Spec.IncomingAuth.AuthzConfig.DeprecatedInlinePrimaryUpstreamProvider(); dep != "" {
+			return dep, true
+		}
+	}
+	return "", false
 }
 
 // Validate performs validation for VirtualMCPServer

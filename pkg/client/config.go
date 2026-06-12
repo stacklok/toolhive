@@ -98,6 +98,8 @@ const (
 	KimiCli ClientApp = "kimi-cli"
 	// Factory represents the Factory.ai Droid CLI.
 	Factory ClientApp = "factory"
+	// CopilotCli represents the GitHub Copilot CLI.
+	CopilotCli ClientApp = "copilot-cli"
 )
 
 const (
@@ -201,8 +203,15 @@ type LLMEnvFileKeySpec struct {
 
 // clientAppConfig represents a configuration path for a supported MCP client.
 type clientAppConfig struct {
-	ClientType                    ClientApp
-	Description                   string
+	ClientType  ClientApp
+	Description string
+	// Deprecated marks a client integration whose upstream tool is no longer
+	// maintained. Deprecated clients still function but are flagged in the CLI
+	// client list and trigger a warning when registered or removed.
+	Deprecated bool
+	// DeprecationMessage is the full warning text shown to users (on stderr)
+	// when they touch a deprecated client. Only set when Deprecated is true.
+	DeprecationMessage            string
 	RelPath                       []string
 	SettingsFile                  string
 	PlatformPrefix                map[Platform][]string
@@ -292,8 +301,13 @@ var (
 
 var supportedClientIntegrations = []clientAppConfig{
 	{
-		ClientType:   RooCode,
-		Description:  "VS Code Roo Code extension",
+		ClientType:  RooCode,
+		Description: "VS Code Roo Code extension",
+		Deprecated:  true,
+		DeprecationMessage: "The Roo Code VS Code extension has been discontinued (last release May 15, 2026)\n" +
+			"and its repository has been archived. Support for this client will be removed in a\n" +
+			"future ToolHive release. The Roo Code team recommends migrating to Cline:\n" +
+			"  thv client register cline",
 		SettingsFile: "mcp_settings.json",
 		RelPath: []string{
 			"Code", "User", "globalStorage", "rooveterinaryinc.roo-cline", "settings",
@@ -1004,6 +1018,25 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsProjectPath: []string{".factory", skillsDirName},
 	},
 	{
+		ClientType:           CopilotCli,
+		Description:          "GitHub Copilot CLI",
+		SettingsFile:         "mcp-config.json",
+		MCPServersPathPrefix: "/mcpServers",
+		RelPath:              []string{".copilot"},
+		Extension:            JSON,
+		SupportedTransportTypesMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          httpTransportLabel,
+			types.TransportTypeSSE:            "sse",
+			types.TransportTypeStreamableHTTP: httpTransportLabel,
+		},
+		IsTransportTypeFieldSupported: true,
+		MCPServersUrlLabelMap: map[types.TransportType]string{
+			types.TransportTypeStdio:          defaultURLFieldName,
+			types.TransportTypeSSE:            defaultURLFieldName,
+			types.TransportTypeStreamableHTTP: defaultURLFieldName,
+		},
+	},
+	{
 		// Xcode does not support MCP; it is an LLM-gateway-only entry.
 		// Cast LLMClientApp → ClientApp for internal config storage; the type
 		// distinction matters only for swag enum generation (see LLMClientApp).
@@ -1059,6 +1092,18 @@ func GetClientDescription(clientType ClientApp) string {
 	return ""
 }
 
+// GetClientDeprecation returns the deprecation warning message for a client type
+// and whether the client is deprecated. The message is empty when the client is
+// not deprecated.
+func GetClientDeprecation(clientType ClientApp) (string, bool) {
+	for _, config := range supportedClientIntegrations {
+		if config.ClientType == clientType {
+			return config.DeprecationMessage, config.Deprecated
+		}
+	}
+	return "", false
+}
+
 // GetClientListFormatted returns a formatted multi-line string listing all supported clients
 // with their descriptions, sorted alphabetically. This is suitable for use in CLI help text.
 func GetClientListFormatted() string {
@@ -1075,7 +1120,11 @@ func GetClientListFormatted() string {
 
 	var sb strings.Builder
 	for _, config := range configs {
-		fmt.Fprintf(&sb, "  - %s: %s\n", config.ClientType, config.Description)
+		description := config.Description
+		if config.Deprecated {
+			description += " (deprecated)"
+		}
+		fmt.Fprintf(&sb, "  - %s: %s\n", config.ClientType, description)
 	}
 	return strings.TrimSuffix(sb.String(), "\n")
 }
@@ -1126,15 +1175,6 @@ func (cm *ClientManager) FindClientConfig(clientType ClientApp) (*ConfigFile, er
 		return nil, fmt.Errorf("failed to validate config file format: %w", err)
 	}
 	return configFile, nil
-}
-
-// FindRegisteredClientConfigs finds all registered client configs and creates them if they don't exist.
-func FindRegisteredClientConfigs(ctx context.Context) ([]ConfigFile, error) {
-	manager, err := NewClientManager()
-	if err != nil {
-		return nil, err
-	}
-	return manager.FindRegisteredClientConfigs(ctx)
 }
 
 // FindRegisteredClientConfigs finds all registered client configs using this manager's dependencies

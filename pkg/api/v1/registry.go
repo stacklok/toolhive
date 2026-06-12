@@ -56,6 +56,14 @@ func writeRegistryAuthRequiredError(w http.ResponseWriter) {
 // structured JSON 503 response when the upstream registry is unreachable.
 const RegistryUnavailableCode = "registry_unavailable"
 
+// RegistryLegacyFormatCode is the machine-readable error code returned in the
+// structured JSON 502 response when the configured registry source serves data
+// in the legacy ToolHive format instead of the upstream MCP registry format.
+// Desktop clients (Studio) match on this value to display a targeted recovery
+// flow (reset to default registry, point to a `?format=upstream` endpoint, or
+// run `thv registry convert`).
+const RegistryLegacyFormatCode = "registry_legacy_format"
+
 // writeRegistryUnavailableError writes a structured JSON 503 response when the
 // upstream registry cannot be reached or returns an unexpected error (e.g. 404).
 func writeRegistryUnavailableError(w http.ResponseWriter, unavailableErr *regpkg.UnavailableError) {
@@ -66,6 +74,48 @@ func writeRegistryUnavailableError(w http.ResponseWriter, unavailableErr *regpkg
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusServiceUnavailable)
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+// writeRegistryLegacyFormatError writes a structured JSON 502 Bad Gateway
+// response when the configured registry source returns data in the legacy
+// ToolHive format. HTTP 502 is correct per RFC 9110 §15.6.3: thv serve is
+// acting as a gateway to the upstream registry, and the upstream returned a
+// response we cannot process. It also aligns with the existing PUT handler
+// which already returns 502 for the same legacy-format detection. The message
+// embeds legacyhint.MigrationMessage so CLI users still see the actionable
+// migration step, while desktop clients can branch on Code.
+func writeRegistryLegacyFormatError(w http.ResponseWriter, legacyErr *regpkg.LegacyFormatError) {
+	body := registryErrorResponse{
+		Code:    RegistryLegacyFormatCode,
+		Message: legacyErr.Error(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadGateway)
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+// writeProviderError translates a registry provider error into a structured
+// HTTP response if it matches a known failure mode (auth required, legacy
+// format, upstream unavailable) and returns true. The caller is responsible
+// for writing a generic fallback response when this returns false.
+func writeProviderError(w http.ResponseWriter, err error) bool {
+	if isRegistryAuthError(err) {
+		writeRegistryAuthRequiredError(w)
+		return true
+	}
+	var legacyErr *regpkg.LegacyFormatError
+	if errors.As(err, &legacyErr) {
+		slog.Warn("upstream registry in legacy format", "error", err)
+		writeRegistryLegacyFormatError(w, legacyErr)
+		return true
+	}
+	var unavailableErr *regpkg.UnavailableError
+	if errors.As(err, &unavailableErr) {
+		slog.Error("upstream registry unavailable", "error", err)
+		writeRegistryUnavailableError(w, unavailableErr)
+		return true
+	}
+	return false
 }
 
 // resolveAuthStatus returns the auth_status and auth_type strings for API responses
@@ -263,14 +313,7 @@ func (rr *RegistryRoutes) getCurrentProvider(w http.ResponseWriter) (regpkg.Prov
 	}
 	provider, err := regpkg.GetDefaultProviderWithConfig(rr.configProvider, opts...)
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return nil, false
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
+		if writeProviderError(w, err) {
 			return nil, false
 		}
 		http.Error(w, "Failed to get registry provider", http.StatusInternalServerError)
@@ -333,6 +376,7 @@ func RegistryRouter(serveMode bool) http.Handler {
 	r.Get("/{name}", routes.getRegistry)
 	r.Put("/{name}", routes.updateRegistry)
 	r.Delete("/{name}", routes.removeRegistry)
+	r.Post("/{name}/refresh", routes.refreshRegistry)
 
 	// Add nested routes for servers within a registry
 	r.Route("/{name}/servers", func(r chi.Router) {
@@ -369,14 +413,7 @@ func (rr *RegistryRoutes) listRegistries(w http.ResponseWriter, _ *http.Request)
 
 	reg, err := provider.GetRegistry()
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
+		if writeProviderError(w, err) {
 			return
 		}
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
@@ -450,14 +487,7 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 
 	reg, err := provider.GetRegistry()
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
+		if writeProviderError(w, err) {
 			return
 		}
 		http.Error(w, "Failed to get registry", http.StatusInternalServerError)
@@ -483,6 +513,51 @@ func (rr *RegistryRoutes) getRegistry(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
+		slog.Error("failed to encode response", "error", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+}
+
+//	 refreshRegistry
+//
+//		@Summary		Refresh registry cache
+//		@Description	Force a refresh of the server-side registry cache for the default registry
+//		@Tags			registry
+//		@Produce		json
+//		@Param			name	path		string	true	"Registry name (must be 'default')"
+//		@Success		200	{object}	map[string]string	"Registry refreshed"
+//		@Failure		404	{string}	string				"Not Found"
+//		@Failure		500	{string}	string				"Internal Server Error"
+//		@Failure		503	{object}	registryErrorResponse	"Registry authentication required or upstream registry unavailable"
+//		@Router			/api/v1beta/registry/{name}/refresh [post]
+func (rr *RegistryRoutes) refreshRegistry(w http.ResponseWriter, r *http.Request) {
+	name := chi.URLParam(r, "name")
+
+	// Only "default" registry is supported currently
+	if name != defaultRegistryName {
+		http.Error(w, "Registry not found", http.StatusNotFound)
+		return
+	}
+
+	provider, ok := rr.getCurrentProvider(w)
+	if !ok {
+		return
+	}
+
+	if cached, ok := provider.(*regpkg.CachedAPIRegistryProvider); ok {
+		if err := cached.ForceRefresh(); err != nil {
+			if writeProviderError(w, err) {
+				return
+			}
+			slog.Error("failed to refresh registry", "error", err)
+			http.Error(w, "Failed to refresh registry", http.StatusInternalServerError)
+			return
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(map[string]string{"status": "refreshed"}); err != nil {
 		slog.Error("failed to encode response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
@@ -737,14 +812,7 @@ func (rr *RegistryRoutes) listServers(w http.ResponseWriter, r *http.Request) {
 	// Get the full registry to access both container and remote servers
 	reg, err := provider.GetRegistry()
 	if err != nil {
-		if isRegistryAuthError(err) {
-			writeRegistryAuthRequiredError(w)
-			return
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
+		if writeProviderError(w, err) {
 			return
 		}
 		slog.Error("failed to get registry", "error", err)

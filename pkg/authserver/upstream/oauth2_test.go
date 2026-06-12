@@ -16,13 +16,16 @@ package upstream
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -408,7 +411,7 @@ func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		tokens, err := provider.exchangeCodeForTokens(ctx, "test-auth-code", "test-verifier")
+		result, err := provider.exchangeCodeForTokens(ctx, "test-auth-code", "test-verifier")
 		require.NoError(t, err)
 
 		// Verify request parameters
@@ -420,12 +423,12 @@ func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 		assert.Equal(t, "http://localhost:8080/callback", receivedParams.Get("redirect_uri"))
 
 		// Verify response
-		assert.Equal(t, "exchanged-access-token", tokens.AccessToken)
-		assert.Equal(t, "exchanged-refresh-token", tokens.RefreshToken)
+		assert.Equal(t, "exchanged-access-token", result.tokens.AccessToken)
+		assert.Equal(t, "exchanged-refresh-token", result.tokens.RefreshToken)
 
 		// Verify expiration is set approximately correctly
 		expectedExpiry := time.Now().Add(7200 * time.Second)
-		assert.WithinDuration(t, expectedExpiry, tokens.ExpiresAt, 10*time.Second)
+		assert.WithinDuration(t, expectedExpiry, result.tokens.ExpiresAt, 10*time.Second)
 	})
 
 	t.Run("handles error response from token endpoint", func(t *testing.T) {
@@ -660,11 +663,11 @@ func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		tokens, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
+		result, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
 		require.NoError(t, err)
 
 		// No expires_in in the response means the token has no expiry.
-		assert.True(t, tokens.ExpiresAt.IsZero(), "ExpiresAt should be zero for non-expiring tokens")
+		assert.True(t, result.tokens.ExpiresAt.IsZero(), "ExpiresAt should be zero for non-expiring tokens")
 	})
 }
 
@@ -935,9 +938,9 @@ func TestBaseOAuth2Provider_WithOAuth2HTTPClient(t *testing.T) {
 
 	// Verify the provider works with custom client
 	ctx := context.Background()
-	tokens, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
+	result, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
 	require.NoError(t, err)
-	assert.NotEmpty(t, tokens.AccessToken)
+	assert.NotEmpty(t, result.tokens.AccessToken)
 }
 
 func TestBaseOAuth2Provider_TokenTypeValidation(t *testing.T) {
@@ -1069,11 +1072,11 @@ func TestBaseOAuth2Provider_IDToken(t *testing.T) {
 	provider, err := NewOAuth2Provider(config)
 	require.NoError(t, err)
 
-	tokens, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
+	result, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
 	require.NoError(t, err)
 
 	// OAuth2 providers can also return ID tokens if they support hybrid flows
-	assert.Equal(t, "test-id-token.payload.signature", tokens.IDToken)
+	assert.Equal(t, "test-id-token.payload.signature", result.tokens.IDToken)
 }
 
 func Test_validateRedirectURI(t *testing.T) {
@@ -2135,5 +2138,390 @@ func TestAuthorizationURL_AdditionalAuthorizationParams(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, "caller-value", parsed.Query().Get("custom"))
+	})
+}
+
+// tokenBodyWithUsername is a minimal valid token response body that includes a
+// "username" field used across several identityFromToken test cases.
+const tokenBodyWithUsername = `{"access_token":"a","token_type":"Bearer","username":"u1"}`
+
+// newTokenResponseServer is a test helper that starts an httptest.Server whose
+// /token endpoint returns tokenBody as the JSON response body, and whose
+// /authorize endpoint always returns 200 OK.
+func newTokenResponseServer(t *testing.T, tokenBody string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(tokenBody))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestBaseOAuth2Provider_ExchangeCodeForIdentity_IdentityFromToken covers the
+// priority-1 path where IdentityFromToken is configured.
+func TestBaseOAuth2Provider_ExchangeCodeForIdentity_IdentityFromToken(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("identityFromToken resolves subject name email", func(t *testing.T) {
+		t.Parallel()
+
+		tokenBody := `{"access_token":"a","token_type":"Bearer","username":"u1","display_name":"User One","email":"u1@example.com"}`
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "username",
+				NamePath:    "display_name",
+				EmailPath:   "email",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "u1", identity.Subject)
+		assert.Equal(t, "User One", identity.Name)
+		assert.Equal(t, "u1@example.com", identity.Email)
+		assert.NotEmpty(t, identity.Tokens.AccessToken)
+		assert.False(t, identity.Synthetic, "IdentityFromToken path must not produce synthetic identities")
+	})
+
+	t.Run("@upstreamjwt modifier resolves identity from JWT-shaped access token", func(t *testing.T) {
+		t.Parallel()
+
+		// RegisterModifiers is called once by TestMain before all tests run.
+		// Do not call it again here: gjson.AddModifier writes to a shared map and
+		// races with concurrent reads in parallel subtests.
+
+		accessToken := makeJWT(`{"sub":"u-jwt-1","name":"JWT User","email":"jwt@example.com"}`)
+		tokenBody := fmt.Sprintf(`{"access_token":%q,"token_type":"Bearer"}`, accessToken)
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "access_token|@upstreamjwt|sub",
+				NamePath:    "access_token|@upstreamjwt|name",
+				EmailPath:   "access_token|@upstreamjwt|email",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "u-jwt-1", identity.Subject)
+		assert.Equal(t, "JWT User", identity.Name)
+		assert.Equal(t, "jwt@example.com", identity.Email)
+		assert.False(t, identity.Synthetic)
+	})
+
+	t.Run("@upstreamjwt modifier accepts hand-forged unsigned JWT", func(t *testing.T) {
+		t.Parallel()
+
+		// Construct a JWT with a garbage signature. The payload is valid base64url-encoded
+		// JSON, but the signature is not the real HMAC/RSA output. This test pins the
+		// intentional no-signature-check behavior. A future contributor who adds
+		// verification must update the trust model docs and this test.
+		header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+		payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"forged-subject"}`))
+		forgedJWT := header + "." + payload + ".INVALIDSIG"
+
+		tokenBody := fmt.Sprintf(`{"access_token":%q,"token_type":"Bearer"}`, forgedJWT)
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "access_token|@upstreamjwt|sub",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		// No signature verification — extraction succeeds despite the forged signature.
+		assert.Equal(t, "forged-subject", identity.Subject)
+	})
+
+	t.Run("identityFromToken bypasses userinfo endpoint entirely", func(t *testing.T) {
+		t.Parallel()
+
+		// httptest.Server dispatches each request on its own goroutine, so
+		// the counter must be accessed atomically — t.Errorf inside the
+		// handler is the load-bearing assertion; the counter just gives a
+		// numeric value the final assertion can read race-free.
+		var tripwireCallCount atomic.Int32
+		tripwire := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			tripwireCallCount.Add(1)
+			t.Errorf("userinfo endpoint must NOT be called when identityFromToken is configured")
+		}))
+		t.Cleanup(tripwire.Close)
+
+		tokenSrv := newTokenResponseServer(t, tokenBodyWithUsername)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "username",
+			},
+			// UserInfo is also configured — identityFromToken must win and
+			// the tripwire userinfo server must never be contacted.
+			UserInfo: &UserInfoConfig{
+				EndpointURL: tripwire.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "u1", identity.Subject)
+		assert.Equal(t, int32(0), tripwireCallCount.Load(), "userinfo endpoint must not be called")
+	})
+
+	t.Run("identityFromToken extraction failure returns ErrIdentityResolutionFailed without calling userinfo", func(t *testing.T) {
+		t.Parallel()
+
+		var tripwireCallCount atomic.Int32
+		tripwire := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			tripwireCallCount.Add(1)
+			t.Errorf("userinfo endpoint must NOT be called when identityFromToken is configured")
+		}))
+		t.Cleanup(tripwire.Close)
+
+		// Token body does NOT contain "missing_path"
+		tokenSrv := newTokenResponseServer(t, tokenBodyWithUsername)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "missing_path",
+			},
+			UserInfo: &UserInfoConfig{
+				EndpointURL: tripwire.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
+		assert.Equal(t, int32(0), tripwireCallCount.Load(), "userinfo endpoint must not be called on extraction failure")
+	})
+
+	t.Run("extraction failure error surfaces the misconfigured path name", func(t *testing.T) {
+		t.Parallel()
+
+		tokenSrv := newTokenResponseServer(t, tokenBodyWithUsername)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				// Path that does not exist in the token response so the extractor
+				// produces a diagnostic that names the path and the failure reason.
+				SubjectPath: "nonexistent_field",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
+		// The error must carry the operator-supplied path name so the
+		// misconfiguration is diagnosable without log access.
+		assert.Contains(t, err.Error(), "nonexistent_field",
+			"error must contain the misconfigured subject path name")
+		assert.Contains(t, err.Error(), "not found",
+			"error must describe why extraction failed")
+	})
+
+	t.Run("userInfo-only path is unchanged when identityFromToken is not set", func(t *testing.T) {
+		t.Parallel()
+
+		userInfoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"sub":   "u-456",
+				"name":  "Bob",
+				"email": "bob@example.com",
+			})
+		}))
+		t.Cleanup(userInfoSrv.Close)
+
+		tokenBody := `{"access_token":"a","token_type":"Bearer"}`
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoSrv.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "u-456", identity.Subject)
+		assert.Equal(t, "Bob", identity.Name)
+		assert.Equal(t, "bob@example.com", identity.Email)
+	})
+
+	t.Run("neither identityFromToken nor userInfo set falls through to synthesis", func(t *testing.T) {
+		t.Parallel()
+
+		tokenBody := `{"access_token":"a","token_type":"Bearer"}`
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		// Both identity surfaces absent — the priority chain falls through to
+		// synthesizeIdentity (PR 5094): a non-PII Subject derived from the
+		// access token, Synthetic=true, no Name/Email.
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.True(t, identity.Synthetic, "expected synthesized identity when neither IdentityFromToken nor UserInfo is set")
+		assert.True(t, IsSynthesizedSubject(identity.Subject),
+			"expected synthesized subject prefix; got %q", identity.Subject)
+		assert.Empty(t, identity.Name, "synthesized identity has no name")
+		assert.Empty(t, identity.Email, "synthesized identity has no email")
+	})
+
+	t.Run("IdentityFromToken configured does not cause RefreshTokens to fail when identity field is absent", func(t *testing.T) {
+		t.Parallel()
+
+		// Token body intentionally does NOT include "username". If extraction ran on
+		// the refresh path, it would fail (path absent) and RefreshTokens would error.
+		// A successful return proves extraction was NOT run on the refresh path.
+		tokenBody := `{"access_token":"refreshed","token_type":"Bearer","refresh_token":"new-refresh"}`
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "username",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		// RefreshTokens must succeed even though "username" is absent from the
+		// response, proving that identity extraction is skipped on the refresh path.
+		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "")
+		require.NoError(t, err)
+		assert.Equal(t, "refreshed", tokens.AccessToken)
+	})
+
+	t.Run("error message does not contain token body content", func(t *testing.T) {
+		t.Parallel()
+
+		secretMarker := "SUPER_SECRET_TOKEN_BODY_MARKER_XYZ789"
+		tokenBody := `{"access_token":"` + secretMarker + `","token_type":"Bearer","username":"u1"}`
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				// Deliberately wrong path to trigger extraction failure.
+				SubjectPath: "missing_field",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
+		// The error must not leak any part of the token response body.
+		assert.NotContains(t, err.Error(), secretMarker,
+			"error message must not contain token body content")
 	})
 }

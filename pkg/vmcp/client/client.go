@@ -27,11 +27,13 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )
 
@@ -64,6 +66,11 @@ type httpBackendClient struct {
 	// registry manages authentication strategies for outgoing requests to backend MCP servers.
 	// Must not be nil - use UnauthenticatedStrategy for no authentication.
 	registry vmcpauth.OutgoingAuthRegistry
+
+	// secretsProvider resolves TOOLHIVE_SECRET_<ident> env vars at client-creation
+	// time for per-backend header-forward injection. Nil when no backends declare
+	// headerForward.AddHeadersFromSecret — plaintext-only backends do not require it.
+	secretsProvider secrets.Provider
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -80,7 +87,8 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 	}
 
 	c := &httpBackendClient{
-		registry: registry,
+		registry:        registry,
+		secretsProvider: secrets.NewEnvironmentProvider(),
 	}
 	c.clientFactory = c.defaultClientFactory
 	return c, nil
@@ -169,31 +177,79 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-// identityPropagatingRoundTripper propagates identity and health-check markers to backend HTTP requests.
-// This ensures that identity information from the vMCP handler is available for authentication
-// strategies that need it (e.g., token exchange).
+// identityPropagatingRoundTripper propagates the health-check marker and a
+// fallback identity to backend HTTP requests.
 //
-// The health-check marker is stored at transport creation time and re-injected into every
-// outgoing request, including the DELETE that mcp-go sends when closing a streamable-HTTP
-// session. Without this, mcp-go's Close() creates a fresh context.Background()-based request
-// that loses the health-check marker, causing auth strategies (UpstreamInjectStrategy,
-// TokenExchangeStrategy) to fail with "no identity found in context".
+// Identity invariant: an identity already present on req.Context() is NEVER
+// overridden. The per-request identity placed on the request context by
+// auth.TokenValidator.Middleware carries the freshest upstream tokens (the
+// middleware refreshes them transparently on every incoming request via
+// upstreamtoken.InProcessService.GetAllValidTokens). Overriding it with a
+// snapshot captured at session-init time would silently re-inject stale
+// upstream access tokens on every backend call, forcing users to re-auth
+// once the captured access token expired (see issue #5323).
+//
+// The fallback identity is used only when req.Context() carries no identity
+// at all. This covers mcp-go's streamable-HTTP Close() path, which constructs
+// its DELETE request from context.Background() and therefore loses any
+// identity attached to the original tool-call context. Without a fallback,
+// auth strategies (UpstreamInjectStrategy, TokenExchangeStrategy, AWSSTSStrategy)
+// would reject the teardown DELETE with "no identity found in context" — the
+// teardown would still complete locally, but the upstream backend would see
+// an unauthenticated DELETE. The fallback may itself be stale, which is
+// acceptable for a session-close: the request is best-effort and any 401
+// from the upstream does not affect functional behavior.
+//
+// The health-check marker is similarly captured at transport creation time and
+// re-injected into every outgoing request — including the Close() DELETE — so
+// that auth strategies correctly skip authentication for health probes even
+// when the request context has been replaced with context.Background().
+//
+// This is the canonical location for the #5323 fallback-only identity
+// invariant. A near-clone exists at identityRoundTripper in
+// pkg/vmcp/session/internal/backend/mcp_session.go (without isHealthCheck
+// support, since health probes do not flow through the session-backed
+// connector). Keep the invariant in sync across both implementations until
+// #5333 lands a shared transport.
 type identityPropagatingRoundTripper struct {
-	base          http.RoundTripper
-	identity      *auth.Identity
-	isHealthCheck bool
+	base http.RoundTripper
+	// fallbackIdentity is injected only when req.Context() carries no identity.
+	// It must never override a non-nil identity present on the request context.
+	//
+	// Shared across all concurrent RoundTrip invocations on this transport; the
+	// pointed-to *auth.Identity (including UpstreamTokens) MUST be treated as
+	// immutable — see pkg/auth/identity.go.
+	fallbackIdentity *auth.Identity
+	isHealthCheck    bool
 }
 
-// RoundTrip implements http.RoundTripper by adding identity and health-check marker to the request context.
+// RoundTrip implements http.RoundTripper.
+//
+// It preserves any identity already present on req.Context() (the fresh,
+// per-request identity placed there by TokenValidator.Middleware). When the
+// request context carries no identity — for example, mcp-go's Close() DELETE
+// is constructed from context.Background() — the captured fallback identity
+// is injected so session-teardown requests can still authenticate. The
+// health-check marker is always re-injected when configured.
 func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
-	if i.identity != nil {
-		ctx = auth.WithIdentity(ctx, i.identity)
+	mutated := false
+
+	// Inject the fallback identity ONLY when the request context carries no
+	// identity. We must never overwrite a non-nil identity already on ctx —
+	// doing so would clobber the freshly refreshed upstream tokens that the
+	// auth middleware places on every incoming request (see #5323).
+	if _, hasIdentity := auth.IdentityFromContext(ctx); !hasIdentity && i.fallbackIdentity != nil {
+		ctx = auth.WithIdentity(ctx, i.fallbackIdentity)
+		mutated = true
 	}
+
 	if i.isHealthCheck {
 		ctx = healthcontext.WithHealthCheckMarker(ctx)
+		mutated = true
 	}
-	if i.identity != nil || i.isHealthCheck {
+
+	if mutated {
 		req = req.Clone(ctx)
 	}
 	return i.base.RoundTrip(req)
@@ -296,16 +352,50 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		target:       target,
 	}
 
-	// Extract identity and health-check marker from context and propagate them to backend
-	// requests. The health-check marker must be carried through to the DELETE request that
-	// mcp-go emits when closing a streamable-HTTP session: mcp-go creates that request with
-	// context.Background(), which loses both the identity and the health-check marker that
-	// were present on the original ListCapabilities call context.
-	identity, _ := auth.IdentityFromContext(ctx)
+	// Inject per-backend HTTP headers from MCPServerEntry.spec.headerForward.
+	// Resolves plaintext + secret-backed headers once here; auth (inner) always
+	// wins over user-supplied headers because it runs after this tripper.
+	baseTransport, err = headerforward.BuildHeaderForwardTripper(
+		ctx, baseTransport, target.HeaderForward, h.secretsProvider, target.WorkloadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build header-forward transport: %w", err)
+	}
+
+	// Capture a fallback identity and the health-check marker from the construction
+	// context. These are used ONLY when the per-request context lacks them.
+	//
+	// Scope note: httpBackendClient calls this factory on every CallTool /
+	// ReadResource / GetPrompt / ListCapabilities with the per-call context, so
+	// the captured "fallback" is per-call, not per-session, in this path. The
+	// always-stale capture-at-session-init behavior that caused #5323 lives in
+	// the persistent-session path (pkg/vmcp/session/internal/backend); this
+	// transport uses the same RoundTripper out of consistency, not because it
+	// suffered the same bug.
+	//
+	// Fallback injection scope: the round-tripper injects the captured fallback
+	// identity on ANY outgoing request whose context lacks an identity — not
+	// only the teardown DELETE. In the current code paths the only known caller
+	// that drops the per-request identity is mcp-go's streamable-HTTP Close()
+	// (which builds its DELETE from context.Background()), so in practice the
+	// fallback only fires for teardown. If a future code path wraps the client
+	// with a context that doesn't carry identity (audit, telemetry, background
+	// reconciliation), it will be silently authenticated using the captured
+	// snapshot. Add an explicit method/URL gate if that becomes undesirable.
+	//
+	//   - Normal backend requests inherit the fresh, per-request identity placed on
+	//     the request context by auth.TokenValidator.Middleware. The transport
+	//     preserves it untouched so upstream-token refresh is not bypassed (#5323).
+	//
+	//   - mcp-go's streamable-HTTP Close() builds its DELETE from context.Background(),
+	//     which loses both the identity and the health-check marker. Re-injecting them
+	//     here keeps the teardown DELETE authenticated and tagged as a health-check
+	//     probe when the original session was a probe (#4613).
+	fallbackIdentity, _ := auth.IdentityFromContext(ctx)
 	baseTransport = &identityPropagatingRoundTripper{
-		base:          baseTransport,
-		identity:      identity,
-		isHealthCheck: healthcontext.IsHealthCheck(ctx),
+		base:             baseTransport,
+		fallbackIdentity: fallbackIdentity,
+		isHealthCheck:    healthcontext.IsHealthCheck(ctx),
 	}
 
 	// Inject W3C Trace Context headers (traceparent/tracestate) into outgoing requests.
@@ -426,6 +516,17 @@ func wrapBackendError(err error, backendID string, operation string) error {
 	// 4. mcp-go transport sentinel errors: check before string-based fallbacks
 	// to ensure accurate classification of protocol-level errors.
 	if errors.Is(err, transport.ErrUnauthorized) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+	// transport.ErrAuthorizationRequired is returned (wrapped in *transport.Error
+	// and *transport.AuthorizationRequiredError) for 401 responses with a
+	// WWW-Authenticate header. transport.ErrOAuthAuthorizationRequired is the
+	// companion sentinel from the OAuth-handler path. Both must map to
+	// ErrAuthenticationFailed so health monitoring engages the auth-aware
+	// branch (#4935) instead of treating the probe as unhealthy (#5223).
+	if errors.Is(err, transport.ErrAuthorizationRequired) ||
+		errors.Is(err, transport.ErrOAuthAuthorizationRequired) {
 		return fmt.Errorf("%w: failed to %s for backend %s: %v",
 			vmcp.ErrAuthenticationFailed, operation, backendID, err)
 	}

@@ -5,28 +5,20 @@ package storage
 
 import (
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"net"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ory/fosite"
 	"github.com/redis/go-redis/v9"
 
+	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
-)
-
-// Default timeouts for Redis operations.
-const (
-	DefaultDialTimeout  = 5 * time.Second
-	DefaultReadTimeout  = 3 * time.Second
-	DefaultWriteTimeout = 3 * time.Second
 )
 
 // nullMarker is used to store nil upstream tokens in Redis.
@@ -61,62 +53,33 @@ func warnOnCleanupErr(err error, operation, key string) {
 	}
 }
 
-// RedisConfig holds Redis connection configuration for runtime use.
-type RedisConfig struct {
-	// Addr is the Redis server address (host:port). Required for standalone and cluster modes.
-	// Mutually exclusive with SentinelConfig.
-	Addr string
-
-	// ClusterMode enables Redis Cluster protocol. Requires Addr to be set.
-	// Use for managed cluster-mode services (GCP Memorystore Cluster, AWS ElastiCache cluster mode).
-	ClusterMode bool
-
-	// SentinelConfig is required for Sentinel mode. Mutually exclusive with Addr.
-	SentinelConfig *SentinelConfig
-
-	// ACLUserConfig is required - ACL user authentication only.
-	ACLUserConfig *ACLUserConfig
-
-	// KeyPrefix for multi-tenancy: "thv:auth:{ns}:{name}:".
-	KeyPrefix string
-
-	// Timeouts (defaults: Dial=5s, Read=3s, Write=3s).
-	DialTimeout  time.Duration
-	ReadTimeout  time.Duration
-	WriteTimeout time.Duration
-
-	// TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
-	// When nil, connections are plaintext.
-	TLS *RedisTLSConfig
-
-	// SentinelTLS configures TLS for connections to Sentinel instances.
-	// Only applies when SentinelConfig is set. When nil, sentinel connections are plaintext.
-	SentinelTLS *RedisTLSConfig
+// filterIndexMembersByPrefix splits SMEMBERS results into members that share
+// this storage instance's key prefix and those that do not. Multi-key
+// operations like MGet and Del fail with CROSSSLOT under Redis Cluster when
+// any member hashes to a different slot, and a stray un-prefixed entry
+// (legacy data, an external admin op, a test fixture) is the most likely
+// source of such drift. Filtering at read time turns a hard cluster failure
+// into a logged warning, while remaining a no-op on standalone Redis.
+func filterIndexMembersByPrefix(prefix string, members []string) (kept, dropped []string) {
+	for _, m := range members {
+		if strings.HasPrefix(m, prefix) {
+			kept = append(kept, m)
+		} else {
+			dropped = append(dropped, m)
+		}
+	}
+	return kept, dropped
 }
 
-// RedisTLSConfig holds TLS configuration for Redis connections.
-// Presence of this struct enables TLS for the connection type.
-type RedisTLSConfig struct {
-	// InsecureSkipVerify skips certificate verification.
-	// Use for self-signed certificates (e.g., sentinel emulators).
-	InsecureSkipVerify bool
-
-	// CACert is the PEM-encoded CA certificate for verifying the server.
-	// When empty, the system root CAs are used.
-	CACert []byte
-}
-
-// SentinelConfig contains Redis Sentinel configuration.
-type SentinelConfig struct {
-	MasterName    string
-	SentinelAddrs []string
-	DB            int
-}
-
-// ACLUserConfig contains Redis ACL user authentication configuration.
-type ACLUserConfig struct {
-	Username string
-	Password string //nolint:gosec // G117: field legitimately holds sensitive data
+// warnDroppedIndexMembers emits a warning for each foreign member returned by
+// filterIndexMembersByPrefix so operators can identify the source of cluster-
+// incompatible entries.
+func warnDroppedIndexMembers(operation, indexKey, expectedPrefix string, dropped []string) {
+	for _, m := range dropped {
+		slog.Warn("dropping foreign index member to prevent CROSSSLOT",
+			"operation", operation, "indexKey", indexKey,
+			"expectedPrefix", expectedPrefix, "member", m)
+	}
 }
 
 // RedisStorage implements the Storage interface backed by Redis.
@@ -142,172 +105,30 @@ type storedSession struct {
 	Session           json.RawMessage     `json:"session"`
 }
 
-// buildTLSConfig creates a *tls.Config from a RedisTLSConfig.
-// Returns an error if a CA certificate is provided but cannot be parsed.
-func buildTLSConfig(cfg *RedisTLSConfig) (*tls.Config, error) {
-	if cfg == nil {
-		return nil, nil
+// NewRedisStorage creates Redis-backed storage. Connection-mode topology,
+// timeouts, TLS, and credentials are configured through cfg; keyPrefix is the
+// per-tenant key prefix (e.g. "thv:auth:{ns}:{name}:"). The auth server
+// requires ACL authentication, so cfg.Password and keyPrefix must be non-empty.
+//
+// Connection-mode validation, timeout defaults, client construction (standalone,
+// cluster, or sentinel), TLS plumbing, and connectivity verification are
+// delegated to the shared toolhive-core redis package.
+func NewRedisStorage(ctx context.Context, cfg tcredis.Config, keyPrefix string) (*RedisStorage, error) {
+	if cfg.Password == "" {
+		return nil, errors.New("invalid redis configuration: ACL password is required")
 	}
-	tc := &tls.Config{
-		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: cfg.InsecureSkipVerify, //nolint:gosec // G402: configurable per-deployment
-	}
-	if len(cfg.CACert) > 0 {
-		pool := x509.NewCertPool()
-		if !pool.AppendCertsFromPEM(cfg.CACert) {
-			return nil, fmt.Errorf("failed to parse CA certificate PEM data")
-		}
-		tc.RootCAs = pool
-	}
-	return tc, nil
-}
-
-// newTLSDialer returns a dialer function that applies different TLS configs for
-// master vs sentinel connections. When masterTLS is nil, master connections use
-// plaintext. When sentinelTLS is nil, sentinel connections use plaintext.
-// This is needed because go-redis applies a single TLSConfig to all connections.
-func newTLSDialer(
-	masterTLS, sentinelTLS *tls.Config,
-	sentinelAddrs []string,
-	timeout time.Duration,
-) func(ctx context.Context, network, addr string) (net.Conn, error) {
-	return func(_ context.Context, network, addr string) (net.Conn, error) {
-		d := &net.Dialer{Timeout: timeout}
-		isSentinel := slices.Contains(sentinelAddrs, addr)
-
-		var tlsCfg *tls.Config
-		if isSentinel {
-			tlsCfg = sentinelTLS
-		} else {
-			tlsCfg = masterTLS
-		}
-
-		if tlsCfg == nil {
-			return d.Dial(network, addr)
-		}
-		return tls.DialWithDialer(d, network, addr, tlsCfg)
-	}
-}
-
-// configureTLSDialer sets up a custom dialer on the FailoverOptions when either
-// master or sentinel TLS is enabled. go-redis applies a single TLSConfig to both
-// sentinel and master connections, so when they need different treatment we install
-// a custom dialer that selects the right config per target address.
-func configureTLSDialer(opts *redis.FailoverOptions, masterCfg, sentinelCfg *RedisTLSConfig) error {
-	if masterCfg == nil && sentinelCfg == nil {
-		return nil
+	if keyPrefix == "" {
+		return nil, errors.New("invalid redis configuration: key prefix is required")
 	}
 
-	var masterTLS *tls.Config
-	if masterCfg != nil {
-		var err error
-		masterTLS, err = buildTLSConfig(masterCfg)
-		if err != nil {
-			return fmt.Errorf("master TLS config: %w", err)
-		}
-	}
-
-	var sentinelTLS *tls.Config
-	if sentinelCfg != nil {
-		var err error
-		sentinelTLS, err = buildTLSConfig(sentinelCfg)
-		if err != nil {
-			return fmt.Errorf("sentinel TLS config: %w", err)
-		}
-	}
-
-	opts.Dialer = newTLSDialer(masterTLS, sentinelTLS, opts.SentinelAddrs, opts.DialTimeout)
-	return nil
-}
-
-// NewRedisStorage creates Redis-backed storage.
-// Supports standalone mode (Addr), cluster mode (Addr + ClusterMode), and Sentinel mode (SentinelConfig).
-// Returns error if configuration validation fails or connection cannot be established.
-func NewRedisStorage(ctx context.Context, cfg RedisConfig) (*RedisStorage, error) {
-	if err := validateConfig(&cfg); err != nil {
-		return nil, fmt.Errorf("invalid redis configuration: %w", err)
-	}
-
-	// Apply defaults
-	if cfg.DialTimeout == 0 {
-		cfg.DialTimeout = DefaultDialTimeout
-	}
-	if cfg.ReadTimeout == 0 {
-		cfg.ReadTimeout = DefaultReadTimeout
-	}
-	if cfg.WriteTimeout == 0 {
-		cfg.WriteTimeout = DefaultWriteTimeout
-	}
-
-	var client redis.UniversalClient
-
-	switch {
-	case cfg.SentinelConfig != nil:
-		opts := &redis.FailoverOptions{
-			MasterName:    cfg.SentinelConfig.MasterName,
-			SentinelAddrs: cfg.SentinelConfig.SentinelAddrs,
-			DB:            cfg.SentinelConfig.DB,
-			Username:      cfg.ACLUserConfig.Username,
-			Password:      cfg.ACLUserConfig.Password,
-			DialTimeout:   cfg.DialTimeout,
-			ReadTimeout:   cfg.ReadTimeout,
-			WriteTimeout:  cfg.WriteTimeout,
-		}
-
-		// Configure TLS dialer if either master or sentinel TLS is enabled.
-		if err := configureTLSDialer(opts, cfg.TLS, cfg.SentinelTLS); err != nil {
-			return nil, err
-		}
-
-		client = redis.NewFailoverClient(opts)
-
-	case cfg.ClusterMode:
-		tlsCfg, err := buildTLSConfig(cfg.TLS)
-		if err != nil {
-			return nil, fmt.Errorf("TLS config: %w", err)
-		}
-
-		opts := &redis.ClusterOptions{
-			Addrs:        []string{cfg.Addr},
-			Username:     cfg.ACLUserConfig.Username,
-			Password:     cfg.ACLUserConfig.Password,
-			DialTimeout:  cfg.DialTimeout,
-			ReadTimeout:  cfg.ReadTimeout,
-			WriteTimeout: cfg.WriteTimeout,
-			TLSConfig:    tlsCfg,
-		}
-
-		client = redis.NewClusterClient(opts)
-
-	default:
-		masterTLS, err := buildTLSConfig(cfg.TLS)
-		if err != nil {
-			return nil, fmt.Errorf("master TLS config: %w", err)
-		}
-
-		opts := &redis.Options{
-			Addr:         cfg.Addr,
-			Username:     cfg.ACLUserConfig.Username,
-			Password:     cfg.ACLUserConfig.Password,
-			DialTimeout:  cfg.DialTimeout,
-			ReadTimeout:  cfg.ReadTimeout,
-			WriteTimeout: cfg.WriteTimeout,
-			TLSConfig:    masterTLS,
-		}
-
-		client = redis.NewClient(opts)
-	}
-
-	// Test connection
-	if err := client.Ping(ctx).Err(); err != nil {
-		// Close the client to prevent resource leak
-		_ = client.Close()
-		return nil, fmt.Errorf("failed to connect to redis: %w", err)
+	client, err := tcredis.NewClient(ctx, &cfg)
+	if err != nil {
+		return nil, err
 	}
 
 	return &RedisStorage{
 		client:    client,
-		keyPrefix: cfg.KeyPrefix,
+		keyPrefix: keyPrefix,
 	}, nil
 }
 
@@ -325,39 +146,6 @@ func NewRedisStorageWithClient(client redis.UniversalClient, keyPrefix string) *
 // from the serialized session data during deserialization.
 func defaultSessionFactory(subject, idpSessionID, clientID string) fosite.Session {
 	return session.New(subject, idpSessionID, clientID, session.UserClaims{})
-}
-
-func validateConfig(cfg *RedisConfig) error {
-	if cfg.ClusterMode && cfg.SentinelConfig != nil {
-		return errors.New("cluster mode cannot be used with sentinel configuration")
-	}
-	if cfg.Addr != "" && cfg.SentinelConfig != nil {
-		return errors.New("addr and sentinel configuration are mutually exclusive; exactly one must be set")
-	}
-	if cfg.ClusterMode && cfg.Addr == "" {
-		return errors.New("cluster mode requires addr to be set")
-	}
-	if cfg.Addr == "" && cfg.SentinelConfig == nil {
-		return errors.New("one of addr (standalone or cluster) or sentinel configuration is required")
-	}
-	if cfg.SentinelConfig != nil {
-		if cfg.SentinelConfig.MasterName == "" {
-			return errors.New("sentinel master name is required")
-		}
-		if len(cfg.SentinelConfig.SentinelAddrs) == 0 {
-			return errors.New("at least one sentinel address is required")
-		}
-	}
-	if cfg.ACLUserConfig == nil {
-		return errors.New("ACL user configuration is required")
-	}
-	if cfg.ACLUserConfig.Password == "" {
-		return errors.New("ACL password is required")
-	}
-	if cfg.KeyPrefix == "" {
-		return errors.New("key prefix is required")
-	}
-	return nil
 }
 
 // Health checks Redis connectivity.
@@ -423,7 +211,8 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 		return fmt.Errorf("failed to marshal client: %w", err)
 	}
 
-	// Public clients (from DCR) expire to prevent unbounded growth.
+	// Public clients (from DCR) expire to prevent unbounded growth; RenewClientTTL
+	// refreshes this on proven use so actively-used clients are not evicted.
 	// Confidential clients don't expire.
 	ttl := time.Duration(0)
 	if client.IsPublic() {
@@ -451,6 +240,26 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 	}
 
 	return &redisClient{storedClient: stored}, nil
+}
+
+// RenewClientTTL extends a public client's registration TTL to DefaultPublicClientTTL.
+//
+// Call this on a proven-use signal — a successful token exchange/refresh — not on a
+// client read. GetClient is reached from the unauthenticated front-channel
+// /oauth/authorize handler before any authentication, and public clients have no
+// secret, so renewing there would let any caller who knows a public client_id keep
+// its row alive indefinitely and defeat the anti-bloat TTL. Renewing on token
+// issuance ties registration survival to actual use.
+//
+// Only public clients carry a TTL; confidential clients are stored without one and
+// are left untouched. EXPIRE on a missing key is a no-op, so a client whose row has
+// already been evicted (or a non-persisted CIMD client) is safely ignored.
+func (s *RedisStorage) RenewClientTTL(ctx context.Context, client fosite.Client) error {
+	if client == nil || !client.IsPublic() {
+		return nil
+	}
+	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
+	return s.client.Expire(ctx, key, DefaultPublicClientTTL).Err()
 }
 
 // ClientAssertionJWTValid returns an error if the JTI is known.
@@ -913,6 +722,17 @@ func (s *storedUpstreamTokens) toUpstreamTokens() *UpstreamTokens {
 // ARGV[2] = TTL in milliseconds
 // ARGV[3] = new UserID ("" if no user)
 // ARGV[4] = user upstream set key prefix (e.g. "thv:auth:{ns:name}:user:upstream:")
+//
+// Cluster slot invariant: this script reads oldUserID from KEYS[1] inside the
+// script body (atomic with the rest of the work), so the user-set keys are
+// constructed dynamically as `ARGV[4] .. userID` rather than being passed as
+// declared KEYS. Every dynamically-built key MUST therefore inherit the
+// `{ns:name}` hash tag that is baked into ARGV[4] (s.keyPrefix). All callers
+// derive ARGV[4] from s.keyPrefix, which DeriveKeyPrefix builds with the
+// `{ns:name}` hash tag, so user-set keys land on the same Redis Cluster slot
+// as KEYS[1] and KEYS[2]. A future refactor that strips the hash tag — or
+// rebuilds setPrefix from raw inputs without the tag — will silently pass on
+// standalone Redis and fail with CROSSSLOT under Cluster.
 var storeUpstreamTokensScript = redis.NewScript(`
 local oldUserID = ""
 local existing = redis.call('GET', KEYS[1])
@@ -1120,6 +940,9 @@ func (s *RedisStorage) GetAllUpstreamTokens(ctx context.Context, sessionID strin
 		return nil, fmt.Errorf("failed to get upstream token index: %w", err)
 	}
 
+	providerKeys, dropped := filterIndexMembersByPrefix(s.keyPrefix, providerKeys)
+	warnDroppedIndexMembers("GetAllUpstreamTokens", idxKey, s.keyPrefix, dropped)
+
 	if len(providerKeys) == 0 {
 		return result, nil
 	}
@@ -1182,6 +1005,9 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 		return fmt.Errorf("failed to get upstream token index: %w", err)
 	}
 
+	providerKeys, dropped := filterIndexMembersByPrefix(s.keyPrefix, providerKeys)
+	warnDroppedIndexMembers("DeleteUpstreamTokens", idxKey, s.keyPrefix, dropped)
+
 	if len(providerKeys) == 0 {
 		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
 	}
@@ -1238,6 +1064,10 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return nil, fmt.Errorf("failed to get user upstream index: %w", err)
 	}
+
+	members, dropped := filterIndexMembersByPrefix(s.keyPrefix, members)
+	warnDroppedIndexMembers("GetLatestUpstreamTokensForUser", setKey, s.keyPrefix, dropped)
+
 	if len(members) == 0 {
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
 	}

@@ -8,9 +8,12 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -22,6 +25,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 )
 
@@ -93,79 +97,46 @@ func requireRedisNotFoundError(t *testing.T, err error) {
 
 // --- Configuration Tests ---
 
-func TestRedisConfig_Validation(t *testing.T) {
+// TestNewRedisStorage_Validation covers the auth-server-specific invariants
+// enforced by NewRedisStorage. Connection-mode topology (Addr XOR Sentinel,
+// cluster requires Addr, sentinel master name and addresses) is validated by
+// the shared toolhive-core redis package and exercised in its own tests.
+func TestNewRedisStorage_Validation(t *testing.T) {
 	t.Parallel()
 
+	validACL := func() tcredis.Config {
+		return tcredis.Config{
+			Addr:     "localhost:6379",
+			Username: "user",
+			Password: "pass",
+		}
+	}
+
 	tests := []struct {
-		name    string
-		cfg     RedisConfig
-		wantErr string
+		name      string
+		cfg       tcredis.Config
+		keyPrefix string
+		wantErr   string
 	}{
 		{
-			name:    "neither addr nor sentinel config",
-			cfg:     RedisConfig{ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
-			wantErr: "one of addr (standalone or cluster) or sentinel configuration is required",
+			name:      "missing ACL password",
+			cfg:       tcredis.Config{Addr: "localhost:6379", Username: "user"},
+			keyPrefix: "test:",
+			wantErr:   "ACL password is required",
 		},
 		{
-			name: "addr and sentinel config both set",
-			cfg: RedisConfig{
-				Addr:           "localhost:6379",
-				SentinelConfig: &SentinelConfig{MasterName: "mymaster", SentinelAddrs: []string{"localhost:26379"}},
-				ACLUserConfig:  &ACLUserConfig{Username: "u", Password: "p"},
-				KeyPrefix:      "test:",
-			},
-			wantErr: "mutually exclusive",
-		},
-		{
-			name: "cluster mode with sentinel config",
-			cfg: RedisConfig{
-				ClusterMode:    true,
-				SentinelConfig: &SentinelConfig{MasterName: "m", SentinelAddrs: []string{"localhost:26379"}},
-				ACLUserConfig:  &ACLUserConfig{Username: "u", Password: "p"},
-				KeyPrefix:      "test:",
-			},
-			wantErr: "cluster mode cannot be used with sentinel",
-		},
-		{
-			name: "cluster mode without addr",
-			cfg: RedisConfig{
-				ClusterMode:   true,
-				ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"},
-				KeyPrefix:     "test:",
-			},
-			wantErr: "cluster mode requires addr",
-		},
-		{
-			name:    "missing sentinel master name",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{SentinelAddrs: []string{"localhost:26379"}}, ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
-			wantErr: "sentinel master name is required",
-		},
-		{
-			name:    "missing sentinel addresses",
-			cfg:     RedisConfig{SentinelConfig: &SentinelConfig{MasterName: "mymaster"}, ACLUserConfig: &ACLUserConfig{Username: "u", Password: "p"}, KeyPrefix: "test:"},
-			wantErr: "at least one sentinel address is required",
-		},
-		{
-			name:    "missing ACL user config",
-			cfg:     RedisConfig{Addr: "localhost:6379", KeyPrefix: "test:"},
-			wantErr: "ACL user configuration is required",
-		},
-		{
-			name:    "missing ACL password",
-			cfg:     RedisConfig{Addr: "localhost:6379", ACLUserConfig: &ACLUserConfig{Username: "user"}, KeyPrefix: "test:"},
-			wantErr: "ACL password is required",
-		},
-		{
-			name:    "missing key prefix",
-			cfg:     RedisConfig{Addr: "localhost:6379", ACLUserConfig: &ACLUserConfig{Username: "user", Password: "pass"}},
-			wantErr: "key prefix is required",
+			name:      "missing key prefix",
+			cfg:       validACL(),
+			keyPrefix: "",
+			wantErr:   "key prefix is required",
 		},
 	}
 
+	ctx := context.Background()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateConfig(&tt.cfg)
+			_, err := NewRedisStorage(ctx, tt.cfg, tt.keyPrefix)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
@@ -175,46 +146,54 @@ func TestRedisConfig_Validation(t *testing.T) {
 func TestNewRedisStorage_ConnectionFailure(t *testing.T) {
 	t.Parallel()
 
-	cfg := RedisConfig{
-		SentinelConfig: &SentinelConfig{
-			MasterName:    "mymaster",
-			SentinelAddrs: []string{"localhost:99999"}, // Invalid port
+	tests := []struct {
+		name string
+		cfg  tcredis.Config
+	}{
+		{
+			name: "sentinel mode",
+			cfg: tcredis.Config{
+				SentinelConfig: &tcredis.SentinelConfig{
+					MasterName:    "mymaster",
+					SentinelAddrs: []string{"localhost:99999"}, // Invalid port
+				},
+				Username:    "user",
+				Password:    "pass",
+				DialTimeout: 100 * time.Millisecond,
+			},
 		},
-		ACLUserConfig: &ACLUserConfig{
-			Username: "user",
-			Password: "pass",
+		{
+			name: "standalone mode",
+			cfg: tcredis.Config{
+				Addr:        "localhost:19999",
+				Username:    "user",
+				Password:    "pass",
+				DialTimeout: 100 * time.Millisecond,
+			},
 		},
-		KeyPrefix:   "test:",
-		DialTimeout: 100 * time.Millisecond,
+		{
+			name: "cluster mode",
+			cfg: tcredis.Config{
+				Addr:        "localhost:19998",
+				ClusterMode: true,
+				Username:    "user",
+				Password:    "pass",
+				DialTimeout: 100 * time.Millisecond,
+			},
+		},
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
+			t.Cleanup(cancel)
 
-	_, err := NewRedisStorage(ctx, cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to connect to redis")
-}
-
-func TestNewRedisStorage_Standalone_ConnectionFailure(t *testing.T) {
-	t.Parallel()
-
-	cfg := RedisConfig{
-		Addr: "localhost:19999",
-		ACLUserConfig: &ACLUserConfig{
-			Username: "user",
-			Password: "pass",
-		},
-		KeyPrefix:   "test:",
-		DialTimeout: 100 * time.Millisecond,
+			_, err := NewRedisStorage(ctx, tt.cfg, "test:")
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "failed to connect")
+		})
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	_, err := NewRedisStorage(ctx, cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to connect to redis")
 }
 
 func TestNewRedisStorage_Standalone_WithMiniredis(t *testing.T) {
@@ -225,43 +204,18 @@ func TestNewRedisStorage_Standalone_WithMiniredis(t *testing.T) {
 	// supplied, so we use RequireUserAuth to match the configured username/password.
 	mr.RequireUserAuth("testuser", "testpass")
 
-	cfg := RedisConfig{
-		Addr: mr.Addr(),
-		ACLUserConfig: &ACLUserConfig{
-			Username: "testuser",
-			Password: "testpass",
-		},
-		KeyPrefix: "test:",
+	cfg := tcredis.Config{
+		Addr:     mr.Addr(),
+		Username: "testuser",
+		Password: "testpass",
 	}
 
 	ctx := context.Background()
-	s, err := NewRedisStorage(ctx, cfg)
+	s, err := NewRedisStorage(ctx, cfg, "test:")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = s.Close() })
 
 	require.NoError(t, s.Health(ctx))
-}
-
-func TestNewRedisStorage_Cluster_ConnectionFailure(t *testing.T) {
-	t.Parallel()
-
-	cfg := RedisConfig{
-		Addr:        "localhost:19998",
-		ClusterMode: true,
-		ACLUserConfig: &ACLUserConfig{
-			Username: "user",
-			Password: "pass",
-		},
-		KeyPrefix:   "test:",
-		DialTimeout: 100 * time.Millisecond,
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
-
-	_, err := NewRedisStorage(ctx, cfg)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "failed to connect to redis")
 }
 
 // --- Client Tests ---
@@ -307,6 +261,57 @@ func TestRedisStorage_RegisterClient(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, client.GetID(), retrieved.GetID())
 		assert.Equal(t, client.GetScopes(), retrieved.GetScopes())
+	})
+}
+
+// TestRedisStorage_RenewClientTTL verifies that RenewClientTTL extends the
+// registration TTL for public (DCR) clients — keeping actively-used clients from
+// being evicted mid-lifecycle — while leaving confidential clients (which have no
+// TTL) untouched, and that renewing an unknown/evicted client is a safe no-op.
+func TestRedisStorage_RenewClientTTL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("public client TTL is renewed", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "public-client")
+			client := &mockClient{id: "public-client", public: true}
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			// Age the registration so only a small slice of the TTL remains.
+			mr.FastForward(DefaultPublicClientTTL - time.Hour)
+			ttlBefore := mr.TTL(key)
+			require.Positive(t, ttlBefore)
+			require.Less(t, ttlBefore, 2*time.Hour, "precondition: TTL should be near expiry")
+
+			require.NoError(t, s.RenewClientTTL(ctx, client))
+
+			ttlAfter := mr.TTL(key)
+			assert.Greater(t, ttlAfter, ttlBefore, "RenewClientTTL should extend the public client TTL")
+			assert.InDelta(t, DefaultPublicClientTTL.Seconds(), ttlAfter.Seconds(), 60,
+				"renewed TTL should be ~DefaultPublicClientTTL")
+		})
+	})
+
+	t.Run("confidential client is left without a TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "conf-client")
+			client := &mockClient{id: "conf-client", public: false}
+			require.NoError(t, s.RegisterClient(ctx, client))
+			require.Equal(t, time.Duration(0), mr.TTL(key), "confidential clients must not have a TTL")
+
+			require.NoError(t, s.RenewClientTTL(ctx, client))
+
+			assert.Equal(t, time.Duration(0), mr.TTL(key),
+				"RenewClientTTL must not introduce a TTL on a confidential client")
+		})
+	})
+
+	t.Run("unknown client is a safe no-op", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "ghost")
+			require.NoError(t, s.RenewClientTTL(ctx, &mockClient{id: "ghost", public: true}))
+			assert.False(t, mr.Exists(key), "renewing an unknown client must not create a key")
+		})
 	})
 }
 
@@ -2720,4 +2725,145 @@ func runDCRConcurrentAccess(
 
 	assert.Zero(t, atomic.LoadInt32(&storeErrCount), "no concurrent Store should have errored")
 	assert.Zero(t, atomic.LoadInt32(&getErrCount), "no concurrent Get should have errored")
+}
+
+// captureWarnLogs swaps in a buffered slog handler at warn level for the
+// duration of the test and returns the captured output. Process-global, not
+// safe for t.Parallel().
+func captureWarnLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	orig := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	return &buf
+}
+
+// assertForeignDropWarn checks that the warn log emitted for a filtered
+// CROSSSLOT-defending op names the operation, the dropped member, and the
+// expected key prefix.
+func assertForeignDropWarn(t *testing.T, out, operation, member, prefix string) {
+	t.Helper()
+	assert.Contains(t, out, "dropping foreign index member to prevent CROSSSLOT",
+		"expected warn log emitted by %s; got: %s", operation, out)
+	assert.Contains(t, out, member, "warn log should name the dropped member")
+	assert.Contains(t, out, operation, "warn log should name the operation")
+	assert.Contains(t, out, strings.TrimSuffix(prefix, ":"),
+		"warn log should reference the expected prefix")
+}
+
+// TestForeignMembersFilteredFromIndexOps verifies that the three multi-key
+// SMEMBERS-fed operations (GetAllUpstreamTokens, DeleteUpstreamTokens,
+// GetLatestUpstreamTokensForUser) drop foreign members before MGet/Del so a
+// stray un-prefixed entry in an index set cannot escalate into a CROSSSLOT
+// failure on Redis Cluster, and emit a warn log naming the dropped member.
+//
+// This test uses slog.SetDefault (process-global) and therefore does not run
+// in parallel.
+func TestForeignMembersFilteredFromIndexOps(t *testing.T) { //nolint:paralleltest // captures slog default
+	storage, mr := newTestRedisStorage(t)
+	t.Cleanup(func() {
+		_ = storage.Close()
+		mr.Close()
+	})
+	ctx := context.Background()
+
+	tokens := &UpstreamTokens{
+		ProviderID:   "github",
+		AccessToken:  "real-access",
+		RefreshToken: "real-refresh",
+		UserID:       "user-A",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	require.NoError(t, storage.StoreUpstreamTokens(ctx, "session-X", "github", tokens))
+
+	sessionIdxKey := redisSetKey(storage.keyPrefix, KeyTypeUpstreamIdx, "session-X")
+	userIdxKey := redisSetKey(storage.keyPrefix, KeyTypeUserUpstream, "user-A")
+	const foreignMember = "other-tenant:auth:{ns:other}:upstream:s:p"
+	mr.SAdd(sessionIdxKey, foreignMember)
+	mr.SAdd(userIdxKey, foreignMember)
+
+	t.Run("GetAllUpstreamTokens", func(t *testing.T) {
+		buf := captureWarnLogs(t)
+		got, err := storage.GetAllUpstreamTokens(ctx, "session-X")
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		require.Contains(t, got, "github")
+		assert.Equal(t, "real-access", got["github"].AccessToken)
+		assertForeignDropWarn(t, buf.String(), "GetAllUpstreamTokens", foreignMember, storage.keyPrefix)
+	})
+
+	t.Run("GetLatestUpstreamTokensForUser", func(t *testing.T) {
+		buf := captureWarnLogs(t)
+		got, err := storage.GetLatestUpstreamTokensForUser(ctx, "user-A", "github")
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Equal(t, "real-refresh", got.RefreshToken)
+		assertForeignDropWarn(t, buf.String(), "GetLatestUpstreamTokensForUser", foreignMember, storage.keyPrefix)
+	})
+
+	// DeleteUpstreamTokens runs last because it removes the index set.
+	t.Run("DeleteUpstreamTokens", func(t *testing.T) {
+		buf := captureWarnLogs(t)
+		require.NoError(t, storage.DeleteUpstreamTokens(ctx, "session-X"))
+		assertForeignDropWarn(t, buf.String(), "DeleteUpstreamTokens", foreignMember, storage.keyPrefix)
+	})
+}
+
+func TestFilterIndexMembersByPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		prefix      string
+		members     []string
+		wantKept    []string
+		wantDropped []string
+	}{
+		{
+			name:        "all members share prefix",
+			prefix:      "thv:auth:{ns:name}:",
+			members:     []string{"thv:auth:{ns:name}:upstream:s1:p1", "thv:auth:{ns:name}:upstream:s1:p2"},
+			wantKept:    []string{"thv:auth:{ns:name}:upstream:s1:p1", "thv:auth:{ns:name}:upstream:s1:p2"},
+			wantDropped: nil,
+		},
+		{
+			name:        "stray un-prefixed member is dropped",
+			prefix:      "thv:auth:{ns:name}:",
+			members:     []string{"thv:auth:{ns:name}:upstream:s1:p1", "legacy-key", "thv:auth:{ns:name}:upstream:s1:p2"},
+			wantKept:    []string{"thv:auth:{ns:name}:upstream:s1:p1", "thv:auth:{ns:name}:upstream:s1:p2"},
+			wantDropped: []string{"legacy-key"},
+		},
+		{
+			name:        "different-tenant member is dropped",
+			prefix:      "thv:auth:{ns-a:srv}:",
+			members:     []string{"thv:auth:{ns-a:srv}:upstream:s1:p1", "thv:auth:{ns-b:srv}:upstream:s1:p1"},
+			wantKept:    []string{"thv:auth:{ns-a:srv}:upstream:s1:p1"},
+			wantDropped: []string{"thv:auth:{ns-b:srv}:upstream:s1:p1"},
+		},
+		{
+			name:        "empty input",
+			prefix:      "thv:auth:{ns:name}:",
+			members:     nil,
+			wantKept:    nil,
+			wantDropped: nil,
+		},
+		{
+			name:        "all members dropped",
+			prefix:      "thv:auth:{ns:name}:",
+			members:     []string{"foo", "bar"},
+			wantKept:    nil,
+			wantDropped: []string{"foo", "bar"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			kept, dropped := filterIndexMembersByPrefix(tc.prefix, tc.members)
+			assert.Equal(t, tc.wantKept, kept, "kept slice mismatch")
+			assert.Equal(t, tc.wantDropped, dropped, "dropped slice mismatch")
+		})
+	}
 }

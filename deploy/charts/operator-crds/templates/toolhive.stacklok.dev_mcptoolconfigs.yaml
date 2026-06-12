@@ -1,4 +1,4 @@
-{{- if .Values.crds.install.server }}
+{{- if .Values.crds.install }}
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
@@ -7,6 +7,8 @@ metadata:
     helm.sh/resource-policy: keep
     {{- end }}
     controller-gen.kubebuilder.io/version: v0.17.3
+  labels:
+    toolhive.stacklok.dev/auto-migrate-storage-version: "true"
   name: mcptoolconfigs.toolhive.stacklok.dev
 spec:
   group: toolhive.stacklok.dev
@@ -26,9 +28,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Valid
       type: string
-    - jsonPath: .status.referencingWorkloads
+    - jsonPath: .status.referenceCount
       name: References
-      type: string
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -190,6 +192,11 @@ spec:
                   It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server.
                 format: int64
                 type: integer
+              referenceCount:
+                description: ReferenceCount is the number of workloads referencing
+                  this config.
+                format: int32
+                type: integer
               referencingWorkloads:
                 description: |-
                   ReferencingWorkloads is a list of workload resources that reference this MCPToolConfig.
@@ -228,9 +235,9 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Valid')].status
       name: Valid
       type: string
-    - jsonPath: .status.referencingWorkloads
+    - jsonPath: .status.referenceCount
       name: References
-      type: string
+      type: integer
     - jsonPath: .metadata.creationTimestamp
       name: Age
       type: date
@@ -392,6 +399,11 @@ spec:
                   ObservedGeneration is the most recent generation observed for this MCPToolConfig.
                   It corresponds to the MCPToolConfig's generation, which is updated on mutation by the API Server.
                 format: int64
+                type: integer
+              referenceCount:
+                description: ReferenceCount is the number of workloads referencing
+                  this config.
+                format: int32
                 type: integer
               referencingWorkloads:
                 description: |-

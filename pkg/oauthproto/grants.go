@@ -231,7 +231,7 @@ func DoTokenRequest(client *http.Client, req *http.Request) (*TokenResponse, err
 // pkg/networking.NewHttpClientBuilder. The builder blocks loopback and RFC
 // 1918 ranges, which would break localhost IdPs (dex, Keycloak-in-Docker)
 // and the httptest.NewServer-based tests that bind to 127.0.0.1. Not a
-// default today for behavior-compatibility with pkg/auth/tokenexchange.
+// default today for behavior-compatibility with pkg/oauthproto/tokenexchange.
 func DefaultHTTPClient() *http.Client {
 	return sharedHTTPClient
 }

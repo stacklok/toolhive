@@ -19,16 +19,58 @@ const (
 	ErrPrivateIpAddress = "the provided URL redirects to a private IP address, which is not allowed"
 )
 
+// nat64Prefixes are the NAT64 translation prefixes whose embedded IPv4 address
+// lives in the low 32 bits (RFC 6052 §2.2 "/96" embedding). An address inside
+// one of these is routed to that IPv4 by a NAT64 gateway, so its true
+// reachability is determined by the embedded IPv4, not by the (global-unicast)
+// IPv6 form.
+//   - 64:ff9b::/96   well-known prefix (RFC 6052), always a /96
+//   - 64:ff9b:1::/96 the /96 sub-prefix of the RFC 8215 local-use 64:ff9b:1::/48
+//
+// The rest of the local-use 64:ff9b:1::/48 uses a shorter NAT64 prefix, where
+// the embedded IPv4 is NOT in the low 32 bits and cannot be located from the
+// address alone. Decoding the low 32 bits there could read attacker-chosen
+// suffix bytes and misclassify an internal target as public, so that remainder
+// is blocked wholesale via privateIPBlocks to avoid a false-negative bypass.
+var nat64Prefixes []*net.IPNet
+
+// embeddedIPv4 returns the IPv4 address embedded in the low 32 bits of a NAT64
+// address if ip falls inside a NAT64 translation prefix, or nil otherwise.
+func embeddedIPv4(ip net.IP) net.IP {
+	v6 := ip.To16()
+	if v6 == nil || ip.To4() != nil {
+		return nil
+	}
+	for _, block := range nat64Prefixes {
+		if block.Contains(ip) {
+			return net.IPv4(v6[12], v6[13], v6[14], v6[15])
+		}
+	}
+	return nil
+}
+
 func init() {
 	for _, cidr := range []string{
-		"127.0.0.0/8",    // IPv4 loopback
-		"10.0.0.0/8",     // RFC1918
-		"172.16.0.0/12",  // RFC1918
-		"192.168.0.0/16", // RFC1918
-		"169.254.0.0/16", // RFC3927 link-local
-		"::1/128",        // IPv6 loopback
-		"fe80::/10",      // IPv6 link-local
-		"fc00::/7",       // IPv6 unique local addr
+		"0.0.0.0/8",       // RFC1122 "this host" (incl. 0.0.0.0 unspecified)
+		"127.0.0.0/8",     // IPv4 loopback
+		"10.0.0.0/8",      // RFC1918
+		"172.16.0.0/12",   // RFC1918
+		"192.168.0.0/16",  // RFC1918
+		"169.254.0.0/16",  // RFC3927 link-local
+		"::1/128",         // IPv6 loopback
+		"fe80::/10",       // IPv6 link-local
+		"fc00::/7",        // IPv6 unique local addr
+		"100.64.0.0/10",   // RFC6598 shared address space (CGN)
+		"192.0.2.0/24",    // RFC5737 documentation (TEST-NET-1)
+		"198.51.100.0/24", // RFC5737 documentation (TEST-NET-2)
+		"203.0.113.0/24",  // RFC5737 documentation (TEST-NET-3)
+		"224.0.0.0/4",     // IPv4 multicast
+		"240.0.0.0/4",     // RFC1112 reserved (Class E), incl. 255.255.255.255 broadcast
+		"ff00::/8",        // IPv6 multicast
+		// NAT64 local-use range (RFC 8215). The 64:ff9b:1::/96 subset is decoded
+		// to its embedded IPv4 below; this catch-all blocks the remaining
+		// non-/96 embeddings, which cannot be decoded from the address alone.
+		"64:ff9b:1::/48",
 	} {
 		_, block, err := net.ParseCIDR(cidr)
 		if err != nil {
@@ -36,12 +78,36 @@ func init() {
 		}
 		privateIPBlocks = append(privateIPBlocks, block)
 	}
+	for _, cidr := range []string{
+		"64:ff9b::/96",   // NAT64 well-known prefix, /96 embedding (RFC 6052)
+		"64:ff9b:1::/96", // /96 sub-prefix of the local-use range (RFC 8215)
+	} {
+		_, block, err := net.ParseCIDR(cidr)
+		if err != nil {
+			panic(fmt.Errorf("parse error on %q: %w", cidr, err))
+		}
+		nat64Prefixes = append(nat64Prefixes, block)
+	}
 }
 
-// IsPrivateIP reports whether ip is a private, loopback, or link-local address.
+// IsPrivateIP reports whether ip is a private, loopback, link-local,
+// unspecified, or otherwise reserved/non-public address.
+//
+// NAT64-translated addresses are evaluated by the IPv4 address they embed: a
+// NAT64 address whose low 32 bits map to a private/link-local IPv4 (e.g.
+// 64:ff9b:1::a9fe:a9fe -> 169.254.169.254, the cloud metadata endpoint) is
+// treated as private, because behind a NAT64 gateway it reaches exactly that
+// internal IPv4, while NAT64 addresses embedding a genuinely public IPv4 remain
+// allowed. This /96 decoding covers the well-known 64:ff9b::/96 (RFC 6052) and
+// the 64:ff9b:1::/96 sub-prefix of the RFC 8215 local-use range; the rest of
+// 64:ff9b:1::/48 uses a non-/96 embedding that cannot be decoded from the
+// address alone and is blocked wholesale (see privateIPBlocks).
 func IsPrivateIP(ip net.IP) bool {
-	if ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+	if ip.IsLoopback() || ip.IsUnspecified() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 		return true
+	}
+	if v4 := embeddedIPv4(ip); v4 != nil {
+		return IsPrivateIP(v4)
 	}
 	for _, block := range privateIPBlocks {
 		if block.Contains(ip) {

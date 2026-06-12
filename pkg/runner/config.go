@@ -18,7 +18,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
-	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -29,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -202,6 +202,14 @@ type RunConfig struct {
 	// POST-based health check instead of the default GET probe.
 	// Applies to both remote URLs and local container workloads.
 	Stateless bool `json:"stateless,omitempty" yaml:"stateless,omitempty"`
+
+	// SessionTTL is the inactivity timeout for proxy sessions, expressed as a Go
+	// duration string (e.g. "30m", "2h", "168h"). Empty uses the transport
+	// default (2h). Negative durations and values that fail time.ParseDuration
+	// are rejected at runtime.
+	// String (not time.Duration) keeps the wire format unit-explicit: a
+	// time.Duration field serializes as nanoseconds in JSON.
+	SessionTTL string `json:"session_ttl,omitempty" yaml:"session_ttl,omitempty" example:"2h"`
 
 	// ProxyMode is the effective HTTP protocol the proxy uses.
 	// For stdio transports, this is the configured mode (sse or streamable-http).

@@ -373,6 +373,7 @@ func BackendToTarget(backend *Backend) *BackendTarget {
 		AuthConfig:      backend.AuthConfig,
 		SessionAffinity: false, // TODO: Add session affinity support in future phases
 		HealthStatus:    backend.HealthStatus,
+		HeaderForward:   backend.HeaderForward,
 		Metadata:        backend.Metadata,
 	}
 }

@@ -88,10 +88,11 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
+//+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 //+kubebuilder:resource:shortName=mcpg;mcpgroup,categories=toolhive
 //+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
+//+kubebuilder:printcolumn:name="Checked",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // MCPGroup is the Schema for the mcpgroups API

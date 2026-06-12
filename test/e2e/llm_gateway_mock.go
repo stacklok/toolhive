@@ -71,15 +71,6 @@ func NewLLMGatewayMock(port int) (*LLMGatewayMock, error) {
 	return m, nil
 }
 
-// NewLLMGatewayMockHTTP creates a mock LLM gateway that serves plain HTTP.
-// Useful in e2e tests where the thv subprocess cannot easily be configured to
-// trust a self-signed certificate. Call Start to begin serving.
-func NewLLMGatewayMockHTTP(port int) *LLMGatewayMock {
-	m := &LLMGatewayMock{port: port, useTLS: false}
-	m.server = m.newServer()
-	return m
-}
-
 func (m *LLMGatewayMock) newServer() *http.Server {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/v1/models", m.handleModels)
@@ -153,25 +144,6 @@ func (m *LLMGatewayMock) URL() string {
 // custom *http.Client or x509.CertPool that trusts the mock gateway.
 func (m *LLMGatewayMock) CertPEM() []byte {
 	return m.certPEM
-}
-
-// TLSClientConfig returns a *tls.Config that trusts the mock gateway's
-// self-signed certificate. Useful for building a custom *http.Client in tests.
-func (m *LLMGatewayMock) TLSClientConfig() (*tls.Config, error) {
-	pool := x509.NewCertPool()
-	if !pool.AppendCertsFromPEM(m.certPEM) {
-		return nil, fmt.Errorf("failed to parse mock gateway certificate")
-	}
-	return &tls.Config{RootCAs: pool, MinVersion: tls.VersionTLS12}, nil //nolint:gosec // test-only; min version set
-}
-
-// Requests returns a copy of all requests received so far, in order.
-func (m *LLMGatewayMock) Requests() []GatewayRequest {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	out := make([]GatewayRequest, len(m.requests))
-	copy(out, m.requests)
-	return out
 }
 
 // LastBearerToken returns the Bearer token from the most recent request, or

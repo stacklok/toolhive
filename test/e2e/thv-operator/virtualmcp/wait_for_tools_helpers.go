@@ -138,29 +138,6 @@ func ToolsContainAll(tools []mcp.Tool, expectedNames ...string) error {
 	return nil
 }
 
-// ToolsContainSubstring checks if the tool list contains at least one tool whose
-// name contains each of the given substrings. Returns an error if any substring
-// has no matching tool.
-func ToolsContainSubstring(tools []mcp.Tool, substrings ...string) error {
-	var missing []string
-	for _, sub := range substrings {
-		found := false
-		for _, t := range tools {
-			if strings.Contains(t.Name, sub) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			missing = append(missing, sub)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("no tools matching substrings %v; got %v", missing, toolNames(tools))
-	}
-	return nil
-}
-
 // ToolsHavePrefix checks if there is at least one tool with each of the given prefixes.
 // Returns an error listing missing prefixes, or nil if all are found.
 func ToolsHavePrefix(tools []mcp.Tool, prefixes ...string) error {

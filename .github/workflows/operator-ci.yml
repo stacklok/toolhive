@@ -160,7 +160,7 @@ jobs:
       uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
       
     - name: Set up Helm
-      uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1 # pin@v4.3.0
+      uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
 
     - name: Setup Ko
       uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
@@ -182,9 +182,9 @@ jobs:
         go install github.com/stackloklabs/yardstick/cmd/yardstick-client@v0.0.2
         
     - name: Install Chainsaw
-      uses: kyverno/action-install-chainsaw@06560d18422209e9c1e08e931d477d04bf2674c1 # v0.2.14
+      uses: kyverno/action-install-chainsaw@1223ef75bedeb59c4e7b5455463d4316e76dff01 # v0.2.15
       with:
-        release: v0.2.14 # chainsaw
+        release: v0.2.15 # chainsaw
 
     - name: Disable containerd image store
       # Workaround for https://github.com/kubernetes-sigs/kind/issues/3795

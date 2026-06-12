@@ -10,9 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +38,7 @@ func TestCreateSquidContainer_Basics(t *testing.T) {
 			gotHost = host
 			return container.CreateResponse{ID: "cid-new"}, nil
 		},
-		startFunc: func(_ context.Context, id string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, id string, _ mobyclient.ContainerStartOptions) error {
 			startCalled = true
 			assert.Equal(t, "cid-new", id)
 			return nil

@@ -47,7 +47,7 @@ type EmbeddingServerList struct {
 //+kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 //+kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 //+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-//+kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+//+kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPExternalAuthConfig is the deprecated v1alpha1 version of the MCPExternalAuthConfig resource.
@@ -76,7 +76,7 @@ type MCPExternalAuthConfigList struct {
 //+kubebuilder:resource:shortName=mcpg;mcpgroup,categories=toolhive
 //+kubebuilder:printcolumn:name="Servers",type="integer",JSONPath=".status.serverCount"
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
+//+kubebuilder:printcolumn:name="Checked",type="string",JSONPath=".status.conditions[?(@.type=='MCPServersChecked')].status"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
 
 // MCPGroup is the deprecated v1alpha1 version of the MCPGroup resource.
@@ -105,7 +105,7 @@ type MCPGroupList struct {
 //+kubebuilder:resource:shortName=mcpoidc,categories=toolhive
 //+kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.type`
 //+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-//+kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+//+kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPOIDCConfig is the deprecated v1alpha1 version of the MCPOIDCConfig resource.
@@ -128,17 +128,22 @@ type MCPOIDCConfigList struct {
 
 // ─── MCPRegistry ─────────────────────────────────────────────────────────────
 
-//+kubebuilder:object:root=true
-//+kubebuilder:deprecatedversion:warning="toolhive.stacklok.dev/v1alpha1 is deprecated; use v1beta1"
-//+kubebuilder:subresource:status
-//+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
-//+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
-//+kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
-//+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
-//+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
-
 // MCPRegistry is the deprecated v1alpha1 version of the MCPRegistry resource.
+// The MCPRegistry CRD as a whole is deprecated and will be removed in a future
+// release; install the ToolHive registry server via the toolhive-registry-server
+// Helm chart instead: https://github.com/stacklok/toolhive-registry-server
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:deprecatedversion:warning="MCPRegistry is deprecated and will be removed in a future release; install the ToolHive registry server via the toolhive-registry-server Helm chart (https://github.com/stacklok/toolhive-registry-server) instead"
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
+// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
+// +kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+//
+//nolint:lll // kubebuilder deprecatedversion marker cannot be line-wrapped
 type MCPRegistry struct {
 	metav1.TypeMeta   `json:",inline"` // nolint:revive
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -281,6 +286,7 @@ type MCPTelemetryConfigList struct {
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
+//+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 //+kubebuilder:resource:shortName=mwc,categories=toolhive
 //+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
 //+kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
@@ -311,7 +317,7 @@ type MCPWebhookConfigList struct {
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=tc;toolconfig,categories=toolhive
 //+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
-//+kubebuilder:printcolumn:name="References",type=string,JSONPath=`.status.referencingWorkloads`
+//+kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
 //+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
 
 // MCPToolConfig is the deprecated v1alpha1 version of the MCPToolConfig resource.
@@ -339,9 +345,7 @@ type MCPToolConfigList struct {
 //+kubebuilder:subresource:status
 //+kubebuilder:resource:shortName=vmcpctd;compositetool,categories=toolhive
 //+kubebuilder:printcolumn:name="Workflow",type="string",JSONPath=".spec.name",description="Workflow name"
-//+kubebuilder:printcolumn:name="Steps",type="integer",JSONPath=".spec.steps[*]",description="Number of steps"
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.validationStatus",description="Validation status"
-//+kubebuilder:printcolumn:name="Refs",type="integer",JSONPath=".status.referencingVirtualServers[*]",description="Refs"
 //+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description="Age"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
 

@@ -51,10 +51,9 @@ func (f *decoratingMultiSessionFactory) MakeSessionWithID(
 	ctx context.Context,
 	id string,
 	identity *auth.Identity,
-	allowAnonymous bool,
 	backends []*vmcp.Backend,
 ) (MultiSession, error) {
-	sess, err := f.base.MakeSessionWithID(ctx, id, identity, allowAnonymous, backends)
+	sess, err := f.base.MakeSessionWithID(ctx, id, identity, backends)
 	if err != nil {
 		return nil, err
 	}

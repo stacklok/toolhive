@@ -73,12 +73,6 @@ func (c *THVCommand) WithEnv(env ...string) *THVCommand {
 	return c
 }
 
-// WithDir sets the working directory for the command
-func (c *THVCommand) WithDir(dir string) *THVCommand {
-	c.dir = dir
-	return c
-}
-
 // WithStdin sets the stdin input for the command
 func (c *THVCommand) WithStdin(stdin string) *THVCommand {
 	c.stdin = stdin

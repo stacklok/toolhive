@@ -17,7 +17,11 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -781,6 +785,122 @@ func TestAcceptHeaderValidation(t *testing.T) {
 
 				assert.NotEqual(t, http.StatusNotAcceptable, rec.Code,
 					"expected request to pass Accept validation but got 406")
+			}
+		})
+	}
+}
+
+// TestHandlerAppliesAuthzAndAnnotationOnlyWhenConfigured proves the shared
+// (*Server).Handler applies BOTH the authz layer and the annotation-enrichment layer
+// exactly when config.AuthzMiddleware != nil. This is the single guard that lets the
+// same Handler serve both modes: the server.New path (AuthzMiddleware set) keeps
+// enforcing authz with no regression, while the Serve path (AuthzMiddleware nil; see
+// TestServeOmitsAuthzAndAnnotation) omits both layers and defers authorization to the
+// core admission seam (#5438). The blocks are not deleted here — physical removal is
+// Phase 3 (#5445).
+func TestHandlerAppliesAuthzAndAnnotationOnlyWhenConfigured(t *testing.T) {
+	t.Parallel()
+
+	// Distinctive status only the observable authz layer writes, so its presence in the
+	// chain is unambiguous.
+	const sentinelStatus = http.StatusTeapot
+
+	readOnly := true
+	caps := &aggregator.AggregatedCapabilities{
+		Tools: []vmcp.Tool{{
+			Name:        "my_tool",
+			Annotations: &vmcp.ToolAnnotations{ReadOnlyHint: &readOnly},
+		}},
+	}
+
+	tests := []struct {
+		name             string
+		withAuthz        bool
+		wantAuthzApplied bool
+	}{
+		{name: "applied when AuthzMiddleware set (server.New path)", withAuthz: true, wantAuthzApplied: true},
+		{name: "omitted when AuthzMiddleware nil (Serve path)", withAuthz: false, wantAuthzApplied: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+			mockRouter := routerMocks.NewMockRouter(ctrl)
+			mockBackendClient := mocks.NewMockBackendClient(ctrl)
+			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+			mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
+			// List/Discover stay permissive (AnyTimes) but do not fire on this path: with
+			// WithSessionScopedRouting() and no Mcp-Session-Id, discovery.Middleware returns
+			// before aggregating. Stop fires via srv.Stop in the cleanup below.
+			mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+			mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
+			mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
+
+			var (
+				authzApplied    bool
+				annotationsSeen bool
+			)
+			// Observable authz layer: records that it ran AND whether the
+			// annotation-enrichment layer (which executes immediately before it) injected
+			// the tool's annotations into ctx, then short-circuits with the sentinel.
+			authz := func(_ http.Handler) http.Handler {
+				return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					authzApplied = true
+					annotationsSeen = authorizers.ToolAnnotationsFromContext(r.Context()) != nil
+					w.WriteHeader(sentinelStatus)
+				})
+			}
+
+			cfg := &server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t)}
+			if tt.withAuthz {
+				cfg.AuthzMiddleware = authz
+			}
+
+			srv, err := server.New(t.Context(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, mockBackendRegistry, nil)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+			handler, err := srv.Handler(t.Context())
+			require.NoError(t, err)
+
+			// Craft a tools/call request. This chain has no auth-parser, so inject the
+			// parsed request and discovered capabilities directly into ctx (as
+			// ParsingMiddleware and the discovery middleware would).
+			//
+			// Load-bearing dependency: discovery.Middleware is built with
+			// WithSessionScopedRouting(), so a request with no Mcp-Session-Id passes straight
+			// through without touching the (mock) manager and WITHOUT rewriting ctx —
+			// preserving the injected capabilities for the annotation-enrichment layer. If
+			// that session-scoped pass-through ever changes to overwrite ctx, annotationsSeen
+			// silently goes false; the positive-case assert.True below is the guard.
+			ctx := context.WithValue(t.Context(), mcpparser.MCPRequestContextKey,
+				&mcpparser.ParsedMCPRequest{Method: "tools/call", ResourceID: "my_tool"})
+			ctx = discovery.WithDiscoveredCapabilities(ctx, caps)
+
+			req := httptest.NewRequest(http.MethodPost, "/mcp", nil).WithContext(ctx)
+			// Set Content-Type so the nil-authz request reaches a representative chain point
+			// (the inner SDK handler) rather than being rejected during content negotiation;
+			// both cases then exercise the chain identically.
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+
+			// Both paths return synchronously: the configured case short-circuits at the
+			// observable authz layer (sentinel), and the nil case falls through to the inner
+			// SDK handler, which answers this POST without blocking. A direct call suffices —
+			// no goroutine/timeout scaffolding needed.
+			handler.ServeHTTP(rec, req)
+
+			assert.Equal(t, tt.wantAuthzApplied, authzApplied)
+			if tt.wantAuthzApplied {
+				assert.Equal(t, sentinelStatus, rec.Code, "observable authz layer should have written the sentinel status")
+				assert.True(t, annotationsSeen,
+					"annotation-enrichment must run before authz and inject the tool annotations")
+			} else {
+				assert.NotEqual(t, sentinelStatus, rec.Code,
+					"no authz layer should run on the Serve-style (nil AuthzMiddleware) path")
 			}
 		})
 	}

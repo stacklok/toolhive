@@ -4,6 +4,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -636,13 +637,27 @@ func TestConnectionError(t *testing.T) {
 func TestNewDefaultClient(t *testing.T) {
 	t.Parallel()
 
+	// noDiscovery stubs server discovery to report no running server, isolating
+	// the test from any real local server (e.g. a running Desktop app).
+	noDiscovery := func(context.Context) (string, []Option) { return "", nil }
+
+	// failDiscovery fails the test if discovery is consulted, asserting that an
+	// earlier resolution step short-circuited.
+	failDiscovery := func(t *testing.T) discoverFunc {
+		t.Helper()
+		return func(context.Context) (string, []Option) {
+			t.Error("discovery should not be called when TOOLHIVE_API_URL is set")
+			return "", nil
+		}
+	}
+
 	t.Run("falls back to default URL when env is empty", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
 
-		c := newDefaultClientWithEnv(t.Context(), mockEnv)
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery)
 		assert.Equal(t, defaultBaseURL, c.baseURL)
 	})
 
@@ -652,8 +667,21 @@ func TestNewDefaultClient(t *testing.T) {
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("http://localhost:9999")
 
-		c := newDefaultClientWithEnv(t.Context(), mockEnv)
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, failDiscovery(t))
 		assert.Equal(t, "http://localhost:9999", c.baseURL)
+	})
+
+	t.Run("uses discovered server when env is empty", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		mockEnv := envmocks.NewMockReader(ctrl)
+		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
+
+		discover := func(context.Context) (string, []Option) {
+			return "http://127.0.0.1:54321", nil
+		}
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, discover)
+		assert.Equal(t, "http://127.0.0.1:54321", c.baseURL)
 	})
 
 	t.Run("applies options", func(t *testing.T) {
@@ -662,7 +690,7 @@ func TestNewDefaultClient(t *testing.T) {
 		mockEnv := envmocks.NewMockReader(ctrl)
 		mockEnv.EXPECT().Getenv(envAPIURL).Return("")
 
-		c := newDefaultClientWithEnv(t.Context(), mockEnv, WithTimeout(5*time.Second))
+		c := newDefaultClientWithEnv(t.Context(), mockEnv, noDiscovery, WithTimeout(5*time.Second))
 		assert.Equal(t, 5*time.Second, c.httpClient.Timeout)
 	})
 }

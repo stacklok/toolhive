@@ -6,6 +6,7 @@ package controllerutil
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -14,10 +15,144 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
-	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
+
+// OBOHandler bundles the three operator-time dispatch points for OBO-typed
+// MCPExternalAuthConfig resources. An out-of-tree build replaces the default
+// instance (which returns obo.ErrEnterpriseRequired from every method) by
+// calling RegisterOBOHandler once during init().
+//
+// # Error contract
+//
+// Every method below must return one of three error categories so callers can
+// triage failures consistently:
+//
+//   - errors.Is(err, obo.ErrEnterpriseRequired) — the build is not licensed
+//     to run OBO. Callers treat this as permanent until an out-of-tree handler
+//     is registered.
+//   - errors.As(err, &*obo.ValidationError) — the user-supplied spec is
+//     malformed (missing field, schema violation, invalid URL). Callers treat
+//     this as permanent until the user edits the spec. The ValidationError's
+//     Message field is written verbatim into the surfaced condition, so
+//     handler authors must ensure it is safe to expose (no Secret names, no
+//     internal addressing, no credential fragments).
+//   - anything else — treated as a transient failure (Secret not yet
+//     available, JWKS unreachable, webhook 5xx). Callers requeue with backoff
+//     rather than locking the resource into a permanent state.
+//
+// Returning a non-ValidationError for what is genuinely a user-fix condition
+// causes the reconciler to spin on backoff. Returning a ValidationError for
+// what is genuinely transient locks the resource into InvalidConfig until the
+// user edits the spec. Handler authors are responsible for placing each
+// failure in the right bucket.
+type OBOHandler struct {
+	// Validate is called from MCPExternalAuthConfig validation to verify the
+	// resource's obo-typed config is well-formed. See the type-level "Error
+	// contract" doc for the three-bucket triage callers apply to its return.
+	Validate func(*mcpv1beta1.MCPExternalAuthConfig) error
+
+	// ApplyRunConfig is called from AddExternalAuthConfigOptions to apply
+	// OBO-specific runner configuration options for consuming MCPServer/
+	// MCPRemoteProxy resources. See the type-level "Error contract" doc.
+	ApplyRunConfig func(
+		ctx context.Context, c client.Client, namespace string,
+		cfg *mcpv1beta1.MCPExternalAuthConfig,
+		opts *[]runner.RunConfigBuilderOption,
+	) error
+
+	// SecretEnvVars is called when computing the consuming resource's pod
+	// environment, to inject any secrets the OBO flow needs at runtime. See
+	// the type-level "Error contract" doc.
+	SecretEnvVars func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error)
+}
+
+// oboMu guards reads and writes of oboHandler. Reads dispatched through the
+// exported OBOValidate / OBOSecretEnvVars / OBOApplyRunConfig wrappers take an
+// RLock; RegisterOBOHandler takes the write lock. Production reads today all
+// happen on a single reconcile-loop goroutine, but the lock is here so that
+// out-of-tree builds adding a hot-reload feature or admission-webhook
+// re-registration do not introduce a latent data race.
+var oboMu sync.RWMutex
+
+// oboHandler holds the package-level OBO handler. The default implementation
+// returns obo.ErrEnterpriseRequired from each method; an out-of-tree build
+// replaces it via RegisterOBOHandler. Access only through currentOBOHandler
+// (read) or RegisterOBOHandler (write) so the mutex contract is preserved.
+var oboHandler = OBOHandler{
+	Validate: func(*mcpv1beta1.MCPExternalAuthConfig) error { return obo.ErrEnterpriseRequired },
+	ApplyRunConfig: func(context.Context, client.Client, string,
+		*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption) error {
+		return obo.ErrEnterpriseRequired
+	},
+	SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+		return nil, obo.ErrEnterpriseRequired
+	},
+}
+
+// currentOBOHandler returns a snapshot of the registered handler under the
+// read lock so callers can dispatch through it without holding any lock for
+// the duration of the call.
+func currentOBOHandler() OBOHandler {
+	oboMu.RLock()
+	defer oboMu.RUnlock()
+	return oboHandler
+}
+
+// RegisterOBOHandler replaces the package-level OBO handler. It is intended
+// to be called exactly once during init() in an out-of-tree package that
+// blank-imports controllerutil. Calling it more than once is allowed and
+// last-write-wins; no panic on double-register, matching the existing
+// pkg/config.RegisterProviderFactory precedent.
+//
+// Panics if any of the three function fields is nil — a partial registration
+// would nil-deref deep inside dispatch, far from the call site. Surfacing the
+// problem at process start (init() time) is far easier to diagnose than at
+// reconcile time.
+func RegisterOBOHandler(h OBOHandler) {
+	switch {
+	case h.Validate == nil:
+		panic("controllerutil.RegisterOBOHandler: Validate is nil")
+	case h.ApplyRunConfig == nil:
+		panic("controllerutil.RegisterOBOHandler: ApplyRunConfig is nil")
+	case h.SecretEnvVars == nil:
+		panic("controllerutil.RegisterOBOHandler: SecretEnvVars is nil")
+	}
+	oboMu.Lock()
+	defer oboMu.Unlock()
+	oboHandler = h
+}
+
+// OBOValidate runs the registered OBO handler's Validate function on the
+// supplied MCPExternalAuthConfig. With the default handler it returns
+// obo.ErrEnterpriseRequired.
+func OBOValidate(cfg *mcpv1beta1.MCPExternalAuthConfig) error {
+	return currentOBOHandler().Validate(cfg)
+}
+
+// OBOSecretEnvVars runs the registered OBO handler's SecretEnvVars function.
+// With the default handler it returns (nil, obo.ErrEnterpriseRequired).
+func OBOSecretEnvVars(cfg *mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+	return currentOBOHandler().SecretEnvVars(cfg)
+}
+
+// OBOApplyRunConfig runs the registered OBO handler's ApplyRunConfig function.
+// With the default handler it returns obo.ErrEnterpriseRequired without
+// mutating the supplied options slice. Exported so that the three-method
+// surface stays symmetric with OBOValidate / OBOSecretEnvVars; routes through
+// the package-level OBO handler registered via RegisterOBOHandler.
+func OBOApplyRunConfig(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	cfg *mcpv1beta1.MCPExternalAuthConfig,
+	opts *[]runner.RunConfigBuilderOption,
+) error {
+	return currentOBOHandler().ApplyRunConfig(ctx, c, namespace, cfg, opts)
+}
 
 // GenerateTokenExchangeEnvVars generates environment variables for token exchange
 func GenerateTokenExchangeEnvVars(
@@ -115,6 +250,13 @@ func AddExternalAuthConfigOptions(
 	case mcpv1beta1.ExternalAuthTypeUpstreamInject:
 		// Upstream inject is handled by the vMCP converter at runtime
 		return nil
+	case mcpv1beta1.ExternalAuthTypeOBO:
+		// Dispatch through the registered handler. In upstream-only builds the
+		// default handler returns obo.ErrEnterpriseRequired; an out-of-tree
+		// build registers a real handler via RegisterOBOHandler. Bypass the
+		// default's "unsupported external auth type" path so callers can
+		// distinguish via errors.Is(err, obo.ErrEnterpriseRequired).
+		return OBOApplyRunConfig(ctx, c, namespace, externalAuthConfig, options)
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}

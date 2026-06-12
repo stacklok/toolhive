@@ -77,6 +77,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				assert.Equal(t, "http", container.Ports[0].Name)
 
 				// Verify health probes
+				assert.NotNil(t, container.StartupProbe)
 				assert.NotNil(t, container.LivenessProbe)
 				assert.NotNil(t, container.ReadinessProbe)
 				assert.Equal(t, "/health", container.LivenessProbe.HTTPGet.Path)

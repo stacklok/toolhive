@@ -35,6 +35,10 @@ import (
 // All middleware types now directly create and inject Identity into the context,
 // eliminating the need for a separate conversion layer.
 //
+// The serverName parameter is the VirtualMCPServer name and is used as the Cedar
+// resource entity name in authorization policy evaluation. It must match the
+// resource name used when compiling Cedar policies for this server.
+//
 // The passThroughTools parameter is optional (pass nil for none). Tool names in
 // this set bypass the response filter's policy check in tools/list responses.
 // This is used when the optimizer is enabled: its meta-tools (find_tool, call_tool)
@@ -50,6 +54,7 @@ import (
 func NewIncomingAuthMiddleware(
 	ctx context.Context,
 	cfg *config.IncomingAuthConfig,
+	serverName string,
 	passThroughTools map[string]struct{},
 	upstreamReader upstreamtoken.TokenReader,
 	keyProvider keys.PublicKeyProvider,
@@ -86,11 +91,11 @@ func NewIncomingAuthMiddleware(
 	// Cedar policies access to discovered tool annotations.
 	var authzMiddleware func(http.Handler) http.Handler
 	if cfg.Authz != nil && cfg.Authz.Type == "cedar" && len(cfg.Authz.Policies) > 0 {
-		authzMiddleware, err = newCedarAuthzMiddleware(cfg.Authz, passThroughTools)
+		authzMiddleware, err = newCedarAuthzMiddleware(cfg.Authz, serverName, passThroughTools)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("failed to create authorization middleware: %w", err)
 		}
-		slog.Info("authorization middleware enabled with Cedar policies")
+		slog.Debug("authorization middleware enabled with Cedar policies", "server_name", serverName)
 	}
 
 	// Auth middleware composes auth + parser.
@@ -105,25 +110,42 @@ func NewIncomingAuthMiddleware(
 }
 
 // newCedarAuthzMiddleware creates Cedar authorization middleware from vMCP config.
+// serverName is forwarded to CreateMiddlewareFromConfig as the Cedar resource entity name.
 func newCedarAuthzMiddleware(
-	authzCfg *config.AuthzConfig, passThroughTools map[string]struct{},
+	authzCfg *config.AuthzConfig, serverName string, passThroughTools map[string]struct{},
 ) (func(http.Handler) http.Handler, error) {
 	if authzCfg == nil || len(authzCfg.Policies) == 0 {
 		return nil, fmt.Errorf("cedar authorization requires at least one policy")
 	}
+	if serverName == "" {
+		return nil, fmt.Errorf("serverName must not be empty: Cedar resource-scoped policies require a non-empty server name")
+	}
 
 	slog.Info("creating Cedar authorization middleware", "policies", len(authzCfg.Policies))
+
+	// Default EntitiesJSON to "[]" when the operator/CLI did not set it. Cedar
+	// requires a valid JSON array; an empty string would fail to parse.
+	entitiesJSON := authzCfg.EntitiesJSON
+	if entitiesJSON == "" {
+		entitiesJSON = "[]"
+	}
 
 	// Build the Cedar config structure expected by the authorizer factory.
 	// PrimaryUpstreamProvider is forwarded so Cedar evaluates claims from the
 	// upstream IDP token when the embedded auth server is active.
+	// GroupClaimName, RoleClaimName, and GroupEntityType plumb the enterprise
+	// JWT-to-entity mapping (groups/roles claims → Cedar parent UIDs) through
+	// to the authorizer.
 	cedarConfig := cedar.Config{
 		Version: "1.0",
 		Type:    cedar.ConfigType,
 		Options: &cedar.ConfigOptions{
 			Policies:                authzCfg.Policies,
-			EntitiesJSON:            "[]",
+			EntitiesJSON:            entitiesJSON,
 			PrimaryUpstreamProvider: authzCfg.PrimaryUpstreamProvider,
+			GroupClaimName:          authzCfg.GroupClaimName,
+			RoleClaimName:           authzCfg.RoleClaimName,
+			GroupEntityType:         authzCfg.GroupEntityType,
 		},
 	}
 
@@ -134,7 +156,7 @@ func newCedarAuthzMiddleware(
 	}
 
 	// Create the middleware using the existing factory
-	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, "vmcp", passThroughTools)
+	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, serverName, passThroughTools)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Cedar middleware: %w", err)
 	}

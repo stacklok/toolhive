@@ -31,11 +31,6 @@ type PodTemplateSpecBuilder struct {
 	defaultSpec *corev1.PodTemplateSpec
 }
 
-// NewPodTemplateSpecBuilder creates a new PodTemplateSpecBuilder with an empty template.
-func NewPodTemplateSpecBuilder() *PodTemplateSpecBuilder {
-	return NewPodTemplateSpecBuilderFrom(nil)
-}
-
 // NewPodTemplateSpecBuilderFrom creates a new PodTemplateSpecBuilder with a user-provided template.
 // The user template is deep-copied to avoid mutating the original.
 // Options applied via Apply() act as defaults - Build() will merge them with user values,

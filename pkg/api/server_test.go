@@ -4,11 +4,15 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"testing"
 
+	"github.com/go-chi/chi/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -85,4 +89,59 @@ func TestListenURL(t *testing.T) {
 			assert.Equal(t, tt.expected(s), s.ListenURL())
 		})
 	}
+}
+
+// TestServerBuilderExtensionPoints exercises WithMiddleware and WithRoute so
+// they remain reachable to deadcode analysis. Both methods form the public
+// surface for ApplyServerExtensions consumers, whose callers may live in
+// downstream repositories that this module's analyzer cannot see. Without
+// this test, a future deadcode pass would flag them as unreachable (as
+// happened in #5355) even though external callers depend on them.
+func TestSecurityHeaders(t *testing.T) {
+	t.Parallel()
+
+	b := NewServerBuilder()
+	router, err := b.Build(context.Background())
+	require.NoError(t, err)
+
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	assert.Equal(t, "nosniff", rec.Header().Get("X-Content-Type-Options"))
+	assert.Equal(t, "same-origin", rec.Header().Get("Cross-Origin-Resource-Policy"))
+}
+
+func TestServerBuilderExtensionPoints(t *testing.T) {
+	t.Parallel()
+
+	t.Run("WithMiddleware appends to middleware chain", func(t *testing.T) {
+		t.Parallel()
+
+		b := NewServerBuilder()
+		mw := func(next http.Handler) http.Handler { return next }
+		b.WithMiddleware(mw, mw)
+
+		assert.Len(t, b.middlewares, 2)
+	})
+
+	t.Run("WithRoute registers handler at prefix", func(t *testing.T) {
+		t.Parallel()
+
+		b := NewServerBuilder()
+		b.WithRoute("/ext", chi.NewRouter())
+
+		_, ok := b.customRoutes["/ext"]
+		assert.True(t, ok, "expected /ext to be registered")
+	})
+
+	t.Run("methods chain on the builder", func(t *testing.T) {
+		t.Parallel()
+
+		b := NewServerBuilder().
+			WithMiddleware(func(next http.Handler) http.Handler { return next }).
+			WithRoute("/ext", chi.NewRouter())
+
+		assert.NotNil(t, b)
+	})
 }

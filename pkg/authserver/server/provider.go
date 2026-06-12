@@ -18,6 +18,7 @@ import (
 	"context"
 	"crypto"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ import (
 	"github.com/ory/fosite"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 )
 
 // Token lifespan bounds for validation.
@@ -58,9 +60,16 @@ type AuthorizationServerConfig struct {
 	// This is advertised in /.well-known/openid-configuration and
 	// /.well-known/oauth-authorization-server discovery endpoints.
 	ScopesSupported []string
+	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes the DCR handler
+	// unions into every newly registered client's scope set. All entries are
+	// guaranteed to be a subset of ScopesSupported.
+	BaselineClientScopes []string
 	// AuthorizationEndpointBaseURL overrides the base URL for the authorization_endpoint
 	// in the discovery document. When empty, defaults to the issuer (AccessTokenIssuer).
 	AuthorizationEndpointBaseURL string
+	// CIMDEnabled indicates that the CIMD storage decorator is active. When true,
+	// the discovery document advertises client_id_metadata_document_supported.
+	CIMDEnabled bool
 }
 
 // Factory is a constructor which is used to create an OAuth2 endpoint handler.
@@ -89,9 +98,16 @@ type AuthorizationServerParams struct {
 	AllowedAudiences []string
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	ScopesSupported []string
+	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes the DCR handler
+	// unions into every newly registered client's scope set. All entries are
+	// guaranteed to be a subset of ScopesSupported.
+	BaselineClientScopes []string
 	// AuthorizationEndpointBaseURL overrides the base URL for the authorization_endpoint
 	// in the discovery document. When empty, defaults to Issuer.
 	AuthorizationEndpointBaseURL string
+	// CIMDEnabled indicates that the CIMD storage decorator is active. When true,
+	// the discovery document advertises client_id_metadata_document_supported.
+	CIMDEnabled bool
 }
 
 // validateIssuerURL validates that the issuer is a valid URL with http or https scheme
@@ -189,7 +205,14 @@ func validateParams(cfg *AuthorizationServerParams) error {
 			return fmt.Errorf("authorization endpoint base URL: %w", err)
 		}
 	}
-	return validateAllowedAudiences(cfg.AllowedAudiences)
+	if err := validateAllowedAudiences(cfg.AllowedAudiences); err != nil {
+		return err
+	}
+	// Defense-in-depth: re-check the baseline-⊆-scopes_supported invariant.
+	// RunConfig.Validate performs the same check at the operator-supplied
+	// wire-format boundary; this gate covers callers that construct
+	// AuthorizationServerParams programmatically and bypass that path.
+	return registration.ValidateScopeSubset(cfg.BaselineClientScopes, cfg.ScopesSupported, "baseline_client_scopes")
 }
 
 // NewAuthorizationServerConfig creates an AuthorizationServerConfig from the provided configuration.
@@ -199,6 +222,12 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 	}
 	if err := validateParams(cfg); err != nil {
 		return nil, err
+	}
+
+	if len(cfg.BaselineClientScopes) > 0 {
+		slog.Info("DCR registrations will be auto-granted baseline scopes",
+			"scopes", cfg.BaselineClientScopes,
+		)
 	}
 
 	// Build JWK from signing key
@@ -231,7 +260,9 @@ func NewAuthorizationServerConfig(cfg *AuthorizationServerParams) (*Authorizatio
 		SigningJWKS:                  &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk}},
 		AllowedAudiences:             cfg.AllowedAudiences,
 		ScopesSupported:              cfg.ScopesSupported,
+		BaselineClientScopes:         cfg.BaselineClientScopes,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
+		CIMDEnabled:                  cfg.CIMDEnabled,
 	}, nil
 }
 

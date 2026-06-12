@@ -4,6 +4,7 @@
 package v1beta1
 
 import (
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 )
@@ -60,7 +61,7 @@ type EmbeddingServerSpec struct {
 	// +kubebuilder:validation:Enum=Always;Never;IfNotPresent
 	// +kubebuilder:default="IfNotPresent"
 	// +optional
-	ImagePullPolicy string `json:"imagePullPolicy,omitempty"`
+	ImagePullPolicy corev1.PullPolicy `json:"imagePullPolicy,omitempty"`
 
 	// Port is the port to expose the embedding service on
 	// +kubebuilder:validation:Minimum=1
@@ -210,6 +211,7 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
+//+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 //+kubebuilder:resource:shortName=emb;embedding,categories=toolhive
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Model",type="string",JSONPath=".spec.model"
@@ -270,11 +272,11 @@ func (e *EmbeddingServer) IsModelCacheEnabled() bool {
 }
 
 // GetImagePullPolicy returns the image pull policy for the EmbeddingServer
-func (e *EmbeddingServer) GetImagePullPolicy() string {
+func (e *EmbeddingServer) GetImagePullPolicy() corev1.PullPolicy {
 	if e.Spec.ImagePullPolicy != "" {
 		return e.Spec.ImagePullPolicy
 	}
-	return "IfNotPresent"
+	return corev1.PullIfNotPresent
 }
 
 func init() {

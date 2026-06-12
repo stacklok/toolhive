@@ -499,15 +499,16 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name               string
-		proxy              *mcpv1beta1.MCPRemoteProxy
-		externalAuth       *mcpv1beta1.MCPExternalAuthConfig
-		interceptorFuncs   *interceptor.Funcs
-		expectError        bool
-		errContains        string
-		expectCondition    bool
-		expectedCondStatus metav1.ConditionStatus
-		expectedCondReason string
+		name                string
+		proxy               *mcpv1beta1.MCPRemoteProxy
+		externalAuth        *mcpv1beta1.MCPExternalAuthConfig
+		interceptorFuncs    *interceptor.Funcs
+		expectError         bool
+		errContains         string
+		expectCondition     bool
+		expectedCondStatus  metav1.ConditionStatus
+		expectedCondReason  string
+		expectedCondMessage string // when set, asserts the condition's Message verbatim
 	}{
 		{
 			name: "no external auth reference",
@@ -672,6 +673,52 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 			expectedCondReason: mcpv1beta1.ConditionReasonMCPRemoteProxyExternalAuthConfigFetchError,
 		},
 		{
+			// Mirror added for #5347: when the referenced MCPExternalAuthConfig
+			// has Status.Conditions[Valid]=False (e.g. obo-typed configs that
+			// the default OBO handler rejected with Reason=EnterpriseRequired
+			// in upstream-only builds), the proxy reconciler must surface a
+			// parallel ExternalAuthConfigValidated=False with the same reason
+			// and message.
+			name: "referenced config Valid=False is mirrored onto the proxy",
+			proxy: &mcpv1beta1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "obo-mirror-proxy",
+					Namespace:  "default",
+					Generation: 7,
+				},
+				Spec: mcpv1beta1.MCPRemoteProxySpec{
+					RemoteURL: "https://mcp.example.com",
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+						Name: "obo-config",
+					},
+				},
+			},
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "obo-config",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeOBO,
+					OBO:  &mcpv1beta1.OBOConfig{},
+				},
+				Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+					Conditions: []metav1.Condition{{
+						Type:    mcpv1beta1.ConditionTypeValid,
+						Status:  metav1.ConditionFalse,
+						Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+						Message: "on-behalf-of (OBO) external auth type requires an enterprise build",
+					}},
+				},
+			},
+			expectError:         true,
+			errContains:         "EnterpriseRequired",
+			expectCondition:     true,
+			expectedCondStatus:  metav1.ConditionFalse,
+			expectedCondReason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
+			expectedCondMessage: "on-behalf-of (OBO) external auth type requires an enterprise build",
+		},
+		{
 			name: "embedded auth server with multiple upstreams rejected",
 			proxy: &mcpv1beta1.MCPRemoteProxy{
 				ObjectMeta: metav1.ObjectMeta{
@@ -752,6 +799,16 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 							"Condition status should match expected")
 						assert.Equal(t, tt.expectedCondReason, cond.Reason,
 							"Condition reason should match expected")
+						if tt.expectedCondMessage != "" {
+							assert.Equal(t, tt.expectedCondMessage, cond.Message,
+								"Condition message should match expected")
+						}
+						// F9: when the test fixture sets a non-zero Generation,
+						// the mirror must stamp ObservedGeneration with it.
+						if tt.proxy.Generation != 0 {
+							assert.Equal(t, tt.proxy.Generation, cond.ObservedGeneration,
+								"Condition.ObservedGeneration must match proxy.Generation")
+						}
 					}
 				}
 			} else {
@@ -1381,4 +1438,65 @@ func TestGetExternalAuthConfigForMCPRemoteProxy(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, "test-auth", result.Name)
+}
+
+func TestMCPRemoteProxyReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) {
+	t.Parallel()
+
+	existingRef := mcpv1beta1.WorkloadReference{
+		Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy,
+		Name: "existing",
+	}
+	newRef := mcpv1beta1.WorkloadReference{
+		Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy,
+		Name: "new",
+	}
+
+	tests := []struct {
+		name          string
+		proxyName     string
+		expectedRefs  []mcpv1beta1.WorkloadReference
+		expectedCount int32
+	}{
+		{
+			name:          "adds new proxy reference",
+			proxyName:     "new",
+			expectedRefs:  []mcpv1beta1.WorkloadReference{existingRef, newRef},
+			expectedCount: 2,
+		},
+		{
+			name:          "does not duplicate existing reference",
+			proxyName:     "existing",
+			expectedRefs:  []mcpv1beta1.WorkloadReference{existingRef},
+			expectedCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			scheme := runtime.NewScheme()
+			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+
+			oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
+				Status: mcpv1beta1.MCPOIDCConfigStatus{
+					ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
+					ReferenceCount:       1,
+				},
+			}
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(oidcConfig).
+				WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
+				Build()
+			reconciler := &MCPRemoteProxyReconciler{Client: fakeClient, Scheme: scheme}
+
+			require.NoError(t, reconciler.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, tt.proxyName))
+			assert.ElementsMatch(t, tt.expectedRefs, oidcConfig.Status.ReferencingWorkloads)
+			assert.Equal(t, tt.expectedCount, oidcConfig.Status.ReferenceCount)
+		})
+	}
 }

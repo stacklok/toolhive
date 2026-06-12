@@ -7,6 +7,8 @@ package sdk
 
 import (
 	"errors"
+	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -48,9 +50,37 @@ func TestFindDockerSocket_DockerDesktopOnLinux(t *testing.T) {
 	socketPath := filepath.Join(home, DockerDesktopLinuxSocketPath)
 	require.NoError(t, os.WriteFile(socketPath, nil, 0o600))
 
-	got, err := findDockerSocket()
-	require.NoError(t, err)
-	assert.Equal(t, socketPath, got)
+	got := findDockerSocket()
+	assert.Equal(t, []string{socketPath}, got)
+}
+
+// TestFindDockerSocket_ReturnsAllCandidates exercises the multi-candidate path
+// that motivates the slice return type: a system Docker socket AND a
+// Docker Desktop on Linux user socket both exist at once (common when Docker
+// Desktop installs a host-side wrapper at /var/run/docker.sock alongside its
+// per-user socket). Both must be returned, system-first, so NewDockerClient
+// can fall back from one to the other on connect failure.
+func TestFindDockerSocket_ReturnsAllCandidates(t *testing.T) {
+	clearSocketEnv(t)
+
+	sysDir := t.TempDir()
+	sysSocket := filepath.Join(sysDir, "docker.sock")
+	require.NoError(t, os.WriteFile(sysSocket, nil, 0o600))
+	orig := systemDockerSocketPath
+	systemDockerSocketPath = sysSocket
+	t.Cleanup(func() { systemDockerSocketPath = orig })
+
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	socketDir := filepath.Join(home, filepath.Dir(DockerDesktopLinuxSocketPath))
+	require.NoError(t, os.MkdirAll(socketDir, 0o755))
+	userSocket := filepath.Join(home, DockerDesktopLinuxSocketPath)
+	require.NoError(t, os.WriteFile(userSocket, nil, 0o600))
+
+	got := findDockerSocket()
+	require.Len(t, got, 2, "expected system socket + user socket to both be returned")
+	assert.Equal(t, sysSocket, got[0], "system socket must be probed first")
+	assert.Equal(t, userSocket, got[1], "Docker Desktop on Linux socket must be the next candidate")
 }
 
 func TestFindPlatformContainerSocket_DockerEnvOverrideWins(t *testing.T) {
@@ -62,7 +92,7 @@ func TestFindPlatformContainerSocket_DockerEnvOverrideWins(t *testing.T) {
 	t.Setenv(DockerSocketEnv, envSocket)
 
 	// Even with a Docker Desktop on Linux socket present at $HOME, the env
-	// var must take precedence.
+	// var must take precedence and short-circuit candidate collection.
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	socketDir := filepath.Join(home, filepath.Dir(DockerDesktopLinuxSocketPath))
@@ -70,9 +100,9 @@ func TestFindPlatformContainerSocket_DockerEnvOverrideWins(t *testing.T) {
 	homeSocket := filepath.Join(home, DockerDesktopLinuxSocketPath)
 	require.NoError(t, os.WriteFile(homeSocket, nil, 0o600))
 
-	path, rt, err := findPlatformContainerSocket(runtime.TypeDocker)
+	paths, rt, err := findPlatformContainerSocket(runtime.TypeDocker)
 	require.NoError(t, err)
-	assert.Equal(t, envSocket, path)
+	assert.Equal(t, []string{envSocket}, paths)
 	assert.Equal(t, runtime.TypeDocker, rt)
 }
 
@@ -89,4 +119,36 @@ func TestFindPlatformContainerSocket_NotFound(t *testing.T) {
 	_, _, err := findPlatformContainerSocket(runtime.TypeDocker)
 	require.Error(t, err)
 	assert.True(t, errors.Is(err, ErrRuntimeNotFound), "expected ErrRuntimeNotFound, got %v", err)
+}
+
+func TestDockerPermissionHint(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil error returns empty hint", func(t *testing.T) {
+		t.Parallel()
+		assert.Empty(t, dockerPermissionHint(nil))
+	})
+
+	t.Run("non-permission error returns empty hint", func(t *testing.T) {
+		t.Parallel()
+		assert.Empty(t, dockerPermissionHint(errors.New("connection refused")))
+	})
+
+	t.Run("fs.ErrPermission triggers hint", func(t *testing.T) {
+		t.Parallel()
+		wrapped := fmt.Errorf("failed to ping Docker server: %w", fs.ErrPermission)
+		hint := dockerPermissionHint(wrapped)
+		assert.Contains(t, hint, "docker' group")
+		assert.Contains(t, hint, "usermod -aG docker")
+	})
+
+	t.Run("rendered 'permission denied' substring triggers hint", func(t *testing.T) {
+		t.Parallel()
+		// The Docker SDK wraps the underlying *os.SyscallError in its own
+		// formatted message, which we can't reach via errors.Is. Make sure
+		// the substring fallback still surfaces the hint in that shape.
+		err := errors.New("Got permission denied while trying to connect to the Docker daemon socket at unix:///var/run/docker.sock")
+		hint := dockerPermissionHint(err)
+		assert.NotEmpty(t, hint)
+	})
 }

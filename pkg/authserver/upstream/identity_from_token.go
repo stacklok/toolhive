@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 
 	"github.com/tidwall/gjson"
 )
@@ -29,7 +30,7 @@ type partialIdentity struct {
 // "associated_user.id") into the raw JSON body returned by the token
 // endpoint. Path semantics, trust-model warnings, and uniqueness notes are
 // documented on the corresponding CRD type
-// (cmd/thv-operator/api/v1alpha1.IdentityFromTokenConfig).
+// (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig).
 type IdentityFromTokenConfig struct {
 	// SubjectPath is the gjson path to the unique user identifier (required).
 	SubjectPath string
@@ -43,16 +44,25 @@ type IdentityFromTokenConfig struct {
 	EmailPath string
 }
 
+// registerOnce ensures gjson modifiers are registered exactly once, even
+// when RegisterModifiers is called concurrently from multiple goroutines
+// (e.g. parallel auth-server constructors in tests or during thundering-herd
+// restarts). gjson.AddModifier writes to a global map without internal
+// synchronization, so concurrent calls race without this guard.
+var registerOnce sync.Once
+
 // RegisterModifiers registers the gjson custom modifiers used by this
 // package's path-based identity extractors. Call once during application
 // or test wire-up before invoking any extractor that consumes a
-// modifier-bearing path. Repeated calls are safe — gjson.AddModifier
-// overwrites the existing entry.
+// modifier-bearing path. Repeated calls are safe — the registration is
+// protected by a sync.Once and executes at most once per process.
 //
 // Modifiers registered:
 //   - @upstreamjwt: see upstreamJWTModifier.
 func RegisterModifiers() {
-	gjson.AddModifier("upstreamjwt", upstreamJWTModifier)
+	registerOnce.Do(func() {
+		gjson.AddModifier("upstreamjwt", upstreamJWTModifier)
+	})
 }
 
 // extractIdentityFromTokenResponse extracts user identity fields from a raw

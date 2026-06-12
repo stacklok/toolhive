@@ -311,6 +311,26 @@ func TestNewAuthorizationServerConfig_InvalidConfig(t *testing.T) {
 			},
 			wantErr: "rotated HMAC secret [1] must be at least 32 bytes",
 		},
+		{
+			// Defense-in-depth gate: a direct caller of NewAuthorizationServerConfig
+			// that bypasses RunConfig.Validate must still be rejected when
+			// BaselineClientScopes contains a scope outside ScopesSupported.
+			// Without this case, only the operator-YAML path is regression-protected.
+			name: "baseline scope not in scopes_supported",
+			params: &AuthorizationServerParams{
+				Issuer:               "https://auth.example.com",
+				AccessTokenLifespan:  time.Hour,
+				RefreshTokenLifespan: time.Hour * 24,
+				AuthCodeLifespan:     time.Minute * 10,
+				HMACSecrets:          servercrypto.NewHMACSecrets([]byte("test-secret-with-32-bytes-long!!")),
+				SigningKeyID:         "key-1",
+				SigningKeyAlgorithm:  "RS256",
+				SigningKey:           rsaKey,
+				ScopesSupported:      []string{"openid"},
+				BaselineClientScopes: []string{"offline_access"},
+			},
+			wantErr: `baseline_client_scopes contains "offline_access"`,
+		},
 	}
 
 	for _, tt := range tests {

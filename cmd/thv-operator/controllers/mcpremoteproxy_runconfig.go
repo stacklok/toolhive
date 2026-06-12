@@ -168,18 +168,19 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		return nil, err
 	}
 
-	// Populate middleware configs from the configuration fields
-	// This ensures that middleware_configs is properly set for serialization
-	if err := runner.PopulateMiddlewareConfigs(runConfig); err != nil {
-		return nil, fmt.Errorf("failed to populate middleware configs: %w", err)
-	}
-
 	// Populate ScalingConfig.SessionRedis from spec.sessionStorage so the
 	// proxy runner has the address/db/keyPrefix needed to construct a
 	// shared Redis-backed session store. The Redis password is intentionally
 	// excluded here — it is injected as the THV_SESSION_REDIS_PASSWORD env
 	// var by buildRedisPasswordEnvVar in mcpremoteproxy_deployment.go.
+	// Must run before PopulateMiddlewareConfigs because rate limiting reads SessionRedis.
 	populateScalingConfigForRemoteProxy(runConfig, proxy)
+
+	// Populate middleware configs from the configuration fields
+	// This ensures that middleware_configs is properly set for serialization
+	if err := runner.PopulateMiddlewareConfigs(runConfig); err != nil {
+		return nil, fmt.Errorf("failed to populate middleware configs: %w", err)
+	}
 
 	return runConfig, nil
 }

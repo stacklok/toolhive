@@ -17,10 +17,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// maxDCRBodySize is the maximum allowed size for DCR request bodies (64KB).
+// MaxDCRBodySize is the maximum allowed size for DCR request bodies (64KB).
 // This prevents DoS attacks via extremely large payloads while being generous
 // enough for legitimate requests with multiple redirect URIs.
-const maxDCRBodySize = 64 * 1024
+//
+// It is exported to serve as the single source of truth for the auth-server
+// body-size cap: the embedded auth server (pkg/authserver/runner) derives its
+// own request-body limit from this constant so the two cannot drift.
+const MaxDCRBodySize = 64 * 1024
 
 // RegisterClientHandler handles POST /oauth/register requests.
 // It implements RFC 7591 Dynamic Client Registration for public clients
@@ -29,7 +33,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	ctx := req.Context()
 
 	// Limit request body size to prevent DoS attacks
-	req.Body = http.MaxBytesReader(w, req.Body, maxDCRBodySize)
+	req.Body = http.MaxBytesReader(w, req.Body, MaxDCRBodySize)
 
 	// Validate Content-Type header (RFC 7591 requires application/json)
 	contentType := req.Header.Get("Content-Type")

@@ -30,6 +30,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
@@ -81,6 +82,10 @@ type TransparentProxy struct {
 	// sessionTTL is the resolved inactivity timeout for the session manager.
 	// Defaults to session.DefaultSessionTTL; overridable via WithSessionTTL.
 	sessionTTL time.Duration
+
+	// readTimeout is the resolved http.Server.ReadTimeout for this proxy.
+	// Defaults to defaultReadTimeout; overridable via WithReadTimeout.
+	readTimeout time.Duration
 
 	// sessionStorage is the optional custom storage backend for the session manager.
 	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
@@ -160,6 +165,12 @@ const (
 	// defaultIdleTimeout is the maximum time to wait for the next request on a
 	// keep-alive connection. Matches the value used by the vMCP server.
 	defaultIdleTimeout = 120 * time.Second
+
+	// defaultReadTimeout bounds reading the entire request (headers + body) on
+	// the proxy http.Server, mitigating slow-upload connection exhaustion. It
+	// does not affect responses, so streamed backend responses are unaffected.
+	// Matches the value used by the vMCP server.
+	defaultReadTimeout = 30 * time.Second
 
 	// HealthCheckIntervalEnvVar is the environment variable name for configuring health check interval.
 	HealthCheckIntervalEnvVar = "TOOLHIVE_HEALTH_CHECK_INTERVAL"
@@ -313,6 +324,18 @@ func WithSessionTTL(ttl time.Duration) Option {
 	}
 }
 
+// WithReadTimeout overrides http.Server.ReadTimeout for this proxy, which bounds
+// reading the entire request (headers + body). Zero or negative values are
+// ignored so the constructor's default (defaultReadTimeout) is preserved.
+func WithReadTimeout(d time.Duration) Option {
+	return func(p *TransparentProxy) {
+		if d <= 0 {
+			return
+		}
+		p.readTimeout = d
+	}
+}
+
 // NewTransparentProxy creates a new transparent proxy with optional middlewares.
 // The endpointPrefix parameter specifies an explicit prefix to prepend to SSE endpoint URLs.
 // The trustProxyHeaders parameter indicates whether to trust X-Forwarded-* headers from reverse proxies.
@@ -439,6 +462,7 @@ func NewTransparentProxyWithOptions(
 		authInfoHandler:             authInfoHandler,
 		prefixHandlers:              prefixHandlers,
 		sessionTTL:                  session.DefaultSessionTTL,
+		readTimeout:                 defaultReadTimeout,
 		isRemote:                    isRemote,
 		transportType:               transportType,
 		onHealthCheckFailed:         onHealthCheckFailed,
@@ -550,7 +574,12 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		"content_type", req.Header.Get("Content-Type"),
 	)
 
-	reqBody := readRequestBody(req)
+	reqBody, err := readRequestBody(req)
+	if err != nil {
+		// Oversized request body (chunked / no Content-Length) tripped the
+		// body-size limit; reject with 413 rather than forwarding a truncated body.
+		return plainResponse(req, http.StatusRequestEntityTooLarge, "Request Entity Too Large"), nil
+	}
 
 	// thv proxy does not provide the transport type, so we need to detect it from the request
 	path := req.URL.Path
@@ -573,18 +602,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			if !errors.Is(err, session.ErrSessionNotFound) {
 				// Storage error (e.g. Redis timeout) — client should retry.
 				slog.Error("session store lookup failed", "error", err)
-				hdr := make(http.Header)
-				hdr.Set("Content-Type", "text/plain; charset=utf-8")
-				return &http.Response{
-					StatusCode: http.StatusServiceUnavailable,
-					Status:     fmt.Sprintf("%d %s", http.StatusServiceUnavailable, http.StatusText(http.StatusServiceUnavailable)),
-					Proto:      "HTTP/1.1",
-					ProtoMajor: 1,
-					ProtoMinor: 1,
-					Header:     hdr,
-					Body:       io.NopCloser(strings.NewReader("session store unavailable\n")),
-					Request:    req,
-				}, nil
+				return plainResponse(req, http.StatusServiceUnavailable, "session store unavailable"), nil
 			}
 			return session.NotFoundResponse(req), nil
 		}
@@ -724,18 +742,41 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
-func readRequestBody(req *http.Request) []byte {
+// plainResponse builds a minimal text/plain *http.Response for the given status,
+// used to synthesize error responses from within RoundTrip.
+func plainResponse(req *http.Request, status int, body string) *http.Response {
+	hdr := make(http.Header)
+	hdr.Set("Content-Type", "text/plain; charset=utf-8")
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     hdr,
+		Body:       io.NopCloser(strings.NewReader(body + "\n")),
+		Request:    req,
+	}
+}
+
+func readRequestBody(req *http.Request) ([]byte, error) {
 	reqBody := []byte{}
 	if req.Body != nil {
 		buf, err := io.ReadAll(req.Body)
 		if err != nil {
+			// An oversized body (without Content-Length, e.g. chunked) trips
+			// http.MaxBytesReader here. Surface it so the caller can return 413
+			// instead of silently forwarding a truncated/empty body.
+			if bodylimit.IsRequestTooLarge(err) {
+				return nil, err
+			}
 			slog.Warn("failed to read request body", "error", err)
 		} else {
 			reqBody = buf
 		}
 		req.Body = io.NopCloser(bytes.NewReader(reqBody))
 	}
-	return reqBody
+	return reqBody, nil
 }
 
 func (t *tracingTransport) detectInitialize(body []byte) bool {
@@ -1191,6 +1232,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,   // Prevent Slowloris attacks
+		ReadTimeout:       p.readTimeout,      // Bound slow body uploads
 		IdleTimeout:       defaultIdleTimeout, // Prevent idle keep-alive connections from blocking Shutdown()
 	}
 

@@ -40,6 +40,7 @@ import (
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
@@ -59,8 +60,13 @@ import (
 
 // Not sure if these values need to be configurable.
 const (
-	middlewareTimeout  = 60 * time.Second
-	readHeaderTimeout  = 10 * time.Second
+	middlewareTimeout = 60 * time.Second
+	readHeaderTimeout = 10 * time.Second
+	// readTimeout bounds reading the entire request (headers + body), mitigating
+	// slow-upload connection exhaustion. WriteTimeout is intentionally NOT set:
+	// the workload router serves multi-minute responses (image pulls) that a
+	// server-level write deadline would sever (see setupDefaultRoutes).
+	readTimeout        = 30 * time.Second
 	idleTimeout        = 120 * time.Second
 	shutdownTimeout    = 30 * time.Second
 	nonceBytes         = 16
@@ -207,7 +213,7 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r.Use(
 		middleware.RequestID,
 		// TODO: Figure out logging middleware. We may want to use a different logger.
-		requestBodySizeLimitMiddleware(maxRequestBodySize),
+		bodylimit.Middleware(maxRequestBodySize),
 		headersMiddleware,
 	)
 
@@ -413,98 +419,6 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 	}
 }
 
-// maxBytesTracker wraps an io.ReadCloser to track bytes read and detect size limit violations
-type maxBytesTracker struct {
-	io.ReadCloser
-	bytesRead     *int64
-	limit         int64
-	limitExceeded *bool
-}
-
-func (t *maxBytesTracker) Read(p []byte) (n int, err error) {
-	n, err = t.ReadCloser.Read(p)
-	*t.bytesRead += int64(n)
-
-	// Check if we've reached/exceeded the limit or if this is a MaxBytesError
-	// Use >= because MaxBytesReader stops AT the limit, not after it
-	if *t.bytesRead >= t.limit {
-		*t.limitExceeded = true
-	}
-
-	if err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			*t.limitExceeded = true
-		}
-	}
-
-	return n, err
-}
-
-// bodySizeResponseWriter wraps http.ResponseWriter to convert 400 to 413 only when
-// MaxBytesReader's limit was exceeded (not for validation errors)
-type bodySizeResponseWriter struct {
-	http.ResponseWriter
-	limitExceeded *bool
-	written       bool
-}
-
-func (w *bodySizeResponseWriter) WriteHeader(statusCode int) {
-	// Only convert 400 to 413 if MaxBytesReader's limit was actually exceeded
-	if statusCode == http.StatusBadRequest && !w.written && *w.limitExceeded {
-		statusCode = http.StatusRequestEntityTooLarge
-	}
-	w.written = true
-	w.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (w *bodySizeResponseWriter) Write(b []byte) (int, error) {
-	if !w.written {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-// requestBodySizeLimitMiddleware limits request body size, returns a 413 for request bodies larger than maxSize.
-func requestBodySizeLimitMiddleware(maxSize int64) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check Content-Length header first for early rejection
-			if r.ContentLength > maxSize {
-				slog.Warn("request body size exceeds limit", //nolint:gosec // G706: request metadata for diagnostics
-					"content_length", r.ContentLength, "limit", maxSize, "method", r.Method, "path", r.URL.Path)
-				http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
-				return
-			}
-
-			// Track if MaxBytesReader's limit is exceeded
-			limitExceeded := false
-			bytesRead := int64(0)
-
-			// Wrap ResponseWriter to intercept only MaxBytesReader errors
-			wrappedWriter := &bodySizeResponseWriter{
-				ResponseWriter: w,
-				limitExceeded:  &limitExceeded,
-				written:        false,
-			}
-
-			// Set MaxBytesReader as a safety net for requests without Content-Length
-			limitedBody := http.MaxBytesReader(wrappedWriter, r.Body, maxSize)
-
-			// Wrap the limited body to detect when size limit is exceeded
-			tracker := &maxBytesTracker{
-				ReadCloser:    limitedBody,
-				bytesRead:     &bytesRead,
-				limit:         maxSize,
-				limitExceeded: &limitExceeded,
-			}
-			r.Body = tracker
-
-			next.ServeHTTP(wrappedWriter, r)
-		})
-	}
-}
-
 // getComponentAndVersionFromRequest determines the component name, version, and ui release build from the request
 func getComponentAndVersionFromRequest(r *http.Request) (string, string, bool) {
 	clientType := r.Header.Get("X-Client-Type")
@@ -547,6 +461,9 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 		Addr:              builder.address,
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
+		// ReadTimeout bounds reading the entire request (headers + body) so a
+		// slow client upload cannot hold a connection open indefinitely.
+		ReadTimeout: readTimeout,
 		// IdleTimeout caps how long a keep-alive connection can sit idle.
 		// On Windows named pipes winio.MaxInstances defaults to 255, so a
 		// slow client cannot hold an instance forever and starve new

@@ -566,6 +566,14 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req.Host = req.URL.Host
 	}
 
+	slog.Debug("outbound request to upstream",
+		"method", req.Method,
+		"url", req.URL.String(),
+		"host", req.Host,
+		"accept", req.Header.Get("Accept"),
+		"content_type", req.Header.Get("Content-Type"),
+	)
+
 	reqBody, err := readRequestBody(req)
 	if err != nil {
 		// Oversized request body (chunked / no Content-Length) tripped the
@@ -648,6 +656,13 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		slog.Error("failed to forward request", "error", err)
 		return nil, err
 	}
+
+	slog.Debug("upstream response received",
+		"status", resp.StatusCode,
+		"url", req.URL.String(),
+		"content_type", resp.Header.Get("Content-Type"),
+		"mcp_session_id", resp.Header.Get("Mcp-Session-Id"),
+	)
 
 	// Check for 401 Unauthorized response (bearer token authentication failure)
 	if resp.StatusCode == http.StatusUnauthorized {
@@ -1045,6 +1060,20 @@ func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
 	return p.responseProcessor.ProcessResponse(resp)
 }
 
+// setXForwardedHeaders populates the standard X-Forwarded-* headers on the
+// outbound request. For remote upstreams X-Forwarded-Host is removed: a
+// third-party server may use it to construct redirect URLs pointing back at
+// the proxy, producing 307 redirect loops. X-Forwarded-For and
+// X-Forwarded-Proto are kept so remote backends can still log the client IP
+// and scheme. Client-supplied X-Forwarded-* values never pass through either
+// way — httputil strips them from the outbound request before Rewrite runs.
+func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest) {
+	pr.SetXForwarded()
+	if p.isRemote {
+		pr.Out.Header.Del("X-Forwarded-Host")
+	}
+}
+
 // Start starts the transparent proxy.
 // nolint:gocyclo // This function handles multiple startup scenarios and is complex by design
 func (p *TransparentProxy) Start(ctx context.Context) error {
@@ -1067,7 +1096,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
-			pr.SetXForwarded()
+			p.setXForwardedHeaders(pr)
 
 			// Route to the originating backend pod when session metadata contains backend_url.
 			// Falls back to static targetURL when the session doesn't exist or has no backend_url.

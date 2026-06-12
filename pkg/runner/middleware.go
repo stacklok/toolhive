@@ -47,6 +47,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		audit.MiddlewareType:                  audit.CreateMiddleware,
 		recovery.MiddlewareType:               recovery.CreateMiddleware,
 		headerfwd.HeaderForwardMiddlewareName: headerfwd.CreateMiddleware,
+		headerfwd.StripAuthMiddlewareName:     headerfwd.CreateStripAuthMiddleware,
 		validating.MiddlewareType:             validating.CreateMiddleware,
 		mutating.MiddlewareType:               mutating.CreateMiddleware,
 	}
@@ -364,8 +365,9 @@ func addUsageMetricsMiddleware(middlewares []types.MiddlewareConfig, configDisab
 
 // addUpstreamSwapMiddleware adds upstream swap middleware if the embedded auth server is configured.
 // This middleware exchanges ToolHive JWTs for upstream IdP tokens.
-// The middleware is only added when EmbeddedAuthServerConfig is set; if UpstreamSwapConfig
-// is nil, default configuration values are used.
+// The middleware is only added when EmbeddedAuthServerConfig is set and
+// DisableUpstreamTokenInjection is false. If UpstreamSwapConfig is nil,
+// default configuration values are used.
 func addUpstreamSwapMiddleware(
 	middlewares []types.MiddlewareConfig,
 	config *RunConfig,
@@ -373,6 +375,29 @@ func addUpstreamSwapMiddleware(
 	// Only add middleware if embedded auth server is configured
 	if config.EmbeddedAuthServerConfig == nil {
 		return middlewares, nil
+	}
+
+	// When upstream token injection is disabled, strip the client's credential
+	// headers (Authorization, Cookie, Proxy-Authorization) so they never reach
+	// the upstream server. Two ordering invariants apply, pinned by
+	// TestPopulateMiddlewareConfigs_StripAuthOrdering:
+	//   - strip-auth is appended after the auth middleware, so the client JWT
+	//     is fully validated (and the identity stored in the request context
+	//     for authz/audit) before the header is removed;
+	//   - token-injecting middlewares (token exchange, AWS STS) run closer to
+	//     the backend and would re-add an Authorization header after the
+	//     strip, silently defeating the flag — that contradiction is rejected
+	//     here instead.
+	if config.EmbeddedAuthServerConfig.DisableUpstreamTokenInjection {
+		if config.TokenExchangeConfig != nil {
+			return nil, fmt.Errorf("disableUpstreamTokenInjection cannot be combined with token exchange: " +
+				"token exchange would re-add an Authorization header after strip-auth removes it")
+		}
+		if config.AWSStsConfig != nil {
+			return nil, fmt.Errorf("disableUpstreamTokenInjection cannot be combined with AWS STS: " +
+				"SigV4 signing would re-add credentials after strip-auth removes them")
+		}
+		return addAuthHeaderStripMiddleware(middlewares)
 	}
 
 	// Use provided config or defaults
@@ -428,6 +453,21 @@ func injectUpstreamProviderIfNeeded(
 	}()
 
 	return cedar.InjectUpstreamProvider(authzCfg, providerName)
+}
+
+// addAuthHeaderStripMiddleware adds the strip-auth middleware
+// (pkg/transport/middleware), which removes the client's credential headers
+// before forwarding to the upstream. This prevents the client's ToolHive JWT,
+// cookies, and proxy credentials from leaking to upstream servers that don't
+// expect them.
+func addAuthHeaderStripMiddleware(
+	middlewares []types.MiddlewareConfig,
+) ([]types.MiddlewareConfig, error) {
+	mwConfig, err := types.NewMiddlewareConfig(headerfwd.StripAuthMiddlewareName, struct{}{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create strip-auth middleware config: %w", err)
+	}
+	return append(middlewares, *mwConfig), nil
 }
 
 // addAWSStsMiddleware adds AWS STS middleware if configured.

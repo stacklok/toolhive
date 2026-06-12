@@ -248,6 +248,17 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		}
 	}()
 
+	// Per-session advertised-set cache for audit backend-enrichment. Sized to the
+	// session manager's cache capacity so it holds an entry for each live session
+	// (a zero capacity falls back to the cache's own default). This is the
+	// transport-side half of "Serve caches, core is stateless": enrichment reads
+	// this cache instead of re-aggregating via core.Lookup* (issue #5493). Built
+	// before sessionmanager.New so a failure here cannot strand its optimizerCleanup.
+	advertisedSets, err := newAdvertisedSetCache(cfg.SessionManagerConfig.CacheCapacity)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create advertised-set cache: %w", err)
+	}
+
 	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, cfg.SessionManagerConfig, cfg.BackendRegistry)
 	if err != nil {
 		return nil, err
@@ -266,6 +277,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		sessionManager:     sessionManager,
 		sessionDataStorage: sessionDataStorage,
 		vmcpSessionMgr:     vmcpSessMgr,
+		advertisedSets:     advertisedSets,
 		ready:              make(chan struct{}),
 		healthMonitor:      cfg.HealthMonitor,
 		statusReporter:     cfg.StatusReporter,

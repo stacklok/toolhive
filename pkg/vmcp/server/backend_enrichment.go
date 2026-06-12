@@ -12,7 +12,6 @@ import (
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/audit"
-	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 )
@@ -21,9 +20,10 @@ import (
 // to audit events by parsing MCP requests and resolving the target backend.
 //
 // The resolution source depends on the path: on the Serve path (s.core != nil) it
-// asks the core (LookupTool/LookupResource/LookupPrompt) and derives the backend from
-// Tool.BackendID; on the legacy server.New path it reads the routing table the discovery
-// middleware injected into the request context.
+// reads the per-session advertised-set cache populated at session registration
+// (keyed by the Mcp-Session-Id header), so it never re-aggregates backend
+// capabilities on a request; on the legacy server.New path it reads the routing
+// table the discovery middleware injected into the request context.
 func (s *Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Read and parse the request body to extract MCP method and parameters
@@ -50,7 +50,11 @@ func (s *Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
 		}
 
 		if len(requestBody) > 0 && json.Unmarshal(requestBody, &mcpRequest) == nil {
-			backendName := s.resolveBackendName(r.Context(), mcpRequest.Method, mcpRequest.Params)
+			// The session ID (Serve path) comes from the same header the SDK and the
+			// legacy discovery middleware use; it is "" for initialize and on the
+			// legacy path, where resolveBackendName ignores it.
+			sessionID := r.Header.Get("Mcp-Session-Id")
+			backendName := s.resolveBackendName(r.Context(), sessionID, mcpRequest.Method, mcpRequest.Params)
 
 			// Mutate the existing BackendInfo from audit middleware
 			if backendName != "" {
@@ -66,14 +70,13 @@ func (s *Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
 }
 
 // resolveBackendName resolves the backend handling an MCP request, dispatching on
-// whether the core is wired (Serve path) or not (legacy path).
-func (s *Server) resolveBackendName(ctx context.Context, method string, params map[string]any) string {
-	// Serve path: the core is the source of truth. Lookup* applies the same admission
-	// filter as List*, so a denied or unadvertised capability resolves to nothing (the
-	// backend name is never derived from a capability the caller cannot reach). The
-	// discovery-into-context seam is not populated on this path.
+// whether the core is wired (Serve path) or not (legacy path). sessionID is the
+// Mcp-Session-Id header value; it is used only on the Serve path.
+func (s *Server) resolveBackendName(ctx context.Context, sessionID, method string, params map[string]any) string {
+	// Serve path: read the per-session advertised-set cache built once at session
+	// registration. The discovery-into-context seam is not populated on this path.
 	if s.core != nil {
-		return s.coreLookupBackendName(ctx, method, params)
+		return s.cachedBackendName(sessionID, method, params)
 	}
 
 	// Legacy path: read the routing table the discovery middleware injected into context.
@@ -84,68 +87,32 @@ func (s *Server) resolveBackendName(ctx context.Context, method string, params m
 	return lookupBackendName(method, params, caps.RoutingTable)
 }
 
-// coreLookupBackendName resolves the backend for an MCP request via the core's
-// Lookup* methods, derives the backend from the resolved capability's BackendID,
-// and returns the backend's human-readable name. Identity is read from the request
-// context at this transport boundary and passed explicitly to the core. Returns ""
-// when the capability is unknown, unadvertised, or denied to the caller.
+// cachedBackendName resolves the backend serving an MCP request from the
+// per-session advertised-set cache populated at session registration
+// (injectCoreSessionCapabilities) from the core's single per-session aggregation.
+// It performs only map lookups — unlike a core.Lookup* call it does NOT
+// re-aggregate backend capabilities, which is the whole point of the cache
+// (issue #5493).
 //
-// The name (not the raw BackendID) is returned for parity with the legacy path,
-// which records BackendTarget.WorkloadName (= backend.Name); recording the same value
-// on both paths keeps audit events correlatable across the Serve and server.New paths.
+// The cached value is the backend's human-readable name (not the raw BackendID),
+// for parity with the legacy path, which records BackendTarget.WorkloadName
+// (= backend.Name); recording the same value on both paths keeps audit events
+// correlatable across the Serve and server.New paths. Conflict resolution and the
+// admission filter were already applied by the core when the set was built, so the
+// cache holds the advertised (possibly renamed) name a client actually calls and
+// never a denied capability.
 //
-// Why the core, not the session's routing table: the core's Lookup* applies conflict
-// resolution and the admission filter, so it resolves the advertised (possibly renamed)
-// name a client actually calls and never resolves a denied capability. The Serve-path
-// session's routing table is built without the core's aggregation (it must not
-// double-aggregate, AC2), so it holds raw pre-resolution names that would miss whenever
-// a tool was renamed — it is not a reliable source here.
-//
-// Cost: Lookup* re-aggregates backend capabilities (the core is intentionally
-// stateless, core_vmcp.go:287-298), so an audited request triggers an aggregation here
-// in addition to the one the call itself performs. This is acceptable for now — the
-// Serve path has no production composition root yet — and is deferred rather than
-// optimized speculatively (vmcp anti-pattern #9: optimize with evidence). When the Serve
-// path goes live, a per-session advertised-set cache ("Serve caches, core is stateless")
-// is the place to remove the second aggregation.
-func (s *Server) coreLookupBackendName(ctx context.Context, method string, params map[string]any) string {
-	identity, _ := auth.IdentityFromContext(ctx)
-	switch method {
-	case "tools/call":
-		if name, ok := params["name"].(string); ok {
-			if tool, err := s.core.LookupTool(ctx, identity, name); err == nil && tool != nil {
-				return s.backendDisplayName(ctx, tool.BackendID)
-			}
-		}
-	case "resources/read":
-		if uri, ok := params["uri"].(string); ok {
-			if res, err := s.core.LookupResource(ctx, identity, uri); err == nil && res != nil {
-				return s.backendDisplayName(ctx, res.BackendID)
-			}
-		}
-	case "prompts/get":
-		if name, ok := params["name"].(string); ok {
-			if prompt, err := s.core.LookupPrompt(ctx, identity, name); err == nil && prompt != nil {
-				return s.backendDisplayName(ctx, prompt.BackendID)
-			}
-		}
-	}
-	return ""
-}
-
-// backendDisplayName resolves a logical backend ID to its human-readable name via
-// the registry, so the Serve path records the same audit value (backend.Name) the
-// legacy path's WorkloadName carries. It falls back to the ID when the backend is
-// not in the registry (mirroring the aggregator's minimal-target fallback), so audit
-// still records an identifier rather than dropping the backend entirely.
-func (s *Server) backendDisplayName(ctx context.Context, backendID string) string {
-	if backendID == "" {
+// Returns "" when the session is unknown on this replica (a cross-pod request with
+// no session affinity, or an already-evicted session) or the capability is not in
+// the advertised set. A miss degrades the audit label gracefully and never triggers
+// a second aggregation. prompts/get is not resolved: the Serve path does not
+// advertise prompts, so there is no prompt to label (see advertisedSet).
+func (s *Server) cachedBackendName(sessionID, method string, params map[string]any) string {
+	set, ok := s.advertisedSets.get(sessionID)
+	if !ok {
 		return ""
 	}
-	if backend := s.backendRegistry.Get(ctx, backendID); backend != nil {
-		return backend.Name
-	}
-	return backendID
+	return set.backendName(method, params)
 }
 
 // lookupBackendName looks up which backend handles a given MCP request.

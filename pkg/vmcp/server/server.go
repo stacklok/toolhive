@@ -266,6 +266,14 @@ type Server struct {
 	// vmcpSessionMgr manages session-scoped backend client lifecycle.
 	vmcpSessionMgr SessionManager
 
+	// advertisedSets caches, per session, the name→backend mapping that audit
+	// backend-enrichment uses to label MCP requests on the Serve path, so it
+	// reads a map instead of calling core.Lookup* (which re-aggregates all
+	// backends on every call). Populated at session registration from the core's
+	// single per-session aggregation; nil on the legacy server.New path. See
+	// advertisedSetCache.
+	advertisedSets *advertisedSetCache
+
 	// Ready channel signals when the server is ready to accept connections.
 	// Closed once the listener is created and serving.
 	ready     chan struct{}
@@ -1186,7 +1194,18 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 	adaptedTools, err := func() ([]server.ServerTool, error) {
 		if s.core != nil {
 			identity, _ := auth.IdentityFromContext(ctx)
-			return s.coreSessionTools(ctx, sessionID, identity)
+			tools, toolBackends, listErr := s.coreSessionTools(ctx, sessionID, identity)
+			if listErr != nil {
+				return nil, listErr
+			}
+			// Re-populate the advertised-set cache on this replica: a session that
+			// registered on another replica left no entry here. Resources are not
+			// re-injected lazily, so only the tools mapping is available — a
+			// resources/read audit on this replica misses gracefully rather than
+			// re-aggregating (see advertisedSetCache). The pod-local case returns
+			// above before reaching here, so this never clobbers a fuller entry.
+			s.advertisedSets.store(sessionID, &advertisedSet{tools: toolBackends})
+			return tools, nil
 		}
 		return s.vmcpSessionMgr.GetAdaptedTools(sessionID)
 	}()
@@ -1241,6 +1260,9 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 					"error", termErr,
 					"original_error", retErr)
 			}
+			// Drop any advertised set stored before the failure (no-op on the
+			// legacy path, where the cache is nil; see advertisedSetCache).
+			s.advertisedSets.evict(sessionID)
 		}
 	}()
 

@@ -112,6 +112,9 @@ type fakeCore struct {
 	listResourcesCalls atomic.Int32
 	callToolCalls      atomic.Int32
 	readResourceCalls  atomic.Int32
+	lookupToolCalls    atomic.Int32
+	lookupResCalls     atomic.Int32
+	lookupPromptCalls  atomic.Int32
 	lastCallToolName   atomic.Value // string
 	lastReadURI        atomic.Value // string
 
@@ -162,6 +165,7 @@ func (*fakeCore) GetPrompt(
 }
 
 func (f *fakeCore) LookupTool(_ context.Context, _ *auth.Identity, name string) (*vmcp.Tool, error) {
+	f.lookupToolCalls.Add(1)
 	for i := range f.tools {
 		if f.tools[i].Name == name {
 			tool := f.tools[i]
@@ -172,6 +176,7 @@ func (f *fakeCore) LookupTool(_ context.Context, _ *auth.Identity, name string) 
 }
 
 func (f *fakeCore) LookupResource(_ context.Context, _ *auth.Identity, uri string) (*vmcp.Resource, error) {
+	f.lookupResCalls.Add(1)
 	for i := range f.resources {
 		if f.resources[i].URI == uri {
 			res := f.resources[i]
@@ -181,7 +186,8 @@ func (f *fakeCore) LookupResource(_ context.Context, _ *auth.Identity, uri strin
 	return nil, vmcp.ErrNotFound
 }
 
-func (*fakeCore) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Prompt, error) {
+func (f *fakeCore) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Prompt, error) {
+	f.lookupPromptCalls.Add(1)
 	return nil, vmcp.ErrNotFound
 }
 
@@ -272,13 +278,15 @@ func TestServeRegistersSessionHooks(t *testing.T) {
 // only reachable over HTTP, via MCPServer.WithContext). Its tool store is the observable
 // surface the injection asserts against.
 type fakeSDKSession struct {
-	id    string
-	tools map[string]server.ServerTool
+	id        string
+	tools     map[string]server.ServerTool
+	resources map[string]server.ServerResource
 }
 
 var (
-	_ server.ClientSession    = (*fakeSDKSession)(nil)
-	_ server.SessionWithTools = (*fakeSDKSession)(nil)
+	_ server.ClientSession        = (*fakeSDKSession)(nil)
+	_ server.SessionWithTools     = (*fakeSDKSession)(nil)
+	_ server.SessionWithResources = (*fakeSDKSession)(nil)
 )
 
 func (f *fakeSDKSession) SessionID() string                                 { return f.id }
@@ -287,6 +295,9 @@ func (*fakeSDKSession) Initialized() bool                                   { re
 func (*fakeSDKSession) NotificationChannel() chan<- mcp.JSONRPCNotification { return nil }
 func (f *fakeSDKSession) GetSessionTools() map[string]server.ServerTool     { return f.tools }
 func (f *fakeSDKSession) SetSessionTools(t map[string]server.ServerTool)    { f.tools = t }
+
+func (f *fakeSDKSession) GetSessionResources() map[string]server.ServerResource  { return f.resources }
+func (f *fakeSDKSession) SetSessionResources(r map[string]server.ServerResource) { f.resources = r }
 
 // TestServeLazyInjectsToolsForRehydratedSession exercises the cross-pod re-injection
 // branch of lazyInjectSessionTools that TestServeRegistersSessionHooks does not reach:
@@ -675,6 +686,10 @@ func TestServeToolCallTerminatesOnBindingFailure(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
 	srv, sessionID, _ := registerServeSession(t, fc)
 
+	// Registration populated the advertised-set cache for this session.
+	_, cached := srv.advertisedSets.get(sessionID)
+	require.True(t, cached, "registration should have cached the session's advertised set")
+
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Token: "attacker-token"})
 	req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
 	res, err := srv.coreToolHandler(sessionID, "t")(ctx, req)
@@ -687,6 +702,11 @@ func TestServeToolCallTerminatesOnBindingFailure(t *testing.T) {
 
 	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return !ok },
 		2*time.Second, 10*time.Millisecond, "a binding failure must terminate the session (fail-closed)")
+
+	// The binding failure is a transport-driven session-end path, so it also evicts the
+	// session's advertised set (issue #5493).
+	_, cached = srv.advertisedSets.get(sessionID)
+	assert.False(t, cached, "terminating on a binding failure must evict the advertised set")
 }
 
 // TestServeCoreResourceHandler covers the Serve resource path: the core's resource is
@@ -702,10 +722,14 @@ func TestServeCoreResourceHandler(t *testing.T) {
 		fc := &fakeCore{resources: []vmcp.Resource{{Name: "doc", URI: uri}}}
 		srv, sessionID, _ := registerServeSession(t, fc)
 
-		resources, err := srv.coreSessionResources(context.Background(), sessionID, nil)
+		resources, resourceBackends, err := srv.coreSessionResources(context.Background(), sessionID, nil)
 		require.NoError(t, err)
 		require.Len(t, resources, 1)
 		assert.Equal(t, uri, resources[0].Resource.URI)
+		// The URI→backend mapping is derived from the same ListResources call for
+		// the audit advertised-set cache. The fakeCore resource has no BackendID, so
+		// the display name is empty.
+		assert.Contains(t, resourceBackends, uri)
 
 		contents, err := srv.coreResourceHandler(sessionID, uri)(context.Background(), mcp.ReadResourceRequest{})
 		require.NoError(t, err)

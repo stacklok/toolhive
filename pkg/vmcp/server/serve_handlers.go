@@ -56,12 +56,12 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 	// and passed explicitly to the core — the core never reads it from context.
 	identity, _ := auth.IdentityFromContext(ctx)
 
-	tools, err := s.coreSessionTools(ctx, sessionID, identity)
+	tools, toolBackends, err := s.coreSessionTools(ctx, sessionID, identity)
 	if err != nil {
 		slog.Error("failed to list core tools for session", "session_id", sessionID, "error", err)
 		return err
 	}
-	resources, err := s.coreSessionResources(ctx, sessionID, identity)
+	resources, resourceBackends, err := s.coreSessionResources(ctx, sessionID, identity)
 	if err != nil {
 		slog.Error("failed to list core resources for session", "session_id", sessionID, "error", err)
 		return err
@@ -80,6 +80,13 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 		}
 	}
 
+	// Cache the advertised name→backend mapping so audit backend-enrichment can
+	// label requests from this session without re-aggregating via core.Lookup*
+	// (issue #5493). The mapping is derived from the ListTools/ListResources calls
+	// above, so it adds no extra aggregation. The cache is nil on the legacy path,
+	// but this method only runs on the Serve path where it is set.
+	s.advertisedSets.store(sessionID, &advertisedSet{tools: toolBackends, resources: resourceBackends})
+
 	slog.Info("session capabilities injected from core",
 		"session_id", sessionID,
 		"tool_count", len(tools),
@@ -91,19 +98,24 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 // adapts them to SDK ServerTools whose handlers route through core.CallTool. The
 // core owns conflict resolution and backend-name translation, so the SDK tool name
 // is forwarded as-is to core.CallTool.
+//
+// It also returns the advertised tool name→backend display-name mapping, derived
+// from the same single ListTools aggregation, so the caller can populate the
+// audit advertised-set cache without a second aggregation (issue #5493).
 func (s *Server) coreSessionTools(
 	ctx context.Context, sessionID string, identity *auth.Identity,
-) ([]server.ServerTool, error) {
+) ([]server.ServerTool, map[string]string, error) {
 	domainTools, err := s.core.ListTools(ctx, identity)
 	if err != nil {
-		return nil, fmt.Errorf("core ListTools: %w", err)
+		return nil, nil, fmt.Errorf("core ListTools: %w", err)
 	}
 
 	sdkTools := make([]server.ServerTool, 0, len(domainTools))
+	toolBackends := make(map[string]string, len(domainTools))
 	for _, domainTool := range domainTools {
 		schemaJSON, err := json.Marshal(domainTool.InputSchema)
 		if err != nil {
-			return nil, fmt.Errorf("marshal schema for tool %s: %w", domainTool.Name, err)
+			return nil, nil, fmt.Errorf("marshal schema for tool %s: %w", domainTool.Name, err)
 		}
 
 		tool := mcp.Tool{
@@ -127,22 +139,28 @@ func (s *Server) coreSessionTools(
 			Tool:    tool,
 			Handler: s.coreToolHandler(sessionID, domainTool.Name),
 		})
+		toolBackends[domainTool.Name] = s.backendDisplayName(ctx, domainTool.BackendID)
 	}
-	return sdkTools, nil
+	return sdkTools, toolBackends, nil
 }
 
 // coreSessionResources queries the core for the resources advertised to identity
 // and adapts them to SDK ServerResources whose handlers route through
 // core.ReadResource.
+//
+// It also returns the advertised resource URI→backend display-name mapping,
+// derived from the same single ListResources aggregation, for the audit
+// advertised-set cache (issue #5493).
 func (s *Server) coreSessionResources(
 	ctx context.Context, sessionID string, identity *auth.Identity,
-) ([]server.ServerResource, error) {
+) ([]server.ServerResource, map[string]string, error) {
 	domainResources, err := s.core.ListResources(ctx, identity)
 	if err != nil {
-		return nil, fmt.Errorf("core ListResources: %w", err)
+		return nil, nil, fmt.Errorf("core ListResources: %w", err)
 	}
 
 	sdkResources := make([]server.ServerResource, 0, len(domainResources))
+	resourceBackends := make(map[string]string, len(domainResources))
 	for _, domainResource := range domainResources {
 		sdkResources = append(sdkResources, server.ServerResource{
 			Resource: mcp.Resource{
@@ -153,8 +171,9 @@ func (s *Server) coreSessionResources(
 			},
 			Handler: s.coreResourceHandler(sessionID, domainResource.URI),
 		})
+		resourceBackends[domainResource.URI] = s.backendDisplayName(ctx, domainResource.BackendID)
 	}
-	return sdkResources, nil
+	return sdkResources, resourceBackends, nil
 }
 
 // coreToolHandler builds the SDK handler for a Serve-path tool. It enforces the
@@ -248,4 +267,22 @@ func (s *Server) terminateOnBindingFailure(sessionID, capability string, err err
 		slog.Error("failed to terminate session after auth failure",
 			"session_id", sessionID, "error", termErr)
 	}
+	// Drop the session's advertised set: this is one of the session-end paths the
+	// transport drives directly (see advertisedSetCache lifecycle).
+	s.advertisedSets.evict(sessionID)
+}
+
+// backendDisplayName resolves a logical backend ID to its human-readable name via
+// the registry, so the Serve path records the same audit value (backend.Name) the
+// legacy path's WorkloadName carries. It falls back to the ID when the backend is
+// not in the registry (mirroring the aggregator's minimal-target fallback), so audit
+// still records an identifier rather than dropping the backend entirely.
+func (s *Server) backendDisplayName(ctx context.Context, backendID string) string {
+	if backendID == "" {
+		return ""
+	}
+	if backend := s.backendRegistry.Get(ctx, backendID); backend != nil {
+		return backend.Name
+	}
+	return backendID
 }

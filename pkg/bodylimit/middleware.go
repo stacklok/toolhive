@@ -26,10 +26,14 @@ const (
 	// runner middleware registry.
 	MiddlewareType = "bodylimit"
 
-	// DefaultMaxRequestBodySize is the fail-safe cap applied when no limit is
-	// configured. Zero must never mean "unlimited" (see go-style rules), so
-	// callers passing a non-positive limit fall back to this value.
-	DefaultMaxRequestBodySize int64 = 1 << 20 // 1 MB
+	// DefaultMaxRequestBodySize is the fail-safe cap applied to inbound request
+	// bodies when no limit is configured. It is sized to accommodate legitimate
+	// MCP tools/call payloads with large inline content (e.g. base64 images or
+	// documents) while still bounding per-request memory; operators can override
+	// it. Note this caps requests only — server-produced response content is not
+	// limited. Zero must never mean "unlimited" (see go-style rules), so callers
+	// passing a non-positive limit fall back to this value.
+	DefaultMaxRequestBodySize int64 = 8 << 20 // 8 MB
 )
 
 // MiddlewareParams holds the parameters for the body limit middleware factory.

@@ -5,6 +5,8 @@ package runner
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -12,6 +14,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/mock/gomock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -30,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 	"github.com/stacklok/toolhive/pkg/webhook"
 	"github.com/stacklok/toolhive/pkg/webhook/mutating"
 	"github.com/stacklok/toolhive/pkg/webhook/validating"
@@ -980,4 +984,46 @@ func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
 	assert.True(t, typeIndex[telemetry.MiddlewareType])
 	assert.True(t, typeIndex[authz.MiddlewareType])
 	assert.True(t, typeIndex[audit.MiddlewareType])
+}
+
+// TestStripAuthMiddleware covers the strip-auth middleware end to end: the
+// factory registers it on the runner under stripAuthMiddlewareType, the
+// handler removes the Authorization header (and nothing else) before calling
+// next, and Close is a no-op.
+func TestStripAuthMiddleware(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	var registered types.Middleware
+	mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
+	mockRunner.EXPECT().AddMiddleware(stripAuthMiddlewareType, gomock.Any()).Do(func(_ string, mw types.Middleware) {
+		registered = mw
+	})
+
+	mwConfig, err := types.NewMiddlewareConfig(stripAuthMiddlewareType, struct{}{})
+	require.NoError(t, err)
+	require.NoError(t, createStripAuthMiddleware(mwConfig, mockRunner))
+	require.NotNil(t, registered)
+
+	var gotAuth, gotCustom string
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		gotCustom = r.Header.Get("X-Custom")
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
+	req.Header.Set("Authorization", "Bearer toolhive-jwt")
+	req.Header.Set("X-Custom", "kept")
+	rec := httptest.NewRecorder()
+
+	registered.Handler()(next).ServeHTTP(rec, req)
+
+	assert.Empty(t, gotAuth, "Authorization header must be stripped before reaching the upstream")
+	assert.Equal(t, "kept", gotCustom, "unrelated headers must pass through")
+	assert.Equal(t, http.StatusNoContent, rec.Code)
+
+	assert.NoError(t, registered.Close())
 }

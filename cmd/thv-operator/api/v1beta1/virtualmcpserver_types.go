@@ -160,6 +160,7 @@ type EmbeddingServerRef struct {
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 //
 // +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? has(self.oidcConfigRef) : true",message="spec.incomingAuth.oidcConfigRef is required when type is oidc"
+// +kubebuilder:validation:XValidation:rule="!(has(self.authzConfig) && has(self.authzConfigRef))",message="authzConfig and authzConfigRef are mutually exclusive; use authzConfigRef to reference a shared MCPAuthzConfig"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type IncomingAuthConfig struct {
@@ -176,10 +177,26 @@ type IncomingAuthConfig struct {
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
-	// AuthzConfig defines authorization policy configuration
-	// Reuses MCPServer authz patterns
+	// AuthzConfig defines authorization policy configuration.
+	// Reuses MCPServer authz patterns.
+	// AuthzConfig and AuthzConfigRef are mutually exclusive.
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
+
+	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+	// The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+	// Mutually exclusive with authzConfig.
+	//
+	// TODO(#4778): remove the staging NOTE below once workload controllers
+	// resolve AuthzConfigRef into a runtime authz config.
+	//
+	// NOTE: this field is consumed by workload controllers in a follow-up PR.
+	// Until that lands, AuthzConfigRef is reference-tracked by the
+	// MCPAuthzConfig controller (deletion protection, status.referenceCount)
+	// but does NOT apply authorization to this VirtualMCPServer. Use the
+	// inline AuthzConfig field in the meantime.
+	// +optional
+	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 }
 
 // OutgoingAuthConfig configures authentication from Virtual MCP to backend MCPServers

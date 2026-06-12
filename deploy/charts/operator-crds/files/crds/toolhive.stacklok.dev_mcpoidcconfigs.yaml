@@ -289,7 +289,10 @@ spec:
               referencingWorkloads:
                 description: |-
                   ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
-                  Each entry identifies the workload by kind and name.
+                  Each entry identifies the workload by kind and name. The map key is the
+                  (kind, name) pair so two workloads of different kinds that share a name
+                  (e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct
+                  entries rather than colliding under merge-patch semantics.
                 items:
                   description: |-
                     WorkloadReference identifies a workload that references a shared configuration resource.
@@ -312,6 +315,7 @@ spec:
                   type: object
                 type: array
                 x-kubernetes-list-map-keys:
+                - kind
                 - name
                 x-kubernetes-list-type: map
             type: object
@@ -590,7 +594,10 @@ spec:
               referencingWorkloads:
                 description: |-
                   ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
-                  Each entry identifies the workload by kind and name.
+                  Each entry identifies the workload by kind and name. The map key is the
+                  (kind, name) pair so two workloads of different kinds that share a name
+                  (e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct
+                  entries rather than colliding under merge-patch semantics.
                 items:
                   description: |-
                     WorkloadReference identifies a workload that references a shared configuration resource.
@@ -613,6 +620,7 @@ spec:
                   type: object
                 type: array
                 x-kubernetes-list-map-keys:
+                - kind
                 - name
                 x-kubernetes-list-type: map
             type: object

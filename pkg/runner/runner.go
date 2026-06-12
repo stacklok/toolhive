@@ -265,6 +265,16 @@ func (r *Runner) Run(ctx context.Context) error {
 		}
 	}
 
+	// Body-size limit is always the outermost middleware, regardless of how the
+	// chain was assembled (PopulateMiddlewareConfigs above, or WithMiddlewareFromFlags
+	// which pre-populates the slice and takes the else branch). Idempotent, so the
+	// operator/Populate path is a no-op here.
+	var err error
+	r.Config.MiddlewareConfigs, err = addBodyLimitMiddleware(r.Config.MiddlewareConfigs)
+	if err != nil {
+		return fmt.Errorf("failed to add body limit middleware: %w", err)
+	}
+
 	// Initialize embedded auth server if configured.
 	// This must happen before middleware creation so that the upstream token
 	// service is available to middleware factories (e.g., upstreamswap).

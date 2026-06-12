@@ -123,6 +123,17 @@ type ServerConfig struct {
 	// definitions before assembling this config (sessionmanager.New only checks the
 	// WorkflowDefs/ComposerFactory pairing). This responsibility moves here with the
 	// relocation and matters when server.New is routed through Serve in Phase 3.
+	//
+	// Caller responsibility (AC2, the single-aggregation contract): FactoryConfig.Base
+	// MUST be constructed WITHOUT a session.WithAggregator option on the Serve path. On
+	// this path the core is the single source of truth — session registration sources the
+	// advertised set from core.ListTools/ListResources and routes calls through the core
+	// (handleSessionRegistrationImpl/serve_handlers.go); the factory's role is reduced to
+	// opening the session's backend connections and binding identity. A factory that also
+	// aggregates would produce a second, divergent capability set (drift) whose routing
+	// table this path discards — exactly the double-aggregation AC2 forbids. This is an
+	// unenforced contract today because no production composition root wires the Serve path
+	// yet; it becomes load-bearing when one does.
 	SessionManagerConfig *sessionmanager.FactoryConfig
 
 	// TelemetryProvider is the cross-cutting telemetry provider (also consumed by
@@ -151,22 +162,32 @@ type ServerConfig struct {
 // The authenticated middleware chain is produced by the shared (*Server).Handler that
 // the Serve-built *Server already uses, with the authz and annotation-enrichment layers
 // guarded off via a nil AuthzMiddleware (#5441); authorization moves to the core
-// admission seam (#5438). The remaining transport concerns — the direct VMCP request
-// path (#5442) and the AS runner / status reporter / optimizer / health monitor
-// lifecycle (#5443) — are relocated under Serve by the subsequent Phase 2 tasks.
-// server.New is not yet routed through Serve and keeps its own copy of the session
-// wiring until Phase 3, so this is purely additive and observable behavior is unchanged.
+// admission seam (#5438). The injected core is stored on the *Server, which makes the
+// "/" MCP route serveable: the shared Handler guards the discovery middleware to the
+// legacy path (s.core == nil), and on the Serve path session registration and request
+// handlers call the core directly (#5442). The last transport subsystems — the embedded
+// AS runner routes, the status reporter (and its periodic goroutine), the optimizer
+// cleanup, and the health monitor's Start/Stop (#5443) — are driven from the
+// carried-forward shared (*Server).Handler/Start/Stop using the fields Serve populates
+// from ServerConfig below. Serve does NOT construct the health monitor: it receives the
+// pre-built *health.Monitor via ServerConfig (nil ⇒ disabled) and owns only its
+// lifecycle, while the composition root injects the same instance into the core as a
+// health.StatusProvider. server.New is not yet routed through Serve and keeps its own
+// copy of the session wiring until Phase 3, so this is purely additive and observable
+// behavior is unchanged.
 //
 // Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
 // nil required collaborator (SessionManagerConfig or BackendRegistry). The session
 // hooks close over the constructed *Server, so they are registered after it is
 // assembled.
 //
-// Contract: the returned *Server now has a live session manager and backend registry,
-// but a nil discovery manager, router, and backend client at this phase. It must NOT
-// be Start()ed or served on the "/" MCP route until #5442 wires those fields — the
-// carried-forward Handler passes them to discovery.Middleware, which would nil-deref.
-// The unauthenticated routes (registered as direct mux entries) are safe to serve.
+// Contract: the returned *Server has a live session manager, backend registry, and core,
+// but a nil discovery manager, router, and backend client — the request path goes
+// through the core, so those legacy collaborators are unused on the Serve path. The
+// shared Handler skips the discovery middleware when s.core != nil, so serving the "/"
+// MCP route no longer nil-derefs. The embedded AS runner routes, the status reporter,
+// the optimizer cleanup, and the health monitor's Start/Stop are driven from the shared
+// Handler/Start/Stop via the fields Serve populates from ServerConfig (#5443).
 func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("%w: nil server config", vmcp.ErrInvalidConfig)
@@ -234,6 +255,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 
 	srv := &Server{
 		config:             serveCfg,
+		core:               v,
 		mcpServer:          mcpServer,
 		backendRegistry:    cfg.BackendRegistry,
 		sessionManager:     sessionManager,

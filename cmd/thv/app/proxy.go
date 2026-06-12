@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/transport"
@@ -225,6 +226,14 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 
 	// Create middlewares slice for incoming request authentication
 	var middlewares []types.NamedMiddleware
+
+	// Body-size limit, always the outermost middleware (index 0) — rejects oversized
+	// request bodies with 413 before auth or the backend reads them. Mirrors the
+	// runner's addBodyLimitMiddleware. See pkg/bodylimit.
+	middlewares = append(middlewares, types.NamedMiddleware{
+		Name:     bodylimit.MiddlewareType,
+		Function: bodylimit.Middleware(bodylimit.DefaultMaxRequestBodySize),
+	})
 
 	// Get OIDC configuration if enabled (for protecting the proxy endpoint)
 	oidcConfig := getProxyOIDCConfig(cmd)

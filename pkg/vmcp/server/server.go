@@ -1198,13 +1198,19 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 			if listErr != nil {
 				return nil, listErr
 			}
-			// Re-populate the advertised-set cache on this replica: a session that
-			// registered on another replica left no entry here. Resources are not
-			// re-injected lazily, so only the tools mapping is available — a
-			// resources/read audit on this replica misses gracefully rather than
-			// re-aggregating (see advertisedSetCache). The pod-local case returns
-			// above before reaching here, so this never clobbers a fuller entry.
-			s.advertisedSets.store(sessionID, &advertisedSet{tools: toolBackends})
+			// Re-populate the advertised-set cache only on a miss. A session that
+			// registered on this replica already holds the full {tools, resources}
+			// entry; storing a tools-only set here would drop its resources mapping.
+			// The early return above does NOT always cover the pod-local case — a
+			// session advertising resources but zero tools has an empty SDK tool
+			// store, so it reaches here — hence the explicit miss check. On a
+			// cross-pod replica that never registered the session there is no entry,
+			// so the tools-only mapping is stored; resources are not re-injected
+			// lazily, so a resources/read audit there misses gracefully rather than
+			// re-aggregating (see advertisedSetCache).
+			if _, cached := s.advertisedSets.get(sessionID); !cached {
+				s.advertisedSets.store(sessionID, &advertisedSet{tools: toolBackends})
+			}
 			return tools, nil
 		}
 		return s.vmcpSessionMgr.GetAdaptedTools(sessionID)

@@ -349,11 +349,23 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 		return gErr == nil && len(tools) > 0
 	}, 2*time.Second, 10*time.Millisecond, "session should be registered with adapted tools")
 
+	// Simulate a second pod: on a replica that never registered the session the
+	// advertised-set cache has no entry (it is node-local). Evict to model that, so the
+	// rehydration path below exercises both SDK-tool injection and cache re-population.
+	srv.advertisedSets.evict(sessionID)
+
 	// Empty-store (cross-pod) branch: a fresh SDK session with no tools gets them injected.
 	rehydrated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{}}
 	srv.lazyInjectSessionTools(srv.mcpServer.WithContext(context.Background(), rehydrated))
 	assert.Contains(t, rehydrated.tools, testTool.Name,
 		"an empty per-session store should be re-injected from the vMCP session manager")
+
+	// Lazy-inject also repopulates the advertised-set cache on a miss (tools-only —
+	// resources are not lazily re-injected), so a subsequent audited tools/call on this
+	// replica can be labelled without re-aggregating.
+	set, ok := srv.advertisedSets.get(sessionID)
+	require.True(t, ok, "lazy-inject must repopulate the advertised-set cache on a miss")
+	assert.Contains(t, set.tools, testTool.Name)
 
 	// No-op branch: a populated store is left untouched (early return before GetAdaptedTools).
 	populated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{
@@ -362,6 +374,51 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 	srv.lazyInjectSessionTools(srv.mcpServer.WithContext(context.Background(), populated))
 	assert.NotContains(t, populated.tools, testTool.Name, "a populated store must not be modified (no-op)")
 	assert.Contains(t, populated.tools, "preexisting")
+}
+
+// failingCreateSessionMgr is a SessionManager stub whose CreateSession always errors,
+// used to drive handleSessionRegistrationImpl's failure path without the full HTTP flow.
+type failingCreateSessionMgr struct{}
+
+func (*failingCreateSessionMgr) Generate() string               { return "" }
+func (*failingCreateSessionMgr) Validate(string) (bool, error)  { return false, nil }
+func (*failingCreateSessionMgr) Terminate(string) (bool, error) { return false, nil }
+func (*failingCreateSessionMgr) CreateSession(context.Context, string) (vmcpsession.MultiSession, error) {
+	return nil, errors.New("forced create failure")
+}
+func (*failingCreateSessionMgr) GetAdaptedTools(string) ([]server.ServerTool, error) { return nil, nil }
+func (*failingCreateSessionMgr) GetAdaptedResources(string) ([]server.ServerResource, error) {
+	return nil, nil
+}
+func (*failingCreateSessionMgr) GetMultiSession(string) (vmcpsession.MultiSession, bool) {
+	return nil, false
+}
+func (*failingCreateSessionMgr) DecorateSession(
+	string, func(sessiontypes.MultiSession) sessiontypes.MultiSession,
+) error {
+	return nil
+}
+func (*failingCreateSessionMgr) NotifyBackendExpired(string, string, map[string]string) {}
+
+// TestServeRegistrationFailureEvictsAdvertisedSet proves the registration-failure
+// cleanup path also evicts the advertised set (the defer in handleSessionRegistrationImpl).
+// The entry is pre-seeded to stand in for any state cached before the failure; a forced
+// CreateSession error then drives the defer, which must evict it.
+func TestServeRegistrationFailureEvictsAdvertisedSet(t *testing.T) {
+	t.Parallel()
+
+	cache, err := newAdvertisedSetCache(8)
+	require.NoError(t, err)
+	const sessionID = "sess-reg-fail"
+	cache.store(sessionID, &advertisedSet{tools: map[string]string{"t": "b"}})
+	srv := &Server{vmcpSessionMgr: &failingCreateSessionMgr{}, advertisedSets: cache}
+
+	sess := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{}}
+	regErr := srv.handleSessionRegistrationImpl(context.Background(), sess)
+	require.Error(t, regErr, "a CreateSession failure must surface as a registration error")
+
+	_, ok := cache.get(sessionID)
+	assert.False(t, ok, "a registration failure must evict the session's advertised set")
 }
 
 // TestServeReturnsErrorWhenSessionManagerConstructionFails verifies Serve surfaces a

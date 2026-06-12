@@ -63,14 +63,15 @@ func (a *advertisedSet) backendName(method string, params map[string]any) string
 // # Lifecycle
 //
 // An entry is stored once per session when its advertised set is built
-// (injectCoreSessionCapabilities) and removed when the transport observes the
-// session ending (terminateOnBindingFailure and the registration-failure
-// cleanup). The remaining session-end paths — a client DELETE and TTL/capacity
-// eviction — are owned by the session manager, which evicts lazily and does not
-// notify the transport, so the cache is bounded (LRU): it can never grow without
-// limit even when one of those paths leaves an entry behind for a now-dead
-// session ID. Such a stale entry is harmless (session IDs are UUIDs and never
-// reused) and is evicted under capacity pressure.
+// (injectCoreSessionCapabilities) and removed on session end: the transport
+// evicts directly on the paths it drives (terminateOnBindingFailure and the
+// registration-failure cleanup), and the SDK's OnUnregisterSession hook — which
+// mcp-go fires on both a client DELETE and the idle-TTL sweep — evicts the rest
+// (wired in Serve). The cache is still bounded (LRU) as a backstop: a session end
+// the hook does not cover (e.g. capacity eviction of the SDK session, or a path a
+// future SDK version changes) can never leave the cache growing without limit. A
+// stale entry left for a now-dead session ID is harmless (session IDs are UUIDs
+// and never reused) and is evicted under capacity pressure.
 //
 // # Cross-replica behaviour
 //

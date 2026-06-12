@@ -107,12 +107,24 @@ func (s *Server) resolveBackendName(ctx context.Context, sessionID, method strin
 // the advertised set. A miss degrades the audit label gracefully and never triggers
 // a second aggregation. prompts/get is not resolved: the Serve path does not
 // advertise prompts, so there is no prompt to label (see advertisedSet).
+//
+// A miss on a labelable method (tools/call, resources/read) is logged at DEBUG so the
+// audit-completeness gap is observable rather than silent (issue #5493). This is the
+// gap gated behind the "hard blocker before audit ships on a live Serve path": until a
+// production composition root wires Serve, no audited traffic hits this path. Logging,
+// not a core.Lookup* fallback, is used on purpose — a fallback would reintroduce the
+// per-request re-aggregation this cache exists to eliminate.
 func (s *Server) cachedBackendName(sessionID, method string, params map[string]any) string {
-	set, ok := s.advertisedSets.get(sessionID)
-	if !ok {
-		return ""
+	if set, ok := s.advertisedSets.get(sessionID); ok {
+		if name := set.backendName(method, params); name != "" {
+			return name
+		}
 	}
-	return set.backendName(method, params)
+	if method == "tools/call" || method == "resources/read" {
+		slog.Debug("audit backend-enrichment resolved no backend on the Serve path",
+			"session_id", sessionID, "method", method)
+	}
+	return ""
 }
 
 // lookupBackendName looks up which backend handles a given MCP request.

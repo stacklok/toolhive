@@ -273,10 +273,15 @@ func (s *Server) terminateOnBindingFailure(sessionID, capability string, err err
 }
 
 // backendDisplayName resolves a logical backend ID to its human-readable name via
-// the registry, so the Serve path records the same audit value (backend.Name) the
-// legacy path's WorkloadName carries. It falls back to the ID when the backend is
-// not in the registry (mirroring the aggregator's minimal-target fallback), so audit
-// still records an identifier rather than dropping the backend entirely.
+// the registry. For a registered backend it records backend.Name — the same value
+// the legacy path's WorkloadName carries, so audit events correlate across paths.
+//
+// For an orphan backend (advertised by the core but absent from the registry) it
+// falls back to the raw backendID, so audit records an identifier rather than
+// dropping the backend entirely. This does NOT match the legacy path in the orphan
+// case: the legacy aggregator's minimal-target fallback leaves WorkloadName empty,
+// so legacy records "" there. Recording the ID is the deliberate, arguably-better
+// behavior; it is not parity.
 func (s *Server) backendDisplayName(ctx context.Context, backendID string) string {
 	if backendID == "" {
 		return ""

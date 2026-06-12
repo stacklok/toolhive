@@ -616,23 +616,39 @@ func TestBackendEnrichmentMiddleware_ServePath(t *testing.T) {
 	})
 
 	// AC1 (issue #5493): an audited Serve-path request must NOT trigger a second backend
-	// aggregation. Enrichment reads the cache and never calls core.Lookup*/List*.
-	t.Run("does not re-aggregate via the core", func(t *testing.T) {
+	// aggregation. Enrichment reads the cache and never calls core.Lookup*/List* — for
+	// tools/call, resources/read, or prompts/get.
+	t.Run("does not re-aggregate via the core for any method", func(t *testing.T) {
 		t.Parallel()
-		isolated := &fakeCore{tools: []vmcp.Tool{{Name: "test-tool", BackendID: "backend-x"}}}
+		isolated := &fakeCore{
+			tools:     []vmcp.Tool{{Name: "test-tool", BackendID: "backend-x"}},
+			resources: []vmcp.Resource{{Name: "doc", URI: "file:///doc", BackendID: "backend-x"}},
+		}
 		isolatedCache, cErr := newAdvertisedSetCache(4)
 		require.NoError(t, cErr)
-		isolatedCache.store(sessionID, &advertisedSet{tools: map[string]string{"test-tool": "github-mcp"}})
+		isolatedCache.store(sessionID, &advertisedSet{
+			tools:     map[string]string{"test-tool": "github-mcp"},
+			resources: map[string]string{"file:///doc": "docs-backend"},
+		})
 		isolatedSrv := &Server{core: isolated, advertisedSets: isolatedCache}
 
-		nextHandler, _ := createTestHandler()
-		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(toolsCallRequest)))
-		req.Header.Set("Mcp-Session-Id", sessionID)
-		req = req.WithContext(audit.WithBackendInfo(req.Context(), &audit.BackendInfo{}))
-		isolatedSrv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
+		for _, body := range []string{
+			toolsCallRequest,
+			`{"method":"resources/read","params":{"uri":"file:///doc"}}`,
+			`{"method":"prompts/get","params":{"name":"p"}}`,
+		} {
+			nextHandler, _ := createTestHandler()
+			req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(body)))
+			req.Header.Set("Mcp-Session-Id", sessionID)
+			req = req.WithContext(audit.WithBackendInfo(req.Context(), &audit.BackendInfo{}))
+			isolatedSrv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
+		}
 
 		assert.Zero(t, isolated.lookupToolCalls.Load(), "enrichment must not call core.LookupTool")
 		assert.Zero(t, isolated.listToolsCalls.Load(), "enrichment must not call core.ListTools")
+		assert.Zero(t, isolated.lookupResCalls.Load(), "enrichment must not call core.LookupResource")
+		assert.Zero(t, isolated.listResourcesCalls.Load(), "enrichment must not call core.ListResources")
+		assert.Zero(t, isolated.lookupPromptCalls.Load(), "enrichment must not call core.LookupPrompt")
 	})
 }
 

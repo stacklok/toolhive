@@ -30,6 +30,7 @@ import (
 	"golang.org/x/exp/jsonrpc2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
@@ -565,7 +566,12 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 		req.Host = req.URL.Host
 	}
 
-	reqBody := readRequestBody(req)
+	reqBody, err := readRequestBody(req)
+	if err != nil {
+		// Oversized request body (chunked / no Content-Length) tripped the
+		// body-size limit; reject with 413 rather than forwarding a truncated body.
+		return plainResponse(req, http.StatusRequestEntityTooLarge, "Request Entity Too Large"), nil
+	}
 
 	// thv proxy does not provide the transport type, so we need to detect it from the request
 	path := req.URL.Path
@@ -588,18 +594,7 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			if !errors.Is(err, session.ErrSessionNotFound) {
 				// Storage error (e.g. Redis timeout) — client should retry.
 				slog.Error("session store lookup failed", "error", err)
-				hdr := make(http.Header)
-				hdr.Set("Content-Type", "text/plain; charset=utf-8")
-				return &http.Response{
-					StatusCode: http.StatusServiceUnavailable,
-					Status:     fmt.Sprintf("%d %s", http.StatusServiceUnavailable, http.StatusText(http.StatusServiceUnavailable)),
-					Proto:      "HTTP/1.1",
-					ProtoMajor: 1,
-					ProtoMinor: 1,
-					Header:     hdr,
-					Body:       io.NopCloser(strings.NewReader("session store unavailable\n")),
-					Request:    req,
-				}, nil
+				return plainResponse(req, http.StatusServiceUnavailable, "session store unavailable"), nil
 			}
 			return session.NotFoundResponse(req), nil
 		}
@@ -732,18 +727,41 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	return resp, nil
 }
 
-func readRequestBody(req *http.Request) []byte {
+// plainResponse builds a minimal text/plain *http.Response for the given status,
+// used to synthesize error responses from within RoundTrip.
+func plainResponse(req *http.Request, status int, body string) *http.Response {
+	hdr := make(http.Header)
+	hdr.Set("Content-Type", "text/plain; charset=utf-8")
+	return &http.Response{
+		StatusCode: status,
+		Status:     fmt.Sprintf("%d %s", status, http.StatusText(status)),
+		Proto:      "HTTP/1.1",
+		ProtoMajor: 1,
+		ProtoMinor: 1,
+		Header:     hdr,
+		Body:       io.NopCloser(strings.NewReader(body + "\n")),
+		Request:    req,
+	}
+}
+
+func readRequestBody(req *http.Request) ([]byte, error) {
 	reqBody := []byte{}
 	if req.Body != nil {
 		buf, err := io.ReadAll(req.Body)
 		if err != nil {
+			// An oversized body (without Content-Length, e.g. chunked) trips
+			// http.MaxBytesReader here. Surface it so the caller can return 413
+			// instead of silently forwarding a truncated/empty body.
+			if bodylimit.IsRequestTooLarge(err) {
+				return nil, err
+			}
 			slog.Warn("failed to read request body", "error", err)
 		} else {
 			reqBody = buf
 		}
 		req.Body = io.NopCloser(bytes.NewReader(reqBody))
 	}
-	return reqBody
+	return reqBody, nil
 }
 
 func (t *tracingTransport) detectInitialize(body []byte) bool {

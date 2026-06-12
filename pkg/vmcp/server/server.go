@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -688,6 +689,12 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// Non-qualifying requests are left untouched; http.Server.WriteTimeout
 	// (defaultWriteTimeout) remains in effect for them.
 	mcpHandler = transportmiddleware.WriteTimeout(s.config.EndpointPath)(mcpHandler)
+
+	// Cap request body size before the MCP parser (and all inner middleware)
+	// buffers it via io.ReadAll, rejecting oversized bodies with 413. This is
+	// parity with the proxy transports (see pkg/bodylimit). It only bounds the
+	// request body and does not affect long-lived SSE response streams.
+	mcpHandler = bodylimit.Middleware(bodylimit.DefaultMaxRequestBodySize)(mcpHandler)
 
 	// Apply recovery middleware as outermost (catches panics from all inner middleware)
 	mcpHandler = recovery.Middleware(mcpHandler)

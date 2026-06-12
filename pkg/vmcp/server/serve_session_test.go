@@ -367,16 +367,21 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 // TestServeReturnsErrorWhenSessionManagerConstructionFails verifies Serve surfaces a
 // sessionmanager.New failure — the path the closeStorageOnErr guard protects. It
 // confirms the guarded path is reached (the failure occurs AFTER session data storage
-// is built, distinct from config validation: ErrorContains("CacheCapacity") +
+// is built, distinct from config validation: ErrorContains("FactoryConfig.Base") +
 // NotErrorIs(ErrInvalidConfig)). It does NOT directly observe sessionDataStorage.Close()
 // — the storage is constructed internally and the test holds no handle to it; the
 // close itself is the same defer-guard pattern carried over verbatim from server.New.
-// A negative CacheCapacity is the cheapest forced failure.
+//
+// A nil FactoryConfig.Base is the cheapest forced sessionmanager.New failure. (A
+// negative CacheCapacity is now rejected earlier, by newAdvertisedSetCache, so it
+// no longer reaches sessionmanager.New — see TestNewAdvertisedSetCacheCapacityValidation.)
 func TestServeReturnsErrorWhenSessionManagerConstructionFails(t *testing.T) {
 	t.Parallel()
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, &ServerConfig{
-		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: testMinimalFactory(), CacheCapacity: -1},
+		// Base nil: passes Serve's own config validation (which only requires a
+		// non-nil SessionManagerConfig) and fails inside sessionmanager.New.
+		SessionManagerConfig: &sessionmanager.FactoryConfig{},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
 	require.Error(t, err)
@@ -384,7 +389,7 @@ func TestServeReturnsErrorWhenSessionManagerConstructionFails(t *testing.T) {
 	// Construction failure from sessionmanager.New (after the storage is built, so the
 	// closeStorageOnErr guard runs) — not a config-validation error.
 	assert.NotErrorIs(t, err, vmcp.ErrInvalidConfig)
-	assert.ErrorContains(t, err, "CacheCapacity")
+	assert.ErrorContains(t, err, "FactoryConfig.Base")
 }
 
 // TestBuildSessionDataStorage verifies provider selection: nil/empty/"memory"

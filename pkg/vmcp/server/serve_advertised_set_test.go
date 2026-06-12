@@ -88,19 +88,22 @@ func TestAdvertisedSetCacheNilReceiverIsSafe(t *testing.T) {
 	})
 }
 
-func TestNewAdvertisedSetCacheCapacityFallback(t *testing.T) {
+func TestNewAdvertisedSetCacheCapacityValidation(t *testing.T) {
 	t.Parallel()
 
-	// A non-positive capacity must fall back to the default rather than failing or
-	// silently enabling unbounded growth.
-	for _, capacity := range []int{0, -1} {
-		c, err := newAdvertisedSetCache(capacity)
-		require.NoError(t, err)
-		require.NotNil(t, c)
-		c.store("s", &advertisedSet{})
-		_, ok := c.get("s")
-		assert.True(t, ok)
-	}
+	// Capacity 0 falls back to the default rather than silently enabling unbounded growth.
+	c, err := newAdvertisedSetCache(0)
+	require.NoError(t, err)
+	require.NotNil(t, c)
+	c.store("s", &advertisedSet{})
+	_, ok := c.get("s")
+	assert.True(t, ok)
+
+	// A negative capacity is rejected (fail loudly), matching the session manager's
+	// validation of the same CacheCapacity field.
+	_, err = newAdvertisedSetCache(-1)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "capacity must be >= 0")
 }
 
 func TestAdvertisedSetCacheIsBounded(t *testing.T) {

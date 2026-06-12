@@ -88,11 +88,16 @@ type advertisedSetCache struct {
 	sets *lru.Cache[string, *advertisedSet]
 }
 
-// newAdvertisedSetCache builds a bounded advertised-set cache. A capacity <= 0
-// falls back to defaultAdvertisedSetCacheCapacity, so a zero value never
-// silently enables unbounded growth.
+// newAdvertisedSetCache builds a bounded advertised-set cache. A capacity of 0
+// uses defaultAdvertisedSetCacheCapacity, so a zero value never silently enables
+// unbounded growth; a negative capacity is rejected. This matches the session
+// manager's validation of the same CacheCapacity field (sessionmanager.New), since
+// both caches are sized from it — the two must not disagree on what a value means.
 func newAdvertisedSetCache(capacity int) (*advertisedSetCache, error) {
-	if capacity <= 0 {
+	if capacity < 0 {
+		return nil, fmt.Errorf("advertised-set cache: capacity must be >= 0 (got %d)", capacity)
+	}
+	if capacity == 0 {
 		capacity = defaultAdvertisedSetCacheCapacity
 	}
 	sets, err := lru.New[string, *advertisedSet](capacity)

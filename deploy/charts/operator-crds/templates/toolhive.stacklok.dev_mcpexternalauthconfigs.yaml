@@ -277,8 +277,13 @@ spec:
                     description: |-
                       DisableUpstreamTokenInjection prevents the embedded auth server from injecting
                       upstream IdP tokens into requests forwarded to the backend MCP server.
-                      When true, the embedded auth server still handles OAuth flows for clients
-                      but does not swap ToolHive JWTs for upstream tokens on outgoing requests.
+                      When true, the embedded auth server still handles OAuth flows for clients,
+                      but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS
+                      the client's credential headers (Authorization, Cookie, Proxy-Authorization)
+                      after validating the JWT — the backend receives an unauthenticated request.
+                      Use headerForward to attach static credentials (e.g. an API key) if the
+                      backend needs them. Cannot be combined with token exchange or AWS STS,
+                      which would re-add credentials after the strip.
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean
@@ -1596,8 +1601,13 @@ spec:
                     description: |-
                       DisableUpstreamTokenInjection prevents the embedded auth server from injecting
                       upstream IdP tokens into requests forwarded to the backend MCP server.
-                      When true, the embedded auth server still handles OAuth flows for clients
-                      but does not swap ToolHive JWTs for upstream tokens on outgoing requests.
+                      When true, the embedded auth server still handles OAuth flows for clients,
+                      but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS
+                      the client's credential headers (Authorization, Cookie, Proxy-Authorization)
+                      after validating the JWT — the backend receives an unauthenticated request.
+                      Use headerForward to attach static credentials (e.g. an API key) if the
+                      backend needs them. Cannot be combined with token exchange or AWS STS,
+                      which would re-add credentials after the strip.
                       This is useful when the backend MCP server does not require authentication
                       (e.g., public documentation servers) but you still want client authentication.
                     type: boolean

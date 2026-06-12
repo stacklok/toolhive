@@ -5,8 +5,6 @@ package runner
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -14,7 +12,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -28,12 +25,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/types"
-	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
 	"github.com/stacklok/toolhive/pkg/webhook"
 	"github.com/stacklok/toolhive/pkg/webhook/mutating"
 	"github.com/stacklok/toolhive/pkg/webhook/validating"
@@ -336,7 +333,7 @@ func TestAddUpstreamSwapMiddleware(t *testing.T) {
 				return &RunConfig{EmbeddedAuthServerConfig: cfg}
 			}(),
 			wantAppended: true,
-			wantType:     stripAuthMiddlewareType,
+			wantType:     headerfwd.StripAuthMiddlewareName,
 		},
 		{
 			name: "EmbeddedAuthServerConfig set with explicit UpstreamSwapConfig uses provided config",
@@ -456,7 +453,7 @@ func TestPopulateMiddlewareConfigs_UpstreamSwap(t *testing.T) {
 					foundSwap = true
 					foundConfig = &tt.config.MiddlewareConfigs[i]
 				}
-				if mw.Type == stripAuthMiddlewareType {
+				if mw.Type == headerfwd.StripAuthMiddlewareName {
 					foundStrip = true
 				}
 			}
@@ -986,44 +983,70 @@ func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
 	assert.True(t, typeIndex[audit.MiddlewareType])
 }
 
-// TestStripAuthMiddleware covers the strip-auth middleware end to end: the
-// factory registers it on the runner under stripAuthMiddlewareType, the
-// handler removes the Authorization header (and nothing else) before calling
-// next, and Close is a no-op.
-func TestStripAuthMiddleware(t *testing.T) {
+// TestPopulateMiddlewareConfigs_StripAuthOrdering pins the ordering invariant
+// for strip-auth: the auth middleware must precede it in the chain so the
+// client JWT is fully validated (and the identity stored in the request
+// context for authz/audit) before the Authorization header is removed.
+func TestPopulateMiddlewareConfigs_StripAuthOrdering(t *testing.T) {
 	t.Parallel()
 
-	ctrl := gomock.NewController(t)
-	defer ctrl.Finish()
+	authServerCfg := createMinimalAuthServerConfig()
+	authServerCfg.DisableUpstreamTokenInjection = true
+	config := &RunConfig{EmbeddedAuthServerConfig: authServerCfg}
 
-	var registered types.Middleware
-	mockRunner := mocks.NewMockMiddlewareRunner(ctrl)
-	mockRunner.EXPECT().AddMiddleware(stripAuthMiddlewareType, gomock.Any()).Do(func(_ string, mw types.Middleware) {
-		registered = mw
-	})
+	require.NoError(t, PopulateMiddlewareConfigs(config))
 
-	mwConfig, err := types.NewMiddlewareConfig(stripAuthMiddlewareType, struct{}{})
-	require.NoError(t, err)
-	require.NoError(t, createStripAuthMiddleware(mwConfig, mockRunner))
-	require.NotNil(t, registered)
+	authIdx, stripIdx := -1, -1
+	for i, mw := range config.MiddlewareConfigs {
+		switch mw.Type {
+		case auth.MiddlewareType:
+			authIdx = i
+		case headerfwd.StripAuthMiddlewareName:
+			stripIdx = i
+		}
+	}
+	require.GreaterOrEqual(t, authIdx, 0, "auth middleware must be present")
+	require.GreaterOrEqual(t, stripIdx, 0, "strip-auth middleware must be present")
+	assert.Less(t, authIdx, stripIdx,
+		"auth must validate the client JWT before strip-auth removes the Authorization header")
+}
 
-	var gotAuth, gotCustom string
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAuth = r.Header.Get("Authorization")
-		gotCustom = r.Header.Get("X-Custom")
-		w.WriteHeader(http.StatusNoContent)
-	})
+// TestPopulateMiddlewareConfigs_StripAuthConflicts verifies that
+// DisableUpstreamTokenInjection is rejected when combined with middlewares
+// that would re-add credentials after the strip (token exchange, AWS STS),
+// instead of silently defeating the flag at runtime.
+func TestPopulateMiddlewareConfigs_StripAuthConflicts(t *testing.T) {
+	t.Parallel()
 
-	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	req.Header.Set("Authorization", "Bearer toolhive-jwt")
-	req.Header.Set("X-Custom", "kept")
-	rec := httptest.NewRecorder()
+	tests := []struct {
+		name    string
+		mutate  func(*RunConfig)
+		wantErr string
+	}{
+		{
+			name:    "token exchange combination is rejected",
+			mutate:  func(c *RunConfig) { c.TokenExchangeConfig = &tokenexchange.Config{} },
+			wantErr: "token exchange",
+		},
+		{
+			name:    "AWS STS combination is rejected",
+			mutate:  func(c *RunConfig) { c.AWSStsConfig = &awssts.Config{}; c.RemoteURL = "https://example.com" },
+			wantErr: "AWS STS",
+		},
+	}
 
-	registered.Handler()(next).ServeHTTP(rec, req)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	assert.Empty(t, gotAuth, "Authorization header must be stripped before reaching the upstream")
-	assert.Equal(t, "kept", gotCustom, "unrelated headers must pass through")
-	assert.Equal(t, http.StatusNoContent, rec.Code)
+			authServerCfg := createMinimalAuthServerConfig()
+			authServerCfg.DisableUpstreamTokenInjection = true
+			config := &RunConfig{EmbeddedAuthServerConfig: authServerCfg}
+			tt.mutate(config)
 
-	assert.NoError(t, registered.Close())
+			err := PopulateMiddlewareConfigs(config)
+			require.ErrorContains(t, err, "disableUpstreamTokenInjection cannot be combined")
+			require.ErrorContains(t, err, tt.wantErr)
+		})
+	}
 }

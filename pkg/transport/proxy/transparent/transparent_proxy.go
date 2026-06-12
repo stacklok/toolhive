@@ -1019,6 +1019,20 @@ func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
 	return p.responseProcessor.ProcessResponse(resp)
 }
 
+// setXForwardedHeaders populates the standard X-Forwarded-* headers on the
+// outbound request. For remote upstreams X-Forwarded-Host is removed: a
+// third-party server may use it to construct redirect URLs pointing back at
+// the proxy, producing 307 redirect loops. X-Forwarded-For and
+// X-Forwarded-Proto are kept so remote backends can still log the client IP
+// and scheme. Client-supplied X-Forwarded-* values never pass through either
+// way — httputil strips them from the outbound request before Rewrite runs.
+func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest) {
+	pr.SetXForwarded()
+	if p.isRemote {
+		pr.Out.Header.Del("X-Forwarded-Host")
+	}
+}
+
 // Start starts the transparent proxy.
 // nolint:gocyclo // This function handles multiple startup scenarios and is complex by design
 func (p *TransparentProxy) Start(ctx context.Context) error {
@@ -1041,15 +1055,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
-
-			// Only set X-Forwarded-* headers for local backends.
-			// For remote upstreams, these headers leak the proxy's hostname
-			// (X-Forwarded-Host) to third-party servers, which can cause
-			// 307 redirect loops when the upstream uses that header to
-			// construct redirect URLs pointing back to the proxy.
-			if !p.isRemote {
-				pr.SetXForwarded()
-			}
+			p.setXForwardedHeaders(pr)
 
 			// Route to the originating backend pod when session metadata contains backend_url.
 			// Falls back to static targetURL when the session doesn't exist or has no backend_url.

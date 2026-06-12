@@ -165,11 +165,16 @@ type ServerConfig struct {
 // admission seam (#5438). The injected core is stored on the *Server, which makes the
 // "/" MCP route serveable: the shared Handler guards the discovery middleware to the
 // legacy path (s.core == nil), and on the Serve path session registration and request
-// handlers call the core directly (#5442). The remaining transport concern — the AS
-// runner / status reporter / optimizer / health monitor lifecycle (#5443) — is
-// relocated under Serve by the next Phase 2 task. server.New is not yet routed through
-// Serve and keeps its own copy of the session wiring until Phase 3, so this is purely
-// additive and observable behavior is unchanged.
+// handlers call the core directly (#5442). The last transport subsystems — the embedded
+// AS runner routes, the status reporter (and its periodic goroutine), the optimizer
+// cleanup, and the health monitor's Start/Stop (#5443) — are driven from the
+// carried-forward shared (*Server).Handler/Start/Stop using the fields Serve populates
+// from ServerConfig below. Serve does NOT construct the health monitor: it receives the
+// pre-built *health.Monitor via ServerConfig (nil ⇒ disabled) and owns only its
+// lifecycle, while the composition root injects the same instance into the core as a
+// health.StatusProvider. server.New is not yet routed through Serve and keeps its own
+// copy of the session wiring until Phase 3, so this is purely additive and observable
+// behavior is unchanged.
 //
 // Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
 // nil required collaborator (SessionManagerConfig or BackendRegistry). The session
@@ -180,8 +185,9 @@ type ServerConfig struct {
 // but a nil discovery manager, router, and backend client — the request path goes
 // through the core, so those legacy collaborators are unused on the Serve path. The
 // shared Handler skips the discovery middleware when s.core != nil, so serving the "/"
-// MCP route no longer nil-derefs. The AS runner / status reporter / optimizer / health
-// monitor lifecycle is still wired by #5443.
+// MCP route no longer nil-derefs. The embedded AS runner routes, the status reporter,
+// the optimizer cleanup, and the health monitor's Start/Stop are driven from the shared
+// Handler/Start/Stop via the fields Serve populates from ServerConfig (#5443).
 func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("%w: nil server config", vmcp.ErrInvalidConfig)

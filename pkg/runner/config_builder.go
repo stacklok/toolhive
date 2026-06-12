@@ -696,6 +696,17 @@ func WithMiddlewareFromFlags(
 // operator build path). The CLI flag path (WithMiddlewareFromFlags) builds
 // MiddlewareConfigs directly and never reads AdditionalMiddlewareConfigs, so
 // combining this option with that path would silently drop the injected config.
+//
+// SECURITY: a config's Parameters are serialized verbatim into the RunConfig the
+// operator writes to a ConfigMap — plaintext, not a Secret — readable by anyone
+// with ConfigMap read access in the workload namespace. Injected parameters must
+// therefore NEVER embed raw credentials (client secrets, refresh tokens,
+// service-account keys, …). Reference such secrets by environment-variable name
+// and resolve them at runtime instead, mirroring the typed token-exchange
+// middleware, which leaves its serialized client_secret empty and reads
+// TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET at startup. Because the seam carries
+// parameters opaquely it cannot enforce this — it is a contract the injecting
+// handler must uphold.
 func WithAdditionalMiddlewareConfigs(configs ...*types.MiddlewareConfig) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
 		for _, c := range configs {

@@ -1,0 +1,59 @@
+# Hardened /retest workflow for stacklok/toolhive
+#
+# Comment "/retest" on a PR to re-run its failed GitHub Actions workflow runs.
+#
+# Security notes (see also the inline comments below):
+#   - issue_comment workflows ALWAYS execute the copy of this file on the
+#     default branch, never the version in the PR. A malicious PR cannot alter
+#     this workflow to steal the token. Review/protect this file on `main`.
+#   - The job uses the ephemeral, auto-revoked GITHUB_TOKEN (NOT a PAT/App key).
+#     Its only powers here are: re-run/cancel workflow runs in THIS repo, and
+#     react/comment on the triggering comment. It cannot read secrets, push
+#     code, or change settings.
+#   - Triggering is gated to org members/collaborators so arbitrary public
+#     users cannot replay CI.
+#   - The action is a third-party node action holding the token, so it is
+#     pinned to a full commit SHA. Treat any bump as a code-review event.
+#
+# BEFORE enabling, confirm there is NO privileged/side-effecting workflow
+# (pull_request_target, deploy, release, publish, etc.) on this repo's PRs that
+# a /retest could replay with secrets. retest re-runs existing runs on the PR
+# head; for normal fork pull_request runs that is sandboxed and safe.
+
+name: Retest Action on PR Comment
+
+on:
+  issue_comment:
+    types: [created]
+
+# Default everything to read-only; the job below opts into the minimum it needs.
+permissions:
+  contents: read
+
+jobs:
+  retest:
+    name: Retest
+    runs-on: ubuntu-24.04
+    # Only run for PR comments, in this repo, from a trusted author, and not bots.
+    if: >-
+      ${{
+        github.event.issue.pull_request
+        && github.repository == 'stacklok/toolhive'
+        && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
+                    github.event.comment.author_association)
+        && github.actor != 'dependabot[bot]'
+        && github.actor != 'github-actions[bot]'
+      }}
+    permissions:
+      actions: write         # re-run failed workflow runs
+      checks: write
+      pull-requests: write   # react/comment on the triggering comment
+    steps:
+      - name: Retest
+        # actions-v0.4.17 -> pinned to its commit SHA. Bump deliberately.
+        uses: envoyproxy/toolshed/actions/retest@1f5b552c6749502b885cb8cf23549b929e745547
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          comment-id: ${{ github.event.comment.id }}
+          pr-url: ${{ github.event.issue.pull_request.url }}
+          app-owner: github-actions

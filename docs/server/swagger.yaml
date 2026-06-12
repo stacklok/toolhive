@@ -1256,6 +1256,26 @@ components:
       type: object
     github_com_stacklok_toolhive_pkg_runner.RunConfig:
       properties:
+        additional_middleware_configs:
+          description: |-
+            AdditionalMiddlewareConfigs carries pre-built middleware configs injected by
+            external-auth handlers (reached via *[]RunConfigBuilderOption) rather than
+            derived from typed RunConfig fields. PopulateMiddlewareConfigs splices these
+            into the chain in the backend-egress group — after auth and before recovery —
+            instead of discarding them. Upstream carries these configs verbatim and never
+            inspects their parameters; the middleware type identity (e.g. an enterprise
+            auth type) is supplied by the caller via types.MiddlewareConfig.Type.
+
+            Each entry's Type is expected to be a NEW egress middleware type (e.g. OBO),
+            not one already produced from a typed RunConfig field (auth, authz, audit,
+            tokenExchange, awssts, …). Dispatch in the proxyrunner is purely by Type
+            string, so an injected Type that shadows a typed-field type would add a
+            second instance of that middleware to the chain; the seam does not validate
+            against this.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig'
+          type: array
+          uniqueItems: false
         allow_docker_gateway:
           description: |-
             AllowDockerGateway permits outbound connections to Docker gateway addresses

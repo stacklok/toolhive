@@ -43,34 +43,17 @@ func waitForReady(t *testing.T, addr string) {
 // the proxy chain rejects an oversized request body with 413 (the chain wires
 // it exactly as PopulateMiddlewareConfigs does for every proxy transport).
 //
-// Two distinct code paths are exercised:
-//   - "content-length": a body with a Content-Length header that exceeds the
-//     limit is rejected early by the middleware before the handler runs.
-//   - "chunked": a body sent WITHOUT a Content-Length bypasses the early
-//     Content-Length rejection and instead trips http.MaxBytesReader inside the
-//     handler's io.ReadAll, which must still report 413 (not 500). Regression
-//     guard for the handler's MaxBytesError handling.
+// The request is sent WITHOUT a Content-Length (chunked transfer), which
+// bypasses the middleware's early Content-Length rejection and instead trips
+// http.MaxBytesReader inside the handler's io.ReadAll, which must still report
+// 413 (not 500). This is the per-transport code path: the early Content-Length
+// reject lives entirely in bodylimit.Middleware and is covered by
+// pkg/bodylimit. A body that flows far enough to be capped also proves the
+// middleware is mounted on the chain.
 //
 //nolint:paralleltest // starts an HTTP server
 func TestHTTPProxy_RejectsOversizedBody(t *testing.T) {
 	const limit = 1024
-
-	tests := []struct {
-		name string
-		// body returns the request body for each case. io.NopCloser hides the
-		// concrete reader type so net/http omits Content-Length and uses chunked
-		// transfer, bypassing the middleware's early-reject path.
-		body func() io.Reader
-	}{
-		{
-			name: "content-length",
-			body: func() io.Reader { return bytes.NewReader(make([]byte, limit+1)) },
-		},
-		{
-			name: "chunked",
-			body: func() io.Reader { return io.NopCloser(bytes.NewReader(make([]byte, limit*8))) },
-		},
-	}
 
 	chain := []types.NamedMiddleware{
 		{Name: bodylimit.MiddlewareType, Function: bodylimit.Middleware(limit)},
@@ -85,20 +68,20 @@ func TestHTTPProxy_RejectsOversizedBody(t *testing.T) {
 
 	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
 
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, tc.body())
-			require.NoError(t, err)
-			req.Header.Set("Content-Type", "application/json")
+	// io.NopCloser hides the concrete reader type so net/http omits
+	// Content-Length and uses chunked transfer, bypassing the middleware's
+	// early-reject path.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url,
+		io.NopCloser(bytes.NewReader(make([]byte, limit*8))))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
 
-			resp, err := http.DefaultClient.Do(req)
-			require.NoError(t, err)
-			defer resp.Body.Close()
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
 
-			assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
-			assert.NotEqual(t, http.StatusInternalServerError, resp.StatusCode)
-		})
-	}
+	assert.Equal(t, http.StatusRequestEntityTooLarge, resp.StatusCode)
+	assert.NotEqual(t, http.StatusInternalServerError, resp.StatusCode)
 }
 
 // TestHTTPProxy_BodyLimitBoundsDownstreamReader verifies that the body-limit

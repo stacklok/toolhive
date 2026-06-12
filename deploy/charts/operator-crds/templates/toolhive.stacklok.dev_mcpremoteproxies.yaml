@@ -100,8 +100,9 @@ spec:
                 - name
                 type: object
               authzConfig:
-                description: AuthzConfig defines authorization policy configuration
-                  for the proxy
+                description: |-
+                  AuthzConfig defines authorization policy configuration for the proxy.
+                  AuthzConfig and AuthzConfigRef are mutually exclusive.
                 properties:
                   configMap:
                     description: |-
@@ -209,6 +210,28 @@ spec:
                 - message: inline must be set when type is 'inline', and must not
                     be set otherwise
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+              authzConfigRef:
+                description: |-
+                  AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                  The referenced MCPAuthzConfig must exist in the same namespace as this MCPRemoteProxy.
+                  Mutually exclusive with authzConfig.
+
+                  resolve AuthzConfigRef into a runtime authz config.
+
+                  NOTE: this field is consumed by workload controllers in a follow-up PR.
+                  Until that lands, AuthzConfigRef is reference-tracked by the
+                  MCPAuthzConfig controller (deletion protection, status.referenceCount)
+                  but does NOT apply authorization to this MCPRemoteProxy. Use the
+                  inline AuthzConfig field in the meantime.
+                properties:
+                  name:
+                    description: Name is the name of the MCPAuthzConfig resource in
+                      the same namespace.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               endpointPrefix:
                 description: |-
                   EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
@@ -534,6 +557,10 @@ spec:
             required:
             - remoteUrl
             type: object
+            x-kubernetes-validations:
+            - message: authzConfig and authzConfigRef are mutually exclusive; use
+                authzConfigRef to reference a shared MCPAuthzConfig
+              rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
           status:
             description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
             properties:
@@ -725,8 +752,9 @@ spec:
                 - name
                 type: object
               authzConfig:
-                description: AuthzConfig defines authorization policy configuration
-                  for the proxy
+                description: |-
+                  AuthzConfig defines authorization policy configuration for the proxy.
+                  AuthzConfig and AuthzConfigRef are mutually exclusive.
                 properties:
                   configMap:
                     description: |-
@@ -834,6 +862,28 @@ spec:
                 - message: inline must be set when type is 'inline', and must not
                     be set otherwise
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+              authzConfigRef:
+                description: |-
+                  AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                  The referenced MCPAuthzConfig must exist in the same namespace as this MCPRemoteProxy.
+                  Mutually exclusive with authzConfig.
+
+                  resolve AuthzConfigRef into a runtime authz config.
+
+                  NOTE: this field is consumed by workload controllers in a follow-up PR.
+                  Until that lands, AuthzConfigRef is reference-tracked by the
+                  MCPAuthzConfig controller (deletion protection, status.referenceCount)
+                  but does NOT apply authorization to this MCPRemoteProxy. Use the
+                  inline AuthzConfig field in the meantime.
+                properties:
+                  name:
+                    description: Name is the name of the MCPAuthzConfig resource in
+                      the same namespace.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               endpointPrefix:
                 description: |-
                   EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
@@ -1159,6 +1209,10 @@ spec:
             required:
             - remoteUrl
             type: object
+            x-kubernetes-validations:
+            - message: authzConfig and authzConfigRef are mutually exclusive; use
+                authzConfigRef to reference a shared MCPAuthzConfig
+              rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
           status:
             description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
             properties:

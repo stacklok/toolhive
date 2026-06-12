@@ -138,6 +138,13 @@ type MCPRemoteProxySpec struct {
 	// SessionAffinity controls whether the Service routes repeated client connections to the same pod.
 	// MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
 	// Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+	//
+	// Interaction with sessionStorage: when running multiple replicas with
+	// sessionStorage.provider "redis", set this to "None" so requests are
+	// distributed across replicas and sessions resolve via the shared store.
+	// Conversely, "None" without Redis-backed sessionStorage breaks session
+	// continuity — any request landing on a different pod fails with
+	// "Session not found".
 	// +kubebuilder:validation:Enum=ClientIP;None
 	// +kubebuilder:default=ClientIP
 	// +optional
@@ -154,6 +161,10 @@ type MCPRemoteProxySpec struct {
 	// transparent_proxy.go) and rewrites client-facing session IDs to backend
 	// session IDs using session metadata. Both lookups require shared state
 	// across replicas.
+	//
+	// When using the Redis provider, also set sessionAffinity to "None" so the
+	// Service routes requests round-robin and all replicas rely on the shared
+	// session store rather than pod-local state.
 	//
 	// Mirrors MCPServer.spec.sessionStorage and VirtualMCPServer.spec.sessionStorage.
 	// +optional

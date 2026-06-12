@@ -276,7 +276,32 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			errMsg:    "upstreamInject requires a non-empty providerName",
 		},
 		{
-			name: "valid obo type with placeholder OBOConfig",
+			name: "valid obo type with fully populated OBOConfig",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-full",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeOBO,
+					OBO: &OBOConfig{
+						TenantID:        "72f988bf-86f1-41af-91ab-2d7cd011db47",
+						ClientID:        "app-client-id",
+						ClientSecretRef: &SecretKeyRef{Name: "entra-client", Key: "clientSecret"},
+						Audience:        "api://backend",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			// Go Validate() intentionally does NOT check OBOConfig fields: the
+			// required-field, pattern, and "at least one of audience or scopes"
+			// rules are enforced by the kubebuilder markers + CEL at admission,
+			// and the registered OBO handler validates semantics at reconcile.
+			// So a minimal obo block passes the Go method even though the
+			// apiserver would reject it (covered by the envtest CEL suite).
+			name: "obo type with minimal OBOConfig passes Go Validate (field checks deferred)",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-obo",

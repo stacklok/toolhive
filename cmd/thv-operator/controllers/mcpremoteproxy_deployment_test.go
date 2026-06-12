@@ -58,7 +58,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				t.Helper()
 				assert.Equal(t, "basic-proxy", dep.Name)
 				assert.Equal(t, "default", dep.Namespace)
-				assert.Equal(t, int32(1), *dep.Spec.Replicas)
+				assert.Nil(t, dep.Spec.Replicas, "nil spec.replicas leaves the count to the apiserver default")
 
 				// Verify labels
 				assert.Equal(t, labelsForMCPRemoteProxy("basic-proxy"), dep.Spec.Selector.MatchLabels)

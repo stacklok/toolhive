@@ -1457,6 +1457,11 @@ func (in *MCPRemoteProxySpec) DeepCopyInto(out *MCPRemoteProxySpec) {
 		*out = new(MCPGroupRef)
 		**out = **in
 	}
+	if in.Replicas != nil {
+		in, out := &in.Replicas, &out.Replicas
+		*out = new(int32)
+		**out = **in
+	}
 	if in.SessionStorage != nil {
 		in, out := &in.SessionStorage, &out.SessionStorage
 		*out = new(SessionStorageConfig)

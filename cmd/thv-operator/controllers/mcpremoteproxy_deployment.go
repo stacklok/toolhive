@@ -27,7 +27,6 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, runConfigChecksum string,
 ) *appsv1.Deployment {
 	ls := labelsForMCPRemoteProxy(proxy.Name)
-	replicas := int32(1)
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgs()
@@ -63,7 +62,10 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 			Annotations: deploymentAnnotations,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			// nil leaves the replica count to the apiserver default (1) on create
+			// and to an HPA or other external controller thereafter; non-nil is
+			// operator-owned and reconciled by deploymentNeedsUpdate.
+			Replicas: proxy.Spec.Replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: ls,
 			},

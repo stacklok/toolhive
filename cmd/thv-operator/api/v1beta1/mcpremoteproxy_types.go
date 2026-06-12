@@ -170,6 +170,18 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	SessionAffinity string `json:"sessionAffinity,omitempty"`
 
+	// Replicas is the desired number of proxy pod replicas.
+	// MCPRemoteProxy creates a single Deployment for the proxy process, so there
+	// is only one replicas field (mirrors VirtualMCPServer.spec.replicas).
+	// When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+	// management to an HPA or other external controller.
+	// When set above 1, also configure sessionStorage with the redis provider and
+	// sessionAffinity: "None" so sessions resolve across replicas; otherwise a
+	// SessionStorageWarning condition is surfaced on the resource status.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
 	// SessionStorage configures session storage for stateful horizontal scaling.
 	// When nil, no session storage is configured and the proxy falls back to
 	// pod-local in-memory session state — incompatible with multi-replica

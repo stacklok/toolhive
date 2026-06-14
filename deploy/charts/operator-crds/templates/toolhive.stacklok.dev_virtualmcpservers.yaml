@@ -145,6 +145,21 @@ spec:
                     required:
                     - enabled
                     type: object
+                  disableUpstreamTokenInjection:
+                    default: false
+                    description: |-
+                      DisableUpstreamTokenInjection prevents the embedded auth server from injecting
+                      upstream IdP tokens into requests forwarded to the backend MCP server.
+                      When true, the embedded auth server still handles OAuth flows for clients,
+                      but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS
+                      the client's credential headers (Authorization, Cookie, Proxy-Authorization)
+                      after validating the JWT — the backend receives an unauthenticated request.
+                      Use headerForward to attach static credentials (e.g. an API key) if the
+                      backend needs them. Cannot be combined with token exchange or AWS STS,
+                      which would re-add credentials after the strip.
+                      This is useful when the backend MCP server does not require authentication
+                      (e.g., public documentation servers) but you still want client authentication.
+                    type: boolean
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -365,7 +380,7 @@ spec:
                             type: object
                           tls:
                             description: |-
-                              TLS configures TLS for connections to the Redis/Valkey master.
+                              TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
                               Presence of this field enables TLS. Omit to use plaintext.
                             properties:
                               caCertSecretRef:
@@ -2462,8 +2477,9 @@ spec:
                 properties:
                   authzConfig:
                     description: |-
-                      AuthzConfig defines authorization policy configuration
-                      Reuses MCPServer authz patterns
+                      AuthzConfig defines authorization policy configuration.
+                      Reuses MCPServer authz patterns.
+                      AuthzConfig and AuthzConfigRef are mutually exclusive.
                     properties:
                       configMap:
                         description: |-
@@ -2571,6 +2587,28 @@ spec:
                     - message: inline must be set when type is 'inline', and must
                         not be set otherwise
                       rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+                  authzConfigRef:
+                    description: |-
+                      AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                      The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+                      Mutually exclusive with authzConfig.
+
+                      resolve AuthzConfigRef into a runtime authz config.
+
+                      NOTE: this field is consumed by workload controllers in a follow-up PR.
+                      Until that lands, AuthzConfigRef is reference-tracked by the
+                      MCPAuthzConfig controller (deletion protection, status.referenceCount)
+                      but does NOT apply authorization to this VirtualMCPServer. Use the
+                      inline AuthzConfig field in the meantime.
+                    properties:
+                      name:
+                        description: Name is the name of the MCPAuthzConfig resource
+                          in the same namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
                   oidcConfigRef:
                     description: |-
                       OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
@@ -2622,6 +2660,9 @@ spec:
                 - message: spec.incomingAuth.oidcConfigRef is required when type is
                     oidc
                   rule: 'self.type == ''oidc'' ? has(self.oidcConfigRef) : true'
+                - message: authzConfig and authzConfigRef are mutually exclusive;
+                    use authzConfigRef to reference a shared MCPAuthzConfig
+                  rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
@@ -3120,6 +3161,21 @@ spec:
                     required:
                     - enabled
                     type: object
+                  disableUpstreamTokenInjection:
+                    default: false
+                    description: |-
+                      DisableUpstreamTokenInjection prevents the embedded auth server from injecting
+                      upstream IdP tokens into requests forwarded to the backend MCP server.
+                      When true, the embedded auth server still handles OAuth flows for clients,
+                      but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS
+                      the client's credential headers (Authorization, Cookie, Proxy-Authorization)
+                      after validating the JWT — the backend receives an unauthenticated request.
+                      Use headerForward to attach static credentials (e.g. an API key) if the
+                      backend needs them. Cannot be combined with token exchange or AWS STS,
+                      which would re-add credentials after the strip.
+                      This is useful when the backend MCP server does not require authentication
+                      (e.g., public documentation servers) but you still want client authentication.
+                    type: boolean
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -3340,7 +3396,7 @@ spec:
                             type: object
                           tls:
                             description: |-
-                              TLS configures TLS for connections to the Redis/Valkey master.
+                              TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
                               Presence of this field enables TLS. Omit to use plaintext.
                             properties:
                               caCertSecretRef:
@@ -5437,8 +5493,9 @@ spec:
                 properties:
                   authzConfig:
                     description: |-
-                      AuthzConfig defines authorization policy configuration
-                      Reuses MCPServer authz patterns
+                      AuthzConfig defines authorization policy configuration.
+                      Reuses MCPServer authz patterns.
+                      AuthzConfig and AuthzConfigRef are mutually exclusive.
                     properties:
                       configMap:
                         description: |-
@@ -5546,6 +5603,28 @@ spec:
                     - message: inline must be set when type is 'inline', and must
                         not be set otherwise
                       rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+                  authzConfigRef:
+                    description: |-
+                      AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                      The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+                      Mutually exclusive with authzConfig.
+
+                      resolve AuthzConfigRef into a runtime authz config.
+
+                      NOTE: this field is consumed by workload controllers in a follow-up PR.
+                      Until that lands, AuthzConfigRef is reference-tracked by the
+                      MCPAuthzConfig controller (deletion protection, status.referenceCount)
+                      but does NOT apply authorization to this VirtualMCPServer. Use the
+                      inline AuthzConfig field in the meantime.
+                    properties:
+                      name:
+                        description: Name is the name of the MCPAuthzConfig resource
+                          in the same namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
                   oidcConfigRef:
                     description: |-
                       OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
@@ -5597,6 +5676,9 @@ spec:
                 - message: spec.incomingAuth.oidcConfigRef is required when type is
                     oidc
                   rule: 'self.type == ''oidc'' ? has(self.oidcConfigRef) : true'
+                - message: authzConfig and authzConfigRef are mutually exclusive;
+                    use authzConfigRef to reference a shared MCPAuthzConfig
+                  rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.

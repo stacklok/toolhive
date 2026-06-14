@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"sync"
 	"testing"
 	"time"
@@ -21,6 +22,7 @@ import (
 
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/container/runtime/mocks"
+	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
 // MockHTTPProxy is a mock implementation of types.Proxy
@@ -1033,6 +1035,163 @@ func TestStdioTransport_ShouldRestart(t *testing.T) {
 
 			result := transport.ShouldRestart()
 			assert.Equal(t, tt.expectedResult, result)
+		})
+	}
+}
+
+// TestNewStdioTransport_PreservesAuthInfoHandler verifies that SetAuthInfoHandler
+// stores the handler on the struct (no networking required).
+func TestNewStdioTransport_PreservesAuthInfoHandler(t *testing.T) {
+	t.Parallel()
+
+	handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	tr := NewStdioTransport("localhost", 8080, nil, false, false, nil)
+	tr.SetAuthInfoHandler(handler)
+
+	// authInfoHandler is unexported but accessible within the same package.
+	require.NotNil(t, tr.authInfoHandler)
+}
+
+// TestNewStdioTransport_PreservesPrefixHandlers verifies that SetPrefixHandlers
+// stores the map on the struct (no networking required).
+func TestNewStdioTransport_PreservesPrefixHandlers(t *testing.T) {
+	t.Parallel()
+
+	handlers := map[string]http.Handler{
+		"/oauth/token": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	tr := NewStdioTransport("localhost", 8080, nil, false, false, nil)
+	tr.SetPrefixHandlers(handlers)
+
+	require.Len(t, tr.prefixHandlers, 1)
+	require.Contains(t, tr.prefixHandlers, "/oauth/token")
+}
+
+func TestFactory_Create_PreservesAuthFields(t *testing.T) {
+	t.Parallel()
+
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	prefixHandlers := map[string]http.Handler{
+		"/oauth/token": http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}),
+	}
+
+	tests := []struct {
+		name  string
+		cfg   types.Config
+		check func(t *testing.T, tr types.Transport)
+	}{
+		{
+			name: "stdio/authInfoHandler",
+			cfg: types.Config{
+				Type:            types.TransportTypeStdio,
+				Host:            "localhost",
+				ProxyPort:       8080,
+				AuthInfoHandler: sentinel,
+			},
+			check: func(t *testing.T, tr types.Transport) {
+				t.Helper()
+				stdio, ok := tr.(*StdioTransport)
+				require.True(t, ok, "expected *StdioTransport")
+				require.NotNil(t, stdio.authInfoHandler)
+			},
+		},
+		{
+			name: "stdio/prefixHandlers",
+			cfg: types.Config{
+				Type:           types.TransportTypeStdio,
+				Host:           "localhost",
+				ProxyPort:      8080,
+				PrefixHandlers: prefixHandlers,
+			},
+			check: func(t *testing.T, tr types.Transport) {
+				t.Helper()
+				stdio, ok := tr.(*StdioTransport)
+				require.True(t, ok, "expected *StdioTransport")
+				require.Len(t, stdio.prefixHandlers, 1)
+				require.Contains(t, stdio.prefixHandlers, "/oauth/token")
+			},
+		},
+		{
+			name: "sse/authInfoHandler",
+			cfg: types.Config{
+				Type:            types.TransportTypeSSE,
+				Host:            "localhost",
+				ProxyPort:       8080,
+				AuthInfoHandler: sentinel,
+			},
+			check: func(t *testing.T, tr types.Transport) {
+				t.Helper()
+				ht, ok := tr.(*HTTPTransport)
+				require.True(t, ok, "expected *HTTPTransport")
+				require.NotNil(t, ht.authInfoHandler)
+			},
+		},
+		{
+			name: "sse/prefixHandlers",
+			cfg: types.Config{
+				Type:           types.TransportTypeSSE,
+				Host:           "localhost",
+				ProxyPort:      8080,
+				PrefixHandlers: prefixHandlers,
+			},
+			check: func(t *testing.T, tr types.Transport) {
+				t.Helper()
+				ht, ok := tr.(*HTTPTransport)
+				require.True(t, ok, "expected *HTTPTransport")
+				require.Len(t, ht.prefixHandlers, 1)
+				require.Contains(t, ht.prefixHandlers, "/oauth/token")
+			},
+		},
+		{
+			name: "streamable-http/authInfoHandler",
+			cfg: types.Config{
+				Type:            types.TransportTypeStreamableHTTP,
+				Host:            "localhost",
+				ProxyPort:       8080,
+				AuthInfoHandler: sentinel,
+			},
+			check: func(t *testing.T, tr types.Transport) {
+				t.Helper()
+				ht, ok := tr.(*HTTPTransport)
+				require.True(t, ok, "expected *HTTPTransport")
+				require.NotNil(t, ht.authInfoHandler)
+			},
+		},
+		{
+			name: "streamable-http/prefixHandlers",
+			cfg: types.Config{
+				Type:           types.TransportTypeStreamableHTTP,
+				Host:           "localhost",
+				ProxyPort:      8080,
+				PrefixHandlers: prefixHandlers,
+			},
+			check: func(t *testing.T, tr types.Transport) {
+				t.Helper()
+				ht, ok := tr.(*HTTPTransport)
+				require.True(t, ok, "expected *HTTPTransport")
+				require.Len(t, ht.prefixHandlers, 1)
+				require.Contains(t, ht.prefixHandlers, "/oauth/token")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			factory := NewFactory()
+			tr, err := factory.Create(tt.cfg)
+			require.NoError(t, err)
+			tt.check(t, tr)
 		})
 	}
 }

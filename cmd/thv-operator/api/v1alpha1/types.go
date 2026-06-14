@@ -126,19 +126,53 @@ type MCPOIDCConfigList struct {
 	Items           []MCPOIDCConfig `json:"items"`
 }
 
-// ─── MCPRegistry ─────────────────────────────────────────────────────────────
+// ─── MCPAuthzConfig ──────────────────────────────────────────────────────────
 
 //+kubebuilder:object:root=true
 //+kubebuilder:deprecatedversion:warning="toolhive.stacklok.dev/v1alpha1 is deprecated; use v1beta1"
 //+kubebuilder:subresource:status
-//+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
-//+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
-//+kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
-//+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
-//+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+//+kubebuilder:resource:shortName=authzcfg,categories=toolhive
+//+kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
+//+kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
+//+kubebuilder:printcolumn:name="References",type=integer,JSONPath=`.status.referenceCount`
+//+kubebuilder:printcolumn:name="Age",type=date,JSONPath=`.metadata.creationTimestamp`
+
+// MCPAuthzConfig is the deprecated v1alpha1 version of the MCPAuthzConfig resource.
+type MCPAuthzConfig struct {
+	metav1.TypeMeta   `json:",inline"` // nolint:revive
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   v1beta1.MCPAuthzConfigSpec   `json:"spec,omitempty"`
+	Status v1beta1.MCPAuthzConfigStatus `json:"status,omitempty"`
+}
+
+//+kubebuilder:object:root=true
+
+// MCPAuthzConfigList contains a list of MCPAuthzConfig.
+type MCPAuthzConfigList struct {
+	metav1.TypeMeta `json:",inline"` // nolint:revive
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []MCPAuthzConfig `json:"items"`
+}
+
+// ─── MCPRegistry ─────────────────────────────────────────────────────────────
 
 // MCPRegistry is the deprecated v1alpha1 version of the MCPRegistry resource.
+// The MCPRegistry CRD as a whole is deprecated and will be removed in a future
+// release; install the ToolHive registry server via the toolhive-registry-server
+// Helm chart instead: https://github.com/stacklok/toolhive-registry-server
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:deprecatedversion:warning="MCPRegistry is deprecated and will be removed in a future release; install the ToolHive registry server via the toolhive-registry-server Helm chart (https://github.com/stacklok/toolhive-registry-server) instead"
+// +kubebuilder:subresource:status
+// +kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
+// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
+// +kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+//
+//nolint:lll // kubebuilder deprecatedversion marker cannot be line-wrapped
 type MCPRegistry struct {
 	metav1.TypeMeta   `json:",inline"` // nolint:revive
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -397,6 +431,7 @@ type VirtualMCPServerList struct {
 func init() {
 	SchemeBuilder.Register(
 		&EmbeddingServer{}, &EmbeddingServerList{},
+		&MCPAuthzConfig{}, &MCPAuthzConfigList{},
 		&MCPExternalAuthConfig{}, &MCPExternalAuthConfigList{},
 		&MCPGroup{}, &MCPGroupList{},
 		&MCPOIDCConfig{}, &MCPOIDCConfigList{},

@@ -1,0 +1,19 @@
+suite: opt-in feature flags
+# The experimental and storage-version-migrator features are quoted-boolean env
+# vars. A dropped quote or a renamed var silently disables the feature, so pin
+# both the enabled and (in the baseline suite) disabled states.
+set:
+  operator.features.experimental: true
+  operator.features.storageVersionMigrator: true
+templates:
+  - deployment.yaml
+tests:
+  - it: flips both feature-flag env vars to the quoted string "true"
+    template: deployment.yaml
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: ENABLE_EXPERIMENTAL_FEATURES, value: "true" }
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR, value: "true" }

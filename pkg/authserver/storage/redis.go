@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ory/fosite"
@@ -49,6 +50,35 @@ func warnOnCleanupErr(err error, operation, key string) {
 	if err != nil {
 		slog.Warn("best-effort index cleanup failed",
 			"operation", operation, "key", key, "error", err)
+	}
+}
+
+// filterIndexMembersByPrefix splits SMEMBERS results into members that share
+// this storage instance's key prefix and those that do not. Multi-key
+// operations like MGet and Del fail with CROSSSLOT under Redis Cluster when
+// any member hashes to a different slot, and a stray un-prefixed entry
+// (legacy data, an external admin op, a test fixture) is the most likely
+// source of such drift. Filtering at read time turns a hard cluster failure
+// into a logged warning, while remaining a no-op on standalone Redis.
+func filterIndexMembersByPrefix(prefix string, members []string) (kept, dropped []string) {
+	for _, m := range members {
+		if strings.HasPrefix(m, prefix) {
+			kept = append(kept, m)
+		} else {
+			dropped = append(dropped, m)
+		}
+	}
+	return kept, dropped
+}
+
+// warnDroppedIndexMembers emits a warning for each foreign member returned by
+// filterIndexMembersByPrefix so operators can identify the source of cluster-
+// incompatible entries.
+func warnDroppedIndexMembers(operation, indexKey, expectedPrefix string, dropped []string) {
+	for _, m := range dropped {
+		slog.Warn("dropping foreign index member to prevent CROSSSLOT",
+			"operation", operation, "indexKey", indexKey,
+			"expectedPrefix", expectedPrefix, "member", m)
 	}
 }
 
@@ -181,7 +211,8 @@ func (s *RedisStorage) RegisterClient(ctx context.Context, client fosite.Client)
 		return fmt.Errorf("failed to marshal client: %w", err)
 	}
 
-	// Public clients (from DCR) expire to prevent unbounded growth.
+	// Public clients (from DCR) expire to prevent unbounded growth; RenewClientTTL
+	// refreshes this on proven use so actively-used clients are not evicted.
 	// Confidential clients don't expire.
 	ttl := time.Duration(0)
 	if client.IsPublic() {
@@ -209,6 +240,26 @@ func (s *RedisStorage) GetClient(ctx context.Context, id string) (fosite.Client,
 	}
 
 	return &redisClient{storedClient: stored}, nil
+}
+
+// RenewClientTTL extends a public client's registration TTL to DefaultPublicClientTTL.
+//
+// Call this on a proven-use signal — a successful token exchange/refresh — not on a
+// client read. GetClient is reached from the unauthenticated front-channel
+// /oauth/authorize handler before any authentication, and public clients have no
+// secret, so renewing there would let any caller who knows a public client_id keep
+// its row alive indefinitely and defeat the anti-bloat TTL. Renewing on token
+// issuance ties registration survival to actual use.
+//
+// Only public clients carry a TTL; confidential clients are stored without one and
+// are left untouched. EXPIRE on a missing key is a no-op, so a client whose row has
+// already been evicted (or a non-persisted CIMD client) is safely ignored.
+func (s *RedisStorage) RenewClientTTL(ctx context.Context, client fosite.Client) error {
+	if client == nil || !client.IsPublic() {
+		return nil
+	}
+	key := redisKey(s.keyPrefix, KeyTypeClient, client.GetID())
+	return s.client.Expire(ctx, key, DefaultPublicClientTTL).Err()
 }
 
 // ClientAssertionJWTValid returns an error if the JTI is known.
@@ -671,6 +722,17 @@ func (s *storedUpstreamTokens) toUpstreamTokens() *UpstreamTokens {
 // ARGV[2] = TTL in milliseconds
 // ARGV[3] = new UserID ("" if no user)
 // ARGV[4] = user upstream set key prefix (e.g. "thv:auth:{ns:name}:user:upstream:")
+//
+// Cluster slot invariant: this script reads oldUserID from KEYS[1] inside the
+// script body (atomic with the rest of the work), so the user-set keys are
+// constructed dynamically as `ARGV[4] .. userID` rather than being passed as
+// declared KEYS. Every dynamically-built key MUST therefore inherit the
+// `{ns:name}` hash tag that is baked into ARGV[4] (s.keyPrefix). All callers
+// derive ARGV[4] from s.keyPrefix, which DeriveKeyPrefix builds with the
+// `{ns:name}` hash tag, so user-set keys land on the same Redis Cluster slot
+// as KEYS[1] and KEYS[2]. A future refactor that strips the hash tag — or
+// rebuilds setPrefix from raw inputs without the tag — will silently pass on
+// standalone Redis and fail with CROSSSLOT under Cluster.
 var storeUpstreamTokensScript = redis.NewScript(`
 local oldUserID = ""
 local existing = redis.call('GET', KEYS[1])
@@ -878,6 +940,9 @@ func (s *RedisStorage) GetAllUpstreamTokens(ctx context.Context, sessionID strin
 		return nil, fmt.Errorf("failed to get upstream token index: %w", err)
 	}
 
+	providerKeys, dropped := filterIndexMembersByPrefix(s.keyPrefix, providerKeys)
+	warnDroppedIndexMembers("GetAllUpstreamTokens", idxKey, s.keyPrefix, dropped)
+
 	if len(providerKeys) == 0 {
 		return result, nil
 	}
@@ -940,6 +1005,9 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 		return fmt.Errorf("failed to get upstream token index: %w", err)
 	}
 
+	providerKeys, dropped := filterIndexMembersByPrefix(s.keyPrefix, providerKeys)
+	warnDroppedIndexMembers("DeleteUpstreamTokens", idxKey, s.keyPrefix, dropped)
+
 	if len(providerKeys) == 0 {
 		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
 	}
@@ -996,6 +1064,10 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 	if err != nil && !errors.Is(err, redis.Nil) {
 		return nil, fmt.Errorf("failed to get user upstream index: %w", err)
 	}
+
+	members, dropped := filterIndexMembersByPrefix(s.keyPrefix, members)
+	warnDroppedIndexMembers("GetLatestUpstreamTokensForUser", setKey, s.keyPrefix, dropped)
+
 	if len(members) == 0 {
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
 	}

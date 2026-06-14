@@ -481,6 +481,15 @@ type ClientRegistry interface {
 	// This supports both static configuration and dynamic client registration (RFC 7591).
 	// Returns ErrAlreadyExists if a client with the same ID already exists.
 	RegisterClient(ctx context.Context, client fosite.Client) error
+
+	// RenewClientTTL extends the registration TTL of a public (DCR) client so an
+	// actively-used client is not evicted mid-lifecycle and forced to re-register.
+	// Call it on a proven-use signal (e.g. a successful token exchange), NOT on an
+	// unauthenticated client read such as the /oauth/authorize lookup. Implementations
+	// renew only public clients; confidential clients have no TTL. Backends without a
+	// native TTL (the in-memory backend) treat this as a no-op. A renewal failure is
+	// non-fatal to the caller's primary operation.
+	RenewClientTTL(ctx context.Context, client fosite.Client) error
 }
 
 // UpstreamTokenStorage provides storage for tokens obtained from upstream identity providers.

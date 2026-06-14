@@ -41,6 +41,10 @@ func TestMergeForwardedHeaders(t *testing.T) {
 		// pointer (i.e., no merge was needed — original passed through unchanged).
 		wantSameAsBase bool
 		wantHeaders    map[string]string
+		// wantErr means mergeForwardedHeaders should return an error — a forwarded
+		// header name collides with a static header-forward value (plaintext or
+		// secret) on the backend.
+		wantErr bool
 	}{
 		{
 			name:           "nil forwarded returns base unchanged",
@@ -91,12 +95,20 @@ func TestMergeForwardedHeaders(t *testing.T) {
 			wantHeaders: map[string]string{"X-Litellm-Api-Key": "sk-2"},
 		},
 		{
-			name: "static config wins over forwarded header with same name",
+			name: "forwarded header colliding with static plaintext returns error",
 			base: &vmcp.HeaderForwardConfig{
-				AddPlaintextHeaders: map[string]string{"X-Litellm-Api-Key": "static-wins"},
+				AddPlaintextHeaders: map[string]string{"X-Litellm-Api-Key": "static-value"},
 			},
-			forwarded:   map[string]string{"X-Litellm-Api-Key": "forwarded-loses"},
-			wantHeaders: map[string]string{"X-Litellm-Api-Key": "static-wins"},
+			forwarded: map[string]string{"X-Litellm-Api-Key": "forwarded-value"},
+			wantErr:   true,
+		},
+		{
+			name: "forwarded header colliding with static secret returns error",
+			base: &vmcp.HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{"X-Litellm-Api-Key": "my-secret-id"},
+			},
+			forwarded: map[string]string{"X-Litellm-Api-Key": "sk-5"},
+			wantErr:   true,
 		},
 		{
 			name: "base AddHeadersFromSecret preserved unchanged",
@@ -130,7 +142,14 @@ func TestMergeForwardedHeaders(t *testing.T) {
 				origBasePlaintext = maps.Clone(tc.base.AddPlaintextHeaders)
 			}
 
-			got := mergeForwardedHeaders(tc.base, tc.forwarded)
+			got, err := mergeForwardedHeaders(tc.base, tc.forwarded)
+
+			if tc.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, got)
+				return
+			}
+			require.NoError(t, err)
 
 			if tc.wantSameAsBase {
 				assert.Same(t, tc.base, got, "expected the original base pointer to be returned unchanged")

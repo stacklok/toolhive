@@ -324,7 +324,10 @@ func createMCPClient(
 	// at the vMCP server's incoming edge) and are merged into the per-session backend
 	// header-forward config here. The session is created once per request, so the
 	// captured headers are stable for the session's lifetime.
-	mergedHeaderForward := mergeForwardedHeaders(target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx))
+	mergedHeaderForward, err := mergeForwardedHeaders(target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("backend %s: %w", target.WorkloadID, err)
+	}
 	base, err = headerforward.BuildHeaderForwardTripper(ctx, base, mergedHeaderForward, provider, target.WorkloadID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build header-forward transport for backend %s: %w", target.WorkloadID, err)
@@ -532,17 +535,30 @@ func initAndQueryCapabilities(
 //     checked against middleware.RestrictedHeaders; restricted names are silently
 //     dropped (defense-in-depth — they were already filtered upstream, but we
 //     guard here too).
-//  4. A forwarded header does NOT overwrite a name already present as an explicit
-//     static value in base.AddPlaintextHeaders (static config wins).
-func mergeForwardedHeaders(base *vmcp.HeaderForwardConfig, forwarded map[string]string) *vmcp.HeaderForwardConfig {
+//  4. A forwarded header name that also appears as a static header in base
+//     (AddPlaintextHeaders or AddHeadersFromSecret) is a misconfiguration: the
+//     function returns an error rather than silently picking a winner.
+func mergeForwardedHeaders(base *vmcp.HeaderForwardConfig, forwarded map[string]string) (*vmcp.HeaderForwardConfig, error) {
 	if len(forwarded) == 0 {
-		return base
+		return base, nil
 	}
 
 	// Build the merged AddPlaintextHeaders map starting from the static config.
 	var staticPlaintext map[string]string
 	if base != nil {
 		staticPlaintext = base.AddPlaintextHeaders
+	}
+
+	// Canonical set of header names already owned by the backend's static
+	// header-forward config (plaintext + secret), used for collision detection.
+	staticNames := make(map[string]struct{})
+	if base != nil {
+		for k := range base.AddPlaintextHeaders {
+			staticNames[http.CanonicalHeaderKey(k)] = struct{}{}
+		}
+		for k := range base.AddHeadersFromSecret {
+			staticNames[http.CanonicalHeaderKey(k)] = struct{}{}
+		}
 	}
 
 	merged := make(map[string]string, len(staticPlaintext)+len(forwarded))
@@ -554,9 +570,10 @@ func mergeForwardedHeaders(base *vmcp.HeaderForwardConfig, forwarded map[string]
 			slog.Debug("Dropping restricted forwarded header", "header", canonical)
 			continue
 		}
-		// Static config wins: do not overwrite an existing value.
-		if _, exists := merged[canonical]; exists {
-			continue
+		// Fail loud on collision with a static header-forward value (rule 4).
+		if _, exists := staticNames[canonical]; exists {
+			return nil, fmt.Errorf(
+				"forwarded header %q collides with the backend's static header-forward config", canonical)
 		}
 		merged[canonical] = value
 	}
@@ -567,5 +584,5 @@ func mergeForwardedHeaders(base *vmcp.HeaderForwardConfig, forwarded map[string]
 	if base != nil {
 		out.AddHeadersFromSecret = base.AddHeadersFromSecret
 	}
-	return out
+	return out, nil
 }

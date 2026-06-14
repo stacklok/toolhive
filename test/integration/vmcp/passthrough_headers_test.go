@@ -134,4 +134,25 @@ func TestVMCPServer_PassthroughHeaders(t *testing.T) {
 	// the handler silently returning wrong data.
 	assert.Contains(t, text, absentSentinel,
 		"non-allowlisted header slot should contain the absent sentinel")
+
+	// ── Second call: header changes mid-session, backend must not see the change ─
+	// Forwarded headers are captured once at backend-session creation and stay
+	// stable for the session's lifetime. Change the caller's X-Test-Api-Key and
+	// call again: the backend must still observe the ORIGINAL value, proving the
+	// session does not re-read forwarded headers per request (nor drop them after
+	// the first call).
+	const changedValue = "caller-key-CHANGED"
+	mcpClient.SetHeader(allowlistedHeader, changedValue)
+
+	result2 := mcpClient.CallTool(ctx, "api_echo_header", map[string]any{})
+	text2 := helpers.AssertToolCallSuccess(t, result2)
+
+	t.Logf("backend response (second call): %s", text2)
+
+	assert.Contains(t, text2, allowlistedValue,
+		"second call must still see the header value captured at session creation (%q)",
+		allowlistedValue)
+	assert.NotContains(t, text2, changedValue,
+		"changed header value %q must not reach the backend — forwarded headers are session-stable",
+		changedValue)
 }

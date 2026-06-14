@@ -5,7 +5,9 @@ package helpers
 
 import (
 	"context"
+	"maps"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -31,6 +33,12 @@ import (
 type MCPClient struct {
 	client *client.Client
 	tb     testing.TB
+
+	// reqHeaders holds the caller-side HTTP headers sent on every outbound
+	// request to the vMCP server. It is served per-request through a header func
+	// and guarded by reqHeadersMu so SetHeader can change a header mid-session.
+	reqHeaders   map[string]string
+	reqHeadersMu *sync.Mutex
 }
 
 // MCPClientOption is a functional option for configuring an MCPClient.
@@ -43,9 +51,10 @@ type mcpClientConfig struct {
 	extraHeaders  map[string]string
 }
 
-// WithClientHeader adds a static HTTP request header that the client sends on
-// every outbound request to the vMCP server.  Call multiple times to set
-// multiple headers.
+// WithClientHeader sets the initial value of an HTTP request header that the
+// client sends on every outbound request to the vMCP server.  Call multiple
+// times to set multiple headers; use MCPClient.SetHeader to change a value
+// after the client is created.
 //
 // This is used by header-passthrough tests to inject caller-side headers so
 // the capture middleware can forward them to the backend.
@@ -90,11 +99,20 @@ func NewMCPClient(ctx context.Context, tb testing.TB, serverURL string, opts ...
 		opt(config)
 	}
 
-	// Build transport options. WithHTTPHeaders injects static headers on every
-	// request — used for header-passthrough tests.
-	transportOpts := []mcptransport.StreamableHTTPCOption{}
-	if len(config.extraHeaders) > 0 {
-		transportOpts = append(transportOpts, mcptransport.WithHTTPHeaders(config.extraHeaders))
+	// Caller headers are served through a per-request header func backed by a
+	// mutex-guarded map. This lets header-passthrough tests change a header
+	// mid-session via SetHeader and assert the backend still observes the value
+	// captured at backend-session creation.
+	reqHeaders := map[string]string{}
+	maps.Copy(reqHeaders, config.extraHeaders)
+	reqHeadersMu := &sync.Mutex{}
+
+	transportOpts := []mcptransport.StreamableHTTPCOption{
+		mcptransport.WithHTTPHeaderFunc(func(context.Context) map[string]string {
+			reqHeadersMu.Lock()
+			defer reqHeadersMu.Unlock()
+			return maps.Clone(reqHeaders)
+		}),
 	}
 
 	// Create streamable-http client (vMCP only supports streamable-http)
@@ -121,9 +139,20 @@ func NewMCPClient(ctx context.Context, tb testing.TB, serverURL string, opts ...
 		config.clientName, config.clientVersion, serverURL)
 
 	return &MCPClient{
-		client: mcpClient,
-		tb:     tb,
+		client:       mcpClient,
+		tb:           tb,
+		reqHeaders:   reqHeaders,
+		reqHeadersMu: reqHeadersMu,
 	}
+}
+
+// SetHeader updates a caller-side HTTP header sent on subsequent requests to the
+// vMCP server. Used by header-passthrough tests to change a header mid-session
+// and assert the backend still observes the value captured at session creation.
+func (c *MCPClient) SetHeader(name, value string) {
+	c.reqHeadersMu.Lock()
+	defer c.reqHeadersMu.Unlock()
+	c.reqHeaders[name] = value
 }
 
 // Close closes the MCP client connection.

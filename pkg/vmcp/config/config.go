@@ -181,9 +181,10 @@ type Config struct {
 	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty" yaml:"rateLimiting,omitempty"`
 
 	// PassthroughHeaders is an allowlist of incoming client request header names
-	// forwarded verbatim to all backends. Resolved per-request at the auth
-	// boundary and baked into the per-session backend client. Names must not be
-	// in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+	// forwarded verbatim to all backends. Captured at the vMCP incoming edge by
+	// headerforward.CaptureMiddleware and consumed once at session creation
+	// when the per-session backend client's HeaderForwardConfig is built. Names
+	// must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
 	// +optional
 	// +listType=atomic
 	PassthroughHeaders []string `json:"passthroughHeaders,omitempty" yaml:"passthroughHeaders,omitempty"`

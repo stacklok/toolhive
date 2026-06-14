@@ -98,12 +98,12 @@ func NewIncomingAuthMiddleware(
 		slog.Debug("authorization middleware enabled with Cedar policies", "server_name", serverName)
 	}
 
-	// Auth middleware composes auth + MCP parser.
-	// Order (outermost → innermost): authMiddleware → parser. The parser is
-	// innermost so downstream middleware (audit, authz) sees both the identity
-	// and the parsed MCP request.
+	// Auth middleware composes auth + parser.
+	// The parser is included because downstream middleware (audit, authz) reads
+	// parsed MCP data from context.
 	composedAuth := func(next http.Handler) http.Handler {
-		return authMiddleware(mcp.ParsingMiddleware(next))
+		withParser := mcp.ParsingMiddleware(next)
+		return authMiddleware(withParser)
 	}
 
 	return composedAuth, authzMiddleware, authInfoHandler, nil

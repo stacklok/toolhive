@@ -709,15 +709,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Info("authentication middleware enabled for MCP endpoints")
 	}
 
-	// Apply forwarded-header capture: copy allowlisted incoming headers into the
-	// request context so the per-session backend client forwards them to backends
-	// (see pkg/vmcp/headerforward). Identity-independent plumbing, so its position
-	// relative to auth is immaterial; it must only run before session creation,
-	// which every handler inner to it satisfies. No-op when the allowlist is empty.
-	if len(s.config.PassthroughHeaders) > 0 {
-		mcpHandler = headerforward.CaptureMiddleware(s.config.PassthroughHeaders)(mcpHandler)
-		slog.Info("forwarded-header capture enabled for MCP endpoints", "headers", s.config.PassthroughHeaders)
-	}
+	mcpHandler = s.applyForwardedHeaderCapture(mcpHandler)
 
 	// Apply Accept header validation (rejects GET requests without Accept: text/event-stream)
 	mcpHandler = headerValidatingMiddleware(mcpHandler)
@@ -750,6 +742,21 @@ func (s *Server) applyRateLimiting(next http.Handler) http.Handler {
 	}
 	slog.Info("rate limit middleware enabled for MCP endpoints")
 	return s.config.RateLimitMiddleware(next)
+}
+
+// applyForwardedHeaderCapture wraps next with the forwarded-header capture
+// middleware when passthrough headers are configured. It copies the allowlisted
+// incoming headers into the request context so the per-session backend client
+// forwards them to backends (see pkg/vmcp/headerforward). Identity-independent
+// plumbing: its position relative to auth is immaterial; it must only run before
+// session creation, which every inner handler satisfies. No-op when the allowlist
+// is empty.
+func (s *Server) applyForwardedHeaderCapture(next http.Handler) http.Handler {
+	if len(s.config.PassthroughHeaders) == 0 {
+		return next
+	}
+	slog.Info("forwarded-header capture enabled for MCP endpoints", "headers", s.config.PassthroughHeaders)
+	return headerforward.CaptureMiddleware(s.config.PassthroughHeaders)(next)
 }
 
 // Start starts the Virtual MCP Server and begins serving requests.

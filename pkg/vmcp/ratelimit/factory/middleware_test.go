@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
 )
 
 func TestNewMiddlewareDisabledWithoutConfig(t *testing.T) {
@@ -158,14 +159,174 @@ func TestRateLimitMiddlewareUsesPostAggregationToolNames(t *testing.T) {
 	assert.Equal(t, http.StatusTooManyRequests, secondMatchingTool.Code)
 }
 
+func TestRateLimitToolNameOptimizerExtractsInnerToolName(t *testing.T) {
+	t.Parallel()
+
+	parsed := parsedToolCall("call_tool", map[string]any{
+		optimizerdec.CallToolArgToolName: "backend_a_echo",
+	}, 1)
+
+	resolved := optimizerRateLimitRequest(parsed, map[string]struct{}{
+		optimizerdec.CallToolName: {},
+	})
+
+	require.NotSame(t, parsed, resolved)
+	assert.Equal(t, "backend_a_echo", resolved.ResourceID)
+	assert.Equal(t, "call_tool", parsed.ResourceID, "original parsed request should not be mutated")
+}
+
+func TestRateLimitToolNameFallsBackForInvalidInnerToolName(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name      string
+		arguments map[string]any
+	}{
+		{
+			name:      "missing tool_name",
+			arguments: map[string]any{},
+		},
+		{
+			name: "empty tool_name",
+			arguments: map[string]any{
+				optimizerdec.CallToolArgToolName: "",
+			},
+		},
+		{
+			name: "non-string tool_name",
+			arguments: map[string]any{
+				optimizerdec.CallToolArgToolName: 123,
+			},
+		},
+		{
+			name:      "nil arguments",
+			arguments: nil,
+		},
+	}
+
+	passThroughTools := map[string]struct{}{
+		optimizerdec.CallToolName: {},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			parsed := parsedToolCall("call_tool", tc.arguments, 1)
+
+			resolved := optimizerRateLimitRequest(parsed, passThroughTools)
+
+			assert.Same(t, parsed, resolved)
+			assert.Equal(t, "call_tool", resolved.ResourceID)
+		})
+	}
+}
+
+func TestRateLimitToolNameFallsBackForNilParsedRequest(t *testing.T) {
+	t.Parallel()
+
+	resolved := optimizerRateLimitRequest(nil, map[string]struct{}{
+		optimizerdec.CallToolName: {},
+	})
+
+	assert.Nil(t, resolved)
+}
+
+func TestRateLimitToolNameFallsBackForNonPassThroughTool(t *testing.T) {
+	t.Parallel()
+
+	parsed := parsedToolCall("backend_a_echo", map[string]any{
+		optimizerdec.CallToolArgToolName: "backend_b_echo",
+	}, 1)
+
+	resolved := optimizerRateLimitRequest(parsed, map[string]struct{}{
+		optimizerdec.CallToolName: {},
+	})
+
+	assert.Same(t, parsed, resolved)
+	assert.Equal(t, "backend_a_echo", resolved.ResourceID)
+}
+
+func TestRateLimitMiddlewareOptimizerUsesInnerToolName(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRateLimitHandlerWithPassThroughTools(t, &ratelimittypes.RateLimitConfig{
+		Tools: []ratelimittypes.ToolRateLimitConfig{
+			{
+				Name: "backend_a_echo",
+				Shared: &ratelimittypes.RateLimitBucket{
+					MaxTokens:    1,
+					RefillPeriod: metav1.Duration{Duration: time.Minute},
+				},
+			},
+		},
+	}, map[string]struct{}{
+		optimizerdec.CallToolName: {},
+	})
+
+	first := serveToolCallWithArguments(t, handler, optimizerdec.CallToolName, "", map[string]any{
+		optimizerdec.CallToolArgToolName: "backend_a_echo",
+	})
+	assert.Equal(t, http.StatusOK, first.Code)
+
+	otherTool := serveToolCallWithArguments(t, handler, optimizerdec.CallToolName, "", map[string]any{
+		optimizerdec.CallToolArgToolName: "backend_b_echo",
+	})
+	assert.Equal(t, http.StatusOK, otherTool.Code)
+
+	secondMatchingTool := serveToolCallWithArguments(t, handler, optimizerdec.CallToolName, "", map[string]any{
+		optimizerdec.CallToolArgToolName: "backend_a_echo",
+	})
+	assert.Equal(t, http.StatusTooManyRequests, secondMatchingTool.Code)
+	assertRateLimitedBody(t, secondMatchingTool)
+}
+
+func TestRateLimitMiddlewareOptimizerFallsBackForInvalidInnerToolName(t *testing.T) {
+	t.Parallel()
+
+	handler := newTestRateLimitHandlerWithPassThroughTools(t, &ratelimittypes.RateLimitConfig{
+		Tools: []ratelimittypes.ToolRateLimitConfig{
+			{
+				Name: optimizerdec.CallToolName,
+				Shared: &ratelimittypes.RateLimitBucket{
+					MaxTokens:    1,
+					RefillPeriod: metav1.Duration{Duration: time.Minute},
+				},
+			},
+		},
+	}, map[string]struct{}{
+		optimizerdec.CallToolName: {},
+	})
+
+	first := serveToolCallWithArguments(t, handler, optimizerdec.CallToolName, "", map[string]any{
+		optimizerdec.CallToolArgToolName: "",
+	})
+	assert.Equal(t, http.StatusOK, first.Code)
+
+	second := serveToolCallWithArguments(t, handler, optimizerdec.CallToolName, "", map[string]any{
+		optimizerdec.CallToolArgToolName: "",
+	})
+	assert.Equal(t, http.StatusTooManyRequests, second.Code)
+}
+
 func newTestRateLimitHandler(t *testing.T, cfg *ratelimittypes.RateLimitConfig) http.Handler {
+	t.Helper()
+
+	return newTestRateLimitHandlerWithPassThroughTools(t, cfg, nil)
+}
+
+func newTestRateLimitHandlerWithPassThroughTools(
+	t *testing.T,
+	cfg *ratelimittypes.RateLimitConfig,
+	passThroughTools map[string]struct{},
+) http.Handler {
 	t.Helper()
 
 	mr := miniredis.RunT(t)
 	middleware, cleanup, err := NewMiddleware(t.Context(), Config{
-		Namespace:    "default",
-		ServerName:   "vmcp",
-		RateLimiting: cfg,
+		Namespace:        "default",
+		ServerName:       "vmcp",
+		RateLimiting:     cfg,
+		PassThroughTools: passThroughTools,
 		SessionStorage: &vmcpconfig.SessionStorageConfig{
 			Provider: "redis",
 			Address:  mr.Addr(),
@@ -186,8 +347,20 @@ func newTestRateLimitHandler(t *testing.T, cfg *ratelimittypes.RateLimitConfig) 
 func serveToolCall(t *testing.T, handler http.Handler, toolName, userID string) *httptest.ResponseRecorder {
 	t.Helper()
 
+	return serveToolCallWithArguments(t, handler, toolName, userID, nil)
+}
+
+func serveToolCallWithArguments(
+	t *testing.T,
+	handler http.Handler,
+	toolName string,
+	userID string,
+	arguments map[string]any,
+) *httptest.ResponseRecorder {
+	t.Helper()
+
 	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
-	req = withParsedMCPRequest(req, "tools/call", toolName, 1)
+	req = withParsedMCPRequest(req, "tools/call", toolName, arguments, 1)
 	if userID != "" {
 		req = withIdentity(req, userID)
 	}
@@ -196,15 +369,35 @@ func serveToolCall(t *testing.T, handler http.Handler, toolName, userID string) 
 	return w
 }
 
-func withParsedMCPRequest(r *http.Request, method, resourceID string, id any) *http.Request {
-	parsed := &mcpparser.ParsedMCPRequest{
+func withParsedMCPRequest(
+	r *http.Request,
+	method string,
+	resourceID string,
+	arguments map[string]any,
+	id any,
+) *http.Request {
+	parsed := parsedMCPRequest(method, resourceID, arguments, id)
+	ctx := context.WithValue(r.Context(), mcpparser.MCPRequestContextKey, parsed)
+	return r.WithContext(ctx)
+}
+
+func parsedToolCall(resourceID string, arguments map[string]any, id any) *mcpparser.ParsedMCPRequest {
+	return parsedMCPRequest("tools/call", resourceID, arguments, id)
+}
+
+func parsedMCPRequest(
+	method string,
+	resourceID string,
+	arguments map[string]any,
+	id any,
+) *mcpparser.ParsedMCPRequest {
+	return &mcpparser.ParsedMCPRequest{
 		Method:     method,
 		ResourceID: resourceID,
+		Arguments:  arguments,
 		ID:         id,
 		IsRequest:  true,
 	}
-	ctx := context.WithValue(r.Context(), mcpparser.MCPRequestContextKey, parsed)
-	return r.WithContext(ctx)
 }
 
 func withIdentity(r *http.Request, subject string) *http.Request {

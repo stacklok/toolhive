@@ -350,8 +350,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// aggregation (agg feeds it via Config.Aggregator below).
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry)
 
-	// When the optimizer is enabled, its meta-tools must pass through the authz
-	// response filter so they appear in tools/list.
+	// When the optimizer is enabled, its meta-tools are pass-through tools.
+	// Authz uses this for optimizer-aware authorization/filtering, and rate
+	// limiting uses it to resolve call_tool to the inner backend tool name.
 	var passThroughTools map[string]struct{}
 	if optCfg != nil {
 		passThroughTools = map[string]struct{}{
@@ -390,10 +391,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 
 	namespace := vmcpNamespace()
 	rateLimitMiddleware, rateLimitCleanup, err := ratelimitfactory.NewMiddleware(ctx, ratelimitfactory.Config{
-		Namespace:      namespace,
-		ServerName:     vmcpCfg.Name,
-		RateLimiting:   vmcpCfg.RateLimiting,
-		SessionStorage: vmcpCfg.SessionStorage,
+		Namespace:        namespace,
+		ServerName:       vmcpCfg.Name,
+		RateLimiting:     vmcpCfg.RateLimiting,
+		SessionStorage:   vmcpCfg.SessionStorage,
+		PassThroughTools: passThroughTools,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to create rate limit middleware: %w", err)

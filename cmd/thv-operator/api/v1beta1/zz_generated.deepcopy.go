@@ -3188,6 +3188,11 @@ func (in *VirtualMCPServerSpec) DeepCopyInto(out *VirtualMCPServerSpec) {
 		*out = new(OutgoingAuthConfig)
 		(*in).DeepCopyInto(*out)
 	}
+	if in.PassthroughHeaders != nil {
+		in, out := &in.PassthroughHeaders, &out.PassthroughHeaders
+		*out = make([]string, len(*in))
+		copy(*out, *in)
+	}
 	if in.ServiceAccount != nil {
 		in, out := &in.ServiceAccount, &out.ServiceAccount
 		*out = new(string)

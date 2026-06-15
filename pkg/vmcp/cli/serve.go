@@ -408,6 +408,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		AuthMiddleware:          authMiddleware,
 		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,
+		PassthroughHeaders:      vmcpCfg.PassthroughHeaders,
 		RateLimitMiddleware:     rateLimitMiddleware,
 		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       telemetryProvider,

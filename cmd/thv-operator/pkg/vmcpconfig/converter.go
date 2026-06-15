@@ -85,6 +85,11 @@ func (c *Converter) Convert(
 	// without requiring explicit mapping in this converter.
 	config := vmcp.Spec.Config.DeepCopy()
 
+	// Promoted top-level field takes precedence over spec.config.passthroughHeaders.
+	if len(vmcp.Spec.PassthroughHeaders) > 0 {
+		config.PassthroughHeaders = vmcp.Spec.PassthroughHeaders
+	}
+
 	// Override name with the CR name (authoritative source)
 	config.Name = vmcp.Name
 

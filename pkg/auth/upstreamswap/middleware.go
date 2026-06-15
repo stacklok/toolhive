@@ -132,6 +132,7 @@ func createReplaceInjector() injectionFunc {
 func createCustomInjector(headerName string) injectionFunc {
 	return func(r *http.Request, token string) {
 		r.Header.Set(headerName, fmt.Sprintf("Bearer %s", token))
+		r.Header.Del("Authorization")
 	}
 }
 

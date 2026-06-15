@@ -259,7 +259,7 @@ func TestMiddleware_SuccessfulSwap_CustomHeader(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	assert.Equal(t, "Bearer upstream-access-token", capturedCustomHeader)
-	assert.Equal(t, "Bearer original-token", capturedAuthHeader)
+	assert.Empty(t, capturedAuthHeader)
 }
 
 func TestMiddleware_Close(t *testing.T) {
@@ -298,7 +298,7 @@ func TestCreateInjectors(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer original")
 		injector(req, "test-token")
 		assert.Equal(t, "Bearer test-token", req.Header.Get("X-Custom-Header"))
-		assert.Equal(t, "Bearer original", req.Header.Get("Authorization"))
+		assert.Empty(t, req.Header.Get("Authorization"))
 	})
 }
 

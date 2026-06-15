@@ -5,6 +5,7 @@ package v1beta1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // HeaderForwardConfig defines header forward configuration for remote servers.
@@ -133,6 +134,16 @@ type MCPRemoteProxySpec struct {
 	// +optional
 	ServiceAccount *string `json:"serviceAccount,omitempty"`
 
+	// PodTemplateSpec defines the pod template to use for the MCPRemoteProxy
+	// This allows for customizing the pod configuration beyond what is provided by the other fields.
+	// Note that to modify the specific container the remote proxy runs in, you must specify
+	// the `toolhive` container name in the PodTemplateSpec.
+	// This field accepts a PodTemplateSpec object as JSON/YAML.
+	// +optional
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Type=object
+	PodTemplateSpec *runtime.RawExtension `json:"podTemplateSpec,omitempty"`
+
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
 	// When enabled, the proxy will use X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port,
 	// and X-Forwarded-Prefix headers to construct endpoint URLs
@@ -258,6 +269,9 @@ const (
 	// ConditionTypeMCPRemoteProxyAuthServerRefValidated indicates whether the AuthServerRef is valid
 	ConditionTypeMCPRemoteProxyAuthServerRefValidated = "AuthServerRefValidated"
 
+	// ConditionTypeMCPRemoteProxyPodTemplateValid indicates whether the PodTemplateSpec is valid
+	ConditionTypeMCPRemoteProxyPodTemplateValid = "PodTemplateValid"
+
 	// ConditionTypeConfigurationValid indicates whether the proxy spec has passed all pre-deployment validation checks
 	ConditionTypeConfigurationValid = "ConfigurationValid"
 )
@@ -345,6 +359,12 @@ const (
 
 	// ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream indicates multi-upstream is not supported
 	ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream = "MultiUpstreamNotSupported"
+
+	// ConditionReasonMCPRemoteProxyPodTemplateValid indicates PodTemplateSpec validation succeeded
+	ConditionReasonMCPRemoteProxyPodTemplateValid = "ValidPodTemplateSpec"
+
+	// ConditionReasonMCPRemoteProxyPodTemplateInvalid indicates PodTemplateSpec validation failed
+	ConditionReasonMCPRemoteProxyPodTemplateInvalid = "InvalidPodTemplateSpec"
 
 	// ConditionReasonConfigurationValid indicates all configuration validations passed
 	ConditionReasonConfigurationValid = "ConfigurationValid"

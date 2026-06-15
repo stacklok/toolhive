@@ -9,7 +9,6 @@
 package server
 
 import (
-	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -322,28 +321,6 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 		"key_prefix", keyPrefix,
 	)
 	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, keyPrefix, cfg.SessionTTL)
-}
-
-// WithDefaults returns a copy of cfg with the transport defaults applied to any field
-// left unset: Name, Version, Host, EndpointPath, and SessionTTL. It is the single place
-// these defaults are defined. The composition root (cli) — and any test that builds a
-// Config by hand — resolves its Config through WithDefaults before handing it to New, so
-// New, Serve, buildServeConfig, and the derive* helpers can all treat their input as
-// already-resolved pass-through (default once at the edge, not per-constructor).
-//
-// Port 0 is left untouched — it means "let the OS assign a random port" (the CLI flag
-// supplies the production default of 4483).
-//
-// cfg is treated as read-only: a shallow copy is returned and the caller's value is not
-// mutated (go-style: copy before mutating caller input).
-func WithDefaults(cfg *Config) *Config {
-	resolved := *cfg
-	resolved.Name = cmp.Or(resolved.Name, defaultServerName)
-	resolved.Version = cmp.Or(resolved.Version, defaultServerVersion)
-	resolved.Host = cmp.Or(resolved.Host, defaultHost)
-	resolved.EndpointPath = cmp.Or(resolved.EndpointPath, defaultEndpointPath)
-	resolved.SessionTTL = cmp.Or(resolved.SessionTTL, defaultSessionTTL)
-	return &resolved
 }
 
 // New creates a new Virtual MCP Server instance.

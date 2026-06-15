@@ -179,6 +179,15 @@ type Config struct {
 	// Requires Redis session storage to be configured for distributed rate limiting.
 	// +optional
 	RateLimiting *ratelimittypes.RateLimitConfig `json:"rateLimiting,omitempty" yaml:"rateLimiting,omitempty"`
+
+	// PassthroughHeaders is an allowlist of incoming client request header names
+	// forwarded verbatim to all backends. Captured at the vMCP incoming edge by
+	// headerforward.CaptureMiddleware and consumed once at session creation
+	// when the per-session backend client's HeaderForwardConfig is built. Names
+	// must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+	// +optional
+	// +listType=atomic
+	PassthroughHeaders []string `json:"passthroughHeaders,omitempty" yaml:"passthroughHeaders,omitempty"`
 }
 
 // IncomingAuthConfig configures client authentication to the virtual MCP server.

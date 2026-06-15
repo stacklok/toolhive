@@ -2196,3 +2196,47 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 		})
 	}
 }
+
+// TestConverter_PassthroughHeaders verifies that spec.passthroughHeaders is promoted
+// correctly, takes precedence over spec.config.passthroughHeaders, and that the
+// auto-passthrough path (only spec.config.passthroughHeaders set) is preserved.
+func TestConverter_PassthroughHeaders(t *testing.T) {
+	t.Parallel()
+
+	// newVMCP builds a minimal VirtualMCPServer with the given passthrough header slices.
+	newVMCP := func(topLevel, configLevel []string) *mcpv1beta1.VirtualMCPServer {
+		return &mcpv1beta1.VirtualMCPServer{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
+			Spec: mcpv1beta1.VirtualMCPServerSpec{
+				GroupRef:           &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+				IncomingAuth:       &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
+				PassthroughHeaders: topLevel,
+				Config:             vmcpconfig.Config{PassthroughHeaders: configLevel},
+			},
+		}
+	}
+
+	tests := []struct {
+		name     string
+		topLevel []string // spec.passthroughHeaders
+		config   []string // spec.config.passthroughHeaders
+		want     []string
+	}{
+		{name: "top-level only sets headers", topLevel: []string{"x-env"}, want: []string{"x-env"}},
+		{name: "top-level wins over config when both set", topLevel: []string{"x-api-key"}, config: []string{"x-tenant"}, want: []string{"x-api-key"}},
+		{name: "auto-passthrough: only config-level preserves value", config: []string{"x-tenant"}, want: []string{"x-tenant"}},
+		{name: "neither set produces nil"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			config, _, err := converter.Convert(ctx, newVMCP(tt.topLevel, tt.config), nil)
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.Equal(t, tt.want, config.PassthroughHeaders)
+		})
+	}
+}

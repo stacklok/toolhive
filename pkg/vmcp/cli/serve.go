@@ -398,7 +398,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		}()
 	}
 
-	// Resolve transport defaults once here at the composition root (Option 1): the
+	// Resolve transport defaults once here at the composition root: the
 	// vMCP config edge is the single place flags/CRD/YAML become a fully-resolved
 	// Config, so server.New, Serve, and the derive* helpers downstream are pure
 	// pass-through. WithDefaults fills any unset Host/EndpointPath/SessionTTL/Name/

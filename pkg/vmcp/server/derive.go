@@ -22,7 +22,7 @@ import (
 //
 // cfg is treated as read-only (go-style: copy before mutating caller input); a fresh
 // ServerConfig is returned. This is a pure projection: transport defaults are resolved
-// once at the composition root via WithDefaults (Option 1), so cfg already holds resolved
+// once at the composition root via WithDefaults, so cfg already holds resolved
 // values and deriveServerConfig applies no defaulting of its own. Port 0 still means
 // "OS-assigned".
 //

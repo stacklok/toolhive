@@ -91,7 +91,7 @@ func testMinimalSessionManagerConfig() *sessionmanager.FactoryConfig {
 // tests that do not exercise session creation: the two required collaborators Serve
 // validates (a non-nil SessionManagerConfig and an empty BackendRegistry) plus the
 // transport scalars resolved to their defaults. Serve is a pure pass-through now —
-// transport defaulting moved to the composition root via WithDefaults (Option 1) — so the
+// transport defaulting moved to the composition root via WithDefaults — so the
 // scalars must be set here; in particular SessionTTL must be non-zero or the session data
 // storage construction fails ("ttl must be a positive duration").
 func testMinimalServeConfig() *ServerConfig {
@@ -106,7 +106,7 @@ func testMinimalServeConfig() *ServerConfig {
 	}
 }
 
-// Transport defaulting is no longer Serve's job (Option 1: it is resolved once at the
+// Transport defaulting is no longer Serve's job (it is resolved once at the
 // composition root via WithDefaults), so there is no "Serve applies defaults" test — the
 // WithDefaults resolver is covered by TestWithDefaults, and Serve's faithful pass-through
 // of an already-resolved config is covered by TestServePreservesExplicitConfig below.
@@ -308,7 +308,7 @@ func TestServeValidation(t *testing.T) {
 //
 // This is a PRESENCE check only — with every source field non-zero it cannot catch a
 // wrong-source mapping. buildServeConfig is a pure pass-through (defaulting moved to the
-// composition root via WithDefaults, Option 1), so value correctness is carried by
+// composition root via WithDefaults), so value correctness is carried by
 // TestServePreservesExplicitConfig.
 func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 	t.Parallel()

@@ -102,7 +102,7 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 }
 
 // deriveServerConfig no longer applies transport defaults — it is a pure projection now
-// that defaulting is resolved once at the composition root (Option 1). The WithDefaults
+// that defaulting is resolved once at the composition root. The WithDefaults
 // resolver carries that behavior and is covered by TestWithDefaults (server_test.go).
 
 func TestDeriveServerConfigPropagatesNilCrossCutting(t *testing.T) {

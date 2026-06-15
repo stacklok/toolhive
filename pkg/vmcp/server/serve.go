@@ -302,7 +302,7 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 
 // buildServeConfig maps the transport-only ServerConfig onto the existing *Config the
 // carried-forward (*Server) methods read from. It is a pure pass-through: transport
-// defaults are resolved once at the composition root via WithDefaults (Option 1), so the
+// defaults are resolved once at the composition root via WithDefaults, so the
 // incoming ServerConfig is already resolved and buildServeConfig applies no defaulting of
 // its own. Port 0 still means "OS-assigned".
 //

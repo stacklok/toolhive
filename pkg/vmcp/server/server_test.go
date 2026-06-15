@@ -216,7 +216,7 @@ func TestNew(t *testing.T) {
 }
 
 // TestWithDefaults covers the single transport-defaulting resolver. It is the one place
-// the default list lives (Option 1); the composition root and the constructors route
+// the default list lives; the composition root and the constructors route
 // their Config through it, so New/Serve/derive* downstream are pure pass-through.
 func TestWithDefaults(t *testing.T) {
 	t.Parallel()

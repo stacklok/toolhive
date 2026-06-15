@@ -329,7 +329,7 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 // these defaults are defined. The composition root (cli) — and any test that builds a
 // Config by hand — resolves its Config through WithDefaults before handing it to New, so
 // New, Serve, buildServeConfig, and the derive* helpers can all treat their input as
-// already-resolved pass-through (Option 1: default once at the edge, not per-constructor).
+// already-resolved pass-through (default once at the edge, not per-constructor).
 //
 // Port 0 is left untouched — it means "let the OS assign a random port" (the CLI flag
 // supplies the production default of 4483).
@@ -363,7 +363,7 @@ func New(
 	workflowDefs map[string]*composer.WorkflowDefinition,
 ) (*Server, error) {
 	// Resolve transport defaults on a COPY. The composition root (cli) already resolves
-	// them at the edge via WithDefaults (Option 1: a single defaulting list); New repeats
+	// them at the edge via WithDefaults (a single defaulting list); New repeats
 	// it defensively so legacy direct callers and tests that build a Config by hand keep
 	// working — but without mutating the caller's value (go-style: copy before mutating
 	// caller input). That non-mutation is what lets #5445 hand the raw, un-defaulted

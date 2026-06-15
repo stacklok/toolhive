@@ -13,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
@@ -56,12 +57,12 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 	// and passed explicitly to the core — the core never reads it from context.
 	identity, _ := auth.IdentityFromContext(ctx)
 
-	tools, toolBackends, err := s.coreSessionTools(ctx, sessionID, identity)
+	tools, err := s.coreSessionTools(ctx, sessionID, identity)
 	if err != nil {
 		slog.Error("failed to list core tools for session", "session_id", sessionID, "error", err)
 		return err
 	}
-	resources, resourceBackends, err := s.coreSessionResources(ctx, sessionID, identity)
+	resources, err := s.coreSessionResources(ctx, sessionID, identity)
 	if err != nil {
 		slog.Error("failed to list core resources for session", "session_id", sessionID, "error", err)
 		return err
@@ -80,13 +81,6 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 		}
 	}
 
-	// Cache the advertised name→backend mapping so audit backend-enrichment can
-	// label requests from this session without re-aggregating via core.Lookup*
-	// (issue #5493). The mapping is derived from the ListTools/ListResources calls
-	// above, so it adds no extra aggregation. The cache is nil on the legacy path,
-	// but this method only runs on the Serve path where it is set.
-	s.advertisedSets.store(sessionID, &advertisedSet{tools: toolBackends, resources: resourceBackends})
-
 	slog.Info("session capabilities injected from core",
 		"session_id", sessionID,
 		"tool_count", len(tools),
@@ -99,23 +93,22 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 // core owns conflict resolution and backend-name translation, so the SDK tool name
 // is forwarded as-is to core.CallTool.
 //
-// It also returns the advertised tool name→backend display-name mapping, derived
-// from the same single ListTools aggregation, so the caller can populate the
-// audit advertised-set cache without a second aggregation (issue #5493).
+// The backend display name is resolved here (once per session, from the same
+// ListTools aggregation) and captured in the handler closure, so the handler can
+// label the audit event without a per-request lookup (see coreToolHandler).
 func (s *Server) coreSessionTools(
 	ctx context.Context, sessionID string, identity *auth.Identity,
-) ([]server.ServerTool, map[string]string, error) {
+) ([]server.ServerTool, error) {
 	domainTools, err := s.core.ListTools(ctx, identity)
 	if err != nil {
-		return nil, nil, fmt.Errorf("core ListTools: %w", err)
+		return nil, fmt.Errorf("core ListTools: %w", err)
 	}
 
 	sdkTools := make([]server.ServerTool, 0, len(domainTools))
-	toolBackends := make(map[string]string, len(domainTools))
 	for _, domainTool := range domainTools {
 		schemaJSON, err := json.Marshal(domainTool.InputSchema)
 		if err != nil {
-			return nil, nil, fmt.Errorf("marshal schema for tool %s: %w", domainTool.Name, err)
+			return nil, fmt.Errorf("marshal schema for tool %s: %w", domainTool.Name, err)
 		}
 
 		tool := mcp.Tool{
@@ -137,30 +130,25 @@ func (s *Server) coreSessionTools(
 
 		sdkTools = append(sdkTools, server.ServerTool{
 			Tool:    tool,
-			Handler: s.coreToolHandler(sessionID, domainTool.Name),
+			Handler: s.coreToolHandler(sessionID, domainTool.Name, s.backendDisplayName(ctx, domainTool.BackendID)),
 		})
-		toolBackends[domainTool.Name] = s.backendDisplayName(ctx, domainTool.BackendID)
 	}
-	return sdkTools, toolBackends, nil
+	return sdkTools, nil
 }
 
 // coreSessionResources queries the core for the resources advertised to identity
 // and adapts them to SDK ServerResources whose handlers route through
-// core.ReadResource.
-//
-// It also returns the advertised resource URI→backend display-name mapping,
-// derived from the same single ListResources aggregation, for the audit
-// advertised-set cache (issue #5493).
+// core.ReadResource. The backend display name is resolved here and captured in the
+// handler closure for audit labelling (see coreResourceHandler).
 func (s *Server) coreSessionResources(
 	ctx context.Context, sessionID string, identity *auth.Identity,
-) ([]server.ServerResource, map[string]string, error) {
+) ([]server.ServerResource, error) {
 	domainResources, err := s.core.ListResources(ctx, identity)
 	if err != nil {
-		return nil, nil, fmt.Errorf("core ListResources: %w", err)
+		return nil, fmt.Errorf("core ListResources: %w", err)
 	}
 
 	sdkResources := make([]server.ServerResource, 0, len(domainResources))
-	resourceBackends := make(map[string]string, len(domainResources))
 	for _, domainResource := range domainResources {
 		sdkResources = append(sdkResources, server.ServerResource{
 			Resource: mcp.Resource{
@@ -169,18 +157,27 @@ func (s *Server) coreSessionResources(
 				Description: domainResource.Description,
 				MIMEType:    domainResource.MimeType,
 			},
-			Handler: s.coreResourceHandler(sessionID, domainResource.URI),
+			Handler: s.coreResourceHandler(sessionID, domainResource.URI, s.backendDisplayName(ctx, domainResource.BackendID)),
 		})
-		resourceBackends[domainResource.URI] = s.backendDisplayName(ctx, domainResource.BackendID)
 	}
-	return sdkResources, resourceBackends, nil
+	return sdkResources, nil
 }
 
-// coreToolHandler builds the SDK handler for a Serve-path tool. It enforces the
-// session's identity binding, then delegates to core.CallTool with the caller's
-// explicit identity. Admission (authorization) is the core's responsibility.
-func (s *Server) coreToolHandler(sessionID, toolName string) server.ToolHandlerFunc {
+// coreToolHandler builds the SDK handler for a Serve-path tool. It labels the audit
+// event with backendName (the serving backend, pre-resolved at registration),
+// enforces the session's identity binding, then delegates to core.CallTool with the
+// caller's explicit identity. Admission (authorization) is the core's responsibility.
+func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Label the audit event with the backend serving this tool. The audit
+		// middleware created the BackendInfo upstream and reads it after this handler
+		// returns (auditor.Middleware), so writing the pre-resolved name here — where
+		// the call is actually handled — is what lets the Serve path drop the separate
+		// backend-enrichment middleware and its per-request lookup (#5512 review).
+		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
+			bi.BackendName = backendName
+		}
+
 		args, ok := req.Params.Arguments.(map[string]any)
 		if !ok {
 			wrappedErr := fmt.Errorf("%w: arguments must be object, got %T", vmcp.ErrInvalidInput, req.Params.Arguments)
@@ -214,11 +211,15 @@ func (s *Server) coreToolHandler(sessionID, toolName string) server.ToolHandlerF
 }
 
 // coreResourceHandler builds the SDK handler for a Serve-path resource. It mirrors
-// coreToolHandler: binding check, then core.ReadResource with explicit identity.
+// coreToolHandler: audit label, binding check, then core.ReadResource with explicit identity.
 func (s *Server) coreResourceHandler(
-	sessionID, uri string,
+	sessionID, uri, backendName string,
 ) func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 	return func(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
+			bi.BackendName = backendName
+		}
+
 		caller, _ := auth.IdentityFromContext(ctx)
 		if err := s.enforceSessionBinding(sessionID, caller); err != nil {
 			s.terminateOnBindingFailure(sessionID, uri, err)
@@ -267,9 +268,6 @@ func (s *Server) terminateOnBindingFailure(sessionID, capability string, err err
 		slog.Error("failed to terminate session after auth failure",
 			"session_id", sessionID, "error", termErr)
 	}
-	// Drop the session's advertised set: this is one of the session-end paths the
-	// transport drives directly (see advertisedSetCache lifecycle).
-	s.advertisedSets.evict(sessionID)
 }
 
 // backendDisplayName resolves a logical backend ID to its human-readable name via

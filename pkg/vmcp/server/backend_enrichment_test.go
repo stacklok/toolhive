@@ -79,8 +79,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 		rr := httptest.NewRecorder()
 
 		// Create server instance and wrap handler with middleware
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 
 		// Execute middleware
 		middleware.ServeHTTP(rr, req)
@@ -122,8 +121,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -160,8 +158,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -189,8 +186,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -214,8 +210,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -248,8 +243,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Should not panic, should proceed normally
@@ -286,8 +280,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Should not panic, should proceed with next handler
@@ -325,8 +318,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -369,8 +361,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(bodyReadingHandler)
+		middleware := backendEnrichmentMiddleware(bodyReadingHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Verify body was properly restored and readable by next handler
@@ -405,8 +396,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Should not panic, should proceed normally
@@ -442,8 +432,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -479,8 +468,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Should not panic, should proceed with next handler
@@ -524,131 +512,12 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(bodyReadingHandler)
+		middleware := backendEnrichmentMiddleware(bodyReadingHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Verify body was restored (as empty) and readable by next handler without error
 		assert.NoError(t, readErr, "downstream handler should be able to read restored body without error")
 		assert.Empty(t, bodyRead, "restored body should be empty after read error")
-	})
-}
-
-// TestBackendEnrichmentMiddleware_ServePath verifies the Serve path (s.core != nil):
-// backend identity is resolved from the per-session advertised-set cache (keyed by the
-// Mcp-Session-Id header, populated at registration), recorded as the backend's
-// human-readable name to match the legacy path's WorkloadName, and resolved WITHOUT
-// re-aggregating via the core — with no reliance on the discovery-into-context table.
-func TestBackendEnrichmentMiddleware_ServePath(t *testing.T) {
-	t.Parallel()
-
-	const sessionID = "session-1"
-
-	// Build the cache the way registration would: the core's single per-session
-	// aggregation resolved "test-tool" to backend "github-mcp" (BackendID → display
-	// name) and a resource to "docs-backend".
-	cache, err := newAdvertisedSetCache(16)
-	require.NoError(t, err)
-	cache.store(sessionID, &advertisedSet{
-		tools:     map[string]string{"test-tool": "github-mcp"},
-		resources: map[string]string{"file:///doc": "docs-backend"},
-	})
-	// core is non-nil only to select the Serve branch; enrichment must NOT consult it.
-	fc := &fakeCore{tools: []vmcp.Tool{{Name: "test-tool", BackendID: "backend-x"}}}
-	srv := &Server{core: fc, advertisedSets: cache}
-
-	enrich := func(t *testing.T, body, sid string) *audit.BackendInfo {
-		t.Helper()
-		nextHandler, handlerCalled := createTestHandler()
-		backendInfo := &audit.BackendInfo{}
-		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(body)))
-		if sid != "" {
-			req.Header.Set("Mcp-Session-Id", sid)
-		}
-		req = req.WithContext(audit.WithBackendInfo(req.Context(), backendInfo))
-		srv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
-		assert.True(t, *handlerCalled)
-		return backendInfo
-	}
-
-	t.Run("resolves a tool from the per-session cache (name, not raw BackendID)", func(t *testing.T) {
-		t.Parallel()
-		assert.Equal(t, "github-mcp", enrich(t, toolsCallRequest, sessionID).BackendName)
-	})
-
-	t.Run("resolves a resource from the per-session cache", func(t *testing.T) {
-		t.Parallel()
-		body := `{"method":"resources/read","params":{"uri":"file:///doc"}}`
-		assert.Equal(t, "docs-backend", enrich(t, body, sessionID).BackendName)
-	})
-
-	t.Run("misses for a capability not in the advertised set", func(t *testing.T) {
-		t.Parallel()
-		body := `{"method":"tools/call","params":{"name":"unknown-tool"}}`
-		assert.Empty(t, enrich(t, body, sessionID).BackendName)
-	})
-
-	t.Run("misses when the session is unknown on this replica (cross-pod)", func(t *testing.T) {
-		t.Parallel()
-		assert.Empty(t, enrich(t, toolsCallRequest, "other-session").BackendName,
-			"an unknown session must resolve no backend (and must not re-aggregate)")
-	})
-
-	t.Run("ignores the discovery context and resolves from the cache", func(t *testing.T) {
-		t.Parallel()
-		nextHandler, handlerCalled := createTestHandler()
-		backendInfo := &audit.BackendInfo{}
-		// A legacy routing table is present in context but must be ignored on the Serve path.
-		caps := &aggregator.AggregatedCapabilities{RoutingTable: &vmcp.RoutingTable{
-			Tools: map[string]*vmcp.BackendTarget{"test-tool": {WorkloadName: "legacy-backend"}},
-		}}
-		req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(toolsCallRequest)))
-		req.Header.Set("Mcp-Session-Id", sessionID)
-		ctx := discovery.WithDiscoveredCapabilities(req.Context(), caps)
-		ctx = audit.WithBackendInfo(ctx, backendInfo)
-		req = req.WithContext(ctx)
-
-		srv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
-
-		assert.True(t, *handlerCalled)
-		assert.Equal(t, "github-mcp", backendInfo.BackendName,
-			"Serve path must resolve from the cache, not the discovery context (legacy-backend)")
-	})
-
-	// AC1 (issue #5493): an audited Serve-path request must NOT trigger a second backend
-	// aggregation. Enrichment reads the cache and never calls core.Lookup*/List* — for
-	// tools/call, resources/read, or prompts/get.
-	t.Run("does not re-aggregate via the core for any method", func(t *testing.T) {
-		t.Parallel()
-		isolated := &fakeCore{
-			tools:     []vmcp.Tool{{Name: "test-tool", BackendID: "backend-x"}},
-			resources: []vmcp.Resource{{Name: "doc", URI: "file:///doc", BackendID: "backend-x"}},
-		}
-		isolatedCache, cErr := newAdvertisedSetCache(4)
-		require.NoError(t, cErr)
-		isolatedCache.store(sessionID, &advertisedSet{
-			tools:     map[string]string{"test-tool": "github-mcp"},
-			resources: map[string]string{"file:///doc": "docs-backend"},
-		})
-		isolatedSrv := &Server{core: isolated, advertisedSets: isolatedCache}
-
-		for _, body := range []string{
-			toolsCallRequest,
-			`{"method":"resources/read","params":{"uri":"file:///doc"}}`,
-			`{"method":"prompts/get","params":{"name":"p"}}`,
-		} {
-			nextHandler, _ := createTestHandler()
-			req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewReader([]byte(body)))
-			req.Header.Set("Mcp-Session-Id", sessionID)
-			req = req.WithContext(audit.WithBackendInfo(req.Context(), &audit.BackendInfo{}))
-			isolatedSrv.backendEnrichmentMiddleware(nextHandler).ServeHTTP(httptest.NewRecorder(), req)
-		}
-
-		assert.Zero(t, isolated.lookupToolCalls.Load(), "enrichment must not call core.LookupTool")
-		assert.Zero(t, isolated.listToolsCalls.Load(), "enrichment must not call core.ListTools")
-		assert.Zero(t, isolated.lookupResCalls.Load(), "enrichment must not call core.LookupResource")
-		assert.Zero(t, isolated.listResourcesCalls.Load(), "enrichment must not call core.ListResources")
-		assert.Zero(t, isolated.lookupPromptCalls.Load(), "enrichment must not call core.LookupPrompt")
 	})
 }
 
@@ -860,8 +729,7 @@ func TestBackendEnrichmentMiddleware_ContextPropagation(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Verify custom context value was preserved

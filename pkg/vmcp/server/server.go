@@ -266,14 +266,6 @@ type Server struct {
 	// vmcpSessionMgr manages session-scoped backend client lifecycle.
 	vmcpSessionMgr SessionManager
 
-	// advertisedSets caches, per session, the name→backend mapping that audit
-	// backend-enrichment uses to label MCP requests on the Serve path, so it
-	// reads a map instead of calling core.Lookup* (which re-aggregates all
-	// backends on every call). Populated at session registration from the core's
-	// single per-session aggregation; nil on the legacy server.New path. See
-	// advertisedSetCache.
-	advertisedSets *advertisedSetCache
-
 	// Ready channel signals when the server is ready to accept connections.
 	// Closed once the listener is created and serving.
 	ready     chan struct{}
@@ -641,12 +633,8 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// when auth middleware is nil.
 	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
-	// Apply backend enrichment middleware if audit is configured
-	// This runs after discovery populates the routing table, so it can extract backend names
-	if s.config.AuditConfig != nil {
-		mcpHandler = s.backendEnrichmentMiddleware(mcpHandler)
-		slog.Info("backend enrichment middleware enabled for audit events")
-	}
+	// Apply backend enrichment middleware (legacy path only — see withBackendEnrichment).
+	mcpHandler = s.withBackendEnrichment(mcpHandler)
 
 	// Apply authorization middleware if configured (runs AFTER discovery in execution).
 	// Wrapping it here (before discovery wrap) means discovery runs first, then authz.
@@ -1194,24 +1182,7 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 	adaptedTools, err := func() ([]server.ServerTool, error) {
 		if s.core != nil {
 			identity, _ := auth.IdentityFromContext(ctx)
-			tools, toolBackends, listErr := s.coreSessionTools(ctx, sessionID, identity)
-			if listErr != nil {
-				return nil, listErr
-			}
-			// Re-populate the advertised-set cache only on a miss. A session that
-			// registered on this replica already holds the full {tools, resources}
-			// entry; storing a tools-only set here would drop its resources mapping.
-			// The early return above does NOT always cover the pod-local case — a
-			// session advertising resources but zero tools has an empty SDK tool
-			// store, so it reaches here — hence the explicit miss check. On a
-			// cross-pod replica that never registered the session there is no entry,
-			// so the tools-only mapping is stored; resources are not re-injected
-			// lazily, so a resources/read audit there misses gracefully rather than
-			// re-aggregating (see advertisedSetCache).
-			if _, cached := s.advertisedSets.get(sessionID); !cached {
-				s.advertisedSets.store(sessionID, &advertisedSet{tools: toolBackends})
-			}
-			return tools, nil
+			return s.coreSessionTools(ctx, sessionID, identity)
 		}
 		return s.vmcpSessionMgr.GetAdaptedTools(sessionID)
 	}()
@@ -1266,9 +1237,6 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 					"error", termErr,
 					"original_error", retErr)
 			}
-			// Drop any advertised set stored before the failure (no-op on the
-			// legacy path, where the cache is nil; see advertisedSetCache).
-			s.advertisedSets.evict(sessionID)
 		}
 	}()
 

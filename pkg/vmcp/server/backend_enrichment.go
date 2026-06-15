@@ -16,15 +16,33 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 )
 
+// withBackendEnrichment wraps h with the legacy audit backend-enrichment middleware
+// when audit is enabled on the legacy (server.New) path. On the Serve path
+// (s.core != nil) the per-session tool/resource handlers write the backend label
+// directly into the audit BackendInfo (serve_handlers.go), so the middleware — with
+// its per-request body re-read and routing-table lookup — is not wired and h is
+// returned unchanged (#5512 review). The legacy wiring is retired with the rest of the
+// discovery path in #5445.
+func (s *Server) withBackendEnrichment(h http.Handler) http.Handler {
+	if s.config.AuditConfig != nil && s.core == nil {
+		slog.Info("backend enrichment middleware enabled for audit events")
+		return backendEnrichmentMiddleware(h)
+	}
+	return h
+}
+
 // backendEnrichmentMiddleware wraps an HTTP handler to add backend routing information
 // to audit events by parsing MCP requests and resolving the target backend.
 //
-// The resolution source depends on the path: on the Serve path (s.core != nil) it
-// reads the per-session advertised-set cache populated at session registration
-// (keyed by the Mcp-Session-Id header), so it never re-aggregates backend
-// capabilities on a request; on the legacy server.New path it reads the routing
-// table the discovery middleware injected into the request context.
-func (s *Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
+// This is the legacy (server.New) path's audit labelling: it reads the routing table
+// the discovery middleware injected into the request context. It is only wired when
+// s.core == nil (see (*Server).Handler) — on the Serve path the per-session handlers
+// label the audit event directly (serve_handlers.go), so this middleware, with its
+// per-request body re-read, is not in the chain. Retired with the discovery path in #5445.
+//
+// It is a free function (not a *Server method): with the Serve branch gone it reads no
+// Server state — resolution comes entirely from the request context.
+func backendEnrichmentMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Read and parse the request body to extract MCP method and parameters
 		var requestBody []byte
@@ -50,11 +68,7 @@ func (s *Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
 		}
 
 		if len(requestBody) > 0 && json.Unmarshal(requestBody, &mcpRequest) == nil {
-			// The session ID (Serve path) comes from the same header the SDK and the
-			// legacy discovery middleware use; it is "" for initialize and on the
-			// legacy path, where resolveBackendName ignores it.
-			sessionID := r.Header.Get("Mcp-Session-Id")
-			backendName := s.resolveBackendName(r.Context(), sessionID, mcpRequest.Method, mcpRequest.Params)
+			backendName := resolveBackendName(r.Context(), mcpRequest.Method, mcpRequest.Params)
 
 			// Mutate the existing BackendInfo from audit middleware
 			if backendName != "" {
@@ -69,62 +83,15 @@ func (s *Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
 	})
 }
 
-// resolveBackendName resolves the backend handling an MCP request, dispatching on
-// whether the core is wired (Serve path) or not (legacy path). sessionID is the
-// Mcp-Session-Id header value; it is used only on the Serve path.
-func (s *Server) resolveBackendName(ctx context.Context, sessionID, method string, params map[string]any) string {
-	// Serve path: read the per-session advertised-set cache built once at session
-	// registration. The discovery-into-context seam is not populated on this path.
-	if s.core != nil {
-		return s.cachedBackendName(sessionID, method, params)
-	}
-
-	// Legacy path: read the routing table the discovery middleware injected into context.
+// resolveBackendName resolves the backend handling an MCP request from the routing
+// table the discovery middleware injected into the request context (legacy path).
+// The middleware is only wired when s.core == nil, so there is no Serve-path branch.
+func resolveBackendName(ctx context.Context, method string, params map[string]any) string {
 	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
 	if !ok || caps == nil || caps.RoutingTable == nil {
 		return ""
 	}
 	return lookupBackendName(method, params, caps.RoutingTable)
-}
-
-// cachedBackendName resolves the backend serving an MCP request from the
-// per-session advertised-set cache populated at session registration
-// (injectCoreSessionCapabilities) from the core's single per-session aggregation.
-// It performs only map lookups — unlike a core.Lookup* call it does NOT
-// re-aggregate backend capabilities, which is the whole point of the cache
-// (issue #5493).
-//
-// The cached value is the backend's human-readable name (not the raw BackendID),
-// for parity with the legacy path, which records BackendTarget.WorkloadName
-// (= backend.Name); recording the same value on both paths keeps audit events
-// correlatable across the Serve and server.New paths. Conflict resolution and the
-// admission filter were already applied by the core when the set was built, so the
-// cache holds the advertised (possibly renamed) name a client actually calls and
-// never a denied capability.
-//
-// Returns "" when the session is unknown on this replica (a cross-pod request with
-// no session affinity, or an already-evicted session) or the capability is not in
-// the advertised set. A miss degrades the audit label gracefully and never triggers
-// a second aggregation. prompts/get is not resolved: the Serve path does not
-// advertise prompts, so there is no prompt to label (see advertisedSet).
-//
-// A miss on a labelable method (tools/call, resources/read) is logged at DEBUG so the
-// audit-completeness gap is observable rather than silent (issue #5493). This is the
-// gap gated behind the "hard blocker before audit ships on a live Serve path": until a
-// production composition root wires Serve, no audited traffic hits this path. Logging,
-// not a core.Lookup* fallback, is used on purpose — a fallback would reintroduce the
-// per-request re-aggregation this cache exists to eliminate.
-func (s *Server) cachedBackendName(sessionID, method string, params map[string]any) string {
-	if set, ok := s.advertisedSets.get(sessionID); ok {
-		if name := set.backendName(method, params); name != "" {
-			return name
-		}
-	}
-	if method == "tools/call" || method == "resources/read" {
-		slog.Debug("audit backend-enrichment resolved no backend on the Serve path",
-			"session_id", sessionID, "method", method)
-	}
-	return ""
 }
 
 // lookupBackendName looks up which backend handles a given MCP request.

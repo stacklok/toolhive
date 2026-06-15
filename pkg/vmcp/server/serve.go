@@ -248,17 +248,6 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		}
 	}()
 
-	// Per-session advertised-set cache for audit backend-enrichment. Sized to the
-	// session manager's cache capacity so it holds an entry for each live session
-	// (a zero capacity falls back to the cache's own default). This is the
-	// transport-side half of "Serve caches, core is stateless": enrichment reads
-	// this cache instead of re-aggregating via core.Lookup* (issue #5493). Built
-	// before sessionmanager.New so a failure here cannot strand its optimizerCleanup.
-	advertisedSets, err := newAdvertisedSetCache(cfg.SessionManagerConfig.CacheCapacity)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create advertised-set cache: %w", err)
-	}
-
 	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, cfg.SessionManagerConfig, cfg.BackendRegistry)
 	if err != nil {
 		return nil, err
@@ -277,7 +266,6 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		sessionManager:     sessionManager,
 		sessionDataStorage: sessionDataStorage,
 		vmcpSessionMgr:     vmcpSessMgr,
-		advertisedSets:     advertisedSets,
 		ready:              make(chan struct{}),
 		healthMonitor:      cfg.HealthMonitor,
 		statusReporter:     cfg.StatusReporter,
@@ -306,16 +294,6 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	})
 	hooks.AddBeforeCallTool(func(hookCtx context.Context, _ any, _ *mcp.CallToolRequest) {
 		srv.lazyInjectSessionTools(hookCtx)
-	})
-	// Evict the session's advertised set when the SDK unregisters it. mcp-go fires
-	// this on a client DELETE and on the idle-TTL sweep, the two session-end paths
-	// the transport does not drive itself; it is NOT fired per-request on the POST
-	// path, and on the GET path only for a session that GET itself created, so a
-	// live stateful session's entry is not evicted mid-session. The bounded LRU
-	// remains the backstop for any path this hook does not cover. evict is nil-safe
-	// and a no-op for a session not on this replica (cross-pod).
-	hooks.AddOnUnregisterSession(func(_ context.Context, session server.ClientSession) {
-		srv.advertisedSets.evict(session.SessionID())
 	})
 
 	// Disarm the close-on-error guard: the Server is fully constructed.

@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -112,9 +113,6 @@ type fakeCore struct {
 	listResourcesCalls atomic.Int32
 	callToolCalls      atomic.Int32
 	readResourceCalls  atomic.Int32
-	lookupToolCalls    atomic.Int32
-	lookupResCalls     atomic.Int32
-	lookupPromptCalls  atomic.Int32
 	lastCallToolName   atomic.Value // string
 	lastReadURI        atomic.Value // string
 
@@ -165,7 +163,6 @@ func (*fakeCore) GetPrompt(
 }
 
 func (f *fakeCore) LookupTool(_ context.Context, _ *auth.Identity, name string) (*vmcp.Tool, error) {
-	f.lookupToolCalls.Add(1)
 	for i := range f.tools {
 		if f.tools[i].Name == name {
 			tool := f.tools[i]
@@ -176,7 +173,6 @@ func (f *fakeCore) LookupTool(_ context.Context, _ *auth.Identity, name string) 
 }
 
 func (f *fakeCore) LookupResource(_ context.Context, _ *auth.Identity, uri string) (*vmcp.Resource, error) {
-	f.lookupResCalls.Add(1)
 	for i := range f.resources {
 		if f.resources[i].URI == uri {
 			res := f.resources[i]
@@ -186,8 +182,7 @@ func (f *fakeCore) LookupResource(_ context.Context, _ *auth.Identity, uri strin
 	return nil, vmcp.ErrNotFound
 }
 
-func (f *fakeCore) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Prompt, error) {
-	f.lookupPromptCalls.Add(1)
+func (*fakeCore) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Prompt, error) {
 	return nil, vmcp.ErrNotFound
 }
 
@@ -278,15 +273,13 @@ func TestServeRegistersSessionHooks(t *testing.T) {
 // only reachable over HTTP, via MCPServer.WithContext). Its tool store is the observable
 // surface the injection asserts against.
 type fakeSDKSession struct {
-	id        string
-	tools     map[string]server.ServerTool
-	resources map[string]server.ServerResource
+	id    string
+	tools map[string]server.ServerTool
 }
 
 var (
-	_ server.ClientSession        = (*fakeSDKSession)(nil)
-	_ server.SessionWithTools     = (*fakeSDKSession)(nil)
-	_ server.SessionWithResources = (*fakeSDKSession)(nil)
+	_ server.ClientSession    = (*fakeSDKSession)(nil)
+	_ server.SessionWithTools = (*fakeSDKSession)(nil)
 )
 
 func (f *fakeSDKSession) SessionID() string                                 { return f.id }
@@ -295,9 +288,6 @@ func (*fakeSDKSession) Initialized() bool                                   { re
 func (*fakeSDKSession) NotificationChannel() chan<- mcp.JSONRPCNotification { return nil }
 func (f *fakeSDKSession) GetSessionTools() map[string]server.ServerTool     { return f.tools }
 func (f *fakeSDKSession) SetSessionTools(t map[string]server.ServerTool)    { f.tools = t }
-
-func (f *fakeSDKSession) GetSessionResources() map[string]server.ServerResource  { return f.resources }
-func (f *fakeSDKSession) SetSessionResources(r map[string]server.ServerResource) { f.resources = r }
 
 // TestServeLazyInjectsToolsForRehydratedSession exercises the cross-pod re-injection
 // branch of lazyInjectSessionTools that TestServeRegistersSessionHooks does not reach:
@@ -349,23 +339,11 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 		return gErr == nil && len(tools) > 0
 	}, 2*time.Second, 10*time.Millisecond, "session should be registered with adapted tools")
 
-	// Simulate a second pod: on a replica that never registered the session the
-	// advertised-set cache has no entry (it is node-local). Evict to model that, so the
-	// rehydration path below exercises both SDK-tool injection and cache re-population.
-	srv.advertisedSets.evict(sessionID)
-
 	// Empty-store (cross-pod) branch: a fresh SDK session with no tools gets them injected.
 	rehydrated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{}}
 	srv.lazyInjectSessionTools(srv.mcpServer.WithContext(context.Background(), rehydrated))
 	assert.Contains(t, rehydrated.tools, testTool.Name,
 		"an empty per-session store should be re-injected from the vMCP session manager")
-
-	// Lazy-inject also repopulates the advertised-set cache on a miss (tools-only —
-	// resources are not lazily re-injected), so a subsequent audited tools/call on this
-	// replica can be labelled without re-aggregating.
-	set, ok := srv.advertisedSets.get(sessionID)
-	require.True(t, ok, "lazy-inject must repopulate the advertised-set cache on a miss")
-	assert.Contains(t, set.tools, testTool.Name)
 
 	// No-op branch: a populated store is left untouched (early return before GetAdaptedTools).
 	populated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{
@@ -376,69 +354,19 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 	assert.Contains(t, populated.tools, "preexisting")
 }
 
-// failingCreateSessionMgr is a SessionManager stub whose CreateSession always errors,
-// used to drive handleSessionRegistrationImpl's failure path without the full HTTP flow.
-type failingCreateSessionMgr struct{}
-
-func (*failingCreateSessionMgr) Generate() string               { return "" }
-func (*failingCreateSessionMgr) Validate(string) (bool, error)  { return false, nil }
-func (*failingCreateSessionMgr) Terminate(string) (bool, error) { return false, nil }
-func (*failingCreateSessionMgr) CreateSession(context.Context, string) (vmcpsession.MultiSession, error) {
-	return nil, errors.New("forced create failure")
-}
-func (*failingCreateSessionMgr) GetAdaptedTools(string) ([]server.ServerTool, error) { return nil, nil }
-func (*failingCreateSessionMgr) GetAdaptedResources(string) ([]server.ServerResource, error) {
-	return nil, nil
-}
-func (*failingCreateSessionMgr) GetMultiSession(string) (vmcpsession.MultiSession, bool) {
-	return nil, false
-}
-func (*failingCreateSessionMgr) DecorateSession(
-	string, func(sessiontypes.MultiSession) sessiontypes.MultiSession,
-) error {
-	return nil
-}
-func (*failingCreateSessionMgr) NotifyBackendExpired(string, string, map[string]string) {}
-
-// TestServeRegistrationFailureEvictsAdvertisedSet proves the registration-failure
-// cleanup path also evicts the advertised set (the defer in handleSessionRegistrationImpl).
-// The entry is pre-seeded to stand in for any state cached before the failure; a forced
-// CreateSession error then drives the defer, which must evict it.
-func TestServeRegistrationFailureEvictsAdvertisedSet(t *testing.T) {
-	t.Parallel()
-
-	cache, err := newAdvertisedSetCache(8)
-	require.NoError(t, err)
-	const sessionID = "sess-reg-fail"
-	cache.store(sessionID, &advertisedSet{tools: map[string]string{"t": "b"}})
-	srv := &Server{vmcpSessionMgr: &failingCreateSessionMgr{}, advertisedSets: cache}
-
-	sess := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{}}
-	regErr := srv.handleSessionRegistrationImpl(context.Background(), sess)
-	require.Error(t, regErr, "a CreateSession failure must surface as a registration error")
-
-	_, ok := cache.get(sessionID)
-	assert.False(t, ok, "a registration failure must evict the session's advertised set")
-}
-
 // TestServeReturnsErrorWhenSessionManagerConstructionFails verifies Serve surfaces a
 // sessionmanager.New failure — the path the closeStorageOnErr guard protects. It
 // confirms the guarded path is reached (the failure occurs AFTER session data storage
-// is built, distinct from config validation: ErrorContains("FactoryConfig.Base") +
+// is built, distinct from config validation: ErrorContains("CacheCapacity") +
 // NotErrorIs(ErrInvalidConfig)). It does NOT directly observe sessionDataStorage.Close()
 // — the storage is constructed internally and the test holds no handle to it; the
 // close itself is the same defer-guard pattern carried over verbatim from server.New.
-//
-// A nil FactoryConfig.Base is the cheapest forced sessionmanager.New failure. (A
-// negative CacheCapacity is now rejected earlier, by newAdvertisedSetCache, so it
-// no longer reaches sessionmanager.New — see TestNewAdvertisedSetCacheCapacityValidation.)
+// A negative CacheCapacity is the cheapest forced failure.
 func TestServeReturnsErrorWhenSessionManagerConstructionFails(t *testing.T) {
 	t.Parallel()
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, &ServerConfig{
-		// Base nil: passes Serve's own config validation (which only requires a
-		// non-nil SessionManagerConfig) and fails inside sessionmanager.New.
-		SessionManagerConfig: &sessionmanager.FactoryConfig{},
+		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: testMinimalFactory(), CacheCapacity: -1},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
 	require.Error(t, err)
@@ -446,7 +374,7 @@ func TestServeReturnsErrorWhenSessionManagerConstructionFails(t *testing.T) {
 	// Construction failure from sessionmanager.New (after the storage is built, so the
 	// closeStorageOnErr guard runs) — not a config-validation error.
 	assert.NotErrorIs(t, err, vmcp.ErrInvalidConfig)
-	assert.ErrorContains(t, err, "FactoryConfig.Base")
+	assert.ErrorContains(t, err, "CacheCapacity")
 }
 
 // TestBuildSessionDataStorage verifies provider selection: nil/empty/"memory"
@@ -715,7 +643,7 @@ func TestServeCoreToolHandler(t *testing.T) {
 			srv, sessionID, _ := registerServeSession(t, fc)
 
 			req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: tc.args}}
-			res, err := srv.coreToolHandler(sessionID, "t")(context.Background(), req)
+			res, err := srv.coreToolHandler(sessionID, "t", "")(context.Background(), req)
 			// Tool errors/denials surface as IsError results, not Go errors.
 			require.NoError(t, err)
 			require.NotNil(t, res)
@@ -748,13 +676,9 @@ func TestServeToolCallTerminatesOnBindingFailure(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
 	srv, sessionID, _ := registerServeSession(t, fc)
 
-	// Registration populated the advertised-set cache for this session.
-	_, cached := srv.advertisedSets.get(sessionID)
-	require.True(t, cached, "registration should have cached the session's advertised set")
-
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Token: "attacker-token"})
 	req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
-	res, err := srv.coreToolHandler(sessionID, "t")(ctx, req)
+	res, err := srv.coreToolHandler(sessionID, "t", "")(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	assert.True(t, res.IsError)
@@ -764,11 +688,6 @@ func TestServeToolCallTerminatesOnBindingFailure(t *testing.T) {
 
 	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return !ok },
 		2*time.Second, 10*time.Millisecond, "a binding failure must terminate the session (fail-closed)")
-
-	// The binding failure is a transport-driven session-end path, so it also evicts the
-	// session's advertised set (issue #5493).
-	_, cached = srv.advertisedSets.get(sessionID)
-	assert.False(t, cached, "terminating on a binding failure must evict the advertised set")
 }
 
 // TestServeCoreResourceHandler covers the Serve resource path: the core's resource is
@@ -784,16 +703,12 @@ func TestServeCoreResourceHandler(t *testing.T) {
 		fc := &fakeCore{resources: []vmcp.Resource{{Name: "doc", URI: uri}}}
 		srv, sessionID, _ := registerServeSession(t, fc)
 
-		resources, resourceBackends, err := srv.coreSessionResources(context.Background(), sessionID, nil)
+		resources, err := srv.coreSessionResources(context.Background(), sessionID, nil)
 		require.NoError(t, err)
 		require.Len(t, resources, 1)
 		assert.Equal(t, uri, resources[0].Resource.URI)
-		// The URI→backend mapping is derived from the same ListResources call for
-		// the audit advertised-set cache. The fakeCore resource has no BackendID, so
-		// the display name is empty.
-		assert.Contains(t, resourceBackends, uri)
 
-		contents, err := srv.coreResourceHandler(sessionID, uri)(context.Background(), mcp.ReadResourceRequest{})
+		contents, err := srv.coreResourceHandler(sessionID, uri, "")(context.Background(), mcp.ReadResourceRequest{})
 		require.NoError(t, err)
 		require.NotEmpty(t, contents)
 		gotURI, _ := fc.lastReadURI.Load().(string)
@@ -808,10 +723,65 @@ func TestServeCoreResourceHandler(t *testing.T) {
 		}
 		srv, sessionID, _ := registerServeSession(t, fc)
 
-		_, err := srv.coreResourceHandler(sessionID, uri)(context.Background(), mcp.ReadResourceRequest{})
+		_, err := srv.coreResourceHandler(sessionID, uri, "")(context.Background(), mcp.ReadResourceRequest{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "read denied by authorization policy")
 		assert.NotContains(t, err.Error(), "cedar said no", "the underlying authorizer error must not leak")
+	})
+}
+
+// TestServeHandlersLabelAuditBackend verifies the Serve-path audit labelling (#5512):
+// the per-session tool/resource handlers write the pre-resolved backend name into the
+// audit BackendInfo carried in the request context — the mechanism that lets the Serve
+// path drop the backend-enrichment middleware. It also locks in AC1 of #5493: labelling
+// is an O(1) write, never a re-aggregation (core.ListTools stays at its single
+// registration-time call).
+func TestServeHandlersLabelAuditBackend(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tool handler labels the backend and does not re-aggregate", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+		require.Equal(t, int32(1), fc.listToolsCalls.Load(), "registration aggregates exactly once")
+
+		bi := &audit.BackendInfo{}
+		ctx := audit.WithBackendInfo(context.Background(), bi)
+		req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+		res, err := srv.coreToolHandler(sessionID, "t", "github-mcp")(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.False(t, res.IsError)
+
+		assert.Equal(t, "github-mcp", bi.BackendName,
+			"the tool handler must label the audit event with the serving backend")
+		assert.Equal(t, int32(1), fc.listToolsCalls.Load(),
+			"labelling must not re-aggregate — core.ListTools stays at the single registration call")
+	})
+
+	t.Run("resource handler labels the backend", func(t *testing.T) {
+		t.Parallel()
+		const uri = "file:///doc.txt"
+		fc := &fakeCore{resources: []vmcp.Resource{{Name: "doc", URI: uri}}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		bi := &audit.BackendInfo{}
+		ctx := audit.WithBackendInfo(context.Background(), bi)
+		_, err := srv.coreResourceHandler(sessionID, uri, "docs-backend")(ctx, mcp.ReadResourceRequest{})
+		require.NoError(t, err)
+		assert.Equal(t, "docs-backend", bi.BackendName)
+	})
+
+	t.Run("no BackendInfo in context is a safe no-op", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+		res, err := srv.coreToolHandler(sessionID, "t", "github-mcp")(context.Background(), req)
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.False(t, res.IsError, "a missing BackendInfo must not break the call")
 	})
 }
 

@@ -215,6 +215,78 @@ func TestNew(t *testing.T) {
 	}
 }
 
+// TestWithDefaults covers the single transport-defaulting resolver. It is the one place
+// the default list lives (Option 1); the composition root and the constructors route
+// their Config through it, so New/Serve/derive* downstream are pure pass-through.
+func TestWithDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		in   *server.Config
+		want server.Config // only transport scalars are compared
+	}{
+		{
+			name: "fills every transport default on an empty config",
+			in:   &server.Config{},
+			want: server.Config{
+				Name: "toolhive-vmcp", Version: "0.1.0", Host: "127.0.0.1",
+				EndpointPath: "/mcp", SessionTTL: 30 * time.Minute, Port: 0,
+			},
+		},
+		{
+			name: "preserves explicitly set values",
+			in: &server.Config{
+				Name: "custom", Version: "1.2.3", Host: "0.0.0.0",
+				EndpointPath: "/rpc", SessionTTL: 7 * time.Minute, Port: 8080,
+			},
+			want: server.Config{
+				Name: "custom", Version: "1.2.3", Host: "0.0.0.0",
+				EndpointPath: "/rpc", SessionTTL: 7 * time.Minute, Port: 8080,
+			},
+		},
+		{
+			name: "fills only the unset fields",
+			in:   &server.Config{Host: "192.168.1.1", Port: 9000},
+			want: server.Config{
+				Name: "toolhive-vmcp", Version: "0.1.0", Host: "192.168.1.1",
+				EndpointPath: "/mcp", SessionTTL: 30 * time.Minute, Port: 9000,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := server.WithDefaults(tt.in)
+			assert.Equal(t, tt.want.Name, got.Name)
+			assert.Equal(t, tt.want.Version, got.Version)
+			assert.Equal(t, tt.want.Host, got.Host)
+			assert.Equal(t, tt.want.EndpointPath, got.EndpointPath)
+			assert.Equal(t, tt.want.SessionTTL, got.SessionTTL)
+			assert.Equal(t, tt.want.Port, got.Port) // Port is never defaulted (0 => OS-assigned)
+		})
+	}
+}
+
+// TestWithDefaultsDoesNotMutateInput verifies WithDefaults treats its argument as
+// read-only: an all-unset Config passes through with no fields written back, so callers
+// (and the constructors that call it on a copy) never see their value mutated. This
+// non-mutation is what preserves the raw cfg.Name for downstream Cedar authz parity.
+func TestWithDefaultsDoesNotMutateInput(t *testing.T) {
+	t.Parallel()
+
+	in := &server.Config{} // all unset: defaulting would be visible as mutation
+	_ = server.WithDefaults(in)
+
+	assert.Empty(t, in.Name)
+	assert.Empty(t, in.Version)
+	assert.Empty(t, in.Host)
+	assert.Empty(t, in.EndpointPath)
+	assert.Zero(t, in.SessionTTL)
+}
+
 func TestServer_Address(t *testing.T) {
 	t.Parallel()
 

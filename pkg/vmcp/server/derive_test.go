@@ -101,19 +101,9 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 	assert.Same(t, smCfg, got.SessionManagerConfig)
 }
 
-func TestDeriveServerConfigAppliesTransportDefaults(t *testing.T) {
-	t.Parallel()
-
-	// Empty transport scalars exercise every default; Port stays zero (OS-assigned).
-	got := deriveServerConfig(&Config{}, nil, nil, nil)
-
-	assert.Equal(t, defaultServerName, got.Name)
-	assert.Equal(t, defaultServerVersion, got.Version)
-	assert.Equal(t, defaultHost, got.Host)
-	assert.Equal(t, defaultEndpointPath, got.EndpointPath)
-	assert.Equal(t, defaultSessionTTL, got.SessionTTL)
-	assert.Equal(t, 0, got.Port)
-}
+// deriveServerConfig no longer applies transport defaults — it is a pure projection now
+// that defaulting is resolved once at the composition root (Option 1). The WithDefaults
+// resolver carries that behavior and is covered by TestWithDefaults (server_test.go).
 
 func TestDeriveServerConfigPropagatesNilCrossCutting(t *testing.T) {
 	t.Parallel()
@@ -131,9 +121,11 @@ func TestDeriveServerConfigPropagatesNilCrossCutting(t *testing.T) {
 
 // TestDeriveServerConfigMapsAllFields guards deriveServerConfig against silent drift:
 // with every readable source field non-zero and every collaborator param non-nil, every
-// ServerConfig field must be populated. If a future ServerConfig field is added and
-// deriveServerConfig forgets it, this fails (the field is zero). Add a deliberately-
-// unmapped field to the skip set with a reason, mirroring the doc comment.
+// ServerConfig field must be populated. deriveServerConfig is a pure pass-through (no
+// defaulting), so this presence check covers every field uniformly — a dropped mapping
+// surfaces as a zero field. The skip set (none today) is the escape hatch for any future
+// semantically-zero-valid field — a bool/int that legitimately defaults to its zero value
+// — since a presence check cannot distinguish "unset" from "validly zero".
 func TestDeriveServerConfigMapsAllFields(t *testing.T) {
 	t.Parallel()
 
@@ -212,7 +204,9 @@ func TestDeriveCoreConfigUsesRawServerNameAndNilDefaults(t *testing.T) {
 
 // TestDeriveCoreConfigMapsAllFields guards deriveCoreConfig against silent drift: with
 // every cross-cutting source field non-zero and every collaborator non-nil, every
-// core.Config field must be populated.
+// core.Config field must be populated. Like TestDeriveServerConfigMapsAllFields this is a
+// pure presence check; the skip set is the escape hatch for any future semantically-zero-
+// valid field (a bool/int that legitimately defaults to its zero value).
 func TestDeriveCoreConfigMapsAllFields(t *testing.T) {
 	t.Parallel()
 

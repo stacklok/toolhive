@@ -204,6 +204,7 @@ func TestServeRegistersSessionHooks(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{testTool}}
 
 	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
@@ -302,6 +303,7 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{testTool}}
 
 	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
@@ -365,6 +367,7 @@ func TestServeReturnsErrorWhenSessionManagerConstructionFails(t *testing.T) {
 	t.Parallel()
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: testMinimalFactory(), CacheCapacity: -1},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
@@ -460,6 +463,7 @@ func TestServeHandlerSkipsDiscoveryAndRoutesCallThroughCore(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{testTool}}
 
 	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
@@ -523,6 +527,7 @@ func TestServeEnforcesSessionBinding(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{testTool}}
 
 	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
@@ -576,6 +581,7 @@ func registerServeSession(t *testing.T, fc *fakeCore) (*Server, string, string) 
 	factory, _ := newToolSessionFactory(t, ctrl, fc.tools)
 
 	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})

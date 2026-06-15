@@ -4,8 +4,6 @@
 package server
 
 import (
-	"cmp"
-
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -23,11 +21,10 @@ import (
 // Serve(ctx, core.New(deriveCoreConfig(cfg, …)), deriveServerConfig(cfg, …)).
 //
 // cfg is treated as read-only (go-style: copy before mutating caller input); a fresh
-// ServerConfig is returned. The same transport defaults server.New applies are applied
-// here via cmp.Or against the shared default* constants, so the returned ServerConfig
-// is post-default and self-contained. buildServeConfig re-applies the identical cmp.Or
-// downstream, which is idempotent — the default values live in one place (the
-// constants), so the two cannot drift.
+// ServerConfig is returned. This is a pure projection: transport defaults are resolved
+// once at the composition root via WithDefaults (Option 1), so cfg already holds resolved
+// values and deriveServerConfig applies no defaulting of its own. Port 0 still means
+// "OS-assigned".
 //
 // Three collaborators the transport needs but server.Config does not carry directly are
 // passed in by the composition root rather than reached out of cfg:
@@ -53,13 +50,13 @@ func deriveServerConfig(
 	sessionManagerConfig *sessionmanager.FactoryConfig,
 ) *ServerConfig {
 	return &ServerConfig{
-		Name:                    cmp.Or(cfg.Name, defaultServerName),
-		Version:                 cmp.Or(cfg.Version, defaultServerVersion),
+		Name:                    cfg.Name,
+		Version:                 cfg.Version,
 		GroupRef:                cfg.GroupRef,
-		Host:                    cmp.Or(cfg.Host, defaultHost),
-		Port:                    cfg.Port, // 0 means "OS-assigned"; intentionally not defaulted.
-		EndpointPath:            cmp.Or(cfg.EndpointPath, defaultEndpointPath),
-		SessionTTL:              cmp.Or(cfg.SessionTTL, defaultSessionTTL),
+		Host:                    cfg.Host,
+		Port:                    cfg.Port, // 0 means "OS-assigned".
+		EndpointPath:            cfg.EndpointPath,
+		SessionTTL:              cfg.SessionTTL,
 		AuthMiddleware:          cfg.AuthMiddleware,
 		RateLimitMiddleware:     cfg.RateLimitMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,

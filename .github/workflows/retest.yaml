@@ -46,6 +46,7 @@ jobs:
       }}
     permissions:
       actions: write         # re-run failed workflow runs
+      checks: write
       pull-requests: write   # react/comment on the triggering comment
     steps:
       - name: Retest
@@ -55,9 +56,4 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           comment-id: ${{ github.event.comment.id }}
           pr-url: ${{ github.event.issue.pull_request.url }}
-          # azp_org / azp_token intentionally omitted — toolhive uses GitHub
-          # Actions, not Azure Pipelines.
-          #
-          # app-owner (optional): set this to restrict WHICH checks get retried
-          # to a specific GitHub App's check runs. Leave unset to retry all
-          # failed runs on the PR head.
+          app-owner: github-actions

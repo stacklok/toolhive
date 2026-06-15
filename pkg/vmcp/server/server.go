@@ -39,6 +39,7 @@ import (
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/internal/backendtelemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -137,6 +138,13 @@ type Config struct {
 	// AuthInfoHandler is the optional handler for /.well-known/oauth-protected-resource endpoint.
 	// Exposes OIDC discovery information about the protected resource.
 	AuthInfoHandler http.Handler
+
+	// PassthroughHeaders is an allowlist of incoming client header names that the
+	// vMCP forwards, unchanged, to every backend it calls. They are captured
+	// per-request at the incoming edge (headerforward.CaptureMiddleware) and merged
+	// into the per-session backend client's header-forward config. Empty disables
+	// capture (no middleware is installed).
+	PassthroughHeaders []string
 
 	// RateLimitMiddleware is the optional rate-limit middleware to apply after
 	// authentication and MCP request parsing.
@@ -701,6 +709,8 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Info("authentication middleware enabled for MCP endpoints")
 	}
 
+	mcpHandler = s.applyForwardedHeaderCapture(mcpHandler)
+
 	// Apply Accept header validation (rejects GET requests without Accept: text/event-stream)
 	mcpHandler = headerValidatingMiddleware(mcpHandler)
 
@@ -732,6 +742,21 @@ func (s *Server) applyRateLimiting(next http.Handler) http.Handler {
 	}
 	slog.Info("rate limit middleware enabled for MCP endpoints")
 	return s.config.RateLimitMiddleware(next)
+}
+
+// applyForwardedHeaderCapture wraps next with the forwarded-header capture
+// middleware when passthrough headers are configured. It copies the allowlisted
+// incoming headers into the request context so the per-session backend client
+// forwards them to backends (see pkg/vmcp/headerforward). Identity-independent
+// plumbing: its position relative to auth is immaterial; it must only run before
+// session creation, which every inner handler satisfies. No-op when the allowlist
+// is empty.
+func (s *Server) applyForwardedHeaderCapture(next http.Handler) http.Handler {
+	if len(s.config.PassthroughHeaders) == 0 {
+		return next
+	}
+	slog.Info("forwarded-header capture enabled for MCP endpoints", "headers", s.config.PassthroughHeaders)
+	return headerforward.CaptureMiddleware(s.config.PassthroughHeaders)(next)
 }
 
 // Start starts the Virtual MCP Server and begins serving requests.

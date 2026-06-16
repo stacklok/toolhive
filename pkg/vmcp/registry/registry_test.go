@@ -107,8 +107,13 @@ func TestNewKubernetesBackendRegistry_StartsEmpty(t *testing.T) {
 // TestNewKubernetesBackendRegistry_ReturnsLiveRegistry verifies the returned
 // registry is the live, mutable DynamicRegistry the watcher updates in place —
 // the wiring that gives parity with cli.Serve's live add/remove behavior
-// (AC: live updates). The watcher's CR→registry conversion itself is covered by
-// pkg/vmcp/k8s's backend reconciler integration test.
+// (AC: live updates). This constructor reuses k8s.NewBackendWatcher unchanged, so
+// the CR→registry conversion is not re-tested here; the envtest-backed
+// "BackendReconciler Integration Tests" suite in
+// pkg/vmcp/k8s/backend_reconciler_integration_test.go (TestBackendReconcilerIntegration)
+// drives real MCPServer/MCPRemoteProxy/MCPServerEntry CRs through the reconciler
+// into a DynamicRegistry and asserts registry.Count()/Version() on add and remove
+// — the same DynamicRegistry update path this constructor wires.
 func TestNewKubernetesBackendRegistry_ReturnsLiveRegistry(t *testing.T) {
 	t.Parallel()
 

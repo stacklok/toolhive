@@ -74,6 +74,19 @@ func WithRESTConfig(cfg *rest.Config) Option {
 //     (server.ServerConfig.BackendRegistry).
 //   - server.Watcher: a readiness handle for the /readyz endpoint; pass it to
 //     server.ServerConfig.Watcher to gate readiness on informer cache sync.
+//
+// Lifecycle and failure semantics (the watcher runs in a background goroutine, so
+// the contract is not visible in the signature):
+//   - The goroutine runs until ctx is cancelled. The caller MUST cancel ctx to
+//     release the goroutine and the watcher's informer caches/connections; there
+//     is no separate Stop/Close handle, so a caller that never cancels ctx leaks
+//     them.
+//   - A successful return means the watcher was constructed and started, NOT that
+//     it has connected or synced. If watcher.Start later fails (e.g. the REST
+//     config points nowhere), the error is logged, not returned — the caller holds
+//     a registry that never populates. Observe real readiness through the returned
+//     server.Watcher (wire it into server.ServerConfig.Watcher so /readyz gates on
+//     cache sync).
 func NewKubernetesBackendRegistry(
 	ctx context.Context,
 	namespace, group string,

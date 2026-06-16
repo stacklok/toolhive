@@ -84,6 +84,7 @@ func deriveServerConfig(
 		AuthMiddleware:          cfg.AuthMiddleware,
 		RateLimitMiddleware:     cfg.RateLimitMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
+		PassthroughHeaders:      cfg.PassthroughHeaders,
 		AuthServer:              cfg.AuthServer,
 		HealthMonitor:           healthMon,
 		StatusReportingInterval: cfg.StatusReportingInterval,

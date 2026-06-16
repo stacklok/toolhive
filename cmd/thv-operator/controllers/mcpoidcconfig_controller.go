@@ -91,27 +91,7 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Validate spec configuration early
 	if err := oidcConfig.Validate(); err != nil {
 		logger.Error(err, "MCPOIDCConfig spec validation failed")
-		// Capture the transition before MutateAndPatchStatus mutates conditions
-		// in place, so the Warning fires only when entering the invalid state
-		// rather than on every reconcile that re-observes it.
-		wasInvalid := conditionStatusIs(oidcConfig.Status.Conditions,
-			mcpv1beta1.ConditionTypeOIDCConfigValid, metav1.ConditionFalse)
-		if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
-			meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
-				Type:               mcpv1beta1.ConditionTypeOIDCConfigValid,
-				Status:             metav1.ConditionFalse,
-				Reason:             mcpv1beta1.ConditionReasonOIDCConfigInvalid,
-				Message:            err.Error(),
-				ObservedGeneration: c.Generation,
-			})
-		}); updateErr != nil {
-			logger.Error(updateErr, "Failed to update status after validation error")
-		}
-		if !wasInvalid {
-			emitConfigEvent(r.Recorder, oidcConfig, corev1.EventTypeWarning,
-				eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", err.Error())
-		}
-		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
+		return r.handleValidationFailure(ctx, oidcConfig, err)
 	}
 
 	// Whether we are recovering from a prior validation failure. Captured before
@@ -170,6 +150,36 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	emitConfigRecoveryEvent(r.Recorder, oidcConfig, wasInvalid)
 	return ctrl.Result{}, nil
+}
+
+// handleValidationFailure records the Valid=False condition for a spec that
+// failed validation and emits a one-shot Warning event on the transition into
+// the invalid state. It never requeues — the user must fix the spec.
+func (r *MCPOIDCConfigReconciler) handleValidationFailure(
+	ctx context.Context, oidcConfig *mcpv1beta1.MCPOIDCConfig, validationErr error,
+) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+	// Capture the transition before MutateAndPatchStatus mutates conditions in
+	// place, so the Warning fires only when entering the invalid state rather
+	// than on every reconcile that re-observes it.
+	wasInvalid := conditionStatusIs(oidcConfig.Status.Conditions,
+		mcpv1beta1.ConditionTypeOIDCConfigValid, metav1.ConditionFalse)
+	if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+		meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeOIDCConfigValid,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonOIDCConfigInvalid,
+			Message:            validationErr.Error(),
+			ObservedGeneration: c.Generation,
+		})
+	}); updateErr != nil {
+		logger.Error(updateErr, "Failed to update status after validation error")
+	}
+	if !wasInvalid {
+		emitConfigEvent(r.Recorder, oidcConfig, corev1.EventTypeWarning,
+			eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", validationErr.Error())
+	}
+	return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 }
 
 // setOIDCConfigValidTrueCondition stamps ConditionTypeOIDCConfigValid=True onto

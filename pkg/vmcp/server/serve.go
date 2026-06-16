@@ -138,6 +138,12 @@ type ServerConfig struct {
 	// table this path discards — exactly the double-aggregation AC2 forbids. This is an
 	// unenforced contract today because no production composition root wires the Serve path
 	// yet; it becomes load-bearing when one does.
+	//
+	// Caller responsibility (optimizer): to enable the optimizer on the Serve path, set
+	// FactoryConfig.OptimizerConfig/OptimizerFactory AND FactoryConfig.AdvertiseFromCore.
+	// Serve then builds a per-session optimizer over the core's tools (serve_optimizer.go);
+	// AdvertiseFromCore suppresses the factory's own optimizer decorator so the shared FTS5
+	// store is not double-indexed (see FactoryConfig.AdvertiseFromCore).
 	SessionManagerConfig *sessionmanager.FactoryConfig
 
 	// TelemetryProvider is the cross-cutting telemetry provider (also consumed by
@@ -265,9 +271,14 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		sessionManager:     sessionManager,
 		sessionDataStorage: sessionDataStorage,
 		vmcpSessionMgr:     vmcpSessMgr,
-		ready:              make(chan struct{}),
-		healthMonitor:      cfg.HealthMonitor,
-		statusReporter:     cfg.StatusReporter,
+		// Surface the resolved (telemetry-wrapped) optimizer factory so Serve-path
+		// session registration builds a per-session optimizer over the core's tools.
+		// Nil when the optimizer is disabled; the store/cleanup stay owned by the
+		// session manager (optimizerCleanup, appended to shutdownFuncs below).
+		optimizerFactory: vmcpSessMgr.OptimizerFactory(),
+		ready:            make(chan struct{}),
+		healthMonitor:    cfg.HealthMonitor,
+		statusReporter:   cfg.StatusReporter,
 	}
 
 	if optimizerCleanup != nil {

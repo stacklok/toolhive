@@ -74,6 +74,18 @@ type FactoryConfig struct {
 	// 0 uses defaultCacheCapacity (1000). Negative values are rejected by
 	// sessionmanager.New.
 	CacheCapacity int
+
+	// AdvertiseFromCore signals that the advertised capability set is sourced from
+	// the core (the Serve path), not from this factory's per-session aggregation.
+	// When true, New still resolves the optimizer factory (owning its store and
+	// cleanup) and exposes it via Manager.OptimizerFactory so the Serve layer can
+	// build a per-session optimizer over the core's tools — but it does NOT install
+	// the optimizer decorator on the session factory. Installing it would upsert a
+	// second, divergent tool set (the factory's raw, un-aggregated tools) into the
+	// shared FTS5 store alongside the core-sourced set, i.e. double-index the store.
+	// Has no effect when the optimizer is disabled. The legacy server.New path leaves
+	// this false, so its optimizer decorator is unchanged.
+	AdvertiseFromCore bool
 }
 
 // resolveOptimizer wires the optimizer factory from cfg, applying telemetry
@@ -141,7 +153,10 @@ func buildDecoratingFactory(
 	if len(cfg.WorkflowDefs) > 0 {
 		decorators = append(decorators, compositeToolsDecorator(cfg.WorkflowDefs, cfg.ComposerFactory, instruments))
 	}
-	if optimizerFactory != nil {
+	// On the Serve path (AdvertiseFromCore) the optimizer is built by the Serve layer
+	// over the core's advertised set, so the factory's optimizer decorator is skipped
+	// to avoid double-indexing the shared store (see FactoryConfig.AdvertiseFromCore).
+	if optimizerFactory != nil && !cfg.AdvertiseFromCore {
 		decorators = append(decorators, optimizerDecoratorFn(optimizerFactory, terminateSession))
 	}
 

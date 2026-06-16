@@ -57,7 +57,9 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 	// and passed explicitly to the core — the core never reads it from context.
 	identity, _ := auth.IdentityFromContext(ctx)
 
-	tools, err := s.coreSessionTools(ctx, sessionID, identity)
+	// serveSessionTools returns the core's advertised tools, or — when the optimizer
+	// is enabled on this path — the find_tool/call_tool meta-tools built over them.
+	tools, err := s.serveSessionTools(ctx, sessionID, identity)
 	if err != nil {
 		slog.Error("failed to list core tools for session", "session_id", sessionID, "error", err)
 		return err

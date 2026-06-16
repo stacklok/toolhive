@@ -220,6 +220,15 @@ type Server struct {
 	// value is the branch selector throughout this file ("s.core == nil" == legacy).
 	core core.VMCP
 
+	// optimizerFactory builds a per-session optimizer over the core's advertised
+	// tools. Set only on the Serve path when the optimizer is enabled (nil otherwise,
+	// including the entire legacy server.New path, which decorates the session factory
+	// instead). When non-nil, Serve-path session registration advertises find_tool/
+	// call_tool in place of the raw core tools and dispatches call_tool's inner
+	// invocation through core.CallTool. The shared store and cleanup are owned by the
+	// session manager; this is the resolved factory surfaced via Manager.OptimizerFactory.
+	optimizerFactory func(context.Context, []server.ServerTool) (optimizer.Optimizer, error)
+
 	// MCP protocol server (mark3labs/mcp-go)
 	mcpServer *server.MCPServer
 
@@ -1161,8 +1170,10 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 	// Re-derive the tool set the same way registration did, so cross-pod re-injection
 	// matches the advertised set. On the Serve path (s.core != nil) that means a fresh
 	// core.ListTools for the request identity (the core is stateless, so re-deriving on
-	// pod B is the cache-miss equivalent of the once-per-session registration call); on
-	// the legacy path it reads the factory-built session's tools via GetAdaptedTools.
+	// pod B is the cache-miss equivalent of the once-per-session registration call),
+	// optimizer-wrapped into find_tool/call_tool when the optimizer is enabled — both
+	// via serveSessionTools, the same helper registration uses; on the legacy path it
+	// reads the factory-built session's tools via GetAdaptedTools.
 	//
 	// Note: on the Serve path this lists under the CURRENT request identity, not the
 	// session's bound identity. For the realistic same-principal load-balanced case they
@@ -1173,7 +1184,7 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 	adaptedTools, err := func() ([]server.ServerTool, error) {
 		if s.core != nil {
 			identity, _ := auth.IdentityFromContext(ctx)
-			return s.coreSessionTools(ctx, sessionID, identity)
+			return s.serveSessionTools(ctx, sessionID, identity)
 		}
 		return s.vmcpSessionMgr.GetAdaptedTools(sessionID)
 	}()

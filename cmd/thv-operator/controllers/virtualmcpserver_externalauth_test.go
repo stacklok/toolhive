@@ -1516,7 +1516,7 @@ func TestDiscoverExternalAuthConfigSecrets_DeterministicOrdering(t *testing.T) {
 			}
 
 			// One MCPExternalAuthConfig per MCPServer, each with a client secret ref so
-			// getExternalAuthConfigSecretEnvVar returns a non-nil env var.
+			// getExternalAuthConfigSecretEnvVars returns a non-empty env var slice.
 			authConfigs := []client.Object{
 				&mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "alpha-auth", Namespace: "default"},
@@ -1827,12 +1827,14 @@ func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testin
 		"inline backend SubjectProviderName should be injected from first upstream")
 }
 
-// TestGetExternalAuthConfigSecretEnvVar_OBO proves the obo arm of the
-// getExternalAuthConfigSecretEnvVar switch dispatches through the registered
+// TestGetExternalAuthConfigSecretEnvVars_OBO proves the obo arm of the
+// getExternalAuthConfigSecretEnvVars switch dispatches through the registered
 // OBO handler. With the default handler the method must return an error
 // wrapping obo.ErrEnterpriseRequired AND must not silently fall through to
-// nil, nil — that would mask the wired-but-disabled state behind a no-op.
-func TestGetExternalAuthConfigSecretEnvVar_OBO(t *testing.T) {
+// nil, nil — that would mask the wired-but-disabled state behind a no-op. This
+// propagate-on-disabled contract is why vMCP calls OBOSecretEnvVars directly
+// rather than the swallowing ctrlutil.AddOBOSecretEnvVars wrapper.
+func TestGetExternalAuthConfigSecretEnvVars_OBO(t *testing.T) {
 	t.Parallel()
 
 	scheme := runtime.NewScheme()
@@ -1861,11 +1863,11 @@ func TestGetExternalAuthConfigSecretEnvVar_OBO(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	envVar, err := r.getExternalAuthConfigSecretEnvVar(t.Context(), "default", authCfg.Name)
+	envVars, err := r.getExternalAuthConfigSecretEnvVars(t.Context(), "default", authCfg.Name)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired,
 		"the default OBO handler returns obo.ErrEnterpriseRequired; the dispatch arm must propagate it")
-	assert.Nil(t, envVar, "no env var should be returned on the error path")
+	assert.Empty(t, envVars, "no env var should be returned on the error path")
 
 	// Generic-error guard: per issue #5328 AC, neither generic substring may
 	// leak from any of the three consumer dispatch paths.

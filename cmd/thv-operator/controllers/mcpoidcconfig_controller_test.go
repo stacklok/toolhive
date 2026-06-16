@@ -720,8 +720,8 @@ func TestMCPOIDCConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testi
 // full r.Status().Update: a condition written by a disjoint owner that lands
 // between the reconciler's Get and its status patch survives, because the
 // reconciler sends a JSON merge-patch carrying only the fields it changed
-// (here referencingWorkloads/referenceCount) rather than PUTing its stale view
-// of the whole Status.Conditions array.
+// (here referencingWorkloads/referenceCount) rather than sending a full PUT of
+// its stale view of the whole Status.Conditions array.
 //
 // The merge-patch-vs-PUT behaviour lives entirely in the shared
 // ctrlutil.MutateAndPatchStatus helper that all three config controllers use,

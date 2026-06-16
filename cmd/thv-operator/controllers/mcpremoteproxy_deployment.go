@@ -211,6 +211,22 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		} else {
 			env = append(env, bearerTokenEnvVars...)
 		}
+
+		// Add OBO secret environment variables. Dispatched through the
+		// registered OBO handler; inert (no env vars) in builds without one.
+		// This function feeds both the deployment builder and containerNeedsUpdate,
+		// so builder/drift symmetry is automatic.
+		oboEnvVars, err := ctrlutil.AddOBOSecretEnvVars(
+			ctx,
+			r.Client,
+			proxy.Namespace,
+			proxy.Spec.ExternalAuthConfigRef,
+		)
+		if err != nil {
+			logOBOSecretEnvVarError(ctx, err)
+		} else {
+			env = append(env, oboEnvVars...)
+		}
 	}
 
 	// Add header forward secret environment variables

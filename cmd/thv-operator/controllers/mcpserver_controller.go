@@ -8,6 +8,7 @@ package controllers
 import (
 	"context"
 	"encoding/json"
+	stderrors "errors"
 	"fmt"
 	"maps"
 	"os"
@@ -41,6 +42,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/session"
@@ -1003,6 +1005,26 @@ func (r *MCPServerReconciler) imagePullSecretsForMCPServer(
 	return r.ImagePullSecretsDefaults.Merge(crLevel)
 }
 
+// logOBOSecretEnvVarError logs an error from OBO secret env var generation
+// without leaking sensitive detail. The OBOHandler error contract only
+// guarantees *obo.ValidationError.Message is safe to surface; the transient
+// bucket (e.g. "secret obo-secret/client-secret not found", JWKS URLs) carries
+// no such guarantee, so anything that is not a ValidationError is logged
+// generically with a pointer to the MCPExternalAuthConfig status, which the
+// MCPExternalAuthConfig reconciler populates with the triaged detail. Shared by
+// the MCPServer and MCPRemoteProxy proxy-env builders.
+func logOBOSecretEnvVarError(ctx context.Context, err error) {
+	logger := log.FromContext(ctx)
+	var validationErr *obo.ValidationError
+	if stderrors.As(err, &validationErr) {
+		logger.Error(err, "Failed to generate OBO secret environment variables")
+		return
+	}
+	logger.Error(nil,
+		"Failed to generate OBO secret environment variables; "+
+			"see the referenced MCPExternalAuthConfig status for details")
+}
+
 // deploymentForMCPServer returns a MCPServer Deployment object
 //
 //nolint:gocyclo
@@ -1099,6 +1121,18 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 			ctxLogger.Error(err, "Failed to generate token exchange environment variables")
 		} else {
 			env = append(env, tokenExchangeEnvVars...)
+		}
+
+		// Add OBO secret environment variables. Dispatched through the
+		// registered OBO handler; inert (no env vars) in builds without one.
+		// Must mirror deploymentNeedsUpdate exactly to avoid reconcile drift.
+		oboEnvVars, err := ctrlutil.AddOBOSecretEnvVars(
+			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef,
+		)
+		if err != nil {
+			logOBOSecretEnvVarError(ctx, err)
+		} else {
+			env = append(env, oboEnvVars...)
 		}
 	}
 
@@ -1741,6 +1775,25 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 				return true
 			}
 			expectedProxyEnv = append(expectedProxyEnv, tokenExchangeEnvVars...)
+
+			// Add OBO secret environment variables. Must mirror
+			// deploymentForMCPServer exactly (same call, same position) so a
+			// correctly-configured resource does not look perpetually drifted.
+			// In handler-less builds the dispatcher swallows ErrEnterpriseRequired
+			// to (nil, nil), keeping this path symmetric with the builder. A
+			// genuine handler error returns true here while the builder logs and
+			// continues, so as long as the handler keeps erroring the operator
+			// re-applies an identical (OBO-env-less) Deployment each reconcile; it
+			// stops only once the handler succeeds. This mirrors the token-exchange
+			// block above; unifying both (requeue on genuine error so neither side
+			// acts) is out of scope for this change.
+			oboEnvVars, err := ctrlutil.AddOBOSecretEnvVars(
+				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.ExternalAuthConfigRef,
+			)
+			if err != nil {
+				return true
+			}
+			expectedProxyEnv = append(expectedProxyEnv, oboEnvVars...)
 		}
 
 		// Validate webhook config. Webhook secrets are mounted as files when the deployment is built.

@@ -3433,11 +3433,11 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 		return fmt.Errorf("%s", msg)
 	}
 
-	// Update ReferencingWorkloads on the MCPOIDCConfig status
-	if err := r.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, vmcp.Name); err != nil {
-		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingWorkloads")
-		// Non-fatal: continue with reconciliation
-	}
+	// ReferencingWorkloads on the MCPOIDCConfig is maintained solely by the
+	// MCPOIDCConfig controller, which watches the workload kinds and recomputes
+	// the full list. The VirtualMCPServer controller must not write the config's
+	// status — a full r.Status().Update would clobber conditions the config
+	// controller owns. See #5511.
 
 	// Set valid condition
 	statusManager.SetCondition(
@@ -3456,31 +3456,6 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 			"newHash", oidcConfig.Status.ConfigHash)
 
 		statusManager.SetOIDCConfigHash(oidcConfig.Status.ConfigHash)
-	}
-
-	return nil
-}
-
-// updateOIDCConfigReferencingWorkloads ensures the VirtualMCPServer is listed in
-// the MCPOIDCConfig's ReferencingWorkloads status field.
-func (r *VirtualMCPServerReconciler) updateOIDCConfigReferencingWorkloads(
-	ctx context.Context,
-	oidcConfig *mcpv1beta1.MCPOIDCConfig,
-	vmcpName string,
-) error {
-	ref := mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindVirtualMCPServer, Name: vmcpName}
-	// Check if already listed
-	for _, entry := range oidcConfig.Status.ReferencingWorkloads {
-		if entry.Kind == ref.Kind && entry.Name == ref.Name {
-			return nil
-		}
-	}
-
-	// Add the workload reference
-	oidcConfig.Status.ReferencingWorkloads = append(oidcConfig.Status.ReferencingWorkloads, ref)
-	oidcConfig.Status.ReferenceCount = workloadReferenceCount(oidcConfig.Status.ReferencingWorkloads)
-	if err := r.Status().Update(ctx, oidcConfig); err != nil {
-		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingWorkloads: %w", err)
 	}
 
 	return nil

@@ -29,16 +29,15 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 	}}
 
 	tests := []struct {
-		name                    string
-		mcpServer               *mcpv1beta1.MCPServer
-		oidcConfig              *mcpv1beta1.MCPOIDCConfig
-		expectError             bool
-		expectErrorContains     string
-		expectHash              string
-		expectHashCleared       bool
-		expectConditionStatus   *metav1.ConditionStatus
-		expectConditionReason   string
-		expectReferencingServer bool
+		name                  string
+		mcpServer             *mcpv1beta1.MCPServer
+		oidcConfig            *mcpv1beta1.MCPOIDCConfig
+		expectError           bool
+		expectErrorContains   string
+		expectHash            string
+		expectHashCleared     bool
+		expectConditionStatus *metav1.ConditionStatus
+		expectConditionReason string
 	}{
 		{
 			name: "no ref clears previously stored hash",
@@ -109,10 +108,9 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 					Conditions: validOIDCCondition,
 				},
 			},
-			expectHash:              "hash-123",
-			expectConditionStatus:   conditionStatusPtr(metav1.ConditionTrue),
-			expectConditionReason:   mcpv1beta1.ConditionReasonOIDCConfigRefValid,
-			expectReferencingServer: true,
+			expectHash:            "hash-123",
+			expectConditionStatus: conditionStatusPtr(metav1.ConditionTrue),
+			expectConditionReason: mcpv1beta1.ConditionReasonOIDCConfigRefValid,
 		},
 		{
 			name: "detects config hash change",
@@ -137,10 +135,9 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 					Conditions: validOIDCCondition,
 				},
 			},
-			expectHash:              "new-hash",
-			expectConditionStatus:   conditionStatusPtr(metav1.ConditionTrue),
-			expectConditionReason:   mcpv1beta1.ConditionReasonOIDCConfigRefValid,
-			expectReferencingServer: true,
+			expectHash:            "new-hash",
+			expectConditionStatus: conditionStatusPtr(metav1.ConditionTrue),
+			expectConditionReason: mcpv1beta1.ConditionReasonOIDCConfigRefValid,
 		},
 	}
 
@@ -200,66 +197,8 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 				}
 				assert.True(t, found, "expected %s condition", mcpv1beta1.ConditionOIDCConfigRefValidated)
 			}
-
-			if tt.expectReferencingServer && tt.oidcConfig != nil {
-				var updated mcpv1beta1.MCPOIDCConfig
-				require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(tt.oidcConfig), &updated))
-				expectedRef := mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: tt.mcpServer.Name}
-				assert.Contains(t, updated.Status.ReferencingWorkloads, expectedRef)
-			}
 		})
 	}
-}
-
-func TestMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) {
-	t.Parallel()
-
-	existingRef := mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "existing"}
-
-	t.Run("adds new server reference", func(t *testing.T) {
-		t.Parallel()
-		ctx := t.Context()
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-
-		cfg := &mcpv1beta1.MCPOIDCConfig{
-			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-			Status: mcpv1beta1.MCPOIDCConfigStatus{
-				ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
-				ReferenceCount:       1,
-			},
-		}
-		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).
-			WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
-		r := newTestMCPServerReconciler(fc, scheme, kubernetes.PlatformKubernetes)
-
-		require.NoError(t, r.updateOIDCConfigReferencingWorkloads(ctx, cfg, "new"))
-		newRef := mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "new"}
-		assert.ElementsMatch(t, []mcpv1beta1.WorkloadReference{existingRef, newRef}, cfg.Status.ReferencingWorkloads)
-		assert.EqualValues(t, 2, cfg.Status.ReferenceCount)
-	})
-
-	t.Run("does not duplicate existing reference", func(t *testing.T) {
-		t.Parallel()
-		ctx := t.Context()
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-
-		cfg := &mcpv1beta1.MCPOIDCConfig{
-			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-			Status: mcpv1beta1.MCPOIDCConfigStatus{
-				ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
-				ReferenceCount:       1,
-			},
-		}
-		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).
-			WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
-		r := newTestMCPServerReconciler(fc, scheme, kubernetes.PlatformKubernetes)
-
-		require.NoError(t, r.updateOIDCConfigReferencingWorkloads(ctx, cfg, "existing"))
-		assert.Len(t, cfg.Status.ReferencingWorkloads, 1)
-		assert.EqualValues(t, 1, cfg.Status.ReferenceCount)
-	})
 }
 
 // TestMCPServerReconciler_handleOIDCConfig_ConditionPersistedOnRecovery verifies that the

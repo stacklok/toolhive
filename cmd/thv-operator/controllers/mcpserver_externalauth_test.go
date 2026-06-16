@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -783,4 +784,62 @@ func TestMCPServerDeployment_OBOSecretEnvVars(t *testing.T) {
 
 	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"),
 		"builder and drift check must agree on the OBO env var (no reconcile hot-loop)")
+}
+
+// TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence locks in the
+// documented MCPServer builder/drift behavior when the registered OBO handler
+// returns a genuine (non-ErrEnterpriseRequired) error: the builder logs and
+// continues, producing an OBO-env-less Deployment without failing, while
+// deploymentNeedsUpdate reports the Deployment needs an update. This divergence
+// is described at the drift site and exercised nowhere else at the controller
+// level. (The inert ErrEnterpriseRequired path stays symmetric — see the test
+// above — because AddOBOSecretEnvVars swallows it.)
+//
+//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
+func TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence(t *testing.T) {
+	t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
+
+	stub := defaultOBOHandlerStub()
+	stub.SecretEnvVars = func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+		return nil, errors.New("secret not yet available")
+	}
+	ctrlutil.RegisterOBOHandler(stub)
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
+		},
+	}
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:                 "test-image:latest",
+			Transport:             "stdio",
+			ProxyPort:             8080,
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: authConfig.Name},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authConfig).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	// Builder logs-and-continues: a Deployment is still produced (no error, no
+	// panic), with no OBO env var injected.
+	deployment, err := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err, "builder must log-and-continue on a genuine OBO handler error, not fail")
+	require.NotNil(t, deployment)
+
+	// Drift check returns true on the same error — the documented divergence.
+	assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"),
+		"deploymentNeedsUpdate reports drift while the OBO handler errors")
 }

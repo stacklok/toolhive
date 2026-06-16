@@ -130,9 +130,13 @@ jobs:
           if [ "${{ matrix.label_filter }}" = "vmcp" ]; then
             docker pull ghcr.io/stackloklabs/yardstick/yardstick-server:1.1.1 &
           fi
+          # the time server is only used by the proxy (streamable-http) test suite
+          if [ "${{ matrix.label_filter }}" = "proxy" ]; then
+            docker pull ghcr.io/stacklok/dockyard/uvx/mcp-server-time:2026.1.26 &
+          fi
           wait
           echo "Pre-pulled images:"
-          docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'osv-mcp|gofetch|egress-proxy|yardstick'
+          docker images --format '{{.Repository}}:{{.Tag}}' | grep -E 'osv-mcp|gofetch|egress-proxy|yardstick|mcp-server-time'
 
       - name: Run E2E tests (${{ matrix.title }})
         env:

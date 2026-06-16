@@ -633,12 +633,8 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// when auth middleware is nil.
 	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
-	// Apply backend enrichment middleware if audit is configured
-	// This runs after discovery populates the routing table, so it can extract backend names
-	if s.config.AuditConfig != nil {
-		mcpHandler = s.backendEnrichmentMiddleware(mcpHandler)
-		slog.Info("backend enrichment middleware enabled for audit events")
-	}
+	// Apply backend enrichment middleware (legacy path only — see withBackendEnrichment).
+	mcpHandler = s.withBackendEnrichment(mcpHandler)
 
 	// Apply authorization middleware if configured (runs AFTER discovery in execution).
 	// Wrapping it here (before discovery wrap) means discovery runs first, then authz.

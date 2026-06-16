@@ -398,7 +398,12 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		}()
 	}
 
-	serverCfg := &vmcpserver.Config{
+	// Resolve transport defaults once here at the composition root: the
+	// vMCP config edge is the single place flags/CRD/YAML become a fully-resolved
+	// Config, so server.New, Serve, and the derive* helpers downstream are pure
+	// pass-through. WithDefaults fills any unset Host/EndpointPath/SessionTTL/Name/
+	// Version (EndpointPath in particular is never set by the CLI).
+	serverCfg := vmcpserver.WithDefaults(&vmcpserver.Config{
 		Name:                    vmcpCfg.Name,
 		Version:                 versions.Version,
 		GroupRef:                vmcpCfg.Group,
@@ -408,6 +413,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		AuthMiddleware:          authMiddleware,
 		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,
+		PassthroughHeaders:      vmcpCfg.PassthroughHeaders,
 		RateLimitMiddleware:     rateLimitMiddleware,
 		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       telemetryProvider,
@@ -419,7 +425,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		OptimizerConfig:         optCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
-	}
+	})
 
 	// Assign Watcher only when backendWatcher is non-nil. A typed nil
 	// *k8s.BackendWatcher assigned to the Watcher interface produces a

@@ -69,6 +69,11 @@ type Options struct {
 	SecretsProvider secrets.Provider
 	// Interactive controls whether the browser OIDC+PKCE flow is allowed.
 	Interactive bool
+	// SkipBrowser, when true, makes the interactive flow print the authorization
+	// URL to stderr and wait for the callback instead of opening a browser. It
+	// only has effect when Interactive is true. Useful for headless/SSH/CI
+	// environments where no system browser is available.
+	SkipBrowser bool
 	// KeyProvider returns the secrets-provider key for the refresh token.
 	// May be called multiple times per Token() invocation; must be deterministic
 	// and free of side effects. Typically returns a cached config ref if set,
@@ -244,6 +249,13 @@ func (t *OAuthTokenSource) tryRestoreFromCache(ctx context.Context) error {
 	return nil
 }
 
+// startFlow runs the interactive OAuth flow to completion. It is a package var
+// so tests can stub the browser/callback round-trip and assert how skipBrowser
+// is forwarded without standing up a real browser or callback listener.
+var startFlow = func(ctx context.Context, flow *oauth.Flow, skipBrowser bool) (*oauth.TokenResult, error) {
+	return flow.Start(ctx, skipBrowser)
+}
+
 // performBrowserFlow runs the interactive OIDC+PKCE browser flow and persists
 // the resulting refresh token for future non-interactive use.
 func (t *OAuthTokenSource) performBrowserFlow(ctx context.Context) error {
@@ -257,7 +269,7 @@ func (t *OAuthTokenSource) performBrowserFlow(ctx context.Context) error {
 		return fmt.Errorf("creating OAuth flow: %w", err)
 	}
 
-	tokenResult, err := flow.Start(ctx, false)
+	tokenResult, err := startFlow(ctx, flow, t.opts.SkipBrowser)
 	if err != nil {
 		return fmt.Errorf("OAuth flow start failed: %w", err)
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/auth/tokensource"
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
@@ -623,4 +624,65 @@ func TestToken_Interactive_OIDCDiscoveryFails_ReturnsError(t *testing.T) {
 	assert.False(t, errors.Is(err, errTestFallback),
 		"browser flow OIDC failure must not collapse to FallbackErr")
 	assert.Contains(t, err.Error(), "OIDC browser flow failed")
+}
+
+// ── SkipBrowser is forwarded to the OAuth flow ────────────────────────────────
+
+// TestToken_Interactive_SkipBrowser_ForwardedToFlow verifies that the SkipBrowser
+// option reaches flow.Start unchanged. The OAuth flow itself is stubbed via the
+// startFlow seam so the assertion holds without opening a browser or binding a
+// callback listener; the rest of performBrowserFlow runs against the fake OIDC
+// token endpoint.
+//
+//nolint:paralleltest // overrides the package-global startFlow seam; must not race other tests
+func TestToken_Interactive_SkipBrowser_ForwardedToFlow(t *testing.T) {
+	cases := []struct {
+		name        string
+		skipBrowser bool
+	}{
+		{name: "skip browser", skipBrowser: true},
+		{name: "open browser", skipBrowser: false},
+	}
+	for _, tc := range cases {
+		//nolint:paralleltest // shares the package-global startFlow seam with the parent
+		t.Run(tc.name, func(t *testing.T) {
+			expiry := time.Now().Add(time.Hour)
+			srv := fakeOIDCServerSimple(t, "at-skip", expiry, "rt-skip")
+
+			ctrl := gomock.NewController(t)
+			t.Cleanup(ctrl.Finish)
+			mock := secretsmocks.NewMockProvider(ctrl)
+			mock.EXPECT().GetSecret(gomock.Any(), gomock.Any()).Return("", errors.New("not found")).AnyTimes()
+			mock.EXPECT().SetSecret(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil).AnyTimes()
+
+			var (
+				called  bool
+				gotSkip bool
+			)
+			restore := tokensource.SetStartFlowForTest(
+				func(_ context.Context, _ *oauth.Flow, skipBrowser bool) (*oauth.TokenResult, error) {
+					called = true
+					gotSkip = skipBrowser
+					return &oauth.TokenResult{
+						AccessToken:  "at-skip",
+						RefreshToken: "rt-skip",
+						Expiry:       expiry,
+						TokenType:    "Bearer",
+					}, nil
+				},
+			)
+			t.Cleanup(restore)
+
+			opts := optsWithFakeOIDC(srv, mock)
+			opts.Interactive = true
+			opts.SkipBrowser = tc.skipBrowser
+			ts := tokensource.New(opts)
+
+			tok, err := ts.Token(context.Background())
+			require.NoError(t, err)
+			assert.True(t, called, "interactive flow must invoke the OAuth flow starter")
+			assert.Equal(t, "at-skip", tok, "the access token from the flow must be returned")
+			assert.Equal(t, tc.skipBrowser, gotSkip, "SkipBrowser option must be forwarded to flow.Start verbatim")
+		})
+	}
 }

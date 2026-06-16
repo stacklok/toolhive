@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -1772,4 +1773,83 @@ func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile(t *testing.T
 			assert.Equal(t, tt.wantMessage, validCond.Message)
 		})
 	}
+}
+
+// TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition
+// verifies that when the controller observes a foreign-owned condition already
+// on the object and then writes its own Valid=True, it folds its condition into
+// the existing set rather than dropping the foreign one. It catches the
+// mutate-outside-the-closure bug: a condition set before MutateAndPatchStatus
+// snapshots the object would produce an empty diff, and the controller-owned
+// Valid condition would never land (the bottom assertion catches that).
+//
+// The concurrent-writer guarantee — that a condition written by a disjoint
+// owner between the reconciler's Get and its patch survives because
+// MutateAndPatchStatus sends a partial merge-patch rather than a full PUT — is
+// proven against the shared ctrlutil.MutateAndPatchStatus helper (used by all
+// three config controllers) in
+// TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch.
+func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "default", Generation: 1},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+				ClientID: "test-client",
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{
+					Name: "test-secret",
+					Key:  "client-secret",
+				},
+				Audience: "backend-service",
+			},
+		},
+		Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               "ForeignControllerSays",
+					Status:             metav1.ConditionTrue,
+					Reason:             "ExternallySet",
+					Message:            "set by a hypothetical sibling owner of this resource",
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(externalAuthConfig).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+		Build()
+	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: externalAuthConfig.Name, Namespace: externalAuthConfig.Namespace}}
+
+	// First reconcile adds the finalizer; second runs the success path and
+	// writes Valid=True without touching any foreign condition.
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var after mcpv1beta1.MCPExternalAuthConfig
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &after))
+
+	foreign := meta.FindStatusCondition(after.Status.Conditions, "ForeignControllerSays")
+	require.NotNil(t, foreign,
+		"foreign condition must survive an MCPExternalAuthConfig reconcile — the controller must fold its own condition into the existing set, not replace it")
+	assert.Equal(t, metav1.ConditionTrue, foreign.Status, "foreign condition value must not be modified")
+	assert.Equal(t, "ExternallySet", foreign.Reason)
+
+	// And our own Valid=True landed.
+	own := meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeValid)
+	require.NotNil(t, own, "controller-owned Valid condition must land")
+	assert.Equal(t, metav1.ConditionTrue, own.Status)
 }

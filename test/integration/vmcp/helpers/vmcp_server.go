@@ -69,10 +69,11 @@ type VMCPServerOption func(*vmcpServerConfig)
 
 // vmcpServerConfig holds configuration for creating a test vMCP server.
 type vmcpServerConfig struct {
-	conflictStrategy  string
-	prefixFormat      string
-	workflowDefs      map[string]*composer.WorkflowDefinition
-	telemetryProvider *telemetry.Provider
+	conflictStrategy   string
+	prefixFormat       string
+	workflowDefs       map[string]*composer.WorkflowDefinition
+	telemetryProvider  *telemetry.Provider
+	passthroughHeaders []string
 }
 
 // WithPrefixConflictResolution configures prefix-based conflict resolution.
@@ -94,6 +95,19 @@ func WithWorkflowDefinitions(defs map[string]*composer.WorkflowDefinition) VMCPS
 func WithTelemetryProvider(provider *telemetry.Provider) VMCPServerOption {
 	return func(c *vmcpServerConfig) {
 		c.telemetryProvider = provider
+	}
+}
+
+// WithPassthroughHeaders sets the vMCP server's PassthroughHeaders allowlist,
+// matching the production wiring in pkg/vmcp/cli/serve.go.
+//
+// When this option is used, NewVMCPServer passes the header names to
+// vmcpserver.Config.PassthroughHeaders, which installs
+// headerforward.CaptureMiddleware so allowlisted headers are captured into the
+// request context and forwarded to backends.
+func WithPassthroughHeaders(headers ...string) VMCPServerOption {
+	return func(c *vmcpServerConfig) {
+		c.passthroughHeaders = headers
 	}
 }
 
@@ -179,15 +193,20 @@ func NewVMCPServer(
 	// strategy (e.g. prefix format applied by the aggregator).
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry, vmcpsession.WithAggregator(agg))
 
-	// Create vMCP server with test-specific defaults
+	// Create vMCP server with test-specific defaults.
+	//
+	// PassthroughHeaders wires headerforward.CaptureMiddleware inside the server
+	// (matching pkg/vmcp/cli/serve.go), so allowlisted headers are captured into
+	// the request context and forwarded to backends. Empty disables capture.
 	vmcpServer, err := vmcpserver.New(ctx, &vmcpserver.Config{
-		Name:              "test-vmcp",
-		Version:           "1.0.0",
-		Host:              "127.0.0.1",
-		Port:              getFreePort(tb), // Get a random available port for parallel test execution
-		AuthMiddleware:    auth.AnonymousMiddleware,
-		TelemetryProvider: config.telemetryProvider,
-		SessionFactory:    sessionFactory,
+		Name:               "test-vmcp",
+		Version:            "1.0.0",
+		Host:               "127.0.0.1",
+		Port:               getFreePort(tb), // Get a random available port for parallel test execution
+		AuthMiddleware:     auth.AnonymousMiddleware,
+		PassthroughHeaders: config.passthroughHeaders,
+		TelemetryProvider:  config.telemetryProvider,
+		SessionFactory:     sessionFactory,
 	}, rtr, backendClient, discoveryMgr, backendRegistry, config.workflowDefs)
 	require.NoError(tb, err, "failed to create vMCP server")
 

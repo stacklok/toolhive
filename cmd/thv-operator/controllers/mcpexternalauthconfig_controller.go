@@ -108,7 +108,7 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		// in place, so the Warning fires only when entering the invalid state.
 		wasInvalid := conditionStatusIs(externalAuthConfig.Status.Conditions,
 			mcpv1beta1.ConditionTypeValid, metav1.ConditionFalse)
-		if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
+		updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
 			func(c *mcpv1beta1.MCPExternalAuthConfig) {
 				r.applyIdentitySynthesizedCondition(c)
 				meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
@@ -118,10 +118,14 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 					Message:            err.Error(),
 					ObservedGeneration: c.Generation,
 				})
-			}); updateErr != nil {
+			})
+		if updateErr != nil {
 			logger.Error(updateErr, "Failed to update status after validation error")
 		}
-		if !wasInvalid {
+		// Emit the Warning only on the transition into the invalid state, and
+		// only once the condition persisted, so a failing status write does not
+		// re-fire the event every reconcile.
+		if !wasInvalid && updateErr == nil {
 			emitConfigEvent(r.Recorder, externalAuthConfig, corev1.EventTypeWarning,
 				eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", err.Error())
 		}
@@ -404,7 +408,7 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 			// place: emit the Warning only when entering the blocked state.
 			wasBlocked := conditionStatusIs(externalAuthConfig.Status.Conditions,
 				mcpv1beta1.ConditionTypeDeletionBlocked, metav1.ConditionTrue)
-			if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
+			updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
 				func(c *mcpv1beta1.MCPExternalAuthConfig) {
 					meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 						Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
@@ -415,10 +419,14 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 					})
 					c.Status.ReferencingWorkloads = referencingWorkloads
 					c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-				}); updateErr != nil {
+				})
+			if updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
 			}
-			if !wasBlocked {
+			// Emit the Warning only on the transition into the blocked state, and
+			// only once the condition persisted, so a failing status write does
+			// not re-fire the event every reconcile.
+			if !wasBlocked && updateErr == nil {
 				emitConfigEvent(r.Recorder, externalAuthConfig, corev1.EventTypeWarning,
 					eventReasonDeletionBlocked, eventActionDelete,
 					"deletion blocked while still referenced by workloads: %v", referencingWorkloads)

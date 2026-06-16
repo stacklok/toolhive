@@ -102,7 +102,7 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		// in place, so the Warning fires only when entering the invalid state.
 		wasInvalid := conditionStatusIs(authzConfig.Status.Conditions,
 			mcpv1beta1.ConditionTypeAuthzConfigValid, metav1.ConditionFalse)
-		if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
+		updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
 			meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 				Type:               mcpv1beta1.ConditionTypeAuthzConfigValid,
 				Status:             metav1.ConditionFalse,
@@ -110,10 +110,14 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				Message:            err.Error(),
 				ObservedGeneration: c.Generation,
 			})
-		}); updateErr != nil {
+		})
+		if updateErr != nil {
 			logger.Error(updateErr, "Failed to update status after validation error")
 		}
-		if !wasInvalid {
+		// Emit the Warning only on the transition into the invalid state, and
+		// only once the condition persisted, so a failing status write does not
+		// re-fire the event every reconcile.
+		if !wasInvalid && updateErr == nil {
 			emitConfigEvent(r.Recorder, authzConfig, corev1.EventTypeWarning,
 				eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", err.Error())
 		}
@@ -300,7 +304,7 @@ func (r *MCPAuthzConfigReconciler) handleDeletion(
 			// place: emit the Warning only when entering the blocked state.
 			wasBlocked := conditionStatusIs(authzConfig.Status.Conditions,
 				mcpv1beta1.ConditionTypeDeletionBlocked, metav1.ConditionTrue)
-			if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
+			updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
 				meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 					Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
 					Status:             metav1.ConditionTrue,
@@ -310,10 +314,14 @@ func (r *MCPAuthzConfigReconciler) handleDeletion(
 				})
 				c.Status.ReferencingWorkloads = referencingWorkloads
 				c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-			}); updateErr != nil {
+			})
+			if updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
 			}
-			if !wasBlocked {
+			// Emit the Warning only on the transition into the blocked state, and
+			// only once the condition persisted, so a failing status write does
+			// not re-fire the event every reconcile.
+			if !wasBlocked && updateErr == nil {
 				emitConfigEvent(r.Recorder, authzConfig, corev1.EventTypeWarning,
 					eventReasonDeletionBlocked, eventActionDelete,
 					"deletion blocked while still referenced by workloads: %v", referencingWorkloads)

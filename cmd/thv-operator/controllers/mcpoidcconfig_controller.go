@@ -164,7 +164,7 @@ func (r *MCPOIDCConfigReconciler) handleValidationFailure(
 	// than on every reconcile that re-observes it.
 	wasInvalid := conditionStatusIs(oidcConfig.Status.Conditions,
 		mcpv1beta1.ConditionTypeOIDCConfigValid, metav1.ConditionFalse)
-	if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+	updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
 		meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeOIDCConfigValid,
 			Status:             metav1.ConditionFalse,
@@ -172,10 +172,14 @@ func (r *MCPOIDCConfigReconciler) handleValidationFailure(
 			Message:            validationErr.Error(),
 			ObservedGeneration: c.Generation,
 		})
-	}); updateErr != nil {
+	})
+	if updateErr != nil {
 		logger.Error(updateErr, "Failed to update status after validation error")
 	}
-	if !wasInvalid {
+	// Emit the Warning only on the transition into the invalid state, and only
+	// once the condition persisted — a status write that keeps failing would
+	// otherwise re-fire the event on every reconcile.
+	if !wasInvalid && updateErr == nil {
 		emitConfigEvent(r.Recorder, oidcConfig, corev1.EventTypeWarning,
 			eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", validationErr.Error())
 	}
@@ -229,7 +233,7 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 			// place: emit the Warning only when entering the blocked state.
 			wasBlocked := conditionStatusIs(oidcConfig.Status.Conditions,
 				mcpv1beta1.ConditionTypeDeletionBlocked, metav1.ConditionTrue)
-			if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+			updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
 				meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 					Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
 					Status:             metav1.ConditionTrue,
@@ -239,10 +243,14 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 				})
 				c.Status.ReferencingWorkloads = referencingWorkloads
 				c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-			}); updateErr != nil {
+			})
+			if updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
 			}
-			if !wasBlocked {
+			// Emit the Warning only on the transition into the blocked state, and
+			// only once the condition persisted, so a failing status write does
+			// not re-fire the event every reconcile.
+			if !wasBlocked && updateErr == nil {
 				emitConfigEvent(r.Recorder, oidcConfig, corev1.EventTypeWarning,
 					eventReasonDeletionBlocked, eventActionDelete,
 					"deletion blocked while still referenced by workloads: %v", referencingWorkloads)

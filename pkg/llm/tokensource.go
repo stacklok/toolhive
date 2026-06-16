@@ -39,8 +39,11 @@ type TokenSource = tokensource.OAuthTokenSource
 // tokenRefUpdater is called after login/refresh to persist the token reference
 // into config — pass nil to skip config persistence (useful in tests).
 // Set interactive to false for non-interactive callers such as thv llm token.
+// When skipBrowser is true, an interactive login prints the authorization URL
+// instead of opening a browser (headless/SSH/CI use); it has no effect unless
+// interactive is also true.
 func NewTokenSource(
-	cfg *Config, secretsProvider secrets.Provider, interactive bool, tokenRefUpdater TokenRefUpdater,
+	cfg *Config, secretsProvider secrets.Provider, interactive, skipBrowser bool, tokenRefUpdater TokenRefUpdater,
 ) *TokenSource {
 	return tokensource.New(tokensource.Options{
 		OIDC: tokensource.OIDCParams{
@@ -52,6 +55,7 @@ func NewTokenSource(
 		},
 		SecretsProvider: secretsProvider,
 		Interactive:     interactive,
+		SkipBrowser:     skipBrowser,
 		KeyProvider: func() string {
 			if cfg.OIDC.CachedRefreshTokenRef != "" {
 				return cfg.OIDC.CachedRefreshTokenRef

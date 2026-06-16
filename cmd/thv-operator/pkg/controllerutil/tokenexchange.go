@@ -316,6 +316,9 @@ func AddExternalAuthConfigSecretEnvVars(
 		// MCPExternalAuthConfig reconciler surfaces EnterpriseRequired.
 		return nil, nil
 	}
+	// Forward every env var the handler returns. Note VirtualMCPServer's
+	// firstOBOSecretEnvVar keeps only the first; harmless while handlers return
+	// a single var, but the two should be reconciled if that ever changes.
 	return envVars, err
 }
 

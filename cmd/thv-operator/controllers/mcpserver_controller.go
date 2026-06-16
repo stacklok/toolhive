@@ -1758,6 +1758,12 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			// Add OBO secret environment variables. Must mirror
 			// deploymentForMCPServer exactly (same call, same position) so a
 			// correctly-configured resource does not look perpetually drifted.
+			// In handler-less builds the dispatcher swallows ErrEnterpriseRequired
+			// to (nil, nil), keeping this path symmetric with the builder. A
+			// genuine handler error returns true here while the builder logs and
+			// continues — the same transient builder/drift divergence the
+			// token-exchange block above has; it self-resolves once the handler
+			// succeeds and is out of scope to unify here.
 			oboEnvVars, err := ctrlutil.AddExternalAuthConfigSecretEnvVars(
 				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.ExternalAuthConfigRef,
 			)

@@ -339,24 +339,15 @@ func New(
 	backendRegistry vmcp.BackendRegistry,
 	workflowDefs map[string]*composer.WorkflowDefinition,
 ) (*Server, error) {
-	// Apply defaults
-	if cfg.Host == "" {
-		cfg.Host = defaultHost
-	}
-	// Note: Port 0 means "let OS assign random port" - intentionally no default applied here.
-	// CLI provides default via flag (4483), so Port is only 0 in tests for dynamic port assignment.
-	if cfg.EndpointPath == "" {
-		cfg.EndpointPath = defaultEndpointPath
-	}
-	if cfg.Name == "" {
-		cfg.Name = defaultServerName
-	}
-	if cfg.Version == "" {
-		cfg.Version = defaultServerVersion
-	}
-	if cfg.SessionTTL == 0 {
-		cfg.SessionTTL = defaultSessionTTL
-	}
+	// Resolve transport defaults on a COPY. The composition root (cli) already resolves
+	// them at the edge via WithDefaults (a single defaulting list); New repeats
+	// it defensively so legacy direct callers and tests that build a Config by hand keep
+	// working — but without mutating the caller's value (go-style: copy before mutating
+	// caller input). That non-mutation is what lets #5445 hand the raw, un-defaulted
+	// cfg.Name to the core for Cedar authz parity. New's own defaulting goes away when
+	// #5445 reduces it to a Serve(core.New(...)) wrapper; until then WithDefaults is the
+	// single place the default list lives, shared with the edge.
+	cfg = WithDefaults(cfg)
 
 	// Create hooks for SDK integration
 	hooks := &server.Hooks{}

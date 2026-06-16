@@ -618,3 +618,23 @@ func TestLLMTeardownCommand_ClientFlagAndPositionalArgMutuallyExclusive(t *testi
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cannot use --client and a positional tool-name argument at the same time")
 }
+
+// TestLLMCommands_SkipBrowserFlag verifies that the login-capable llm subcommands
+// register the --skip-browser flag as an opt-in boolean (default false), so a
+// default invocation preserves the browser-opening behavior.
+func TestLLMCommands_SkipBrowserFlag(t *testing.T) {
+	t.Parallel()
+
+	root := newLLMCommand()
+	for _, path := range [][]string{
+		{"setup"},
+		{"token"},
+		{"proxy", "start"},
+	} {
+		sub, _, err := root.Find(path)
+		require.NoErrorf(t, err, "resolving llm subcommand %v", path)
+		flag := sub.Flags().Lookup("skip-browser")
+		require.NotNilf(t, flag, "llm %v must register --skip-browser", path)
+		assert.Equalf(t, "false", flag.DefValue, "llm %v --skip-browser must default to false", path)
+	}
+}

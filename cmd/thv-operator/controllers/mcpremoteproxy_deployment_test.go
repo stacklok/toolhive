@@ -30,6 +30,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
 // TestDeploymentForMCPRemoteProxy tests deployment generation
@@ -57,7 +58,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				t.Helper()
 				assert.Equal(t, "basic-proxy", dep.Name)
 				assert.Equal(t, "default", dep.Namespace)
-				assert.Equal(t, int32(1), *dep.Spec.Replicas)
+				assert.Nil(t, dep.Spec.Replicas, "nil spec.replicas leaves the count to the apiserver default")
 
 				// Verify labels
 				assert.Equal(t, labelsForMCPRemoteProxy("basic-proxy"), dep.Spec.Selector.MatchLabels)
@@ -1303,6 +1304,69 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 			r := &MCPRemoteProxyReconciler{}
 			result := r.serviceNeedsUpdate(tt.service, tt.proxy)
 			assert.Equal(t, tt.needsUpdate, result)
+		})
+	}
+}
+
+// TestBuildRedisPasswordEnvVarForRemoteProxy mirrors VirtualMCPServer's
+// TestBuildRedisPasswordEnvVar — the env var must be injected only when
+// sessionStorage uses the redis provider AND a passwordRef is set, and it
+// must always be a SecretKeyRef (never a plaintext value).
+func TestBuildRedisPasswordEnvVarForRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	passwordRef := &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+
+	tests := []struct {
+		name        string
+		storage     *mcpv1beta1.SessionStorageConfig
+		expectEnVar bool
+	}{
+		{
+			name:        "nil sessionStorage produces no env var",
+			storage:     nil,
+			expectEnVar: false,
+		},
+		{
+			name:        "memory provider produces no env var",
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: "memory"},
+			expectEnVar: false,
+		},
+		{
+			name:        "redis without passwordRef produces no env var",
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: mcpv1beta1.SessionStorageProviderRedis, Address: "redis:6379"},
+			expectEnVar: false,
+		},
+		{
+			name: "redis with passwordRef produces THV_SESSION_REDIS_PASSWORD",
+			storage: &mcpv1beta1.SessionStorageConfig{
+				Provider:    mcpv1beta1.SessionStorageProviderRedis,
+				Address:     "redis:6379",
+				PasswordRef: passwordRef,
+			},
+			expectEnVar: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			proxy := &mcpv1beta1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
+				Spec:       mcpv1beta1.MCPRemoteProxySpec{SessionStorage: tc.storage},
+			}
+			env := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+			if tc.expectEnVar {
+				require.Len(t, env, 1)
+				assert.Equal(t, session.RedisPasswordEnvVar, env[0].Name)
+				assert.Empty(t, env[0].Value, "must not use plaintext Value")
+				require.NotNil(t, env[0].ValueFrom)
+				require.NotNil(t, env[0].ValueFrom.SecretKeyRef)
+				assert.Equal(t, passwordRef.Name, env[0].ValueFrom.SecretKeyRef.Name)
+				assert.Equal(t, passwordRef.Key, env[0].ValueFrom.SecretKeyRef.Key)
+			} else {
+				assert.Empty(t, env)
+			}
 		})
 	}
 }

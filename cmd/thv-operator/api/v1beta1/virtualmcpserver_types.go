@@ -37,6 +37,15 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
 
+	// PassthroughHeaders is an allowlist of incoming client request header names
+	// forwarded verbatim to all backends (e.g. an API key the backend resolves to
+	// a user). Takes precedence over config.PassthroughHeaders. Names must not be
+	// restricted headers (Host, hop-by-hop, X-Forwarded-*). Forwarded headers are
+	// attacker-influenceable unless a trusted upstream sets them.
+	// +optional
+	// +listType=atomic
+	PassthroughHeaders []string `json:"passthroughHeaders,omitempty"`
+
 	// ServiceType specifies the Kubernetes service type for the Virtual MCP server
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
 	// +kubebuilder:default=ClusterIP

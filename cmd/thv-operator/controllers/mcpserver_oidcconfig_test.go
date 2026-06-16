@@ -363,6 +363,17 @@ func TestMCPOIDCConfigReconciler_handleDeletion_BlocksWhenReferenced(t *testing.
 
 	assert.Greater(t, result.RequeueAfter, time.Duration(0), "should requeue while referenced")
 	assert.Contains(t, cfg.Finalizers, OIDCConfigFinalizerName, "finalizer must remain")
+
+	// The DeletionBlocked condition is written through MutateAndPatchStatus;
+	// re-fetch to confirm it (and the referencing-workload bookkeeping) was
+	// persisted rather than only mutated in memory.
+	var after mcpv1beta1.MCPOIDCConfig
+	require.NoError(t, fc.Get(ctx, client.ObjectKeyFromObject(cfg), &after))
+	blocked := meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked)
+	require.NotNil(t, blocked, "DeletionBlocked condition must be set while referenced")
+	assert.Equal(t, metav1.ConditionTrue, blocked.Status)
+	assert.Equal(t, "ReferencedByWorkloads", blocked.Reason)
+	assert.EqualValues(t, 1, after.Status.ReferenceCount, "referencing workload must be recorded")
 }
 
 func TestMCPOIDCConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *testing.T) {

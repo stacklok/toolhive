@@ -70,10 +70,14 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 		return r.handleDeletion(ctx, oidcConfig)
 	}
 
-	// Add finalizer if it doesn't exist
+	// Add finalizer if it doesn't exist.
+	// MutateAndPatchSpec wraps an optimistic-lock merge patch: any concurrent
+	// finalizer additions land on the live object via the apiserver, and our
+	// patch only carries the field we changed. See .claude/rules/operator.md.
 	if !controllerutil.ContainsFinalizer(oidcConfig, OIDCConfigFinalizerName) {
-		controllerutil.AddFinalizer(oidcConfig, OIDCConfigFinalizerName)
-		if err := r.Update(ctx, oidcConfig); err != nil {
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+			controllerutil.AddFinalizer(c, OIDCConfigFinalizerName)
+		}); err != nil {
 			logger.Error(err, "Failed to add finalizer")
 			return ctrl.Result{}, err
 		}
@@ -83,27 +87,19 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	// Validate spec configuration early
 	if err := oidcConfig.Validate(); err != nil {
 		logger.Error(err, "MCPOIDCConfig spec validation failed")
-		meta.SetStatusCondition(&oidcConfig.Status.Conditions, metav1.Condition{
-			Type:               mcpv1beta1.ConditionTypeOIDCConfigValid,
-			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1beta1.ConditionReasonOIDCConfigInvalid,
-			Message:            err.Error(),
-			ObservedGeneration: oidcConfig.Generation,
-		})
-		if updateErr := r.Status().Update(ctx, oidcConfig); updateErr != nil {
+		if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+			meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+				Type:               mcpv1beta1.ConditionTypeOIDCConfigValid,
+				Status:             metav1.ConditionFalse,
+				Reason:             mcpv1beta1.ConditionReasonOIDCConfigInvalid,
+				Message:            err.Error(),
+				ObservedGeneration: c.Generation,
+			})
+		}); updateErr != nil {
 			logger.Error(updateErr, "Failed to update status after validation error")
 		}
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 	}
-
-	// Validation succeeded - set Valid=True condition
-	conditionChanged := meta.SetStatusCondition(&oidcConfig.Status.Conditions, metav1.Condition{
-		Type:               mcpv1beta1.ConditionTypeOIDCConfigValid,
-		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1beta1.ConditionReasonOIDCConfigValid,
-		Message:            "Spec validation passed",
-		ObservedGeneration: oidcConfig.Generation,
-	})
 
 	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(oidcConfig.Spec)
@@ -115,36 +111,59 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 			"oldHash", oidcConfig.Status.ConfigHash,
 			"newHash", configHash)
 
-		oidcConfig.Status.ConfigHash = configHash
-		oidcConfig.Status.ObservedGeneration = oidcConfig.Generation
-
-		if err := r.Status().Update(ctx, oidcConfig); err != nil {
+		if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+			setOIDCConfigValidTrueCondition(c)
+			c.Status.ConfigHash = configHash
+			c.Status.ObservedGeneration = c.Generation
+		}); err != nil {
 			logger.Error(err, "Failed to update MCPOIDCConfig status")
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{}, nil
 	}
 
-	// Refresh ReferencingWorkloads list
-	referencingWorkloads, err := r.findReferencingWorkloads(ctx, oidcConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing workloads")
-	} else if !ctrlutil.WorkloadRefsEqual(oidcConfig.Status.ReferencingWorkloads, referencingWorkloads) ||
-		oidcConfig.Status.ReferenceCount != workloadReferenceCount(referencingWorkloads) {
-		oidcConfig.Status.ReferencingWorkloads = referencingWorkloads
-		oidcConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-		conditionChanged = true
+	// Refresh ReferencingWorkloads list. On error, fall through with the lookup
+	// result skipped: the status patch below is best-effort and still ensures
+	// the Valid=True condition is set even when the reference refresh fails.
+	referencingWorkloads, findErr := r.findReferencingWorkloads(ctx, oidcConfig)
+	if findErr != nil {
+		logger.Error(findErr, "Failed to find referencing workloads")
 	}
 
-	// Update condition if it changed (even without hash change)
-	if conditionChanged {
-		if err := r.Status().Update(ctx, oidcConfig); err != nil {
-			logger.Error(err, "Failed to update MCPOIDCConfig status after condition change")
-			return ctrl.Result{}, err
+	// Single status patch covering the steady-state success path: ensure the
+	// Valid=True condition is set, and refresh the references list when the
+	// lookup succeeded and the list changed. MutateAndPatchStatus short-circuits
+	// on an empty diff so the no-op case still skips the wire call
+	// (SteadyStateNoOp behaviour is preserved).
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+		setOIDCConfigValidTrueCondition(c)
+		if findErr == nil &&
+			(!ctrlutil.WorkloadRefsEqual(c.Status.ReferencingWorkloads, referencingWorkloads) ||
+				c.Status.ReferenceCount != workloadReferenceCount(referencingWorkloads)) {
+			c.Status.ReferencingWorkloads = referencingWorkloads
+			c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
 		}
+	}); err != nil {
+		logger.Error(err, "Failed to update MCPOIDCConfig status")
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// setOIDCConfigValidTrueCondition stamps ConditionTypeOIDCConfigValid=True onto
+// the supplied object. It is callable inside a MutateAndPatchStatus closure: the
+// closure receives the freshly-snapshotted object, and SetStatusCondition only
+// mutates Conditions when the desired state differs, so a no-op reconcile
+// produces an empty patch body that the helper skips.
+func setOIDCConfigValidTrueCondition(c *mcpv1beta1.MCPOIDCConfig) {
+	meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeOIDCConfigValid,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonOIDCConfigValid,
+		Message:            "Spec validation passed",
+		ObservedGeneration: c.Generation,
+	})
 }
 
 // calculateConfigHash calculates a hash of the MCPOIDCConfig spec using Kubernetes utilities
@@ -175,16 +194,17 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 				"oidcConfig", oidcConfig.Name,
 				"referencingWorkloads", referencingWorkloads)
 
-			meta.SetStatusCondition(&oidcConfig.Status.Conditions, metav1.Condition{
-				Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
-				Status:             metav1.ConditionTrue,
-				Reason:             "ReferencedByWorkloads",
-				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
-				ObservedGeneration: oidcConfig.Generation,
-			})
-			oidcConfig.Status.ReferencingWorkloads = referencingWorkloads
-			oidcConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-			if updateErr := r.Status().Update(ctx, oidcConfig); updateErr != nil {
+			if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+				meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+					Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
+					Status:             metav1.ConditionTrue,
+					Reason:             "ReferencedByWorkloads",
+					Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
+					ObservedGeneration: c.Generation,
+				})
+				c.Status.ReferencingWorkloads = referencingWorkloads
+				c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
+			}); updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
 			}
 
@@ -192,8 +212,9 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 			return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 		}
 
-		controllerutil.RemoveFinalizer(oidcConfig, OIDCConfigFinalizerName)
-		if err := r.Update(ctx, oidcConfig); err != nil {
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, oidcConfig, func(c *mcpv1beta1.MCPOIDCConfig) {
+			controllerutil.RemoveFinalizer(c, OIDCConfigFinalizerName)
+		}); err != nil {
 			logger.Error(err, "Failed to remove finalizer")
 			return ctrl.Result{}, err
 		}

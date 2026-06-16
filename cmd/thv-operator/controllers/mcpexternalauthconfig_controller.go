@@ -74,10 +74,14 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return r.handleDeletion(ctx, externalAuthConfig)
 	}
 
-	// Add finalizer if it doesn't exist
+	// Add finalizer if it doesn't exist.
+	// MutateAndPatchSpec wraps an optimistic-lock merge patch: any concurrent
+	// finalizer additions land on the live object via the apiserver, and our
+	// patch only carries the field we changed. See .claude/rules/operator.md.
 	if !controllerutil.ContainsFinalizer(externalAuthConfig, ExternalAuthConfigFinalizerName) {
-		controllerutil.AddFinalizer(externalAuthConfig, ExternalAuthConfigFinalizerName)
-		if err := r.Update(ctx, externalAuthConfig); err != nil {
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, externalAuthConfig, func(c *mcpv1beta1.MCPExternalAuthConfig) {
+			controllerutil.AddFinalizer(c, ExternalAuthConfigFinalizerName)
+		}); err != nil {
 			logger.Error(err, "Failed to add finalizer")
 			return ctrl.Result{}, err
 		}
@@ -85,38 +89,28 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return ctrl.Result{RequeueAfter: externalAuthConfigRequeueDelay}, nil
 	}
 
-	// Compute the IdentitySynthesized advisory upfront, before validation.
-	// The advisory is a pure function of the upstream provider field shape
-	// (specifically, which OAuth2 upstreams have nil userInfo) and does not
-	// depend on issuer URL validity or other Validate() concerns. Computing
-	// it before validation ensures the advisory tracks the current spec on
-	// every reconcile — including the validation-failure path — so a broken
-	// edit cannot leave a stale True/upstream-name dangling.
-	//
-	// Note: the OBO failure path routes through setInvalid, which discards
-	// this in-memory mutation (its MutateAndPatchStatus call re-fetches and
-	// re-applies the advisory inside its patch closure). The in-memory
-	// mutation here is therefore load-bearing only on the validation-failure
-	// path (the r.Status().Update on the ValidationFailed return) and the
-	// Valid=True path (the r.Status().Update on the conditionChanged write).
-	// The function is idempotent on the same spec, so the double computation
-	// on the OBO path is benign.
-	syntheticChanged := r.applyIdentitySynthesizedCondition(externalAuthConfig)
-
 	// Validate spec configuration early
 	if err := externalAuthConfig.Validate(); err != nil {
 		logger.Error(err, "MCPExternalAuthConfig spec validation failed")
-		// Update status with validation error. The synthesis condition mutated
-		// above is part of the same in-memory Conditions slice and will land
-		// in this same write.
-		meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
-			Type:               mcpv1beta1.ConditionTypeValid,
-			Status:             metav1.ConditionFalse,
-			Reason:             "ValidationFailed",
-			Message:            err.Error(),
-			ObservedGeneration: externalAuthConfig.Generation,
-		})
-		if updateErr := r.Status().Update(ctx, externalAuthConfig); updateErr != nil {
+		// Fold the IdentitySynthesized advisory into the same patch as the
+		// Valid=False write so a broken edit cannot leave a stale advisory
+		// (True/upstream-name) dangling. Both mutations happen inside the
+		// closure: MutateAndPatchStatus snapshots the object on entry, so any
+		// pre-mutate change would land in both halves of the diff and be
+		// silently dropped. applyIdentitySynthesizedCondition is a pure
+		// function of the current spec, so it recomputes the advisory even on
+		// the validation-failure path.
+		if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
+			func(c *mcpv1beta1.MCPExternalAuthConfig) {
+				r.applyIdentitySynthesizedCondition(c)
+				meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+					Type:               mcpv1beta1.ConditionTypeValid,
+					Status:             metav1.ConditionFalse,
+					Reason:             "ValidationFailed",
+					Message:            err.Error(),
+					ObservedGeneration: c.Generation,
+				})
+			}); updateErr != nil {
 			logger.Error(updateErr, "Failed to update status after validation error")
 		}
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
@@ -125,23 +119,13 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 	// Dispatch OBO-typed configs through the registered handler. The default
 	// handler returns obo.ErrEnterpriseRequired so upstream-only builds surface
 	// Valid=False / Reason=EnterpriseRequired here rather than failing later
-	// inside a consumer reconciler with a generic "unsupported" error.
+	// inside a consumer reconciler with a generic "unsupported" error. The OBO
+	// failure path routes through setInvalid, which applies the advisory inside
+	// its own patch closure.
 	if externalAuthConfig.Spec.Type == mcpv1beta1.ExternalAuthTypeOBO {
 		if handled, err := r.triageOBOValidation(ctx, externalAuthConfig); handled {
 			return ctrl.Result{}, err
 		}
-	}
-
-	// Validation succeeded - set Valid=True condition
-	conditionChanged := meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
-		Type:               mcpv1beta1.ConditionTypeValid,
-		Status:             metav1.ConditionTrue,
-		Reason:             "ValidationSucceeded",
-		Message:            "Spec validation passed",
-		ObservedGeneration: externalAuthConfig.Generation,
-	})
-	if syntheticChanged {
-		conditionChanged = true
 	}
 
 	// Calculate the hash of the current configuration
@@ -153,17 +137,27 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		return r.handleConfigHashChange(ctx, externalAuthConfig, configHash)
 	}
 
-	// Update condition if it changed (even without hash change)
-	if conditionChanged {
-		if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
-			logger.Error(err, "Failed to update MCPExternalAuthConfig status after condition change")
-			return ctrl.Result{}, err
-		}
-	}
-
-	// Even when hash hasn't changed, update referencing workloads list.
-	// This ensures ReferencingWorkloads is updated when MCPServers are created or deleted.
+	// Steady-state success path: ensure Valid=True and the IdentitySynthesized
+	// advisory are set, and refresh the referencing-workloads list, in a single
+	// status patch.
 	return r.updateReferencingWorkloads(ctx, externalAuthConfig)
+}
+
+// setValidTrueAndSynthesized stamps ConditionTypeValid=True and refreshes the
+// IdentitySynthesized advisory on the supplied object. It is callable inside a
+// MutateAndPatchStatus closure: applyIdentitySynthesizedCondition is idempotent
+// on the same spec and SetStatusCondition only mutates Conditions on a real
+// change, so a no-op reconcile produces an empty patch body that the helper
+// skips.
+func (r *MCPExternalAuthConfigReconciler) setValidTrueAndSynthesized(c *mcpv1beta1.MCPExternalAuthConfig) {
+	r.applyIdentitySynthesizedCondition(c)
+	meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeValid,
+		Status:             metav1.ConditionTrue,
+		Reason:             "ValidationSucceeded",
+		Message:            "Spec validation passed",
+		ObservedGeneration: c.Generation,
+	})
 }
 
 // calculateConfigHash calculates a hash of the MCPExternalAuthConfig spec using Kubernetes utilities
@@ -174,27 +168,30 @@ func (*MCPExternalAuthConfigReconciler) calculateConfigHash(spec mcpv1beta1.MCPE
 // applyIdentitySynthesizedCondition sets ConditionTypeIdentitySynthesized
 // True when any OAuth2 upstream has nil userInfo, False when every upstream
 // has userInfo configured, and removes it for non-embeddedAuthServer types
-// where the question is moot. Returns true if the in-memory condition list
-// changed so the caller can fold this into the next status write.
+// where the question is moot. It is idempotent on the same spec and is called
+// inside the status-write closures so the advisory is recomputed on every
+// status patch.
 func (*MCPExternalAuthConfigReconciler) applyIdentitySynthesizedCondition(
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
-) bool {
+) {
 	if cfg.Spec.Type != mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer || cfg.Spec.EmbeddedAuthServer == nil {
-		return meta.RemoveStatusCondition(&cfg.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+		meta.RemoveStatusCondition(&cfg.Status.Conditions, mcpv1beta1.ConditionTypeIdentitySynthesized)
+		return
 	}
 
 	syntheticUpstreams := cfg.Spec.EmbeddedAuthServer.SyntheticIdentityUpstreams()
 	if len(syntheticUpstreams) == 0 {
-		return meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
+		meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeIdentitySynthesized,
 			Status:             metav1.ConditionFalse,
 			Reason:             mcpv1beta1.ConditionReasonIdentitySynthesizedInactive,
 			Message:            "All OAuth2 upstreams have userInfo configured; user identity is resolved from the upstream",
 			ObservedGeneration: cfg.Generation,
 		})
+		return
 	}
 
-	return meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
+	meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
 		Type:   mcpv1beta1.ConditionTypeIdentitySynthesized,
 		Status: metav1.ConditionTrue,
 		Reason: mcpv1beta1.ConditionReasonIdentitySynthesizedActive,
@@ -253,16 +250,13 @@ func (r *MCPExternalAuthConfigReconciler) triageOBOValidation(
 // an out-of-tree handler must be registered) for this branch to clear, so
 // requeuing buys nothing.
 //
-// Callers in Reconcile() may have already mutated cfg.Status.Conditions in
-// memory (notably applyIdentitySynthesizedCondition). MutateAndPatchStatus
-// diffs the post-mutate object against the snapshot it takes at the start of
-// the call, so any mutation present in cfg before the helper runs lands in
-// both halves of the diff and silently disappears from the merge patch. To
-// avoid losing the IdentitySynthesized advisory transition (e.g., when a user
-// switches a config from embeddedAuthServer to obo), this helper re-fetches
-// the object from the apiserver and re-applies the synthesized-condition
-// computation inside the patch closure so both the advisory transition and
-// the Valid=False condition land in the same patch.
+// The IdentitySynthesized advisory is recomputed inside the patch closure so
+// both the advisory transition (e.g., when a user switches a config from
+// embeddedAuthServer to obo) and the Valid=False condition land in the same
+// merge patch. The object is re-fetched first so the closure mutates a clean
+// snapshot: MutateAndPatchStatus diffs the post-mutate object against the
+// snapshot it takes on entry, so any mutation already present before the
+// helper runs would land in both halves of the diff and be dropped.
 func (r *MCPExternalAuthConfigReconciler) setInvalid(
 	ctx context.Context,
 	cfg *mcpv1beta1.MCPExternalAuthConfig,
@@ -281,14 +275,10 @@ func (r *MCPExternalAuthConfigReconciler) setInvalid(
 	}
 	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, fresh, func(c *mcpv1beta1.MCPExternalAuthConfig) {
 		// applyIdentitySynthesizedCondition is idempotent on the same spec;
-		// re-applying it inside the closure folds the advisory transition
-		// into the same patch as the Valid=False write below. This
-		// re-invocation is load-bearing: removing it would cause
-		// MutateAndPatchStatus to silently drop the IdentitySynthesized
-		// transition because the pre-mutate snapshot already contains the
-		// in-memory mutation from line 95. See
-		// TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized
-		// for the regression guard.
+		// re-applying it inside the closure folds the advisory transition into
+		// the same patch as the Valid=False write below. See
+		// TestMCPExternalAuthConfigReconciler_IdentitySynthesizedTransitionsOnValidationFailure
+		// for the related validation-path regression guard.
 		r.applyIdentitySynthesizedCondition(c)
 		meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeValid,
@@ -311,10 +301,6 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 		"oldHash", externalAuthConfig.Status.ConfigHash,
 		"newHash", configHash)
 
-	// Update the status with the new hash
-	externalAuthConfig.Status.ConfigHash = configHash
-	externalAuthConfig.Status.ObservedGeneration = externalAuthConfig.Generation
-
 	// Find all MCPServers that reference this MCPExternalAuthConfig
 	referencingServers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
 	if err != nil {
@@ -322,17 +308,25 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
 
-	// Update the status with the list of referencing workloads
+	// Build the list of referencing workloads
 	refs := make([]mcpv1beta1.WorkloadReference, 0, len(referencingServers))
 	for _, server := range referencingServers {
 		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: server.Name})
 	}
 	ctrlutil.SortWorkloadRefs(refs)
-	externalAuthConfig.Status.ReferencingWorkloads = refs
-	externalAuthConfig.Status.ReferenceCount = workloadReferenceCount(refs)
 
-	// Update the MCPExternalAuthConfig status
-	if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
+	// Single status patch covering the hash-change success path: the new hash
+	// and generation, the refreshed reference list, and the Valid=True /
+	// IdentitySynthesized conditions. All mutations happen inside the closure so
+	// the pre-mutate snapshot stays clean (a MutateAndPatchStatus prerequisite).
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
+		func(c *mcpv1beta1.MCPExternalAuthConfig) {
+			r.setValidTrueAndSynthesized(c)
+			c.Status.ConfigHash = configHash
+			c.Status.ObservedGeneration = c.Generation
+			c.Status.ReferencingWorkloads = refs
+			c.Status.ReferenceCount = workloadReferenceCount(refs)
+		}); err != nil {
 		logger.Error(err, "Failed to update MCPExternalAuthConfig status")
 		return ctrl.Result{}, err
 	}
@@ -377,16 +371,18 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 				"externalAuthConfig", externalAuthConfig.Name,
 				"referencingWorkloads", referencingWorkloads)
 
-			meta.SetStatusCondition(&externalAuthConfig.Status.Conditions, metav1.Condition{
-				Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
-				Status:             metav1.ConditionTrue,
-				Reason:             "ReferencedByWorkloads",
-				Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
-				ObservedGeneration: externalAuthConfig.Generation,
-			})
-			externalAuthConfig.Status.ReferencingWorkloads = referencingWorkloads
-			externalAuthConfig.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-			if updateErr := r.Status().Update(ctx, externalAuthConfig); updateErr != nil {
+			if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
+				func(c *mcpv1beta1.MCPExternalAuthConfig) {
+					meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
+						Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
+						Status:             metav1.ConditionTrue,
+						Reason:             "ReferencedByWorkloads",
+						Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
+						ObservedGeneration: c.Generation,
+					})
+					c.Status.ReferencingWorkloads = referencingWorkloads
+					c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
+				}); updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
 			}
 
@@ -395,8 +391,10 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 		}
 
 		// No references, safe to remove finalizer and allow deletion
-		controllerutil.RemoveFinalizer(externalAuthConfig, ExternalAuthConfigFinalizerName)
-		if err := r.Update(ctx, externalAuthConfig); err != nil {
+		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, externalAuthConfig,
+			func(c *mcpv1beta1.MCPExternalAuthConfig) {
+				controllerutil.RemoveFinalizer(c, ExternalAuthConfigFinalizerName)
+			}); err != nil {
 			logger.Error(err, "Failed to remove finalizer")
 			return ctrl.Result{}, err
 		}
@@ -662,27 +660,33 @@ func (r *MCPExternalAuthConfigReconciler) mapMCPRemoteProxyToExternalAuthConfig(
 	return requests
 }
 
-// updateReferencingWorkloads finds referencing workloads and updates the status if the list changed
+// updateReferencingWorkloads writes the steady-state success status in a single
+// patch: it ensures Valid=True and the IdentitySynthesized advisory are set and
+// refreshes the referencing-workloads list. MutateAndPatchStatus short-circuits
+// on an empty diff, so a no-op reconcile skips the wire call.
 func (r *MCPExternalAuthConfigReconciler) updateReferencingWorkloads(
 	ctx context.Context,
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (ctrl.Result, error) {
+	logger := log.FromContext(ctx)
+
 	refs, err := r.findReferencingWorkloads(ctx, externalAuthConfig)
 	if err != nil {
-		logger := log.FromContext(ctx)
 		logger.Error(err, "Failed to find referencing workloads")
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing workloads: %w", err)
 	}
 
-	if !ctrlutil.WorkloadRefsEqual(externalAuthConfig.Status.ReferencingWorkloads, refs) ||
-		externalAuthConfig.Status.ReferenceCount != workloadReferenceCount(refs) {
-		externalAuthConfig.Status.ReferencingWorkloads = refs
-		externalAuthConfig.Status.ReferenceCount = workloadReferenceCount(refs)
-		if err := r.Status().Update(ctx, externalAuthConfig); err != nil {
-			logger := log.FromContext(ctx)
-			logger.Error(err, "Failed to update MCPExternalAuthConfig status")
-			return ctrl.Result{}, err
-		}
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
+		func(c *mcpv1beta1.MCPExternalAuthConfig) {
+			r.setValidTrueAndSynthesized(c)
+			if !ctrlutil.WorkloadRefsEqual(c.Status.ReferencingWorkloads, refs) ||
+				c.Status.ReferenceCount != workloadReferenceCount(refs) {
+				c.Status.ReferencingWorkloads = refs
+				c.Status.ReferenceCount = workloadReferenceCount(refs)
+			}
+		}); err != nil {
+		logger.Error(err, "Failed to update MCPExternalAuthConfig status")
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil

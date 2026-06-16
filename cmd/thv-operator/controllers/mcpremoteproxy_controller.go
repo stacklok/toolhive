@@ -127,6 +127,9 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Surface advisory condition when primaryUpstreamProvider is set but ignored
 	r.validateAuthzPrimaryUpstreamProviderIgnored(proxy)
 
+	// Surface advisory condition when replicas > 1 without Redis session storage
+	r.validateSessionStorageForReplicas(proxy)
+
 	// Handle MCPToolConfig
 	if err := r.handleToolConfig(ctx, proxy); err != nil {
 		ctxLogger.Error(err, "Failed to handle MCPToolConfig")
@@ -301,10 +304,15 @@ func (r *MCPRemoteProxyReconciler) ensureDeployment(
 		if newDeployment == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
 		}
-		// Update the deployment spec but preserve replica count for HPA compatibility
+		// Update template and metadata. Also sync Spec.Replicas when spec.replicas
+		// is non-nil (operator authoritative); preserve it when nil so an HPA or
+		// other external controller can manage scaling.
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
 		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
+		if newDeployment.Spec.Replicas != nil {
+			deployment.Spec.Replicas = newDeployment.Spec.Replicas
+		}
 
 		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
 		if err := r.Update(ctx, deployment); err != nil {
@@ -1107,6 +1115,40 @@ func (*MCPRemoteProxyReconciler) validateAuthzPrimaryUpstreamProviderIgnored(pro
 	})
 }
 
+// validateSessionStorageForReplicas surfaces a SessionStorageWarning condition
+// when replicas > 1 but session storage is not configured with the Redis
+// backend. Reconciliation continues regardless; this is advisory only.
+// Mirrors the MCPServer and VirtualMCPServer validators so the condition is
+// consistent across all types that share the replicas + sessionStorage pair.
+// The caller is responsible for persisting status.
+func (*MCPRemoteProxyReconciler) validateSessionStorageForReplicas(proxy *mcpv1beta1.MCPRemoteProxy) {
+	condition := func() metav1.Condition {
+		if proxy.Spec.Replicas == nil || *proxy.Spec.Replicas <= 1 {
+			return metav1.Condition{
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonSessionStorageNotApplicable,
+				Message: "session storage warning is not active",
+			}
+		}
+		if proxy.Spec.SessionStorage == nil ||
+			proxy.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis {
+			return metav1.Condition{
+				Status:  metav1.ConditionTrue,
+				Reason:  mcpv1beta1.ConditionReasonSessionStorageMissing,
+				Message: "replicas > 1 but sessionStorage.provider is not redis; sessions are not shared across replicas",
+			}
+		}
+		return metav1.Condition{
+			Status:  metav1.ConditionFalse,
+			Reason:  mcpv1beta1.ConditionReasonSessionStorageConfigured,
+			Message: "Redis session storage is configured",
+		}
+	}()
+	condition.Type = mcpv1beta1.ConditionSessionStorageWarning
+	condition.ObservedGeneration = proxy.Generation
+	meta.SetStatusCondition(&proxy.Status.Conditions, condition)
+}
+
 // ensureRBACResources ensures that the RBAC resources are in place for the remote proxy.
 // Uses the RBAC client (pkg/kubernetes/rbac) which creates or updates RBAC resources
 // automatically during operator upgrades.
@@ -1298,6 +1340,15 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 
 	if r.podSpecNeedsUpdate(deployment, proxy) {
 		return true
+	}
+
+	// Check if spec.replicas has changed. Only compare when spec.replicas is
+	// non-nil; nil means hands-off mode (HPA or another external controller
+	// manages replicas) and the live count is authoritative.
+	if proxy.Spec.Replicas != nil {
+		if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != *proxy.Spec.Replicas {
+			return true
+		}
 	}
 
 	return false

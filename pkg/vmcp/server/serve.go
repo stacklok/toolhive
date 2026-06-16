@@ -4,7 +4,6 @@
 package server
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -301,11 +300,11 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	return srv, nil
 }
 
-// buildServeConfig maps the transport-only ServerConfig onto the existing *Config
-// the carried-forward (*Server) methods read from, applying the same transport
-// defaults server.New applies today. Defaults are applied here rather than by
-// mutating the caller's ServerConfig (go-style: copy before mutating caller input).
-// Port 0 is left untouched to mean "OS-assigned".
+// buildServeConfig maps the transport-only ServerConfig onto the existing *Config the
+// carried-forward (*Server) methods read from. It is a pure pass-through: transport
+// defaults are resolved once at the composition root via WithDefaults, so the
+// incoming ServerConfig is already resolved and buildServeConfig applies no defaulting of
+// its own. Port 0 still means "OS-assigned".
 //
 // Several Config fields are deliberately NOT mapped at this phase (see
 // TestBuildServeConfigMapsSharedFields, which guards this list against drift):
@@ -325,13 +324,13 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 //     wiring), not via Config→New, so these Config fields are unused on the Serve path.
 func buildServeConfig(cfg *ServerConfig) *Config {
 	return &Config{
-		Name:                    cmp.Or(cfg.Name, defaultServerName),
-		Version:                 cmp.Or(cfg.Version, defaultServerVersion),
+		Name:                    cfg.Name,
+		Version:                 cfg.Version,
 		GroupRef:                cfg.GroupRef,
-		Host:                    cmp.Or(cfg.Host, defaultHost),
+		Host:                    cfg.Host,
 		Port:                    cfg.Port,
-		EndpointPath:            cmp.Or(cfg.EndpointPath, defaultEndpointPath),
-		SessionTTL:              cmp.Or(cfg.SessionTTL, defaultSessionTTL),
+		EndpointPath:            cfg.EndpointPath,
+		SessionTTL:              cfg.SessionTTL,
 		AuthMiddleware:          cfg.AuthMiddleware,
 		RateLimitMiddleware:     cfg.RateLimitMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,

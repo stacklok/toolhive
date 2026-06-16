@@ -1775,22 +1775,21 @@ func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile(t *testing.T
 	}
 }
 
-// TestMCPExternalAuthConfigReconciler_PreservesForeignConditions locks in the
-// property the MutateAndPatchStatus migration is meant to protect: the
-// controller's snapshot-and-diff machinery does not erase Status.Conditions
-// entries it doesn't own when building its patch body.
+// TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition
+// verifies that when the controller observes a foreign-owned condition already
+// on the object and then writes its own Valid=True, it folds its condition into
+// the existing set rather than dropping the foreign one. It catches the
+// mutate-outside-the-closure bug: a condition set before MutateAndPatchStatus
+// snapshots the object would produce an empty diff, and the controller-owned
+// Valid condition would never land (the bottom assertion catches that).
 //
-// The test fails if anyone mutates conditions outside the MutateAndPatchStatus
-// closure (the snapshot would already contain the in-memory mutation, the diff
-// would be empty, and the controller-owned Valid condition would never land —
-// the assertion at the bottom catches that).
-//
-// It does NOT catch a regression to r.Status().Update on its own: under the
-// fake client there is no concurrent writer between Get and Patch, so a full
-// PUT of the in-memory object (which still includes the foreign condition)
-// would persist successfully. Exercising the merge-patch-vs-PUT difference for
-// concurrent writers requires a WithInterceptorFuncs-backed scenario.
-func TestMCPExternalAuthConfigReconciler_PreservesForeignConditions(t *testing.T) {
+// The concurrent-writer guarantee — that a condition written by a disjoint
+// owner between the reconciler's Get and its patch survives because
+// MutateAndPatchStatus sends a partial merge-patch rather than a full PUT — is
+// proven against the shared ctrlutil.MutateAndPatchStatus helper (used by all
+// three config controllers) in
+// TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch.
+func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -1845,7 +1844,7 @@ func TestMCPExternalAuthConfigReconciler_PreservesForeignConditions(t *testing.T
 
 	foreign := meta.FindStatusCondition(after.Status.Conditions, "ForeignControllerSays")
 	require.NotNil(t, foreign,
-		"foreign condition must survive an MCPExternalAuthConfig reconcile — otherwise merge-patch is replacing the conditions array wholesale")
+		"foreign condition must survive an MCPExternalAuthConfig reconcile — the controller must fold its own condition into the existing set, not replace it")
 	assert.Equal(t, metav1.ConditionTrue, foreign.Status, "foreign condition value must not be modified")
 	assert.Equal(t, "ExternallySet", foreign.Reason)
 

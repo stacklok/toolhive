@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -41,13 +43,15 @@ const (
 // MCPExternalAuthConfigReconciler reconciles a MCPExternalAuthConfig object
 type MCPExternalAuthConfigReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs/finalizers,verbs=update
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -100,7 +104,11 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 		// silently dropped. applyIdentitySynthesizedCondition is a pure
 		// function of the current spec, so it recomputes the advisory even on
 		// the validation-failure path.
-		if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
+		// Capture the transition before MutateAndPatchStatus mutates conditions
+		// in place, so the Warning fires only when entering the invalid state.
+		wasInvalid := conditionStatusIs(externalAuthConfig.Status.Conditions,
+			mcpv1beta1.ConditionTypeValid, metav1.ConditionFalse)
+		updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
 			func(c *mcpv1beta1.MCPExternalAuthConfig) {
 				r.applyIdentitySynthesizedCondition(c)
 				meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
@@ -110,8 +118,16 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 					Message:            err.Error(),
 					ObservedGeneration: c.Generation,
 				})
-			}); updateErr != nil {
+			})
+		if updateErr != nil {
 			logger.Error(updateErr, "Failed to update status after validation error")
+		}
+		// Emit the Warning only on the transition into the invalid state, and
+		// only once the condition persisted, so a failing status write does not
+		// re-fire the event every reconcile.
+		if !wasInvalid && updateErr == nil {
+			emitConfigEvent(r.Recorder, externalAuthConfig, corev1.EventTypeWarning,
+				eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", err.Error())
 		}
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 	}
@@ -273,7 +289,11 @@ func (r *MCPExternalAuthConfigReconciler) setInvalid(
 		}
 		return getErr
 	}
-	return ctrlutil.MutateAndPatchStatus(ctx, r.Client, fresh, func(c *mcpv1beta1.MCPExternalAuthConfig) {
+	// Capture the transition before the patch mutates conditions in place, so
+	// the Warning fires only when entering the invalid state.
+	wasInvalid := conditionStatusIs(fresh.Status.Conditions,
+		mcpv1beta1.ConditionTypeValid, metav1.ConditionFalse)
+	if patchErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, fresh, func(c *mcpv1beta1.MCPExternalAuthConfig) {
 		// applyIdentitySynthesizedCondition is idempotent on the same spec;
 		// re-applying it inside the closure folds the advisory transition into
 		// the same patch as the Valid=False write below. See
@@ -287,7 +307,14 @@ func (r *MCPExternalAuthConfigReconciler) setInvalid(
 			Message:            err.Error(),
 			ObservedGeneration: c.Generation,
 		})
-	})
+	}); patchErr != nil {
+		return patchErr
+	}
+	if !wasInvalid {
+		emitConfigEvent(r.Recorder, fresh, corev1.EventTypeWarning,
+			eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", err.Error())
+	}
+	return nil
 }
 
 // handleConfigHashChange handles the logic when the config hash changes
@@ -315,6 +342,11 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 	}
 	ctrlutil.SortWorkloadRefs(refs)
 
+	// Capture the recovery transition before the patch mutates conditions in
+	// place, so a single Normal event fires on the False->True transition.
+	wasInvalid := conditionStatusIs(externalAuthConfig.Status.Conditions,
+		mcpv1beta1.ConditionTypeValid, metav1.ConditionFalse)
+
 	// Single status patch covering the hash-change success path: the new hash
 	// and generation, the refreshed reference list, and the Valid=True /
 	// IdentitySynthesized conditions. All mutations happen inside the closure so
@@ -330,6 +362,7 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 		logger.Error(err, "Failed to update MCPExternalAuthConfig status")
 		return ctrl.Result{}, err
 	}
+	emitConfigRecoveryEvent(r.Recorder, externalAuthConfig, wasInvalid)
 
 	// Trigger reconciliation of all referencing MCPServers
 	for _, server := range referencingServers {
@@ -371,7 +404,11 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 				"externalAuthConfig", externalAuthConfig.Name,
 				"referencingWorkloads", referencingWorkloads)
 
-			if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
+			// Capture the transition before the patch mutates conditions in
+			// place: emit the Warning only when entering the blocked state.
+			wasBlocked := conditionStatusIs(externalAuthConfig.Status.Conditions,
+				mcpv1beta1.ConditionTypeDeletionBlocked, metav1.ConditionTrue)
+			updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
 				func(c *mcpv1beta1.MCPExternalAuthConfig) {
 					meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 						Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
@@ -382,8 +419,17 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 					})
 					c.Status.ReferencingWorkloads = referencingWorkloads
 					c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-				}); updateErr != nil {
+				})
+			if updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
+			}
+			// Emit the Warning only on the transition into the blocked state, and
+			// only once the condition persisted, so a failing status write does
+			// not re-fire the event every reconcile.
+			if !wasBlocked && updateErr == nil {
+				emitConfigEvent(r.Recorder, externalAuthConfig, corev1.EventTypeWarning,
+					eventReasonDeletionBlocked, eventActionDelete,
+					"deletion blocked while still referenced by workloads: %v", referencingWorkloads)
 			}
 
 			// Requeue to check again later
@@ -676,6 +722,11 @@ func (r *MCPExternalAuthConfigReconciler) updateReferencingWorkloads(
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing workloads: %w", err)
 	}
 
+	// Capture the recovery transition before the patch mutates conditions in
+	// place, so a single Normal event fires on the False->True transition.
+	wasInvalid := conditionStatusIs(externalAuthConfig.Status.Conditions,
+		mcpv1beta1.ConditionTypeValid, metav1.ConditionFalse)
+
 	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
 		func(c *mcpv1beta1.MCPExternalAuthConfig) {
 			r.setValidTrueAndSynthesized(c)
@@ -688,6 +739,7 @@ func (r *MCPExternalAuthConfigReconciler) updateReferencingWorkloads(
 		logger.Error(err, "Failed to update MCPExternalAuthConfig status")
 		return ctrl.Result{}, err
 	}
+	emitConfigRecoveryEvent(r.Recorder, externalAuthConfig, wasInvalid)
 
 	return ctrl.Result{}, nil
 }

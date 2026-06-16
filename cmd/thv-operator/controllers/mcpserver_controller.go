@@ -1100,6 +1100,19 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		} else {
 			env = append(env, tokenExchangeEnvVars...)
 		}
+
+		// Add OBO secret environment variables. Dispatched through the
+		// registered OBO handler; inert (no env vars) in builds without one.
+		// Must mirror deploymentNeedsUpdate exactly to avoid reconcile drift.
+		oboEnvVars, err := ctrlutil.AddExternalAuthConfigSecretEnvVars(
+			ctx, r.Client, m.Namespace, m.Spec.ExternalAuthConfigRef,
+		)
+		if err != nil {
+			ctxLogger := log.FromContext(ctx)
+			ctxLogger.Error(err, "Failed to generate OBO secret environment variables")
+		} else {
+			env = append(env, oboEnvVars...)
+		}
 	}
 
 	// Validate webhook config and add mounted webhook secrets.
@@ -1741,6 +1754,17 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 				return true
 			}
 			expectedProxyEnv = append(expectedProxyEnv, tokenExchangeEnvVars...)
+
+			// Add OBO secret environment variables. Must mirror
+			// deploymentForMCPServer exactly (same call, same position) so a
+			// correctly-configured resource does not look perpetually drifted.
+			oboEnvVars, err := ctrlutil.AddExternalAuthConfigSecretEnvVars(
+				ctx, r.Client, mcpServer.Namespace, mcpServer.Spec.ExternalAuthConfigRef,
+			)
+			if err != nil {
+				return true
+			}
+			expectedProxyEnv = append(expectedProxyEnv, oboEnvVars...)
 		}
 
 		// Validate webhook config. Webhook secrets are mounted as files when the deployment is built.

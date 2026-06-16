@@ -289,3 +289,174 @@ func TestAddExternalAuthConfigOptions_OBO(t *testing.T) {
 	assert.NotContains(t, err.Error(), "unknown middleware type")
 	assert.Empty(t, options, "default OBO handler must not append to the options slice")
 }
+
+// TestAddExternalAuthConfigSecretEnvVars covers the shared secret-env dispatcher
+// across every ExternalAuthType. Only obo contributes env vars (and only when a
+// handler is registered); every other type, plus a nil ref, yields no env vars.
+// A build with the default OBO handler treats obo as inert (no env vars, no
+// error) so the deployment builder and drift-check paths stay byte-identical.
+func TestAddExternalAuthConfigSecretEnvVars(t *testing.T) {
+	t.Parallel()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	const ns = "default"
+
+	newConfig := func(name string, typ mcpv1beta1.ExternalAuthType) *mcpv1beta1.MCPExternalAuthConfig {
+		cfg := &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec:       mcpv1beta1.MCPExternalAuthConfigSpec{Type: typ},
+		}
+		if typ == mcpv1beta1.ExternalAuthTypeOBO {
+			cfg.Spec.OBO = &mcpv1beta1.OBOConfig{}
+		}
+		return cfg
+	}
+
+	tests := []struct {
+		name    string
+		seed    *mcpv1beta1.MCPExternalAuthConfig // object stored in the fake client (nil = none)
+		ref     *mcpv1beta1.ExternalAuthConfigRef
+		wantErr bool
+	}{
+		{
+			name: "nil ref returns no env vars",
+			ref:  nil,
+		},
+		{
+			name:    "missing config returns error",
+			ref:     &mcpv1beta1.ExternalAuthConfigRef{Name: "does-not-exist"},
+			wantErr: true,
+		},
+		{
+			name: "tokenExchange type contributes no env vars here",
+			seed: newConfig("te", mcpv1beta1.ExternalAuthTypeTokenExchange),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "te"},
+		},
+		{
+			name: "bearerToken type contributes no env vars here",
+			seed: newConfig("bt", mcpv1beta1.ExternalAuthTypeBearerToken),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "bt"},
+		},
+		{
+			name: "headerInjection type contributes no env vars here",
+			seed: newConfig("hi", mcpv1beta1.ExternalAuthTypeHeaderInjection),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "hi"},
+		},
+		{
+			name: "unauthenticated type contributes no env vars here",
+			seed: newConfig("un", mcpv1beta1.ExternalAuthTypeUnauthenticated),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "un"},
+		},
+		{
+			name: "embeddedAuthServer type contributes no env vars here",
+			seed: newConfig("eas", mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "eas"},
+		},
+		{
+			name: "awsSts type contributes no env vars here",
+			seed: newConfig("aws", mcpv1beta1.ExternalAuthTypeAWSSts),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "aws"},
+		},
+		{
+			name: "upstreamInject type contributes no env vars here",
+			seed: newConfig("ui", mcpv1beta1.ExternalAuthTypeUpstreamInject),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "ui"},
+		},
+		{
+			name: "obo with default handler is inert",
+			seed: newConfig("obo", mcpv1beta1.ExternalAuthTypeOBO),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "obo"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.seed != nil {
+				builder = builder.WithObjects(tt.seed)
+			}
+
+			envVars, err := AddExternalAuthConfigSecretEnvVars(t.Context(), builder.Build(), ns, tt.ref)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Empty(t, envVars, "only a registered OBO handler contributes env vars through this dispatcher")
+		})
+	}
+}
+
+// TestAddExternalAuthConfigSecretEnvVars_OBOHandlerRegistered proves the obo arm
+// forwards a registered handler's env vars verbatim and propagates a genuine
+// (non-enterprise) handler error, while still swallowing ErrEnterpriseRequired.
+//
+//nolint:paralleltest // Mutates package-level oboHandler; must not race other tests.
+func TestAddExternalAuthConfigSecretEnvVars_OBOHandlerRegistered(t *testing.T) {
+	withDefaultOBOHandler(t)
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	const ns = "default"
+	authCfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: ns},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(authCfg).Build()
+	ref := &mcpv1beta1.ExternalAuthConfigRef{Name: authCfg.Name}
+
+	noopValidate := func(*mcpv1beta1.MCPExternalAuthConfig) error { return nil }
+	noopApply := func(
+		context.Context, client.Client, string,
+		*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption,
+	) error {
+		return nil
+	}
+
+	// A registered handler's env vars are forwarded verbatim.
+	expected := []corev1.EnvVar{{
+		Name: "OBO_CLIENT_SECRET",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "obo-secret"},
+				Key:                  "token",
+			},
+		},
+	}}
+	RegisterOBOHandler(OBOHandler{
+		Validate:       noopValidate,
+		ApplyRunConfig: noopApply,
+		SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+			return expected, nil
+		},
+	})
+
+	envVars, err := AddExternalAuthConfigSecretEnvVars(t.Context(), fakeClient, ns, ref)
+	require.NoError(t, err)
+	assert.Equal(t, expected, envVars, "the dispatcher must forward the handler's env vars verbatim")
+
+	// A genuine (non-enterprise) handler error propagates to the caller.
+	sentinel := errors.New("secret not found")
+	RegisterOBOHandler(OBOHandler{
+		Validate:       noopValidate,
+		ApplyRunConfig: noopApply,
+		SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+			return nil, sentinel
+		},
+	})
+
+	envVars, err = AddExternalAuthConfigSecretEnvVars(t.Context(), fakeClient, ns, ref)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sentinel, "a genuine handler error must propagate, not be swallowed")
+	assert.Nil(t, envVars)
+}

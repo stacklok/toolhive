@@ -18,6 +18,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 )
 
@@ -26,7 +27,6 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, runConfigChecksum string,
 ) *appsv1.Deployment {
 	ls := labelsForMCPRemoteProxy(proxy.Name)
-	replicas := int32(1)
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgs()
@@ -62,7 +62,10 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 			Annotations: deploymentAnnotations,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			// nil leaves the replica count to the apiserver default (1) on create
+			// and to an HPA or other external controller thereafter; non-nil is
+			// operator-owned and reconciled by deploymentNeedsUpdate.
+			Replicas: proxy.Spec.Replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: ls,
 			},
@@ -234,7 +237,36 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		}
 	}
 
+	// Add THV_SESSION_REDIS_PASSWORD when sessionStorage uses a passwordRef.
+	// The non-sensitive parts (address/db/keyPrefix) are populated into the
+	// runconfig by populateScalingConfigForRemoteProxy; the password is
+	// injected separately so it never lands in the ConfigMap.
+	env = append(env, buildRedisPasswordEnvVarForRemoteProxy(proxy)...)
+
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+}
+
+// buildRedisPasswordEnvVarForRemoteProxy returns the THV_SESSION_REDIS_PASSWORD
+// env var sourced from spec.sessionStorage.passwordRef when sessionStorage uses
+// the redis provider; returns nil otherwise. Mirrors VirtualMCPServer's
+// buildRedisPasswordEnvVar in virtualmcpserver_deployment.go.
+func buildRedisPasswordEnvVarForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.EnvVar {
+	if proxy.Spec.SessionStorage == nil ||
+		proxy.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis ||
+		proxy.Spec.SessionStorage.PasswordRef == nil {
+		return nil
+	}
+	return []corev1.EnvVar{{
+		Name: session.RedisPasswordEnvVar,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: proxy.Spec.SessionStorage.PasswordRef.Name,
+				},
+				Key: proxy.Spec.SessionStorage.PasswordRef.Key,
+			},
+		},
+	}}
 }
 
 // buildOIDCClientSecretEnvVars returns OIDC client secret env vars when the proxy

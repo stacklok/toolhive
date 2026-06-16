@@ -8,7 +8,7 @@ require (
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.42.0
-	github.com/aws/aws-sdk-go-v2/config v1.32.24
+	github.com/aws/aws-sdk-go-v2/config v1.32.25
 	github.com/aws/aws-sdk-go-v2/service/sts v1.43.3
 	github.com/cedar-policy/cedar-go v1.6.1
 	github.com/cenkalti/backoff/v5 v5.0.3
@@ -42,7 +42,7 @@ require (
 	github.com/ory/fosite v0.49.0
 	github.com/pelletier/go-toml/v2 v2.3.1
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
-	github.com/pressly/goose/v3 v3.27.0
+	github.com/pressly/goose/v3 v3.27.1
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.20.0
 	github.com/shirou/gopsutil/v4 v4.26.3
@@ -64,7 +64,7 @@ require (
 	go.uber.org/mock v0.6.0
 	go.uber.org/zap v1.28.0
 	golang.ngrok.com/ngrok/v2 v2.1.4
-	golang.org/x/exp/jsonrpc2 v0.0.0-20260603202125-055de637280b
+	golang.org/x/exp/jsonrpc2 v0.0.0-20260611194520-c48552f49976
 	golang.org/x/mod v0.36.0
 	golang.org/x/oauth2 v0.36.0
 	golang.org/x/sync v0.20.0
@@ -74,7 +74,7 @@ require (
 	k8s.io/api v0.35.3
 	k8s.io/apimachinery v0.35.3
 	k8s.io/utils v0.0.0-20260319190234-28399d86e0b5
-	modernc.org/sqlite v1.48.0
+	modernc.org/sqlite v1.49.1
 	sigs.k8s.io/controller-runtime v0.23.3
 	sigs.k8s.io/yaml v1.6.0
 )
@@ -87,13 +87,10 @@ require go.starlark.net v0.0.0-20260522144826-ec58d4b459e2
 
 require (
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.30 // indirect
-	github.com/containerd/stargz-snapshotter/estargz v0.18.2 // indirect
 	github.com/go-openapi/runtime/server-middleware v0.30.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
-	github.com/mitchellh/go-homedir v1.1.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
-	github.com/vbatts/tar-split v0.12.2 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 )
 
@@ -105,13 +102,13 @@ require (
 	github.com/ProtonMail/go-crypto v1.1.6 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/asaskevich/govalidator v0.0.0-20230301143203-a9d515a09cc2 // indirect
-	github.com/aws/aws-sdk-go-v2/credentials v1.19.23 // indirect
+	github.com/aws/aws-sdk-go-v2/credentials v1.19.24 // indirect
 	github.com/aws/aws-sdk-go-v2/feature/ec2/imds v1.18.29 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/configsources v1.4.29 // indirect
 	github.com/aws/aws-sdk-go-v2/internal/endpoints/v2 v2.7.29 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/accept-encoding v1.13.12 // indirect
 	github.com/aws/aws-sdk-go-v2/service/internal/presigned-url v1.13.29 // indirect
-	github.com/aws/aws-sdk-go-v2/service/signin v1.1.5 // indirect
+	github.com/aws/aws-sdk-go-v2/service/signin v1.2.0 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sso v1.31.3 // indirect
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.36.6 // indirect
 	github.com/aws/smithy-go v1.27.1 // indirect
@@ -204,7 +201,7 @@ require (
 	github.com/lufia/plan9stats v0.0.0-20211012122336-39d0f177ccd0 // indirect
 	github.com/magiconair/properties v1.8.10 // indirect
 	github.com/mattn/go-colorable v0.1.14 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
+	github.com/mattn/go-isatty v0.0.21 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.23 // indirect
 	github.com/mattn/goveralls v0.0.12 // indirect
@@ -293,7 +290,7 @@ require (
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	golang.ngrok.com/muxado/v2 v2.0.1 // indirect
-	golang.org/x/exp/event v0.0.0-20260410095643-746e56fc9e2f // indirect
+	golang.org/x/exp/event v0.0.0-20260603202125-055de637280b // indirect
 	golang.org/x/net v0.55.0 // indirect
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/tools v0.45.0 // indirect
@@ -309,7 +306,7 @@ require (
 	k8s.io/apiextensions-apiserver v0.35.0
 	k8s.io/klog/v2 v2.140.0 // indirect
 	k8s.io/kube-openapi v0.0.0-20250910181357-589584f1c912 // indirect
-	modernc.org/libc v1.70.0 // indirect
+	modernc.org/libc v1.72.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
 	oras.land/oras-go/v2 v2.6.1
@@ -343,7 +340,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.10
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.67.0
+	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.68.0
 	go.opentelemetry.io/otel v1.44.0
 	go.opentelemetry.io/otel/metric v1.44.0
 	go.opentelemetry.io/otel/trace v1.44.0
@@ -358,4 +355,4 @@ require (
 // The fix is merged upstream (google/go-containerregistry#2308) but not yet
 // released. Pin to the last known-good release until a fixed version ships.
 // TODO: remove this replace once go-containerregistry > v0.21.6 is released.
-replace github.com/google/go-containerregistry => github.com/google/go-containerregistry v0.21.5
+replace github.com/google/go-containerregistry => github.com/google/go-containerregistry v0.21.6

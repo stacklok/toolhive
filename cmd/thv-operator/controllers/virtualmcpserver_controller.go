@@ -145,7 +145,6 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers/status,verbs=get
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch
@@ -3434,10 +3433,12 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 	}
 
 	// ReferencingWorkloads on the MCPOIDCConfig is maintained solely by the
-	// MCPOIDCConfig controller, which watches the workload kinds and recomputes
-	// the full list. The VirtualMCPServer controller must not write the config's
-	// status — a full r.Status().Update would clobber conditions the config
-	// controller owns. See #5511.
+	// MCPOIDCConfig controller, which watches MCPServer/VirtualMCPServer/
+	// MCPRemoteProxy and recomputes the full list (additions and removals). The
+	// VirtualMCPServer controller must not write the config's status: a full
+	// r.Status().Update here would clobber conditions the config controller
+	// owns, and the previous append-only write never removed stale entries.
+	// See #5511.
 
 	// Set valid condition
 	statusManager.SetCondition(

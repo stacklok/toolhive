@@ -54,7 +54,6 @@ type MCPRemoteProxyReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
@@ -921,10 +920,12 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 	}
 
 	// ReferencingWorkloads on the MCPOIDCConfig is maintained solely by the
-	// MCPOIDCConfig controller, which watches the workload kinds and recomputes
-	// the full list. The MCPRemoteProxy controller must not write the config's
-	// status — a full r.Status().Update would clobber conditions the config
-	// controller owns. See #5511.
+	// MCPOIDCConfig controller, which watches MCPServer/VirtualMCPServer/
+	// MCPRemoteProxy and recomputes the full list (additions and removals). The
+	// MCPRemoteProxy controller must not write the config's status: a full
+	// r.Status().Update here would clobber conditions the config controller
+	// owns, and the previous append-only write never removed stale entries.
+	// See #5511.
 
 	// Detect whether the condition is transitioning to True (e.g. recovering from
 	// a transient error). Without this check the status update is skipped when the

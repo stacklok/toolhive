@@ -36,10 +36,12 @@ type Deps struct {
 	SessionManagerConfig *sessionmanager.FactoryConfig
 }
 
-// BuildAndServe builds a live backend registry via the public constructor and
-// wires it into core.New and server.Serve, returning the constructed
-// *server.Server.
-func BuildAndServe(ctx context.Context, namespace, group string, deps Deps) (*server.Server, error) {
+// BuildServer builds a live backend registry via the public constructor and wires
+// it into core.New and server.Serve, returning the constructed *server.Server.
+//
+// server.Serve only assembles the server; the caller must still call
+// (*server.Server).Start to begin serving HTTP — hence "Build", not "Serve".
+func BuildServer(ctx context.Context, namespace, group string, deps Deps) (*server.Server, error) {
 	// One call replaces the NewDynamicRegistry + rest.InClusterConfig +
 	// k8s.NewBackendWatcher + watcher-goroutine wiring an embedder would
 	// otherwise copy from cli/serve.go — and removes the direct pkg/vmcp/k8s and

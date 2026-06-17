@@ -68,6 +68,12 @@ func TestNewKubernetesBackendRegistry_InvalidInput(t *testing.T) {
 // default (no WithRESTConfig) path resolves the REST config via
 // rest.InClusterConfig. The env vars are forced empty so the lookup
 // deterministically reports "not in cluster" regardless of where the test runs.
+//
+// This test intentionally omits t.Parallel: t.Setenv panics in a parallel test.
+// Mutating process env is safe here only because Go runs non-parallel tests to
+// completion before resuming paused parallel ones, so no parallel test reads these
+// vars concurrently. Do not add t.Parallel here, and do not add another
+// env-reading non-parallel test that races these vars.
 func TestNewKubernetesBackendRegistry_DefaultUsesInClusterConfig(t *testing.T) {
 	t.Setenv("KUBERNETES_SERVICE_HOST", "")
 	t.Setenv("KUBERNETES_SERVICE_PORT", "")
@@ -104,17 +110,18 @@ func TestNewKubernetesBackendRegistry_StartsEmpty(t *testing.T) {
 	assert.Empty(t, reg.List(ctx))
 }
 
-// TestNewKubernetesBackendRegistry_ReturnsLiveRegistry verifies the returned
-// registry is the live, mutable DynamicRegistry the watcher updates in place —
-// the wiring that gives parity with cli.Serve's live add/remove behavior
-// (AC: live updates). This constructor reuses k8s.NewBackendWatcher unchanged, so
-// the CR→registry conversion is not re-tested here; the envtest-backed
-// "BackendReconciler Integration Tests" suite in
+// TestNewKubernetesBackendRegistry_ReturnsLiveMutableRegistry_NotACopy verifies a
+// narrow guarantee: the returned value is the live, mutable DynamicRegistry the
+// watcher updates in place, not a snapshot or defensive copy. It deliberately does
+// NOT exercise the "live updates" acceptance criterion end-to-end — it mutates the
+// registry directly rather than driving a CR through the watcher/reconciler. That
+// path is covered where it lives: this constructor reuses k8s.NewBackendWatcher
+// unchanged, and the envtest-backed "BackendReconciler Integration Tests" suite in
 // pkg/vmcp/k8s/backend_reconciler_integration_test.go (TestBackendReconcilerIntegration)
 // drives real MCPServer/MCPRemoteProxy/MCPServerEntry CRs through the reconciler
 // into a DynamicRegistry and asserts registry.Count()/Version() on add and remove
 // — the same DynamicRegistry update path this constructor wires.
-func TestNewKubernetesBackendRegistry_ReturnsLiveRegistry(t *testing.T) {
+func TestNewKubernetesBackendRegistry_ReturnsLiveMutableRegistry_NotACopy(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())

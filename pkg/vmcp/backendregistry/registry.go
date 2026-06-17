@@ -14,8 +14,8 @@
 // and pkg/vmcp/server types it already uses.
 //
 // Per RFC THV-0076/D9 the Kubernetes watch substrate stays internal to vMCP:
-// callers receive a read-only vmcp.BackendRegistry and a server.Watcher readiness
-// handle, never the k8s.BackendWatcher itself. The watcher still runs in the
+// callers receive a vmcp.BackendRegistry (which they treat as read-only) and a
+// server.Watcher readiness handle, never the k8s.BackendWatcher itself. The watcher still runs in the
 // embedder's Pod, so controller-runtime / k8s.io remain compiled into the binary
 // (a transitive dependency); this package removes only the direct import surface.
 package backendregistry
@@ -69,8 +69,11 @@ func WithRESTConfig(cfg *rest.Config) Option {
 //     cli.Serve's vmcpCfg.Group).
 //
 // Returns:
-//   - vmcp.BackendRegistry: a read-only view kept current by the watcher. Pass it
-//     to core.New (core.Config.BackendRegistry) and server.Serve
+//   - vmcp.BackendRegistry: the live registry the watcher mutates, kept current as
+//     backends come and go. The narrow return type hides the mutators at compile
+//     time but the value is NOT immutable (a type assertion can reach them);
+//     embedders should treat it as read-only and let the watcher own all writes.
+//     Pass it to core.New (core.Config.BackendRegistry) and server.Serve
 //     (server.ServerConfig.BackendRegistry).
 //   - server.Watcher: a readiness handle for the /readyz endpoint; pass it to
 //     server.ServerConfig.Watcher to gate readiness on informer cache sync.
@@ -84,9 +87,10 @@ func WithRESTConfig(cfg *rest.Config) Option {
 //   - A successful return means the watcher was constructed and started, NOT that
 //     it has connected or synced. If watcher.Start later fails (e.g. the REST
 //     config points nowhere), the error is logged, not returned — the caller holds
-//     a registry that never populates. Observe real readiness through the returned
-//     server.Watcher (wire it into server.ServerConfig.Watcher so /readyz gates on
-//     cache sync).
+//     a registry that never populates. The returned server.Watcher is the only
+//     signal that distinguishes a watcher that started cleanly from one that
+//     failed, so the caller MUST wire it into server.ServerConfig.Watcher to gate
+//     /readyz on cache sync; otherwise a never-starting watcher goes undetected.
 func NewKubernetesBackendRegistry(
 	ctx context.Context,
 	namespace, group string,
@@ -113,6 +117,13 @@ func NewKubernetesBackendRegistry(
 		}
 	}
 
+	// The registry+watcher+goroutine wiring below is a near-verbatim copy of
+	// cli/serve.go's dynamic-discovery branch (the "discovered" outgoingAuth
+	// source). Deduplicating cli.Serve onto this constructor is deferred (it
+	// would discard cli.Serve's seeded backends for this start-empty path), so
+	// the two copies must stay in sync until that follow-up lands — keep any
+	// lifecycle change here mirrored there.
+	//
 	// Start empty; the watcher's initial informer sync populates the registry.
 	dynamicRegistry := vmcp.NewDynamicRegistry(nil)
 
@@ -124,7 +135,7 @@ func NewKubernetesBackendRegistry(
 	go func() {
 		slog.Info("starting Kubernetes backend watcher in background")
 		if err := watcher.Start(ctx); err != nil {
-			slog.Error(fmt.Sprintf("Backend watcher stopped with error: %v", err))
+			slog.Error("backend watcher stopped", "error", err)
 		}
 	}()
 

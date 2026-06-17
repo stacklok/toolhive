@@ -19,8 +19,8 @@ import (
 
 // Referencing the example embedder keeps it part of this test's build, so the
 // import-graph assertion below runs against a package that is known to compile
-// against the live registry/core/server APIs.
-var _ = exampleembedder.BuildAndServe
+// against the live backendregistry/core/server APIs.
+var _ = exampleembedder.BuildServer
 
 // exampleEmbedderDir is the source directory of the example embedder, relative to
 // this package directory (the test working directory).
@@ -34,6 +34,8 @@ const exampleEmbedderDir = "internal/exampleembedder"
 func TestExampleEmbedderImportSurface(t *testing.T) {
 	t.Parallel()
 
+	// Forbid each path exactly and any subpackage of it (prefix + "/"), so a
+	// future pkg/vmcp/k8s/foo import can't slip past an exact-match guard.
 	forbidden := []string{
 		"github.com/stacklok/toolhive/pkg/vmcp/k8s",
 		"k8s.io/client-go/rest",
@@ -57,7 +59,8 @@ func TestExampleEmbedderImportSurface(t *testing.T) {
 		for _, imp := range file.Imports {
 			path := strings.Trim(imp.Path.Value, `"`)
 			for _, f := range forbidden {
-				assert.NotEqualf(t, f, path, "embedder file %s must not directly import %s", name, f)
+				hit := path == f || strings.HasPrefix(path, f+"/")
+				assert.Falsef(t, hit, "embedder file %s must not directly import %s (got %q)", name, f, path)
 			}
 		}
 	}

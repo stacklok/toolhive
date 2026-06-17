@@ -879,6 +879,9 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 // the MCP server is ready. A 200 always means ready. When authExpected is true, a 401 or
 // 403 also means ready: it proves the local proxy listener is up and its auth middleware
 // is enforcing credentials against the unauthenticated probe.
+//
+// Today ToolHive's OIDC validator rejects the tokenless probe with 401; 403 is accepted
+// defensively to cover upstream IdP or edge behavior, not any current ToolHive code path.
 func isReadyStatus(statusCode int, authExpected bool) bool {
 	if statusCode == http.StatusOK {
 		return true
@@ -894,6 +897,10 @@ func isReadyStatus(statusCode int, authExpected bool) bool {
 // is true (the workload has OIDC configured), an HTTP 401 or 403 is treated as "ready":
 // it proves the proxy listener is up and the auth middleware is enforcing credentials. When
 // authExpected is false, only HTTP 200 is accepted.
+//
+// Note that in the OIDC case readiness reflects only the proxy/auth layer being up — the
+// auth middleware rejects the probe before the request reaches the backend, so this probe
+// does not confirm backend MCP server initialization.
 //
 // Note: This function should not be called for STDIO transport.
 func waitForInitializeSuccess(

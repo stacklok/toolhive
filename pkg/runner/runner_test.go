@@ -315,33 +315,6 @@ func TestWaitForInitializeSuccess(t *testing.T) {
 		assert.NoError(t, err)
 	})
 
-	t.Run("Auth expected accepts 403 as ready", func(t *testing.T) {
-		t.Parallel()
-
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusForbidden)
-		}))
-		t.Cleanup(server.Close)
-
-		ctx := context.Background()
-		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", true, 5*time.Second)
-		assert.NoError(t, err)
-	})
-
-	t.Run("No auth expected still times out on 401", func(t *testing.T) {
-		t.Parallel()
-
-		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(http.StatusUnauthorized)
-		}))
-		t.Cleanup(server.Close)
-
-		ctx := context.Background()
-		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", false, 500*time.Millisecond)
-		assert.Error(t, err)
-		assert.Contains(t, err.Error(), "initialize not successful")
-	})
-
 	t.Run("Context cancelled", func(t *testing.T) {
 		t.Parallel()
 
@@ -357,6 +330,33 @@ func TestWaitForInitializeSuccess(t *testing.T) {
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "context cancelled")
 	})
+}
+
+func TestIsReadyStatus(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		statusCode   int
+		authExpected bool
+		want         bool
+	}{
+		{"200 ready without auth", http.StatusOK, false, true},
+		{"200 ready with auth", http.StatusOK, true, true},
+		{"401 not ready without auth", http.StatusUnauthorized, false, false},
+		{"401 ready with auth", http.StatusUnauthorized, true, true},
+		{"403 not ready without auth", http.StatusForbidden, false, false},
+		{"403 ready with auth", http.StatusForbidden, true, true},
+		{"500 not ready without auth", http.StatusInternalServerError, false, false},
+		{"500 not ready with auth", http.StatusInternalServerError, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isReadyStatus(tt.statusCode, tt.authExpected))
+		})
+	}
 }
 
 func TestHandleRemoteAuthentication(t *testing.T) {

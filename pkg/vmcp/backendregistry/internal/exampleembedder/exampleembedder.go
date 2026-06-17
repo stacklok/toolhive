@@ -3,14 +3,14 @@
 
 // Package exampleembedder demonstrates an embedder that obtains a live,
 // Kubernetes-backed vMCP backend registry through the public
-// registry.NewKubernetesBackendRegistry constructor and wires it into the
+// backendregistry.NewKubernetesBackendRegistry constructor and wires it into the
 // core+Serve assembly WITHOUT importing pkg/vmcp/k8s or k8s.io/client-go/rest.
 //
 // It backs the acceptance tests for issue #5541: the import-graph test
-// (registry/importgraph_test.go) parses this package and asserts it imports
-// neither the watch substrate nor the Kubernetes REST package, and the package
-// compiling at all proves the constructor's return types plug directly into
-// core.Config and server.ServerConfig.
+// (backendregistry/importgraph_test.go) parses this package and asserts it
+// imports neither the watch substrate nor the Kubernetes REST package, and the
+// package compiling at all proves the constructor's return types plug directly
+// into core.Config and server.ServerConfig.
 package exampleembedder
 
 import (
@@ -18,8 +18,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/backendregistry"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
-	"github.com/stacklok/toolhive/pkg/vmcp/registry"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
@@ -44,7 +44,7 @@ func BuildAndServe(ctx context.Context, namespace, group string, deps Deps) (*se
 	// k8s.NewBackendWatcher + watcher-goroutine wiring an embedder would
 	// otherwise copy from cli/serve.go — and removes the direct pkg/vmcp/k8s and
 	// k8s.io/client-go/rest imports.
-	reg, watcher, err := registry.NewKubernetesBackendRegistry(ctx, namespace, group)
+	reg, watcher, err := backendregistry.NewKubernetesBackendRegistry(ctx, namespace, group)
 	if err != nil {
 		return nil, err
 	}

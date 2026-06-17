@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package registry_test
+package backendregistry_test
 
 import (
 	"context"
@@ -12,7 +12,7 @@ import (
 	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/registry"
+	"github.com/stacklok/toolhive/pkg/vmcp/backendregistry"
 )
 
 // fakeRESTConfig is a non-connecting REST config. NewBackendWatcher builds a
@@ -52,8 +52,8 @@ func TestNewKubernetesBackendRegistry_InvalidInput(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			t.Cleanup(cancel)
 
-			reg, watcher, err := registry.NewKubernetesBackendRegistry(
-				ctx, tc.namespace, tc.group, registry.WithRESTConfig(fakeRESTConfig()),
+			reg, watcher, err := backendregistry.NewKubernetesBackendRegistry(
+				ctx, tc.namespace, tc.group, backendregistry.WithRESTConfig(fakeRESTConfig()),
 			)
 
 			require.Error(t, err)
@@ -75,7 +75,7 @@ func TestNewKubernetesBackendRegistry_DefaultUsesInClusterConfig(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	reg, watcher, err := registry.NewKubernetesBackendRegistry(ctx, "default", "default/test-group")
+	reg, watcher, err := backendregistry.NewKubernetesBackendRegistry(ctx, "default", "default/test-group")
 
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "in-cluster")
@@ -93,8 +93,8 @@ func TestNewKubernetesBackendRegistry_StartsEmpty(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	reg, watcher, err := registry.NewKubernetesBackendRegistry(
-		ctx, "default", "default/test-group", registry.WithRESTConfig(fakeRESTConfig()),
+	reg, watcher, err := backendregistry.NewKubernetesBackendRegistry(
+		ctx, "default", "default/test-group", backendregistry.WithRESTConfig(fakeRESTConfig()),
 	)
 	require.NoError(t, err)
 	require.NotNil(t, reg)
@@ -120,8 +120,8 @@ func TestNewKubernetesBackendRegistry_ReturnsLiveRegistry(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
-	reg, _, err := registry.NewKubernetesBackendRegistry(
-		ctx, "default", "default/test-group", registry.WithRESTConfig(fakeRESTConfig()),
+	reg, _, err := backendregistry.NewKubernetesBackendRegistry(
+		ctx, "default", "default/test-group", backendregistry.WithRESTConfig(fakeRESTConfig()),
 	)
 	require.NoError(t, err)
 

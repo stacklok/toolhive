@@ -1,8 +1,8 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package registry provides public constructors for vMCP backend registries
-// that hide the Kubernetes watch substrate from embedders.
+// Package backendregistry provides public constructors for vMCP backend
+// registries that hide the Kubernetes watch substrate from embedders.
 //
 // An embedder that wants live, Kubernetes-driven backend discovery would
 // otherwise have to replicate the registry+watcher wiring from
@@ -18,7 +18,7 @@
 // handle, never the k8s.BackendWatcher itself. The watcher still runs in the
 // embedder's Pod, so controller-runtime / k8s.io remain compiled into the binary
 // (a transitive dependency); this package removes only the direct import surface.
-package registry
+package backendregistry
 
 import (
 	"context"

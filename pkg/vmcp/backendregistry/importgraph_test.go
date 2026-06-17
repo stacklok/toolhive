@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package registry_test
+package backendregistry_test
 
 import (
 	"go/parser"
@@ -14,7 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/registry/internal/exampleembedder"
+	"github.com/stacklok/toolhive/pkg/vmcp/backendregistry/internal/exampleembedder"
 )
 
 // Referencing the example embedder keeps it part of this test's build, so the

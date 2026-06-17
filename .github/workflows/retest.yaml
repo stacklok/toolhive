@@ -7,17 +7,20 @@
 #     default branch, never the version in the PR. A malicious PR cannot alter
 #     this workflow to steal the token. Review/protect this file on `main`.
 #   - The job uses the ephemeral, auto-revoked GITHUB_TOKEN (NOT a PAT/App key).
-#     Its only powers here are: re-run/cancel workflow runs in THIS repo, and
-#     react/comment on the triggering comment. It cannot read secrets, push
-#     code, or change settings.
+#     Its only powers here are: re-run workflow runs in THIS repo, and
+#     react to the triggering comment. It cannot read secrets, push code, or
+#     change settings.
 #   - Triggering is gated to org members/collaborators so arbitrary public
-#     users cannot replay CI.
-#   - The action is a third-party node action holding the token, so it is
-#     pinned to a full commit SHA. Treat any bump as a code-review event.
+#     users cannot replay CI, and the comment body must contain "/retest".
+#   - No third-party action holds the token: the re-run is a few lines of
+#     `gh api` calls owned in this repo. (We previously used
+#     envoyproxy/toolshed retest, but that action assumes check runs carry a
+#     populated output.title/text — true for its AZP/App checks but null for
+#     plain GitHub Actions checks — so it crashed on a null dereference.)
 #
 # BEFORE enabling, confirm there is NO privileged/side-effecting workflow
 # (pull_request_target, deploy, release, publish, etc.) on this repo's PRs that
-# a /retest could replay with secrets. retest re-runs existing runs on the PR
+# a /retest could replay with secrets. We re-run existing failed runs on the PR
 # head; for normal fork pull_request runs that is sandboxed and safe.
 
 name: Retest Action on PR Comment
@@ -34,11 +37,13 @@ jobs:
   retest:
     name: Retest
     runs-on: ubuntu-24.04
-    # Only run for PR comments, in this repo, from a trusted author, and not bots.
+    # Only run for PR comments containing "/retest", in this repo, from a
+    # trusted author, and not bots.
     if: >-
       ${{
         github.event.issue.pull_request
         && github.repository == 'stacklok/toolhive'
+        && contains(github.event.comment.body, '/retest')
         && contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'),
                     github.event.comment.author_association)
         && github.actor != 'dependabot[bot]'
@@ -46,14 +51,50 @@ jobs:
       }}
     permissions:
       actions: write         # re-run failed workflow runs
-      checks: write
-      pull-requests: write   # react/comment on the triggering comment
+      pull-requests: write   # react to the triggering comment
     steps:
-      - name: Retest
-        # actions-v0.4.17 -> pinned to its commit SHA. Bump deliberately.
-        uses: envoyproxy/toolshed/actions/retest@1f5b552c6749502b885cb8cf23549b929e745547
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          comment-id: ${{ github.event.comment.id }}
-          pr-url: ${{ github.event.issue.pull_request.url }}
-          app-owner: github-actions
+      - name: Re-run failed workflow runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.issue.pull_request.url }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          react() { gh api -X POST "repos/$REPO/issues/comments/$COMMENT_ID/reactions" -f content="$1" >/dev/null; }
+
+          # Acknowledge immediately so the commenter gets feedback.
+          react eyes
+
+          head_sha=$(gh api "$PR_URL" --jq '.head.sha')
+
+          # Capture the query separately so a transient API failure surfaces as
+          # an error (set -e) rather than being mistaken for "nothing to retry".
+          runs_json=$(gh api "repos/$REPO/actions/runs?head_sha=$head_sha&per_page=100")
+          mapfile -t run_ids < <(jq -r \
+            '.workflow_runs[] | select(.conclusion=="failure" or .conclusion=="cancelled" or .conclusion=="timed_out") | .id' \
+            <<<"$runs_json")
+
+          if [ ${#run_ids[@]} -eq 0 ]; then
+            echo "No failed runs to retry"
+            react confused
+            exit 0
+          fi
+
+          failures=0
+          for id in "${run_ids[@]}"; do
+            echo "Re-running failed jobs for run $id"
+            if ! gh api -X POST "repos/$REPO/actions/runs/$id/rerun-failed-jobs" >/dev/null; then
+              echo "::warning::Could not re-run $id (too old or not retryable)"
+              failures=$((failures + 1))
+            fi
+          done
+
+          if [ "$failures" -eq "${#run_ids[@]}" ]; then
+            echo "All re-run attempts failed"
+            react confused
+            exit 1
+          fi
+
+          react rocket

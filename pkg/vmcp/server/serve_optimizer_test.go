@@ -237,10 +237,36 @@ func TestServeOptimizerFindToolReturnsCoreTools(t *testing.T) {
 	require.NotNil(t, res)
 	assert.False(t, res.IsError)
 
-	body, err := json.Marshal(res)
-	require.NoError(t, err)
-	assert.Contains(t, string(body), "tool-a", "find_tool must return matches from the core's advertised set")
-	assert.Contains(t, string(body), "tool-b")
+	// Decode the result text into the typed output and assert the matched tool names
+	// exactly, rather than substring-matching the whole body (which could pass on an
+	// unrelated field). Real search/ranking is out of scope per the issue — the test
+	// optimizer returns the whole advertised set — so this asserts find_tool surfaces
+	// the core's set, not the relevance ordering.
+	require.Len(t, res.Content, 1)
+	text, ok := res.Content[0].(mcp.TextContent)
+	require.True(t, ok, "find_tool result content must be text")
+	var out optimizer.FindToolOutput
+	require.NoError(t, json.Unmarshal([]byte(text.Text), &out))
+	names := make([]string, 0, len(out.Tools))
+	for _, tl := range out.Tools {
+		names = append(names, tl.Name)
+	}
+	assert.ElementsMatch(t, []string{"tool-a", "tool-b"}, names,
+		"find_tool must return exactly the core's advertised set")
+}
+
+// TestServeOptimizerToolHandlerRejectsUnknownMetaTool locks in the defensive default
+// branch of optimizerToolHandler: a definition advertised by OptimizerTools() without a
+// wired handler must fail at registration (a non-nil error), not silently produce a nil
+// handler that would only blow up at call time.
+func TestServeOptimizerToolHandlerRejectsUnknownMetaTool(t *testing.T) {
+	t.Parallel()
+
+	srv := &Server{}
+	handler, err := srv.optimizerToolHandler("sess", "bogus", &dispatchOptimizer{})
+	require.Error(t, err)
+	assert.Nil(t, handler)
+	assert.ErrorContains(t, err, "bogus")
 }
 
 // TestServeOptimizerCallToolRoutesThroughCore proves call_tool dispatches the inner
@@ -349,7 +375,13 @@ func TestServeOptimizerLazyInjectsForRehydratedSession(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCore{tools: []vmcp.Tool{{Name: "tool-a"}}}
-	srv, sessionID, _, _ := registerServeOptimizerSession(t, fc)
+	srv, sessionID, _, optFactory := registerServeOptimizerSession(t, fc)
+
+	// Capture the registration-time counts so we can prove the rehydration REBUILDS
+	// (the half of AC5 that distinguishes the Serve path from the legacy GetAdaptedTools):
+	// a fresh core.ListTools aggregation feeds a freshly built optimizer.
+	listBefore := fc.listToolsCalls.Load()
+	buildsBefore := optFactory.calls.Load()
 
 	rehydrated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{}}
 	srv.lazyInjectSessionTools(srv.mcpServer.WithContext(context.Background(), rehydrated))
@@ -360,4 +392,9 @@ func TestServeOptimizerLazyInjectsForRehydratedSession(t *testing.T) {
 		"cross-pod re-injection must advertise call_tool")
 	assert.NotContains(t, rehydrated.tools, "tool-a",
 		"cross-pod re-injection must not advertise raw core tools in optimizer mode")
+
+	assert.Equal(t, listBefore+1, fc.listToolsCalls.Load(),
+		"re-injection must re-derive from a fresh core.ListTools, not a cached set")
+	assert.Equal(t, buildsBefore+1, optFactory.calls.Load(),
+		"re-injection must rebuild the optimizer over the freshly aggregated set")
 }

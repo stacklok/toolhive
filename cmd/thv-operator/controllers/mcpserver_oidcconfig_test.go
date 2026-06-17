@@ -29,16 +29,15 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 	}}
 
 	tests := []struct {
-		name                    string
-		mcpServer               *mcpv1beta1.MCPServer
-		oidcConfig              *mcpv1beta1.MCPOIDCConfig
-		expectError             bool
-		expectErrorContains     string
-		expectHash              string
-		expectHashCleared       bool
-		expectConditionStatus   *metav1.ConditionStatus
-		expectConditionReason   string
-		expectReferencingServer bool
+		name                  string
+		mcpServer             *mcpv1beta1.MCPServer
+		oidcConfig            *mcpv1beta1.MCPOIDCConfig
+		expectError           bool
+		expectErrorContains   string
+		expectHash            string
+		expectHashCleared     bool
+		expectConditionStatus *metav1.ConditionStatus
+		expectConditionReason string
 	}{
 		{
 			name: "no ref clears previously stored hash",
@@ -109,10 +108,9 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 					Conditions: validOIDCCondition,
 				},
 			},
-			expectHash:              "hash-123",
-			expectConditionStatus:   conditionStatusPtr(metav1.ConditionTrue),
-			expectConditionReason:   mcpv1beta1.ConditionReasonOIDCConfigRefValid,
-			expectReferencingServer: true,
+			expectHash:            "hash-123",
+			expectConditionStatus: conditionStatusPtr(metav1.ConditionTrue),
+			expectConditionReason: mcpv1beta1.ConditionReasonOIDCConfigRefValid,
 		},
 		{
 			name: "detects config hash change",
@@ -137,10 +135,9 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 					Conditions: validOIDCCondition,
 				},
 			},
-			expectHash:              "new-hash",
-			expectConditionStatus:   conditionStatusPtr(metav1.ConditionTrue),
-			expectConditionReason:   mcpv1beta1.ConditionReasonOIDCConfigRefValid,
-			expectReferencingServer: true,
+			expectHash:            "new-hash",
+			expectConditionStatus: conditionStatusPtr(metav1.ConditionTrue),
+			expectConditionReason: mcpv1beta1.ConditionReasonOIDCConfigRefValid,
 		},
 	}
 
@@ -200,66 +197,8 @@ func TestMCPServerReconciler_handleOIDCConfig(t *testing.T) {
 				}
 				assert.True(t, found, "expected %s condition", mcpv1beta1.ConditionOIDCConfigRefValidated)
 			}
-
-			if tt.expectReferencingServer && tt.oidcConfig != nil {
-				var updated mcpv1beta1.MCPOIDCConfig
-				require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(tt.oidcConfig), &updated))
-				expectedRef := mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: tt.mcpServer.Name}
-				assert.Contains(t, updated.Status.ReferencingWorkloads, expectedRef)
-			}
 		})
 	}
-}
-
-func TestMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) {
-	t.Parallel()
-
-	existingRef := mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "existing"}
-
-	t.Run("adds new server reference", func(t *testing.T) {
-		t.Parallel()
-		ctx := t.Context()
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-
-		cfg := &mcpv1beta1.MCPOIDCConfig{
-			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-			Status: mcpv1beta1.MCPOIDCConfigStatus{
-				ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
-				ReferenceCount:       1,
-			},
-		}
-		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).
-			WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
-		r := newTestMCPServerReconciler(fc, scheme, kubernetes.PlatformKubernetes)
-
-		require.NoError(t, r.updateOIDCConfigReferencingWorkloads(ctx, cfg, "new"))
-		newRef := mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "new"}
-		assert.ElementsMatch(t, []mcpv1beta1.WorkloadReference{existingRef, newRef}, cfg.Status.ReferencingWorkloads)
-		assert.EqualValues(t, 2, cfg.Status.ReferenceCount)
-	})
-
-	t.Run("does not duplicate existing reference", func(t *testing.T) {
-		t.Parallel()
-		ctx := t.Context()
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-
-		cfg := &mcpv1beta1.MCPOIDCConfig{
-			ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-			Status: mcpv1beta1.MCPOIDCConfigStatus{
-				ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
-				ReferenceCount:       1,
-			},
-		}
-		fc := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).
-			WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
-		r := newTestMCPServerReconciler(fc, scheme, kubernetes.PlatformKubernetes)
-
-		require.NoError(t, r.updateOIDCConfigReferencingWorkloads(ctx, cfg, "existing"))
-		assert.Len(t, cfg.Status.ReferencingWorkloads, 1)
-		assert.EqualValues(t, 1, cfg.Status.ReferenceCount)
-	})
 }
 
 // TestMCPServerReconciler_handleOIDCConfig_ConditionPersistedOnRecovery verifies that the
@@ -457,4 +396,76 @@ func TestMCPOIDCConfigReconciler_handleDeletion_IgnoresCrossNamespaceRef(t *test
 // conditionStatusPtr returns a pointer to a metav1.ConditionStatus value.
 func conditionStatusPtr(s metav1.ConditionStatus) *metav1.ConditionStatus {
 	return &s
+}
+
+// TestMCPServerReconciler_handleOIDCConfig_DoesNotWriteConfigStatus guards the
+// trust boundary consolidated in #5511: the MCPServer controller may read the
+// referenced MCPOIDCConfig but must never write its status. The MCPOIDCConfig
+// controller is the sole owner of that status (conditions and
+// ReferencingWorkloads). This unit test is the actual enforcement of that
+// boundary — RBAC does not enforce it, because the operator runs as a single
+// ServiceAccount whose aggregated role still grants mcpoidcconfigs/status write
+// for the MCPOIDCConfig controller's own use. A future reintroduction of a
+// cross-controller status write would flip the ResourceVersion and fail here.
+func TestMCPServerReconciler_handleOIDCConfig_DoesNotWriteConfigStatus(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	// Seed a config whose status carries a condition and a ReferencingWorkloads
+	// entry owned by the MCPOIDCConfig controller — neither must be touched.
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type:   mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: "https://x", ClientID: "c"},
+		},
+		Status: mcpv1beta1.MCPOIDCConfigStatus{
+			ConfigHash: "hash-123",
+			Conditions: []metav1.Condition{
+				{
+					Type: mcpv1beta1.ConditionTypeOIDCConfigValid, Status: metav1.ConditionTrue,
+					Reason: mcpv1beta1.ConditionReasonOIDCConfigValid,
+				},
+				{
+					Type: "ForeignControllerSays", Status: metav1.ConditionTrue,
+					Reason: "ExternallySet", LastTransitionTime: metav1.Now(),
+				},
+			},
+			ReferencingWorkloads: []mcpv1beta1.WorkloadReference{{Kind: "MCPServer", Name: "someone-else"}},
+			ReferenceCount:       1,
+		},
+	}
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:         "img",
+			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "cfg", Audience: "aud"},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(oidcConfig, mcpServer).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}, &mcpv1beta1.MCPOIDCConfig{}).
+		Build()
+	r := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	var before mcpv1beta1.MCPOIDCConfig
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(oidcConfig), &before))
+
+	require.NoError(t, r.handleOIDCConfig(ctx, mcpServer))
+
+	var after mcpv1beta1.MCPOIDCConfig
+	require.NoError(t, fakeClient.Get(ctx, client.ObjectKeyFromObject(oidcConfig), &after))
+
+	assert.Equal(t, before.ResourceVersion, after.ResourceVersion,
+		"MCPServer reconcile must not write the MCPOIDCConfig — its status is owned by the MCPOIDCConfig controller")
+	assert.Equal(t, before.Status.ReferencingWorkloads, after.Status.ReferencingWorkloads,
+		"MCPServer reconcile must not touch the config's ReferencingWorkloads")
+	assert.NotNil(t, meta.FindStatusCondition(after.Status.Conditions, "ForeignControllerSays"),
+		"config-owned conditions must remain untouched")
 }

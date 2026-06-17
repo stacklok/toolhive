@@ -77,14 +77,19 @@ type FactoryConfig struct {
 
 	// AdvertiseFromCore signals that the advertised capability set is sourced from
 	// the core (the Serve path), not from this factory's per-session aggregation.
-	// When true, New still resolves the optimizer factory (owning its store and
-	// cleanup) and exposes it via Manager.OptimizerFactory so the Serve layer can
-	// build a per-session optimizer over the core's tools — but it does NOT install
-	// the optimizer decorator on the session factory. Installing it would upsert a
-	// second, divergent tool set (the factory's raw, un-aggregated tools) into the
-	// shared FTS5 store alongside the core-sourced set, i.e. double-index the store.
-	// Has no effect when the optimizer is disabled. The legacy server.New path leaves
-	// this false, so its optimizer decorator is unchanged.
+	//
+	// It is the single switch that selects WHICH layer indexes the shared FTS5 store,
+	// so the two can never both do it (the AC6 double-index):
+	//   - true:  New does NOT install the optimizer decorator on the session factory,
+	//            and exposes the resolved factory via Manager.OptimizerFactory so the
+	//            Serve layer builds a per-session optimizer over the core's tools.
+	//   - false: New installs the optimizer decorator (legacy behavior) and
+	//            Manager.OptimizerFactory returns nil, so a Serve composition root that
+	//            enables the optimizer but forgets this flag gets no Serve-layer
+	//            optimizer rather than a second, divergent upsert into the store.
+	// Either way New resolves the optimizer factory and owns its store/cleanup. Has no
+	// effect when the optimizer is disabled. The legacy server.New path leaves this
+	// false, so its optimizer decorator is unchanged.
 	AdvertiseFromCore bool
 }
 

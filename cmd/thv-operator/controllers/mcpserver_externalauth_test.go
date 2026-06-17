@@ -16,6 +16,7 @@ package controllers
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -715,4 +717,129 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnSourceNotFou
 	assert.Nil(t,
 		meta.FindStatusCondition(mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeExternalAuthConfigValidated),
 		"stale mirror must be cleared when the referenced source is NotFound")
+}
+
+// TestMCPServerDeployment_OBOSecretEnvVars verifies that an obo-typed
+// MCPExternalAuthConfig referenced from an MCPServer injects the registered
+// OBOHandler.SecretEnvVars output into the proxy container, and that the
+// deployment builder (deploymentForMCPServer) and the drift check
+// (deploymentNeedsUpdate) agree on it. MCPServer assembles env in two separate
+// functions, so this guards the builder/drift symmetry that prevents a reconcile
+// hot-loop. A stub OBO handler stands in for the out-of-tree enterprise handler.
+//
+//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
+func TestMCPServerDeployment_OBOSecretEnvVars(t *testing.T) {
+	t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
+
+	oboEnvVar := corev1.EnvVar{
+		Name: "TOOLHIVE_OBO_CLIENT_SECRET",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "obo-secret"},
+				Key:                  "client-secret",
+			},
+		},
+	}
+	stub := defaultOBOHandlerStub()
+	stub.SecretEnvVars = func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+		return []corev1.EnvVar{oboEnvVar}, nil
+	}
+	ctrlutil.RegisterOBOHandler(stub)
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
+		},
+	}
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:                 "test-image:latest",
+			Transport:             "stdio",
+			ProxyPort:             8080,
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: authConfig.Name},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authConfig).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	deployment, err := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err)
+	require.NotNil(t, deployment)
+
+	container := deployment.Spec.Template.Spec.Containers[0]
+	assert.Contains(t, container.Env, oboEnvVar,
+		"OBO handler SecretEnvVars output must be injected into the proxy container")
+
+	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"),
+		"builder and drift check must agree on the OBO env var (no reconcile hot-loop)")
+}
+
+// TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence locks in the
+// documented MCPServer builder/drift behavior when the registered OBO handler
+// returns a genuine (non-ErrEnterpriseRequired) error: the builder logs and
+// continues, producing an OBO-env-less Deployment without failing, while
+// deploymentNeedsUpdate reports the Deployment needs an update. This divergence
+// is described at the drift site and exercised nowhere else at the controller
+// level. (The inert ErrEnterpriseRequired path stays symmetric — see the test
+// above — because AddOBOSecretEnvVars swallows it.)
+//
+//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
+func TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence(t *testing.T) {
+	t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
+
+	stub := defaultOBOHandlerStub()
+	stub.SecretEnvVars = func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+		return nil, errors.New("secret not yet available")
+	}
+	ctrlutil.RegisterOBOHandler(stub)
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
+		},
+	}
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:                 "test-image:latest",
+			Transport:             "stdio",
+			ProxyPort:             8080,
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: authConfig.Name},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(authConfig).
+		Build()
+
+	reconciler := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	// Builder logs-and-continues: a Deployment is still produced (no error, no
+	// panic), with no OBO env var injected.
+	deployment, err := reconciler.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err, "builder must log-and-continue on a genuine OBO handler error, not fail")
+	require.NotNil(t, deployment)
+
+	// Drift check returns true on the same error — the documented divergence.
+	assert.True(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"),
+		"deploymentNeedsUpdate reports drift while the OBO handler errors")
 }

@@ -5,6 +5,7 @@ package controllerutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -260,6 +261,62 @@ func AddExternalAuthConfigOptions(
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}
+}
+
+// AddOBOSecretEnvVars resolves ref to an MCPExternalAuthConfig and, if it is the
+// obo type, returns the pod environment variables the registered OBOHandler asks
+// for at runtime. For every other type it returns no env vars: this is the
+// OBO-only secret-env dispatcher, deliberately narrower than its sibling
+// AddExternalAuthConfigOptions (which switches on every ExternalAuthType). The
+// name says "OBO" precisely so it is not mistaken for full type coverage —
+// MCPServer / MCPRemoteProxy / VirtualMCPServer each produce the non-obo types'
+// secret env vars through their own per-type helpers (GenerateTokenExchangeEnvVars,
+// GenerateBearerTokenEnvVar, VirtualMCPServer's getExternalAuthConfigSecretEnvVars
+// switch), using consumer-specific env var names that must stay byte-identical.
+// Do NOT add the other types here, and do NOT drop the existing per-type calls
+// assuming this helper covers them.
+//
+// obo is the one type a single dispatcher can own, because its env var name is
+// defined by the handler and is therefore identical across consumers; the others
+// are not. Routing the obo path through here is what keeps consumers from
+// drifting — the failure mode #5537 fixed.
+//
+// A build without a registered OBO handler yields obo.ErrEnterpriseRequired from
+// the dispatch; that is treated as "no env vars" (obo is inert) rather than an
+// error, so the deployment builder and drift-check paths compute identical env
+// and the Deployment does not enter a reconcile hot-loop. The
+// MCPExternalAuthConfig reconciler is what surfaces the enterprise-required state
+// to the user. (VirtualMCPServer intentionally does NOT route through this
+// wrapper: its dispatch must propagate ErrEnterpriseRequired per #5328, so it
+// calls OBOSecretEnvVars directly — but it likewise forwards every env var.)
+func AddOBOSecretEnvVars(
+	ctx context.Context,
+	c client.Client,
+	namespace string,
+	ref *mcpv1beta1.ExternalAuthConfigRef,
+) ([]corev1.EnvVar, error) {
+	if ref == nil {
+		return nil, nil
+	}
+
+	externalAuthConfig, err := GetExternalAuthConfigByName(ctx, c, namespace, ref.Name)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get MCPExternalAuthConfig: %w", err)
+	}
+
+	if externalAuthConfig.Spec.Type != mcpv1beta1.ExternalAuthTypeOBO {
+		return nil, nil
+	}
+
+	envVars, err := OBOSecretEnvVars(externalAuthConfig)
+	if errors.Is(err, obo.ErrEnterpriseRequired) {
+		// No OBO handler registered (upstream-only build): obo is inert. Return
+		// no env vars so the builder and drift paths agree; the
+		// MCPExternalAuthConfig reconciler surfaces EnterpriseRequired.
+		return nil, nil
+	}
+	// Forward every env var the handler returns.
+	return envVars, err
 }
 
 func addTokenExchangeConfig(

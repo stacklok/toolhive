@@ -81,7 +81,7 @@ func TestSecurityContextBuilder_BuildPodSecurityContext_OpenShift(t *testing.T) 
 	assert.Nil(t, podCtx.RunAsGroup)
 	assert.Nil(t, podCtx.FSGroup)
 
-	// SeccompProfile should be explicitly set for OpenShift
+	// SeccompProfile must be set to RuntimeDefault for restricted Pod Security Standard compliance
 	require.NotNil(t, podCtx.SeccompProfile)
 	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, podCtx.SeccompProfile.Type)
 }
@@ -147,13 +147,48 @@ func TestSecurityContextBuilder_BuildContainerSecurityContext_OpenShift(t *testi
 	assert.NotNil(t, containerCtx.ReadOnlyRootFilesystem)
 	assert.True(t, *containerCtx.ReadOnlyRootFilesystem)
 
-	// SeccompProfile should be explicitly set for OpenShift
+	// SeccompProfile must be set to RuntimeDefault for restricted Pod Security Standard compliance
 	require.NotNil(t, containerCtx.SeccompProfile)
 	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, containerCtx.SeccompProfile.Type)
 
-	// Capabilities should drop all for OpenShift
+	// Capabilities must drop ALL for restricted Pod Security Standard compliance
 	require.NotNil(t, containerCtx.Capabilities)
 	assert.Equal(t, []corev1.Capability{"ALL"}, containerCtx.Capabilities.Drop)
+}
+
+func TestSecurityContextBuilder_ApplyConfiguration_RestrictedPSS(t *testing.T) {
+	t.Parallel()
+
+	// The cluster only ever consumes the ApplyConfiguration builders, so assert that the
+	// restricted Pod Security Standard fields survive the conversion on every platform.
+	tests := []struct {
+		name     string
+		platform Platform
+	}{
+		{name: "Kubernetes platform", platform: PlatformKubernetes},
+		{name: "OpenShift platform", platform: PlatformOpenShift},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			builder := NewSecurityContextBuilder(tt.platform)
+
+			podApply := builder.BuildPodSecurityContextApplyConfiguration()
+			require.NotNil(t, podApply)
+			require.NotNil(t, podApply.SeccompProfile)
+			require.NotNil(t, podApply.SeccompProfile.Type)
+			assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, *podApply.SeccompProfile.Type)
+
+			containerApply := builder.BuildContainerSecurityContextApplyConfiguration()
+			require.NotNil(t, containerApply)
+			require.NotNil(t, containerApply.SeccompProfile)
+			require.NotNil(t, containerApply.SeccompProfile.Type)
+			assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, *containerApply.SeccompProfile.Type)
+			require.NotNil(t, containerApply.Capabilities)
+			assert.Equal(t, []corev1.Capability{"ALL"}, containerApply.Capabilities.Drop)
+		})
+	}
 }
 
 func TestSecurityContextBuilder_ConsistentBehavior(t *testing.T) {
@@ -173,6 +208,7 @@ func TestSecurityContextBuilder_ConsistentBehavior(t *testing.T) {
 	assert.Equal(t, podCtx1.RunAsGroup, podCtx2.RunAsGroup)
 	assert.Equal(t, podCtx1.FSGroup, podCtx2.FSGroup)
 	assert.Equal(t, podCtx1.RunAsNonRoot, podCtx2.RunAsNonRoot)
+	assert.Equal(t, podCtx1.SeccompProfile, podCtx2.SeccompProfile)
 
 	// Container contexts should be equal
 	assert.Equal(t, containerCtx1.RunAsUser, containerCtx2.RunAsUser)
@@ -181,4 +217,6 @@ func TestSecurityContextBuilder_ConsistentBehavior(t *testing.T) {
 	assert.Equal(t, containerCtx1.RunAsNonRoot, containerCtx2.RunAsNonRoot)
 	assert.Equal(t, containerCtx1.AllowPrivilegeEscalation, containerCtx2.AllowPrivilegeEscalation)
 	assert.Equal(t, containerCtx1.ReadOnlyRootFilesystem, containerCtx2.ReadOnlyRootFilesystem)
+	assert.Equal(t, containerCtx1.SeccompProfile, containerCtx2.SeccompProfile)
+	assert.Equal(t, containerCtx1.Capabilities, containerCtx2.Capabilities)
 }

@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"syscall"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
@@ -56,6 +57,49 @@ const (
 	maxResponseSize = 100 * 1024 * 1024 // 100 MB
 )
 
+// Option configures an httpBackendClient.
+type Option func(*httpBackendClient)
+
+// WithDialControl installs a per-connection Control hook on the dialer used to
+// reach every backend. The hook fires after DNS resolution and before the TCP
+// handshake, receiving the resolved peer IP in address — which is why it
+// defeats DNS-rebinding attacks that a host-name–based allow/deny check cannot:
+// a hostname can legitimately resolve to a blocked IP after the name-based check
+// passes.
+//
+// The hook composes with per-backend CA-bundle handling: it augments the
+// internally built *http.Transport rather than replacing it. Supplying it
+// implies the standard dial timeouts (30 s Timeout, 30 s KeepAlive) used
+// throughout this package.
+//
+// The signature matches net.Dialer.Control exactly.
+//
+// Security limitations embedders must understand:
+//
+//   - Per-TCP-dial, not per-request: the hook fires once per TCP connection.
+//     A pooled connection is reused without re-invoking the hook until it is
+//     recycled. Because each backend gets its own isolated transport and
+//     connection pool, a reused connection is always one this hook already
+//     approved on its first dial — reuse cannot reach an unclassified peer.
+//     This client does not offer per-request re-classification.
+//
+//   - Proxy transparency: when http.ProxyFromEnvironment selects a proxy
+//     (HTTP_PROXY/HTTPS_PROXY set), the dial target is the proxy server, so
+//     the hook receives the proxy's IP, not the backend's. Embedders relying
+//     on this hook for SSRF or IP allow-listing must either unset the proxy
+//     env vars or additionally validate the request URL's host before dialing.
+//
+//   - Both IP families: the address argument may be an IPv4 or IPv6 literal
+//     (host:port form); embedders must handle both families — including
+//     IPv4-mapped IPv6 such as ::ffff:127.0.0.1 — in their check. See the
+//     OWASP SSRF Prevention Cheat Sheet for the full set of ranges to deny
+//     (loopback, RFC 1918, link-local 169.254/16, CGNAT 100.64/10, IPv6 ULA).
+func WithDialControl(control func(network, address string, c syscall.RawConn) error) Option {
+	return func(h *httpBackendClient) {
+		h.dialControl = control
+	}
+}
+
 // httpBackendClient implements vmcp.BackendClient using mark3labs/mcp-go HTTP client.
 // It supports streamable-HTTP and SSE transports for backend MCP servers.
 type httpBackendClient struct {
@@ -71,6 +115,12 @@ type httpBackendClient struct {
 	// time for per-backend header-forward injection. Nil when no backends declare
 	// headerForward.AddHeadersFromSecret — plaintext-only backends do not require it.
 	secretsProvider secrets.Provider
+
+	// dialControl is an optional per-connection hook injected via WithDialControl.
+	// When non-nil it is installed on the net.Dialer used by every backend transport,
+	// receiving the resolved peer IP before the TCP handshake. Nil reproduces the
+	// default dialer behavior with no hook.
+	dialControl func(network, address string, c syscall.RawConn) error
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -80,8 +130,12 @@ type httpBackendClient struct {
 // It must not be nil. To disable authentication, use a registry configured with the
 // "unauthenticated" strategy.
 //
+// Options are additive: nil or absent options reproduce the default behavior exactly.
+// See [WithDialControl] to install a per-connection dial hook for SSRF /
+// DNS-rebinding defense.
+//
 // Returns an error if registry is nil.
-func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendClient, error) {
+func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry, opts ...Option) (vmcp.BackendClient, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("registry cannot be nil; use UnauthenticatedStrategy for no authentication")
 	}
@@ -90,8 +144,23 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 		registry:        registry,
 		secretsProvider: secrets.NewEnvironmentProvider(),
 	}
+	for _, o := range opts {
+		o(c)
+	}
 	c.clientFactory = c.defaultClientFactory
 	return c, nil
+}
+
+// backendDialer returns a net.Dialer with the standard backend timeouts and an
+// optional Control hook. Centralising the timeout constants here ensures the
+// fallback-construction branch and the dial-control replacement branch always
+// stay in sync — no "kept in sync with the branch below" promise required.
+func backendDialer(control func(network, address string, c syscall.RawConn) error) *net.Dialer {
+	return &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   control,
+	}
 }
 
 // newBackendTransport creates a *http.Transport with the same defaults as http.DefaultTransport.
@@ -107,7 +176,18 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 // If caBundleData is non-empty, the raw PEM bytes are used directly instead of reading
 // from a file. This is used in dynamic mode where CA bundles are fetched from K8s
 // ConfigMaps at discovery time. caBundleData takes precedence over caBundlePath.
-func newBackendTransport(caBundlePath string, caBundleData []byte) (*http.Transport, error) {
+//
+// If dialControl is non-nil, a fresh net.Dialer carrying the hook is installed on the
+// transport. The hook fires per-connection on the resolved peer IP, which is what
+// defeats DNS-rebinding attacks — a name-based check cannot, because the name can
+// resolve to a blocked IP after the check passes. A cloned *http.Transport exposes
+// DialContext only as an opaque func, so we cannot read back the original dialer's
+// settings; we reconstruct the dialer via backendDialer instead.
+func newBackendTransport(
+	caBundlePath string,
+	caBundleData []byte,
+	dialControl func(network, address string, c syscall.RawConn) error,
+) (*http.Transport, error) {
 	var t *http.Transport
 	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
 		t = dt.Clone()
@@ -116,17 +196,18 @@ func newBackendTransport(caBundlePath string, caBundleData []byte) (*http.Transp
 		// Construct a transport with the same defaults as the Go standard library uses for
 		// http.DefaultTransport so we don't silently drop proxy, timeout, or HTTP/2 settings.
 		t = &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           backendDialer(nil).DialContext,
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		}
+	}
+
+	if dialControl != nil {
+		t.DialContext = backendDialer(dialControl).DialContext
 	}
 
 	// Resolve CA certificate PEM data: caBundleData takes precedence over caBundlePath
@@ -321,9 +402,9 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	// Build transport chain (outermost to innermost, request execution order):
 	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP
 	//
-	// Clone DefaultTransport per call so each client gets an isolated connection pool,
+	// Build an isolated per-call transport so each client gets its own connection pool,
 	// preventing stale keep-alive connections from one backend affecting others.
-	httpTransport, err := newBackendTransport(target.CABundlePath, target.CABundleData)
+	httpTransport, err := newBackendTransport(target.CABundlePath, target.CABundleData, h.dialControl)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transport for backend %s: %w", target.WorkloadID, err)
 	}

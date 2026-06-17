@@ -157,12 +157,14 @@ func completeLogsArgs(cmd *cobra.Command, args []string, _ string) ([]string, co
 }
 
 // workloadStatusIndicator returns the status string with a visual indicator prepended
-// for statuses that warrant user attention (unauthenticated, policy_stopped).
+// for statuses that warrant user attention (unauthenticated, auth_retrying, policy_stopped).
 // All other statuses are returned as plain strings.
 func workloadStatusIndicator(status runtime.WorkloadStatus) string {
 	switch status {
 	case runtime.WorkloadStatusUnauthenticated:
 		return "⚠️  " + string(status)
+	case runtime.WorkloadStatusAuthRetrying:
+		return "🔄 " + string(status)
 	case runtime.WorkloadStatusPolicyStopped:
 		return "🚫 " + string(status)
 	case runtime.WorkloadStatusRunning, runtime.WorkloadStatusStopped, runtime.WorkloadStatusError,

@@ -44,6 +44,13 @@ const (
 	// WorkloadStatusUnauthenticated indicates that the workload is running but
 	// cannot authenticate with the remote MCP server (e.g., expired refresh token).
 	WorkloadStatusUnauthenticated WorkloadStatus = "unauthenticated"
+	// WorkloadStatusAuthRetrying indicates that background authentication
+	// refresh is failing transiently and the monitor is still retrying.
+	// The workload may recover on its own (→ Running) or be marked
+	// unauthenticated when the configured ceiling is exceeded
+	// (→ Unauthenticated). Hot requests fail fast with 503+Retry-After
+	// while in this state.
+	WorkloadStatusAuthRetrying WorkloadStatus = "auth_retrying"
 	// WorkloadStatusPolicyStopped indicates that the workload was stopped by
 	// policy enforcement. The StatusContext field carries the human-readable reason.
 	WorkloadStatusPolicyStopped WorkloadStatus = "policy_stopped"

@@ -1006,6 +1006,7 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - auth_retrying
       - policy_stopped
       - running
       - stopped
@@ -1016,6 +1017,7 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - auth_retrying
       - policy_stopped
       - running
       - stopped
@@ -1026,6 +1028,7 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - auth_retrying
       - policy_stopped
       type: string
       x-enum-varnames:
@@ -1038,6 +1041,7 @@ components:
       - WorkloadStatusRemoving
       - WorkloadStatusUnknown
       - WorkloadStatusUnauthenticated
+      - WorkloadStatusAuthRetrying
       - WorkloadStatusPolicyStopped
     github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig:
       description: |-

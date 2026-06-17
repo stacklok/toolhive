@@ -59,8 +59,9 @@ func TestSecurityContextBuilder_BuildPodSecurityContext_Kubernetes(t *testing.T)
 	assert.NotNil(t, podCtx.FSGroup)
 	assert.Equal(t, int64(1000), *podCtx.FSGroup)
 
-	// SeccompProfile should not be explicitly set for standard Kubernetes
-	assert.Nil(t, podCtx.SeccompProfile)
+	// SeccompProfile must be set to RuntimeDefault for restricted Pod Security Standard compliance
+	require.NotNil(t, podCtx.SeccompProfile)
+	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, podCtx.SeccompProfile.Type)
 }
 
 func TestSecurityContextBuilder_BuildPodSecurityContext_OpenShift(t *testing.T) {
@@ -112,9 +113,13 @@ func TestSecurityContextBuilder_BuildContainerSecurityContext_Kubernetes(t *test
 	assert.NotNil(t, containerCtx.ReadOnlyRootFilesystem)
 	assert.True(t, *containerCtx.ReadOnlyRootFilesystem)
 
-	// SeccompProfile and Capabilities should not be explicitly set for standard Kubernetes
-	assert.Nil(t, containerCtx.SeccompProfile)
-	assert.Nil(t, containerCtx.Capabilities)
+	// SeccompProfile must be set to RuntimeDefault for restricted Pod Security Standard compliance
+	require.NotNil(t, containerCtx.SeccompProfile)
+	assert.Equal(t, corev1.SeccompProfileTypeRuntimeDefault, containerCtx.SeccompProfile.Type)
+
+	// Capabilities must drop ALL for restricted Pod Security Standard compliance
+	require.NotNil(t, containerCtx.Capabilities)
+	assert.Equal(t, []corev1.Capability{"ALL"}, containerCtx.Capabilities.Drop)
 }
 
 func TestSecurityContextBuilder_BuildContainerSecurityContext_OpenShift(t *testing.T) {

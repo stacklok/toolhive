@@ -242,7 +242,7 @@ func TestWaitForInitializeSuccess(t *testing.T) {
 		defer server.Close()
 
 		ctx := context.Background()
-		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", 5*time.Second)
+		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", false, 5*time.Second)
 		assert.NoError(t, err)
 	})
 
@@ -259,7 +259,7 @@ func TestWaitForInitializeSuccess(t *testing.T) {
 		defer server.Close()
 
 		ctx := context.Background()
-		err := waitForInitializeSuccess(ctx, server.URL, "streamable", 5*time.Second)
+		err := waitForInitializeSuccess(ctx, server.URL, "streamable", false, 5*time.Second)
 		assert.NoError(t, err)
 	})
 
@@ -276,7 +276,7 @@ func TestWaitForInitializeSuccess(t *testing.T) {
 		defer server.Close()
 
 		ctx := context.Background()
-		err := waitForInitializeSuccess(ctx, server.URL+"#container-name", "sse", 5*time.Second)
+		err := waitForInitializeSuccess(ctx, server.URL+"#container-name", "sse", false, 5*time.Second)
 		assert.NoError(t, err)
 	})
 
@@ -284,7 +284,7 @@ func TestWaitForInitializeSuccess(t *testing.T) {
 		t.Parallel()
 
 		ctx := context.Background()
-		err := waitForInitializeSuccess(ctx, "http://localhost:9999", "unknown-transport", 5*time.Second)
+		err := waitForInitializeSuccess(ctx, "http://localhost:9999", "unknown-transport", false, 5*time.Second)
 		assert.NoError(t, err)
 	})
 
@@ -297,7 +297,47 @@ func TestWaitForInitializeSuccess(t *testing.T) {
 		defer server.Close()
 
 		ctx := context.Background()
-		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", 500*time.Millisecond)
+		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", false, 500*time.Millisecond)
+		assert.Error(t, err)
+		assert.Contains(t, err.Error(), "initialize not successful")
+	})
+
+	t.Run("Auth expected accepts 401 as ready", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		t.Cleanup(server.Close)
+
+		ctx := context.Background()
+		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", true, 5*time.Second)
+		assert.NoError(t, err)
+	})
+
+	t.Run("Auth expected accepts 403 as ready", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusForbidden)
+		}))
+		t.Cleanup(server.Close)
+
+		ctx := context.Background()
+		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", true, 5*time.Second)
+		assert.NoError(t, err)
+	})
+
+	t.Run("No auth expected still times out on 401", func(t *testing.T) {
+		t.Parallel()
+
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusUnauthorized)
+		}))
+		t.Cleanup(server.Close)
+
+		ctx := context.Background()
+		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", false, 500*time.Millisecond)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "initialize not successful")
 	})
@@ -313,7 +353,7 @@ func TestWaitForInitializeSuccess(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel() // Cancel immediately
 
-		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", 5*time.Second)
+		err := waitForInitializeSuccess(ctx, server.URL, "streamable-http", false, 5*time.Second)
 		assert.Error(t, err)
 		assert.Contains(t, err.Error(), "context cancelled")
 	})

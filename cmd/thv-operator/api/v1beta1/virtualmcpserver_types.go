@@ -294,6 +294,11 @@ type VirtualMCPServerStatus struct {
 	// +optional
 	BackendCount int32 `json:"backendCount,omitempty"`
 
+	// AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection.
+	// Only populated when IncomingAuth.AuthzConfigRef is set.
+	// +optional
+	AuthzConfigHash string `json:"authzConfigHash,omitempty"`
+
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection.
 	// Only populated when IncomingAuth.OIDCConfigRef is set.
 	// +optional

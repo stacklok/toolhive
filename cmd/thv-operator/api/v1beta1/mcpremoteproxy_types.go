@@ -244,6 +244,10 @@ type MCPRemoteProxyStatus struct {
 	// +optional
 	AuthServerConfigHash string `json:"authServerConfigHash,omitempty"`
 
+	// AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection
+	// +optional
+	AuthzConfigHash string `json:"authzConfigHash,omitempty"`
+
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
 	// +optional
 	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`

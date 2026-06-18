@@ -12,11 +12,11 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	statusmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus/mocks"
 )
 
@@ -53,9 +53,7 @@ func vmcpWithAuthzConfigMap(cmName string) *mcpv1beta1.VirtualMCPServer {
 // the supplied objects. The reconciler runs the namespaced-scope branch in tests.
 func reconcilerWithObjects(t *testing.T, objects ...client.Object) *VirtualMCPServerReconciler {
 	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 	return &VirtualMCPServerReconciler{Client: c, Scheme: scheme}
 }

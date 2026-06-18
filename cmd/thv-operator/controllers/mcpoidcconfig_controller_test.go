@@ -11,10 +11,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -22,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -96,8 +95,7 @@ func TestMCPOIDCConfigReconciler_ReconcileNotFound(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Empty client — no objects exist
 	fakeClient := fake.NewClientBuilder().
@@ -126,9 +124,7 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -195,9 +191,7 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Start with invalid config: type=inline but no inline config
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
@@ -314,8 +308,7 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := []client.Object{tt.oidcConfig}
 
@@ -347,9 +340,7 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -425,9 +416,7 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Invalid config: type is inline but no inline config set
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
@@ -576,9 +565,7 @@ func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -659,9 +646,7 @@ func TestMCPOIDCConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testi
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "default", Generation: 1},
@@ -739,9 +724,7 @@ func TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch(t 
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "concurrent-config", Namespace: "default", Generation: 1},

@@ -12,13 +12,13 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestToolConfigReconciler_EdgeCases(t *testing.T) {
@@ -28,8 +28,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -57,8 +56,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -130,8 +128,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -192,8 +189,7 @@ func TestToolConfigReconciler_ErrorScenarios(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -255,8 +251,7 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -364,8 +359,7 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		// MCPToolConfig with completely empty spec
 		toolConfig := &mcpv1beta1.MCPToolConfig{

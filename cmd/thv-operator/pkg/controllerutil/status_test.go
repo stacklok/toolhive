@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 // statusPatchRecordingClient wraps a client.Client and intercepts
@@ -81,8 +82,7 @@ func (c *statusPatchRecordingClient) lastBody() string {
 
 func buildStatusTestClient(t *testing.T, seed *mcpv1beta1.MCPServer) (*statusPatchRecordingClient, client.Client) {
 	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 	inner := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(seed).

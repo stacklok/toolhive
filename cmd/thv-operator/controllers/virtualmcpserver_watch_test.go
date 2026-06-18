@@ -19,13 +19,12 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -153,9 +152,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.mcpGroup}
@@ -197,9 +194,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 func TestMapMCPGroupToVirtualMCPServer_InvalidObject(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &VirtualMCPServerReconciler{
@@ -397,9 +392,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.mcpServer}
@@ -447,9 +440,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 func TestMapMCPServerToVirtualMCPServer_InvalidObject(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &VirtualMCPServerReconciler{
@@ -647,9 +638,7 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.mcpRemoteProxy}
@@ -697,9 +686,7 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 func TestMapMCPRemoteProxyToVirtualMCPServer_InvalidObject(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &VirtualMCPServerReconciler{
@@ -1057,9 +1044,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.authConfig}
@@ -1248,9 +1233,7 @@ func TestMapToolConfigToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.toolConfig}
@@ -1741,9 +1724,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{}
@@ -1889,9 +1870,7 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.embeddingServer}
@@ -1933,9 +1912,7 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 func TestMapEmbeddingServerToVirtualMCPServer_InvalidObject(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &VirtualMCPServerReconciler{

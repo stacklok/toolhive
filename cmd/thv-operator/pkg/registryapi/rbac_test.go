@@ -13,13 +13,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func createTestMCPRegistry() *mcpv1beta1.MCPRegistry {
@@ -33,14 +33,6 @@ func createTestMCPRegistry() *mcpv1beta1.MCPRegistry {
 			ConfigYAML: "sources:\n  - name: default\n    format: toolhive\nregistries:\n  - name: default\n    sources: [\"default\"]\n",
 		},
 	}
-}
-
-func createTestScheme() *runtime.Scheme {
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
-	return scheme
 }
 
 func TestEnsureRBACResources(t *testing.T) {
@@ -58,7 +50,7 @@ func TestEnsureRBACResources(t *testing.T) {
 			mcpRegistry: createTestMCPRegistry(),
 			setupClient: func(t *testing.T) client.Client {
 				t.Helper()
-				return fake.NewClientBuilder().WithScheme(createTestScheme()).Build()
+				return fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).Build()
 			},
 			validate: func(t *testing.T, c client.Client, mcpRegistry *mcpv1beta1.MCPRegistry) {
 				t.Helper()
@@ -100,7 +92,7 @@ func TestEnsureRBACResources(t *testing.T) {
 				mcpRegistry := createTestMCPRegistry()
 				resourceName := mcpRegistry.Name + "-registry-api"
 				return fake.NewClientBuilder().
-					WithScheme(createTestScheme()).
+					WithScheme(testutil.NewScheme(t)).
 					WithObjects(
 						&corev1.ServiceAccount{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: mcpRegistry.Namespace}},
 						&rbacv1.Role{ObjectMeta: metav1.ObjectMeta{Name: resourceName, Namespace: mcpRegistry.Namespace}, Rules: registryAPIRBACRules},
@@ -121,7 +113,7 @@ func TestEnsureRBACResources(t *testing.T) {
 			setupClient: func(t *testing.T) client.Client {
 				t.Helper()
 				return fake.NewClientBuilder().
-					WithScheme(createTestScheme()).
+					WithScheme(testutil.NewScheme(t)).
 					WithInterceptorFuncs(interceptor.Funcs{
 						Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 							if _, ok := obj.(*corev1.ServiceAccount); ok {
@@ -139,7 +131,7 @@ func TestEnsureRBACResources(t *testing.T) {
 			setupClient: func(t *testing.T) client.Client {
 				t.Helper()
 				return fake.NewClientBuilder().
-					WithScheme(createTestScheme()).
+					WithScheme(testutil.NewScheme(t)).
 					WithInterceptorFuncs(interceptor.Funcs{
 						Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 							if _, ok := obj.(*rbacv1.Role); ok {
@@ -157,7 +149,7 @@ func TestEnsureRBACResources(t *testing.T) {
 			setupClient: func(t *testing.T) client.Client {
 				t.Helper()
 				return fake.NewClientBuilder().
-					WithScheme(createTestScheme()).
+					WithScheme(testutil.NewScheme(t)).
 					WithInterceptorFuncs(interceptor.Funcs{
 						Create: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 							if _, ok := obj.(*rbacv1.RoleBinding); ok {
@@ -175,7 +167,7 @@ func TestEnsureRBACResources(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			c := tt.setupClient(t)
-			m := &manager{client: c, scheme: createTestScheme()}
+			m := &manager{client: c, scheme: testutil.NewScheme(t)}
 
 			err := m.ensureRBACResources(context.Background(), tt.mcpRegistry)
 
@@ -237,7 +229,7 @@ func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 		{Name: "extra-creds"},
 	}
 
-	scheme := createTestScheme()
+	scheme := testutil.NewScheme(t)
 	c := fake.NewClientBuilder().WithScheme(scheme).Build()
 	m := &manager{client: c, scheme: scheme}
 
@@ -281,7 +273,7 @@ func TestEnsureRBACResources_EmptyImagePullSecretsPreservesSAPullSecrets(t *test
 		},
 	}
 
-	scheme := createTestScheme()
+	scheme := testutil.NewScheme(t)
 	c := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(mcpRegistry, preexistingSA).

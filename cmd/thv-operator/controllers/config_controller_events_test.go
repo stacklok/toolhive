@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 // drainEvents returns every event currently buffered on the fake recorder
@@ -46,20 +47,12 @@ func countContaining(evts []string, substr string) int {
 	return n
 }
 
-func configEventsScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-	return scheme
-}
-
 // ---- MCPOIDCConfig ----
 
 func TestMCPOIDCConfigReconciler_EmitsEvents(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := configEventsScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	// Invalid: type=inline but no inline config.
 	cfg := &mcpv1beta1.MCPOIDCConfig{
@@ -110,7 +103,7 @@ func TestMCPOIDCConfigReconciler_EmitsEvents(t *testing.T) {
 func TestMCPOIDCConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := configEventsScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	cfg := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -150,7 +143,7 @@ func TestMCPOIDCConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 func TestMCPOIDCConfigReconciler_NilRecorderNoPanic(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := configEventsScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	cfg := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -188,7 +181,7 @@ func validExternalAuthSpec() mcpv1beta1.MCPExternalAuthConfigSpec {
 func TestMCPExternalAuthConfigReconciler_EmitsEvents(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := configEventsScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	// Invalid: type=tokenExchange but no tokenExchange config block.
 	cfg := &mcpv1beta1.MCPExternalAuthConfig{
@@ -235,7 +228,7 @@ func TestMCPExternalAuthConfigReconciler_EmitsEvents(t *testing.T) {
 func TestMCPExternalAuthConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := configEventsScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	cfg := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -284,7 +277,7 @@ func TestMCPExternalAuthConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T)
 func TestMCPExternalAuthConfigReconciler_EmitsRecoveryOnSteadyStatePath(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := configEventsScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	spec := validExternalAuthSpec()
 	hash := (&MCPExternalAuthConfigReconciler{}).calculateConfigHash(spec)
@@ -327,7 +320,7 @@ func TestMCPExternalAuthConfigReconciler_EmitsRecoveryOnSteadyStatePath(t *testi
 func TestMCPAuthzConfigReconciler_EmitsEvents(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := configEventsScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	// Invalid: cedarv1 type but empty policy set (fails backend validation).
 	cfg := &mcpv1beta1.MCPAuthzConfig{
@@ -377,7 +370,7 @@ func TestMCPAuthzConfigReconciler_EmitsEvents(t *testing.T) {
 func TestMCPAuthzConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := configEventsScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	cfg := &mcpv1beta1.MCPAuthzConfig{
 		ObjectMeta: metav1.ObjectMeta{

@@ -9,16 +9,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	k8smeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestToolConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -164,9 +163,7 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			// Create fake client with objects
 			objs := []client.Object{tt.toolConfig}
@@ -241,8 +238,7 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 func TestToolConfigReconciler_findReferencingWorkloads(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -316,9 +312,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *te
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -401,9 +395,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *tes
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -481,9 +473,7 @@ func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{

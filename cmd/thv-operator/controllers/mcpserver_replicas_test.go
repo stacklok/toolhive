@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
@@ -102,7 +103,7 @@ func TestReplicaBehavior(t *testing.T) {
 				},
 			}
 
-			testScheme := createTestScheme()
+			testScheme := testutil.NewScheme(t)
 
 			// Create a deployment with the desired replica count
 			deployment := &appsv1.Deployment{
@@ -195,7 +196,7 @@ func TestConfigUpdatePreservesReplicas(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create deployment with 3 replicas and an old image
 	deployment := &appsv1.Deployment{
@@ -281,7 +282,7 @@ func TestUpdateMCPServerStatusScaledToZero(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create deployment scaled to zero
 	deployment := &appsv1.Deployment{
@@ -352,7 +353,7 @@ func TestUpdateMCPServerStatusReadyReplicas(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create deployment with 3 replicas
 	deployment := &appsv1.Deployment{
@@ -476,7 +477,7 @@ func TestDefaultCreationHasNilReplicas(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
@@ -556,7 +557,7 @@ func TestTerminationGracePeriodSet(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
@@ -590,7 +591,7 @@ func TestSpecDrivenReplicasNil(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
@@ -624,7 +625,7 @@ func TestSpecDrivenReplicas3(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
@@ -661,7 +662,7 @@ func TestStdioCapConditionSet(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
@@ -713,7 +714,7 @@ func TestSessionStorageWarningSet(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
@@ -766,7 +767,7 @@ func TestSessionStorageWarningCleared(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(mcpServer).
@@ -884,7 +885,7 @@ func TestUpdateMCPServerStatusExcludesTerminatingPods(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1106,7 +1107,7 @@ func TestRateLimitConfigValidation(t *testing.T) {
 				Spec: tt.spec,
 			}
 
-			testScheme := createTestScheme()
+			testScheme := testutil.NewScheme(t)
 			clientBuilder := fake.NewClientBuilder().
 				WithScheme(testScheme).
 				WithObjects(mcpServer).
@@ -1246,7 +1247,7 @@ func TestMCPServerDeploymentInjectsRedisPasswordEnvVar(t *testing.T) {
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	r := newTestMCPServerReconciler(nil, testScheme, kubernetes.PlatformKubernetes)
 
 	deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
@@ -1310,7 +1311,7 @@ func TestMCPServerDeploymentRedisPasswordOverridesUserEnvOnCollision(t *testing.
 		},
 	}
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	r := newTestMCPServerReconciler(nil, testScheme, kubernetes.PlatformKubernetes)
 
 	deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")

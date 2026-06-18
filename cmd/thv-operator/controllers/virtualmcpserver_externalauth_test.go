@@ -12,13 +12,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/authserver"
@@ -182,9 +181,7 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			_ = mcpv1beta1.AddToScheme(scheme)
-			_ = corev1.AddToScheme(scheme)
+			scheme := testutil.NewScheme(t)
 
 			// Set up fake client (no secrets needed - secrets are mounted as env vars, not resolved)
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -710,8 +707,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			_ = mcpv1beta1.AddToScheme(scheme)
+			scheme := testutil.NewScheme(t)
 
 			// Build objects list for fake client
 			objects := []client.Object{tt.vmcp}
@@ -815,8 +811,7 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			_ = mcpv1beta1.AddToScheme(scheme)
+			scheme := testutil.NewScheme(t)
 
 			objects := []client.Object{}
 			for i := range tt.authConfigs {
@@ -861,8 +856,7 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 func TestConvertBackendAuthConfigToVMCP_MirrorsInvalidExternalAuthConfig(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	invalidSource := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "obo-source", Namespace: "default"},
@@ -1313,8 +1307,7 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 func TestBuildOutgoingAuthConfig_SubjectProviderInjection(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// A shared MCPExternalAuthConfig with token_exchange and no SubjectProviderName.
 	defaultAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
@@ -1471,8 +1464,7 @@ func TestDiscoverExternalAuthConfigSecrets_DeterministicOrdering(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			vmcp := &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1624,8 +1616,7 @@ func TestDiscoverInlineExternalAuthConfigSecrets_DeterministicOrdering(t *testin
 	//
 	// Alphabetical order: ALPHA < BETA < MU < ZETA
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1755,8 +1746,7 @@ func TestDiscoverInlineExternalAuthConfigSecrets_DeterministicOrdering(t *testin
 func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// MCPExternalAuthConfig referenced by the inline Backends override.
 	inlineAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
@@ -1837,9 +1827,7 @@ func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testin
 func TestGetExternalAuthConfigSecretEnvVars_OBO(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	authCfg := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{

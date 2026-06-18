@@ -9,14 +9,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 // TestMCPServerReconciler_ValidateGroupRef tests the validateGroupRef function
@@ -159,9 +158,7 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := []client.Object{}
 			for _, group := range tt.mcpGroups {
@@ -266,9 +263,7 @@ func TestMCPServerReconciler_GroupRefValidation_Integration(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := []client.Object{tt.mcpServer}
 			if tt.mcpGroup != nil {
@@ -303,9 +298,7 @@ func TestMCPServerReconciler_GroupRefCrossNamespace(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{

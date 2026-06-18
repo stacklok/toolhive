@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestGetTelemetryConfigForMCPServer(t *testing.T) {
@@ -90,8 +90,7 @@ func TestGetTelemetryConfigForMCPServer(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			builder := fake.NewClientBuilder().WithScheme(scheme)
 			if tt.telemetryConfig != nil {
@@ -124,8 +123,7 @@ func TestGetTelemetryConfigForMCPServer_NamespacedLookup(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Config exists in namespace-a but server is in namespace-b
 	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{

@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 )
@@ -253,7 +254,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			_ = rbacv1.AddToScheme(scheme)
 			_ = appsv1.AddToScheme(scheme)
 
@@ -342,7 +343,7 @@ func TestMCPRemoteProxyConfigChangePropagation(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	_ = rbacv1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
@@ -413,7 +414,7 @@ func TestMCPRemoteProxyStatusProgression(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	_ = rbacv1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
 
@@ -500,7 +501,7 @@ func TestCommonHelpers(t *testing.T) {
 			},
 		}
 
-		scheme := createRunConfigTestScheme()
+		scheme := testutil.NewScheme(t)
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			WithRuntimeObjects(externalAuth).
@@ -572,7 +573,7 @@ func TestEnsureAuthzConfigMapShared(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(proxy).
@@ -619,7 +620,7 @@ func TestRBACClientIntegration(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	_ = rbacv1.AddToScheme(scheme)
 
 	fakeClient := fake.NewClientBuilder().
@@ -696,7 +697,7 @@ func TestGenerateTokenExchangeEnvVarsShared(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(externalAuth).
@@ -880,7 +881,7 @@ func TestValidateSpecConfigurationConditions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := append([]runtime.Object{tt.proxy}, tt.existingObjects...)
 
 			fakeClient := fake.NewClientBuilder().
@@ -991,7 +992,7 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.proxy}
 			if tt.toolConfig != nil {
 				objects = append(objects, tt.toolConfig)

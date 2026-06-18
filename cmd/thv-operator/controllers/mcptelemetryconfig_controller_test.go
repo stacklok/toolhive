@@ -9,14 +9,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestMCPTelemetryConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -72,8 +71,7 @@ func TestMCPTelemetryConfigReconciler_ReconcileNotFound(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Empty client — no objects exist
 	fakeClient := fake.NewClientBuilder().
@@ -102,9 +100,7 @@ func TestMCPTelemetryConfigReconciler_SteadyStateNoOp(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -165,9 +161,7 @@ func TestMCPTelemetryConfigReconciler_ValidationRecovery(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Start with invalid config: empty sensitive header name
 	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
@@ -280,8 +274,7 @@ func TestMCPTelemetryConfigReconciler_handleDeletion(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
@@ -311,9 +304,7 @@ func TestMCPTelemetryConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -383,9 +374,7 @@ func TestMCPTelemetryConfigReconciler_ValidationFailureSetsCondition(t *testing.
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Invalid config: empty sensitive header name
 	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
@@ -552,9 +541,7 @@ func TestMCPTelemetryConfigReconciler_ConditionOnlyUpdate(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	spec := newTelemetrySpec("https://otel-collector:4317", true, true)
 
@@ -622,9 +609,7 @@ func TestMCPTelemetryConfigReconciler_ReferenceTracking(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -714,9 +699,7 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_BlocksWhenReferenced(t *tes
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	now := metav1.Now()
 	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
@@ -769,9 +752,7 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	now := metav1.Now()
 	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
@@ -820,8 +801,7 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_NoFinalizerIsNoOp(t *testin
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Object with DeletionTimestamp but no finalizers.
 	// We don't add it to the fake client (which rejects such objects)

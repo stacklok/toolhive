@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -33,13 +34,6 @@ const (
 	sseProxyMode            = "sse"
 	streamableHTTPProxyMode = "streamable-http"
 )
-
-func createRunConfigTestScheme() *runtime.Scheme {
-	testScheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(testScheme)
-	_ = mcpv1beta1.AddToScheme(testScheme)
-	return testScheme
-}
 
 func createTestMCPServerWithConfig(name, namespace, image string, envVars []mcpv1beta1.EnvVar) *mcpv1beta1.MCPServer {
 	return &mcpv1beta1.MCPServer{
@@ -478,7 +472,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				tt.mcpServer.Spec.AuthzConfig.Type == mcpv1beta1.AuthzConfigTypeConfigMap &&
 				tt.mcpServer.Spec.AuthzConfig.ConfigMap != nil {
 
-				scheme := createRunConfigTestScheme()
+				scheme := testutil.NewScheme(t)
 
 				// Prepare a ConfigMap with authorization configuration content
 				cm := &corev1.ConfigMap{
@@ -850,7 +844,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.mcpServer}
 			if tt.existingCM != nil {
 				objects = append(objects, tt.existingCM)
@@ -899,7 +893,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 	// Additional test: ConfigMap-based Authz referenced externally should be embedded into runconfig.json
 	t.Run("configmap with external authorization configuration", func(t *testing.T) {
 		t.Parallel()
-		testScheme := createRunConfigTestScheme()
+		testScheme := testutil.NewScheme(t)
 
 		mcpServer := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
@@ -1195,7 +1189,7 @@ func TestLabelsForRunConfig(t *testing.T) {
 // TestEnsureRunConfigConfigMapCompleteFlow tests the complete flow from MCPServer changes to ConfigMap updates
 func TestEnsureRunConfigConfigMapCompleteFlow(t *testing.T) {
 	t.Parallel()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
 	reconciler := &MCPServerReconciler{
 		Client: fakeClient,
@@ -1377,7 +1371,7 @@ func TestMCPServerModificationScenarios(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			// Setup - create a new scheme for each test to avoid concurrent access
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 
 			fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
 			reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
@@ -1522,7 +1516,7 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(testScheme).
 				WithRuntimeObjects(tc.mcpServer).
@@ -1700,7 +1694,7 @@ func TestPopulateScalingConfig(t *testing.T) {
 
 			r := &MCPServerReconciler{
 				Client: fake.NewClientBuilder().
-					WithScheme(createRunConfigTestScheme()).
+					WithScheme(testutil.NewScheme(t)).
 					WithObjects(m).
 					Build(),
 			}
@@ -1752,7 +1746,7 @@ func TestCreateRunConfigFromMCPServer_RateLimiting(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 			k8sClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
 
 			r := &MCPServerReconciler{
@@ -1800,8 +1794,8 @@ func TestCreateRunConfigFromMCPServer_SetsMCPServerGeneration(t *testing.T) {
 	}
 
 	r := newTestMCPServerReconciler(
-		fake.NewClientBuilder().WithScheme(createRunConfigTestScheme()).WithObjects(m).Build(),
-		createRunConfigTestScheme(),
+		fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).WithObjects(m).Build(),
+		testutil.NewScheme(t),
 		kubernetes.PlatformKubernetes,
 	)
 

@@ -12,11 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -248,9 +248,7 @@ func TestRegisterOBOHandler_PanicsOnNilField(t *testing.T) {
 func TestAddExternalAuthConfigOptions_OBO(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	authCfg := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -304,9 +302,7 @@ func TestAddExternalAuthConfigOptions_OBO(t *testing.T) {
 func TestAddOBOSecretEnvVars(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	const ns = "default"
 
@@ -424,9 +420,7 @@ func TestAddOBOSecretEnvVars(t *testing.T) {
 func TestAddOBOSecretEnvVars_OBOHandlerRegistered(t *testing.T) {
 	withDefaultOBOHandler(t)
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	const ns = "default"
 	authCfg := &mcpv1beta1.MCPExternalAuthConfig{

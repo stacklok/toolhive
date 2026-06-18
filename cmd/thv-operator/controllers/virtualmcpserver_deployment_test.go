@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -50,8 +51,7 @@ func TestDeploymentForVirtualMCPServer(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	r := &VirtualMCPServerReconciler{
 		Scheme:           scheme,
@@ -113,8 +113,7 @@ func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	r := &VirtualMCPServerReconciler{
 		Scheme:           scheme,
@@ -413,9 +412,7 @@ func TestServiceForVirtualMCPServer(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	r := &VirtualMCPServerReconciler{
 		Scheme: scheme,
@@ -454,9 +451,7 @@ func TestServiceForVirtualMCPServerSessionAffinityNone(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	r := &VirtualMCPServerReconciler{
 		Scheme: scheme,
@@ -837,9 +832,7 @@ func TestBuildCABundleVolumesForEntries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := make([]client.Object, 0, len(tt.entries))
 			for i := range tt.entries {
@@ -947,9 +940,7 @@ func TestDeploymentForVirtualMCPServer_ImagePullSecrets(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			vmcp := &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1034,9 +1025,7 @@ func TestDeploymentForVirtualMCPServer_ImagePullSecrets_UpdatePath(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			r := &VirtualMCPServerReconciler{
 				Scheme:           scheme,
@@ -1307,9 +1296,7 @@ func TestBuildHeaderForwardEnvVarsForEntries(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := make([]client.Object, 0, len(tt.entries))
 			for i := range tt.entries {
@@ -1395,9 +1382,7 @@ func TestBuildHeaderForwardEnvVarsForEntries_ShuffledInputDeterministic(t *testi
 		{Name: "alpha", Type: workloads.WorkloadTypeMCPServerEntry},
 	}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	objs := make([]client.Object, 0, len(entries))
 	for i := range entries {

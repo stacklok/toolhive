@@ -5,7 +5,24 @@
 // imported by both pkg/llm and pkg/client to avoid an import cycle.
 package llmgateway
 
-import "net/url"
+import (
+	"net/url"
+	"time"
+)
+
+// ClaudeCodeHelperTTL is written to settings.json as
+// CLAUDE_CODE_API_KEY_HELPER_TTL_MS: how often Claude Code re-invokes the
+// apiKeyHelper ("thv llm token"). Pinned to Claude Code's documented default so
+// the cadence is deterministic rather than relying on the implicit default.
+const ClaudeCodeHelperTTL = 5 * time.Minute
+
+// LLMTokenRefreshWindow is how far before expiry the LLM gateway token source
+// proactively refreshes. It is derived as 2x ClaudeCodeHelperTTL so that every
+// helper invocation in the final window forces a refresh, meaning Claude Code
+// never receives an about-to-expire token. The invariant
+// LLMTokenRefreshWindow > ClaudeCodeHelperTTL is what makes this belt-and-
+// suspenders pairing work; keep the two values in sync (guarded by a test).
+const LLMTokenRefreshWindow = 2 * ClaudeCodeHelperTTL
 
 // ProxyOriginOf returns rawURL with its path, query, fragment, and userinfo
 // stripped so only the scheme and host remain (the "origin"). Tools like

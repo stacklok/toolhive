@@ -165,9 +165,9 @@ const (
 // Exactly one of ValueField or Literal must be set:
 //   - ValueField names which ApplyConfig field to write. Valid values:
 //     "GatewayURL", "AnthropicBaseURL", "ProxyBaseURL", "ProxyOrigin",
-//     "TokenHelperCommand", "PlaceholderAPIKey", "NodeTLSRejectUnauthorized".
-//     An unrecognised ValueField is a programming error and causes
-//     ConfigureLLMGateway to return an error.
+//     "TokenHelperCommand", "PlaceholderAPIKey", "ClaudeCodeHelperTTLMillis",
+//     "NodeTLSRejectUnauthorized". An unrecognised ValueField is a programming
+//     error and causes ConfigureLLMGateway to return an error.
 //   - Literal is written verbatim into the settings key (e.g. a fixed auth
 //     type string). Use Literal instead of ValueField for constant values so
 //     that typos in ValueField are caught as errors rather than silently
@@ -180,7 +180,8 @@ const (
 type LLMGatewayKeySpec struct {
 	JSONPointer string // RFC 6901 path
 	// ValueField: "GatewayURL" | "AnthropicBaseURL" | "ProxyBaseURL" | "ProxyOrigin" |
-	// "TokenHelperCommand" | "PlaceholderAPIKey" | "NodeTLSRejectUnauthorized"
+	// "TokenHelperCommand" | "PlaceholderAPIKey" | "ClaudeCodeHelperTTLMillis" |
+	// "NodeTLSRejectUnauthorized"
 	ValueField     string
 	Literal        string // constant value written verbatim; mutually exclusive with ValueField
 	ClearWhenEmpty bool   // remove the key when the resolved value is empty (ignored for Literal)
@@ -516,6 +517,10 @@ var supportedClientIntegrations = []clientAppConfig{
 		LLMGatewayKeys: []LLMGatewayKeySpec{
 			{JSONPointer: "/apiKeyHelper", ValueField: "TokenHelperCommand"},
 			{JSONPointer: "/env/ANTHROPIC_BASE_URL", ValueField: "AnthropicBaseURL"},
+			// Pin the apiKeyHelper re-invocation cadence so it stays below the token
+			// source's preemptive refresh window — together they guarantee the helper
+			// never returns an about-to-expire token.
+			{JSONPointer: "/env/CLAUDE_CODE_API_KEY_HELPER_TTL_MS", ValueField: "ClaudeCodeHelperTTLMillis"},
 			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
 			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
 			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},

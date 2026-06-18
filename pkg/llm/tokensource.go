@@ -10,6 +10,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/tokensource"
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -64,6 +65,11 @@ func NewTokenSource(
 		},
 		ConfigPersister: tokenRefUpdater,
 		FallbackErr:     ErrTokenRequired,
+		// Widen the preemptive refresh window past Claude Code's apiKeyHelper TTL
+		// so every helper invocation in the final window forces a refresh and the
+		// helper never hands back an about-to-expire token. Kept in sync with the
+		// TTL written to settings.json (see pkg/llmgateway constants).
+		PreemptiveRefreshWindow: llmgateway.LLMTokenRefreshWindow,
 	})
 }
 

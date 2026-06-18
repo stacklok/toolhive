@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
@@ -300,16 +301,10 @@ func TestMCPServerReconciler_GroupRefCrossNamespace(t *testing.T) {
 	ctx := context.Background()
 	scheme := testutil.NewScheme(t)
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "namespace-a",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:    "test-image",
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("test-server", "namespace-a",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithGroupRef("test-group"),
+	)
 
 	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{

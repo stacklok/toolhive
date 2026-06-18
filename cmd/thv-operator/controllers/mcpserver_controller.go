@@ -1266,9 +1266,11 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	}
 
 	// Add the volume mount for a referenced MCPAuthzConfig (spec.authzConfigRef).
-	// Mutually exclusive with the inline volume above (CRD XValidation), and the
-	// volume name/path are shared, so at most one authz volume is ever mounted.
-	if m.Spec.AuthzConfigRef != nil {
+	// Inline and ref are mutually exclusive (CRD XValidation) and share the
+	// "authz-config" volume name, so only add the ref volume when the inline one
+	// was not added. This keeps a hypothetical CEL regression degrading to "one
+	// volume wins" rather than an invalid pod spec with a duplicate volume name.
+	if m.Spec.AuthzConfigRef != nil && authzVolumeMount == nil {
 		refMount, refVolume := ctrlutil.GenerateAuthzVolumeConfigFromRef(m.Name)
 		volumeMounts = append(volumeMounts, *refMount)
 		volumes = append(volumes, *refVolume)

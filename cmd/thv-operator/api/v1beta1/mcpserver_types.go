@@ -58,6 +58,9 @@ const (
 const (
 	// ConditionOIDCConfigRefValidated indicates whether the OIDCConfigRef is valid
 	ConditionOIDCConfigRefValidated = "OIDCConfigRefValidated"
+
+	// ConditionAuthzConfigRefValidated indicates whether the AuthzConfigRef is valid
+	ConditionAuthzConfigRefValidated = "AuthzConfigRefValidated"
 )
 
 const (
@@ -72,6 +75,20 @@ const (
 
 	// ConditionReasonOIDCConfigRefError indicates an error occurred validating the OIDCConfigRef
 	ConditionReasonOIDCConfigRefError = "OIDCConfigRefError"
+)
+
+const (
+	// ConditionReasonAuthzConfigRefValid indicates the referenced MCPAuthzConfig is valid and ready
+	ConditionReasonAuthzConfigRefValid = "AuthzConfigRefValid"
+
+	// ConditionReasonAuthzConfigRefNotFound indicates the referenced MCPAuthzConfig was not found
+	ConditionReasonAuthzConfigRefNotFound = "AuthzConfigRefNotFound"
+
+	// ConditionReasonAuthzConfigRefNotValid indicates the referenced MCPAuthzConfig is not valid
+	ConditionReasonAuthzConfigRefNotValid = "AuthzConfigRefNotValid"
+
+	// ConditionReasonAuthzConfigRefError indicates an error occurred validating the AuthzConfigRef
+	ConditionReasonAuthzConfigRefError = "AuthzConfigRefError"
 )
 
 const (
@@ -897,6 +914,10 @@ type MCPServerStatus struct {
 	// used to detect configuration changes and trigger reconciliation.
 	// +optional
 	AuthServerConfigHash string `json:"authServerConfigHash,omitempty"`
+
+	// AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection
+	// +optional
+	AuthzConfigHash string `json:"authzConfigHash,omitempty"`
 
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
 	// +optional

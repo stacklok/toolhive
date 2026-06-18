@@ -25,7 +25,6 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
-	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
 const (
@@ -34,9 +33,6 @@ const (
 
 	// authzConfigRequeueDelay is the delay before requeuing after adding a finalizer
 	authzConfigRequeueDelay = 500 * time.Millisecond
-
-	// authzConfigVersion is the default version for reconstructed authz configs
-	authzConfigVersion = "1.0"
 )
 
 // MCPAuthzConfigReconciler reconciles a MCPAuthzConfig object.
@@ -208,46 +204,15 @@ func (*MCPAuthzConfigReconciler) validateAuthzConfig(authzConfig *mcpv1beta1.MCP
 		return err
 	}
 
-	// buildFullAuthzConfigJSON returns the registered factory alongside the
+	// BuildFullAuthzConfigJSON returns the registered factory alongside the
 	// envelope, so we don't have to re-Unmarshal the JSON or re-look-up the
-	// factory just to dispatch ValidateConfig.
-	fullConfigJSON, factory, err := buildFullAuthzConfigJSON(authzConfig.Spec)
+	// factory just to dispatch ValidateConfig. It lives in controllerutil so the
+	// workload controllers can reuse it without an import cycle.
+	fullConfigJSON, factory, err := ctrlutil.BuildFullAuthzConfigJSON(authzConfig.Spec)
 	if err != nil {
 		return err
 	}
 	return factory.ValidateConfig(fullConfigJSON)
-}
-
-// buildFullAuthzConfigJSON reconstructs the full authorizer config JSON from a
-// MCPAuthzConfig spec and returns it alongside the resolved factory. The JSON
-// shape is the same one accepted by authorizers.Config and stored in
-// ConfigMaps: {"version": "1.0", "type": "<type>", "<configKey>": {<config>}}.
-// Returning the factory together with the JSON lets callers (notably
-// validateAuthzConfig) skip a second registry lookup.
-func buildFullAuthzConfigJSON(spec mcpv1beta1.MCPAuthzConfigSpec) ([]byte, authorizers.AuthorizerFactory, error) {
-	factory := authorizers.GetFactory(spec.Type)
-	if factory == nil {
-		return nil, nil, fmt.Errorf("unsupported authorizer type: %s (registered types: %v)",
-			spec.Type, authorizers.RegisteredTypes())
-	}
-
-	if len(spec.Config.Raw) == 0 {
-		return nil, nil, fmt.Errorf("config field is empty")
-	}
-
-	versionJSON, _ := json.Marshal(authzConfigVersion)
-	typeJSON, _ := json.Marshal(spec.Type)
-	fullConfig := map[string]json.RawMessage{
-		"version":           versionJSON,
-		"type":              typeJSON,
-		factory.ConfigKey(): spec.Config.Raw,
-	}
-
-	result, err := json.Marshal(fullConfig)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal full authz config: %w", err)
-	}
-	return result, factory, nil
 }
 
 // canonicalizeSpecForHash returns a copy of spec whose Config.Raw has been

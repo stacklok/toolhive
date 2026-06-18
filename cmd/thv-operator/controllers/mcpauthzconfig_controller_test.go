@@ -4,7 +4,6 @@
 package controllers
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -54,96 +53,6 @@ func newAuthzTestReconciler(t *testing.T, objs ...client.Object) (*MCPAuthzConfi
 		Build()
 
 	return &MCPAuthzConfigReconciler{Client: fakeClient, Scheme: scheme}, fakeClient
-}
-
-func Test_buildFullAuthzConfigJSON(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		spec          mcpv1beta1.MCPAuthzConfigSpec
-		expectError   bool
-		expectType    string
-		expectKey     string
-		expectVersion string
-	}{
-		{
-			name: "valid Cedar config produces correct JSON",
-			spec: mcpv1beta1.MCPAuthzConfigSpec{
-				Type:   "cedarv1",
-				Config: validCedarConfig(),
-			},
-			expectType:    "cedarv1",
-			expectKey:     "cedar",
-			expectVersion: "1.0",
-		},
-		{
-			name: "valid HTTP PDP config produces correct JSON",
-			spec: mcpv1beta1.MCPAuthzConfigSpec{
-				Type:   "httpv1",
-				Config: validHTTPPDPConfig(),
-			},
-			expectType:    "httpv1",
-			expectKey:     "pdp",
-			expectVersion: "1.0",
-		},
-		{
-			name: "unknown type returns error",
-			spec: mcpv1beta1.MCPAuthzConfigSpec{
-				Type:   "unknown-type",
-				Config: runtime.RawExtension{Raw: []byte(`{}`)},
-			},
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			result, factory, err := buildFullAuthzConfigJSON(tt.spec)
-
-			if tt.expectError {
-				require.Error(t, err)
-				assert.Nil(t, factory, "factory must be nil when buildFullAuthzConfigJSON errors")
-				return
-			}
-
-			require.NoError(t, err)
-			require.NotNil(t, factory, "factory must accompany a successful build")
-			assert.Equal(t, tt.expectKey, factory.ConfigKey(),
-				"returned factory's ConfigKey must match the nested envelope key")
-
-			var parsed map[string]json.RawMessage
-			require.NoError(t, json.Unmarshal(result, &parsed), "Output must be valid JSON")
-
-			var version string
-			require.NoError(t, json.Unmarshal(parsed["version"], &version))
-			assert.Equal(t, tt.expectVersion, version)
-
-			var typ string
-			require.NoError(t, json.Unmarshal(parsed["type"], &typ))
-			assert.Equal(t, tt.expectType, typ)
-
-			_, hasKey := parsed[tt.expectKey]
-			assert.True(t, hasKey, "Output JSON should contain key %q", tt.expectKey)
-		})
-	}
-}
-
-func Test_buildFullAuthzConfigJSON_EmptyConfigRaw(t *testing.T) {
-	t.Parallel()
-
-	spec := mcpv1beta1.MCPAuthzConfigSpec{
-		Type:   "cedarv1",
-		Config: runtime.RawExtension{Raw: []byte{}},
-	}
-
-	result, factory, err := buildFullAuthzConfigJSON(spec)
-	require.Error(t, err)
-	assert.Nil(t, result)
-	assert.Nil(t, factory, "factory must be nil when buildFullAuthzConfigJSON errors")
-	assert.Contains(t, err.Error(), "config field is empty")
 }
 
 func TestCanonicalizeSpecForHash(t *testing.T) {

@@ -125,6 +125,12 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
+	// Resolve a referenced MCPAuthzConfig (spec.authzConfigRef) into runtime authz.
+	// Inline and ref are mutually exclusive (CRD XValidation), so at most one is active.
+	if err := ctrlutil.AddAuthzConfigRefOptions(apiCtx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfigRef, &options); err != nil {
+		return nil, fmt.Errorf("failed to process AuthzConfigRef: %w", err)
+	}
+
 	// Add OIDC configuration if referenced via MCPOIDCConfigRef
 	resolvedOIDCConfig, err := r.resolveAndAddOIDCConfig(apiCtx, proxy, &options)
 	if err != nil {

@@ -147,6 +147,16 @@ func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
 		volumes = append(volumes, *authzVolume)
 	}
 
+	// Add the volume mount for a referenced MCPAuthzConfig (spec.authzConfigRef).
+	// Inline and ref are mutually exclusive (CRD XValidation) and share the
+	// "authz-config" volume name, so only add the ref volume when the inline one
+	// was not added.
+	if proxy.Spec.AuthzConfigRef != nil && authzVolumeMount == nil {
+		refMount, refVolume := ctrlutil.GenerateAuthzVolumeConfigFromRef(proxy.Name)
+		volumeMounts = append(volumeMounts, *refMount)
+		volumes = append(volumes, *refVolume)
+	}
+
 	return volumeMounts, volumes
 }
 

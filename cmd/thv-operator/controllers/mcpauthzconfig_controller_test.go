@@ -914,7 +914,11 @@ func TestMCPAuthzConfigReconciler_watchHandlers(t *testing.T) {
 			t.Parallel()
 
 			ctx := t.Context()
-			r, _ := newAuthzTestReconciler(t, staleConfig, tt.obj)
+			// DeepCopy the shared fixture: newAuthzTestReconciler builds a fake
+			// client whose versionedTracker.Add mutates ObjectMeta.ResourceVersion
+			// in place. Passing the same staleConfig pointer into parallel subtests
+			// would race on that write (#5502); each subtest gets its own copy.
+			r, _ := newAuthzTestReconciler(t, staleConfig.DeepCopy(), tt.obj)
 
 			requests := func() []reconcile.Request {
 				switch tt.obj.(type) {

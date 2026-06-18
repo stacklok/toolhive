@@ -2873,6 +2873,11 @@ spec:
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
+              authzConfigHash:
+                description: |-
+                  AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection.
+                  Only populated when IncomingAuth.AuthzConfigRef is set.
+                type: string
               backendCount:
                 description: |-
                   BackendCount is the number of routable backends (ready + unauthenticated).
@@ -5890,6 +5895,11 @@ spec:
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
+              authzConfigHash:
+                description: |-
+                  AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection.
+                  Only populated when IncomingAuth.AuthzConfigRef is set.
+                type: string
               backendCount:
                 description: |-
                   BackendCount is the number of routable backends (ready + unauthenticated).

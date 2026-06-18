@@ -650,6 +650,10 @@ spec:
                   AuthServerConfigHash is the hash of the referenced authServerRef spec,
                   used to detect configuration changes and trigger reconciliation.
                 type: string
+              authzConfigHash:
+                description: AuthzConfigHash is the hash of the referenced MCPAuthzConfig
+                  spec for change detection
+                type: string
               conditions:
                 description: Conditions represent the latest available observations
                   of the MCPRemoteProxy's state
@@ -1382,6 +1386,10 @@ spec:
                 description: |-
                   AuthServerConfigHash is the hash of the referenced authServerRef spec,
                   used to detect configuration changes and trigger reconciliation.
+                type: string
+              authzConfigHash:
+                description: AuthzConfigHash is the hash of the referenced MCPAuthzConfig
+                  spec for change detection
                 type: string
               conditions:
                 description: Conditions represent the latest available observations

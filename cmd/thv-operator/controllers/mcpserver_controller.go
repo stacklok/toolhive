@@ -138,6 +138,10 @@ const (
 
 	// authzLabelValueInline is the label value for inline authorization configuration
 	authzLabelValueInline = "inline"
+
+	// authzLabelValueRef is the label value for a ConfigMap materialized from a
+	// referenced MCPAuthzConfig (spec.authzConfigRef)
+	authzLabelValueRef = "ref"
 )
 
 const defaultTerminationGracePeriodSeconds = int64(30)
@@ -155,6 +159,7 @@ func (r *MCPServerReconciler) detectPlatform(ctx context.Context) (kubernetes.Pl
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers/finalizers,verbs=update
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpauthzconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
@@ -313,6 +318,17 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
 		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
 			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPOIDCConfig error")
+		}
+		return ctrl.Result{}, err
+	}
+
+	// Check if MCPAuthzConfig is referenced and handle it
+	if err := r.handleAuthzConfig(ctx, mcpServer); err != nil {
+		ctxLogger.Error(err, "Failed to handle MCPAuthzConfig")
+		mcpServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
+		setReadyCondition(mcpServer, metav1.ConditionFalse, mcpv1beta1.ConditionReasonNotReady, err.Error())
+		if statusErr := r.Status().Update(ctx, mcpServer); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPServer status after MCPAuthzConfig error")
 		}
 		return ctrl.Result{}, err
 	}
@@ -1242,11 +1258,20 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 		})
 	}
 
-	// Add volume mounts for authorization configuration
+	// Add volume mounts for authorization configuration (inline spec.authzConfig).
 	authzVolumeMount, authzVolume := ctrlutil.GenerateAuthzVolumeConfig(m.Spec.AuthzConfig, m.Name)
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
 		volumes = append(volumes, *authzVolume)
+	}
+
+	// Add the volume mount for a referenced MCPAuthzConfig (spec.authzConfigRef).
+	// Mutually exclusive with the inline volume above (CRD XValidation), and the
+	// volume name/path are shared, so at most one authz volume is ever mounted.
+	if m.Spec.AuthzConfigRef != nil {
+		refMount, refVolume := ctrlutil.GenerateAuthzVolumeConfigFromRef(m.Name)
+		volumeMounts = append(volumeMounts, *refMount)
+		volumes = append(volumes, *refVolume)
 	}
 
 	// Add OIDC CA bundle volume if configured via MCPOIDCConfigRef
@@ -2103,6 +2128,14 @@ func labelsForInlineAuthzConfig(name string) map[string]string {
 	return labels
 }
 
+// labelsForAuthzConfigRef returns the labels for ConfigMaps materialized from a
+// referenced MCPAuthzConfig.
+func labelsForAuthzConfigRef(name string) map[string]string {
+	labels := labelsForMCPServer(name)
+	labels[authzLabelKey] = authzLabelValueRef
+	return labels
+}
+
 // getToolhiveRunnerImage returns the image to use for the toolhive runner container
 func getToolhiveRunnerImage() string {
 	// Get the image from the environment variable or use a default
@@ -2421,6 +2454,109 @@ func setOIDCConfigRefCondition(m *mcpv1beta1.MCPServer, status metav1.ConditionS
 	})
 }
 
+// handleAuthzConfig validates the referenced MCPAuthzConfig, tracks its hash on
+// the MCPServer status, and sets the AuthzConfigRefValidated condition. When the
+// ref is cleared it removes both the hash and the condition so a stale "valid"
+// signal does not linger. ReferencingWorkloads on the MCPAuthzConfig is owned by
+// the MCPAuthzConfig controller (#5511); this controller never writes it.
+func (r *MCPServerReconciler) handleAuthzConfig(ctx context.Context, m *mcpv1beta1.MCPServer) error {
+	if m.Spec.AuthzConfigRef == nil {
+		// No MCPAuthzConfig referenced: clear any stored hash and remove the
+		// condition so it does not remain stale-True after the ref is removed.
+		changed := false
+		if m.Status.AuthzConfigHash != "" {
+			m.Status.AuthzConfigHash = ""
+			changed = true
+		}
+		if meta.RemoveStatusCondition(&m.Status.Conditions, mcpv1beta1.ConditionAuthzConfigRefValidated) {
+			changed = true
+		}
+		if changed {
+			if err := r.Status().Update(ctx, m); err != nil {
+				return fmt.Errorf("failed to clear MCPAuthzConfig status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	authzConfig, err := r.fetchAndValidateAuthzConfig(ctx, m)
+	if err != nil {
+		return err
+	}
+
+	prevCondition := meta.FindStatusCondition(m.Status.Conditions, mcpv1beta1.ConditionAuthzConfigRefValidated)
+	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
+
+	setAuthzConfigRefCondition(m, metav1.ConditionTrue,
+		mcpv1beta1.ConditionReasonAuthzConfigRefValid,
+		fmt.Sprintf("MCPAuthzConfig %s is valid and ready", m.Spec.AuthzConfigRef.Name))
+
+	if m.Status.AuthzConfigHash != authzConfig.Status.ConfigHash {
+		m.Status.AuthzConfigHash = authzConfig.Status.ConfigHash
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		if err := r.Status().Update(ctx, m); err != nil {
+			return fmt.Errorf("failed to update MCPAuthzConfig status: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// fetchAndValidateAuthzConfig fetches the referenced MCPAuthzConfig, validates it
+// is ready, and sets the appropriate failure condition on the MCPServer if not.
+func (r *MCPServerReconciler) fetchAndValidateAuthzConfig(
+	ctx context.Context, m *mcpv1beta1.MCPServer,
+) (*mcpv1beta1.MCPAuthzConfig, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	authzConfig, err := ctrlutil.GetAuthzConfigForWorkload(ctx, r.Client, m.Namespace, m.Spec.AuthzConfigRef)
+	if err != nil {
+		setAuthzConfigRefCondition(m, metav1.ConditionFalse,
+			mcpv1beta1.ConditionReasonAuthzConfigRefNotFound,
+			fmt.Sprintf("MCPAuthzConfig %s not found: %v", m.Spec.AuthzConfigRef.Name, err))
+		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update status after MCPAuthzConfig lookup error")
+		}
+		return nil, err
+	}
+
+	if authzConfig == nil {
+		setAuthzConfigRefCondition(m, metav1.ConditionFalse,
+			mcpv1beta1.ConditionReasonAuthzConfigRefNotFound,
+			fmt.Sprintf("MCPAuthzConfig %s not found", m.Spec.AuthzConfigRef.Name))
+		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update status after MCPAuthzConfig not found")
+		}
+		return nil, fmt.Errorf("MCPAuthzConfig %s not found", m.Spec.AuthzConfigRef.Name)
+	}
+
+	if err := ctrlutil.ValidateAuthzConfigReady(authzConfig); err != nil {
+		setAuthzConfigRefCondition(m, metav1.ConditionFalse,
+			mcpv1beta1.ConditionReasonAuthzConfigRefNotValid,
+			fmt.Sprintf("MCPAuthzConfig %s is not valid: %v", m.Spec.AuthzConfigRef.Name, err))
+		if statusErr := r.Status().Update(ctx, m); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update status after MCPAuthzConfig validation check")
+		}
+		return nil, err
+	}
+
+	return authzConfig, nil
+}
+
+// setAuthzConfigRefCondition sets the AuthzConfigRefValidated status condition
+func setAuthzConfigRefCondition(m *mcpv1beta1.MCPServer, status metav1.ConditionStatus, reason, message string) {
+	meta.SetStatusCondition(&m.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionAuthzConfigRefValidated,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: m.Generation,
+	})
+}
+
 // handleWebhookConfig validates and tracks the hash of the referenced MCPWebhookConfig.
 func (r *MCPServerReconciler) handleWebhookConfig(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	ctxLogger := log.FromContext(ctx)
@@ -2463,10 +2599,26 @@ func (r *MCPServerReconciler) handleWebhookConfig(ctx context.Context, m *mcpv1b
 	return nil
 }
 
-// ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline configuration
+// ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline
+// configuration (spec.authzConfig) and for a referenced MCPAuthzConfig
+// (spec.authzConfigRef). The two are mutually exclusive (CRD XValidation), so at
+// most one ConfigMap is materialized per reconcile.
 func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1beta1.MCPServer) error {
-	return ctrlutil.EnsureAuthzConfigMap(
+	if err := ctrlutil.EnsureAuthzConfigMap(
 		ctx, r.Client, r.Scheme, m, m.Namespace, m.Name, m.Spec.AuthzConfig, labelsForInlineAuthzConfig(m.Name),
+	); err != nil {
+		return err
+	}
+
+	if m.Spec.AuthzConfigRef == nil {
+		return nil
+	}
+	authzConfig, err := ctrlutil.GetAuthzConfigForWorkload(ctx, r.Client, m.Namespace, m.Spec.AuthzConfigRef)
+	if err != nil {
+		return err
+	}
+	return ctrlutil.EnsureAuthzConfigMapFromRef(
+		ctx, r.Client, r.Scheme, m, m.Namespace, m.Name, authzConfig, labelsForAuthzConfigRef(m.Name),
 	)
 }
 
@@ -2632,6 +2784,38 @@ func (r *MCPServerReconciler) validateRateLimitConfig(ctx context.Context, mcpSe
 	}
 }
 
+// mapAuthzConfigToServers maps MCPAuthzConfig changes to reconciliation requests
+// for the MCPServers that reference it via spec.authzConfigRef.
+func (r *MCPServerReconciler) mapAuthzConfigToServers(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	authzConfig, ok := obj.(*mcpv1beta1.MCPAuthzConfig)
+	if !ok {
+		return nil
+	}
+
+	mcpServerList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, mcpServerList, client.InNamespace(authzConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPServers for MCPAuthzConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, server := range mcpServerList.Items {
+		if server.Spec.AuthzConfigRef != nil &&
+			server.Spec.AuthzConfigRef.Name == authzConfig.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      server.Name,
+					Namespace: server.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
 // mapWebhookConfigToServers maps MCPWebhookConfig changes to MCPServer reconciliation requests.
 func (r *MCPServerReconciler) mapWebhookConfigToServers(
 	ctx context.Context, obj client.Object,
@@ -2733,6 +2917,9 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		},
 	)
 
+	// Create a handler that maps MCPAuthzConfig changes to MCPServer reconciliation requests
+	authzConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapAuthzConfigToServers)
+
 	telemetryConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToServers)
 	webhookConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapWebhookConfigToServers)
 
@@ -2742,6 +2929,7 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Owns(&corev1.Service{}).
 		Watches(&mcpv1beta1.MCPExternalAuthConfig{}, externalAuthConfigHandler).
 		Watches(&mcpv1beta1.MCPOIDCConfig{}, oidcConfigHandler).
+		Watches(&mcpv1beta1.MCPAuthzConfig{}, authzConfigHandler).
 		Watches(&mcpv1beta1.MCPTelemetryConfig{}, telemetryConfigHandler).
 		Watches(&mcpv1alpha1.MCPWebhookConfig{}, webhookConfigHandler).
 		Complete(r)

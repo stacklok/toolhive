@@ -112,7 +112,7 @@ var _ = Describe("MCPServer AuthzConfigRef Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, newServer(srvName, namespace, cfgName))).To(Succeed())
 		})
 
-		It("re-reconciles the MCPServer via the watch and updates the tracked hash", func() {
+		It("reflects a config hash change on the referencing MCPServer", func() {
 			Eventually(func(g Gomega) {
 				var got mcpv1beta1.MCPServer
 				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: srvName, Namespace: namespace}, &got)).To(Succeed())
@@ -128,11 +128,34 @@ var _ = Describe("MCPServer AuthzConfigRef Integration Tests", func() {
 			})
 			Expect(k8sClient.Status().Update(ctx, &cfg)).To(Succeed())
 
-			By("observing the MCPServer pick up the new hash through the watch")
+			// The MCPServer controller watches MCPAuthzConfig, so the change is
+			// picked up without an external nudge. (This asserts the observable
+			// outcome; it does not attempt to prove the watch is the sole trigger.)
+			By("observing the MCPServer eventually reflect the new hash")
 			Eventually(func(g Gomega) {
 				var got mcpv1beta1.MCPServer
 				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: srvName, Namespace: namespace}, &got)).To(Succeed())
 				g.Expect(got.Status.AuthzConfigHash).To(Equal("hash-2"))
+			}, timeout, interval).Should(Succeed())
+		})
+
+		It("transitions AuthzConfigRefValidated to False when the config becomes invalid", func() {
+			By("flagging the referenced config invalid")
+			var cfg mcpv1beta1.MCPAuthzConfig
+			Expect(k8sClient.Get(ctx, types.NamespacedName{Name: cfgName, Namespace: namespace}, &cfg)).To(Succeed())
+			meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
+				Type: mcpv1beta1.ConditionTypeAuthzConfigValid, Status: metav1.ConditionFalse, Reason: "Invalidated",
+			})
+			Expect(k8sClient.Status().Update(ctx, &cfg)).To(Succeed())
+
+			By("observing the MCPServer condition flip to False/NotValid")
+			Eventually(func(g Gomega) {
+				var got mcpv1beta1.MCPServer
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: srvName, Namespace: namespace}, &got)).To(Succeed())
+				cond := meta.FindStatusCondition(got.Status.Conditions, mcpv1beta1.ConditionAuthzConfigRefValidated)
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(cond.Reason).To(Equal(mcpv1beta1.ConditionReasonAuthzConfigRefNotValid))
 			}, timeout, interval).Should(Succeed())
 		})
 	})

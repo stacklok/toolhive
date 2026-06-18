@@ -208,6 +208,13 @@ func EnsureAuthzConfigMapFromRef(
 // GenerateAuthzVolumeConfigFromRef returns the volume mount + volume for the
 // ConfigMap materialized by EnsureAuthzConfigMapFromRef, mirroring
 // GenerateAuthzVolumeConfig for the inline path.
+//
+// Note: in operator-managed deployments this mounted file is NOT the active
+// enforcement path — the proxy builds its authz middleware from the authz config
+// embedded in the RunConfig (via AddAuthzConfigRefOptions → WithAuthzConfig). The
+// mount exists for parity with the inline path and for potential future
+// file-based consumption (config.AuthzConfigPath); the operator does not set
+// that path today.
 func GenerateAuthzVolumeConfigFromRef(resourceName string) (*corev1.VolumeMount, *corev1.Volume) {
 	volumeMount := &corev1.VolumeMount{
 		Name:      "authz-config",

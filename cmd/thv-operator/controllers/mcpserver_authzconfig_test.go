@@ -49,6 +49,7 @@ func TestMCPServerReconciler_handleAuthzConfig(t *testing.T) {
 		mcpServer             *mcpv1beta1.MCPServer
 		authzConfig           *mcpv1beta1.MCPAuthzConfig
 		expectError           bool
+		expectErrContains     string
 		expectHash            string
 		expectHashCleared     bool
 		expectConditionStatus *metav1.ConditionStatus
@@ -82,6 +83,7 @@ func TestMCPServerReconciler_handleAuthzConfig(t *testing.T) {
 				},
 			},
 			expectError:           true,
+			expectErrContains:     "not found",
 			expectConditionStatus: conditionStatusPtr(metav1.ConditionFalse),
 			expectConditionReason: mcpv1beta1.ConditionReasonAuthzConfigRefNotFound,
 		},
@@ -96,6 +98,7 @@ func TestMCPServerReconciler_handleAuthzConfig(t *testing.T) {
 			},
 			authzConfig:           authzConfigForTest("bad", false, ""),
 			expectError:           true,
+			expectErrContains:     "not valid",
 			expectConditionStatus: conditionStatusPtr(metav1.ConditionFalse),
 			expectConditionReason: mcpv1beta1.ConditionReasonAuthzConfigRefNotValid,
 		},
@@ -139,6 +142,9 @@ func TestMCPServerReconciler_handleAuthzConfig(t *testing.T) {
 			err := reconciler.handleAuthzConfig(ctx, tt.mcpServer)
 			if tt.expectError {
 				assert.Error(t, err)
+				if tt.expectErrContains != "" {
+					assert.ErrorContains(t, err, tt.expectErrContains)
+				}
 			} else {
 				assert.NoError(t, err)
 			}
@@ -161,4 +167,62 @@ func TestMCPServerReconciler_handleAuthzConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMCPServerReconciler_handleAuthzConfig_Transitions exercises the stateful
+// bookkeeping (needsUpdate from the prior condition, and recovery) that the
+// static single-state cases above do not: valid -> invalid -> valid.
+func TestMCPServerReconciler_handleAuthzConfig_Transitions(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	authzConfig := authzConfigForTest("cfg", true, "h1")
+	server := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:          "img",
+			AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "cfg"},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(server, authzConfig).
+		WithStatusSubresource(&mcpv1beta1.MCPServer{}, &mcpv1beta1.MCPAuthzConfig{}).
+		Build()
+	r := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
+
+	condStatus := func() *metav1.Condition {
+		return meta.FindStatusCondition(server.Status.Conditions, mcpv1beta1.ConditionAuthzConfigRefValidated)
+	}
+
+	// valid -> condition True + hash tracked
+	require.NoError(t, r.handleAuthzConfig(ctx, server))
+	require.NotNil(t, condStatus())
+	assert.Equal(t, metav1.ConditionTrue, condStatus().Status)
+	assert.Equal(t, "h1", server.Status.AuthzConfigHash)
+
+	// flip the referenced config to invalid -> condition transitions to False/NotValid
+	authzConfig.Status.Conditions = []metav1.Condition{{
+		Type: mcpv1beta1.ConditionTypeAuthzConfigValid, Status: metav1.ConditionFalse, Reason: "Invalidated",
+	}}
+	require.NoError(t, fakeClient.Status().Update(ctx, authzConfig))
+
+	assert.Error(t, r.handleAuthzConfig(ctx, server))
+	require.NotNil(t, condStatus())
+	assert.Equal(t, metav1.ConditionFalse, condStatus().Status)
+	assert.Equal(t, mcpv1beta1.ConditionReasonAuthzConfigRefNotValid, condStatus().Reason)
+
+	// recover the config -> condition transitions back to True
+	authzConfig.Status.Conditions = []metav1.Condition{{
+		Type: mcpv1beta1.ConditionTypeAuthzConfigValid, Status: metav1.ConditionTrue, Reason: "Test",
+	}}
+	require.NoError(t, fakeClient.Status().Update(ctx, authzConfig))
+
+	require.NoError(t, r.handleAuthzConfig(ctx, server))
+	require.NotNil(t, condStatus())
+	assert.Equal(t, metav1.ConditionTrue, condStatus().Status)
 }

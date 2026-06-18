@@ -2461,6 +2461,14 @@ func setOIDCConfigRefCondition(m *mcpv1beta1.MCPServer, status metav1.ConditionS
 // ref is cleared it removes both the hash and the condition so a stale "valid"
 // signal does not linger. ReferencingWorkloads on the MCPAuthzConfig is owned by
 // the MCPAuthzConfig controller (#5511); this controller never writes it.
+//
+// Revocation semantics (fail-stale, not fail-open): if a previously-valid ref
+// later becomes invalid or missing, this returns an error and Reconcile stops
+// before updating the deployment, so an already-running workload keeps enforcing
+// its last-applied authz policy while the MCPServer is marked Failed/Ready=False.
+// It is not torn down and does not revert to no-authz. This matches the
+// OIDC/ExternalAuth/Telemetry ref handlers; hard fail-closed-on-revocation would
+// require a separate, product-signed-off mechanism.
 func (r *MCPServerReconciler) handleAuthzConfig(ctx context.Context, m *mcpv1beta1.MCPServer) error {
 	if m.Spec.AuthzConfigRef == nil {
 		// No MCPAuthzConfig referenced: clear any stored hash and remove the
@@ -2475,7 +2483,7 @@ func (r *MCPServerReconciler) handleAuthzConfig(ctx context.Context, m *mcpv1bet
 		}
 		if changed {
 			if err := r.Status().Update(ctx, m); err != nil {
-				return fmt.Errorf("failed to clear MCPAuthzConfig status: %w", err)
+				return fmt.Errorf("failed to clear MCPAuthzConfig hash from MCPServer status: %w", err)
 			}
 		}
 		return nil
@@ -2500,7 +2508,7 @@ func (r *MCPServerReconciler) handleAuthzConfig(ctx context.Context, m *mcpv1bet
 
 	if needsUpdate {
 		if err := r.Status().Update(ctx, m); err != nil {
-			return fmt.Errorf("failed to update MCPAuthzConfig status: %w", err)
+			return fmt.Errorf("failed to update MCPServer status after validating MCPAuthzConfig: %w", err)
 		}
 	}
 

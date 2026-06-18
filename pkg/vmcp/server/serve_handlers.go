@@ -200,6 +200,14 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 		// how the client changes the header on later requests. The shared backend
 		// client (pkg/vmcp/client) reads the forwarded headers from ctx to build the
 		// outgoing transport chain.
+		//
+		// Note on vmcp anti-pattern #1 ("reserve context for trace IDs, cancellation,
+		// and deadlines only"): this use of context is a known, intentional exception.
+		// The MCP SDK controls the request context passed to the tool handler, and the
+		// shared backend client factory (pkg/vmcp/client) has no explicit parameter
+		// slot for per-session headers — forwarding through context is the only
+		// coupling-free path that does not require threading session state through the
+		// core.VMCP → backendClient boundary.
 		ctx = s.injectCapturedHeaders(ctx, sessionID)
 
 		result, err := s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))

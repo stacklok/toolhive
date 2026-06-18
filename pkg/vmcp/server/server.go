@@ -14,6 +14,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -1247,6 +1248,11 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 
 	// Defer cleanup: if any error occurs, terminate the session and log failures.
 	// Also remove any node-local captured passthrough headers stored for this session.
+	//
+	// Double-delete safety: capturedPassthroughHeaders.Delete is idempotent. This
+	// defer fires only on registration failure — before the session is live and before
+	// the OnUnregisterSession hook (serve.go) is ever registered for this session ID.
+	// The two delete paths are therefore mutually exclusive for well-formed sessions.
 	defer func() {
 		if retErr != nil {
 			if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
@@ -1255,6 +1261,9 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 					"error", termErr,
 					"original_error", retErr)
 			}
+			// The Store above runs only after CreateSession succeeds; if we reach
+			// this defer, the Store either never ran (CreateSession failed) or ran
+			// but injectCoreSessionCapabilities failed. Either way, Delete is safe.
 			s.capturedPassthroughHeaders.Delete(sessionID)
 		}
 	}()
@@ -1293,7 +1302,11 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 		// the client changes the header on later requests (session-stable forwarding).
 		// Node-local only — never written to Redis (see capturedPassthroughHeaders).
 		if captured := headerforward.ForwardedHeadersFromContext(ctx); len(captured) > 0 {
-			s.capturedPassthroughHeaders.Store(sessionID, captured)
+			// Defensive copy: ForwardedHeadersFromContext returns the map reference
+			// placed in the context by CaptureMiddleware. Cloning before storing
+			// ensures the session's credential snapshot is structurally immutable
+			// regardless of whether the caller mutates its own map later.
+			s.capturedPassthroughHeaders.Store(sessionID, maps.Clone(captured))
 		}
 		return s.injectCoreSessionCapabilities(ctx, session)
 	}

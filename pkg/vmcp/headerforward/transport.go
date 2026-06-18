@@ -109,11 +109,17 @@ func BuildHeaderForwardTripper(
 //  1. If forwarded is empty, base is returned unchanged (no allocation, same pointer).
 //  2. A new HeaderForwardConfig is built from a shallow copy of base so the
 //     shared target.HeaderForward is never mutated.
-//  3. Forwarded header names are canonicalized via http.CanonicalHeaderKey and
-//     checked against middleware.RestrictedHeaders; restricted names are silently
-//     dropped (defense-in-depth — they were already filtered upstream by
+//  3. All output AddPlaintextHeaders keys (both static and forwarded) are
+//     canonicalized via http.CanonicalHeaderKey. Static keys from
+//     base.AddPlaintextHeaders are therefore also re-canonicalized in the output,
+//     which changes the intermediate map representation (though wire behavior is
+//     identical since resolveHeaderForward / BuildHeaderForwardTripper
+//     canonicalize again before writing to http.Header).
+//  4. Forwarded header names are additionally checked against
+//     middleware.RestrictedHeaders; restricted names are silently dropped
+//     (defense-in-depth — they were already filtered upstream by
 //     CaptureMiddleware, but we guard here too).
-//  4. A forwarded header name that also appears in base (AddPlaintextHeaders or
+//  5. A forwarded header name that also appears in base (AddPlaintextHeaders or
 //     AddHeadersFromSecret) is a misconfiguration: the function returns an error
 //     rather than silently picking a winner.
 func MergeForwardedHeaders(base *vmcp.HeaderForwardConfig, forwarded map[string]string) (*vmcp.HeaderForwardConfig, error) {

@@ -337,12 +337,27 @@ func TestMergeForwardedHeaders(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
+			// Snapshot base before the call to catch any mutation.
+			var origBasePlaintext map[string]string
+			if tc.base != nil && tc.base.AddPlaintextHeaders != nil {
+				origBasePlaintext = make(map[string]string, len(tc.base.AddPlaintextHeaders))
+				for k, v := range tc.base.AddPlaintextHeaders {
+					origBasePlaintext[k] = v
+				}
+			}
+
 			got, err := MergeForwardedHeaders(tc.base, tc.forwarded)
 			if tc.wantErr {
 				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
+
+			// Verify base was not mutated regardless of outcome.
+			if tc.base != nil {
+				assert.Equal(t, origBasePlaintext, tc.base.AddPlaintextHeaders,
+					"base.AddPlaintextHeaders must not be mutated by MergeForwardedHeaders")
+			}
 
 			if tc.wantCfg == nil {
 				assert.Nil(t, got)

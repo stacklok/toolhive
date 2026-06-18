@@ -292,10 +292,10 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		return v.Close()
 	})
 
-	// Register the three SDK hooks against the assembled *Server (relocated from
-	// server.New). They drive phase-2 of two-phase creation (OnRegisterSession) and
+	// Register the SDK hooks against the assembled *Server (relocated from
+	// server.New). They drive phase-2 of two-phase creation (OnRegisterSession),
 	// the cross-pod Redis re-hydration of per-session tools (OnBeforeListTools /
-	// OnBeforeCallTool); the *Server receiver methods are unchanged.
+	// OnBeforeCallTool), and node-local captured-header cleanup (OnUnregisterSession).
 	hooks.AddOnRegisterSession(func(hookCtx context.Context, session server.ClientSession) {
 		srv.handleSessionRegistration(hookCtx, session)
 	})
@@ -304,6 +304,14 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	})
 	hooks.AddBeforeCallTool(func(hookCtx context.Context, _ any, _ *mcp.CallToolRequest) {
 		srv.lazyInjectSessionTools(hookCtx)
+	})
+	// Clean up node-local captured passthrough headers when the SDK unregisters the
+	// session (on client DELETE or SDK-internal timeout). This is the primary cleanup
+	// path for explicitly-terminated sessions; TTL-expired sessions are cleaned up
+	// lazily when the node-local cache evicts them. Node-local only — credentials
+	// must not be persisted to shared state (security.md).
+	hooks.AddOnUnregisterSession(func(_ context.Context, clientSess server.ClientSession) {
+		srv.capturedPassthroughHeaders.Delete(clientSess.SessionID())
 	})
 
 	// Disarm the close-on-error guard: the Server is fully constructed.

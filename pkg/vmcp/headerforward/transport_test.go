@@ -241,3 +241,145 @@ func TestBuildHeaderForwardTripper_NilCfgReturnsBase(t *testing.T) {
 	require.NoError(t, err)
 	assert.Same(t, base, got, "nil cfg must pass base through untouched")
 }
+
+// TestMergeForwardedHeaders exercises the key rules of MergeForwardedHeaders:
+// empty forwarded, static-only, forwarded-only, merged output, restricted-name
+// drop, and collision detection.
+func TestMergeForwardedHeaders(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		base      *vmcp.HeaderForwardConfig
+		forwarded map[string]string
+		wantCfg   *vmcp.HeaderForwardConfig
+		wantErr   bool
+	}{
+		{
+			name:      "empty forwarded returns base unchanged",
+			base:      &vmcp.HeaderForwardConfig{AddPlaintextHeaders: map[string]string{"X-Static": "v"}},
+			forwarded: nil,
+			wantCfg:   &vmcp.HeaderForwardConfig{AddPlaintextHeaders: map[string]string{"X-Static": "v"}},
+		},
+		{
+			name:      "nil base and empty forwarded returns nil",
+			base:      nil,
+			forwarded: nil,
+			wantCfg:   nil,
+		},
+		{
+			name:      "nil base with forwarded yields forwarded-only config",
+			base:      nil,
+			forwarded: map[string]string{"X-Api-Key": "key123"},
+			wantCfg: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{"X-Api-Key": "key123"},
+			},
+		},
+		{
+			name:      "forwarded headers are canonicalized",
+			base:      nil,
+			forwarded: map[string]string{"x-api-key": "key123"},
+			wantCfg: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{"X-Api-Key": "key123"},
+			},
+		},
+		{
+			name: "static and forwarded are merged",
+			base: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{"X-Static": "static-value"},
+			},
+			forwarded: map[string]string{"X-Dynamic": "dynamic-value"},
+			wantCfg: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{
+					"X-Static":  "static-value",
+					"X-Dynamic": "dynamic-value",
+				},
+			},
+		},
+		{
+			name: "secret headers preserved from base",
+			base: &vmcp.HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{"X-Auth": "MY_SECRET"},
+			},
+			forwarded: map[string]string{"X-Dynamic": "value"},
+			wantCfg: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders:  map[string]string{"X-Dynamic": "value"},
+				AddHeadersFromSecret: map[string]string{"X-Auth": "MY_SECRET"},
+			},
+		},
+		{
+			name:      "restricted header is silently dropped",
+			base:      nil,
+			forwarded: map[string]string{"X-Forwarded-For": "1.2.3.4", "X-Api-Key": "k"},
+			wantCfg: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{"X-Api-Key": "k"},
+			},
+		},
+		{
+			name: "collision with plaintext static returns error",
+			base: &vmcp.HeaderForwardConfig{
+				AddPlaintextHeaders: map[string]string{"X-Api-Key": "static"},
+			},
+			forwarded: map[string]string{"X-Api-Key": "forwarded"},
+			wantErr:   true,
+		},
+		{
+			name: "collision with secret static returns error",
+			base: &vmcp.HeaderForwardConfig{
+				AddHeadersFromSecret: map[string]string{"X-Auth": "SECRET_ID"},
+			},
+			forwarded: map[string]string{"X-Auth": "value"},
+			wantErr:   true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := MergeForwardedHeaders(tc.base, tc.forwarded)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+
+			if tc.wantCfg == nil {
+				assert.Nil(t, got)
+				return
+			}
+			require.NotNil(t, got)
+			assert.Equal(t, tc.wantCfg.AddPlaintextHeaders, got.AddPlaintextHeaders)
+			assert.Equal(t, tc.wantCfg.AddHeadersFromSecret, got.AddHeadersFromSecret)
+		})
+	}
+}
+
+// TestMergeForwardedHeaders_EmptyForwardedReturnsSamePointer verifies that when
+// forwarded is nil/empty, the exact same base pointer is returned (no allocation).
+func TestMergeForwardedHeaders_EmptyForwardedReturnsSamePointer(t *testing.T) {
+	t.Parallel()
+	base := &vmcp.HeaderForwardConfig{AddPlaintextHeaders: map[string]string{"X-A": "v"}}
+	got, err := MergeForwardedHeaders(base, nil)
+	require.NoError(t, err)
+	assert.Same(t, base, got, "empty forwarded must return the same base pointer")
+
+	got2, err := MergeForwardedHeaders(base, map[string]string{})
+	require.NoError(t, err)
+	assert.Same(t, base, got2, "empty forwarded map must return the same base pointer")
+}
+
+// TestMergeForwardedHeaders_RestrictedHeadersList verifies that every header in
+// middleware.RestrictedHeaders is dropped when present in forwarded.
+func TestMergeForwardedHeaders_RestrictedHeadersList(t *testing.T) {
+	t.Parallel()
+	for name := range middleware.RestrictedHeaders {
+		forwarded := map[string]string{name: "inject"}
+		got, err := MergeForwardedHeaders(nil, forwarded)
+		require.NoError(t, err, "restricted header %q must not return an error", name)
+		if got != nil {
+			assert.NotContains(t, got.AddPlaintextHeaders, name,
+				"restricted header %q must be dropped", name)
+		}
+	}
+}

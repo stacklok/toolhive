@@ -433,11 +433,21 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		target:       target,
 	}
 
-	// Inject per-backend HTTP headers from MCPServerEntry.spec.headerForward.
-	// Resolves plaintext + secret-backed headers once here; auth (inner) always
-	// wins over user-supplied headers because it runs after this tripper.
+	// Merge session-captured passthrough headers (from ctx) with the static
+	// per-backend header-forward config. On the Serve path, the caller (coreToolHandler
+	// in pkg/vmcp/server/serve_handlers.go) replaces the per-request forwarded headers
+	// on ctx with the session-stable snapshot captured once at session creation, so
+	// passing ctx here provides session-stable header injection without re-reading the
+	// live incoming request headers. Restricted names and static-config collisions are
+	// rejected by MergeForwardedHeaders.
+	mergedHeaderForward, mergeErr := headerforward.MergeForwardedHeaders(
+		target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx),
+	)
+	if mergeErr != nil {
+		return nil, fmt.Errorf("failed to merge forwarded headers for backend %s: %w", target.WorkloadID, mergeErr)
+	}
 	baseTransport, err = headerforward.BuildHeaderForwardTripper(
-		ctx, baseTransport, target.HeaderForward, h.secretsProvider, target.WorkloadID,
+		ctx, baseTransport, mergedHeaderForward, h.secretsProvider, target.WorkloadID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build header-forward transport: %w", err)

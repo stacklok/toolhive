@@ -101,6 +101,71 @@ func BuildHeaderForwardTripper(
 	return &headerForwardRoundTripper{base: base, headers: headers}, nil
 }
 
+// MergeForwardedHeaders returns a HeaderForwardConfig that combines the static
+// backend configuration (base) with any per-request forwarded headers captured
+// from the caller's request (see CaptureMiddleware / ForwardedHeadersFromContext).
+//
+// Rules (applied in order):
+//  1. If forwarded is empty, base is returned unchanged (no allocation, same pointer).
+//  2. A new HeaderForwardConfig is built from a shallow copy of base so the
+//     shared target.HeaderForward is never mutated.
+//  3. Forwarded header names are canonicalized via http.CanonicalHeaderKey and
+//     checked against middleware.RestrictedHeaders; restricted names are silently
+//     dropped (defense-in-depth — they were already filtered upstream by
+//     CaptureMiddleware, but we guard here too).
+//  4. A forwarded header name that also appears in base (AddPlaintextHeaders or
+//     AddHeadersFromSecret) is a misconfiguration: the function returns an error
+//     rather than silently picking a winner.
+func MergeForwardedHeaders(base *vmcp.HeaderForwardConfig, forwarded map[string]string) (*vmcp.HeaderForwardConfig, error) {
+	if len(forwarded) == 0 {
+		return base, nil
+	}
+
+	// Build the merged AddPlaintextHeaders starting from the static config.
+	var staticPlaintext map[string]string
+	if base != nil {
+		staticPlaintext = base.AddPlaintextHeaders
+	}
+
+	// Canonical set of header names already owned by the static config, used for
+	// collision detection.
+	staticNames := make(map[string]struct{})
+	if base != nil {
+		for k := range base.AddPlaintextHeaders {
+			staticNames[http.CanonicalHeaderKey(k)] = struct{}{}
+		}
+		for k := range base.AddHeadersFromSecret {
+			staticNames[http.CanonicalHeaderKey(k)] = struct{}{}
+		}
+	}
+
+	merged := make(map[string]string, len(staticPlaintext)+len(forwarded))
+	for k, v := range staticPlaintext {
+		merged[k] = v
+	}
+
+	for name, value := range forwarded {
+		canonical := http.CanonicalHeaderKey(name)
+		if middleware.RestrictedHeaders[canonical] {
+			slog.Debug("dropping restricted forwarded header", "header", canonical)
+			continue
+		}
+		if _, exists := staticNames[canonical]; exists {
+			return nil, fmt.Errorf(
+				"forwarded header %q collides with the backend's static header-forward config", canonical)
+		}
+		merged[canonical] = value
+	}
+
+	out := &vmcp.HeaderForwardConfig{
+		AddPlaintextHeaders: merged,
+	}
+	if base != nil {
+		out.AddHeadersFromSecret = base.AddHeadersFromSecret
+	}
+	return out, nil
+}
+
 // resolveHeaderForward merges plaintext headers with secret-resolved headers into
 // a single canonicalized http.Header. Plaintext entries are copied verbatim;
 // secret identifiers are looked up via the provider (TOOLHIVE_SECRET_<ident>).

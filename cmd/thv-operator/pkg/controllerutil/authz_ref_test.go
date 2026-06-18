@@ -99,6 +99,8 @@ func TestBuildFullAuthzConfigJSON(t *testing.T) {
 			data, factory, err := BuildFullAuthzConfigJSON(tt.spec)
 			if tt.wantErr {
 				assert.Error(t, err)
+				assert.Nil(t, data, "data must be nil on error")
+				assert.Nil(t, factory, "factory must be nil on error")
 				return
 			}
 			require.NoError(t, err)

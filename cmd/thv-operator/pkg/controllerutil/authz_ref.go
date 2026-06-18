@@ -23,8 +23,16 @@ import (
 )
 
 // authzRefConfigMapName is the name of the ConfigMap materialized from a
-// referenced MCPAuthzConfig for a given workload. Distinct from the inline
-// "-authz-inline" suffix so the two paths never collide on one workload.
+// referenced MCPAuthzConfig for a given workload. The "-authz-ref" suffix keeps
+// it distinct from the inline path's "-authz-inline" ConfigMap so the two
+// ConfigMaps never overwrite each other.
+//
+// The volume name and mount path ("authz-config", "/etc/toolhive/authz") are
+// deliberately shared with the inline GenerateAuthzVolumeConfig: a workload
+// mounts at most one authz volume because spec.authzConfig and
+// spec.authzConfigRef are mutually exclusive (enforced by CRD XValidation), so
+// the proxy reads authz.json from the same path regardless of the source. The
+// shared volume name is therefore intentional, not a collision risk.
 func authzRefConfigMapName(resourceName string) string {
 	return fmt.Sprintf("%s-authz-ref", resourceName)
 }
@@ -164,6 +172,13 @@ func EnsureAuthzConfigMapFromRef(
 ) error {
 	if authzConfig == nil {
 		return nil
+	}
+
+	// Defense in depth: the workload controller validates readiness before
+	// materializing, but guard here too so this exported helper never writes a
+	// ConfigMap from a config its owning controller has flagged invalid.
+	if err := ValidateAuthzConfigReady(authzConfig); err != nil {
+		return err
 	}
 
 	data, _, err := BuildFullAuthzConfigJSON(authzConfig.Spec)

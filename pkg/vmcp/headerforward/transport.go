@@ -141,7 +141,10 @@ func MergeForwardedHeaders(base *vmcp.HeaderForwardConfig, forwarded map[string]
 
 	merged := make(map[string]string, len(staticPlaintext)+len(forwarded))
 	for k, v := range staticPlaintext {
-		merged[k] = v
+		// Canonicalize static keys (consistent with forwarded keys below) so the
+		// returned map has uniformly canonical HTTP header names regardless of how
+		// the static config was specified.
+		merged[http.CanonicalHeaderKey(k)] = v
 	}
 
 	for name, value := range forwarded {

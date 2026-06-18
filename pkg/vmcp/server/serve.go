@@ -306,10 +306,13 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		srv.lazyInjectSessionTools(hookCtx)
 	})
 	// Clean up node-local captured passthrough headers when the SDK unregisters the
-	// session (on client DELETE or SDK-internal timeout). This is the primary cleanup
-	// path for explicitly-terminated sessions; TTL-expired sessions are cleaned up
-	// lazily when the node-local cache evicts them. Node-local only — credentials
-	// must not be persisted to shared state (security.md).
+	// session. The hook fires for both explicit client DELETE requests and for sessions
+	// that expire: the SDK's sessionIdleTTL sweeper calls UnregisterSession on idle
+	// sessions, which triggers this hook. Sessions abandoned without DELETE (e.g. a
+	// crashed client with a sessionIdleTTL of 0) retain their entry until the Server
+	// shuts down — acceptable because the map is bounded by the number of live sessions
+	// and each entry is small (a few header name→value pairs). Credentials in the map
+	// are node-local only and never written to shared state (security.md).
 	hooks.AddOnUnregisterSession(func(_ context.Context, clientSess server.ClientSession) {
 		srv.capturedPassthroughHeaders.Delete(clientSess.SessionID())
 	})

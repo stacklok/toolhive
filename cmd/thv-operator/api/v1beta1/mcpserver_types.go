@@ -324,15 +324,6 @@ type MCPServerSpec struct {
 	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
 	// The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.
 	// Mutually exclusive with authzConfig.
-	//
-	// TODO(#4778): remove the staging NOTE below once workload controllers
-	// resolve AuthzConfigRef into a runtime authz config.
-	//
-	// NOTE: this field is consumed by workload controllers in a follow-up PR.
-	// Until that lands, AuthzConfigRef is reference-tracked by the
-	// MCPAuthzConfig controller (deletion protection, status.referenceCount)
-	// but does NOT apply authorization to this MCPServer. Use the inline
-	// AuthzConfig field in the meantime.
 	// +optional
 	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 

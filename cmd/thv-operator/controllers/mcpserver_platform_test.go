@@ -91,18 +91,9 @@ func TestMCPServerReconciler_DetectPlatform_Error(t *testing.T) {
 func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 	t.Parallel()
 
-	// Create a test MCPServer
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-		},
-	}
+	// Central-placement builder: defaults (image/transport/port) match this
+	// fixture exactly, so the migration is behavior-identical — the clean case.
+	mcpServer := testutil.NewMCPServer("test-mcp-server", "default")
 
 	// Create reconciler with mock platform detector for Kubernetes
 	scheme := testutil.NewScheme(t)

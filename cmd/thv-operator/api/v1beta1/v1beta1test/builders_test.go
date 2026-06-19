@@ -39,3 +39,34 @@ func TestNewMCPServer_Options(t *testing.T) {
 	assert.Equal(t, "stdio", m.Spec.Transport, "untouched fields keep their defaults")
 	assert.Len(t, m.Spec.Env, 1)
 }
+
+func TestNewMCPServer_RefOptions(t *testing.T) {
+	t.Parallel()
+
+	m := v1beta1test.NewMCPServer("srv", "ns",
+		v1beta1test.WithToolConfigRef("tools"),
+		v1beta1test.WithExternalAuthConfigRef("extauth"),
+		v1beta1test.WithWebhookConfigRef("hook"),
+		v1beta1test.WithTelemetryConfigRef("otel"),
+	)
+
+	assert.Equal(t, "tools", m.Spec.ToolConfigRef.Name)
+	assert.Equal(t, "extauth", m.Spec.ExternalAuthConfigRef.Name)
+	assert.Equal(t, "hook", m.Spec.WebhookConfigRef.Name)
+	assert.Equal(t, "otel", m.Spec.TelemetryConfigRef.Name)
+}
+
+func TestNewMCPServer_MutateRunsLast(t *testing.T) {
+	t.Parallel()
+
+	m := v1beta1test.NewMCPServer("srv", "ns",
+		v1beta1test.WithImage("from-option"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.Image = "from-mutate"
+			m.Spec.Secrets = []mcpv1beta1.SecretRef{{Name: "s"}}
+		}),
+	)
+
+	assert.Equal(t, "from-mutate", m.Spec.Image, "Mutate runs after typed options")
+	assert.Len(t, m.Spec.Secrets, 1)
+}

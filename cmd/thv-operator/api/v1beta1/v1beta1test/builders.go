@@ -69,9 +69,38 @@ func WithEnv(env ...mcpv1beta1.EnvVar) MCPServerOption {
 	return func(m *mcpv1beta1.MCPServer) { m.Spec.Env = env }
 }
 
+// WithProxyMode overrides the proxy mode (e.g. "sse", "streamable-http").
+func WithProxyMode(mode string) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) { m.Spec.ProxyMode = mode }
+}
+
+// WithArgs sets the container args.
+func WithArgs(args ...string) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) { m.Spec.Args = args }
+}
+
 // WithToolConfigRef sets the ToolConfig reference by name.
 func WithToolConfigRef(name string) MCPServerOption {
 	return func(m *mcpv1beta1.MCPServer) { m.Spec.ToolConfigRef = &mcpv1beta1.ToolConfigRef{Name: name} }
+}
+
+// WithExternalAuthConfigRef sets the MCPExternalAuthConfig reference by name.
+func WithExternalAuthConfigRef(name string) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) {
+		m.Spec.ExternalAuthConfigRef = &mcpv1beta1.ExternalAuthConfigRef{Name: name}
+	}
+}
+
+// WithWebhookConfigRef sets the MCPWebhookConfig reference by name.
+func WithWebhookConfigRef(name string) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) { m.Spec.WebhookConfigRef = &mcpv1beta1.WebhookConfigRef{Name: name} }
+}
+
+// WithTelemetryConfigRef sets the MCPTelemetryConfig reference by name.
+func WithTelemetryConfigRef(name string) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) {
+		m.Spec.TelemetryConfigRef = &mcpv1beta1.MCPTelemetryConfigReference{Name: name}
+	}
 }
 
 // WithDeletionTimestamp marks the server as being deleted (with the given
@@ -81,4 +110,14 @@ func WithDeletionTimestamp(ts metav1.Time, finalizers ...string) MCPServerOption
 		m.DeletionTimestamp = &ts
 		m.Finalizers = finalizers
 	}
+}
+
+// Mutate is the escape hatch for spec fields that have no dedicated option
+// (AuthzConfig, ResourceOverrides, PodTemplateSpec, Secrets, Volumes, …). It
+// runs last, after all other options. Prefer a dedicated option when one
+// exists; reach for Mutate only for the less common fields, and keep genuinely
+// complex fixtures as inline literals rather than threading everything through
+// here.
+func Mutate(fn func(*mcpv1beta1.MCPServer)) MCPServerOption {
+	return fn
 }

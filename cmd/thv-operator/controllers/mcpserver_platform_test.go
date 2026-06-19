@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
@@ -91,9 +92,9 @@ func TestMCPServerReconciler_DetectPlatform_Error(t *testing.T) {
 func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 	t.Parallel()
 
-	// Central-placement builder: defaults (image/transport/port) match this
-	// fixture exactly, so the migration is behavior-identical — the clean case.
-	mcpServer := testutil.NewMCPServer("test-mcp-server", "default")
+	// Builder defaults (image/transport/port) match this fixture exactly,
+	// so the migration is behavior-identical.
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-server", "default")
 
 	// Create reconciler with mock platform detector for Kubernetes
 	scheme := testutil.NewScheme(t)

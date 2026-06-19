@@ -49,9 +49,7 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 			mcpServer: func() *mcpv1beta1.MCPServer {
 				return v1beta1test.NewMCPServer("server", "default",
 					v1beta1test.WithImage("test"),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Spec.AuthServerRef = &mcpv1beta1.AuthServerRef{Kind: "Secret", Name: "foo"}
-					}),
+					v1beta1test.WithAuthServerRef("Secret", "foo"),
 				)
 			},
 			expectError:     true,
@@ -64,9 +62,7 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 			mcpServer: func() *mcpv1beta1.MCPServer {
 				return v1beta1test.NewMCPServer("server", "default",
 					v1beta1test.WithImage("test"),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Spec.AuthServerRef = &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "missing"}
-					}),
+					v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "missing"),
 				)
 			},
 			expectError:     true,
@@ -79,9 +75,7 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 			mcpServer: func() *mcpv1beta1.MCPServer {
 				return v1beta1test.NewMCPServer("server", "default",
 					v1beta1test.WithImage("test"),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Spec.AuthServerRef = &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "sts-config"}
-					}),
+					v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "sts-config"),
 				)
 			},
 			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {
@@ -105,9 +99,7 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 			mcpServer: func() *mcpv1beta1.MCPServer {
 				return v1beta1test.NewMCPServer("server", "default",
 					v1beta1test.WithImage("test"),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Spec.AuthServerRef = &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "multi"}
-					}),
+					v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "multi"),
 				)
 			},
 			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {
@@ -136,9 +128,7 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 			mcpServer: func() *mcpv1beta1.MCPServer {
 				return v1beta1test.NewMCPServer("server", "default",
 					v1beta1test.WithImage("test"),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Spec.AuthServerRef = &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "valid"}
-					}),
+					v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "valid"),
 				)
 			},
 			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {

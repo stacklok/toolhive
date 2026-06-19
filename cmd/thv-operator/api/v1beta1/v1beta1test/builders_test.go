@@ -64,6 +64,7 @@ func TestNewMCPServer_TypedFieldOptions(t *testing.T) {
 	m := v1beta1test.NewMCPServer("srv", "ns",
 		v1beta1test.WithOIDCConfigRef("oidc", "aud"),
 		v1beta1test.WithAuthzConfigRef("authz"),
+		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "auth-server"),
 		v1beta1test.WithMCPPort(9090),
 		v1beta1test.WithReplicas(replicas),
 		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{Phase: mcpv1beta1.MCPServerPhaseReady}),
@@ -72,6 +73,8 @@ func TestNewMCPServer_TypedFieldOptions(t *testing.T) {
 	assert.Equal(t, "oidc", m.Spec.OIDCConfigRef.Name)
 	assert.Equal(t, "aud", m.Spec.OIDCConfigRef.Audience)
 	assert.Equal(t, "authz", m.Spec.AuthzConfigRef.Name)
+	assert.Equal(t, "MCPExternalAuthConfig", m.Spec.AuthServerRef.Kind)
+	assert.Equal(t, "auth-server", m.Spec.AuthServerRef.Name)
 	assert.Equal(t, int32(9090), m.Spec.MCPPort)
 	require.NotNil(t, m.Spec.Replicas)
 	assert.Equal(t, int32(3), *m.Spec.Replicas)

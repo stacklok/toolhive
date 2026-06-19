@@ -118,6 +118,14 @@ func WithAuthzConfigRef(name string) MCPServerOption {
 	}
 }
 
+// WithAuthServerRef sets the embedded auth-server reference by kind and name
+// (e.g. kind "MCPExternalAuthConfig" or "Secret").
+func WithAuthServerRef(kind, name string) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) {
+		m.Spec.AuthServerRef = &mcpv1beta1.AuthServerRef{Kind: kind, Name: name}
+	}
+}
+
 // WithMCPPort sets the MCP container port.
 func WithMCPPort(port int32) MCPServerOption {
 	return func(m *mcpv1beta1.MCPServer) { m.Spec.MCPPort = port }

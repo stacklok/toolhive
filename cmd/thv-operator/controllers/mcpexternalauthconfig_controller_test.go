@@ -816,12 +816,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(
 	// Server referencing via authServerRef
 	serverViaAuthServerRef := v1beta1test.NewMCPServer("server-via-authserverref", "default",
 		v1beta1test.WithImage("test-image"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.AuthServerRef = &mcpv1beta1.AuthServerRef{
-				Kind: "MCPExternalAuthConfig",
-				Name: "auth-server-config",
-			}
-		}),
+		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "auth-server-config"),
 	)
 
 	// Server referencing via externalAuthConfigRef
@@ -907,12 +902,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_bothRefsOnSame
 	serverWithBothRefs := v1beta1test.NewMCPServer("server-with-both-refs", "default",
 		v1beta1test.WithImage("test-image"),
 		v1beta1test.WithExternalAuthConfigRef("token-exchange-config"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.AuthServerRef = &mcpv1beta1.AuthServerRef{
-				Kind: "MCPExternalAuthConfig",
-				Name: "embedded-auth-config",
-			}
-		}),
+		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "embedded-auth-config"),
 	)
 
 	fakeClient := fake.NewClientBuilder().
@@ -980,12 +970,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers_deduplicates(
 	server := v1beta1test.NewMCPServer("server-both-same", "default",
 		v1beta1test.WithImage("test-image"),
 		v1beta1test.WithExternalAuthConfigRef("shared-config"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.AuthServerRef = &mcpv1beta1.AuthServerRef{
-				Kind: "MCPExternalAuthConfig",
-				Name: "shared-config",
-			}
-		}),
+		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "shared-config"),
 	)
 
 	fakeClient := fake.NewClientBuilder().

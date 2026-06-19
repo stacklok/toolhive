@@ -16,6 +16,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
+
 	// Blank-imported so the cedarv1 and httpv1 authorizer factories register
 	// themselves; BuildFullAuthzConfigJSON / AddAuthzConfigRefOptions resolve
 	// the backend via the authorizers registry.

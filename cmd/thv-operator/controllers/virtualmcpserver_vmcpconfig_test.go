@@ -22,6 +22,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
@@ -1581,20 +1582,16 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 
 	// Create MCPServer in the group so static mode has something to discover
 	// This is needed because static mode validates that at least one backend exists
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-backend",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Transport: "sse", // Required for backend discovery
-		},
-		Status: mcpv1beta1.MCPServerStatus{
-			Phase: mcpv1beta1.MCPServerPhaseReady,
-			URL:   "http://test-backend.default.svc.cluster.local:8080",
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("test-backend", "default",
+		v1beta1test.WithGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"), // Required for backend discovery
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Status = mcpv1beta1.MCPServerStatus{
+				Phase: mcpv1beta1.MCPServerPhaseReady,
+				URL:   "http://test-backend.default.svc.cluster.local:8080",
+			}
+		}),
+	)
 
 	// Create VirtualMCPServer in static mode (source: inline)
 	vmcpServer := &mcpv1beta1.VirtualMCPServer{
@@ -1698,23 +1695,17 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 	}
 
 	// Create MCPServer with ExternalAuthConfigRef and Status
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "discovered-backend",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Transport: "sse", // Required for static mode backend discovery
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: "test-auth-config",
-			},
-		},
-		Status: mcpv1beta1.MCPServerStatus{
-			Phase: mcpv1beta1.MCPServerPhaseReady,
-			URL:   "http://discovered-backend.default.svc.cluster.local:8080",
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("discovered-backend", "default",
+		v1beta1test.WithGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"), // Required for static mode backend discovery
+		v1beta1test.WithExternalAuthConfigRef("test-auth-config"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Status = mcpv1beta1.MCPServerStatus{
+				Phase: mcpv1beta1.MCPServerPhaseReady,
+				URL:   "http://discovered-backend.default.svc.cluster.local:8080",
+			}
+		}),
+	)
 
 	// Create VirtualMCPServer in static mode (source: inline) WITHOUT inline backends
 	vmcpServer := &mcpv1beta1.VirtualMCPServer{

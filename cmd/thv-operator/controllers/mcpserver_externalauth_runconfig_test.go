@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
@@ -50,16 +51,9 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 	}{
 		{
 			name: "no external auth config reference",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					// No ExternalAuthConfigRef
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+			),
 			expectError: false,
 			validateConfig: func(t *testing.T, opts []runner.RunConfigBuilderOption) {
 				t.Helper()
@@ -69,18 +63,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "valid token exchange configuration with all fields",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "test-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("test-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
@@ -118,18 +104,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "valid token exchange with minimal configuration",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "minimal-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("minimal-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "minimal-config",
@@ -166,35 +144,19 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "external auth config not found",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "non-existent",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("non-existent"),
+			),
 			expectError: true,
 			errContains: "failed to get MCPExternalAuthConfig",
 		},
 		{
 			name: "unsupported external auth type",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "unsupported-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("unsupported-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "unsupported-config",
@@ -209,18 +171,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "valid embedded auth server configuration",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "embedded-auth-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("embedded-auth-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "embedded-auth-config",
@@ -263,18 +217,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "embedded auth server with nil embedded config",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "bad-embedded-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("bad-embedded-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "bad-embedded-config",
@@ -294,18 +240,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "embedded auth server without OIDC config fails",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "embedded-auth-config-no-oidc",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("embedded-auth-config-no-oidc"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "embedded-auth-config-no-oidc",
@@ -330,18 +268,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "embedded auth server without resourceUrl fails",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "embedded-auth-config-no-resource",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("embedded-auth-config-no-resource"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "embedded-auth-config-no-resource",
@@ -369,18 +299,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "token exchange spec is nil",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "nil-spec-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("nil-spec-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "nil-spec-config",
@@ -396,18 +318,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "client secret not found",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "no-secret-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("no-secret-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "no-secret-config",
@@ -431,18 +345,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "secret missing required key",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "missing-key-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("missing-key-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "missing-key-config",
@@ -475,18 +381,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "empty scope string",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "empty-scope-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("empty-scope-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "empty-scope-config",
@@ -523,18 +421,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "token exchange without client credentials (GCP Workforce Identity)",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "gcp-workforce-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("gcp-workforce-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "gcp-workforce-config",
@@ -558,18 +448,10 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		},
 		{
 			name: "token exchange with empty client ID but no secret ref",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "empty-client-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("empty-client-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "empty-client-config",
@@ -648,20 +530,10 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 	}{
 		{
 			name: "with external auth token exchange",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "external-auth-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:     "test:v1",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "oauth-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("external-auth-server", "default",
+				v1beta1test.WithImage("test:v1"),
+				v1beta1test.WithExternalAuthConfigRef("oauth-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "oauth-config",
@@ -724,43 +596,25 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 		},
 		{
 			name: "external auth config not found returns error",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "broken-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:     "test:v1",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "non-existent",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("broken-server", "default",
+				v1beta1test.WithImage("test:v1"),
+				v1beta1test.WithExternalAuthConfigRef("non-existent"),
+			),
 			expectError: true,
 		},
 		{
 			name: "with external auth embedded auth server",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "embedded-auth-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:     "test:v1",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "embedded-auth-config",
-					},
-					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+			mcpServer: v1beta1test.NewMCPServer("embedded-auth-server", "default",
+				v1beta1test.WithImage("test:v1"),
+				v1beta1test.WithExternalAuthConfigRef("embedded-auth-config"),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{
 						Name:     "embedded-oidc",
 						Audience: "http://embedded-auth-server.default.svc.cluster.local:8080",
 						Scopes:   []string{"openid", "offline_access", "mcp:tools"},
-					},
-				},
-			},
+					}
+				}),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "embedded-auth-config",
@@ -891,15 +745,9 @@ func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 	}{
 		{
 			name: "no external auth config reference",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+			),
 			expectError: false,
 			validate: func(t *testing.T, envVars []corev1.EnvVar) {
 				t.Helper()
@@ -908,18 +756,10 @@ func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 		},
 		{
 			name: "valid token exchange config generates env var",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "oauth-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("oauth-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "oauth-config",
@@ -951,18 +791,10 @@ func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 		},
 		{
 			name: "unsupported auth type returns empty env vars",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "unsupported-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("unsupported-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "unsupported-config",
@@ -980,18 +812,10 @@ func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 		},
 		{
 			name: "nil token exchange spec returns empty env vars",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "nil-spec-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("nil-spec-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "nil-spec-config",
@@ -1010,35 +834,19 @@ func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 		},
 		{
 			name: "external auth config not found returns error",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "non-existent",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("non-existent"),
+			),
 			expectError: true,
 			errContains: "failed to get MCPExternalAuthConfig",
 		},
 		{
 			name: "token exchange without client secret ref (GCP Workforce Identity)",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "gcp-workforce-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("gcp-workforce-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "gcp-workforce-config",
@@ -1063,18 +871,10 @@ func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 		},
 		{
 			name: "token exchange with nil client secret ref returns no env vars",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "nil-secret-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("nil-secret-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "nil-secret-config",

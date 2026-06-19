@@ -14,6 +14,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/webhook"
@@ -53,15 +54,9 @@ func TestWebhookConfigHelpers(t *testing.T) {
 		},
 	}
 
-	server := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "test-webhook"},
-		},
-	}
+	server := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithWebhookConfigRef("test-webhook"),
+	)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(config, server).Build()
 	ctx := t.Context()

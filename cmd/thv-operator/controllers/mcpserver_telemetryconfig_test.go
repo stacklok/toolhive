@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
@@ -27,33 +28,17 @@ func TestGetTelemetryConfigForMCPServer(t *testing.T) {
 		expectedConfigName string
 	}{
 		{
-			name: "nil ref returns nil without error",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					TelemetryConfigRef: nil,
-				},
-			},
+			name:            "nil ref returns nil without error",
+			mcpServer:       v1beta1test.NewMCPServer("test-server", "default"),
 			telemetryConfig: nil,
 			expectNil:       true,
 			expectError:     false,
 		},
 		{
 			name: "fetches the right config from the fake client",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-						Name: "my-telemetry-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithTelemetryConfigRef("my-telemetry-config"),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "my-telemetry-config",
@@ -67,17 +52,9 @@ func TestGetTelemetryConfigForMCPServer(t *testing.T) {
 		},
 		{
 			name: "returns nil without error when not found",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-						Name: "non-existent-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithTelemetryConfigRef("non-existent-config"),
+			),
 			telemetryConfig: nil,
 			expectNil:       true,
 			expectError:     false,
@@ -134,17 +111,9 @@ func TestGetTelemetryConfigForMCPServer_NamespacedLookup(t *testing.T) {
 		Spec: newTelemetrySpec("https://otel-collector:4317", true, false),
 	}
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "namespace-b",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-				Name: "shared-config",
-			},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("test-server", "namespace-b",
+		v1beta1test.WithTelemetryConfigRef("shared-config"),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).

@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/transport/session"
@@ -91,17 +92,7 @@ func TestReplicaBehavior(t *testing.T) {
 			name := "replica-test"
 			namespace := testNamespaceDefault
 
-			mcpServer := &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      name,
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:     "test-image:latest",
-					Transport: tt.transport,
-					ProxyPort: 8080,
-				},
-			}
+			mcpServer := v1beta1test.NewMCPServer(name, namespace, v1beta1test.WithTransport(tt.transport))
 
 			testScheme := testutil.NewScheme(t)
 
@@ -184,17 +175,10 @@ func TestConfigUpdatePreservesReplicas(t *testing.T) {
 	name := "config-update-test"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "new-image:v2", // Changed image triggers deployment update
-			Transport: "sse",
-			ProxyPort: 8080,
-		},
-	}
+	// Changed image triggers deployment update
+	mcpServer := v1beta1test.NewMCPServer(name, namespace,
+		v1beta1test.WithImage("new-image:v2"),
+		v1beta1test.WithTransport("sse"))
 
 	testScheme := testutil.NewScheme(t)
 
@@ -270,17 +254,7 @@ func TestUpdateMCPServerStatusScaledToZero(t *testing.T) {
 	name := "stopped-test"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "sse",
-			ProxyPort: 8080,
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer(name, namespace, v1beta1test.WithTransport("sse"))
 
 	testScheme := testutil.NewScheme(t)
 
@@ -341,17 +315,7 @@ func TestUpdateMCPServerStatusReadyReplicas(t *testing.T) {
 	name := "ready-replicas-test"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "sse",
-			ProxyPort: 8080,
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer(name, namespace, v1beta1test.WithTransport("sse"))
 
 	testScheme := testutil.NewScheme(t)
 
@@ -465,17 +429,7 @@ func TestDefaultCreationHasNilReplicas(t *testing.T) {
 	name := "default-creation"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "sse",
-			ProxyPort: 8080,
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer(name, namespace, v1beta1test.WithTransport("sse"))
 
 	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
@@ -545,17 +499,7 @@ func TestTerminationGracePeriodSet(t *testing.T) {
 	name := "tgp-test"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "sse",
-			ProxyPort: 8080,
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer(name, namespace, v1beta1test.WithTransport("sse"))
 
 	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
@@ -578,18 +522,7 @@ func TestSpecDrivenReplicasNil(t *testing.T) {
 	name := "nil-replicas-test"
 	namespace := testNamespaceDefault
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "sse",
-			ProxyPort: 8080,
-			Replicas:  nil,
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer(name, namespace, v1beta1test.WithTransport("sse"))
 
 	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
@@ -612,18 +545,9 @@ func TestSpecDrivenReplicas3(t *testing.T) {
 	namespace := testNamespaceDefault
 	replicas := int32(3)
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "sse",
-			ProxyPort: 8080,
-			Replicas:  &replicas,
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer(name, namespace,
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Replicas = &replicas }))
 
 	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
@@ -649,18 +573,8 @@ func TestStdioCapConditionSet(t *testing.T) {
 	namespace := testNamespaceDefault
 	replicas := int32(3)
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-			Replicas:  &replicas,
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer(name, namespace,
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Replicas = &replicas }))
 
 	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
@@ -700,19 +614,10 @@ func TestSessionStorageWarningSet(t *testing.T) {
 	namespace := testNamespaceDefault
 	replicas := int32(2)
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "sse",
-			ProxyPort: 8080,
-			Replicas:  &replicas,
-			// No SessionStorage configured
-		},
-	}
+	// No SessionStorage configured
+	mcpServer := v1beta1test.NewMCPServer(name, namespace,
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Replicas = &replicas }))
 
 	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
@@ -750,22 +655,15 @@ func TestSessionStorageWarningCleared(t *testing.T) {
 	namespace := testNamespaceDefault
 	replicas := int32(2)
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "sse",
-			ProxyPort: 8080,
-			Replicas:  &replicas,
-			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+	mcpServer := v1beta1test.NewMCPServer(name, namespace,
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.Replicas = &replicas
+			m.Spec.SessionStorage = &mcpv1beta1.SessionStorageConfig{
 				Provider: mcpv1beta1.SessionStorageProviderRedis,
 				Address:  "redis:6379",
-			},
-		},
-	}
+			}
+		}))
 
 	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
@@ -873,17 +771,7 @@ func TestUpdateMCPServerStatusExcludesTerminatingPods(t *testing.T) {
 	namespace := testNamespaceDefault
 	now := metav1.NewTime(time.Now())
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "sse",
-			ProxyPort: 8080,
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer(name, namespace, v1beta1test.WithTransport("sse"))
 
 	testScheme := testutil.NewScheme(t)
 
@@ -1203,10 +1091,8 @@ func TestMCPServerBuildRedisPasswordEnvVar(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			m := &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-mcp", Namespace: "default"},
-				Spec:       mcpv1beta1.MCPServerSpec{SessionStorage: tc.storage},
-			}
+			m := v1beta1test.NewMCPServer("test-mcp", "default",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.SessionStorage = tc.storage }))
 			env := r.buildRedisPasswordEnvVar(m)
 			if tc.expectEnVar {
 				require.Len(t, env, 1)
@@ -1230,22 +1116,15 @@ func TestMCPServerDeploymentInjectsRedisPasswordEnvVar(t *testing.T) {
 
 	passwordRef := &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"}
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp-redis",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "streamable-http",
-			ProxyPort: 8080,
-			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-redis", "default",
+		v1beta1test.WithTransport("streamable-http"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.SessionStorage = &mcpv1beta1.SessionStorageConfig{
 				Provider:    mcpv1beta1.SessionStorageProviderRedis,
 				Address:     "redis:6379",
 				PasswordRef: passwordRef,
-			},
-		},
-	}
+			}
+		}))
 
 	testScheme := testutil.NewScheme(t)
 	r := newTestMCPServerReconciler(nil, testScheme, kubernetes.PlatformKubernetes)

@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
@@ -581,18 +582,12 @@ func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T
 			},
 		},
 	}
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server-to-track",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-				Name: "test-config",
-			},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("server-to-track", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: "test-config"}
+		}),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -787,13 +782,12 @@ func TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch(t 
 	// Introduce a referencing workload so the next reconcile patches only
 	// referencingWorkloads/referenceCount — not the conditions array, and
 	// without bumping the config's generation.
-	server := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "referencing-server", Namespace: "default"},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:         "img",
-			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfig.Name, Audience: "aud"},
-		},
-	}
+	server := v1beta1test.NewMCPServer("referencing-server", "default",
+		v1beta1test.WithImage("img"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfig.Name, Audience: "aud"}
+		}),
+	)
 	require.NoError(t, fakeClient.Create(ctx, server))
 
 	// Arm the concurrent writer and run the reference-refresh reconcile.

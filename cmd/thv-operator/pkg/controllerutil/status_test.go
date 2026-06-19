@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
@@ -93,19 +94,13 @@ func buildStatusTestClient(t *testing.T, seed *mcpv1beta1.MCPServer) (*statusPat
 }
 
 func newSeedMCPServer(name string) *mcpv1beta1.MCPServer {
-	return &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "example/mcp:latest",
-			Transport: "stdio",
-			ProxyMode: "sse",
-			ProxyPort: 8080,
-			MCPPort:   8080,
-		},
-	}
+	return v1beta1test.NewMCPServer(name, "default",
+		v1beta1test.WithImage("example/mcp:latest"),
+		v1beta1test.WithProxyMode("sse"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.MCPPort = 8080
+		}),
+	)
 }
 
 // TestMutateAndPatchStatus_AppliesMutation asserts the happy path:

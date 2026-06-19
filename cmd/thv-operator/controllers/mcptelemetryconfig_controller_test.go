@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
@@ -621,40 +622,18 @@ func TestMCPTelemetryConfigReconciler_ReferenceTracking(t *testing.T) {
 	}
 
 	// Two MCPServers reference this config, one does not
-	server1 := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server-a",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-				Name: "shared-config",
-			},
-		},
-	}
-	server2 := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server-b",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-				Name: "shared-config",
-			},
-		},
-	}
-	server3 := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server-c",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			// No TelemetryConfigRef
-		},
-	}
+	server1 := v1beta1test.NewMCPServer("server-a", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithTelemetryConfigRef("shared-config"),
+	)
+	server2 := v1beta1test.NewMCPServer("server-b", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithTelemetryConfigRef("shared-config"),
+	)
+	server3 := v1beta1test.NewMCPServer("server-c", "default",
+		v1beta1test.WithImage("test-image"),
+		// No TelemetryConfigRef
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -714,18 +693,10 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_BlocksWhenReferenced(t *tes
 	}
 
 	// MCPServer that references this config
-	server := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "referencing-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-				Name: "referenced-config",
-			},
-		},
-	}
+	server := v1beta1test.NewMCPServer("referencing-server", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithTelemetryConfigRef("referenced-config"),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -767,16 +738,10 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *
 	}
 
 	// MCPServer exists but does NOT reference this config
-	server := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "unrelated-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			// No TelemetryConfigRef
-		},
-	}
+	server := v1beta1test.NewMCPServer("unrelated-server", "default",
+		v1beta1test.WithImage("test-image"),
+		// No TelemetryConfigRef
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).

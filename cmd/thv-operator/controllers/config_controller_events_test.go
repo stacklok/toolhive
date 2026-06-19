@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
@@ -117,13 +118,12 @@ func TestMCPOIDCConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 			Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: "https://accounts.google.com", ClientID: "c"},
 		},
 	}
-	server := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "ref-server", Namespace: "default"},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:         "example/mcp:latest",
-			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "oidc-del"},
-		},
-	}
+	server := v1beta1test.NewMCPServer("ref-server", "default",
+		v1beta1test.WithImage("example/mcp:latest"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: "oidc-del"}
+		}),
+	)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(cfg, server).
@@ -239,13 +239,10 @@ func TestMCPExternalAuthConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T)
 		},
 		Spec: validExternalAuthSpec(),
 	}
-	server := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "ref-server", Namespace: "default"},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:                 "example/mcp:latest",
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "extauth-del"},
-		},
-	}
+	server := v1beta1test.NewMCPServer("ref-server", "default",
+		v1beta1test.WithImage("example/mcp:latest"),
+		v1beta1test.WithExternalAuthConfigRef("extauth-del"),
+	)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(cfg, server).
@@ -381,13 +378,12 @@ func TestMCPAuthzConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 		},
 		Spec: mcpv1beta1.MCPAuthzConfigSpec{Type: "cedarv1", Config: validCedarConfig()},
 	}
-	server := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "ref-server", Namespace: "default"},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:          "example/mcp:latest",
-			AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "authz-del"},
-		},
-	}
+	server := v1beta1test.NewMCPServer("ref-server", "default",
+		v1beta1test.WithImage("example/mcp:latest"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.AuthzConfigRef = &mcpv1beta1.MCPAuthzConfigReference{Name: "authz-del"}
+		}),
+	)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(cfg, server).

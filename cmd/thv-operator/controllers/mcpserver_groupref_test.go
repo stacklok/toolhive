@@ -33,16 +33,10 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 	}{
 		{
 			name: "GroupRef validated when group exists and is Ready",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:    "test-image",
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithGroupRef("test-group"),
+			),
 			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -59,32 +53,20 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 		},
 		{
 			name: "GroupRef not validated when group does not exist",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:    "test-image",
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "non-existent-group"},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithGroupRef("non-existent-group"),
+			),
 			mcpGroups:               []*mcpv1beta1.MCPGroup{},
 			expectedConditionStatus: metav1.ConditionFalse,
 			expectedConditionReason: mcpv1beta1.ConditionReasonGroupRefNotFound,
 		},
 		{
 			name: "GroupRef not validated when group is Pending",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:    "test-image",
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithGroupRef("test-group"),
+			),
 			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -102,16 +84,10 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 		},
 		{
 			name: "GroupRef not validated when group is Failed",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:    "test-image",
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithGroupRef("test-group"),
+			),
 			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -129,16 +105,10 @@ func TestMCPServerReconciler_ValidateGroupRef(t *testing.T) {
 		},
 		{
 			name: "No validation when GroupRef is empty",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					// No GroupRef
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				// No GroupRef
+			),
 			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -212,16 +182,10 @@ func TestMCPServerReconciler_GroupRefValidation_Integration(t *testing.T) {
 	}{
 		{
 			name: "Server with valid GroupRef gets validated condition",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:    "test-image",
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithGroupRef("test-group"),
+			),
 			mcpGroup: &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-group",
@@ -235,16 +199,10 @@ func TestMCPServerReconciler_GroupRefValidation_Integration(t *testing.T) {
 		},
 		{
 			name: "Server with GroupRef to non-Ready group gets failed condition",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:    "test-image",
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithGroupRef("test-group"),
+			),
 			mcpGroup: &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-group",

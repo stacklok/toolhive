@@ -17,6 +17,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -35,34 +36,29 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 	}{
 		{
 			name: "no ref clears previously stored hash",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-				Spec:       mcpv1beta1.MCPServerSpec{Image: "img"},
-				Status:     mcpv1beta1.MCPServerStatus{WebhookConfigHash: "old-hash"},
-			},
+			mcpServer: v1beta1test.NewMCPServer("s", "default",
+				v1beta1test.WithImage("img"),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Status = mcpv1beta1.MCPServerStatus{WebhookConfigHash: "old-hash"}
+				}),
+			),
 			expectHashCleared: true,
 		},
 		{
 			name: "referenced config not found returns error",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:            "img",
-					WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "missing"},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("s", "default",
+				v1beta1test.WithImage("img"),
+				v1beta1test.WithWebhookConfigRef("missing"),
+			),
 			expectError:         true,
 			expectErrorContains: "not found",
 		},
 		{
 			name: "valid config sets hash",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:            "img",
-					WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "cfg"},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("s", "default",
+				v1beta1test.WithImage("img"),
+				v1beta1test.WithWebhookConfigRef("cfg"),
+			),
 			webhookConfig: &mcpv1alpha1.MCPWebhookConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
 				Spec:       mcpv1beta1.MCPWebhookConfigSpec{},
@@ -74,13 +70,10 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 		},
 		{
 			name: "invalid config returns validation error",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:            "img",
-					WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "cfg"},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("s", "default",
+				v1beta1test.WithImage("img"),
+				v1beta1test.WithWebhookConfigRef("cfg"),
+			),
 			webhookConfig: &mcpv1alpha1.MCPWebhookConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
 				Spec: mcpv1beta1.MCPWebhookConfigSpec{
@@ -95,14 +88,13 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 		},
 		{
 			name: "detects hash change",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:            "img",
-					WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "cfg"},
-				},
-				Status: mcpv1beta1.MCPServerStatus{WebhookConfigHash: "old-hash"},
-			},
+			mcpServer: v1beta1test.NewMCPServer("s", "default",
+				v1beta1test.WithImage("img"),
+				v1beta1test.WithWebhookConfigRef("cfg"),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Status = mcpv1beta1.MCPServerStatus{WebhookConfigHash: "old-hash"}
+				}),
+			),
 			webhookConfig: &mcpv1alpha1.MCPWebhookConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
 				Spec:       mcpv1beta1.MCPWebhookConfigSpec{},
@@ -163,28 +155,16 @@ func TestMCPServerReconciler_mapWebhookConfigToServers(t *testing.T) {
 	scheme := testutil.NewScheme(t)
 
 	servers := []runtime.Object{
-		&mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: "s1", Namespace: "default"},
-			Spec: mcpv1beta1.MCPServerSpec{
-				WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "test-config"},
-			},
-		},
-		&mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: "s2", Namespace: "default"},
-			Spec: mcpv1beta1.MCPServerSpec{
-				WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "other-config"},
-			},
-		},
-		&mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: "s3", Namespace: "other-ns"},
-			Spec: mcpv1beta1.MCPServerSpec{
-				WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "test-config"},
-			},
-		},
-		&mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: "s4", Namespace: "default"},
-			Spec:       mcpv1beta1.MCPServerSpec{}, // No reference
-		},
+		v1beta1test.NewMCPServer("s1", "default",
+			v1beta1test.WithWebhookConfigRef("test-config"),
+		),
+		v1beta1test.NewMCPServer("s2", "default",
+			v1beta1test.WithWebhookConfigRef("other-config"),
+		),
+		v1beta1test.NewMCPServer("s3", "other-ns",
+			v1beta1test.WithWebhookConfigRef("test-config"),
+		),
+		v1beta1test.NewMCPServer("s4", "default"), // No reference
 	}
 
 	fakeClient := fake.NewClientBuilder().
@@ -222,15 +202,10 @@ func TestMCPServerReconciler_deploymentForMCPServerWebhookConfigError(t *testing
 
 	scheme := testutil.NewScheme(t)
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:            "img",
-			Transport:        "stdio",
-			ProxyPort:        8080,
-			WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "missing"},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("s", "default",
+		v1beta1test.WithImage("img"),
+		v1beta1test.WithWebhookConfigRef("missing"),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).

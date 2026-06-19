@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -228,13 +229,11 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		t.Parallel()
 
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
-		owner := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-server",
-				Namespace: "default",
-				UID:       "test-uid",
-			},
-		}
+		owner := v1beta1test.NewMCPServer("test-server", "default",
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+				m.UID = "test-uid"
+			}),
+		)
 		authzConfig := &mcpv1beta1.AuthzConfigRef{
 			Type: mcpv1beta1.AuthzConfigTypeInline,
 			Inline: &mcpv1beta1.InlineAuthzConfig{
@@ -277,13 +276,11 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		t.Parallel()
 
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
-		owner := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-server",
-				Namespace: "default",
-				UID:       "test-uid-2",
-			},
-		}
+		owner := v1beta1test.NewMCPServer("test-server", "default",
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+				m.UID = "test-uid-2"
+			}),
+		)
 		authzConfig := &mcpv1beta1.AuthzConfigRef{
 			Type: mcpv1beta1.AuthzConfigTypeInline,
 			Inline: &mcpv1beta1.InlineAuthzConfig{

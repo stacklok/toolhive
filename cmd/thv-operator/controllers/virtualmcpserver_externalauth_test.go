@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
@@ -237,26 +238,10 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-1",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "auth-config-1",
-						},
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-2",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						// No ExternalAuthConfigRef
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-1", "default",
+					v1beta1test.WithExternalAuthConfigRef("auth-config-1"),
+				),
+				*v1beta1test.NewMCPServer("backend-2", "default"), // No ExternalAuthConfigRef
 			},
 			authConfigs: []mcpv1beta1.MCPExternalAuthConfig{
 				{
@@ -316,28 +301,12 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-1",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "auth-config-1",
-						},
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-2",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "auth-config-2",
-						},
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-1", "default",
+					v1beta1test.WithExternalAuthConfigRef("auth-config-1"),
+				),
+				*v1beta1test.NewMCPServer("backend-2", "default",
+					v1beta1test.WithExternalAuthConfigRef("auth-config-2"),
+				),
 			},
 			authConfigs: []mcpv1beta1.MCPExternalAuthConfig{
 				{
@@ -426,17 +395,9 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-1",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "auth-config-1",
-						},
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-1", "default",
+					v1beta1test.WithExternalAuthConfigRef("auth-config-1"),
+				),
 			},
 			authConfigs: []mcpv1beta1.MCPExternalAuthConfig{
 				{
@@ -572,17 +533,9 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-1",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "missing-auth-config",
-						},
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-1", "default",
+					v1beta1test.WithExternalAuthConfigRef("missing-auth-config"),
+				),
 			},
 			workloadNames: []workloads.TypedWorkload{
 				{
@@ -1338,17 +1291,9 @@ func TestBuildOutgoingAuthConfig_SubjectProviderInjection(t *testing.T) {
 		},
 	}
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "backend-1",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: "discovered-auth",
-			},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("backend-1", "default",
+		v1beta1test.WithExternalAuthConfigRef("discovered-auth"),
+	)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1481,30 +1426,14 @@ func TestDiscoverExternalAuthConfigSecrets_DeterministicOrdering(t *testing.T) {
 			// Four MCPServers each referencing a distinct MCPExternalAuthConfig.
 			// The MCPServer names match the workload Names in tt.workloadOrder.
 			mcpServers := []client.Object{
-				&mcpv1beta1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "server-alpha", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "alpha-auth"},
-					},
-				},
-				&mcpv1beta1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "server-beta", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "beta-auth"},
-					},
-				},
-				&mcpv1beta1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "server-mu", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "mu-auth"},
-					},
-				},
-				&mcpv1beta1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "server-zeta", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "zeta-auth"},
-					},
-				},
+				v1beta1test.NewMCPServer("server-alpha", "default",
+					v1beta1test.WithExternalAuthConfigRef("alpha-auth")),
+				v1beta1test.NewMCPServer("server-beta", "default",
+					v1beta1test.WithExternalAuthConfigRef("beta-auth")),
+				v1beta1test.NewMCPServer("server-mu", "default",
+					v1beta1test.WithExternalAuthConfigRef("mu-auth")),
+				v1beta1test.NewMCPServer("server-zeta", "default",
+					v1beta1test.WithExternalAuthConfigRef("zeta-auth")),
 			}
 
 			// One MCPExternalAuthConfig per MCPServer, each with a client secret ref so

@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
@@ -48,36 +49,19 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 	}{
 		{
 			name: "no external auth config reference",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					// No ExternalAuthConfigRef
-				},
-				Status: mcpv1beta1.MCPServerStatus{},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+			),
 			expectError:       false,
 			expectHash:        "",
 			expectHashCleared: false,
 		},
 		{
 			name: "external auth config reference exists",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "test-config",
-					},
-				},
-				Status: mcpv1beta1.MCPServerStatus{},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("test-config"),
+			),
 			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
@@ -104,38 +88,21 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			name: "external auth config not found",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "non-existent-config",
-					},
-				},
-				Status: mcpv1beta1.MCPServerStatus{},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("non-existent-config"),
+			),
 			expectError: true,
 		},
 		{
 			name: "external auth config hash changed",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "test-config",
-					},
-				},
-				Status: mcpv1beta1.MCPServerStatus{
-					ExternalAuthConfigHash: "old-hash",
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("test-config"),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Status.ExternalAuthConfigHash = "old-hash"
+				}),
+			),
 			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
@@ -162,38 +129,23 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			name: "clear hash when reference is removed",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					// No ExternalAuthConfigRef (was removed)
-				},
-				Status: mcpv1beta1.MCPServerStatus{
-					ExternalAuthConfigHash: "old-hash-to-clear",
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				// No ExternalAuthConfigRef (was removed)
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Status.ExternalAuthConfigHash = "old-hash-to-clear"
+				}),
+			),
 			expectError:       false,
 			expectHash:        "",
 			expectHashCleared: true,
 		},
 		{
 			name: "embedded auth server with multiple upstreams rejected",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "multi-upstream-config",
-					},
-				},
-				Status: mcpv1beta1.MCPServerStatus{},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef("multi-upstream-config"),
+			),
 			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "multi-upstream-config",
@@ -293,19 +245,11 @@ func TestMCPServerReconciler_handleExternalAuthConfig_SameNamespace(t *testing.T
 	}
 
 	// MCPServer in different namespace
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: "test-config", // References config in same namespace (default)
-			},
-		},
-		Status: mcpv1beta1.MCPServerStatus{},
-	}
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithImage("test-image"),
+		// References config in same namespace (default)
+		v1beta1test.WithExternalAuthConfigRef("test-config"),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -353,21 +297,13 @@ func TestMCPServerReconciler_handleExternalAuthConfig_HashUpdateTrigger(t *testi
 		},
 	}
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: "test-config",
-			},
-		},
-		Status: mcpv1beta1.MCPServerStatus{
-			ExternalAuthConfigHash: "initial-hash",
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithExternalAuthConfigRef("test-config"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Status.ExternalAuthConfigHash = "initial-hash"
+		}),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -429,19 +365,10 @@ func TestMCPServerReconciler_handleExternalAuthConfig_NoHashInConfig(t *testing.
 		},
 	}
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: "test-config",
-			},
-		},
-		Status: mcpv1beta1.MCPServerStatus{},
-	}
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithExternalAuthConfigRef("test-config"),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -568,18 +495,14 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 			}
 
 			const serverGeneration int64 = 11
-			mcpServer := &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test-server",
-					Namespace:  namespace,
-					Generation: serverGeneration,
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:                 "test-image",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: authName},
-				},
-				Status: mcpv1beta1.MCPServerStatus{Conditions: tt.preexisting},
-			}
+			mcpServer := v1beta1test.NewMCPServer("test-server", namespace,
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithExternalAuthConfigRef(authName),
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Generation = serverGeneration
+					m.Status.Conditions = tt.preexisting
+				}),
+			)
 
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
@@ -632,18 +555,17 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnRefRemoved(t
 
 	scheme := testutil.NewScheme(t)
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
-		Spec:       mcpv1beta1.MCPServerSpec{Image: "test-image" /* no ExternalAuthConfigRef */},
-		Status: mcpv1beta1.MCPServerStatus{
-			Conditions: []metav1.Condition{{
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithImage("test-image"), // no ExternalAuthConfigRef
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Status.Conditions = []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 				Status:  metav1.ConditionFalse,
 				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
 				Message: "stale mirror from when the ref pointed at an obo-typed config",
-			}},
-		},
-	}
+			}}
+		}),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -673,21 +595,18 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnSourceNotFou
 
 	scheme := testutil.NewScheme(t)
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:                 "test-image",
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "gone"},
-		},
-		Status: mcpv1beta1.MCPServerStatus{
-			Conditions: []metav1.Condition{{
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithExternalAuthConfigRef("gone"),
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Status.Conditions = []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 				Status:  metav1.ConditionFalse,
 				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
 				Message: "stale mirror — source has since been deleted",
-			}},
-		},
-	}
+			}}
+		}),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -742,15 +661,9 @@ func TestMCPServerDeployment_OBOSecretEnvVars(t *testing.T) {
 			OBO:  &mcpv1beta1.OBOConfig{},
 		},
 	}
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:                 "test-image:latest",
-			Transport:             "stdio",
-			ProxyPort:             8080,
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: authConfig.Name},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithExternalAuthConfigRef(authConfig.Name),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -799,15 +712,9 @@ func TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence(t *testing.
 			OBO:  &mcpv1beta1.OBOConfig{},
 		},
 	}
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:                 "test-image:latest",
-			Transport:             "stdio",
-			ProxyPort:             8080,
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: authConfig.Name},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithExternalAuthConfigRef(authConfig.Name),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).

@@ -20,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
@@ -36,60 +37,35 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 	}{
 		{
 			name: "invalid_json_in_podtemplatespec",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-invalid-json",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:     "test-image:latest",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					PodTemplateSpec: &runtime.RawExtension{
-						// Valid JSON but invalid PodTemplateSpec structure
-						// (spec.containers should be an array, not a string)
+			mcpServer: v1beta1test.NewMCPServer("test-invalid-json", "default",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					// Valid JSON but invalid PodTemplateSpec structure
+					// (spec.containers should be an array, not a string)
+					m.Spec.PodTemplateSpec = &runtime.RawExtension{
 						Raw: []byte(`{"spec": {"containers": "invalid"}}`),
-					},
-				},
-			},
+					}
+				}),
+			),
 			expectConditionStatus: metav1.ConditionFalse,
 			expectConditionReason: mcpv1beta1.ConditionReasonPodTemplateInvalid,
 			expectEventReason:     "InvalidPodTemplateSpec",
 		},
 		{
 			name: "valid_podtemplatespec",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-valid",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:     "test-image:latest",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					PodTemplateSpec: &runtime.RawExtension{
+			mcpServer: v1beta1test.NewMCPServer("test-valid", "default",
+				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+					m.Spec.PodTemplateSpec = &runtime.RawExtension{
 						Raw: []byte(`{"spec": {"containers": [{"name": "mcp"}]}}`),
-					},
-				},
-			},
+					}
+				}),
+			),
 			expectConditionStatus: metav1.ConditionTrue,
 			expectConditionReason: mcpv1beta1.ConditionReasonPodTemplateValid,
 			expectEventReason:     "", // No warning event for valid spec
 		},
 		{
-			name: "nil_podtemplatespec",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-nil",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:           "test-image:latest",
-					Transport:       "stdio",
-					ProxyPort:       8080,
-					PodTemplateSpec: nil,
-				},
-			},
+			name:                  "nil_podtemplatespec",
+			mcpServer:             v1beta1test.NewMCPServer("test-nil", "default"),
 			expectConditionStatus: "", // No condition set for nil spec
 			expectConditionReason: "", // No condition set for nil spec
 			expectEventReason:     "", // No warning event for nil spec
@@ -184,20 +160,13 @@ func TestDeploymentArgsWithInvalidPodTemplateSpec(t *testing.T) {
 	s := testutil.NewScheme(t)
 
 	// MCPServer with invalid PodTemplateSpec
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-			PodTemplateSpec: &runtime.RawExtension{
+	mcpServer := v1beta1test.NewMCPServer("test-mcp", "default",
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.Spec.PodTemplateSpec = &runtime.RawExtension{
 				Raw: []byte(`{invalid json`),
-			},
-		},
-	}
+			}
+		}),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(s).

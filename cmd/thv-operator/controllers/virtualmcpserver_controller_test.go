@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -82,26 +83,22 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-1",
-						Namespace: "default",
-					},
-					Status: mcpv1beta1.MCPServerStatus{
-						Phase: mcpv1beta1.MCPServerPhaseReady,
-						URL:   "http://backend-1.default.svc.cluster.local:8080",
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-2",
-						Namespace: "default",
-					},
-					Status: mcpv1beta1.MCPServerStatus{
-						Phase: mcpv1beta1.MCPServerPhaseReady,
-						URL:   "http://backend-2.default.svc.cluster.local:8080",
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-1", "default",
+					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+						m.Status = mcpv1beta1.MCPServerStatus{
+							Phase: mcpv1beta1.MCPServerPhaseReady,
+							URL:   "http://backend-1.default.svc.cluster.local:8080",
+						}
+					}),
+				),
+				*v1beta1test.NewMCPServer("backend-2", "default",
+					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+						m.Status = mcpv1beta1.MCPServerStatus{
+							Phase: mcpv1beta1.MCPServerPhaseReady,
+							URL:   "http://backend-2.default.svc.cluster.local:8080",
+						}
+					}),
+				),
 			},
 			expectError:    false,
 			expectedReason: mcpv1beta1.ConditionReasonVirtualMCPServerGroupRefValid,

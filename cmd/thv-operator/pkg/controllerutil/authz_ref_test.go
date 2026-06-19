@@ -13,7 +13,6 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -209,29 +208,4 @@ func TestAddAuthzConfigRefOptions(t *testing.T) {
 		var opts []runner.RunConfigBuilderOption
 		assert.Error(t, AddAuthzConfigRefOptions(ctx, c, "default", &mcpv1beta1.MCPAuthzConfigReference{Name: "notready-authz"}, &opts))
 	})
-}
-
-func TestEnsureAuthzConfigMapFromRefAndVolume(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	scheme := authzScheme(t)
-
-	owner := &mcpv1beta1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "srv", Namespace: "default"}}
-	authzCfg := newAuthzConfig("authz", "cedarv1", cedarRefConfig, true)
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(owner).Build()
-
-	require.NoError(t, EnsureAuthzConfigMapFromRef(ctx, c, scheme, owner, "default", "srv", authzCfg, map[string]string{"app": "srv"}))
-
-	mount, volume := GenerateAuthzVolumeConfigFromRef("srv")
-	require.NotNil(t, mount)
-	require.NotNil(t, volume)
-	require.NotNil(t, volume.ConfigMap)
-	cmName := volume.ConfigMap.Name
-
-	var cm corev1.ConfigMap
-	require.NoError(t, c.Get(ctx, client.ObjectKey{Namespace: "default", Name: cmName}, &cm))
-	body, ok := cm.Data[DefaultAuthzKey]
-	require.True(t, ok, "ConfigMap must carry the authz payload under DefaultAuthzKey")
-	assert.Contains(t, body, `"type":"cedarv1"`)
-	assert.Contains(t, body, "cedar")
 }

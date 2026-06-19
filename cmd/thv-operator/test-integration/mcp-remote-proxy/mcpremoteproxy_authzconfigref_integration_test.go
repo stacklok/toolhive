@@ -8,7 +8,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -77,7 +76,7 @@ var _ = Describe("MCPRemoteProxy AuthzConfigRef Integration Tests", func() {
 			seedAuthzConfig("authz-cfg", namespace, typ, rawConfig, "hash-1", true)
 			Expect(k8sClient.Create(ctx, newProxy("rp-authz", namespace, "authz-cfg"))).To(Succeed())
 
-			By("setting AuthzConfigRefValidated=True and tracking the hash")
+			By("setting AuthzConfigRefValidated=True and tracking the hash (any backend)")
 			Eventually(func(g Gomega) {
 				var got mcpv1beta1.MCPRemoteProxy
 				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "rp-authz", Namespace: namespace}, &got)).To(Succeed())
@@ -85,14 +84,6 @@ var _ = Describe("MCPRemoteProxy AuthzConfigRef Integration Tests", func() {
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 				g.Expect(got.Status.AuthzConfigHash).To(Equal("hash-1"))
-			}, timeout, interval).Should(Succeed())
-
-			By("materializing the authz ConfigMap the proxy mounts (any backend)")
-			Eventually(func(g Gomega) {
-				var cm corev1.ConfigMap
-				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "rp-authz-authz-ref", Namespace: namespace}, &cm)).To(Succeed())
-				g.Expect(cm.Data).To(HaveKey("authz.json"))
-				g.Expect(cm.Data["authz.json"]).To(ContainSubstring(typ))
 			}, timeout, interval).Should(Succeed())
 		},
 		Entry("cedarv1", "cedarv1", cedarConfig),

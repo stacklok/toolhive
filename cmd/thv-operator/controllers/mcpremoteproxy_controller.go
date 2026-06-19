@@ -233,29 +233,15 @@ func (r *MCPRemoteProxyReconciler) ensureAllResources(ctx context.Context, proxy
 }
 
 // ensureAuthzConfigMapForProxy ensures the authorization ConfigMap exists for inline
-// configuration (spec.authzConfig) and for a referenced MCPAuthzConfig
-// (spec.authzConfigRef). The two are mutually exclusive (CRD XValidation), so at
-// most one ConfigMap is materialized per reconcile.
+// configuration (spec.authzConfig). A referenced MCPAuthzConfig
+// (spec.authzConfigRef) is not materialized into a ConfigMap: it is enforced by
+// embedding the resolved authz config directly in the RunConfig (see
+// AddAuthzConfigRefOptions), which is the path the proxy actually reads.
 func (r *MCPRemoteProxyReconciler) ensureAuthzConfigMapForProxy(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	authzLabels := labelsForMCPRemoteProxy(proxy.Name)
 	authzLabels[authzLabelKey] = authzLabelValueInline
-	if err := ctrlutil.EnsureAuthzConfigMap(
+	return ctrlutil.EnsureAuthzConfigMap(
 		ctx, r.Client, r.Scheme, proxy, proxy.Namespace, proxy.Name, proxy.Spec.AuthzConfig, authzLabels,
-	); err != nil {
-		return err
-	}
-
-	if proxy.Spec.AuthzConfigRef == nil {
-		return nil
-	}
-	authzConfig, err := ctrlutil.GetAuthzConfigForWorkload(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfigRef)
-	if err != nil {
-		return err
-	}
-	refLabels := labelsForMCPRemoteProxy(proxy.Name)
-	refLabels[authzLabelKey] = authzLabelValueRef
-	return ctrlutil.EnsureAuthzConfigMapFromRef(
-		ctx, r.Client, r.Scheme, proxy, proxy.Namespace, proxy.Name, authzConfig, refLabels,
 	)
 }
 

@@ -152,7 +152,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				v1beta1test.WithTransport("sse"),
 				// ProxyMode set to streamable-http (should be ignored and set to "sse")
 				v1beta1test.WithProxyMode(streamableHTTPProxyMode),
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.MCPPort = 8080 })),
+				v1beta1test.WithMCPPort(8080)),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "sse-server", config.Name)
@@ -169,7 +169,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			// ProxyMode not specified
 			mcpServer: v1beta1test.NewMCPServer("sse-server-no-proxymode", "test-ns",
 				v1beta1test.WithTransport("sse"),
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.MCPPort = 8080 })),
+				v1beta1test.WithMCPPort(8080)),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "sse-server-no-proxymode", config.Name)
@@ -184,7 +184,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 				v1beta1test.WithTransport("streamable-http"),
 				// ProxyMode set to sse (should be ignored and set to "streamable-http")
 				v1beta1test.WithProxyMode(sseProxyMode),
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.MCPPort = 8080 })),
+				v1beta1test.WithMCPPort(8080)),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "streamable-http-server", config.Name)
@@ -198,7 +198,7 @@ func TestCreateRunConfigFromMCPServer(t *testing.T) {
 			// ProxyMode not specified
 			mcpServer: v1beta1test.NewMCPServer("streamable-http-server-no-proxymode", "test-ns",
 				v1beta1test.WithTransport("streamable-http"),
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.MCPPort = 8080 })),
+				v1beta1test.WithMCPPort(8080)),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "streamable-http-server-no-proxymode", config.Name)
@@ -691,9 +691,7 @@ func TestEnsureRunConfigConfigMap(t *testing.T) {
 			name: "configmap with audit configuration enabled",
 			mcpServer: v1beta1test.NewMCPServer("audit-test", "toolhive-system",
 				v1beta1test.WithImage("ghcr.io/example/server:v1.0.0"),
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-					m.Spec.Audit = &mcpv1beta1.AuditConfig{Enabled: true}
-				})),
+				v1beta1test.WithAudit(&mcpv1beta1.AuditConfig{Enabled: true})),
 			existingCM:  nil,
 			expectError: false,
 			validateContent: func(t *testing.T, cm *corev1.ConfigMap) {
@@ -1313,7 +1311,7 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 			name: "vault injection in PodTemplateSpec annotations",
 			mcpServer: v1beta1test.NewMCPServer("vault-server", "toolhive-system",
 				v1beta1test.WithImage("ghcr.io/example/server:v1.0.0"),
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+				v1beta1test.WithPodTemplateSpec(func() *runtime.RawExtension {
 					pts := &corev1.PodTemplateSpec{
 						ObjectMeta: metav1.ObjectMeta{
 							Annotations: map[string]string{
@@ -1323,8 +1321,8 @@ func TestEnsureRunConfigConfigMap_WithVaultInjection(t *testing.T) {
 						},
 					}
 					raw, _ := json.Marshal(pts)
-					m.Spec.PodTemplateSpec = &runtime.RawExtension{Raw: raw}
-				})),
+					return &runtime.RawExtension{Raw: raw}
+				}())),
 			expectedEnvDir: "/vault/secrets",
 		},
 		{

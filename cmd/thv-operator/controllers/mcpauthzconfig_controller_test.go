@@ -297,9 +297,7 @@ func TestMCPAuthzConfigReconciler_handleDeletion(t *testing.T) {
 			existingWorkloads: []client.Object{
 				v1beta1test.NewMCPServer("referencing-server", "default",
 					v1beta1test.WithImage("example/mcp:latest"),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Spec.AuthzConfigRef = &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"}
-					}),
+					v1beta1test.WithAuthzConfigRef("test-config"),
 				),
 			},
 			expectRequeue: true,
@@ -383,9 +381,7 @@ func TestMCPAuthzConfigReconciler_FinalizerRemovedAfterLastRefDropped(t *testing
 	}
 	workload := v1beta1test.NewMCPServer("ref-server", "default",
 		v1beta1test.WithImage("example/mcp:latest"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.AuthzConfigRef = &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"}
-		}),
+		v1beta1test.WithAuthzConfigRef("test-config"),
 	)
 	r, fakeClient := newAuthzTestReconciler(t, authzConfig, workload)
 
@@ -519,9 +515,7 @@ func TestMCPAuthzConfigReconciler_HashAndRefsLandInOneReconcile(t *testing.T) {
 	}
 	server := v1beta1test.NewMCPServer("ref-server", "default",
 		v1beta1test.WithImage("example/mcp:latest"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.AuthzConfigRef = &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"}
-		}),
+		v1beta1test.WithAuthzConfigRef("test-config"),
 	)
 	r, fakeClient := newAuthzTestReconciler(t, authzConfig, server)
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: authzConfig.Name, Namespace: authzConfig.Namespace}}
@@ -668,9 +662,7 @@ func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
 			existingWorkloads: []client.Object{
 				v1beta1test.NewMCPServer("my-server", "default",
 					v1beta1test.WithImage("example/mcp:latest"),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Spec.AuthzConfigRef = &mcpv1beta1.MCPAuthzConfigReference{Name: "shared-config"}
-					}),
+					v1beta1test.WithAuthzConfigRef("shared-config"),
 				),
 				&mcpv1beta1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{Name: "my-vmcp", Namespace: "default"},
@@ -701,9 +693,7 @@ func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
 			existingWorkloads: []client.Object{
 				v1beta1test.NewMCPServer("unrelated-server", "default",
 					v1beta1test.WithImage("example/mcp:latest"),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Spec.AuthzConfigRef = &mcpv1beta1.MCPAuthzConfigReference{Name: "other-config"}
-					}),
+					v1beta1test.WithAuthzConfigRef("other-config"),
 				),
 				&mcpv1beta1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{Name: "unrelated-vmcp", Namespace: "default"},
@@ -772,9 +762,7 @@ func TestMCPAuthzConfigReconciler_watchHandlers(t *testing.T) {
 			name: "MCPServer with ref enqueues current and stale configs",
 			obj: v1beta1test.NewMCPServer("srv", "default",
 				v1beta1test.WithImage("example/mcp:latest"),
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-					m.Spec.AuthzConfigRef = &mcpv1beta1.MCPAuthzConfigReference{Name: "current-config"}
-				}),
+				v1beta1test.WithAuthzConfigRef("current-config"),
 			),
 			expected: map[string]struct{}{"current-config": {}, "stale-config": {}},
 		},

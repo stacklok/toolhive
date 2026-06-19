@@ -543,11 +543,10 @@ func TestSpecDrivenReplicas3(t *testing.T) {
 
 	name := "three-replicas-test"
 	namespace := testNamespaceDefault
-	replicas := int32(3)
 
 	mcpServer := v1beta1test.NewMCPServer(name, namespace,
 		v1beta1test.WithTransport("sse"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Replicas = &replicas }))
+		v1beta1test.WithReplicas(3))
 
 	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
@@ -571,10 +570,9 @@ func TestStdioCapConditionSet(t *testing.T) {
 
 	name := "stdio-cap-test"
 	namespace := testNamespaceDefault
-	replicas := int32(3)
 
 	mcpServer := v1beta1test.NewMCPServer(name, namespace,
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Replicas = &replicas }))
+		v1beta1test.WithReplicas(3))
 
 	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
@@ -612,12 +610,11 @@ func TestSessionStorageWarningSet(t *testing.T) {
 
 	name := "session-storage-warning-test"
 	namespace := testNamespaceDefault
-	replicas := int32(2)
 
 	// No SessionStorage configured
 	mcpServer := v1beta1test.NewMCPServer(name, namespace,
 		v1beta1test.WithTransport("sse"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Replicas = &replicas }))
+		v1beta1test.WithReplicas(2))
 
 	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
@@ -653,16 +650,13 @@ func TestSessionStorageWarningCleared(t *testing.T) {
 
 	name := "session-storage-ok-test"
 	namespace := testNamespaceDefault
-	replicas := int32(2)
 
 	mcpServer := v1beta1test.NewMCPServer(name, namespace,
 		v1beta1test.WithTransport("sse"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.Replicas = &replicas
-			m.Spec.SessionStorage = &mcpv1beta1.SessionStorageConfig{
-				Provider: mcpv1beta1.SessionStorageProviderRedis,
-				Address:  "redis:6379",
-			}
+		v1beta1test.WithReplicas(2),
+		v1beta1test.WithSessionStorage(&mcpv1beta1.SessionStorageConfig{
+			Provider: mcpv1beta1.SessionStorageProviderRedis,
+			Address:  "redis:6379",
 		}))
 
 	testScheme := testutil.NewScheme(t)
@@ -1092,7 +1086,7 @@ func TestMCPServerBuildRedisPasswordEnvVar(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			m := v1beta1test.NewMCPServer("test-mcp", "default",
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.SessionStorage = tc.storage }))
+				v1beta1test.WithSessionStorage(tc.storage))
 			env := r.buildRedisPasswordEnvVar(m)
 			if tc.expectEnVar {
 				require.Len(t, env, 1)
@@ -1118,12 +1112,10 @@ func TestMCPServerDeploymentInjectsRedisPasswordEnvVar(t *testing.T) {
 
 	mcpServer := v1beta1test.NewMCPServer("test-mcp-redis", "default",
 		v1beta1test.WithTransport("streamable-http"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.SessionStorage = &mcpv1beta1.SessionStorageConfig{
-				Provider:    mcpv1beta1.SessionStorageProviderRedis,
-				Address:     "redis:6379",
-				PasswordRef: passwordRef,
-			}
+		v1beta1test.WithSessionStorage(&mcpv1beta1.SessionStorageConfig{
+			Provider:    mcpv1beta1.SessionStorageProviderRedis,
+			Address:     "redis:6379",
+			PasswordRef: passwordRef,
 		}))
 
 	testScheme := testutil.NewScheme(t)

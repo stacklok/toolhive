@@ -37,13 +37,11 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 	}{
 		{
 			name: "invalid_json_in_podtemplatespec",
+			// Valid JSON but invalid PodTemplateSpec structure
+			// (spec.containers should be an array, not a string)
 			mcpServer: v1beta1test.NewMCPServer("test-invalid-json", "default",
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-					// Valid JSON but invalid PodTemplateSpec structure
-					// (spec.containers should be an array, not a string)
-					m.Spec.PodTemplateSpec = &runtime.RawExtension{
-						Raw: []byte(`{"spec": {"containers": "invalid"}}`),
-					}
+				v1beta1test.WithPodTemplateSpec(&runtime.RawExtension{
+					Raw: []byte(`{"spec": {"containers": "invalid"}}`),
 				}),
 			),
 			expectConditionStatus: metav1.ConditionFalse,
@@ -53,10 +51,8 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 		{
 			name: "valid_podtemplatespec",
 			mcpServer: v1beta1test.NewMCPServer("test-valid", "default",
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-					m.Spec.PodTemplateSpec = &runtime.RawExtension{
-						Raw: []byte(`{"spec": {"containers": [{"name": "mcp"}]}}`),
-					}
+				v1beta1test.WithPodTemplateSpec(&runtime.RawExtension{
+					Raw: []byte(`{"spec": {"containers": [{"name": "mcp"}]}}`),
 				}),
 			),
 			expectConditionStatus: metav1.ConditionTrue,
@@ -161,10 +157,8 @@ func TestDeploymentArgsWithInvalidPodTemplateSpec(t *testing.T) {
 
 	// MCPServer with invalid PodTemplateSpec
 	mcpServer := v1beta1test.NewMCPServer("test-mcp", "default",
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.PodTemplateSpec = &runtime.RawExtension{
-				Raw: []byte(`{invalid json`),
-			}
+		v1beta1test.WithPodTemplateSpec(&runtime.RawExtension{
+			Raw: []byte(`{invalid json`),
 		}),
 	)
 

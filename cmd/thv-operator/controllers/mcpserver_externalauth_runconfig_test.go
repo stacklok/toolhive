@@ -607,12 +607,9 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 			mcpServer: v1beta1test.NewMCPServer("embedded-auth-server", "default",
 				v1beta1test.WithImage("test:v1"),
 				v1beta1test.WithExternalAuthConfigRef("embedded-auth-config"),
+				v1beta1test.WithOIDCConfigRef("embedded-oidc", "http://embedded-auth-server.default.svc.cluster.local:8080"),
 				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-					m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{
-						Name:     "embedded-oidc",
-						Audience: "http://embedded-auth-server.default.svc.cluster.local:8080",
-						Scopes:   []string{"openid", "offline_access", "mcp:tools"},
-					}
+					m.Spec.OIDCConfigRef.Scopes = []string{"openid", "offline_access", "mcp:tools"}
 				}),
 			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{

@@ -99,9 +99,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
 				v1beta1test.WithImage("test-image"),
 				v1beta1test.WithExternalAuthConfigRef("test-config"),
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-					m.Status.ExternalAuthConfigHash = "old-hash"
-				}),
+				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{ExternalAuthConfigHash: "old-hash"}),
 			),
 			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
@@ -132,9 +130,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
 				v1beta1test.WithImage("test-image"),
 				// No ExternalAuthConfigRef (was removed)
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-					m.Status.ExternalAuthConfigHash = "old-hash-to-clear"
-				}),
+				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{ExternalAuthConfigHash: "old-hash-to-clear"}),
 			),
 			expectError:       false,
 			expectHash:        "",
@@ -300,9 +296,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_HashUpdateTrigger(t *testi
 	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
 		v1beta1test.WithImage("test-image"),
 		v1beta1test.WithExternalAuthConfigRef("test-config"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Status.ExternalAuthConfigHash = "initial-hash"
-		}),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{ExternalAuthConfigHash: "initial-hash"}),
 	)
 
 	fakeClient := fake.NewClientBuilder().
@@ -498,9 +492,9 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 			mcpServer := v1beta1test.NewMCPServer("test-server", namespace,
 				v1beta1test.WithImage("test-image"),
 				v1beta1test.WithExternalAuthConfigRef(authName),
+				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{Conditions: tt.preexisting}),
 				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
 					m.Generation = serverGeneration
-					m.Status.Conditions = tt.preexisting
 				}),
 			)
 
@@ -557,13 +551,13 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnRefRemoved(t
 
 	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
 		v1beta1test.WithImage("test-image"), // no ExternalAuthConfigRef
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Status.Conditions = []metav1.Condition{{
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Conditions: []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 				Status:  metav1.ConditionFalse,
 				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
 				Message: "stale mirror from when the ref pointed at an obo-typed config",
-			}}
+			}},
 		}),
 	)
 
@@ -598,13 +592,13 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnSourceNotFou
 	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
 		v1beta1test.WithImage("test-image"),
 		v1beta1test.WithExternalAuthConfigRef("gone"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Status.Conditions = []metav1.Condition{{
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Conditions: []metav1.Condition{{
 				Type:    mcpv1beta1.ConditionTypeExternalAuthConfigValidated,
 				Status:  metav1.ConditionFalse,
 				Reason:  mcpv1beta1.ConditionReasonEnterpriseRequired,
 				Message: "stale mirror — source has since been deleted",
-			}}
+			}},
 		}),
 	)
 

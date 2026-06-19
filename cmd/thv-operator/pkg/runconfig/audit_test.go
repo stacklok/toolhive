@@ -42,9 +42,7 @@ func TestAddAuditConfigOptions(t *testing.T) {
 		{
 			name: "with disabled audit configuration",
 			mcpServer: v1beta1test.NewMCPServer("audit-server", "test-ns",
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-					m.Spec.Audit = &mcpv1beta1.AuditConfig{Enabled: true}
-				}),
+				v1beta1test.WithAudit(&mcpv1beta1.AuditConfig{Enabled: true}),
 			),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {

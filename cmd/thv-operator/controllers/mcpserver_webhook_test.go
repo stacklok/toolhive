@@ -38,9 +38,7 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 			name: "no ref clears previously stored hash",
 			mcpServer: v1beta1test.NewMCPServer("s", "default",
 				v1beta1test.WithImage("img"),
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-					m.Status = mcpv1beta1.MCPServerStatus{WebhookConfigHash: "old-hash"}
-				}),
+				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{WebhookConfigHash: "old-hash"}),
 			),
 			expectHashCleared: true,
 		},
@@ -91,9 +89,7 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 			mcpServer: v1beta1test.NewMCPServer("s", "default",
 				v1beta1test.WithImage("img"),
 				v1beta1test.WithWebhookConfigRef("cfg"),
-				v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-					m.Status = mcpv1beta1.MCPServerStatus{WebhookConfigHash: "old-hash"}
-				}),
+				v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{WebhookConfigHash: "old-hash"}),
 			),
 			webhookConfig: &mcpv1alpha1.MCPWebhookConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},

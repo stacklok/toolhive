@@ -584,9 +584,7 @@ func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T
 	}
 	mcpServer := v1beta1test.NewMCPServer("server-to-track", "default",
 		v1beta1test.WithImage("test-image"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: "test-config"}
-		}),
+		v1beta1test.WithOIDCConfigRef("test-config", ""),
 	)
 
 	fakeClient := fake.NewClientBuilder().
@@ -784,9 +782,7 @@ func TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch(t 
 	// without bumping the config's generation.
 	server := v1beta1test.NewMCPServer("referencing-server", "default",
 		v1beta1test.WithImage("img"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: oidcConfig.Name, Audience: "aud"}
-		}),
+		v1beta1test.WithOIDCConfigRef(oidcConfig.Name, "aud"),
 	)
 	require.NoError(t, fakeClient.Create(ctx, server))
 

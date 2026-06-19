@@ -120,9 +120,7 @@ func TestMCPOIDCConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 	}
 	server := v1beta1test.NewMCPServer("ref-server", "default",
 		v1beta1test.WithImage("example/mcp:latest"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: "oidc-del"}
-		}),
+		v1beta1test.WithOIDCConfigRef("oidc-del", ""),
 	)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -380,9 +378,7 @@ func TestMCPAuthzConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 	}
 	server := v1beta1test.NewMCPServer("ref-server", "default",
 		v1beta1test.WithImage("example/mcp:latest"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.AuthzConfigRef = &mcpv1beta1.MCPAuthzConfigReference{Name: "authz-del"}
-		}),
+		v1beta1test.WithAuthzConfigRef("authz-del"),
 	)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).

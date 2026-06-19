@@ -39,9 +39,7 @@ func TestMCPServerReconciler_handleAuthServerRef(t *testing.T) {
 			mcpServer: func() *mcpv1beta1.MCPServer {
 				return v1beta1test.NewMCPServer("server", "default",
 					v1beta1test.WithImage("test"),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Status.AuthServerConfigHash = "old-hash"
-					}),
+					v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{AuthServerConfigHash: "old-hash"}),
 				)
 			},
 			expectHash: "",

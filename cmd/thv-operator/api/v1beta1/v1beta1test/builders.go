@@ -15,6 +15,7 @@ package v1beta1test
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
@@ -59,8 +60,8 @@ func WithProxyPort(port int32) MCPServerOption {
 	return func(m *mcpv1beta1.MCPServer) { m.Spec.ProxyPort = port }
 }
 
-// WithGroupRef sets the MCPGroup the server belongs to.
-func WithGroupRef(name string) MCPServerOption {
+// WithMCPGroupRef sets the MCPGroup the server belongs to.
+func WithMCPGroupRef(name string) MCPServerOption {
 	return func(m *mcpv1beta1.MCPServer) { m.Spec.GroupRef = &mcpv1beta1.MCPGroupRef{Name: name} }
 }
 
@@ -103,6 +104,50 @@ func WithTelemetryConfigRef(name string) MCPServerOption {
 	}
 }
 
+// WithOIDCConfigRef sets the MCPOIDCConfig reference by name and audience.
+func WithOIDCConfigRef(name, audience string) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) {
+		m.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{Name: name, Audience: audience}
+	}
+}
+
+// WithAuthzConfigRef sets the MCPAuthzConfig reference by name.
+func WithAuthzConfigRef(name string) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) {
+		m.Spec.AuthzConfigRef = &mcpv1beta1.MCPAuthzConfigReference{Name: name}
+	}
+}
+
+// WithMCPPort sets the MCP container port.
+func WithMCPPort(port int32) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) { m.Spec.MCPPort = port }
+}
+
+// WithReplicas sets the desired replica count.
+func WithReplicas(replicas int32) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) { m.Spec.Replicas = &replicas }
+}
+
+// WithPodTemplateSpec sets the raw pod template spec override.
+func WithPodTemplateSpec(pts *runtime.RawExtension) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) { m.Spec.PodTemplateSpec = pts }
+}
+
+// WithSessionStorage sets the session storage configuration.
+func WithSessionStorage(cfg *mcpv1beta1.SessionStorageConfig) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) { m.Spec.SessionStorage = cfg }
+}
+
+// WithAudit sets the audit configuration.
+func WithAudit(cfg *mcpv1beta1.AuditConfig) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) { m.Spec.Audit = cfg }
+}
+
+// WithStatus replaces the MCPServer status.
+func WithStatus(status mcpv1beta1.MCPServerStatus) MCPServerOption {
+	return func(m *mcpv1beta1.MCPServer) { m.Status = status }
+}
+
 // WithDeletionTimestamp marks the server as being deleted (with the given
 // finalizers so the fake client accepts the non-zero timestamp).
 func WithDeletionTimestamp(ts metav1.Time, finalizers ...string) MCPServerOption {
@@ -112,12 +157,12 @@ func WithDeletionTimestamp(ts metav1.Time, finalizers ...string) MCPServerOption
 	}
 }
 
-// Mutate is the escape hatch for spec fields that have no dedicated option
-// (AuthzConfig, ResourceOverrides, PodTemplateSpec, Secrets, Volumes, …). It
-// runs last, after all other options. Prefer a dedicated option when one
-// exists; reach for Mutate only for the less common fields, and keep genuinely
-// complex fixtures as inline literals rather than threading everything through
-// here.
+// Mutate is the escape hatch for spec or metadata fields that have no dedicated
+// option (AuthzConfig, ResourceOverrides, Secrets, Volumes, AuthServerRef,
+// metadata.UID/Generation, …). It runs last, after all other options. Prefer a
+// dedicated option when one exists; reach for Mutate only for the less common
+// fields, and keep genuinely complex fixtures as inline literals rather than
+// threading everything through here.
 func Mutate(fn func(*mcpv1beta1.MCPServer)) MCPServerOption {
 	return fn
 }

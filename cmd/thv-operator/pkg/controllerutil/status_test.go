@@ -97,9 +97,7 @@ func newSeedMCPServer(name string) *mcpv1beta1.MCPServer {
 	return v1beta1test.NewMCPServer(name, "default",
 		v1beta1test.WithImage("example/mcp:latest"),
 		v1beta1test.WithProxyMode("sse"),
-		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-			m.Spec.MCPPort = 8080
-		}),
+		v1beta1test.WithMCPPort(8080),
 	)
 }
 

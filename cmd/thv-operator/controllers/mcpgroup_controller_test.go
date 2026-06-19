@@ -48,17 +48,13 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "default",
 					v1beta1test.WithImage("test-image"),
-					v1beta1test.WithGroupRef(testGroupName),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Status.Phase = mcpv1beta1.MCPServerPhaseReady
-					}),
+					v1beta1test.WithMCPGroupRef(testGroupName),
+					v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{Phase: mcpv1beta1.MCPServerPhaseReady}),
 				),
 				v1beta1test.NewMCPServer("server2", "default",
 					v1beta1test.WithImage("test-image"),
-					v1beta1test.WithGroupRef(testGroupName),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Status.Phase = mcpv1beta1.MCPServerPhaseReady
-					}),
+					v1beta1test.WithMCPGroupRef(testGroupName),
+					v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{Phase: mcpv1beta1.MCPServerPhaseReady}),
 				),
 			},
 			expectedServerCount: 2,
@@ -76,17 +72,13 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "default",
 					v1beta1test.WithImage("test-image"),
-					v1beta1test.WithGroupRef(testGroupName),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Status.Phase = mcpv1beta1.MCPServerPhaseReady
-					}),
+					v1beta1test.WithMCPGroupRef(testGroupName),
+					v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{Phase: mcpv1beta1.MCPServerPhaseReady}),
 				),
 				v1beta1test.NewMCPServer("server2", "default",
 					v1beta1test.WithImage("test-image"),
-					v1beta1test.WithGroupRef(testGroupName),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
-					}),
+					v1beta1test.WithMCPGroupRef(testGroupName),
+					v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{Phase: mcpv1beta1.MCPServerPhaseFailed}),
 				),
 			},
 			expectedServerCount: 2,
@@ -104,17 +96,13 @@ func TestMCPGroupReconciler_Reconcile_BasicLogic(t *testing.T) {
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "default",
 					v1beta1test.WithImage("test-image"),
-					v1beta1test.WithGroupRef(testGroupName),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Status.Phase = mcpv1beta1.MCPServerPhaseReady
-					}),
+					v1beta1test.WithMCPGroupRef(testGroupName),
+					v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{Phase: mcpv1beta1.MCPServerPhaseReady}),
 				),
 				v1beta1test.NewMCPServer("server2", "default",
 					v1beta1test.WithImage("test-image"),
-					v1beta1test.WithGroupRef(testGroupName),
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Status.Phase = mcpv1beta1.MCPServerPhasePending
-					}),
+					v1beta1test.WithMCPGroupRef(testGroupName),
+					v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{Phase: mcpv1beta1.MCPServerPhasePending}),
 				),
 			},
 			expectedServerCount: 2,
@@ -228,11 +216,11 @@ func TestMCPGroupReconciler_ServerFiltering(t *testing.T) {
 			namespace: "default",
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "default",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef(testGroupName)),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef(testGroupName)),
 				v1beta1test.NewMCPServer("server2", "default",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef("other-group")),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef("other-group")),
 				v1beta1test.NewMCPServer("server3", "default",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef(testGroupName)),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef(testGroupName)),
 			},
 			expectedServerNames: []string{"server1", "server3"},
 			expectedCount:       2,
@@ -243,7 +231,7 @@ func TestMCPGroupReconciler_ServerFiltering(t *testing.T) {
 			namespace: "default",
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "default",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef(testGroupName)),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef(testGroupName)),
 				v1beta1test.NewMCPServer("server2", "default", v1beta1test.WithImage("test")),
 			},
 			expectedServerNames: []string{"server1"},
@@ -255,9 +243,9 @@ func TestMCPGroupReconciler_ServerFiltering(t *testing.T) {
 			namespace: "namespace-a",
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "namespace-a",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef(testGroupName)),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef(testGroupName)),
 				v1beta1test.NewMCPServer("server2", "namespace-b",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef(testGroupName)),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef(testGroupName)),
 			},
 			expectedServerNames: []string{"server1"},
 			expectedCount:       1,
@@ -356,7 +344,7 @@ func TestMCPGroupReconciler_findMCPGroupForMCPServer(t *testing.T) {
 			name: "server with groupRef finds matching group",
 			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
 				v1beta1test.WithImage("test-image"),
-				v1beta1test.WithGroupRef(testGroupName),
+				v1beta1test.WithMCPGroupRef(testGroupName),
 			),
 			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
@@ -389,7 +377,7 @@ func TestMCPGroupReconciler_findMCPGroupForMCPServer(t *testing.T) {
 			name: "server with non-existent groupRef returns empty",
 			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
 				v1beta1test.WithImage("test-image"),
-				v1beta1test.WithGroupRef("non-existent-group"),
+				v1beta1test.WithMCPGroupRef("non-existent-group"),
 			),
 			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
@@ -405,7 +393,7 @@ func TestMCPGroupReconciler_findMCPGroupForMCPServer(t *testing.T) {
 			name: "server finds correct group among multiple groups",
 			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
 				v1beta1test.WithImage("test-image"),
-				v1beta1test.WithGroupRef("group-b"),
+				v1beta1test.WithMCPGroupRef("group-b"),
 			),
 			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
@@ -558,7 +546,7 @@ func TestMCPGroupReconciler_Conditions(t *testing.T) {
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "default",
 					v1beta1test.WithImage("test-image"),
-					v1beta1test.WithGroupRef(testGroupName),
+					v1beta1test.WithMCPGroupRef(testGroupName),
 				),
 			},
 			expectedConditionStatus: metav1.ConditionTrue,
@@ -748,11 +736,11 @@ func TestMCPGroupReconciler_Deletion(t *testing.T) {
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "default",
 					v1beta1test.WithImage("test-image"),
-					v1beta1test.WithGroupRef(testGroupName),
+					v1beta1test.WithMCPGroupRef(testGroupName),
 				),
 				v1beta1test.NewMCPServer("server2", "default",
 					v1beta1test.WithImage("test-image"),
-					v1beta1test.WithGroupRef(testGroupName),
+					v1beta1test.WithMCPGroupRef(testGroupName),
 				),
 			},
 			expectedServerConditionType: mcpv1beta1.ConditionGroupRefValidated,
@@ -763,7 +751,7 @@ func TestMCPGroupReconciler_Deletion(t *testing.T) {
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "default",
 					v1beta1test.WithImage("test-image"),
-					v1beta1test.WithGroupRef("other-group"),
+					v1beta1test.WithMCPGroupRef("other-group"),
 				),
 			},
 			shouldUpdateServers: false,
@@ -893,11 +881,11 @@ func TestMCPGroupReconciler_findReferencingMCPServers(t *testing.T) {
 			namespace: "default",
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "default",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef(testGroupName)),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef(testGroupName)),
 				v1beta1test.NewMCPServer("server2", "default",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef("other-group")),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef("other-group")),
 				v1beta1test.NewMCPServer("server3", "default",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef(testGroupName)),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef(testGroupName)),
 			},
 			expectedCount: 2,
 			expectedNames: []string{"server1", "server3"},
@@ -908,7 +896,7 @@ func TestMCPGroupReconciler_findReferencingMCPServers(t *testing.T) {
 			namespace: "default",
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "default",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef("other-group")),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef("other-group")),
 			},
 			expectedCount: 0,
 			expectedNames: []string{},
@@ -919,9 +907,9 @@ func TestMCPGroupReconciler_findReferencingMCPServers(t *testing.T) {
 			namespace: "namespace-a",
 			mcpServers: []*mcpv1beta1.MCPServer{
 				v1beta1test.NewMCPServer("server1", "namespace-a",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef(testGroupName)),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef(testGroupName)),
 				v1beta1test.NewMCPServer("server2", "namespace-b",
-					v1beta1test.WithImage("test"), v1beta1test.WithGroupRef(testGroupName)),
+					v1beta1test.WithImage("test"), v1beta1test.WithMCPGroupRef(testGroupName)),
 			},
 			expectedCount: 1,
 			expectedNames: []string{"server1"},

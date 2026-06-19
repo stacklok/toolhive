@@ -84,19 +84,15 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
 				*v1beta1test.NewMCPServer("backend-1", "default",
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Status = mcpv1beta1.MCPServerStatus{
-							Phase: mcpv1beta1.MCPServerPhaseReady,
-							URL:   "http://backend-1.default.svc.cluster.local:8080",
-						}
+					v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+						Phase: mcpv1beta1.MCPServerPhaseReady,
+						URL:   "http://backend-1.default.svc.cluster.local:8080",
 					}),
 				),
 				*v1beta1test.NewMCPServer("backend-2", "default",
-					v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
-						m.Status = mcpv1beta1.MCPServerStatus{
-							Phase: mcpv1beta1.MCPServerPhaseReady,
-							URL:   "http://backend-2.default.svc.cluster.local:8080",
-						}
+					v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+						Phase: mcpv1beta1.MCPServerPhaseReady,
+						URL:   "http://backend-2.default.svc.cluster.local:8080",
 					}),
 				),
 			},

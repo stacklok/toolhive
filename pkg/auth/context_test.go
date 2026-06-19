@@ -7,6 +7,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -113,4 +114,14 @@ func TestIdentityContext_Overwrite(t *testing.T) {
 	retrieved, ok := IdentityFromContext(ctx)
 	require.True(t, ok)
 	assert.Equal(t, "user2", retrieved.Subject)
+}
+
+// TestClaimsToIdentity_PopulatesPlatformUserID verifies that claimsToIdentity fills
+// PlatformUserID from the `sub` claim, giving storage layers that key on the canonical
+// platform user a single, documented place to read it.
+func TestClaimsToIdentity_PopulatesPlatformUserID(t *testing.T) {
+	t.Parallel()
+	id, err := claimsToIdentity(jwt.MapClaims{"sub": "user123"}, "tok")
+	require.NoError(t, err)
+	assert.Equal(t, "user123", id.PlatformUserID)
 }

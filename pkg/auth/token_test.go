@@ -2403,6 +2403,36 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		require.Equal(t, map[string]string{"github": "gh-tok"}, captured.UpstreamTokens)
 	})
 
+	t.Run("places identity in context before loading upstream tokens", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+
+		// loadUpstreamTokens forwards its context straight to the reader, so the
+		// context the reader receives IS the one loadUpstreamTokens ran with.
+		// Capture it to assert the middleware enriched the context with the identity
+		// BEFORE performing the load.
+		var loadCtxIdentity *Identity
+		var loadCtxHadIdentity bool
+		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-xyz").
+			DoAndReturn(func(ctx context.Context, _ string) (map[string]string, error) {
+				loadCtxIdentity, loadCtxHadIdentity = IdentityFromContext(ctx)
+				return map[string]string{"github": "gh-tok"}, nil
+			})
+		v := makeValidator(t, WithUpstreamTokenReader(reader))
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
+
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+signToken(claimsWithTsid))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusOK, rr.Code)
+		require.True(t, loadCtxHadIdentity,
+			"middleware must place the identity into the context before loading upstream tokens")
+		require.Equal(t, "test-user", loadCtxIdentity.PlatformUserID)
+	})
+
 	t.Run("returns 503 when storage fails", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

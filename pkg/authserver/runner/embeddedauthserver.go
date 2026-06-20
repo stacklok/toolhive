@@ -93,12 +93,13 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
-	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor)
+	return NewEmbeddedAuthServerWithStorage(ctx, cfg, stor)
 }
 
-// newEmbeddedAuthServerWithStorage is the unexported core constructor that
-// builds an EmbeddedAuthServer around a caller-supplied storage backend.
-// NewEmbeddedAuthServer dispatches into this helper after running
+// NewEmbeddedAuthServerWithStorage is the exported core constructor that
+// builds an EmbeddedAuthServer around a caller-supplied storage backend. It
+// lets external composition (e.g. an enterprise build) inject a decorated
+// storage.Storage aggregate. NewEmbeddedAuthServer dispatches into this helper after running
 // createStorage; tests dispatch into it directly so they can supply a
 // closeTrackingStorage wrapper to verify the deferred-cleanup contract.
 //
@@ -108,7 +109,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 // crash-looping caller (typical when DCR's network I/O fails) does not
 // leak the Redis client connection pool / MemoryStorage cleanup goroutine
 // on every restart. The named return retErr is the gate.
-func newEmbeddedAuthServerWithStorage(
+func NewEmbeddedAuthServerWithStorage(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
 	stor storage.Storage,

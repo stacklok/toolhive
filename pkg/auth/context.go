@@ -75,8 +75,9 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 
 	identity := &Identity{
 		PrincipalInfo: PrincipalInfo{
-			Subject: sub,
-			Claims:  filteredClaims,
+			Subject:        sub,
+			PlatformUserID: sub,
+			Claims:         filteredClaims,
 		},
 		Token:     token,
 		TokenType: "Bearer",

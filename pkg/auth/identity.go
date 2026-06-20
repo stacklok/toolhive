@@ -21,6 +21,14 @@ type PrincipalInfo struct {
 	// This is always required per OIDC Core 1.0 spec § 5.1.
 	Subject string `json:"sub,omitempty"`
 
+	// PlatformUserID is the platform's canonical user identifier. It defaults to
+	// the `sub` claim (see claimsToIdentity), which is correct for standalone use
+	// where `sub` is the local User.ID. Middleware that validates a token whose
+	// `sub` is not the platform-canonical user identifier MUST override this field
+	// before calling WithIdentity; storage layers that key on the canonical user
+	// trust it.
+	PlatformUserID string `json:"platform_user_id,omitempty"`
+
 	// Name is the human-readable name (from 'name' claim).
 	Name string `json:"name,omitempty"`
 

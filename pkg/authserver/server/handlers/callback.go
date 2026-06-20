@@ -14,6 +14,7 @@ import (
 
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -138,6 +139,14 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 			h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 		}
 	}
+
+	// Place the resolved identity in the request context so callback storage calls
+	// that carry no tokens argument — GetAllUpstreamTokens during chain consistency,
+	// DeleteUpstreamTokens on cleanup — can resolve the canonical user from context.
+	// (StoreUpstreamTokens does not need this; it keys off tokens.UserID below.)
+	ctx = auth.WithIdentity(ctx, &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{Subject: subject, PlatformUserID: subject},
+	})
 
 	// Convert IDP tokens to storage tokens with binding fields.
 	// SessionExpiresAt is set unconditionally as the Fosite session bound. Storage

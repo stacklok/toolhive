@@ -44,7 +44,7 @@ require (
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c
 	github.com/pressly/goose/v3 v3.27.1
 	github.com/prometheus/client_golang v1.23.2
-	github.com/redis/go-redis/v9 v9.20.0
+	github.com/redis/go-redis/v9 v9.20.1
 	github.com/shirou/gopsutil/v4 v4.26.5
 	github.com/spf13/viper v1.21.0
 	github.com/stacklok/toolhive-catalog v0.20260610.0

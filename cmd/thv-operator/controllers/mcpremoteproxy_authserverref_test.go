@@ -12,11 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
@@ -174,24 +172,13 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			scheme := testutil.NewScheme(t)
-
 			proxy := tt.proxy()
-			objs := []runtime.Object{proxy}
+			objs := []client.Object{proxy}
 			if tt.authConfig != nil {
 				objs = append(objs, tt.authConfig())
 			}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithRuntimeObjects(objs...).
-				WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{}).
-				Build()
-
-			reconciler := &MCPRemoteProxyReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			reconciler, _ := newTestMCPRemoteProxyReconciler(t, objs...)
 			err := reconciler.handleAuthServerRef(ctx, proxy)
 
 			if tt.expectError {

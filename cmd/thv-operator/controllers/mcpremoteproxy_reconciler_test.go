@@ -254,11 +254,7 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := testutil.NewScheme(t)
-			_ = rbacv1.AddToScheme(scheme)
-			_ = appsv1.AddToScheme(scheme)
-
-			objects := []runtime.Object{tt.proxy}
+			objects := []client.Object{tt.proxy}
 			if tt.toolConfig != nil {
 				objects = append(objects, tt.toolConfig)
 			}
@@ -269,18 +265,8 @@ func TestMCPRemoteProxyFullReconciliation(t *testing.T) {
 				objects = append(objects, tt.secret)
 			}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithRuntimeObjects(objects...).
-				WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{}).
-				Build()
-
-			reconciler := &MCPRemoteProxyReconciler{
-				Client:           fakeClient,
-				Scheme:           scheme,
-				Recorder:         events.NewFakeRecorder(10),
-				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-			}
+			reconciler, fakeClient := newTestMCPRemoteProxyReconciler(t, objects...)
+			reconciler.Recorder = events.NewFakeRecorder(10)
 
 			ctx := context.TODO()
 			req := ctrl.Request{
@@ -992,8 +978,7 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := testutil.NewScheme(t)
-			objects := []runtime.Object{tt.proxy}
+			objects := []client.Object{tt.proxy}
 			if tt.toolConfig != nil {
 				objects = append(objects, tt.toolConfig)
 			}
@@ -1001,17 +986,8 @@ func TestValidateAndHandleConfigs(t *testing.T) {
 				objects = append(objects, tt.externalAuth)
 			}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithRuntimeObjects(objects...).
-				WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{}).
-				Build()
-
-			reconciler := &MCPRemoteProxyReconciler{
-				Client:   fakeClient,
-				Scheme:   scheme,
-				Recorder: events.NewFakeRecorder(10),
-			}
+			reconciler, fakeClient := newTestMCPRemoteProxyReconciler(t, objects...)
+			reconciler.Recorder = events.NewFakeRecorder(10)
 
 			err := reconciler.validateAndHandleConfigs(context.TODO(), tt.proxy)
 

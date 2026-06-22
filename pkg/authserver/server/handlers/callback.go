@@ -351,8 +351,19 @@ func (h *Handler) handleUpstreamError(
 		if err == nil {
 			_ = h.storage.DeletePendingAuthorization(ctx, internalState)
 			// Clean up any upstream tokens stored by earlier legs of a multi-upstream chain.
+			// On a subsequent leg the resolved user is carried in pending.ResolvedUserID;
+			// place it in ctx so a context-keyed storage decorator can resolve the canonical
+			// user for this delete (DeleteUpstreamTokens takes no tokens argument). A first-leg
+			// error has no resolved user and no earlier-leg tokens to clean up, so the bare
+			// ctx is correct there.
 			if pending.SessionID != "" {
-				_ = h.storage.DeleteUpstreamTokens(ctx, pending.SessionID)
+				cleanupCtx := ctx
+				if pending.ResolvedUserID != "" {
+					cleanupCtx = auth.WithIdentity(ctx, &auth.Identity{
+						PrincipalInfo: auth.PrincipalInfo{Subject: pending.ResolvedUserID, PlatformUserID: pending.ResolvedUserID},
+					})
+				}
+				_ = h.storage.DeleteUpstreamTokens(cleanupCtx, pending.SessionID)
 			}
 			ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
 			if ar != nil {

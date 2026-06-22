@@ -99,7 +99,14 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 // NewEmbeddedAuthServerWithStorage is the exported core constructor that
 // builds an EmbeddedAuthServer around a caller-supplied storage backend. It
 // lets external composition (e.g. an enterprise build) inject a decorated
-// storage.Storage aggregate. NewEmbeddedAuthServer dispatches into this helper after running
+// storage.Storage aggregate.
+//
+// The supplied storage MUST also implement storage.DCRCredentialStore (both
+// OSS MemoryStorage and RedisStorage do); the constructor returns an error if
+// it does not. It also validates cfg, so direct callers get the same
+// fail-loud config check NewEmbeddedAuthServer performs before dispatch.
+//
+// NewEmbeddedAuthServer dispatches into this helper after running
 // createStorage; tests dispatch into it directly so they can supply a
 // closeTrackingStorage wrapper to verify the deferred-cleanup contract.
 //
@@ -137,6 +144,15 @@ func NewEmbeddedAuthServerWithStorage(
 			}
 		}
 	}()
+
+	// Validate cfg here too. NewEmbeddedAuthServer validates before
+	// createStorage, but direct callers of this exported constructor would
+	// otherwise skip the check. Placed inside the deferred-cleanup gate above so
+	// a validation failure still closes the caller-supplied storage per the
+	// resource-ownership contract.
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid run config: %w", err)
+	}
 
 	// 1. Create key provider from RunConfig.SigningKeyConfig
 	keyProvider, err := createKeyProvider(cfg.SigningKeyConfig)

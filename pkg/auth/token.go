@@ -553,8 +553,9 @@ func WithEnvReader(reader env.Reader) TokenValidatorOption {
 
 // WithUpstreamTokenReader configures the token validator to enrich Identity
 // with upstream provider tokens. When set, the Middleware extracts the token
-// session ID (tsid) from JWT claims and loads all upstream tokens into
-// Identity.UpstreamTokens before placing the Identity in the request context.
+// session ID (tsid) from JWT claims, loads all upstream tokens into
+// Identity.UpstreamTokens, and then places the enriched Identity in the
+// request context.
 func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.upstreamTokenReader = reader
@@ -1211,19 +1212,19 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			return
 		}
 
-		// Place the Identity in the request context BEFORE loading upstream tokens,
+		// Enrich Identity with upstream provider tokens when an embedded auth
+		// server is active (reader configured via WithUpstreamTokenReader). The
+		// load runs against a temporary load-scoped context carrying the Identity,
 		// so storage layers invoked during the load can resolve the canonical user
-		// from context. The load and the downstream handler share one Identity
-		// pointer; the in-place UpstreamTokens mutation below completes before the
-		// context is served.
-		ctx := WithIdentity(r.Context(), identity)
-
-		// Enrich Identity with upstream provider tokens when an embedded
-		// auth server is active (reader configured via WithUpstreamTokenReader).
+		// from context. The in-place UpstreamTokens mutation completes here, before
+		// the publicly-reachable context is built below — so the Identity placed in
+		// the served context is never mutated afterwards (see the UpstreamTokens doc
+		// comment in identity.go).
 		if v.upstreamTokenReader != nil {
-			tokens, loadErr := v.loadUpstreamTokens(ctx, claims)
+			loadCtx := WithIdentity(r.Context(), identity)
+			tokens, loadErr := v.loadUpstreamTokens(loadCtx, claims)
 			if loadErr != nil {
-				slog.WarnContext(ctx, "upstream token storage unavailable",
+				slog.WarnContext(loadCtx, "upstream token storage unavailable",
 					"error", loadErr,
 				)
 				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
@@ -1232,6 +1233,8 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			identity.UpstreamTokens = tokens
 		}
 
+		// Add the fully-populated Identity to the request context and serve.
+		ctx := WithIdentity(r.Context(), identity)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }

@@ -1079,3 +1079,62 @@ func TestCallbackHandler_PlacesIdentityInContext_OnChainRead(t *testing.T) {
 	require.True(t, ok, "callback must place identity in ctx before the chain-consistency GetAllUpstreamTokens")
 	require.Equal(t, leg1User, id.PlatformUserID)
 }
+
+// TestCallbackHandler_PlacesIdentityInContext_OnUpstreamErrorCleanup verifies that
+// when a subsequent-leg callback returns an upstream error, the earlier-leg cleanup
+// (DeleteUpstreamTokens in handleUpstreamError) runs with the resolved identity
+// already in the request context.
+//
+// This is the error-path sibling of the chain-read test above. handleUpstreamError
+// runs from an early return at the top of CallbackHandler, before the happy-path
+// identity injection, so it must place the identity itself. DeleteUpstreamTokens
+// takes only (ctx, sessionID) — no tokens argument — so a context-keyed storage
+// decorator can resolve the canonical user only from ctx. The resolved user is
+// carried forward from leg 1 via pending.ResolvedUserID.
+func TestCallbackHandler_PlacesIdentityInContext_OnUpstreamErrorCleanup(t *testing.T) {
+	t.Parallel()
+	handler, storState, _, _ := multiUpstreamTestSetup(t)
+
+	sessionID := "error-cleanup-session"
+	const leg1User = "resolved-user-id-from-leg1"
+
+	// First leg already completed: provider-1's tokens exist, keyed to leg1User.
+	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+		ProviderID:   "provider-1",
+		AccessToken:  "p1-at",
+		RefreshToken: "p1-rt",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		ClientID:     testAuthClientID,
+		UserID:       leg1User,
+	}
+
+	// Second-leg pending carries the resolved identity forward from leg 1.
+	secondLegState := "error-cleanup-second-leg-state"
+	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        secondLegState,
+		UpstreamProviderName: "provider-2",
+		SessionID:            sessionID,
+		ResolvedUserID:       leg1User,
+		ResolvedUserName:     "First Leg User",
+		ResolvedUserEmail:    "firstleg@example.com",
+		CreatedAt:            time.Now(),
+	}
+
+	// Upstream returns an error on the second leg, driving the handleUpstreamError path.
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?error=access_denied&state="+secondLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	// handleUpstreamError cleans up earlier-leg tokens via DeleteUpstreamTokens; the
+	// harness captured the ctx it ran with. Assert the callback placed the resolved
+	// identity into that ctx so a context-keyed decorator can delete the canonical row.
+	id, ok := auth.IdentityFromContext(storState.deleteUpstreamCtx)
+	require.True(t, ok, "handleUpstreamError must place identity in ctx before the cleanup DeleteUpstreamTokens")
+	require.Equal(t, leg1User, id.PlatformUserID)
+}

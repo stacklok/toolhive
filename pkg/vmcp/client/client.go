@@ -433,11 +433,19 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		target:       target,
 	}
 
-	// Inject per-backend HTTP headers from MCPServerEntry.spec.headerForward.
-	// Resolves plaintext + secret-backed headers once here; auth (inner) always
-	// wins over user-supplied headers because it runs after this tripper.
+	// Merge the live per-request forwarded headers (captured by headerforward.CaptureMiddleware
+	// into the request context) with the static per-backend header-forward config. This factory
+	// runs on every backend call, so forwarding is per-request: each call reflects the current
+	// incoming header value. Restricted names and static-config collisions are rejected by
+	// MergeForwardedHeaders.
+	mergedHeaderForward, mergeErr := headerforward.MergeForwardedHeaders(
+		target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx),
+	)
+	if mergeErr != nil {
+		return nil, fmt.Errorf("failed to merge forwarded headers for backend %s: %w", target.WorkloadID, mergeErr)
+	}
 	baseTransport, err = headerforward.BuildHeaderForwardTripper(
-		ctx, baseTransport, target.HeaderForward, h.secretsProvider, target.WorkloadID,
+		ctx, baseTransport, mergedHeaderForward, h.secretsProvider, target.WorkloadID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build header-forward transport: %w", err)

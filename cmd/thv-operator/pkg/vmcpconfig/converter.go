@@ -28,6 +28,10 @@ import (
 const (
 	// authzLabelValueInline is the string value for inline authz configuration
 	authzLabelValueInline = "inline"
+	// authzConfigTypeCedarV1 is the MCPAuthzConfig.spec.type value for the Cedar
+	// authorizer. vMCP's incoming-auth middleware is hard-coded to Cedar, so the
+	// converter only resolves shared-config references of this type.
+	authzConfigTypeCedarV1 = "cedarv1"
 	// conflictResolutionPrefix is the string value for prefix conflict resolution strategy
 	conflictResolutionPrefix = "prefix"
 	// vmcpOIDCClientSecretEnvVar is the environment variable name for the OIDC client secret.
@@ -177,9 +181,24 @@ func (c *Converter) convertIncomingAuth(
 		OIDC: oidcConfig,
 	}
 
-	// Convert authorization configuration
-	if vmcp.Spec.IncomingAuth.AuthzConfig != nil {
+	// Convert authorization configuration. The inline/configMap authzConfig and
+	// the shared authzConfigRef are mutually exclusive (enforced by CRD
+	// XValidation). Guard here too so enforcement never depends solely on
+	// apiserver CEL: if both are set, fail loud rather than silently letting one
+	// override the other.
+	if vmcp.Spec.IncomingAuth.AuthzConfig != nil && vmcp.Spec.IncomingAuth.AuthzConfigRef != nil {
+		return nil, fmt.Errorf("authzConfig and authzConfigRef are mutually exclusive")
+	}
+
+	switch {
+	case vmcp.Spec.IncomingAuth.AuthzConfig != nil:
 		authz, err := c.convertAuthzConfig(ctx, vmcp)
+		if err != nil {
+			return nil, err
+		}
+		incoming.Authz = authz
+	case vmcp.Spec.IncomingAuth.AuthzConfigRef != nil:
+		authz, err := c.resolveAuthzConfigRef(ctx, vmcp)
 		if err != nil {
 			return nil, err
 		}
@@ -187,6 +206,66 @@ func (c *Converter) convertIncomingAuth(
 	}
 
 	return incoming, nil
+}
+
+// resolveAuthzConfigRef resolves a referenced MCPAuthzConfig
+// (spec.incomingAuth.authzConfigRef) into a vmcpconfig.AuthzConfig.
+//
+// Only cedarv1 is supported today: vMCP's incoming-auth middleware hard-codes
+// the Cedar authorizer (pkg/vmcp/auth/factory/incoming.go), so a non-Cedar
+// reference fails fast here with a clear error rather than being carried through
+// as inert config that would fail later with an opaque message. Generalising the
+// vMCP runtime to other backends is tracked as a separate follow-up.
+//
+// The referenced config must exist and be Valid; otherwise an error is returned
+// and the caller stops the conversion (and, in the controller, the reconcile).
+func (c *Converter) resolveAuthzConfigRef(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) (*vmcpconfig.AuthzConfig, error) {
+	ref := vmcp.Spec.IncomingAuth.AuthzConfigRef
+
+	authzConfig, err := controllerutil.GetAuthzConfigForWorkload(ctx, c.k8sClient, vmcp.Namespace, ref)
+	if err != nil {
+		return nil, err
+	}
+	if err := controllerutil.ValidateAuthzConfigReady(authzConfig); err != nil {
+		return nil, err
+	}
+
+	if authzConfig.Spec.Type != authzConfigTypeCedarV1 {
+		return nil, fmt.Errorf(
+			"MCPAuthzConfig type %q is not yet supported for VirtualMCPServer; only %s is supported",
+			authzConfig.Spec.Type, authzConfigTypeCedarV1)
+	}
+
+	cfg, err := controllerutil.BuildAuthzConfigFromRef(authzConfig)
+	if err != nil {
+		return nil, err
+	}
+	opts, err := controllerutil.ExtractCedarAuthzOptions(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("MCPAuthzConfig %s/%s is not a Cedar config: %w",
+			authzConfig.Namespace, authzConfig.Name, err)
+	}
+
+	authz := &vmcpconfig.AuthzConfig{
+		Type:                    "cedar",
+		Policies:                opts.Policies,
+		EntitiesJSON:            opts.EntitiesJSON,
+		PrimaryUpstreamProvider: opts.PrimaryUpstreamProvider,
+		GroupClaimName:          opts.GroupClaimName,
+		RoleClaimName:           opts.RoleClaimName,
+		GroupEntityType:         opts.GroupEntityType,
+	}
+
+	// Spec-level embedded auth server precedence still applies to the resolved
+	// PrimaryUpstreamProvider, identically to the inline/configMap path.
+	if err := c.resolvePrimaryUpstreamProvider(vmcp, authz); err != nil {
+		return nil, err
+	}
+
+	return authz, nil
 }
 
 // convertAuthzConfig resolves the AuthzConfig from either the inline spec or a

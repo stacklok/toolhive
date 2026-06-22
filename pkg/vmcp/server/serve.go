@@ -292,10 +292,10 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		return v.Close()
 	})
 
-	// Register the SDK hooks against the assembled *Server (relocated from
-	// server.New). They drive phase-2 of two-phase creation (OnRegisterSession),
+	// Register the three SDK hooks against the assembled *Server (relocated from
+	// server.New). They drive phase-2 of two-phase creation (OnRegisterSession) and
 	// the cross-pod Redis re-hydration of per-session tools (OnBeforeListTools /
-	// OnBeforeCallTool), and node-local captured-header cleanup (OnUnregisterSession).
+	// OnBeforeCallTool); the *Server receiver methods are unchanged.
 	hooks.AddOnRegisterSession(func(hookCtx context.Context, session server.ClientSession) {
 		srv.handleSessionRegistration(hookCtx, session)
 	})
@@ -304,17 +304,6 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	})
 	hooks.AddBeforeCallTool(func(hookCtx context.Context, _ any, _ *mcp.CallToolRequest) {
 		srv.lazyInjectSessionTools(hookCtx)
-	})
-	// Clean up node-local captured passthrough headers when the SDK unregisters the
-	// session. The hook fires for both explicit client DELETE requests and for sessions
-	// that expire: the SDK's sessionIdleTTL sweeper calls UnregisterSession on idle
-	// sessions, which triggers this hook. Sessions abandoned without DELETE (e.g. a
-	// crashed client with a sessionIdleTTL of 0) retain their entry until the Server
-	// shuts down — acceptable because the map is bounded by the number of live sessions
-	// and each entry is small (a few header name→value pairs). Credentials in the map
-	// are node-local only and never written to shared state (security.md).
-	hooks.AddOnUnregisterSession(func(_ context.Context, clientSess server.ClientSession) {
-		srv.capturedPassthroughHeaders.Delete(clientSess.SessionID())
 	})
 
 	// Disarm the close-on-error guard: the Server is fully constructed.

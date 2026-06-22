@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -291,21 +290,6 @@ type Server struct {
 	// statusReporter enables vMCP to report operational status to control plane.
 	// Nil if status reporting is disabled.
 	statusReporter vmcpstatus.Reporter
-
-	// capturedPassthroughHeaders holds the per-session passthrough headers captured
-	// once at session-creation time on the Serve path (s.core != nil). It is keyed
-	// by session ID. Every entry is populated in handleSessionRegistrationImpl and
-	// cleaned up via the OnUnregisterSession hook (serve.go) or on registration
-	// failure.
-	//
-	// Security: these values may be credentials (e.g. API keys). They are stored
-	// node-local ONLY and are NEVER written to Redis or any shared state store.
-	// A session restored on another pod will have no captured headers — matching
-	// the legacy path's imperfect cross-pod behavior (the legacy per-session
-	// connection cannot be serialized either). This is acceptable: the alternative
-	// would require persisting credentials to shared state, which violates the
-	// security constraint in .claude/rules/security.md.
-	capturedPassthroughHeaders sync.Map // map[sessionID string → map[string]string]
 
 	// shutdownFuncs contains cleanup functions to run during Stop().
 	// Populated during Start() initialization before blocking; no mutex needed
@@ -1247,12 +1231,6 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	slog.Debug("creating session-scoped backends", "session_id", sessionID)
 
 	// Defer cleanup: if any error occurs, terminate the session and log failures.
-	// Also remove any node-local captured passthrough headers stored for this session.
-	//
-	// Double-delete safety: capturedPassthroughHeaders.Delete is idempotent. This
-	// defer fires only on registration failure — before the session is live and before
-	// the OnUnregisterSession hook (serve.go) is ever registered for this session ID.
-	// The two delete paths are therefore mutually exclusive for well-formed sessions.
 	defer func() {
 		if retErr != nil {
 			if _, termErr := s.vmcpSessionMgr.Terminate(sessionID); termErr != nil {
@@ -1261,10 +1239,6 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 					"error", termErr,
 					"original_error", retErr)
 			}
-			// The Store above runs only after CreateSession succeeds; if we reach
-			// this defer, the Store either never ran (CreateSession failed) or ran
-			// but injectCoreSessionCapabilities failed. Either way, Delete is safe.
-			s.capturedPassthroughHeaders.Delete(sessionID)
 		}
 	}()
 
@@ -1295,19 +1269,6 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	// returned error becomes retErr (named return), so the defer terminates the
 	// session on failure.
 	if s.core != nil {
-		// Capture passthrough headers from the session-creation request context
-		// (once per session). The snapshot is injected into every subsequent backend
-		// call for this session's lifetime by coreToolHandler / coreResourceHandler,
-		// ensuring the backend always sees the session-creation-time value even when
-		// the client changes the header on later requests (session-stable forwarding).
-		// Node-local only — never written to Redis (see capturedPassthroughHeaders).
-		if captured := headerforward.ForwardedHeadersFromContext(ctx); len(captured) > 0 {
-			// Defensive copy: ForwardedHeadersFromContext returns the map reference
-			// placed in the context by CaptureMiddleware. Cloning before storing
-			// ensures the session's credential snapshot is structurally immutable
-			// regardless of whether the caller mutates its own map later.
-			s.capturedPassthroughHeaders.Store(sessionID, maps.Clone(captured))
-		}
 		return s.injectCoreSessionCapabilities(ctx, session)
 	}
 

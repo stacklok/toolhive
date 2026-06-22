@@ -17,7 +17,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
-	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
@@ -194,22 +193,6 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 			return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", err)), nil
 		}
 
-		// Replace the per-request forwarded headers on ctx with the session-stable
-		// snapshot captured once at session creation. This ensures the backend always
-		// receives the value present when the session was established, regardless of
-		// how the client changes the header on later requests. The shared backend
-		// client (pkg/vmcp/client) reads the forwarded headers from ctx to build the
-		// outgoing transport chain.
-		//
-		// Note on vmcp anti-pattern #1 ("reserve context for trace IDs, cancellation,
-		// and deadlines only"): this use of context is a known, intentional exception.
-		// The MCP SDK controls the request context passed to the tool handler, and the
-		// shared backend client factory (pkg/vmcp/client) has no explicit parameter
-		// slot for per-session headers — forwarding through context is the only
-		// coupling-free path that does not require threading session state through the
-		// core.VMCP → backendClient boundary.
-		ctx = s.injectCapturedHeaders(ctx, sessionID)
-
 		result, err := s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))
 		if err != nil {
 			// Admission denial returns a generic message so the underlying authorizer
@@ -230,8 +213,7 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 }
 
 // coreResourceHandler builds the SDK handler for a Serve-path resource. It mirrors
-// coreToolHandler: audit label, binding check, session-stable header injection, then
-// core.ReadResource with explicit identity.
+// coreToolHandler: audit label, binding check, then core.ReadResource with explicit identity.
 func (s *Server) coreResourceHandler(
 	sessionID, uri, backendName string,
 ) func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
@@ -246,10 +228,6 @@ func (s *Server) coreResourceHandler(
 			return nil, fmt.Errorf("unauthorized: %w", err)
 		}
 
-		// Replace the per-request forwarded headers on ctx with the session-stable
-		// snapshot captured once at session creation (mirrors coreToolHandler).
-		ctx = s.injectCapturedHeaders(ctx, sessionID)
-
 		result, err := s.core.ReadResource(ctx, caller, uri)
 		if err != nil {
 			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
@@ -259,25 +237,6 @@ func (s *Server) coreResourceHandler(
 		}
 		return conversion.ToMCPResourceContents(result.Contents), nil
 	}
-}
-
-// injectCapturedHeaders replaces the per-request forwarded headers on ctx with
-// the session-stable snapshot captured at session creation (stored node-locally in
-// capturedPassthroughHeaders). If no snapshot exists for this session (e.g. no
-// passthrough headers were configured, or the session was created without any
-// allowlisted headers present), ctx is returned unchanged.
-//
-// This is the enforcement point for session-stable header forwarding on the Serve
-// path: coreToolHandler and coreResourceHandler call this before delegating to
-// core.CallTool / core.ReadResource, so the shared backend client always sees the
-// session-creation-time value, not a mid-session change.
-func (s *Server) injectCapturedHeaders(ctx context.Context, sessionID string) context.Context {
-	if v, ok := s.capturedPassthroughHeaders.Load(sessionID); ok {
-		if headers, ok := v.(map[string]string); ok {
-			return headerforward.WithForwardedHeaders(ctx, headers)
-		}
-	}
-	return ctx
 }
 
 // enforceSessionBinding validates caller against the session's stored identity

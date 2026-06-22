@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -48,16 +49,10 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 			mcpGroupName, images.YardstickServerImage, timeout, pollingInterval)
 
 		By("Creating EmbeddingServer for optimizer")
-		embeddingServer := &mcpv1beta1.EmbeddingServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      embeddingName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.EmbeddingServerSpec{
-				Model: "BAAI/bge-small-en-v1.5",
-				Image: images.TextEmbeddingsInferenceImage,
-			},
-		}
+		embeddingServer := v1beta1test.NewEmbeddingServer(embeddingName, testNamespace,
+			v1beta1test.WithEmbeddingModel("BAAI/bge-small-en-v1.5"),
+			v1beta1test.WithEmbeddingImage(images.TextEmbeddingsInferenceImage),
+		)
 		Expect(k8sClient.Create(ctx, embeddingServer)).To(Succeed())
 
 		By("Creating VirtualMCPServer with optimizer and circuit breaker enabled")

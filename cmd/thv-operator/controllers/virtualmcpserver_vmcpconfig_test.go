@@ -1583,7 +1583,7 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 	// Create MCPServer in the group so static mode has something to discover
 	// This is needed because static mode validates that at least one backend exists
 	mcpServer := v1beta1test.NewMCPServer("test-backend", "default",
-		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithGroupRef("test-group"),
 		v1beta1test.WithTransport("sse"), // Required for backend discovery
 		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
 			Phase: mcpv1beta1.MCPServerPhaseReady,
@@ -1694,7 +1694,7 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 
 	// Create MCPServer with ExternalAuthConfigRef and Status
 	mcpServer := v1beta1test.NewMCPServer("discovered-backend", "default",
-		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithGroupRef("test-group"),
 		v1beta1test.WithTransport("sse"), // Required for static mode backend discovery
 		v1beta1test.WithExternalAuthConfigRef("test-auth-config"),
 		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{

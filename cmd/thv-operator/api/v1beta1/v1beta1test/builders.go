@@ -60,8 +60,8 @@ func WithProxyPort(port int32) MCPServerOption {
 	return func(m *mcpv1beta1.MCPServer) { m.Spec.ProxyPort = port }
 }
 
-// WithMCPGroupRef sets the MCPGroup the server belongs to.
-func WithMCPGroupRef(name string) MCPServerOption {
+// WithGroupRef sets the MCPGroup the server belongs to.
+func WithGroupRef(name string) MCPServerOption {
 	return func(m *mcpv1beta1.MCPServer) { m.Spec.GroupRef = &mcpv1beta1.MCPGroupRef{Name: name} }
 }
 
@@ -166,8 +166,9 @@ func WithDeletionTimestamp(ts metav1.Time, finalizers ...string) MCPServerOption
 }
 
 // Mutate is the escape hatch for spec or metadata fields that have no dedicated
-// option (AuthzConfig, ResourceOverrides, Secrets, Volumes, AuthServerRef,
-// metadata.UID/Generation, …). It runs last, after all other options. Prefer a
+// option (AuthzConfig, ResourceOverrides, Secrets, Volumes,
+// metadata.UID/Generation, …). It applies in argument order like any other
+// option — pass it last if it must override earlier typed options. Prefer a
 // dedicated option when one exists; reach for Mutate only for the less common
 // fields, and keep genuinely complex fixtures as inline literals rather than
 // threading everything through here.

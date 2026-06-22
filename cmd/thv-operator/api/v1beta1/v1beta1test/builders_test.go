@@ -31,7 +31,7 @@ func TestNewMCPServer_Options(t *testing.T) {
 
 	m := v1beta1test.NewMCPServer("srv", "toolhive",
 		v1beta1test.WithImage("ghcr.io/example/mcp:1.2.3"),
-		v1beta1test.WithMCPGroupRef("my-group"),
+		v1beta1test.WithGroupRef("my-group"),
 		v1beta1test.WithEnv(mcpv1beta1.EnvVar{Name: "FOO", Value: "bar"}),
 	)
 
@@ -81,17 +81,25 @@ func TestNewMCPServer_TypedFieldOptions(t *testing.T) {
 	assert.Equal(t, mcpv1beta1.MCPServerPhaseReady, m.Status.Phase)
 }
 
-func TestNewMCPServer_MutateRunsLast(t *testing.T) {
+func TestNewMCPServer_OptionsApplyInArgumentOrder(t *testing.T) {
 	t.Parallel()
 
-	m := v1beta1test.NewMCPServer("srv", "ns",
+	// Mutate after a typed option overrides it.
+	m1 := v1beta1test.NewMCPServer("srv", "ns",
 		v1beta1test.WithImage("from-option"),
 		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
 			m.Spec.Image = "from-mutate"
 			m.Spec.Secrets = []mcpv1beta1.SecretRef{{Name: "s"}}
 		}),
 	)
+	assert.Equal(t, "from-mutate", m1.Spec.Image, "later Mutate overrides earlier WithImage")
+	assert.Len(t, m1.Spec.Secrets, 1)
 
-	assert.Equal(t, "from-mutate", m.Spec.Image, "Mutate runs after typed options")
-	assert.Len(t, m.Spec.Secrets, 1)
+	// A typed option after Mutate overrides the Mutate: options apply in
+	// argument order, so Mutate is NOT special-cased to run last.
+	m2 := v1beta1test.NewMCPServer("srv", "ns",
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) { m.Spec.Image = "from-mutate" }),
+		v1beta1test.WithImage("from-option"),
+	)
+	assert.Equal(t, "from-option", m2.Spec.Image, "later WithImage overrides earlier Mutate")
 }

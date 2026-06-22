@@ -40,6 +40,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	operatorvmcpconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
@@ -180,7 +181,7 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
-	// Validate shared config references (OIDC, Telemetry) before resource creation.
+	// Validate shared config references (OIDC, Authz, Telemetry) before resource creation.
 	// Each handler is a no-op when its respective ref is nil.
 	// telemetryCfg is the fetched MCPTelemetryConfig (nil when not referenced),
 	// threaded through to downstream functions to avoid redundant API calls.
@@ -3366,7 +3367,7 @@ func generateHMACSecret() (string, error) {
 	return base64.StdEncoding.EncodeToString(secret), nil
 }
 
-// handleConfigRefs validates shared config references (OIDC, Telemetry) before resource creation.
+// handleConfigRefs validates shared config references (OIDC, Authz, Telemetry) before resource creation.
 // Each handler is a no-op when its respective ref is nil.
 // Returns the fetched MCPTelemetryConfig (may be nil) so callers can thread it through
 // to downstream functions without redundant API calls.
@@ -3446,6 +3447,23 @@ func (r *VirtualMCPServerReconciler) handleAuthzConfig(
 			metav1.ConditionFalse,
 		)
 		return err
+	}
+
+	// vMCP's incoming-auth middleware is Cedar-only, so a non-Cedar reference
+	// cannot be enforced. Reject it here (in addition to the converter's
+	// defense-in-depth check) so the condition reflects reality instead of
+	// reporting Valid on a workload that fails to render a config. Fail fast with
+	// a message naming the unsupported type.
+	if authzConfig.Spec.Type != operatorvmcpconfig.AuthzConfigTypeCedarV1 {
+		msg := fmt.Sprintf("MCPAuthzConfig %s has unsupported type %q for VirtualMCPServer; only %s is supported",
+			ref.Name, authzConfig.Spec.Type, operatorvmcpconfig.AuthzConfigTypeCedarV1)
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionAuthzConfigRefValidated,
+			mcpv1beta1.ConditionReasonAuthzConfigRefNotValid,
+			msg,
+			metav1.ConditionFalse,
+		)
+		return fmt.Errorf("%s", msg)
 	}
 
 	statusManager.SetCondition(

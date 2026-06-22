@@ -194,9 +194,20 @@ var _ = Describe("VirtualMCPServer AuthzConfigRef Integration", Label("k8s", "au
 			}, timeout, interval).Should(BeTrue())
 		})
 
+		It("sets AuthzConfigRefValidated=False/NotValid naming the unsupported type", func() {
+			Eventually(func(g Gomega) {
+				cond := meta.FindStatusCondition(getVmcp(vmcpName).Status.Conditions,
+					mcpv1beta1.ConditionAuthzConfigRefValidated)
+				g.Expect(cond).NotTo(BeNil())
+				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
+				g.Expect(cond.Reason).To(Equal(mcpv1beta1.ConditionReasonAuthzConfigRefNotValid))
+				g.Expect(cond.Message).To(ContainSubstring("httpv1"))
+			}, timeout, interval).Should(Succeed())
+		})
+
 		It("fails fast: the vmcp config is never generated for a non-Cedar reference", func() {
-			// vMCP's runtime authz middleware is Cedar-only, so the converter rejects
-			// httpv1 and Reconcile errors before materializing the config ConfigMap.
+			// vMCP's runtime authz middleware is Cedar-only, so the controller rejects
+			// httpv1 before materializing the config ConfigMap.
 			Consistently(func() bool {
 				cm := &corev1.ConfigMap{}
 				err := k8sClient.Get(ctx, types.NamespacedName{

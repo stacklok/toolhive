@@ -17,6 +17,27 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 )
 
+// httpAuthzConfigForTest builds a non-Cedar (httpv1) MCPAuthzConfig whose own
+// Valid condition is True — used to assert VirtualMCPServer rejects it because
+// the vMCP runtime is Cedar-only.
+func httpAuthzConfigForTest(name string) *mcpv1beta1.MCPAuthzConfig {
+	return &mcpv1beta1.MCPAuthzConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+		Spec: mcpv1beta1.MCPAuthzConfigSpec{
+			Type:   "httpv1",
+			Config: runtime.RawExtension{Raw: []byte(`{"http":{"url":"https://pdp.example.com"}}`)},
+		},
+		Status: mcpv1beta1.MCPAuthzConfigStatus{
+			ConfigHash: "http-hash",
+			Conditions: []metav1.Condition{{
+				Type:   mcpv1beta1.ConditionTypeAuthzConfigValid,
+				Status: metav1.ConditionTrue,
+				Reason: "Test",
+			}},
+		},
+	}
+}
+
 // vmcpWithAuthzRef builds a VirtualMCPServer that references the named
 // MCPAuthzConfig (nil refName leaves AuthzConfigRef unset).
 func vmcpWithAuthzRef(refName string, status mcpv1beta1.VirtualMCPServerStatus) *mcpv1beta1.VirtualMCPServer {
@@ -94,6 +115,24 @@ func TestVirtualMCPServerReconciler_handleAuthzConfig(t *testing.T) {
 			expectedCondStatus: metav1.ConditionTrue,
 			expectedCondReason: mcpv1beta1.ConditionReasonAuthzConfigRefValid,
 		},
+		{
+			name: "valid ref with unchanged hash keeps condition true and hash",
+			vmcp: vmcpWithAuthzRef("my-authz", mcpv1beta1.VirtualMCPServerStatus{
+				AuthzConfigHash: "abc123",
+			}),
+			authzConfig:        authzConfigForTest("my-authz", true, "abc123"),
+			expectedHash:       "abc123",
+			expectedCondStatus: metav1.ConditionTrue,
+			expectedCondReason: mcpv1beta1.ConditionReasonAuthzConfigRefValid,
+		},
+		{
+			name:               "non-Cedar ref fails fast with NotValid",
+			vmcp:               vmcpWithAuthzRef("http-authz", mcpv1beta1.VirtualMCPServerStatus{}),
+			authzConfig:        httpAuthzConfigForTest("http-authz"),
+			expectError:        true,
+			expectedCondStatus: metav1.ConditionFalse,
+			expectedCondReason: mcpv1beta1.ConditionReasonAuthzConfigRefNotValid,
+		},
 	}
 
 	for _, tt := range tests {
@@ -165,20 +204,39 @@ func TestMapAuthzConfigToVirtualMCPServer(t *testing.T) {
 	vmcp2.Name = "vmcp2"
 	vmcp3 := vmcpWithAuthzRef("", mcpv1beta1.VirtualMCPServerStatus{}) // no ref
 	vmcp3.Name = "vmcp3"
+	// Same-named config in a different namespace must NOT be enqueued: the mapper
+	// lists InNamespace(config.Namespace), so cross-namespace refs never match.
+	vmcpOtherNS := vmcpWithAuthzRef("shared-authz", mcpv1beta1.VirtualMCPServerStatus{})
+	vmcpOtherNS.Name = "vmcp-other-ns"
+	vmcpOtherNS.Namespace = "other-ns"
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(vmcp1, vmcp2, vmcp3).
-		Build()
-
-	reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: scheme}
-
-	authzConfig := &mcpv1beta1.MCPAuthzConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "shared-authz", Namespace: "default"},
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fake.NewClientBuilder().
+			WithScheme(scheme).
+			WithObjects(vmcp1, vmcp2, vmcp3, vmcpOtherNS).
+			Build(),
+		Scheme: scheme,
 	}
 
-	requests := reconciler.mapAuthzConfigToVirtualMCPServer(t.Context(), authzConfig)
+	t.Run("enqueues only the referencing VirtualMCPServer in the config namespace", func(t *testing.T) {
+		t.Parallel()
+		requests := reconciler.mapAuthzConfigToVirtualMCPServer(t.Context(),
+			&mcpv1beta1.MCPAuthzConfig{ObjectMeta: metav1.ObjectMeta{Name: "shared-authz", Namespace: "default"}})
+		require.Len(t, requests, 1)
+		assert.Equal(t, types.NamespacedName{Name: "vmcp1", Namespace: "default"}, requests[0].NamespacedName)
+	})
 
-	require.Len(t, requests, 1)
-	assert.Equal(t, types.NamespacedName{Name: "vmcp1", Namespace: "default"}, requests[0].NamespacedName)
+	t.Run("returns nil for a non-MCPAuthzConfig object", func(t *testing.T) {
+		t.Parallel()
+		requests := reconciler.mapAuthzConfigToVirtualMCPServer(t.Context(),
+			&mcpv1beta1.MCPServer{ObjectMeta: metav1.ObjectMeta{Name: "shared-authz", Namespace: "default"}})
+		assert.Nil(t, requests)
+	})
+
+	t.Run("returns no requests when no VirtualMCPServer references the config", func(t *testing.T) {
+		t.Parallel()
+		requests := reconciler.mapAuthzConfigToVirtualMCPServer(t.Context(),
+			&mcpv1beta1.MCPAuthzConfig{ObjectMeta: metav1.ObjectMeta{Name: "unreferenced", Namespace: "default"}})
+		assert.Empty(t, requests)
+	})
 }

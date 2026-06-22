@@ -28,10 +28,11 @@ import (
 const (
 	// authzLabelValueInline is the string value for inline authz configuration
 	authzLabelValueInline = "inline"
-	// authzConfigTypeCedarV1 is the MCPAuthzConfig.spec.type value for the Cedar
-	// authorizer. vMCP's incoming-auth middleware is hard-coded to Cedar, so the
-	// converter only resolves shared-config references of this type.
-	authzConfigTypeCedarV1 = "cedarv1"
+	// AuthzConfigTypeCedarV1 is the MCPAuthzConfig.spec.type value for the Cedar
+	// authorizer. vMCP's incoming-auth middleware is hard-coded to Cedar, so both
+	// the converter and the VirtualMCPServer controller only resolve shared-config
+	// references of this type; any other type fails fast.
+	AuthzConfigTypeCedarV1 = "cedarv1"
 	// conflictResolutionPrefix is the string value for prefix conflict resolution strategy
 	conflictResolutionPrefix = "prefix"
 	// vmcpOIDCClientSecretEnvVar is the environment variable name for the OIDC client secret.
@@ -233,10 +234,10 @@ func (c *Converter) resolveAuthzConfigRef(
 		return nil, err
 	}
 
-	if authzConfig.Spec.Type != authzConfigTypeCedarV1 {
+	if authzConfig.Spec.Type != AuthzConfigTypeCedarV1 {
 		return nil, fmt.Errorf(
 			"MCPAuthzConfig type %q is not yet supported for VirtualMCPServer; only %s is supported",
-			authzConfig.Spec.Type, authzConfigTypeCedarV1)
+			authzConfig.Spec.Type, AuthzConfigTypeCedarV1)
 	}
 
 	cfg, err := controllerutil.BuildAuthzConfigFromRef(authzConfig)
@@ -250,17 +251,19 @@ func (c *Converter) resolveAuthzConfigRef(
 	}
 
 	authz := &vmcpconfig.AuthzConfig{
-		Type:                    "cedar",
-		Policies:                opts.Policies,
-		EntitiesJSON:            opts.EntitiesJSON,
-		PrimaryUpstreamProvider: opts.PrimaryUpstreamProvider,
-		GroupClaimName:          opts.GroupClaimName,
-		RoleClaimName:           opts.RoleClaimName,
-		GroupEntityType:         opts.GroupEntityType,
+		Type:            "cedar",
+		Policies:        opts.Policies,
+		EntitiesJSON:    opts.EntitiesJSON,
+		GroupClaimName:  opts.GroupClaimName,
+		RoleClaimName:   opts.RoleClaimName,
+		GroupEntityType: opts.GroupEntityType,
 	}
 
-	// Spec-level embedded auth server precedence still applies to the resolved
-	// PrimaryUpstreamProvider, identically to the inline/configMap path.
+	// PrimaryUpstreamProvider is an auth-server (control-plane) property resolved
+	// from spec.authServerConfig, not from the shared MCPAuthzConfig payload —
+	// identical to the inline/configMap path (convertAuthzConfig), which also does
+	// not copy opts.PrimaryUpstreamProvider. resolvePrimaryUpstreamProvider is the
+	// sole authority so a data-plane config author cannot pick the trusted upstream.
 	if err := c.resolvePrimaryUpstreamProvider(vmcp, authz); err != nil {
 		return nil, err
 	}

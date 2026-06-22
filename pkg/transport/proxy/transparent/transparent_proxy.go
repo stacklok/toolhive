@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
+	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -149,6 +150,11 @@ type TransparentProxy struct {
 
 	// Shutdown timeout for graceful HTTP server shutdown (default: 30 seconds)
 	shutdownTimeout time.Duration
+
+	// corsOrigins holds the list of allowed CORS origins. When non-empty, the
+	// proxy handles OPTIONS preflight requests and injects Access-Control-Allow-*
+	// headers. Empty (default) keeps the current behaviour with no CORS support.
+	corsOrigins []string
 }
 
 const (
@@ -333,6 +339,22 @@ func WithReadTimeout(d time.Duration) Option {
 			return
 		}
 		p.readTimeout = d
+	}
+}
+
+// WithAllowedOrigins enables CORS support on the transparent proxy by setting the
+// list of permitted origins. An empty slice (the default) leaves CORS disabled so
+// the security posture is unchanged for deployments that do not need browser access.
+//
+// Supported forms per entry:
+//   - Exact origin:          "http://localhost:6274"
+//   - Scheme+host (any port): "http://localhost"  → also matches http://localhost:6274
+//   - Wildcard:               "*"                 → allow every origin
+func WithAllowedOrigins(origins []string) Option {
+	return func(p *TransparentProxy) {
+		if len(origins) > 0 {
+			p.corsOrigins = origins
+		}
 	}
 }
 
@@ -1216,6 +1238,15 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	if p.stateless {
 		finalHandler = statelessMethodGate(finalHandler)
 	}
+
+	// 6. Apply CORS as the outermost wrapper so OPTIONS preflights are intercepted
+	// before the method gate or backend can reject them. Only active when
+	// corsOrigins is non-empty (opt-in, no behaviour change by default).
+	if len(p.corsOrigins) > 0 {
+		finalHandler = middleware.CORS(p.corsOrigins)(finalHandler)
+		slog.Debug("CORS middleware applied", "allowed_origins", p.corsOrigins)
+	}
+
 	mux.Handle("/", finalHandler)
 
 	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown

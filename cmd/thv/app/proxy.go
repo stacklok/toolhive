@@ -123,6 +123,9 @@ var (
 	// Header forwarding flags
 	remoteForwardHeaders       []string
 	remoteForwardHeadersSecret []string
+
+	// CORS flags
+	proxyCORSOrigins []string
 )
 
 // Environment variable names
@@ -156,6 +159,15 @@ func init() {
 		"Headers to inject into requests to remote server (format: Name=Value, can be repeated)")
 	proxyCmd.Flags().StringArrayVar(&remoteForwardHeadersSecret, "remote-forward-headers-secret", []string{},
 		"Headers with secret values from ToolHive secrets manager (format: Name=secret-name, can be repeated)")
+
+	// CORS — disabled by default; opt in explicitly to avoid widening the attack surface
+	proxyCmd.Flags().StringArrayVar(&proxyCORSOrigins, "allow-origins", []string{},
+		`Allowed CORS origins for the MCP proxy endpoint (repeatable).
+Supported forms:
+  exact:          http://localhost:6274
+  scheme+host:    http://localhost   (matches any port on localhost)
+  wildcard:       *                  (allow all — use with caution)
+Example: --allow-origins http://localhost:6274`)
 
 	// Mark target-uri as required
 	if err := proxyCmd.MarkFlagRequired("target-uri"); err != nil {
@@ -264,8 +276,14 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	slog.Debug(fmt.Sprintf("Setting up transparent proxy to forward from host port %d to %s",
 		port, proxyTargetURI))
 
+	// Build optional functional options (e.g. CORS), only when configured.
+	var proxyOptions []transparent.Option
+	if len(proxyCORSOrigins) > 0 {
+		proxyOptions = append(proxyOptions, transparent.WithAllowedOrigins(proxyCORSOrigins))
+	}
+
 	// Create the transparent proxy with middlewares
-	proxy := transparent.NewTransparentProxy(
+	proxy := transparent.NewTransparentProxyWithOptions(
 		proxyHost,
 		port,
 		proxyTargetURI,
@@ -279,7 +297,8 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 		nil,   // onUnauthorizedResponse - not needed for local proxies
 		"",    // endpointPrefix - not configured for proxy command
 		false, // trustProxyHeaders - not configured for proxy command
-		middlewares...)
+		middlewares,
+		proxyOptions...)
 	if err := proxy.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start proxy: %w", err)
 	}

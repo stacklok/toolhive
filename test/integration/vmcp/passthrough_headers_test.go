@@ -22,7 +22,7 @@ import (
 //	MergeForwardedHeaders (client.go) → backend HTTP request.
 //
 // The test exercises the real server wiring (via helpers.WithPassthroughHeaders,
-// which sets vmcpserver.Config.PassthroughHeaders) so headerforward.CaptureMiddleware
+// which sets vmcpserver.ServerConfig.PassthroughHeaders) so headerforward.CaptureMiddleware
 // runs; it does NOT use a stub or reimplementation of the capture logic.
 //
 // Two per-request forwarding assertions are made:
@@ -83,7 +83,7 @@ func TestVMCPServer_PassthroughHeaders(t *testing.T) {
 	t.Cleanup(apiBackend.Close)
 
 	// ── vMCP server ───────────────────────────────────────────────────────────
-	// WithPassthroughHeaders sets vmcpserver.Config.PassthroughHeaders, which
+	// WithPassthroughHeaders sets vmcpserver.ServerConfig.PassthroughHeaders, which
 	// installs headerforward.CaptureMiddleware so allowlisted headers are captured
 	// into the request context and forwarded to backends for each request.
 	backends := []vmcp.Backend{

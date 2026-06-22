@@ -133,7 +133,7 @@ func getFreePort(tb testing.TB) int {
 //
 // The Serve path is used (rather than the legacy server.New path) so that
 // integration tests exercise the production code path that routes tool/resource
-// calls through core.VMCP. This is required for testing session-stable
+// calls through core.VMCP. This is required for testing per-request
 // passthrough header forwarding (#5560).
 func NewVMCPServer(
 	ctx context.Context, tb testing.TB, backends []vmcptypes.Backend, opts ...VMCPServerOption,

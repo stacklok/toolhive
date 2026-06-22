@@ -12,7 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 )
 
 func TestSessionStorageConfigJSONRoundtrip(t *testing.T) {
@@ -128,7 +128,7 @@ func TestVirtualMCPServerSpecRateLimitingJSONRoundtrip(t *testing.T) {
 			Provider: "redis",
 			Address:  "redis.default.svc.cluster.local:6379",
 		},
-		Config: vmcpconfig.Config{
+		Config: vmcpcrd.Config{
 			RateLimiting: &RateLimitConfig{
 				Shared: &RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 				PerUser: &RateLimitBucket{

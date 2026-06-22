@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -163,21 +163,21 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 					Source: "discovered",
 				},
 				ServiceType: "NodePort",
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Name:  vmcpServerName,
 					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
 					},
-					Operational: &vmcpconfig.OperationalConfig{
-						FailureHandling: &vmcpconfig.FailureHandlingConfig{
-							HealthCheckInterval: vmcpconfig.Duration(cbHealthCheckInterval),
-							HealthCheckTimeout:  vmcpconfig.Duration(cbHealthCheckTimeout),
+					Operational: &vmcpcrd.OperationalConfig{
+						FailureHandling: &vmcpcrd.FailureHandlingConfig{
+							HealthCheckInterval: vmcpcrd.Duration(cbHealthCheckInterval),
+							HealthCheckTimeout:  vmcpcrd.Duration(cbHealthCheckTimeout),
 							UnhealthyThreshold:  cbUnhealthyThreshold,
-							CircuitBreaker: &vmcpconfig.CircuitBreakerConfig{
+							CircuitBreaker: &vmcpcrd.CircuitBreakerConfig{
 								Enabled:          true,
 								FailureThreshold: cbFailureThreshold,
-								Timeout:          vmcpconfig.Duration(cbTimeout),
+								Timeout:          vmcpcrd.Duration(cbTimeout),
 							},
 						},
 					},

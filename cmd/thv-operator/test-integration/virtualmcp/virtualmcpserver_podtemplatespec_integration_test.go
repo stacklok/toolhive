@@ -17,7 +17,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 )
 
 var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
@@ -73,7 +73,7 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config:   vmcpconfig.Config{Group: mcpGroupName},
+					Config:   vmcpcrd.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
@@ -213,7 +213,7 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config:   vmcpconfig.Config{Group: mcpGroupName},
+					Config:   vmcpcrd.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
@@ -317,7 +317,7 @@ var _ = Describe("VirtualMCPServer PodTemplateSpec Integration Tests", func() {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config:   vmcpconfig.Config{Group: mcpGroupName},
+					Config:   vmcpcrd.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "anonymous",
 					},

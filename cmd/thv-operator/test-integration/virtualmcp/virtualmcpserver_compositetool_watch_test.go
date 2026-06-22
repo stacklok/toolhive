@@ -13,8 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tests", func() {
@@ -73,9 +73,9 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config: vmcpconfig.Config{
+					Config: vmcpcrd.Config{
 						Group: mcpGroupName,
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 							{Name: compositeToolDefName},
 						},
 					},
@@ -127,17 +127,17 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 					Namespace: namespace,
 				},
 				Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-					CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+					CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 						Name:        "test-workflow",
 						Description: "Test workflow for integration test",
-						Steps: []vmcpconfig.WorkflowStepConfig{
+						Steps: []vmcpcrd.WorkflowStepConfig{
 							{
 								ID:   "step1",
 								Tool: "tool1",
 							},
 						},
-						Output: &vmcpconfig.OutputConfig{
-							Properties: map[string]vmcpconfig.OutputProperty{
+						Output: &vmcpcrd.OutputConfig{
+							Properties: map[string]vmcpcrd.OutputProperty{
 								"result": {
 									Type:        "string",
 									Description: "The workflow result",
@@ -237,10 +237,10 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 					Namespace: namespace,
 				},
 				Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-					CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+					CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 						Name:        "test-workflow-update",
 						Description: "Initial description",
-						Steps: []vmcpconfig.WorkflowStepConfig{
+						Steps: []vmcpcrd.WorkflowStepConfig{
 							{
 								ID:   "step1",
 								Tool: "tool1",
@@ -259,9 +259,9 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config: vmcpconfig.Config{
+					Config: vmcpcrd.Config{
 						Group: mcpGroupName,
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 							{Name: compositeToolDefName},
 						},
 					},
@@ -382,7 +382,7 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config:   vmcpconfig.Config{Group: mcpGroupName},
+					Config:   vmcpcrd.Config{Group: mcpGroupName},
 					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "anonymous",
 					},
@@ -434,10 +434,10 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 					Namespace: namespace,
 				},
 				Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-					CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+					CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 						Name:        "unrelated-workflow",
 						Description: "Workflow not referenced by VirtualMCPServer",
-						Steps: []vmcpconfig.WorkflowStepConfig{
+						Steps: []vmcpcrd.WorkflowStepConfig{
 							{
 								ID:   "step1",
 								Tool: "tool1",

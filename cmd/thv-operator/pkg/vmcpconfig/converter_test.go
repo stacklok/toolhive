@@ -25,6 +25,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -231,13 +232,13 @@ func TestConverter_CompositeToolsPassThrough(t *testing.T) {
 		},
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				CompositeTools: []vmcpconfig.CompositeToolConfig{
+			Config: vmcpcrd.Config{
+				CompositeTools: []vmcpcrd.CompositeToolConfig{
 					{
 						Name:        "test-composite-tool",
 						Description: "A test composite tool",
-						Timeout:     vmcpconfig.Duration(30 * time.Second),
-						Steps: []vmcpconfig.WorkflowStepConfig{
+						Timeout:     vmcpcrd.Duration(30 * time.Second),
+						Steps: []vmcpcrd.WorkflowStepConfig{
 							{
 								ID:   "step1",
 								Type: "tool",
@@ -473,8 +474,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+					Config: vmcpcrd.Config{
+						CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 							{Name: "referenced-tool"},
 						},
 					},
@@ -487,10 +488,10 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+						CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 							Name:        "referenced-tool",
 							Description: "A referenced composite tool",
-							Steps: []vmcpconfig.WorkflowStepConfig{
+							Steps: []vmcpcrd.WorkflowStepConfig{
 								{
 									ID:   "step1",
 									Type: "tool",
@@ -521,12 +522,12 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeTools: []vmcpconfig.CompositeToolConfig{
+					Config: vmcpcrd.Config{
+						CompositeTools: []vmcpcrd.CompositeToolConfig{
 							{
 								Name:        "inline-tool",
 								Description: "An inline composite tool",
-								Steps: []vmcpconfig.WorkflowStepConfig{
+								Steps: []vmcpcrd.WorkflowStepConfig{
 									{
 										ID:   "step1",
 										Type: "tool",
@@ -535,7 +536,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 								},
 							},
 						},
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 							{Name: "referenced-tool"},
 						},
 					},
@@ -548,10 +549,10 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+						CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 							Name:        "referenced-tool",
 							Description: "A referenced composite tool",
-							Steps: []vmcpconfig.WorkflowStepConfig{
+							Steps: []vmcpcrd.WorkflowStepConfig{
 								{
 									ID:   "step1",
 									Type: "tool",
@@ -584,8 +585,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+					Config: vmcpcrd.Config{
+						CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 							{Name: "non-existent-tool"},
 						},
 					},
@@ -604,12 +605,12 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeTools: []vmcpconfig.CompositeToolConfig{
+					Config: vmcpcrd.Config{
+						CompositeTools: []vmcpcrd.CompositeToolConfig{
 							{
 								Name:        "duplicate-tool",
 								Description: "An inline tool",
-								Steps: []vmcpconfig.WorkflowStepConfig{
+								Steps: []vmcpcrd.WorkflowStepConfig{
 									{
 										ID:   "step1",
 										Type: "tool",
@@ -618,7 +619,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 								},
 							},
 						},
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 							{Name: "referenced-tool"},
 						},
 					},
@@ -631,10 +632,10 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+						CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 							Name:        "duplicate-tool", // Same name as inline tool
 							Description: "A referenced tool with duplicate name",
-							Steps: []vmcpconfig.WorkflowStepConfig{
+							Steps: []vmcpcrd.WorkflowStepConfig{
 								{
 									ID:   "step1",
 									Type: "tool",
@@ -673,8 +674,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+					Config: vmcpcrd.Config{
+						CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 							{Name: "tool1"},
 							{Name: "tool2"},
 						},
@@ -688,10 +689,10 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+						CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 							Name:        "tool1",
 							Description: "First referenced tool",
-							Steps: []vmcpconfig.WorkflowStepConfig{
+							Steps: []vmcpcrd.WorkflowStepConfig{
 								{
 									ID:   "step1",
 									Type: "tool",
@@ -707,10 +708,10 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+						CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 							Name:        "tool2",
 							Description: "Second referenced tool",
-							Steps: []vmcpconfig.WorkflowStepConfig{
+							Steps: []vmcpcrd.WorkflowStepConfig{
 								{
 									ID:   "step1",
 									Type: "tool",
@@ -742,8 +743,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+					Config: vmcpcrd.Config{
+						CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 							{Name: "referenced-tool"},
 						},
 					},
@@ -756,7 +757,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-						CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+						CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 							Name:        "referenced-tool",
 							Description: "A referenced tool with parameters",
 							Parameters: thvjson.NewMap(map[string]any{
@@ -765,8 +766,8 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 									"param1": map[string]any{"type": "string"},
 								},
 							}),
-							Timeout: vmcpconfig.Duration(5 * time.Minute),
-							Steps: []vmcpconfig.WorkflowStepConfig{
+							Timeout: vmcpcrd.Duration(5 * time.Minute),
+							Steps: []vmcpcrd.WorkflowStepConfig{
 								{
 									ID:   "step1",
 									Type: "tool",
@@ -900,6 +901,14 @@ func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
 		},
 	}
 
+	// Create the equivalent CRD-mirror config for embedding in the CRD spec.
+	// The vmcpcrd mirror is field-for-field identical to vmcpconfig, so we
+	// transcode expectedConfig through JSON to populate the embed input.
+	var crdConfig vmcpcrd.CompositeToolConfig
+	expectedConfigJSON, err := json.Marshal(expectedConfig)
+	require.NoError(t, err)
+	require.NoError(t, json.Unmarshal(expectedConfigJSON, &crdConfig))
+
 	// Create a VirtualMCPCompositeToolDefinition with all fields populated
 	compositeDef := &mcpv1beta1.VirtualMCPCompositeToolDefinition{
 		ObjectMeta: metav1.ObjectMeta{
@@ -907,7 +916,7 @@ func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-			CompositeToolConfig: expectedConfig,
+			CompositeToolConfig: crdConfig,
 		},
 	}
 
@@ -918,8 +927,8 @@ func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
 		},
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+			Config: vmcpcrd.Config{
+				CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 					{Name: "comprehensive-tool"},
 				},
 			},
@@ -1207,7 +1216,7 @@ func TestResolveToolConfigRefs(t *testing.T) {
 
 	tests := []struct {
 		name             string
-		tools            []*vmcpconfig.WorkloadToolConfig
+		tools            []*vmcpcrd.WorkloadToolConfig
 		existingConfig   *mcpv1beta1.MCPToolConfig
 		expectedWorkload string
 		expectedFilter   []string
@@ -1215,10 +1224,10 @@ func TestResolveToolConfigRefs(t *testing.T) {
 	}{
 		{
 			name: "inline config only",
-			tools: []*vmcpconfig.WorkloadToolConfig{{
+			tools: []*vmcpcrd.WorkloadToolConfig{{
 				Workload:  "backend1",
 				Filter:    []string{"tool1", "tool2"},
-				Overrides: map[string]*vmcpconfig.ToolOverride{"tool1": vmcpToolOverride("renamed_tool1", "Renamed")},
+				Overrides: map[string]*vmcpcrd.ToolOverride{"tool1": {Name: "renamed_tool1", Description: "Renamed"}},
 			}},
 			expectedWorkload: "backend1",
 			expectedFilter:   []string{"tool1", "tool2"},
@@ -1226,9 +1235,9 @@ func TestResolveToolConfigRefs(t *testing.T) {
 		},
 		{
 			name: "with MCPToolConfig reference",
-			tools: []*vmcpconfig.WorkloadToolConfig{{
+			tools: []*vmcpcrd.WorkloadToolConfig{{
 				Workload:      "backend1",
-				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "test-config"},
+				ToolConfigRef: &vmcpcrd.ToolConfigRef{Name: "test-config"},
 			}},
 			existingConfig: newMCPToolConfig("test-config", "default", []string{"fetch"},
 				map[string]mcpv1beta1.ToolOverride{"fetch": toolOverride("renamed_fetch", "Renamed fetch")}),
@@ -1238,11 +1247,11 @@ func TestResolveToolConfigRefs(t *testing.T) {
 		},
 		{
 			name: "inline takes precedence",
-			tools: []*vmcpconfig.WorkloadToolConfig{{
+			tools: []*vmcpcrd.WorkloadToolConfig{{
 				Workload:      "backend1",
 				Filter:        []string{"inline_tool"},
-				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "test-config"},
-				Overrides:     map[string]*vmcpconfig.ToolOverride{"fetch": vmcpToolOverride("inline_fetch", "Inline override")},
+				ToolConfigRef: &vmcpcrd.ToolConfigRef{Name: "test-config"},
+				Overrides:     map[string]*vmcpcrd.ToolOverride{"fetch": {Name: "inline_fetch", Description: "Inline override"}},
 			}},
 			existingConfig: newMCPToolConfig("test-config", "default", []string{"config_tool"},
 				map[string]mcpv1beta1.ToolOverride{"fetch": toolOverride("config_fetch", "Config override")}),
@@ -1267,7 +1276,7 @@ func TestResolveToolConfigRefs(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			converter.k8sClient = k8sClient
 
-			srcAgg := &vmcpconfig.AggregationConfig{Tools: tt.tools}
+			srcAgg := &vmcpcrd.AggregationConfig{Tools: tt.tools}
 			vmcp := &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 			}
@@ -1292,16 +1301,16 @@ func TestResolveToolConfigRefs_FailClosed(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		tools          []*vmcpconfig.WorkloadToolConfig
+		tools          []*vmcpcrd.WorkloadToolConfig
 		existingConfig *mcpv1beta1.MCPToolConfig
 		expectError    bool
 		expectedErrMsg string
 	}{
 		{
 			name: "error when MCPToolConfig reference not found (fail closed)",
-			tools: []*vmcpconfig.WorkloadToolConfig{{
+			tools: []*vmcpcrd.WorkloadToolConfig{{
 				Workload:      "backend1",
-				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "nonexistent-config"},
+				ToolConfigRef: &vmcpcrd.ToolConfigRef{Name: "nonexistent-config"},
 			}},
 			existingConfig: nil, // MCPToolConfig doesn't exist in cluster
 			expectError:    true,
@@ -1309,7 +1318,7 @@ func TestResolveToolConfigRefs_FailClosed(t *testing.T) {
 		},
 		{
 			name: "no error when no ToolConfigRef specified",
-			tools: []*vmcpconfig.WorkloadToolConfig{{
+			tools: []*vmcpcrd.WorkloadToolConfig{{
 				Workload: "backend1",
 				Filter:   []string{"tool1"},
 			}},
@@ -1318,9 +1327,9 @@ func TestResolveToolConfigRefs_FailClosed(t *testing.T) {
 		},
 		{
 			name: "successful when MCPToolConfig exists",
-			tools: []*vmcpconfig.WorkloadToolConfig{{
+			tools: []*vmcpcrd.WorkloadToolConfig{{
 				Workload:      "backend1",
-				ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "valid-config"},
+				ToolConfigRef: &vmcpcrd.ToolConfigRef{Name: "valid-config"},
 			}},
 			existingConfig: newMCPToolConfig("valid-config", "default", []string{"fetch"}, nil),
 			expectError:    false,
@@ -1342,7 +1351,7 @@ func TestResolveToolConfigRefs_FailClosed(t *testing.T) {
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			converter.k8sClient = k8sClient
 
-			srcAgg := &vmcpconfig.AggregationConfig{Tools: tt.tools}
+			srcAgg := &vmcpcrd.AggregationConfig{Tools: tt.tools}
 			vmcp := &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 			}
@@ -1378,11 +1387,11 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						Aggregation: &vmcpconfig.AggregationConfig{
-							Tools: []*vmcpconfig.WorkloadToolConfig{{
+					Config: vmcpcrd.Config{
+						Aggregation: &vmcpcrd.AggregationConfig{
+							Tools: []*vmcpcrd.WorkloadToolConfig{{
 								Workload:      "backend1",
-								ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "missing-config"},
+								ToolConfigRef: &vmcpcrd.ToolConfigRef{Name: "missing-config"},
 							}},
 						},
 					},
@@ -1398,11 +1407,11 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						Aggregation: &vmcpconfig.AggregationConfig{
-							Tools: []*vmcpconfig.WorkloadToolConfig{{
+					Config: vmcpcrd.Config{
+						Aggregation: &vmcpcrd.AggregationConfig{
+							Tools: []*vmcpcrd.WorkloadToolConfig{{
 								Workload:      "backend1",
-								ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "valid-config"},
+								ToolConfigRef: &vmcpcrd.ToolConfigRef{Name: "valid-config"},
 							}},
 						},
 					},
@@ -1468,7 +1477,7 @@ func TestConverter_InlineTelemetryIgnored(t *testing.T) {
 			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
-			Config: vmcpconfig.Config{
+			Config: vmcpcrd.Config{
 				Telemetry: &telemetry.Config{
 					Endpoint:    "otlp-collector:4317",
 					ServiceName: "should-be-ignored",
@@ -1500,7 +1509,7 @@ func TestConverter_TelemetryNil(t *testing.T) {
 			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
-			Config: vmcpconfig.Config{
+			Config: vmcpcrd.Config{
 				Telemetry: nil, // No telemetry config
 			},
 		},
@@ -1521,7 +1530,7 @@ func TestConverter_SessionStorage(t *testing.T) {
 	tests := []struct {
 		name            string
 		sessionStorage  *mcpv1beta1.SessionStorageConfig
-		inlineConfig    *vmcpconfig.SessionStorageConfig
+		inlineConfig    *vmcpcrd.SessionStorageConfig
 		expectedStorage *vmcpconfig.SessionStorageConfig
 	}{
 		{
@@ -1554,7 +1563,7 @@ func TestConverter_SessionStorage(t *testing.T) {
 		{
 			name:           "spec.config.sessionStorage is overwritten when spec.sessionStorage is nil",
 			sessionStorage: nil,
-			inlineConfig: &vmcpconfig.SessionStorageConfig{
+			inlineConfig: &vmcpcrd.SessionStorageConfig{
 				Provider: "redis",
 				Address:  "sneaky:6379",
 			},
@@ -1573,7 +1582,7 @@ func TestConverter_SessionStorage(t *testing.T) {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
+					Config: vmcpcrd.Config{
 						SessionStorage: tt.inlineConfig,
 					},
 					SessionStorage: tt.sessionStorage,
@@ -1602,7 +1611,7 @@ func TestConverter_RateLimitingPassThrough(t *testing.T) {
 		},
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
+			Config: vmcpcrd.Config{
 				RateLimiting: &mcpv1beta1.RateLimitConfig{
 					PerUser: &mcpv1beta1.RateLimitBucket{
 						MaxTokens:    2,
@@ -2202,7 +2211,7 @@ func TestConverter_PassthroughHeaders(t *testing.T) {
 				GroupRef:           &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 				IncomingAuth:       &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
 				PassthroughHeaders: topLevel,
-				Config:             vmcpconfig.Config{PassthroughHeaders: configLevel},
+				Config:             vmcpcrd.Config{PassthroughHeaders: configLevel},
 			},
 		}
 	}

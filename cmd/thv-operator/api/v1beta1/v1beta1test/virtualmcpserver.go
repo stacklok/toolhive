@@ -4,10 +4,13 @@
 package v1beta1test
 
 import (
+	"encoding/json"
+
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -42,8 +45,25 @@ func WithVMCPGroupRef(name string) VirtualMCPServerOption {
 }
 
 // WithVMCPConfig sets the vMCP server configuration.
+//
+// The CRD spec field is the operator-owned vmcpcrd.Config mirror, but tests
+// author fixtures using the runtime config.Config model. Because the two are
+// field-for-field identical (enforced by the AssertNoDrift + round-trip tests),
+// this option transcodes the runtime config into the CRD mirror via JSON. Any
+// transcode error indicates a real drift between the two schemas and is fatal to
+// the test rather than silently dropped.
 func WithVMCPConfig(cfg config.Config) VirtualMCPServerOption {
-	return func(v *mcpv1beta1.VirtualMCPServer) { v.Spec.Config = cfg }
+	return func(v *mcpv1beta1.VirtualMCPServer) {
+		data, err := json.Marshal(cfg)
+		if err != nil {
+			panic("v1beta1test: marshal config.Config: " + err.Error())
+		}
+		var mirror vmcpcrd.Config
+		if err := json.Unmarshal(data, &mirror); err != nil {
+			panic("v1beta1test: unmarshal into vmcpcrd.Config: " + err.Error())
+		}
+		v.Spec.Config = mirror
+	}
 }
 
 // WithVMCPIncomingAuth sets the incoming auth configuration.

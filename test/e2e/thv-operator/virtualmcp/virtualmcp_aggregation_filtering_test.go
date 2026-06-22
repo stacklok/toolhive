@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -50,12 +50,12 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
 						// Tool filtering: only allow echo from backend1, nothing from backend2
-						Tools: []*vmcpconfig.WorkloadToolConfig{
+						Tools: []*vmcpcrd.WorkloadToolConfig{
 							{
 								Workload: backend1Name,
 								Filter:   []string{"echo"}, // Only expose echo tool
@@ -176,8 +176,8 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 			Expect(vmcpServer.Spec.Config.Aggregation.Tools).To(HaveLen(2))
 
 			// Verify backend1 filter allows echo
-			var backend1Config *vmcpconfig.WorkloadToolConfig
-			var backend2Config *vmcpconfig.WorkloadToolConfig
+			var backend1Config *vmcpcrd.WorkloadToolConfig
+			var backend2Config *vmcpcrd.WorkloadToolConfig
 			for i := range vmcpServer.Spec.Config.Aggregation.Tools {
 				if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend1Name {
 					backend1Config = vmcpServer.Spec.Config.Aggregation.Tools[i]

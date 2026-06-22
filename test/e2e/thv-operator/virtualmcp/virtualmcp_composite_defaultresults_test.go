@@ -13,8 +13,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -49,13 +49,13 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
 					},
 					// Define a composite tool with a conditional step that has defaultResults
-					CompositeTools: []vmcpconfig.CompositeToolConfig{
+					CompositeTools: []vmcpcrd.CompositeToolConfig{
 						{
 							Name:        compositeToolName,
 							Description: "Conditionally echoes input, uses default when skipped",
@@ -73,8 +73,8 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 								},
 								"required": []any{"run_step", "message"},
 							}),
-							Timeout: vmcpconfig.Duration(30 * time.Second),
-							Steps: []vmcpconfig.WorkflowStepConfig{
+							Timeout: vmcpcrd.Duration(30 * time.Second),
+							Steps: []vmcpcrd.WorkflowStepConfig{
 								{
 									ID:   "conditional_step",
 									Type: "tool",
@@ -92,8 +92,8 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 								},
 							},
 							// Output references the conditional step's output.output
-							Output: &vmcpconfig.OutputConfig{
-								Properties: map[string]vmcpconfig.OutputProperty{
+							Output: &vmcpcrd.OutputConfig{
+								Properties: map[string]vmcpcrd.OutputProperty{
 									"result": {
 										Type:        "string",
 										Description: "Result from conditional step",

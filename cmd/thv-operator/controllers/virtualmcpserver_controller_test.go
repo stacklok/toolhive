@@ -39,7 +39,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
@@ -1802,9 +1802,9 @@ func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
-					Config: vmcpconfig.Config{
+					Config: vmcpcrd.Config{
 						Group: testGroupName,
-						Operational: &vmcpconfig.OperationalConfig{
+						Operational: &vmcpcrd.OperationalConfig{
 							LogLevel: "debug",
 						},
 					},

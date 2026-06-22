@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	statusmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus/mocks"
 	vmcpconfigconv "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -272,7 +273,7 @@ func TestConvertAggregation(t *testing.T) {
 
 	tests := []struct {
 		name                    string
-		aggregation             *vmcpconfig.AggregationConfig
+		aggregation             *vmcpcrd.AggregationConfig
 		expectedStrategy        vmcp.ConflictResolutionStrategy
 		hasPrefixFormat         bool
 		hasPriorityOrder        bool
@@ -280,9 +281,9 @@ func TestConvertAggregation(t *testing.T) {
 	}{
 		{
 			name: "prefix strategy",
-			aggregation: &vmcpconfig.AggregationConfig{
+			aggregation: &vmcpcrd.AggregationConfig{
 				ConflictResolution: vmcp.ConflictStrategyPrefix,
-				ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
+				ConflictResolutionConfig: &vmcpcrd.ConflictResolutionConfig{
 					PrefixFormat: "{workload}_",
 				},
 			},
@@ -291,9 +292,9 @@ func TestConvertAggregation(t *testing.T) {
 		},
 		{
 			name: "priority strategy",
-			aggregation: &vmcpconfig.AggregationConfig{
+			aggregation: &vmcpcrd.AggregationConfig{
 				ConflictResolution: vmcp.ConflictStrategyPriority,
-				ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
+				ConflictResolutionConfig: &vmcpcrd.ConflictResolutionConfig{
 					PriorityOrder: []string{"backend-1", "backend-2"},
 				},
 			},
@@ -302,16 +303,16 @@ func TestConvertAggregation(t *testing.T) {
 		},
 		{
 			name: "with tool configs",
-			aggregation: &vmcpconfig.AggregationConfig{
+			aggregation: &vmcpcrd.AggregationConfig{
 				ConflictResolution: vmcp.ConflictStrategyPrefix,
-				Tools: []*vmcpconfig.WorkloadToolConfig{
+				Tools: []*vmcpcrd.WorkloadToolConfig{
 					{
 						Workload: "backend-1",
 						Filter:   []string{"tool1", "tool2"},
 					},
 					{
 						Workload: "backend-2",
-						Overrides: map[string]*vmcpconfig.ToolOverride{
+						Overrides: map[string]*vmcpcrd.ToolOverride{
 							"tool3": {
 								Name:        "renamed_tool3",
 								Description: "Updated description",
@@ -333,7 +334,7 @@ func TestConvertAggregation(t *testing.T) {
 			vmcpServer := &mcpv1beta1.VirtualMCPServer{
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
+					Config: vmcpcrd.Config{
 						Aggregation: tt.aggregation,
 					},
 				},
@@ -369,17 +370,17 @@ func TestConvertCompositeTools(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		compositeTools []vmcpconfig.CompositeToolConfig
+		compositeTools []vmcpcrd.CompositeToolConfig
 		expectedCount  int
 	}{
 		{
 			name: "single composite tool",
-			compositeTools: []vmcpconfig.CompositeToolConfig{
+			compositeTools: []vmcpcrd.CompositeToolConfig{
 				{
 					Name:        "deploy_workflow",
 					Description: "Deploy and verify",
-					Timeout:     vmcpconfig.Duration(10 * time.Minute),
-					Steps: []vmcpconfig.WorkflowStepConfig{
+					Timeout:     vmcpcrd.Duration(10 * time.Minute),
+					Steps: []vmcpcrd.WorkflowStepConfig{
 						{
 							ID:   "deploy",
 							Type: mcpv1beta1.WorkflowStepTypeToolCall,
@@ -392,11 +393,11 @@ func TestConvertCompositeTools(t *testing.T) {
 		},
 		{
 			name: "multiple composite tools",
-			compositeTools: []vmcpconfig.CompositeToolConfig{
+			compositeTools: []vmcpcrd.CompositeToolConfig{
 				{
 					Name:        "workflow1",
 					Description: "Workflow 1",
-					Steps: []vmcpconfig.WorkflowStepConfig{
+					Steps: []vmcpcrd.WorkflowStepConfig{
 						{
 							ID:   "step1",
 							Type: mcpv1beta1.WorkflowStepTypeToolCall,
@@ -406,7 +407,7 @@ func TestConvertCompositeTools(t *testing.T) {
 				{
 					Name:        "workflow2",
 					Description: "Workflow 2",
-					Steps: []vmcpconfig.WorkflowStepConfig{
+					Steps: []vmcpcrd.WorkflowStepConfig{
 						{
 							ID:   "step1",
 							Type: mcpv1beta1.WorkflowStepTypeElicitation,
@@ -426,7 +427,7 @@ func TestConvertCompositeTools(t *testing.T) {
 			vmcpServer := &mcpv1beta1.VirtualMCPServer{
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
+					Config: vmcpcrd.Config{
 						CompositeTools: tt.compositeTools,
 					},
 				},
@@ -1079,14 +1080,14 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 		},
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
+			Config: vmcpcrd.Config{
 				// Aggregation with tool overrides (map)
-				Aggregation: &vmcpconfig.AggregationConfig{
+				Aggregation: &vmcpcrd.AggregationConfig{
 					ConflictResolution: vmcp.ConflictStrategyPrefix,
-					Tools: []*vmcpconfig.WorkloadToolConfig{
+					Tools: []*vmcpcrd.WorkloadToolConfig{
 						{
 							Workload: "workload-1",
-							Overrides: map[string]*vmcpconfig.ToolOverride{
+							Overrides: map[string]*vmcpcrd.ToolOverride{
 								"tool-zebra": {
 									Name:        "renamed-zebra",
 									Description: "Zebra tool",
@@ -1104,13 +1105,13 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 					},
 				},
 				// Operational with PerWorkload timeouts (map)
-				Operational: &vmcpconfig.OperationalConfig{
-					Timeouts: &vmcpconfig.TimeoutConfig{
-						Default: vmcpconfig.Duration(30 * time.Second),
-						PerWorkload: map[string]vmcpconfig.Duration{
-							"workload-zebra":  vmcpconfig.Duration(60 * time.Second),
-							"workload-alpha":  vmcpconfig.Duration(45 * time.Second),
-							"workload-middle": vmcpconfig.Duration(50 * time.Second),
+				Operational: &vmcpcrd.OperationalConfig{
+					Timeouts: &vmcpcrd.TimeoutConfig{
+						Default: vmcpcrd.Duration(30 * time.Second),
+						PerWorkload: map[string]vmcpcrd.Duration{
+							"workload-zebra":  vmcpcrd.Duration(60 * time.Second),
+							"workload-alpha":  vmcpcrd.Duration(45 * time.Second),
+							"workload-middle": vmcpcrd.Duration(50 * time.Second),
 						},
 					},
 				},
@@ -1188,7 +1189,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 			Namespace: "default",
 		},
 		Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-			CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+			CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 				Name:        "test-composite-tool",
 				Description: "A test composite tool definition",
 				Parameters: thvjson.NewMap(map[string]any{
@@ -1197,8 +1198,8 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 						"message": map[string]any{"type": "string"},
 					},
 				}),
-				Timeout: vmcpconfig.Duration(30 * time.Second),
-				Steps: []vmcpconfig.WorkflowStepConfig{
+				Timeout: vmcpcrd.Duration(30 * time.Second),
+				Steps: []vmcpcrd.WorkflowStepConfig{
 					{
 						ID:        "step1",
 						Type:      "tool",
@@ -1230,8 +1231,8 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 		},
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+			Config: vmcpcrd.Config{
+				CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 					{Name: "test-composite-tool"},
 				},
 			},
@@ -1310,10 +1311,10 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 			Namespace: "default",
 		},
 		Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-			CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+			CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 				Name:        "referenced-tool",
 				Description: "A referenced composite tool",
-				Steps: []vmcpconfig.WorkflowStepConfig{
+				Steps: []vmcpcrd.WorkflowStepConfig{
 					{
 						ID:   "step1",
 						Type: "tool",
@@ -1344,12 +1345,12 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 		},
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				CompositeTools: []vmcpconfig.CompositeToolConfig{
+			Config: vmcpcrd.Config{
+				CompositeTools: []vmcpcrd.CompositeToolConfig{
 					{
 						Name:        "inline-tool",
 						Description: "An inline composite tool",
-						Steps: []vmcpconfig.WorkflowStepConfig{
+						Steps: []vmcpcrd.WorkflowStepConfig{
 							{
 								ID:   "step1",
 								Type: "tool",
@@ -1358,7 +1359,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 						},
 					},
 				},
-				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+				CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 					{Name: "referenced-tool"},
 				},
 			},
@@ -1441,8 +1442,8 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 		},
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+			Config: vmcpcrd.Config{
+				CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 					{Name: "non-existent-tool"},
 				},
 			},
@@ -1888,8 +1889,8 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroup},
-					Config: vmcpconfig.Config{
-						Optimizer: &vmcpconfig.OptimizerConfig{},
+					Config: vmcpcrd.Config{
+						Optimizer: &vmcpcrd.OptimizerConfig{},
 					},
 					EmbeddingServerRef: &mcpv1beta1.EmbeddingServerRef{
 						Name: "shared-embedding",

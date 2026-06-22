@@ -15,8 +15,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -67,11 +67,11 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
-						Tools: []*vmcpconfig.WorkloadToolConfig{
+						Tools: []*vmcpcrd.WorkloadToolConfig{
 							{
 								// Backend A: Hide ALL tools using ExcludeAll
 								Workload:   backendAName,
@@ -86,7 +86,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 						},
 					},
 					// Define a composite tool that uses tools from BOTH hidden backends
-					CompositeTools: []vmcpconfig.CompositeToolConfig{
+					CompositeTools: []vmcpcrd.CompositeToolConfig{
 						{
 							Name:        compositeToolName,
 							Description: "A composite tool that echoes via both hidden backends",
@@ -100,8 +100,8 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 								},
 								"required": []any{"message"},
 							}),
-							Timeout: vmcpconfig.Duration(30 * time.Second),
-							Steps: []vmcpconfig.WorkflowStepConfig{
+							Timeout: vmcpcrd.Duration(30 * time.Second),
+							Steps: []vmcpcrd.WorkflowStepConfig{
 								{
 									// Step 1: Echo through Backend A (ExcludeAll)
 									ID:   "echo_backend_a",
@@ -270,7 +270,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 			Expect(vmcpServer.Spec.Config.Aggregation.Tools).To(HaveLen(2))
 
 			// Find and verify Backend A config (ExcludeAll)
-			var backendAConfig, backendBConfig *vmcpconfig.WorkloadToolConfig
+			var backendAConfig, backendBConfig *vmcpcrd.WorkloadToolConfig
 			for _, toolConfig := range vmcpServer.Spec.Config.Aggregation.Tools {
 				switch toolConfig.Workload {
 				case backendAName:

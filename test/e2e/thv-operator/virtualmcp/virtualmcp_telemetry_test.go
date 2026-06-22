@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -117,7 +118,7 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 					Name:        "e2e-telemetry-config",
 					ServiceName: "custom-service-name",
 				},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
 				},
 			},

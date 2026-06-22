@@ -18,7 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 )
 
 // extractSecretNames returns just the Name fields from a list of LocalObjectReferences,
@@ -73,7 +73,7 @@ var _ = Describe("VirtualMCPServer ImagePullSecrets Integration Tests",
 					ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
 						GroupRef:     &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-						Config:       vmcpconfig.Config{Group: mcpGroupName},
+						Config:       vmcpcrd.Config{Group: mcpGroupName},
 						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
 						ImagePullSecrets: []corev1.LocalObjectReference{
 							{Name: "registry-creds-1"},
@@ -147,7 +147,7 @@ var _ = Describe("VirtualMCPServer ImagePullSecrets Integration Tests",
 					ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
 						GroupRef:     &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-						Config:       vmcpconfig.Config{Group: mcpGroupName},
+						Config:       vmcpcrd.Config{Group: mcpGroupName},
 						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
 						ImagePullSecrets: []corev1.LocalObjectReference{
 							{Name: "secret-a"},
@@ -239,7 +239,7 @@ var _ = Describe("VirtualMCPServer ImagePullSecrets Integration Tests",
 					ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
 						GroupRef:     &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-						Config:       vmcpconfig.Config{Group: mcpGroupName},
+						Config:       vmcpcrd.Config{Group: mcpGroupName},
 						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
 						// "shared" appears in both sources to exercise overlap;
 						// "explicit-only" is unique to spec.imagePullSecrets;

@@ -16,8 +16,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -194,12 +194,12 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 				EmbeddingServerRef: &mcpv1beta1.EmbeddingServerRef{
 					Name: embeddingName,
 				},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group:     mcpGroupName,
-					Optimizer: &vmcpconfig.OptimizerConfig{},
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Optimizer: &vmcpcrd.OptimizerConfig{},
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: vmcp.ConflictStrategyPrefix,
-						ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
+						ConflictResolutionConfig: &vmcpcrd.ConflictResolutionConfig{
 							PrefixFormat: "{workload}_",
 						},
 					},

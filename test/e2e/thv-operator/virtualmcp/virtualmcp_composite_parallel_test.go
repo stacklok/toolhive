@@ -14,8 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -53,14 +53,14 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
 					},
 					// Define a composite tool that echoes to both backends in parallel
 					// Steps without DependsOn can execute concurrently
-					CompositeTools: []vmcpconfig.CompositeToolConfig{
+					CompositeTools: []vmcpcrd.CompositeToolConfig{
 						{
 							Name:        compositeToolName,
 							Description: "Echoes message to both backends in parallel, then combines results",
@@ -74,8 +74,8 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 								},
 								"required": []any{"message"},
 							}),
-							Timeout: vmcpconfig.Duration(60 * time.Second),
-							Steps: []vmcpconfig.WorkflowStepConfig{
+							Timeout: vmcpcrd.Duration(60 * time.Second),
+							Steps: []vmcpcrd.WorkflowStepConfig{
 								{
 									// Step 1: Echo to backend1 (no dependencies - runs in parallel)
 									ID:   "echo_backend1",

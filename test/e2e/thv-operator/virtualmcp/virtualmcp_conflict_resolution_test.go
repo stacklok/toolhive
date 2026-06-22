@@ -15,8 +15,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -27,7 +27,7 @@ type conflictResolutionTestSetup struct {
 	backend1Name    string
 	backend2Name    string
 	namespace       string
-	aggregation     *vmcpconfig.AggregationConfig
+	aggregation     *vmcpcrd.AggregationConfig
 	timeout         time.Duration
 	pollingInterval time.Duration
 }
@@ -54,7 +54,7 @@ func setupConflictResolutionTest(setup conflictResolutionTestSetup) int32 {
 		},
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
 			GroupRef: &mcpv1beta1.MCPGroupRef{Name: setup.groupName},
-			Config: vmcpconfig.Config{
+			Config: vmcpcrd.Config{
 				Group:       setup.groupName,
 				Aggregation: setup.aggregation,
 			},
@@ -133,9 +133,9 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				namespace:       testNamespace,
 				timeout:         timeout,
 				pollingInterval: pollingInterval,
-				aggregation: &vmcpconfig.AggregationConfig{
+				aggregation: &vmcpcrd.AggregationConfig{
 					ConflictResolution: vmcp.ConflictStrategyPrefix,
-					ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
+					ConflictResolutionConfig: &vmcpcrd.ConflictResolutionConfig{
 						PrefixFormat: "{workload}_",
 					},
 				},
@@ -276,9 +276,9 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				namespace:       testNamespace,
 				timeout:         timeout,
 				pollingInterval: pollingInterval,
-				aggregation: &vmcpconfig.AggregationConfig{
+				aggregation: &vmcpcrd.AggregationConfig{
 					ConflictResolution: vmcp.ConflictStrategyPriority,
-					ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
+					ConflictResolutionConfig: &vmcpcrd.ConflictResolutionConfig{
 						PriorityOrder: []string{backend1Name, backend2Name},
 					},
 				},
@@ -413,18 +413,18 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				namespace:       testNamespace,
 				timeout:         timeout,
 				pollingInterval: pollingInterval,
-				aggregation: &vmcpconfig.AggregationConfig{
+				aggregation: &vmcpcrd.AggregationConfig{
 					ConflictResolution: vmcp.ConflictStrategyManual,
-					Tools: []*vmcpconfig.WorkloadToolConfig{
+					Tools: []*vmcpcrd.WorkloadToolConfig{
 						{
 							Workload: backend1Name,
-							Overrides: map[string]*vmcpconfig.ToolOverride{
+							Overrides: map[string]*vmcpcrd.ToolOverride{
 								"echo": {Name: "echo_backend1"},
 							},
 						},
 						{
 							Workload: backend2Name,
-							Overrides: map[string]*vmcpconfig.ToolOverride{
+							Overrides: map[string]*vmcpcrd.ToolOverride{
 								"echo": {Name: "echo_backend2"},
 							},
 						},
@@ -479,8 +479,8 @@ var _ = Describe("VirtualMCPServer Conflict Resolution", Ordered, func() {
 				Expect(vmcpServer.Spec.Config.Aggregation.Tools).To(HaveLen(2))
 
 				// Verify backend1 overrides
-				var backend1Config *vmcpconfig.WorkloadToolConfig
-				var backend2Config *vmcpconfig.WorkloadToolConfig
+				var backend1Config *vmcpcrd.WorkloadToolConfig
+				var backend2Config *vmcpcrd.WorkloadToolConfig
 				for i := range vmcpServer.Spec.Config.Aggregation.Tools {
 					if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend1Name {
 						backend1Config = vmcpServer.Spec.Config.Aggregation.Tools[i]

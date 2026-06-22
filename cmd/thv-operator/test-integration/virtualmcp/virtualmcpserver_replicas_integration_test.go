@@ -16,7 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 )
 
 var _ = Describe("VirtualMCPServer Replicas Integration Tests",
@@ -61,7 +61,7 @@ var _ = Describe("VirtualMCPServer Replicas Integration Tests",
 					},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
 						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group-replicas"},
-						Config:   vmcpconfig.Config{Group: "test-group-replicas"},
+						Config:   vmcpcrd.Config{Group: "test-group-replicas"},
 						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
@@ -115,7 +115,7 @@ var _ = Describe("VirtualMCPServer Replicas Integration Tests",
 					},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
 						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group-nil-replicas"},
-						Config:   vmcpconfig.Config{Group: "test-group-nil-replicas"},
+						Config:   vmcpcrd.Config{Group: "test-group-nil-replicas"},
 						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 							Type: "anonymous",
 						},

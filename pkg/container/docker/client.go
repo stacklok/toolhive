@@ -660,6 +660,21 @@ func (c *Client) AttachToWorkload(ctx context.Context, workloadName string) (io.
 	return resp.Conn, stdoutReader, nil
 }
 
+// Name returns the name of the concrete runtime this client is connected to
+// (e.g. "docker", "podman", "colima"), as detected at connection time.
+//
+// This intentionally returns the detected runtimeType rather than the static
+// RuntimeName constant used for factory registration. RuntimeName collapses all
+// Docker-API-compatible runtimes under a single "docker" registration, but for
+// workload-ownership tracking each concrete runtime must identify itself
+// distinctly: Docker and Podman are separate daemons with separate containers,
+// so a workload created under one must not be claimed by the other during
+// status reconciliation. Returning the constant would let Podman-owned and
+// Docker-owned workloads share the identity "docker" and corrupt each other.
+func (c *Client) Name() string {
+	return string(c.runtimeType)
+}
+
 // IsRunning checks the health of the container runtime.
 // This is used to verify that the runtime is operational and can manage workloads.
 func (c *Client) IsRunning(ctx context.Context) error {

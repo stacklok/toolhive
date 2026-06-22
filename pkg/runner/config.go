@@ -55,6 +55,11 @@ type RunConfig struct {
 	// means unversioned (backward-compat with older operators, or non-operator callers).
 	MCPServerGeneration int64 `json:"mcpserver_generation,omitempty" yaml:"mcpserver_generation,omitempty"`
 
+	// RuntimeName is the registered name of the container runtime that owns this
+	// workload (e.g., "docker", "kubernetes"). Used during reconciliation to avoid
+	// corrupting status files of workloads managed by a different runtime.
+	RuntimeName string `json:"runtime_name,omitempty" yaml:"runtime_name,omitempty"`
+
 	// Image is the Docker image to run
 	Image string `json:"image" yaml:"image"`
 

@@ -12,6 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func() {
@@ -52,43 +53,35 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 			})).To(Succeed())
 
 			By("Creating VirtualMCPServer with valid inline AuthServerConfig")
-			vmcp := &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-							Name: "authserver-oidc-config",
-							// Audience must match the auth server's allowed audience (the vMCP service URL)
-							Audience: fmt.Sprintf("http://%s.%s.svc.cluster.local:4483", vmcpName, testNamespace),
-						},
+			vmcp := v1beta1test.NewVirtualMCPServer(vmcpName, testNamespace,
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type: "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+						Name: "authserver-oidc-config",
+						// Audience must match the auth server's allowed audience (the vMCP service URL)
+						Audience: fmt.Sprintf("http://%s.%s.svc.cluster.local:4483", vmcpName, testNamespace),
 					},
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					AuthServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
-						Issuer: "http://localhost:9090",
-						UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
-							{
-								Name: "test-provider",
-								Type: mcpv1beta1.UpstreamProviderTypeOIDC,
-								OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
-									IssuerURL: "https://accounts.google.com",
-									ClientID:  "test-client-id",
-								},
+				}),
+				v1beta1test.WithVMCPGroupRef(mcpGroupName),
+				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer: "http://localhost:9090",
+					UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+						{
+							Name: "test-provider",
+							Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+							OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+								IssuerURL: "https://accounts.google.com",
+								ClientID:  "test-client-id",
 							},
 						},
 					},
-				},
-			}
+				}),
+			)
 			Expect(k8sClient.Create(ctx, vmcp)).To(Succeed())
 		})
 
 		AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: testNamespace},
-			})
+			_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpName, testNamespace))
 		})
 
 		It("should set AuthServerConfigValidated condition to True", func() {

@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -149,41 +150,37 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 	It("should configure circuit breaker from VirtualMCPServer spec", func() {
 		By("Creating VirtualMCPServer with circuit breaker enabled")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered",
+			}),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Name:  vmcpServerName,
+				Group: mcpGroupName,
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
 				},
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "discovered",
-				},
-				ServiceType: "NodePort",
-				Config: vmcpconfig.Config{
-					Name:  vmcpServerName,
-					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-					},
-					Operational: &vmcpconfig.OperationalConfig{
-						FailureHandling: &vmcpconfig.FailureHandlingConfig{
-							HealthCheckInterval: vmcpconfig.Duration(cbHealthCheckInterval),
-							HealthCheckTimeout:  vmcpconfig.Duration(cbHealthCheckTimeout),
-							UnhealthyThreshold:  cbUnhealthyThreshold,
-							CircuitBreaker: &vmcpconfig.CircuitBreakerConfig{
-								Enabled:          true,
-								FailureThreshold: cbFailureThreshold,
-								Timeout:          vmcpconfig.Duration(cbTimeout),
-							},
+				Operational: &vmcpconfig.OperationalConfig{
+					FailureHandling: &vmcpconfig.FailureHandlingConfig{
+						HealthCheckInterval: vmcpconfig.Duration(cbHealthCheckInterval),
+						HealthCheckTimeout:  vmcpconfig.Duration(cbHealthCheckTimeout),
+						UnhealthyThreshold:  cbUnhealthyThreshold,
+						CircuitBreaker: &vmcpconfig.CircuitBreakerConfig{
+							Enabled:          true,
+							FailureThreshold: cbFailureThreshold,
+							Timeout:          vmcpconfig.Duration(cbTimeout),
 						},
 					},
 				},
-			},
-		}
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Verifying circuit breaker configuration in ConfigMap")

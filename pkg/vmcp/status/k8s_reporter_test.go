@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -653,21 +654,17 @@ func createTestReporter(t *testing.T, name, namespace string) (*K8sReporter, cli
 func createTestVirtualMCPServer(t *testing.T, fakeClient client.Client, name, namespace string) *mcpv1beta1.VirtualMCPServer {
 	t.Helper()
 
-	vmcpServer := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       name,
-			Namespace:  namespace,
-			Generation: 1,
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{
-				Group: "test-group",
-			},
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type: "anonymous",
-			},
-		},
-	}
+	vmcpServer := v1beta1test.NewVirtualMCPServer(name, namespace,
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			Group: "test-group",
+		}),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 1
+		}),
+	)
 
 	ctx := context.Background()
 	err := fakeClient.Create(ctx, vmcpServer)

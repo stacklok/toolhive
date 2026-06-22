@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -79,22 +80,14 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					return err == nil && fetched.Status.ConfigHash != ""
 				}, timeout, interval).Should(BeTrue())
 
-				virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-vmcp-telemetry-hash",
-						Namespace: namespace,
-					},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group-telemetry-hash"},
-						Config:   vmcpconfig.Config{Group: "test-group-telemetry-hash"},
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-							Type: "anonymous",
-						},
-						TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-							Name: "test-telemetry-vmcp-hash",
-						},
-					},
-				}
+				virtualMCPServer = v1beta1test.NewVirtualMCPServer("test-vmcp-telemetry-hash", namespace,
+					v1beta1test.WithVMCPGroupRef("test-group-telemetry-hash"),
+					v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: "test-group-telemetry-hash"}),
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+						Type: "anonymous",
+					}),
+					v1beta1test.WithVMCPTelemetryConfigRef("test-telemetry-vmcp-hash"),
+				)
 				Expect(k8sClient.Create(ctx, virtualMCPServer)).Should(Succeed())
 			})
 
@@ -214,22 +207,14 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					return err == nil && fetched.Status.ConfigHash != ""
 				}, timeout, interval).Should(BeTrue())
 
-				virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-vmcp-telemetry-update",
-						Namespace: namespace,
-					},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group-telemetry-update"},
-						Config:   vmcpconfig.Config{Group: "test-group-telemetry-update"},
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-							Type: "anonymous",
-						},
-						TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-							Name: "test-telemetry-vmcp-update",
-						},
-					},
-				}
+				virtualMCPServer = v1beta1test.NewVirtualMCPServer("test-vmcp-telemetry-update", namespace,
+					v1beta1test.WithVMCPGroupRef("test-group-telemetry-update"),
+					v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: "test-group-telemetry-update"}),
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+						Type: "anonymous",
+					}),
+					v1beta1test.WithVMCPTelemetryConfigRef("test-telemetry-vmcp-update"),
+				)
 				Expect(k8sClient.Create(ctx, virtualMCPServer)).Should(Succeed())
 
 				// Wait for the initial hash to be propagated to the VirtualMCPServer
@@ -324,22 +309,14 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 				}
 				Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
-				virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "test-vmcp-telemetry-notfound",
-						Namespace: namespace,
-					},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group-telemetry-notfound"},
-						Config:   vmcpconfig.Config{Group: "test-group-telemetry-notfound"},
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-							Type: "anonymous",
-						},
-						TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-							Name: "nonexistent-telemetry-config",
-						},
-					},
-				}
+				virtualMCPServer = v1beta1test.NewVirtualMCPServer("test-vmcp-telemetry-notfound", namespace,
+					v1beta1test.WithVMCPGroupRef("test-group-telemetry-notfound"),
+					v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: "test-group-telemetry-notfound"}),
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+						Type: "anonymous",
+					}),
+					v1beta1test.WithVMCPTelemetryConfigRef("nonexistent-telemetry-config"),
+				)
 				Expect(k8sClient.Create(ctx, virtualMCPServer)).Should(Succeed())
 			})
 

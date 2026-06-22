@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
@@ -46,74 +47,70 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 		}, timeout, pollingInterval)
 
 		By("Creating VirtualMCPServer with composite parallel workflow")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-					},
-					// Define a composite tool that echoes to both backends in parallel
-					// Steps without DependsOn can execute concurrently
-					CompositeTools: []vmcpconfig.CompositeToolConfig{
-						{
-							Name:        compositeToolName,
-							Description: "Echoes message to both backends in parallel, then combines results",
-							Parameters: thvjson.NewMap(map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"message": map[string]any{
-										"type":        "string",
-										"description": "The message to echo in parallel to both backends",
-									},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
+				},
+				// Define a composite tool that echoes to both backends in parallel
+				// Steps without DependsOn can execute concurrently
+				CompositeTools: []vmcpconfig.CompositeToolConfig{
+					{
+						Name:        compositeToolName,
+						Description: "Echoes message to both backends in parallel, then combines results",
+						Parameters: thvjson.NewMap(map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"message": map[string]any{
+									"type":        "string",
+									"description": "The message to echo in parallel to both backends",
 								},
-								"required": []any{"message"},
-							}),
-							Timeout: vmcpconfig.Duration(60 * time.Second),
-							Steps: []vmcpconfig.WorkflowStepConfig{
-								{
-									// Step 1: Echo to backend1 (no dependencies - runs in parallel)
-									ID:   "echo_backend1",
-									Type: "tool",
-									Tool: fmt.Sprintf("%s.echo", backend1Name),
-									Arguments: thvjson.NewMap(map[string]any{
-										"input": "backend1: {{ .params.message }}",
-									}),
-								},
-								{
-									// Step 2: Echo to backend2 (no dependencies - runs in parallel with step 1)
-									ID:   "echo_backend2",
-									Type: "tool",
-									Tool: fmt.Sprintf("%s.echo", backend2Name),
-									Arguments: thvjson.NewMap(map[string]any{
-										"input": "backend2: {{ .params.message }}",
-									}),
-								},
-								{
-									// Step 3: Final aggregation - depends on both parallel steps
-									ID:        "combine_results",
-									Type:      "tool",
-									Tool:      fmt.Sprintf("%s.echo", backend1Name),
-									DependsOn: []string{"echo_backend1", "echo_backend2"},
-									Arguments: thvjson.NewMap(map[string]any{
-										"input": "Combined: [{{ .steps.echo_backend1.result }}] + [{{ .steps.echo_backend2.result }}]",
-									}),
-								},
+							},
+							"required": []any{"message"},
+						}),
+						Timeout: vmcpconfig.Duration(60 * time.Second),
+						Steps: []vmcpconfig.WorkflowStepConfig{
+							{
+								// Step 1: Echo to backend1 (no dependencies - runs in parallel)
+								ID:   "echo_backend1",
+								Type: "tool",
+								Tool: fmt.Sprintf("%s.echo", backend1Name),
+								Arguments: thvjson.NewMap(map[string]any{
+									"input": "backend1: {{ .params.message }}",
+								}),
+							},
+							{
+								// Step 2: Echo to backend2 (no dependencies - runs in parallel with step 1)
+								ID:   "echo_backend2",
+								Type: "tool",
+								Tool: fmt.Sprintf("%s.echo", backend2Name),
+								Arguments: thvjson.NewMap(map[string]any{
+									"input": "backend2: {{ .params.message }}",
+								}),
+							},
+							{
+								// Step 3: Final aggregation - depends on both parallel steps
+								ID:        "combine_results",
+								Type:      "tool",
+								Tool:      fmt.Sprintf("%s.echo", backend1Name),
+								DependsOn: []string{"echo_backend1", "echo_backend2"},
+								Arguments: thvjson.NewMap(map[string]any{
+									"input": "Combined: [{{ .steps.echo_backend1.result }}] + [{{ .steps.echo_backend2.result }}]",
+								}),
 							},
 						},
 					},
 				},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -127,12 +124,7 @@ var _ = Describe("VirtualMCPServer Composite Parallel Workflow", Ordered, func()
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace)
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up backend MCPServers")

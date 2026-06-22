@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
@@ -66,24 +67,18 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 
 			// Create VirtualMCPServer that references the composite tool definition
 			// (even though the composite tool doesn't exist yet)
-			vmcp = &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config: vmcpconfig.Config{
-						Group: mcpGroupName,
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-							{Name: compositeToolDefName},
-						},
+			vmcp = v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+				v1beta1test.WithVMCPGroupRef(mcpGroupName),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					Group: mcpGroupName,
+					CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						{Name: compositeToolDefName},
 					},
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type: "anonymous",
-					},
-				},
-			}
+				}),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type: "anonymous",
+				}),
+			)
 			Expect(k8sClient.Create(ctx, vmcp)).Should(Succeed())
 
 			// Wait for initial VirtualMCPServer reconciliation
@@ -252,24 +247,18 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 			Expect(k8sClient.Create(ctx, compositeToolDef)).Should(Succeed())
 
 			// Create VirtualMCPServer that references the composite tool definition
-			vmcp = &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config: vmcpconfig.Config{
-						Group: mcpGroupName,
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-							{Name: compositeToolDefName},
-						},
+			vmcp = v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+				v1beta1test.WithVMCPGroupRef(mcpGroupName),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					Group: mcpGroupName,
+					CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						{Name: compositeToolDefName},
 					},
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type: "anonymous",
-					},
-				},
-			}
+				}),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type: "anonymous",
+				}),
+			)
 			Expect(k8sClient.Create(ctx, vmcp)).Should(Succeed())
 
 			// Wait for initial reconciliation
@@ -375,20 +364,14 @@ var _ = Describe("VirtualMCPServer CompositeToolDefinition Watch Integration Tes
 			}, timeout, interval).Should(BeTrue())
 
 			// Create VirtualMCPServer WITHOUT referencing the composite tool definition
-			vmcp = &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config:   vmcpconfig.Config{Group: mcpGroupName},
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type: "anonymous",
-					},
-					// No CompositeToolRefs
-				},
-			}
+			vmcp = v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+				v1beta1test.WithVMCPGroupRef(mcpGroupName),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: mcpGroupName}),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type: "anonymous",
+				}),
+				// No CompositeToolRefs
+			)
 			Expect(k8sClient.Create(ctx, vmcp)).Should(Succeed())
 
 			// Wait for initial reconciliation

@@ -21,6 +21,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -112,32 +113,29 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 
 		redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
 		ginkgo.By("Creating VirtualMCPServer with per-user rate limiting")
-		gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					RateLimiting: &mcpv1beta1.RateLimitConfig{
-						PerUser: &mcpv1beta1.RateLimitBucket{
-							MaxTokens:    1,
-							RefillPeriod: metav1.Duration{Duration: time.Minute},
-						},
+		gomega.Expect(k8sClient.Create(ctx, v1beta1test.NewVirtualMCPServer(vmcpName, defaultNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				RateLimiting: &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
+						MaxTokens:    1,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
 					},
 				},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "oidc",
-					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-						Name:     oidcName,
-						Audience: oidcAudience,
-					},
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "oidc",
+				OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+					Name:     oidcName,
+					Audience: oidcAudience,
 				},
-				SessionStorage: &mcpv1beta1.SessionStorageConfig{
-					Provider: mcpv1beta1.SessionStorageProviderRedis,
-					Address:  redisAddr,
-				},
-			},
-		})).To(gomega.Succeed())
+			}),
+			v1beta1test.WithVMCPSessionStorage(&mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  redisAddr,
+			}),
+		))).To(gomega.Succeed())
 
 		ginkgo.By("Waiting for VirtualMCPServer to be ready")
 		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpName, defaultNamespace, timeout, pollInterval)
@@ -157,9 +155,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 		if oidcCleanup != nil {
 			oidcCleanup()
 		}
-		_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
-		})
+		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpName, defaultNamespace))
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 		})

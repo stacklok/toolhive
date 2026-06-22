@@ -11,7 +11,6 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -71,78 +70,71 @@ var _ = Describe("VirtualMCPServer Optimizer Mode", Ordered, func() {
 		// vmcpFetchToolName for clients, but steps must reference the original.
 		fetchStepTool := backendName + "." + backendFetchToolName // "backend-optimizer-fetch.fetch"
 
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef:    &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				ServiceType: "NodePort",
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "discovered",
-				},
-				// Reference to the standalone EmbeddingServer created above.
-				// The controller auto-populates optimizer.embeddingService from EmbeddingServer status.
-				EmbeddingServerRef: &mcpv1beta1.EmbeddingServerRef{
-					Name: embeddingName,
-				},
-
-				Config: vmcpconfig.Config{
-					Group:     mcpGroupName,
-					Optimizer: &vmcpconfig.OptimizerConfig{},
-					// Define a composite tool that calls fetch twice
-					CompositeTools: []vmcpconfig.CompositeToolConfig{
-						{
-							Name:        compositeToolName,
-							Description: "Fetches a URL twice in sequence for verification",
-							Parameters: thvjson.NewMap(map[string]interface{}{
-								"type": "object",
-								"properties": map[string]interface{}{
-									"url": map[string]interface{}{
-										"type":        "string",
-										"description": "URL to fetch twice",
-									},
-								},
-								"required": []string{"url"},
-							}),
-							Steps: []vmcpconfig.WorkflowStepConfig{
-								{
-									ID:        "first_fetch",
-									Type:      "tool",
-									Tool:      fetchStepTool,
-									Arguments: thvjson.NewMap(stepArgs),
-								},
-								{
-									ID:        "second_fetch",
-									Type:      "tool",
-									Tool:      fetchStepTool,
-									DependsOn: []string{"first_fetch"},
-									Arguments: thvjson.NewMap(stepArgs),
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered",
+			}),
+			// Reference to the standalone EmbeddingServer created above.
+			// The controller auto-populates optimizer.embeddingService from EmbeddingServer status.
+			v1beta1test.WithVMCPEmbeddingServerRef(embeddingName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group:     mcpGroupName,
+				Optimizer: &vmcpconfig.OptimizerConfig{},
+				// Define a composite tool that calls fetch twice
+				CompositeTools: []vmcpconfig.CompositeToolConfig{
+					{
+						Name:        compositeToolName,
+						Description: "Fetches a URL twice in sequence for verification",
+						Parameters: thvjson.NewMap(map[string]interface{}{
+							"type": "object",
+							"properties": map[string]interface{}{
+								"url": map[string]interface{}{
+									"type":        "string",
+									"description": "URL to fetch twice",
 								},
 							},
-						},
-					},
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-						Tools: []*vmcpconfig.WorkloadToolConfig{
+							"required": []string{"url"},
+						}),
+						Steps: []vmcpconfig.WorkflowStepConfig{
 							{
-								Workload: backendName,
-								Overrides: map[string]*vmcpconfig.ToolOverride{
-									backendFetchToolName: {
-										Name:        vmcpFetchToolName,
-										Description: vmcpFetchToolDescription,
-									},
+								ID:        "first_fetch",
+								Type:      "tool",
+								Tool:      fetchStepTool,
+								Arguments: thvjson.NewMap(stepArgs),
+							},
+							{
+								ID:        "second_fetch",
+								Type:      "tool",
+								Tool:      fetchStepTool,
+								DependsOn: []string{"first_fetch"},
+								Arguments: thvjson.NewMap(stepArgs),
+							},
+						},
+					},
+				},
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
+					Tools: []*vmcpconfig.WorkloadToolConfig{
+						{
+							Workload: backendName,
+							Overrides: map[string]*vmcpconfig.ToolOverride{
+								backendFetchToolName: {
+									Name:        vmcpFetchToolName,
+									Description: vmcpFetchToolDescription,
 								},
 							},
 						},
 					},
 				},
-			},
-		}
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")

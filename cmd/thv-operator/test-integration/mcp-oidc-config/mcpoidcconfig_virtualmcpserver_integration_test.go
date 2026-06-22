@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -96,25 +97,19 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			}, timeout, interval).Should(BeTrue())
 
 			// Create VirtualMCPServer with OIDCConfigRef
-			vmcpServer = &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-					Config:   vmcpconfig.Config{Group: groupName},
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-							Name:        configName,
-							Audience:    "test-vmcp-audience",
-							Scopes:      []string{"openid"},
-							ResourceURL: "https://mcp-gateway.example.com/mcp",
-						},
+			vmcpServer = v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+				v1beta1test.WithVMCPGroupRef(groupName),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: groupName}),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type: "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+						Name:        configName,
+						Audience:    "test-vmcp-audience",
+						Scopes:      []string{"openid"},
+						ResourceURL: "https://mcp-gateway.example.com/mcp",
 					},
-				},
-			}
+				}),
+			)
 			Expect(k8sClient.Create(ctx, vmcpServer)).Should(Succeed())
 		})
 
@@ -274,24 +269,18 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			}, timeout, interval).Should(BeTrue())
 
 			// Create VirtualMCPServer with OIDCConfigRef
-			vmcpServer = &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-					Config:   vmcpconfig.Config{Group: groupName},
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-							Name:     configName,
-							Audience: "test-vmcp-audience",
-							Scopes:   []string{"openid"},
-						},
+			vmcpServer = v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+				v1beta1test.WithVMCPGroupRef(groupName),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: groupName}),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type: "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+						Name:     configName,
+						Audience: "test-vmcp-audience",
+						Scopes:   []string{"openid"},
 					},
-				},
-			}
+				}),
+			)
 			Expect(k8sClient.Create(ctx, vmcpServer)).Should(Succeed())
 
 			// Wait for ReferencingWorkloads to contain the VirtualMCPServer
@@ -410,24 +399,18 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			}, timeout, interval).Should(BeTrue())
 
 			// Create VirtualMCPServer with OIDCConfigRef
-			vmcpServer = &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-					Config:   vmcpconfig.Config{Group: groupName},
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-							Name:     configName,
-							Audience: "test-vmcp-audience",
-							Scopes:   []string{"openid"},
-						},
+			vmcpServer = v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+				v1beta1test.WithVMCPGroupRef(groupName),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: groupName}),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type: "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+						Name:     configName,
+						Audience: "test-vmcp-audience",
+						Scopes:   []string{"openid"},
 					},
-				},
-			}
+				}),
+			)
 			Expect(k8sClient.Create(ctx, vmcpServer)).Should(Succeed())
 
 			// Wait for ReferencingWorkloads to be populated
@@ -536,24 +519,18 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
 			// Create VirtualMCPServer with OIDCConfigRef pointing to a non-existent config
-			vmcpServer = &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-					Config:   vmcpconfig.Config{Group: groupName},
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-							Name:     "does-not-exist",
-							Audience: "test-vmcp-audience",
-							Scopes:   []string{"openid"},
-						},
+			vmcpServer = v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+				v1beta1test.WithVMCPGroupRef(groupName),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: groupName}),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type: "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+						Name:     "does-not-exist",
+						Audience: "test-vmcp-audience",
+						Scopes:   []string{"openid"},
 					},
-				},
-			}
+				}),
+			)
 			Expect(k8sClient.Create(ctx, vmcpServer)).Should(Succeed())
 		})
 
@@ -676,24 +653,18 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
 			// Create VirtualMCPServer with OIDCConfigRef
-			vmcpServer = &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-					Config:   vmcpconfig.Config{Group: groupName},
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-							Name:     configName,
-							Audience: "test-vmcp-audience",
-							Scopes:   []string{"openid"},
-						},
+			vmcpServer = v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+				v1beta1test.WithVMCPGroupRef(groupName),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: groupName}),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type: "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+						Name:     configName,
+						Audience: "test-vmcp-audience",
+						Scopes:   []string{"openid"},
 					},
-				},
-			}
+				}),
+			)
 			Expect(k8sClient.Create(ctx, vmcpServer)).Should(Succeed())
 		})
 

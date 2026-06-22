@@ -17,6 +17,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/audit"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers"
+	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
@@ -389,6 +391,32 @@ func TestNew_NilSessionFactory_ReturnsError(t *testing.T) {
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "SessionFactory")
+}
+
+// TestNew_NilAggregator_ReturnsError guards the now-required Config.Aggregator: the core
+// is the single source of the advertised capability set, so server.New must fail (via
+// core.New's validation) rather than silently construct a server with no aggregation.
+func TestNew_NilAggregator_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+
+	_, err := server.New(
+		context.Background(),
+		&server.Config{
+			SessionFactory: newNoopMockFactory(t),
+			Aggregator:     nil, // deliberately omitted: now a required field
+		},
+		mockRouter, mockBackendClient, mockDiscoveryMgr,
+		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
+	)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "Aggregator")
 }
 
 func TestNew_WithAuditConfig(t *testing.T) {
@@ -860,14 +888,85 @@ func TestAcceptHeaderValidation(t *testing.T) {
 	}
 }
 
+// newTestAuthzConfig builds a minimal, permissive Cedar authz config. server.New now
+// requires Config.Authz to be set whenever Config.AuthzMiddleware is (the vestigial
+// middleware must not silently degrade to allow-all), so tests that exercise AuthzMiddleware
+// must supply it. The policy permits everything so the core admission seam never interferes
+// with what these tests actually assert.
+func newTestAuthzConfig(t *testing.T) *authorizers.Config {
+	t.Helper()
+	cfg, err := authorizers.NewConfig(cedar.Config{
+		Version: "1.0",
+		Type:    cedar.ConfigType,
+		Options: &cedar.ConfigOptions{Policies: []string{`permit(principal, action, resource);`}, EntitiesJSON: "[]"},
+	})
+	require.NoError(t, err)
+	return cfg
+}
+
+// TestNew_AuthzMiddlewareWithoutAuthz_ReturnsError guards the fail-fast that replaced the
+// former WARN: setting the vestigial Config.AuthzMiddleware without Config.Authz would
+// silently degrade to allow-all on the New/Serve path, so server.New must reject it.
+func TestNew_AuthzMiddlewareWithoutAuthz_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+
+	_, err := server.New(t.Context(),
+		&server.Config{
+			SessionFactory:  newNoopMockFactory(t),
+			Aggregator:      newStubAggregator(nil),
+			AuthzMiddleware: func(h http.Handler) http.Handler { return h }, // set without Authz
+		},
+		mockRouter, mockBackendClient, mockDiscoveryMgr,
+		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
+	)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "AuthzMiddleware")
+}
+
+// TestNew_AuthzWithOptimizer_ReturnsError guards the documented mutual exclusion: the core
+// admission seam has no representation for the optimizer's meta-tools, so combining Authz
+// with the optimizer would silently bypass Cedar. server.New must reject the combination.
+func TestNew_AuthzWithOptimizer_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+
+	_, err := server.New(t.Context(),
+		&server.Config{
+			Name:            "test-vmcp",
+			SessionFactory:  newNoopMockFactory(t),
+			Aggregator:      newStubAggregator(nil),
+			Authz:           newTestAuthzConfig(t),
+			OptimizerConfig: &optimizer.Config{},
+		},
+		mockRouter, mockBackendClient, mockDiscoveryMgr,
+		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
+	)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "OptimizerConfig")
+}
+
 // TestNewIgnoresVestigialAuthzMiddleware proves that server.New — now routed through
 // core.New + Serve — does NOT apply the HTTP authz or annotation-enrichment layers even
-// when Config.AuthzMiddleware is set. deriveServerConfig/buildServeConfig drop
-// AuthzMiddleware (it is vestigial on the New/Serve path), so the shared (*Server).Handler
-// skips both blocks and authorization is enforced by the core admission seam (#5438)
-// instead. The now-dead HTTP blocks remain in the shared Handler until the #5445 follow-up
-// removes them; this guards that they never run via the public constructor. The Serve-path
-// view of the same behavior is TestServeOmitsAuthzAndAnnotation (serve_test.go).
+// when Config.AuthzMiddleware is set (alongside the now-required Config.Authz, mirroring
+// cli/serve.go). deriveServerConfig/buildServeConfig drop AuthzMiddleware (it is vestigial
+// on the New/Serve path), so the shared (*Server).Handler skips both blocks and
+// authorization is enforced by the core admission seam (#5438) instead. The now-dead HTTP
+// blocks remain in the shared Handler until the #5445 follow-up removes them; this guards
+// that they never run via the public constructor. The Serve-path view of the same behavior
+// is TestServeOmitsAuthzAndAnnotation (serve_test.go).
 func TestNewIgnoresVestigialAuthzMiddleware(t *testing.T) {
 	t.Parallel()
 
@@ -894,13 +993,17 @@ func TestNewIgnoresVestigialAuthzMiddleware(t *testing.T) {
 		})
 	}
 
-	// AuthzMiddleware is set, but server.New routes through Serve, which drops it.
+	// AuthzMiddleware is set (alongside Authz, as cli/serve.go does), but server.New routes
+	// through Serve, which drops the HTTP AuthzMiddleware layer; authz is enforced by the
+	// core admission seam from Config.Authz instead.
 	cfg := &server.Config{
+		Name:            "test-vmcp", // required once Authz is set
 		Host:            "127.0.0.1",
 		Port:            0,
 		SessionFactory:  newNoopMockFactory(t),
 		Aggregator:      newStubAggregator(nil),
 		AuthzMiddleware: authz,
+		Authz:           newTestAuthzConfig(t),
 	}
 	srv, err := server.New(t.Context(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, mockBackendRegistry, nil)
 	require.NoError(t, err)

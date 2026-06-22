@@ -406,14 +406,25 @@ func New(
 	resolved := WithDefaults(cfg)
 
 	// AuthzMiddleware is vestigial on the New/Serve path (Serve never applies it; authz
-	// moved to the core admission seam). Warn when it is set without a corresponding
-	// Config.Authz so an embedder that relied on it for Cedar authz gets a diagnosable
-	// signal instead of silently degrading to allow-all. cli/serve.go sets Authz whenever
-	// it sets AuthzMiddleware, so this never fires in-tree.
+	// moved to the core admission seam). Setting it without a corresponding Config.Authz
+	// would silently degrade to allow-all — a security regression for an embedder that
+	// relied on it for Cedar authz — so fail fast instead of logging a warning the embedder
+	// is unlikely to notice. cli/serve.go sets Authz whenever it sets AuthzMiddleware, so
+	// this never fires in-tree.
 	if cfg.AuthzMiddleware != nil && cfg.Authz == nil {
-		slog.Warn("AuthzMiddleware is set but ignored on the server.New/Serve path; " +
-			"authorization is enforced by the core admission seam from Config.Authz, which is nil " +
-			"(allow-all). Set Config.Authz to enforce a policy.")
+		return nil, fmt.Errorf("%w: Config.AuthzMiddleware is set but has no effect on the "+
+			"New/Serve path; set Config.Authz to enforce authorization, or clear AuthzMiddleware",
+			vmcp.ErrInvalidConfig)
+	}
+
+	// The core admission seam has no representation for the optimizer's meta-tools
+	// (find_tool/call_tool), so combining Authz with the optimizer would let those calls
+	// bypass Cedar evaluation entirely. Fail fast per the admission seam contract (see the
+	// core.Admission doc); the optimizer keeps its own HTTP-path authz until a focused PR.
+	if cfg.Authz != nil && cfg.OptimizerConfig != nil {
+		return nil, fmt.Errorf("%w: Config.Authz and Config.OptimizerConfig are mutually "+
+			"exclusive; the optimizer meta-tools (find_tool, call_tool) are not represented "+
+			"in the core admission seam", vmcp.ErrInvalidConfig)
 	}
 
 	// Build the backend health monitor once at the composition root (A2). The same
@@ -443,6 +454,16 @@ func New(
 	if err != nil {
 		return nil, err
 	}
+	// core.New started the workflow state store's background cleanup goroutine. If Serve
+	// fails after this point, close the core so that goroutine does not leak for the process
+	// lifetime (mirrors Serve's closeStorageOnErr guard for sessionDataStorage). On success
+	// the core's lifecycle is owned by srv.Stop, so the guard is disarmed before returning.
+	closeCoreOnErr := true
+	defer func() {
+		if closeCoreOnErr {
+			_ = coreVMCP.Close()
+		}
+	}()
 
 	// On the New/Serve path the core is the single aggregator and the source of the
 	// advertised set; the session factory only opens per-session backend connections and
@@ -472,6 +493,8 @@ func New(
 	// Bind the elicitation adapter to the SDK server Serve built so composite-workflow
 	// elicitation reaches the same mcp-go server that serves client traffic.
 	elicitation.bind(NewSDKElicitationAdapter(srv.MCPServer()))
+
+	closeCoreOnErr = false // Serve succeeded; srv.Stop now owns the core's lifecycle.
 	return srv, nil
 }
 
@@ -684,8 +707,6 @@ func (s *Server) applyForwardedHeaderCapture(next http.Handler) http.Handler {
 }
 
 // Start starts the Virtual MCP Server and begins serving requests.
-//
-//nolint:gocyclo // Complexity from health monitoring and startup orchestration is acceptable
 func (s *Server) Start(ctx context.Context) error {
 	// Build the HTTP handler (middleware chain, routes, mux)
 	handler, err := s.Handler(ctx)

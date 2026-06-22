@@ -433,13 +433,11 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		target:       target,
 	}
 
-	// Merge session-captured passthrough headers (from ctx) with the static
-	// per-backend header-forward config. On the Serve path, the caller (coreToolHandler
-	// in pkg/vmcp/server/serve_handlers.go) replaces the per-request forwarded headers
-	// on ctx with the session-stable snapshot captured once at session creation, so
-	// passing ctx here provides session-stable header injection without re-reading the
-	// live incoming request headers. Restricted names and static-config collisions are
-	// rejected by MergeForwardedHeaders.
+	// Merge the live per-request forwarded headers (captured by headerforward.CaptureMiddleware
+	// into the request context) with the static per-backend header-forward config. This factory
+	// runs on every backend call, so forwarding is per-request: each call reflects the current
+	// incoming header value. Restricted names and static-config collisions are rejected by
+	// MergeForwardedHeaders.
 	mergedHeaderForward, mergeErr := headerforward.MergeForwardedHeaders(
 		target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx),
 	)

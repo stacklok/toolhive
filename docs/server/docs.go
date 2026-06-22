@@ -2731,7 +2731,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "network_isolation": {
-                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.",
+                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.\nPointer so that omitting the field defaults to network isolation ENABLED (matching the\n` + "`" + `thv run` + "`" + ` CLI default); set it explicitly to false to disable network isolation.",
                         "type": "boolean"
                     },
                     "oauth_config": {
@@ -3413,7 +3413,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "network_isolation": {
-                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.",
+                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.\nPointer so that omitting the field defaults to network isolation ENABLED (matching the\n` + "`" + `thv run` + "`" + ` CLI default); set it explicitly to false to disable network isolation.",
                         "type": "boolean"
                     },
                     "oauth_config": {

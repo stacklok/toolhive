@@ -2516,8 +2516,10 @@ components:
           description: Name of the workload
           type: string
         network_isolation:
-          description: Whether network isolation is turned on. This applies the rules
-            in the permission profile.
+          description: |-
+            Whether network isolation is turned on. This applies the rules in the permission profile.
+            Pointer so that omitting the field defaults to network isolation ENABLED (matching the
+            `thv run` CLI default); set it explicitly to false to disable network isolation.
           type: boolean
         oauth_config:
           $ref: '#/components/schemas/pkg_api_v1.remoteOAuthConfig'
@@ -3040,8 +3042,10 @@ components:
           description: Docker image to use
           type: string
         network_isolation:
-          description: Whether network isolation is turned on. This applies the rules
-            in the permission profile.
+          description: |-
+            Whether network isolation is turned on. This applies the rules in the permission profile.
+            Pointer so that omitting the field defaults to network isolation ENABLED (matching the
+            `thv run` CLI default); set it explicitly to false to disable network isolation.
           type: boolean
         oauth_config:
           $ref: '#/components/schemas/pkg_api_v1.remoteOAuthConfig'

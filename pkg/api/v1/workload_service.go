@@ -339,7 +339,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 		runner.WithAuthzConfigPath(req.AuthzConfig),
 		runner.WithAuditConfigPath(""),
 		runner.WithPermissionProfile(req.PermissionProfile),
-		runner.WithNetworkIsolation(req.NetworkIsolation),
+		runner.WithNetworkIsolation(networkIsolationEnabled(req.NetworkIsolation)),
 		runner.WithTrustProxyHeaders(req.TrustProxyHeaders),
 		runner.WithK8sPodPatch(""),
 		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),

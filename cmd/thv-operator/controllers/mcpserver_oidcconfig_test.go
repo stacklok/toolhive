@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -327,10 +328,7 @@ func TestMCPOIDCConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *testi
 		},
 	}
 	// Unrelated server -- does NOT reference this config
-	unrelated := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "other", Namespace: "default"},
-		Spec:       mcpv1beta1.MCPServerSpec{Image: "img"},
-	}
+	unrelated := v1beta1test.NewMCPServer("other", "default", v1beta1test.WithImage("img"))
 
 	fc := fake.NewClientBuilder().WithScheme(scheme).
 		WithObjects(cfg, unrelated).

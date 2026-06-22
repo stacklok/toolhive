@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
@@ -34,16 +35,8 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		expectedConfigData string
 	}{
 		{
-			name: "no authz config",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-namespace",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-				},
-			},
+			name:            "no authz config",
+			mcpServer:       v1beta1test.NewMCPServer("test-server", "test-namespace", v1beta1test.WithImage("test-image")),
 			expectConfigMap: false,
 		},
 		{
@@ -253,16 +246,8 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		expectedConfigName string
 	}{
 		{
-			name: "no authz config",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-namespace",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-				},
-			},
+			name:              "no authz config",
+			mcpServer:         v1beta1test.NewMCPServer("test-server", "test-namespace", v1beta1test.WithImage("test-image")),
 			expectVolumeMount: false,
 		},
 		{

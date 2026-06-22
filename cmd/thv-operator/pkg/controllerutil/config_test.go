@@ -12,6 +12,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
@@ -99,55 +100,25 @@ func TestFindReferencingMCPServers(t *testing.T) {
 
 		ctx := t.Context()
 
-		server1 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server1",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "test-config",
-				},
-			},
-		}
+		server1 := v1beta1test.NewMCPServer("server1", "default",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("test-config"),
+		)
 
-		server2 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server2",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "test-config",
-				},
-			},
-		}
+		server2 := v1beta1test.NewMCPServer("server2", "default",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("test-config"),
+		)
 
-		server3 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server3",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "other-config",
-				},
-			},
-		}
+		server3 := v1beta1test.NewMCPServer("server3", "default",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("other-config"),
+		)
 
-		server4 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server4",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				// No ToolConfigRef
-			},
-		}
+		server4 := v1beta1test.NewMCPServer("server4", "default",
+			v1beta1test.WithImage("test-image"),
+			// No ToolConfigRef
+		)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -180,29 +151,15 @@ func TestFindReferencingMCPServers(t *testing.T) {
 
 		ctx := t.Context()
 
-		server1 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server1",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-					Name: "auth-config",
-				},
-			},
-		}
+		server1 := v1beta1test.NewMCPServer("server1", "default",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithExternalAuthConfigRef("auth-config"),
+		)
 
-		server2 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server2",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				// No ExternalAuthConfigRef
-			},
-		}
+		server2 := v1beta1test.NewMCPServer("server2", "default",
+			v1beta1test.WithImage("test-image"),
+			// No ExternalAuthConfigRef
+		)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -227,15 +184,9 @@ func TestFindReferencingMCPServers(t *testing.T) {
 
 		ctx := t.Context()
 
-		server := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server1",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-			},
-		}
+		server := v1beta1test.NewMCPServer("server1", "default",
+			v1beta1test.WithImage("test-image"),
+		)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -259,31 +210,15 @@ func TestFindReferencingMCPServers(t *testing.T) {
 
 		ctx := t.Context()
 
-		server1 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server1",
-				Namespace: "namespace1",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "test-config",
-				},
-			},
-		}
+		server1 := v1beta1test.NewMCPServer("server1", "namespace1",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("test-config"),
+		)
 
-		server2 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server2",
-				Namespace: "namespace2",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "test-config",
-				},
-			},
-		}
+		server2 := v1beta1test.NewMCPServer("server2", "namespace2",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("test-config"),
+		)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -404,18 +339,12 @@ func TestFindWorkloadRefsFromMCPServers(t *testing.T) {
 
 		// Create servers in reverse alphabetical order to verify sorting
 		servers := []mcpv1beta1.MCPServer{
-			{
-				ObjectMeta: metav1.ObjectMeta{Name: "charlie", Namespace: "ns"},
-				Spec:       mcpv1beta1.MCPServerSpec{Image: "img", ToolConfigRef: &mcpv1beta1.ToolConfigRef{Name: "cfg"}},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{Name: "alpha", Namespace: "ns"},
-				Spec:       mcpv1beta1.MCPServerSpec{Image: "img", ToolConfigRef: &mcpv1beta1.ToolConfigRef{Name: "cfg"}},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{Name: "bravo", Namespace: "ns"},
-				Spec:       mcpv1beta1.MCPServerSpec{Image: "img", ToolConfigRef: &mcpv1beta1.ToolConfigRef{Name: "cfg"}},
-			},
+			*v1beta1test.NewMCPServer("charlie", "ns",
+				v1beta1test.WithImage("img"), v1beta1test.WithToolConfigRef("cfg")),
+			*v1beta1test.NewMCPServer("alpha", "ns",
+				v1beta1test.WithImage("img"), v1beta1test.WithToolConfigRef("cfg")),
+			*v1beta1test.NewMCPServer("bravo", "ns",
+				v1beta1test.WithImage("img"), v1beta1test.WithToolConfigRef("cfg")),
 		}
 
 		builder := fake.NewClientBuilder().WithScheme(scheme)

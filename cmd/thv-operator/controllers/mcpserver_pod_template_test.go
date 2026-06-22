@@ -16,6 +16,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -168,18 +169,8 @@ func TestDeploymentForMCPServerWithPodTemplateSpec(t *testing.T) {
 
 func TestDeploymentForMCPServerSecretsProviderEnv(t *testing.T) {
 	t.Parallel()
-	// Create a test MCPServer
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-		},
-	}
+	// Create a test MCPServer (builder defaults match image/transport/port exactly).
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-server", "default")
 
 	// Create a new scheme for this test to avoid race conditions
 	s := testutil.NewScheme(t)
@@ -309,18 +300,8 @@ func TestDeploymentForMCPServerWithSecrets(t *testing.T) {
 func TestProxyRunnerSecurityContext(t *testing.T) {
 	t.Parallel()
 
-	// Create a test MCPServer
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp-server-env",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-		},
-	}
+	// Create a test MCPServer (builder defaults match image/transport/port exactly).
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-server-env", "default")
 
 	// Create a new scheme for this test to avoid race conditions
 	s := testutil.NewScheme(t)
@@ -356,18 +337,8 @@ func TestProxyRunnerSecurityContext(t *testing.T) {
 func TestProxyRunnerStructuredLogsEnvVar(t *testing.T) {
 	t.Parallel()
 
-	// Create a test MCPServer
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-mcp-server-logs",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-		},
-	}
+	// Create a test MCPServer (builder defaults match image/transport/port exactly).
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-server-logs", "default")
 
 	// Create a new scheme for this test to avoid race conditions
 	s := testutil.NewScheme(t)

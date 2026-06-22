@@ -40,6 +40,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/rbac"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
+	operatorvmcpconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
@@ -145,6 +146,7 @@ type VirtualMCPServerReconciler struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=serviceaccounts,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpauthzconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=embeddingservers/status,verbs=get
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch
@@ -179,7 +181,7 @@ func (r *VirtualMCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		return ctrl.Result{}, nil
 	}
 
-	// Validate shared config references (OIDC, Telemetry) before resource creation.
+	// Validate shared config references (OIDC, Authz, Telemetry) before resource creation.
 	// Each handler is a no-op when its respective ref is nil.
 	// telemetryCfg is the fetched MCPTelemetryConfig (nil when not referenced),
 	// threaded through to downstream functions to avoid redundant API calls.
@@ -2685,6 +2687,12 @@ func (r *VirtualMCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&mcpv1beta1.MCPOIDCConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapOIDCConfigToVirtualMCPServer),
 		).
+		// Watch referenced MCPAuthzConfigs so that validity/hash changes
+		// trigger VirtualMCPServer reconciliation.
+		Watches(
+			&mcpv1beta1.MCPAuthzConfig{},
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthzConfigToVirtualMCPServer),
+		).
 		// Watch referenced MCPTelemetryConfigs so that validity/hash changes
 		// trigger VirtualMCPServer reconciliation.
 		Watches(
@@ -3359,7 +3367,7 @@ func generateHMACSecret() (string, error) {
 	return base64.StdEncoding.EncodeToString(secret), nil
 }
 
-// handleConfigRefs validates shared config references (OIDC, Telemetry) before resource creation.
+// handleConfigRefs validates shared config references (OIDC, Authz, Telemetry) before resource creation.
 // Each handler is a no-op when its respective ref is nil.
 // Returns the fetched MCPTelemetryConfig (may be nil) so callers can thread it through
 // to downstream functions without redundant API calls.
@@ -3371,7 +3379,142 @@ func (r *VirtualMCPServerReconciler) handleConfigRefs(
 	if err := r.handleOIDCConfig(ctx, vmcp, statusManager); err != nil {
 		return nil, err
 	}
+	if err := r.handleAuthzConfig(ctx, vmcp, statusManager); err != nil {
+		return nil, err
+	}
 	return r.handleTelemetryConfig(ctx, vmcp, statusManager)
+}
+
+// handleAuthzConfig validates the referenced MCPAuthzConfig
+// (spec.incomingAuth.authzConfigRef), tracks its hash on the VirtualMCPServer
+// status, and sets the AuthzConfigRefValidated condition. When the ref is
+// cleared it removes both the hash and the condition so a stale "valid" signal
+// does not linger. ReferencingWorkloads on the MCPAuthzConfig is owned by the
+// MCPAuthzConfig controller (#5511); this controller never writes it.
+//
+// Revocation semantics (fail-stale, not fail-open): if a previously-valid ref
+// later becomes invalid or missing, this returns an error and Reconcile stops
+// before updating the deployment, so an already-running workload keeps enforcing
+// its last-applied authz policy while the VirtualMCPServer is marked
+// Failed/Ready=False. It is not torn down and does not revert to no-authz. This
+// matches the OIDC/ExternalAuth/Telemetry ref handlers; hard
+// fail-closed-on-revocation would require a separate, product-signed-off mechanism.
+func (r *VirtualMCPServerReconciler) handleAuthzConfig(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	statusManager virtualmcpserverstatus.StatusManager,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	if vmcp.Spec.IncomingAuth == nil || vmcp.Spec.IncomingAuth.AuthzConfigRef == nil {
+		// No MCPAuthzConfig referenced: clear any stored hash and remove the
+		// condition so it does not remain stale-True after the ref is removed.
+		if vmcp.Status.AuthzConfigHash != "" {
+			statusManager.SetAuthzConfigHash("")
+		}
+		statusManager.RemoveConditionsWithPrefix(mcpv1beta1.ConditionAuthzConfigRefValidated, nil)
+		return nil
+	}
+
+	ref := vmcp.Spec.IncomingAuth.AuthzConfigRef
+
+	authzConfig, err := ctrlutil.GetAuthzConfigForWorkload(ctx, r.Client, vmcp.Namespace, ref)
+	if err != nil {
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionAuthzConfigRefValidated,
+			mcpv1beta1.ConditionReasonAuthzConfigRefNotFound,
+			fmt.Sprintf("MCPAuthzConfig %s not found: %v", ref.Name, err),
+			metav1.ConditionFalse,
+		)
+		return err
+	}
+
+	if authzConfig == nil {
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionAuthzConfigRefValidated,
+			mcpv1beta1.ConditionReasonAuthzConfigRefNotFound,
+			fmt.Sprintf("MCPAuthzConfig %s not found", ref.Name),
+			metav1.ConditionFalse,
+		)
+		return fmt.Errorf("MCPAuthzConfig %s not found", ref.Name)
+	}
+
+	if err := ctrlutil.ValidateAuthzConfigReady(authzConfig); err != nil {
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionAuthzConfigRefValidated,
+			mcpv1beta1.ConditionReasonAuthzConfigRefNotValid,
+			fmt.Sprintf("MCPAuthzConfig %s is not valid: %v", ref.Name, err),
+			metav1.ConditionFalse,
+		)
+		return err
+	}
+
+	// vMCP's incoming-auth middleware is Cedar-only, so a non-Cedar reference
+	// cannot be enforced. Reject it here (in addition to the converter's
+	// defense-in-depth check) so the condition reflects reality instead of
+	// reporting Valid on a workload that fails to render a config. Fail fast with
+	// a message naming the unsupported type.
+	if authzConfig.Spec.Type != operatorvmcpconfig.AuthzConfigTypeCedarV1 {
+		msg := fmt.Sprintf("MCPAuthzConfig %s has unsupported type %q for VirtualMCPServer; only %s is supported",
+			ref.Name, authzConfig.Spec.Type, operatorvmcpconfig.AuthzConfigTypeCedarV1)
+		statusManager.SetCondition(
+			mcpv1beta1.ConditionAuthzConfigRefValidated,
+			mcpv1beta1.ConditionReasonAuthzConfigRefNotValid,
+			msg,
+			metav1.ConditionFalse,
+		)
+		return fmt.Errorf("%s", msg)
+	}
+
+	statusManager.SetCondition(
+		mcpv1beta1.ConditionAuthzConfigRefValidated,
+		mcpv1beta1.ConditionReasonAuthzConfigRefValid,
+		fmt.Sprintf("MCPAuthzConfig %s is valid and ready", ref.Name),
+		metav1.ConditionTrue,
+	)
+
+	if vmcp.Status.AuthzConfigHash != authzConfig.Status.ConfigHash {
+		ctxLogger.V(1).Info("MCPAuthzConfig has changed, updating VirtualMCPServer",
+			"vmcp", vmcp.Name,
+			"authzConfig", authzConfig.Name,
+			"oldHash", vmcp.Status.AuthzConfigHash,
+			"newHash", authzConfig.Status.ConfigHash)
+		statusManager.SetAuthzConfigHash(authzConfig.Status.ConfigHash)
+	}
+
+	return nil
+}
+
+// mapAuthzConfigToVirtualMCPServer maps MCPAuthzConfig changes to VirtualMCPServer reconciliation requests.
+func (r *VirtualMCPServerReconciler) mapAuthzConfigToVirtualMCPServer(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	authzConfig, ok := obj.(*mcpv1beta1.MCPAuthzConfig)
+	if !ok {
+		return nil
+	}
+
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
+	if err := r.List(ctx, vmcpList, client.InNamespace(authzConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPAuthzConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, vmcp := range vmcpList.Items {
+		if vmcp.Spec.IncomingAuth != nil &&
+			vmcp.Spec.IncomingAuth.AuthzConfigRef != nil &&
+			vmcp.Spec.IncomingAuth.AuthzConfigRef.Name == authzConfig.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      vmcp.Name,
+					Namespace: vmcp.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
 }
 
 // handleOIDCConfig validates and tracks the hash of the referenced MCPOIDCConfig.

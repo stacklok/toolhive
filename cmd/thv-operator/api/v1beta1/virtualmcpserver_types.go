@@ -196,14 +196,9 @@ type IncomingAuthConfig struct {
 	// The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
 	// Mutually exclusive with authzConfig.
 	//
-	// TODO(#4778): remove the staging NOTE below once workload controllers
-	// resolve AuthzConfigRef into a runtime authz config.
-	//
-	// NOTE: this field is consumed by workload controllers in a follow-up PR.
-	// Until that lands, AuthzConfigRef is reference-tracked by the
-	// MCPAuthzConfig controller (deletion protection, status.referenceCount)
-	// but does NOT apply authorization to this VirtualMCPServer. Use the
-	// inline AuthzConfig field in the meantime.
+	// Only cedarv1 MCPAuthzConfig resources are supported for VirtualMCPServer
+	// today; referencing a non-Cedar config fails reconciliation with a clear
+	// error because the vMCP runtime authz middleware is Cedar-only.
 	// +optional
 	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 }

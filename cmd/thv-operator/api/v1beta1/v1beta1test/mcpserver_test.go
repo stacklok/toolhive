@@ -31,7 +31,7 @@ func TestNewMCPServer_Options(t *testing.T) {
 
 	m := v1beta1test.NewMCPServer("srv", "toolhive",
 		v1beta1test.WithImage("ghcr.io/example/mcp:1.2.3"),
-		v1beta1test.WithGroupRef("my-group"),
+		v1beta1test.WithMCPGroupRef("my-group"),
 		v1beta1test.WithEnv(mcpv1beta1.EnvVar{Name: "FOO", Value: "bar"}),
 	)
 

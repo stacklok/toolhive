@@ -60,8 +60,8 @@ func WithProxyPort(port int32) MCPServerOption {
 	return func(m *mcpv1beta1.MCPServer) { m.Spec.ProxyPort = port }
 }
 
-// WithGroupRef sets the MCPGroup the server belongs to.
-func WithGroupRef(name string) MCPServerOption {
+// WithMCPGroupRef sets the MCPGroup the server belongs to.
+func WithMCPGroupRef(name string) MCPServerOption {
 	return func(m *mcpv1beta1.MCPServer) { m.Spec.GroupRef = &mcpv1beta1.MCPGroupRef{Name: name} }
 }
 

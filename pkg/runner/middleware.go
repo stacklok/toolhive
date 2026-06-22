@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	cfg "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
@@ -35,6 +36,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		upstreamswap.MiddlewareType:           upstreamswap.CreateMiddleware,
 		awssts.MiddlewareType:                 awssts.CreateMiddleware,
 		obo.MiddlewareType:                    obo.CreateMiddleware,
+		bodylimit.MiddlewareType:              bodylimit.CreateMiddleware,
 		mcp.ParserMiddlewareType:              mcp.CreateParserMiddleware,
 		mcp.ToolFilterMiddlewareType:          mcp.CreateToolFilterMiddleware,
 		mcp.ToolCallFilterMiddlewareType:      mcp.CreateToolCallFilterMiddleware,
@@ -45,6 +47,7 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 		audit.MiddlewareType:                  audit.CreateMiddleware,
 		recovery.MiddlewareType:               recovery.CreateMiddleware,
 		headerfwd.HeaderForwardMiddlewareName: headerfwd.CreateMiddleware,
+		headerfwd.StripAuthMiddlewareName:     headerfwd.CreateStripAuthMiddleware,
 		validating.MiddlewareType:             validating.CreateMiddleware,
 		mutating.MiddlewareType:               mutating.CreateMiddleware,
 	}
@@ -57,6 +60,12 @@ func GetSupportedMiddlewareFactories() map[string]types.MiddlewareFactory {
 func PopulateMiddlewareConfigs(config *RunConfig) error {
 	var middlewareConfigs []types.MiddlewareConfig
 	// TODO: Consider extracting other middleware setup into helper functions like addUsageMetricsMiddleware
+
+	// Body size limit middleware (always present, outermost). See addBodyLimitMiddleware.
+	middlewareConfigs, err := addBodyLimitMiddleware(middlewareConfigs)
+	if err != nil {
+		return err
+	}
 
 	// Authentication middleware (always present)
 	authParams := auth.MiddlewareParams{
@@ -219,9 +228,32 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 		return err
 	}
 
-	// Recovery middleware (always present, added last to be outermost wrapper)
-	// Middleware is applied in reverse order, so adding last means it executes first
-	// and catches panics from all other middleware and handlers.
+	// Additional middleware configs injected by external-auth handlers via
+	// WithAdditionalMiddlewareConfigs (e.g. the enterprise OBO handler). Upstream
+	// carries these pre-built configs verbatim and does not interpret their
+	// parameters. They are spliced into the backend-egress group here: after auth
+	// (so the authenticated identity is available) and after the awssts /
+	// header-forward middleware, and before recovery — giving an injected egress
+	// middleware the final say on the outbound request to the backend. Appending an
+	// empty slice is a no-op, so this is harmless when nothing was injected.
+	//
+	// config.AdditionalMiddlewareConfigs is intentionally NOT cleared after the
+	// splice. Two reasons: (1) this overwrite-based build is idempotent — re-running
+	// PopulateMiddlewareConfigs rebuilds the local slice from scratch and re-reads
+	// the carrier, so the injected entry appears exactly once each time rather than
+	// accumulating; and (2) the carrier stays serialized as a fallback, so a config
+	// persisted before population (empty MiddlewareConfigs) still gets the entry when
+	// the proxyrunner re-populates via the len(MiddlewareConfigs)==0 guard. The cost
+	// is that a fully-populated ConfigMap carries the entry in both slices; the
+	// duplicate is inert because the proxyrunner reads MiddlewareConfigs.
+	middlewareConfigs = append(middlewareConfigs, config.AdditionalMiddlewareConfigs...)
+
+	// Recovery middleware (always present, added last). The proxy transports
+	// apply this slice in reverse order (see applyMiddlewares), so the
+	// last-appended entry becomes the INNERMOST wrapper and executes closest to
+	// the handler. Recovery therefore catches panics from the handler and the
+	// inner middleware; panics raised in middleware that wrap it (earlier
+	// entries, such as body-limit and auth) are not caught here.
 	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
 	if err != nil {
 		return fmt.Errorf("failed to create recovery middleware config: %w", err)
@@ -300,6 +332,27 @@ func addTokenExchangeMiddleware(
 	return append(middlewares, *tokenExchangeMwConfig), nil
 }
 
+// addBodyLimitMiddleware ensures the body-size-limit middleware is present as the
+// outermost entry (index 0) of the chain. It is the symmetric counterpart to recovery
+// ("always present, innermost"): body-limit is "always present, outermost", so an
+// oversized request body is rejected with 413 before auth, the MCP parser, or any
+// handler buffers it via io.ReadAll — regardless of which builder assembled the chain.
+//
+// Idempotent: if the chain already starts with body-limit, the slice is returned
+// unchanged. Defaults to bodylimit.DefaultMaxRequestBodySize.
+func addBodyLimitMiddleware(middlewares []types.MiddlewareConfig) ([]types.MiddlewareConfig, error) {
+	if len(middlewares) > 0 && middlewares[0].Type == bodylimit.MiddlewareType {
+		return middlewares, nil
+	}
+	bodyLimitConfig, err := types.NewMiddlewareConfig(bodylimit.MiddlewareType, bodylimit.MiddlewareParams{
+		MaxBytes: bodylimit.DefaultMaxRequestBodySize,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create body limit middleware config: %w", err)
+	}
+	return append([]types.MiddlewareConfig{*bodyLimitConfig}, middlewares...), nil
+}
+
 // addHeaderForwardMiddleware adds header forward middleware if configured for remote servers
 func addHeaderForwardMiddleware(middlewares []types.MiddlewareConfig, config *RunConfig) ([]types.MiddlewareConfig, error) {
 	if config.RemoteURL == "" || !config.HeaderForward.HasHeaders() {
@@ -332,8 +385,9 @@ func addUsageMetricsMiddleware(middlewares []types.MiddlewareConfig, configDisab
 
 // addUpstreamSwapMiddleware adds upstream swap middleware if the embedded auth server is configured.
 // This middleware exchanges ToolHive JWTs for upstream IdP tokens.
-// The middleware is only added when EmbeddedAuthServerConfig is set; if UpstreamSwapConfig
-// is nil, default configuration values are used.
+// The middleware is only added when EmbeddedAuthServerConfig is set and
+// DisableUpstreamTokenInjection is false. If UpstreamSwapConfig is nil,
+// default configuration values are used.
 func addUpstreamSwapMiddleware(
 	middlewares []types.MiddlewareConfig,
 	config *RunConfig,
@@ -341,6 +395,29 @@ func addUpstreamSwapMiddleware(
 	// Only add middleware if embedded auth server is configured
 	if config.EmbeddedAuthServerConfig == nil {
 		return middlewares, nil
+	}
+
+	// When upstream token injection is disabled, strip the client's credential
+	// headers (Authorization, Cookie, Proxy-Authorization) so they never reach
+	// the upstream server. Two ordering invariants apply, pinned by
+	// TestPopulateMiddlewareConfigs_StripAuthOrdering:
+	//   - strip-auth is appended after the auth middleware, so the client JWT
+	//     is fully validated (and the identity stored in the request context
+	//     for authz/audit) before the header is removed;
+	//   - token-injecting middlewares (token exchange, AWS STS) run closer to
+	//     the backend and would re-add an Authorization header after the
+	//     strip, silently defeating the flag — that contradiction is rejected
+	//     here instead.
+	if config.EmbeddedAuthServerConfig.DisableUpstreamTokenInjection {
+		if config.TokenExchangeConfig != nil {
+			return nil, fmt.Errorf("disableUpstreamTokenInjection cannot be combined with token exchange: " +
+				"token exchange would re-add an Authorization header after strip-auth removes it")
+		}
+		if config.AWSStsConfig != nil {
+			return nil, fmt.Errorf("disableUpstreamTokenInjection cannot be combined with AWS STS: " +
+				"SigV4 signing would re-add credentials after strip-auth removes them")
+		}
+		return addAuthHeaderStripMiddleware(middlewares)
 	}
 
 	// Use provided config or defaults
@@ -396,6 +473,21 @@ func injectUpstreamProviderIfNeeded(
 	}()
 
 	return cedar.InjectUpstreamProvider(authzCfg, providerName)
+}
+
+// addAuthHeaderStripMiddleware adds the strip-auth middleware
+// (pkg/transport/middleware), which removes the client's credential headers
+// before forwarding to the upstream. This prevents the client's ToolHive JWT,
+// cookies, and proxy credentials from leaking to upstream servers that don't
+// expect them.
+func addAuthHeaderStripMiddleware(
+	middlewares []types.MiddlewareConfig,
+) ([]types.MiddlewareConfig, error) {
+	mwConfig, err := types.NewMiddlewareConfig(headerfwd.StripAuthMiddlewareName, struct{}{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create strip-auth middleware config: %w", err)
+	}
+	return append(middlewares, *mwConfig), nil
 }
 
 // addAWSStsMiddleware adds AWS STS middleware if configured.

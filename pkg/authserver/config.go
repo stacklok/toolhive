@@ -91,6 +91,15 @@ type RunConfig struct {
 	// If nil, defaults to in-memory storage.
 	Storage *storage.RunConfig `json:"storage,omitempty" yaml:"storage,omitempty"`
 
+	// DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.
+	// When true, the embedded auth server handles OAuth flows for clients, but instead of
+	// injecting upstream IdP tokens the proxy strips the client's credential headers
+	// (Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the
+	// backend receives an unauthenticated request. Incompatible with token exchange
+	// and AWS STS, which would re-add credentials after the strip.
+	//nolint:lll // field tags require full JSON+YAML names
+	DisableUpstreamTokenInjection bool `json:"disable_upstream_token_injection,omitempty" yaml:"disable_upstream_token_injection,omitempty"`
+
 	// CIMD controls client_id metadata document support. When enabled, the
 	// embedded authorization server accepts HTTPS URLs as client_id values
 	// and resolves them via the CIMD protocol instead of requiring DCR.

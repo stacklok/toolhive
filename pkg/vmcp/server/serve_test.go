@@ -25,9 +25,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 )
 
-// stubVMCP is a no-op core.VMCP for Serve tests. The Serve skeleton never invokes
-// its capability methods; Close records invocation so the shutdown wiring can be
-// asserted.
+// stubVMCP is a no-op core.VMCP for Serve tests that do not drive the request
+// path (construction, config-mapping, and shutdown-wiring tests). Its capability
+// methods return empty; Close records invocation so the shutdown wiring can be
+// asserted. Tests that exercise session registration or request handling use the
+// configurable fakeCore (serve_session_test.go) instead.
 type stubVMCP struct {
 	closed bool
 }
@@ -85,44 +87,29 @@ func testMinimalSessionManagerConfig() *sessionmanager.FactoryConfig {
 	return &sessionmanager.FactoryConfig{Base: testMinimalFactory()}
 }
 
-// testMinimalServeConfig returns a minimal valid ServerConfig for Serve tests that do
-// not exercise session creation: a non-nil SessionManagerConfig and an empty
-// BackendRegistry, the two required collaborators Serve validates.
+// testMinimalServeConfig returns a minimal valid, fully-resolved ServerConfig for Serve
+// tests that do not exercise session creation: the two required collaborators Serve
+// validates (a non-nil SessionManagerConfig and an empty BackendRegistry) plus the
+// transport scalars resolved to their defaults. Serve is a pure pass-through now —
+// transport defaulting moved to the composition root via WithDefaults — so the
+// scalars must be set here; in particular SessionTTL must be non-zero or the session data
+// storage construction fails ("ttl must be a positive duration").
 func testMinimalServeConfig() *ServerConfig {
 	return &ServerConfig{
+		Name:                 defaultServerName,
+		Version:              defaultServerVersion,
+		Host:                 defaultHost,
+		EndpointPath:         defaultEndpointPath,
+		SessionTTL:           defaultSessionTTL,
 		SessionManagerConfig: testMinimalSessionManagerConfig(),
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	}
 }
 
-func TestServeAppliesTransportDefaults(t *testing.T) {
-	t.Parallel()
-
-	// Empty transport fields exercise every default; Port is left zero.
-	cfg := testMinimalServeConfig()
-
-	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
-	require.NotNil(t, srv)
-	require.NotNil(t, srv.MCPServer())
-
-	// Defaults mirror server.New and are applied to the server's own config,
-	// leaving the caller's ServerConfig untouched. Asserting against the shared
-	// consts (not literals) keeps this test from being a third copy that can drift.
-	assert.Equal(t, defaultServerName, srv.config.Name)
-	assert.Equal(t, defaultServerVersion, srv.config.Version)
-	assert.Equal(t, defaultHost, srv.config.Host)
-	assert.Equal(t, defaultEndpointPath, srv.config.EndpointPath)
-	assert.Equal(t, defaultSessionTTL, srv.config.SessionTTL)
-	assert.Equal(t, 0, srv.config.Port) // Port 0 => OS-assigned
-
-	assert.Empty(t, cfg.Host, "caller config must not be mutated")
-
-	// Address reflects the defaulted host and unassigned port (no listener yet).
-	assert.Equal(t, defaultHost+":0", srv.Address())
-}
-
+// Transport defaulting is no longer Serve's job (it is resolved once at the
+// composition root via WithDefaults), so there is no "Serve applies defaults" test — the
+// WithDefaults resolver is covered by TestWithDefaults, and Serve's faithful pass-through
+// of an already-resolved config is covered by TestServePreservesExplicitConfig below.
 func TestServePreservesExplicitConfig(t *testing.T) {
 	t.Parallel()
 
@@ -194,6 +181,32 @@ func TestServeHandlerRegistersUnauthenticatedRoutes(t *testing.T) {
 	assert.NotEqual(t, http.StatusOK, rec.Code)
 }
 
+// TestServeOmitsAuthzAndAnnotation proves the Serve path produces the MCP middleware
+// chain WITHOUT the authz and annotation-enrichment layers. The mechanism is the shared
+// (*Server).Handler guard `s.config.AuthzMiddleware != nil`: Serve leaves AuthzMiddleware
+// nil (buildServeConfig does not map it — see TestBuildServeConfigMapsSharedFields), so
+// both the authz block and the AnnotationEnrichmentMiddleware block — each gated on that
+// guard in Handler — are skipped on the Serve path. Authorization instead runs through the core
+// admission seam (#5438). The blocks are NOT deleted here — they stay in the shared
+// Handler so the still-live server.New path keeps enforcing authz; physical removal is
+// Phase 3 (#5445). The companion TestHandlerAppliesAuthzAndAnnotationOnlyWhenConfigured
+// proves the same shared Handler DOES apply both layers when AuthzMiddleware is non-nil.
+func TestServeOmitsAuthzAndAnnotation(t *testing.T) {
+	t.Parallel()
+
+	srv, err := Serve(context.Background(), &stubVMCP{}, testMinimalServeConfig())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
+
+	assert.Nil(t, srv.config.AuthzMiddleware,
+		"Serve must leave AuthzMiddleware nil so the shared Handler omits authz + annotation-enrichment")
+
+	// The Serve path still produces the rest of the chain: Handler builds without error.
+	handler, err := srv.Handler(context.Background())
+	require.NoError(t, err)
+	require.NotNil(t, handler)
+}
+
 func TestServeHandlerRegistersMetricsWhenTelemetryEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -207,6 +220,7 @@ func TestServeHandlerRegistersMetricsWhenTelemetryEnabled(t *testing.T) {
 	t.Cleanup(func() { _ = provider.Shutdown(ctx) })
 
 	srv, err := Serve(ctx, &stubVMCP{}, &ServerConfig{
+		SessionTTL:           defaultSessionTTL,
 		SessionManagerConfig: testMinimalSessionManagerConfig(),
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 		TelemetryProvider:    provider,
@@ -293,14 +307,14 @@ func TestServeValidation(t *testing.T) {
 // reason, mirroring the buildServeConfig doc comment.
 //
 // This is a PRESENCE check only — with every source field non-zero it cannot catch a
-// wrong-source mapping or default-value drift. Value correctness is carried by
-// TestServePreservesExplicitConfig (pass-through scalars) and
-// TestServeAppliesTransportDefaults (the cmp.Or defaults).
+// wrong-source mapping. buildServeConfig is a pure pass-through (defaulting moved to the
+// composition root via WithDefaults), so value correctness is carried by
+// TestServePreservesExplicitConfig.
 func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 	t.Parallel()
 
 	intentionallyUnmapped := map[string]struct{}{
-		"AuthzMiddleware":     {}, // authenticated/authz chain relocated by #5441
+		"AuthzMiddleware":     {}, // intentionally nil on Serve path; authz moves to core admission seam (#5438), shared Handler skips it
 		"HealthMonitorConfig": {}, // monitor injected pre-built via ServerConfig.HealthMonitor (A2)
 		"StatusReporter":      {}, // set directly on Server; Config.StatusReporter only read by New
 		"SessionFactory":      {}, // session manager built in Serve from ServerConfig.SessionManagerConfig
@@ -321,7 +335,9 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		EndpointPath:            "/e",
 		SessionTTL:              time.Second,
 		AuthMiddleware:          func(h http.Handler) http.Handler { return h },
+		RateLimitMiddleware:     func(h http.Handler) http.Handler { return h },
 		AuthInfoHandler:         http.NewServeMux(),
+		PassthroughHeaders:      []string{"x-test"},
 		AuthServer:              &asrunner.EmbeddedAuthServer{},
 		HealthMonitor:           &health.Monitor{},
 		StatusReportingInterval: time.Second,

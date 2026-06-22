@@ -79,8 +79,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 		rr := httptest.NewRecorder()
 
 		// Create server instance and wrap handler with middleware
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 
 		// Execute middleware
 		middleware.ServeHTTP(rr, req)
@@ -122,8 +121,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -160,8 +158,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -189,8 +186,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -214,8 +210,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -248,8 +243,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Should not panic, should proceed normally
@@ -286,8 +280,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Should not panic, should proceed with next handler
@@ -325,8 +318,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -369,8 +361,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(bodyReadingHandler)
+		middleware := backendEnrichmentMiddleware(bodyReadingHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Verify body was properly restored and readable by next handler
@@ -405,8 +396,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Should not panic, should proceed normally
@@ -442,8 +432,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		assert.True(t, *handlerCalled)
@@ -479,8 +468,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Should not panic, should proceed with next handler
@@ -524,8 +512,7 @@ func TestBackendEnrichmentMiddleware(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(bodyReadingHandler)
+		middleware := backendEnrichmentMiddleware(bodyReadingHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Verify body was restored (as empty) and readable by next handler without error
@@ -742,8 +729,7 @@ func TestBackendEnrichmentMiddleware_ContextPropagation(t *testing.T) {
 
 		rr := httptest.NewRecorder()
 
-		srv := &Server{}
-		middleware := srv.backendEnrichmentMiddleware(nextHandler)
+		middleware := backendEnrichmentMiddleware(nextHandler)
 		middleware.ServeHTTP(rr, req)
 
 		// Verify custom context value was preserved

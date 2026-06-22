@@ -21,6 +21,13 @@ const (
 	// DefaultMCPPort is the default port for the MCP server
 	// 4483 represents "HIVE" on a phone keypad (4=HI, 8=V, 3=E)
 	DefaultMCPPort = "4483"
+
+	// defaultReadTimeout bounds reading the entire request (headers + body),
+	// mitigating slow-upload connection exhaustion. It does not affect responses,
+	// so streamed (SSE) responses are unaffected. WriteTimeout is intentionally
+	// not set: the streamable HTTP server holds long-lived response streams that
+	// a server-level write deadline would sever.
+	defaultReadTimeout = 30 * time.Second
 )
 
 // Config holds the configuration for the MCP server
@@ -79,6 +86,7 @@ func newServerWithHandler(ctx context.Context, config *Config, handler *Handler)
 		Addr:              addr,
 		Handler:           streamableServer,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
+		ReadTimeout:       defaultReadTimeout,
 	}
 
 	return &Server{

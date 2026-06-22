@@ -50,3 +50,4 @@ cmd/vmcp/__debug_bin*
 
 # Superpowers planning artifacts
 docs/superpowers/
+.pr-review/

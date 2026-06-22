@@ -58,7 +58,7 @@ func TestTokenSource_NonInteractive_NoCache_ReturnsErrTokenRequired(t *testing.T
 	mockSecrets.EXPECT().GetSecret(gomock.Any(), gomock.Any()).
 		Return("", errors.New("not found")).AnyTimes()
 
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
+	ts := NewTokenSource(minimalConfig(), mockSecrets, false, false, nil)
 	_, err := ts.Token(context.Background())
 	require.ErrorIs(t, err, ErrTokenRequired)
 }
@@ -74,7 +74,7 @@ func TestTokenSource_NonInteractive_BackendError_ReturnsLastErr(t *testing.T) {
 	mockSecrets.EXPECT().GetSecret(gomock.Any(), gomock.Any()).
 		Return("", backendErr).AnyTimes()
 
-	ts := NewTokenSource(minimalConfig(), mockSecrets, false, nil)
+	ts := NewTokenSource(minimalConfig(), mockSecrets, false, false, nil)
 	_, err := ts.Token(context.Background())
 
 	require.Error(t, err)
@@ -87,7 +87,7 @@ func TestTokenSource_NonInteractive_BackendError_ReturnsLastErr(t *testing.T) {
 func TestTokenSource_NonInteractive_NilSecrets_ReturnsActionableError(t *testing.T) {
 	t.Parallel()
 
-	ts := NewTokenSource(minimalConfig(), nil, false, nil)
+	ts := NewTokenSource(minimalConfig(), nil, false, false, nil)
 	_, err := ts.Token(context.Background())
 
 	require.Error(t, err)
@@ -118,7 +118,7 @@ func TestTokenSource_UsesCachedRefreshTokenRef(t *testing.T) {
 		GetSecret(gomock.Any(), persistedKey).
 		Return("", errors.New("not found"))
 
-	ts := NewTokenSource(cfg, mockSecrets, false, nil)
+	ts := NewTokenSource(cfg, mockSecrets, false, false, nil)
 	_, _ = ts.Token(context.Background())
 	// Expectations verify that persistedKey was used.
 }
@@ -141,7 +141,7 @@ func TestTokenSource_DerivesKeyWhenNoCachedRef(t *testing.T) {
 		GetSecret(gomock.Any(), expectedBase).
 		Return("", errors.New("not found"))
 
-	ts := NewTokenSource(cfg, mockSecrets, false, nil)
+	ts := NewTokenSource(cfg, mockSecrets, false, false, nil)
 	_, _ = ts.Token(context.Background())
 }
 
@@ -173,7 +173,7 @@ func TestTokenSource_TokenRefUpdater_WiredAsConfigPersister(t *testing.T) {
 
 	cfg := minimalConfig()
 	cfg.OIDC.Issuer = srv.URL
-	ts := NewTokenSource(cfg, mock, false, updater)
+	ts := NewTokenSource(cfg, mock, false, false, updater)
 
 	tok, err := ts.Token(context.Background())
 	require.NoError(t, err)

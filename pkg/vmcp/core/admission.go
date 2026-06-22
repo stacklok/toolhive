@@ -30,9 +30,11 @@ import (
 // The optimizer-admission integration the HTTP path performs today — call_tool
 // inner-target authorization, find_tool response filtering, and inner-target
 // annotation sourcing — is deliberately NOT in this seam; it is deferred to its own
-// focused PR. Until then the optimizer keeps the HTTP middleware, and #5441's
-// composition root fails fast (vmcp.ErrInvalidConfig) when Authz is set together
-// with the optimizer, so the combination can never silently route through this seam.
+// focused PR. Until then the optimizer keeps the HTTP middleware, and the composition
+// root that wires core.New must fail fast (vmcp.ErrInvalidConfig) when Authz is set
+// together with the optimizer, so the combination can never silently route through this
+// seam. That fail-fast lands with the core-enforcement switch in #5442 (#5441 keeps the
+// legacy server.New path, which retains the HTTP authz middleware).
 type Admission interface {
 	// FilterTools returns the subset of tools the identity may call. Mirrors
 	// pkg/authz filterToolsByPolicy: a per-tool AuthorizeWithJWTClaims(call) using
@@ -60,8 +62,8 @@ type Admission interface {
 // A non-nil authzCfg with zero policies is NOT treated as allow-all here: it falls
 // through to CreateAuthorizer, which returns ErrNoPolicies, so the core fails
 // CLOSED. This is a deliberate divergence from the live HTTP path, which allows-all
-// for the same input. Fail-closed is the safer default; #5441 reconciles the two
-// when it collapses the construction paths into one shared constructor.
+// for the same input. Fail-closed is the safer default; Phase 3 (#5445) reconciles the
+// two when it collapses the construction paths into one shared constructor.
 //
 // When authzCfg is set, the authorizer is built via the same registry path the
 // HTTP middleware uses (authorizers.GetFactory + CreateAuthorizer, the construction
@@ -73,7 +75,7 @@ type Admission interface {
 // defaulting an empty EntitiesJSON to "[]") belongs to whoever builds authzCfg, not
 // to this generic factory path, which consumes RawConfig as-is. newCedarAuthzMiddleware
 // is the sibling construction path; the two must stay in lockstep (notably the
-// empty-serverName check below) until #5441 collapses them.
+// empty-serverName check below) until Phase 3 (#5445) collapses them.
 func newAdmission(authzCfg *authorizers.Config, serverName string) (Admission, error) {
 	if authzCfg == nil {
 		return allowAllAdmission{}, nil
@@ -172,8 +174,8 @@ func (a *cedarAdmission) FilterTools(
 // the tool's annotations for when-clause evaluation. It authorizes the tool named in
 // `tool.Name` — there is no optimizer meta-tool special-casing here (see the
 // [Admission] doc): the optimizer's call_tool inner-target authorization is deferred
-// to a dedicated optimizer-admission PR, and #5441 fails fast on (Authz + optimizer)
-// so that combination never reaches this seam in the meantime.
+// to a dedicated optimizer-admission PR; the (Authz + optimizer) fail-fast that keeps that
+// combination from reaching this seam lands with the core-enforcement switch in #5442.
 func (a *cedarAdmission) AllowToolCall(
 	ctx context.Context, identity *auth.Identity, tool *vmcp.Tool, args map[string]any,
 ) (bool, error) {
@@ -295,8 +297,8 @@ func (allowAllAdmission) AllowPromptGet(_ context.Context, _ *auth.Identity, _ *
 // than reusing it: that copy lives in package server, which imports this core
 // package, so importing it here would create a cycle (server -> core). Like the
 // filterHealthyBackends C2 duplication in this package, it is intentional and
-// temporary — #5441 retires the server-side middleware (and its copy) on the domain
-// path. Keep the two in sync until then.
+// temporary — Phase 3 (#5445) retires the server-side middleware (and its copy) on the
+// domain path. Keep the two in sync until then.
 func convertAnnotations(ann *vmcp.ToolAnnotations) *authorizers.ToolAnnotations {
 	if ann == nil {
 		return nil

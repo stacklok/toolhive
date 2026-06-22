@@ -13,12 +13,12 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -111,10 +111,7 @@ func newCedarV1Payload(mutate func(m map[string]any)) string {
 // dependencies (OIDC resolver) and arbitrary k8s objects (ConfigMaps for authz).
 func converterWithObjects(t *testing.T, objects ...client.Object) *Converter {
 	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	k8sClient := fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).WithObjects(objects...).Build()
 	converter, err := NewConverter(newNoOpMockResolver(t), k8sClient)
 	require.NoError(t, err)
 	return converter

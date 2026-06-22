@@ -150,17 +150,30 @@ func New(cfg *Config) (VMCP, error) {
 			"type", fmt.Sprintf("%T", stateStore))
 	}
 
+	// Build workflow telemetry instruments once here so they are reused across all
+	// per-call composer factories. Nil when TelemetryProvider is absent (disabled).
+	// Uses the same metric names as the session-factory composite-tool decorator in
+	// pkg/vmcp/server/sessionmanager so both execution paths emit into the same
+	// Prometheus counters and histograms.
+	instruments, err := newWorkflowInstruments(cfg.TelemetryProvider)
+	if err != nil {
+		stopStore()
+		return nil, fmt.Errorf("failed to create workflow telemetry instruments: %w", err)
+	}
+
 	// composerFactory builds a composite-tool engine bound to a specific routing
-	// table, generalizing server.New's sessionComposerFactory (server.go:393-398).
-	// Workflow-level telemetry (toolhive_vmcp_workflow_*) is intentionally NOT wired
-	// here: that instrumentation lives in the session/Serve layer
-	// (sessionmanager/factory.go:174-176) and is added when the core is wired into
-	// Serve (#5439). This mirrors server.go:393-398, which is also uninstrumented.
+	// table. When telemetry is configured, it wraps the engine with OTEL metrics so
+	// workflow executions are instrumented the same way as the session-factory path
+	// (sessionmanager/factory.go). The telemetryComposer is in core_telemetry.go.
 	composerFactory := func(sessionRT *vmcp.RoutingTable, sessionTools []vmcp.Tool) composer.Composer {
-		return composer.NewWorkflowEngine(
+		engine := composer.NewWorkflowEngine(
 			router.NewSessionRouter(sessionRT), backendClient, elicitationHandler,
 			stateStore, workflowAuditor, sessionTools,
 		)
+		if instruments != nil {
+			return &telemetryComposer{base: engine, instruments: instruments}
+		}
+		return engine
 	}
 
 	// Validate workflows fail-fast (server.go:400-405). The validation engine uses

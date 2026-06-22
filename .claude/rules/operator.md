@@ -36,7 +36,7 @@ See `cmd/thv-operator/DESIGN.md` for detailed decision guidelines.
 
 - Always run `task operator-generate` after modifying CRD types
 - Always run `task operator-manifests` after adding kubebuilder markers
-- Always run `task crdref-gen` from `cmd/thv-operator/` after CRD changes to regenerate API docs (uses relative paths)
+- Always run `task crdref-gen` from the repo root after CRD changes to regenerate API docs (running it from `cmd/thv-operator/` fails — the task resolves the config path relative to the repo root)
 - Use `envtest` for integration testing, not real clusters
 - Chainsaw tests require a real Kubernetes cluster
 - Status writes must go through `controllerutil.MutateAndPatchStatus` — see the Status Writes section below
@@ -65,7 +65,7 @@ task operator-generate        # Generate deepcopy, client code
 task operator-manifests       # Generate CRD YAML, RBAC
 task operator-test            # Run unit tests
 task operator-e2e-test        # Run e2e tests
-task crdref-gen              # Generate CRD API docs (run from cmd/thv-operator/)
+task crdref-gen              # Generate CRD API docs (run from the repo root)
 ```
 
 ## Spec / metadata patching

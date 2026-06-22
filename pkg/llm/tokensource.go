@@ -10,6 +10,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/tokensource"
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
 
@@ -39,8 +40,11 @@ type TokenSource = tokensource.OAuthTokenSource
 // tokenRefUpdater is called after login/refresh to persist the token reference
 // into config — pass nil to skip config persistence (useful in tests).
 // Set interactive to false for non-interactive callers such as thv llm token.
+// When skipBrowser is true, an interactive login prints the authorization URL
+// instead of opening a browser (headless/SSH/CI use); it has no effect unless
+// interactive is also true.
 func NewTokenSource(
-	cfg *Config, secretsProvider secrets.Provider, interactive bool, tokenRefUpdater TokenRefUpdater,
+	cfg *Config, secretsProvider secrets.Provider, interactive, skipBrowser bool, tokenRefUpdater TokenRefUpdater,
 ) *TokenSource {
 	return tokensource.New(tokensource.Options{
 		OIDC: tokensource.OIDCParams{
@@ -52,6 +56,7 @@ func NewTokenSource(
 		},
 		SecretsProvider: secretsProvider,
 		Interactive:     interactive,
+		SkipBrowser:     skipBrowser,
 		KeyProvider: func() string {
 			if cfg.OIDC.CachedRefreshTokenRef != "" {
 				return cfg.OIDC.CachedRefreshTokenRef
@@ -60,6 +65,11 @@ func NewTokenSource(
 		},
 		ConfigPersister: tokenRefUpdater,
 		FallbackErr:     ErrTokenRequired,
+		// Widen the preemptive refresh window past Claude Code's apiKeyHelper TTL
+		// so every helper invocation in the final window forces a refresh and the
+		// helper never hands back an about-to-expire token. Kept in sync with the
+		// TTL written to settings.json (see pkg/llmgateway constants).
+		PreemptiveRefreshWindow: llmgateway.LLMTokenRefreshWindow,
 	})
 }
 

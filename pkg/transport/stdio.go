@@ -211,42 +211,15 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	// Create and start the correct proxy with middlewares
 	switch t.proxyMode {
 	case types.ProxyModeStreamableHTTP:
-		var streamableOpts []streamable.Option
-		if t.sessionTTL > 0 {
-			streamableOpts = append(streamableOpts, streamable.WithSessionTTL(t.sessionTTL))
-		}
-		if t.sessionStorage != nil {
-			streamableOpts = append(streamableOpts, streamable.WithSessionStorage(t.sessionStorage))
-		}
-		streamableOpts = append(streamableOpts,
-			streamable.WithAuthInfoHandler(t.authInfoHandler),
-			streamable.WithPrefixHandlers(t.prefixHandlers),
-		)
-		t.httpProxy = streamable.NewHTTPProxy(t.host, t.proxyPort, t.prometheusHandler, t.middlewares, streamableOpts...)
+		t.httpProxy = streamable.NewHTTPProxy(
+			t.host, t.proxyPort, t.prometheusHandler, t.middlewares, t.streamableProxyOptions()...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
 		slog.Debug("streamable HTTP proxy started, processing messages")
 	case types.ProxyModeSSE:
-		var sseOpts []httpsse.Option
-		if t.sessionTTL > 0 {
-			sseOpts = append(sseOpts, httpsse.WithSessionTTL(t.sessionTTL))
-		}
-		if t.sessionStorage != nil {
-			sseOpts = append(sseOpts, httpsse.WithSessionStorage(t.sessionStorage))
-		}
-		sseOpts = append(sseOpts,
-			httpsse.WithAuthInfoHandler(t.authInfoHandler),
-			httpsse.WithPrefixHandlers(t.prefixHandlers),
-		)
 		t.httpProxy = httpsse.NewHTTPSSEProxy(
-			t.host,
-			t.proxyPort,
-			t.trustProxyHeaders,
-			t.prometheusHandler,
-			t.middlewares,
-			sseOpts...,
-		)
+			t.host, t.proxyPort, t.trustProxyHeaders, t.prometheusHandler, t.middlewares, t.sseProxyOptions()...)
 		if err := t.httpProxy.Start(ctx); err != nil {
 			return err
 		}
@@ -275,6 +248,39 @@ func (t *StdioTransport) Start(ctx context.Context) error {
 	go t.handleContainerExit(ctx) //nolint:gosec // G118 - background goroutine manages container lifecycle, outlives request
 
 	return nil
+}
+
+// streamableProxyOptions assembles the options for the streamable HTTP proxy
+// from the transport's configured settings. Zero-valued timeouts/TTL are omitted
+// so the proxy keeps its own defaults.
+func (t *StdioTransport) streamableProxyOptions() []streamable.Option {
+	var opts []streamable.Option
+	if t.sessionTTL > 0 {
+		opts = append(opts, streamable.WithSessionTTL(t.sessionTTL))
+	}
+	if t.sessionStorage != nil {
+		opts = append(opts, streamable.WithSessionStorage(t.sessionStorage))
+	}
+	return append(opts,
+		streamable.WithAuthInfoHandler(t.authInfoHandler),
+		streamable.WithPrefixHandlers(t.prefixHandlers),
+	)
+}
+
+// sseProxyOptions assembles the options for the SSE proxy from the transport's
+// configured settings. Zero-valued TTL is omitted so the proxy keeps its default.
+func (t *StdioTransport) sseProxyOptions() []httpsse.Option {
+	var opts []httpsse.Option
+	if t.sessionTTL > 0 {
+		opts = append(opts, httpsse.WithSessionTTL(t.sessionTTL))
+	}
+	if t.sessionStorage != nil {
+		opts = append(opts, httpsse.WithSessionStorage(t.sessionStorage))
+	}
+	return append(opts,
+		httpsse.WithAuthInfoHandler(t.authInfoHandler),
+		httpsse.WithPrefixHandlers(t.prefixHandlers),
+	)
 }
 
 // Stop gracefully shuts down the transport and the container.

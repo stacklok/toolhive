@@ -17,15 +17,20 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
+	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/propagation"
@@ -110,9 +115,9 @@ func TestQueryHelpers_PartialCapabilities(t *testing.T) {
 func TestNewBackendTransport_IsolatesFromDefault(t *testing.T) {
 	t.Parallel()
 
-	t1, err1 := newBackendTransport("", nil)
+	t1, err1 := newBackendTransport("", nil, nil)
 	require.NoError(t, err1)
-	t2, err2 := newBackendTransport("", nil)
+	t2, err2 := newBackendTransport("", nil, nil)
 	require.NoError(t, err2)
 
 	// Each call must return a distinct transport — not the shared DefaultTransport.
@@ -256,7 +261,7 @@ func TestNewBackendTransport_CustomCA(t *testing.T) {
 			t.Parallel()
 
 			caPath := tt.setupFile(t)
-			tr, err := newBackendTransport(caPath, tt.caBundleData)
+			tr, err := newBackendTransport(caPath, tt.caBundleData, nil)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -1258,4 +1263,201 @@ func TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContext
 	require.NotNil(t, base.capturedReq)
 	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
 		"downstream request must carry health check marker")
+}
+
+// ---------------------------------------------------------------------------
+// WithDialControl / newBackendTransport — dial hook
+// ---------------------------------------------------------------------------
+
+// TestNewBackendTransport_WithDialControl verifies that a non-nil dialControl
+// causes newBackendTransport to wire a hook that fires on dial. The control
+// hook fires BEFORE the TCP handshake completes, so no accepting server is
+// needed — we open a listener for the address but don't accept, then assert
+// the hook fired regardless of the dial outcome.
+func TestNewBackendTransport_WithDialControl(t *testing.T) {
+	t.Parallel()
+
+	var hookFired atomic.Bool
+	control := func(_, _ string, _ syscall.RawConn) error {
+		hookFired.Store(true)
+		return nil
+	}
+
+	// Open a listener to obtain a valid address; we don't need to accept.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	tr, err := newBackendTransport("", nil, control)
+	require.NoError(t, err)
+
+	conn, dialErr := tr.DialContext(t.Context(), "tcp", ln.Addr().String())
+	if dialErr == nil && conn != nil {
+		_ = conn.Close()
+	}
+	assert.True(t, hookFired.Load(), "control hook must fire during DialContext")
+}
+
+// TestWithDialControl_EndToEnd verifies that a Control hook installed via
+// WithDialControl is invoked on every TCP dial made by the client constructed
+// with NewHTTPBackendClient.
+func TestWithDialControl_EndToEnd(t *testing.T) {
+	t.Parallel()
+
+	t.Run("control hook fires on successful dial", func(t *testing.T) {
+		t.Parallel()
+
+		var hookFired atomic.Bool
+		control := func(_, _ string, _ syscall.RawConn) error {
+			hookFired.Store(true)
+			return nil
+		}
+
+		mcpSrv := mcpserver.NewMCPServer("test", "1.0.0")
+		streamSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
+		ts := httptest.NewServer(streamSrv)
+		t.Cleanup(ts.Close)
+
+		registry := auth.NewDefaultOutgoingAuthRegistry()
+		err := registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{})
+		require.NoError(t, err)
+
+		backendClient, err := NewHTTPBackendClient(registry, WithDialControl(control))
+		require.NoError(t, err)
+
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "test-backend",
+			WorkloadName:  "Test Backend",
+			BaseURL:       ts.URL,
+			TransportType: "streamable-http",
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		_, err = backendClient.ListCapabilities(ctx, target)
+		require.NoError(t, err)
+		assert.True(t, hookFired.Load(), "dial control hook must fire on connection to backend")
+	})
+
+	t.Run("control hook returning error blocks the dial", func(t *testing.T) {
+		t.Parallel()
+
+		dialErr := errors.New("dial blocked by control hook")
+		control := func(_, _ string, _ syscall.RawConn) error {
+			return dialErr
+		}
+
+		mcpSrv := mcpserver.NewMCPServer("test", "1.0.0")
+		streamSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
+		ts := httptest.NewServer(streamSrv)
+		t.Cleanup(ts.Close)
+
+		registry := auth.NewDefaultOutgoingAuthRegistry()
+		err := registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{})
+		require.NoError(t, err)
+
+		backendClient, err := NewHTTPBackendClient(registry, WithDialControl(control))
+		require.NoError(t, err)
+
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "test-backend",
+			WorkloadName:  "Test Backend",
+			BaseURL:       ts.URL,
+			TransportType: "streamable-http",
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		_, err = backendClient.ListCapabilities(ctx, target)
+		require.Error(t, err, "ListCapabilities must fail when the dial control hook blocks the connection")
+		assert.Contains(t, err.Error(), dialErr.Error())
+	})
+
+	t.Run("control hook receives resolved IP not hostname", func(t *testing.T) {
+		t.Parallel()
+
+		var capturedAddr atomic.Value
+		control := func(_, address string, _ syscall.RawConn) error {
+			capturedAddr.Store(address)
+			return nil
+		}
+
+		mcpSrv := mcpserver.NewMCPServer("test", "1.0.0")
+		streamSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
+		ts := httptest.NewServer(streamSrv)
+		t.Cleanup(ts.Close)
+
+		registry := auth.NewDefaultOutgoingAuthRegistry()
+		err := registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{})
+		require.NoError(t, err)
+
+		backendClient, err := NewHTTPBackendClient(registry, WithDialControl(control))
+		require.NoError(t, err)
+
+		// Force DNS resolution by using "localhost" instead of the literal 127.0.0.1
+		// that httptest.NewServer embeds in ts.URL. Without this substitution the
+		// hook would receive 127.0.0.1 regardless, making the assertion tautological.
+		baseURL := strings.Replace(ts.URL, "127.0.0.1", "localhost", 1)
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "test-backend",
+			WorkloadName:  "Test Backend",
+			BaseURL:       baseURL,
+			TransportType: "streamable-http",
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		_, err = backendClient.ListCapabilities(ctx, target)
+		require.NoError(t, err)
+
+		addr, _ := capturedAddr.Load().(string)
+		require.NotEmpty(t, addr, "control hook must receive the address")
+		host, _, err := net.SplitHostPort(addr)
+		require.NoError(t, err)
+		// The hook must see the resolved IP, not the name "localhost".
+		// net.ParseIP returns non-nil only for valid IP literals.
+		assert.NotNil(t, net.ParseIP(host),
+			"control hook address %q must be an IP literal (resolved), not a hostname", host)
+		assert.NotEqual(t, "localhost", host,
+			"control hook must receive the resolved IP, not the original hostname (DNS-rebinding defense point)")
+	})
+}
+
+// ExampleWithDialControl shows how an embedder installs a dial-control hook
+// that rejects connections to non-public IP ranges — the building block of an
+// SSRF / DNS-rebinding defense. The hook receives the resolved peer IP, so it
+// classifies the address the kernel is about to connect to rather than the
+// (re-resolvable) hostname. A production check should additionally cover the
+// ranges listed in the WithDialControl doc comment (CGNAT, IPv6 ULA, etc.).
+func ExampleWithDialControl() {
+	denyNonPublic := func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return err
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return fmt.Errorf("unresolved dial address %q", address)
+		}
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+			return fmt.Errorf("blocked connection to non-public IP %s", ip)
+		}
+		return nil
+	}
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{},
+	); err != nil {
+		panic(err)
+	}
+
+	backendClient, err := NewHTTPBackendClient(registry, WithDialControl(denyNonPublic))
+	if err != nil {
+		panic(err)
+	}
+	_ = backendClient
 }

@@ -27,6 +27,25 @@ func (m *mockPlatformDetector) DetectPlatform(_ *rest.Config) (kubernetes.Platfo
 	return m.platform, m.err
 }
 
+// newTestFakeClient builds a fake client and scheme shared by the per-reconciler
+// test factories below. statusType is registered as a status subresource so
+// Status().Update/Patch behaves like a real apiserver for that type; objs seed
+// the tracker. The scheme is the full testutil.NewScheme(t) superset.
+//
+// Callers that need a different status subresource set (multiple types, or a
+// type other than the reconciler's own) should build the client inline rather
+// than using a factory — the extra registration is load-bearing.
+func newTestFakeClient(t *testing.T, statusType client.Object, objs ...client.Object) (client.Client, *runtime.Scheme) {
+	t.Helper()
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(objs...).
+		WithStatusSubresource(statusType).
+		Build()
+	return fakeClient, scheme
+}
+
 // newTestMCPServerReconciler creates a properly initialized MCPServerReconciler for testing.
 // This ensures all required fields are set, including the PlatformDetector.
 //
@@ -59,12 +78,7 @@ func newTestMCPServerReconciler(
 // returned reconciler when a test needs them.
 func newTestVirtualMCPServerReconciler(t *testing.T, objs ...client.Object) (*VirtualMCPServerReconciler, client.Client) {
 	t.Helper()
-	scheme := testutil.NewScheme(t)
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(objs...).
-		WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
-		Build()
+	fakeClient, scheme := newTestFakeClient(t, &mcpv1beta1.VirtualMCPServer{}, objs...)
 	return &VirtualMCPServerReconciler{
 		Client:           fakeClient,
 		Scheme:           scheme,
@@ -78,15 +92,49 @@ func newTestVirtualMCPServerReconciler(t *testing.T, objs ...client.Object) (*Vi
 // Recorder and ImagePullSecretsDefaults).
 func newTestMCPRemoteProxyReconciler(t *testing.T, objs ...client.Object) (*MCPRemoteProxyReconciler, client.Client) {
 	t.Helper()
-	scheme := testutil.NewScheme(t)
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(objs...).
-		WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{}).
-		Build()
+	fakeClient, scheme := newTestFakeClient(t, &mcpv1beta1.MCPRemoteProxy{}, objs...)
 	return &MCPRemoteProxyReconciler{
 		Client:           fakeClient,
 		Scheme:           scheme,
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}, fakeClient
+}
+
+// newTestMCPExternalAuthConfigReconciler builds an MCPExternalAuthConfigReconciler
+// backed by a fake client seeded with objs, with the MCPExternalAuthConfig status
+// subresource enabled. Recorder is left nil; set it on the returned reconciler
+// (e.g. r.Recorder = events.NewFakeRecorder(n)) when a test asserts on events.
+func newTestMCPExternalAuthConfigReconciler(
+	t *testing.T, objs ...client.Object,
+) (*MCPExternalAuthConfigReconciler, client.Client) {
+	t.Helper()
+	fakeClient, scheme := newTestFakeClient(t, &mcpv1beta1.MCPExternalAuthConfig{}, objs...)
+	return &MCPExternalAuthConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}, fakeClient
+}
+
+// newTestMCPOIDCConfigReconciler builds an MCPOIDCConfigReconciler backed by a
+// fake client seeded with objs, with the MCPOIDCConfig status subresource enabled.
+// See newTestMCPExternalAuthConfigReconciler for the Recorder convention.
+func newTestMCPOIDCConfigReconciler(t *testing.T, objs ...client.Object) (*MCPOIDCConfigReconciler, client.Client) {
+	t.Helper()
+	fakeClient, scheme := newTestFakeClient(t, &mcpv1beta1.MCPOIDCConfig{}, objs...)
+	return &MCPOIDCConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
+	}, fakeClient
+}
+
+// newTestMCPAuthzConfigReconciler builds an MCPAuthzConfigReconciler backed by a
+// fake client seeded with objs, with the MCPAuthzConfig status subresource enabled.
+// See newTestMCPExternalAuthConfigReconciler for the Recorder convention.
+func newTestMCPAuthzConfigReconciler(t *testing.T, objs ...client.Object) (*MCPAuthzConfigReconciler, client.Client) {
+	t.Helper()
+	fakeClient, scheme := newTestFakeClient(t, &mcpv1beta1.MCPAuthzConfig{}, objs...)
+	return &MCPAuthzConfigReconciler{
+		Client: fakeClient,
+		Scheme: scheme,
 	}, fakeClient
 }

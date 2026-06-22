@@ -209,6 +209,7 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 		Host:           "127.0.0.1",
 		Port:           4484,
 		SessionFactory: newNoopMockFactory(t),
+		Aggregator:     agg,
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
@@ -515,7 +516,12 @@ func TestIntegration_AuditLogging(t *testing.T) {
 			mock.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
 			mock.EXPECT().GetData().Return(nil).AnyTimes()
 			mock.EXPECT().SetData(gomock.Any()).AnyTimes()
-			mock.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
+			mock.EXPECT().GetMetadata().Return(map[string]string{
+				vmcpsession.MetadataKeyIdentityBinding: "unauthenticated",
+			}).AnyTimes()
+			// Serve-path enforceSessionBinding reads the binding via GetMetadataValue.
+			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyIdentityBinding).
+				Return("unauthenticated", true).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			mock.EXPECT().Tools().Return(auditTools).AnyTimes()
 			mock.EXPECT().Resources().Return(nil).AnyTimes()
@@ -530,11 +536,18 @@ func TestIntegration_AuditLogging(t *testing.T) {
 			return mock, nil
 		}).AnyTimes()
 
+	// The core sources the advertised set by aggregating over mockBackendClient with the
+	// same prefix resolver the legacy discovery path used, so tools/call and resources/read
+	// route through the core and are audit-logged with the prefixed names.
+	auditAgg := aggregator.NewDefaultAggregator(
+		mockBackendClient, aggregator.NewPrefixConflictResolver("{workload}_"), nil, nil)
+
 	srv, err := server.New(ctx, &server.Config{
 		Host:           "127.0.0.1",
 		Port:           0, // Random port
 		AuditConfig:    auditConfig,
 		SessionFactory: auditSessionFactory,
+		Aggregator:     auditAgg,
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
@@ -566,7 +579,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 	// Test 1: Initialize request should be logged
 	t.Run("initialize request is logged", func(t *testing.T) {
 		initReq := map[string]any{
-			"method": "initialize",
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "initialize",
 			"params": map[string]any{
 				"protocolVersion": "2024-11-05",
 				"capabilities":    map[string]any{},
@@ -605,7 +620,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
 
 		toolsReq := map[string]any{
-			"method": "tools/list",
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  "tools/list",
 		}
 
 		reqBody, err := json.Marshal(toolsReq)
@@ -633,7 +650,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
 
 		toolCallReq := map[string]any{
-			"method": "tools/call",
+			"jsonrpc": "2.0",
+			"id":      3,
+			"method":  "tools/call",
 			"params": map[string]any{
 				"name": "weather-service_get_weather", // Prefix added by aggregator
 				"arguments": map[string]any{
@@ -675,7 +694,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
 
 		resourceReq := map[string]any{
-			"method": "resources/read",
+			"jsonrpc": "2.0",
+			"id":      4,
+			"method":  "resources/read",
 			"params": map[string]any{
 				"uri": "weather://current",
 			},
@@ -813,6 +834,7 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 		AuditConfig:    auditConfig,
 		AuthMiddleware: identityMiddleware,
 		SessionFactory: newNoopMockFactory(t),
+		Aggregator:     newStubAggregator(nil),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 

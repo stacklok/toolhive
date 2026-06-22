@@ -251,7 +251,7 @@ func createTestServerWithHealthMonitor(
 		Port:                port,
 		GroupRef:            groupRef,
 		HealthMonitorConfig: healthMonCfg,
-		SessionFactory:      newNoopMockFactory(t),
+		SessionFactory:      newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 

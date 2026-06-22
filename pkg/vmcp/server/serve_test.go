@@ -320,6 +320,8 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		"SessionFactory":      {}, // session manager built in Serve from ServerConfig.SessionManagerConfig
 		"OptimizerFactory":    {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
 		"OptimizerConfig":     {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
+		"Aggregator":          {}, // core collaborator: fed to core.New via deriveCoreConfig, not the transport
+		"Authz":               {}, // core collaborator: fed to the core admission seam via deriveCoreConfig
 	}
 
 	// Every field set to a non-zero value so a dropped mapping surfaces as a zero

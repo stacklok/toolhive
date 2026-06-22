@@ -44,7 +44,7 @@ func TestServer_HealthMonitoring_Disabled(t *testing.T) {
 		Host:                "127.0.0.1",
 		Port:                0,
 		HealthMonitorConfig: nil, // Health monitoring disabled
-		SessionFactory:      testMinimalFactory(),
+		SessionFactory:      testMinimalFactory(), Aggregator: &stubAggregator{},
 	}
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
@@ -113,7 +113,7 @@ func TestServer_HealthMonitoring_Enabled(t *testing.T) {
 			Timeout:            5 * time.Second,
 			DegradedThreshold:  2 * time.Second,
 		},
-		SessionFactory: testMinimalFactory(),
+		SessionFactory: testMinimalFactory(), Aggregator: &stubAggregator{},
 	}
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
@@ -208,7 +208,7 @@ func TestServer_HealthMonitoring_StartupFailure(t *testing.T) {
 			UnhealthyThreshold: 0, // Invalid config - will cause monitor creation to fail
 			Timeout:            50 * time.Millisecond,
 		},
-		SessionFactory: testMinimalFactory(),
+		SessionFactory: testMinimalFactory(), Aggregator: &stubAggregator{},
 	}
 
 	// This should fail during New() because of invalid health monitor config
@@ -241,7 +241,7 @@ func TestServer_HandleBackendHealth_Disabled(t *testing.T) {
 		Host:                "127.0.0.1",
 		Port:                0,
 		HealthMonitorConfig: nil,
-		SessionFactory:      testMinimalFactory(),
+		SessionFactory:      testMinimalFactory(), Aggregator: &stubAggregator{},
 	}
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
@@ -300,7 +300,7 @@ func TestServer_HandleBackendHealth_Enabled(t *testing.T) {
 			UnhealthyThreshold: 3,
 			Timeout:            5 * time.Second,
 		},
-		SessionFactory: testMinimalFactory(),
+		SessionFactory: testMinimalFactory(), Aggregator: &stubAggregator{},
 	}
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)
@@ -395,7 +395,7 @@ func TestServer_Stop_StopsHealthMonitor(t *testing.T) {
 			UnhealthyThreshold: 3,
 			Timeout:            5 * time.Second,
 		},
-		SessionFactory: testMinimalFactory(),
+		SessionFactory: testMinimalFactory(), Aggregator: &stubAggregator{},
 	}
 
 	backendRegistry := vmcp.NewImmutableRegistry(backends)

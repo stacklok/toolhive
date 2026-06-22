@@ -22,6 +22,7 @@ import (
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
@@ -44,7 +45,6 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
-	mockBackendClient := mocks.NewMockBackendClient(ctrl)
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
@@ -55,9 +55,12 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 		TransportType: "streamable-http",
 	}
 
-	// BackendRegistry.List() is called by CreateSession() to build the backend list.
-	// Discover() is not called in the session management path (WithSessionScopedRouting skips discovery).
+	// BackendRegistry.List() is consumed by the core's on-demand aggregation and by
+	// CreateSession(). Get() resolves the backend display name during session registration
+	// (audit labelling). Discover() is no longer called (the discovery middleware is guarded
+	// off on the Serve path); the AnyTimes expectation tolerates zero calls.
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{backend}).AnyTimes()
+	mockBackendRegistry.EXPECT().Get(gomock.Any(), gomock.Any()).Return(&backend).AnyTimes()
 	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).
 		Return(&aggregator.AggregatedCapabilities{}, nil).AnyTimes()
 	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
@@ -69,6 +72,16 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	))
 	factory := vmcpsession.NewSessionFactory(authReg)
 
+	// Real backend client + aggregator: server.New routes through core.New + Serve, so the
+	// core sources the advertised set by querying the real backend through this client and
+	// routes tools/call back through it. A priority resolver keeps raw tool names (the
+	// prefix resolver would rename "echo" → "real-backend_echo").
+	backendClient, err := vmcpclient.NewHTTPBackendClient(authReg)
+	require.NoError(t, err)
+	resolver, err := aggregator.NewPriorityConflictResolver([]string{backend.Name})
+	require.NoError(t, err)
+	agg := aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil)
+
 	rt := router.NewDefaultRouter()
 	srv, err := server.New(
 		context.Background(),
@@ -77,9 +90,10 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 			Port:           0,
 			SessionTTL:     5 * time.Minute,
 			SessionFactory: factory,
+			Aggregator:     agg,
 		},
 		rt,
-		mockBackendClient,
+		backendClient,
 		mockDiscoveryMgr,
 		mockBackendRegistry,
 		nil,

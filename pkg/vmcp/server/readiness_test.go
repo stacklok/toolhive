@@ -69,7 +69,7 @@ func TestReadinessEndpoint_StaticMode(t *testing.T) {
 		Host:           "127.0.0.1",
 		Port:           port,
 		Watcher:        nil, // Static mode
-		SessionFactory: newNoopMockFactory(t),
+		SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 
@@ -145,7 +145,7 @@ func TestReadinessEndpoint_DynamicMode_CacheSynced(t *testing.T) {
 		Host:           "127.0.0.1",
 		Port:           port,
 		Watcher:        mockWatcher, // Dynamic mode with synced cache
-		SessionFactory: newNoopMockFactory(t),
+		SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewDynamicRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 
@@ -221,7 +221,7 @@ func TestReadinessEndpoint_DynamicMode_CacheNotSynced(t *testing.T) {
 		Host:           "127.0.0.1",
 		Port:           port,
 		Watcher:        mockWatcher, // Dynamic mode with unsynced cache
-		SessionFactory: newNoopMockFactory(t),
+		SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
 	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewDynamicRegistry([]vmcp.Backend{}), nil)
 	require.NoError(t, err)
 

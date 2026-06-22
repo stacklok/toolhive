@@ -140,7 +140,9 @@ func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
 		},
 	})
 
-	// Add authz config volume if needed
+	// Add authz config volume if needed (inline spec.authzConfig only).
+	// A referenced MCPAuthzConfig (spec.authzConfigRef) is not mounted: it is
+	// enforced via the authz config embedded in the RunConfig, not a file mount.
 	authzVolumeMount, authzVolume := ctrlutil.GenerateAuthzVolumeConfig(proxy.Spec.AuthzConfig, proxy.Name)
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)

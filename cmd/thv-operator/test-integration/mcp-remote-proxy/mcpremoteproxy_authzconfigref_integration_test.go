@@ -8,7 +8,6 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -18,9 +17,9 @@ import (
 )
 
 // The MCPAuthzConfig controller is not registered in this suite, so we pre-seed
-// the config's Valid condition + ConfigHash directly; the MCPServer controller
-// (which is registered) only reads them.
-var _ = Describe("MCPServer AuthzConfigRef Integration Tests", func() {
+// the config's Valid condition + ConfigHash directly; the MCPRemoteProxy
+// controller (which is registered) only reads them.
+var _ = Describe("MCPRemoteProxy AuthzConfigRef Integration Tests", func() {
 	const (
 		timeout  = time.Second * 30
 		interval = time.Millisecond * 250
@@ -53,11 +52,11 @@ var _ = Describe("MCPServer AuthzConfigRef Integration Tests", func() {
 		return cfg
 	}
 
-	newServer := func(name, namespace, authzRefName string) *mcpv1beta1.MCPServer {
-		return &mcpv1beta1.MCPServer{
+	newProxy := func(name, namespace, authzRefName string) *mcpv1beta1.MCPRemoteProxy {
+		return &mcpv1beta1.MCPRemoteProxy{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image:          "example/mcp-server:v1.0.0",
+			Spec: mcpv1beta1.MCPRemoteProxySpec{
+				RemoteURL:      "https://example.com",
 				Transport:      "streamable-http",
 				AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: authzRefName},
 			},
@@ -70,44 +69,46 @@ var _ = Describe("MCPServer AuthzConfigRef Integration Tests", func() {
 	)
 
 	DescribeTable("a valid referenced MCPAuthzConfig is validated and hash-tracked, for any backend",
-		func(nsName, cfgName, srvName, typ, rawConfig string) {
-			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: nsName}}
-			_ = k8sClient.Create(ctx, ns)
+		func(typ, rawConfig string) {
+			namespace := createTestNamespace(ctx)
+			DeferCleanup(func() { deleteTestNamespace(ctx, namespace) })
 
-			seedAuthzConfig(cfgName, nsName, typ, rawConfig, "hash-1", true)
-			Expect(k8sClient.Create(ctx, newServer(srvName, nsName, cfgName))).To(Succeed())
+			seedAuthzConfig("authz-cfg", namespace, typ, rawConfig, "hash-1", true)
+			Expect(k8sClient.Create(ctx, newProxy("rp-authz", namespace, "authz-cfg"))).To(Succeed())
 
 			By("setting AuthzConfigRefValidated=True and tracking the hash (any backend)")
 			Eventually(func(g Gomega) {
-				var got mcpv1beta1.MCPServer
-				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: srvName, Namespace: nsName}, &got)).To(Succeed())
+				var got mcpv1beta1.MCPRemoteProxy
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: "rp-authz", Namespace: namespace}, &got)).To(Succeed())
 				cond := meta.FindStatusCondition(got.Status.Conditions, mcpv1beta1.ConditionAuthzConfigRefValidated)
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(Equal(metav1.ConditionTrue))
 				g.Expect(got.Status.AuthzConfigHash).To(Equal("hash-1"))
 			}, timeout, interval).Should(Succeed())
 		},
-		Entry("cedarv1", "authzref-cedar", "authz-cedar", "srv-cedar", "cedarv1", cedarConfig),
-		Entry("httpv1", "authzref-http", "authz-http", "srv-http", "httpv1", httpConfig),
+		Entry("cedarv1", "cedarv1", cedarConfig),
+		Entry("httpv1", "httpv1", httpConfig),
 	)
 
 	Context("when the referenced MCPAuthzConfig changes", Ordered, func() {
+		var namespace string
 		const (
-			namespace = "authzref-watch"
-			cfgName   = "authz-watch"
-			srvName   = "srv-watch"
+			cfgName = "authz-watch"
+			rpName  = "rp-watch"
 		)
 		BeforeAll(func() {
-			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
-			_ = k8sClient.Create(ctx, ns)
+			namespace = createTestNamespace(ctx)
 			seedAuthzConfig(cfgName, namespace, "cedarv1", cedarConfig, "hash-1", true)
-			Expect(k8sClient.Create(ctx, newServer(srvName, namespace, cfgName))).To(Succeed())
+			Expect(k8sClient.Create(ctx, newProxy(rpName, namespace, cfgName))).To(Succeed())
+		})
+		AfterAll(func() {
+			deleteTestNamespace(ctx, namespace)
 		})
 
-		It("reflects a config hash change on the referencing MCPServer", func() {
+		It("reflects a config hash change on the referencing MCPRemoteProxy", func() {
 			Eventually(func(g Gomega) {
-				var got mcpv1beta1.MCPServer
-				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: srvName, Namespace: namespace}, &got)).To(Succeed())
+				var got mcpv1beta1.MCPRemoteProxy
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: rpName, Namespace: namespace}, &got)).To(Succeed())
 				g.Expect(got.Status.AuthzConfigHash).To(Equal("hash-1"))
 			}, timeout, interval).Should(Succeed())
 
@@ -120,13 +121,13 @@ var _ = Describe("MCPServer AuthzConfigRef Integration Tests", func() {
 			})
 			Expect(k8sClient.Status().Update(ctx, &cfg)).To(Succeed())
 
-			// The MCPServer controller watches MCPAuthzConfig, so the change is
+			// The MCPRemoteProxy controller watches MCPAuthzConfig, so the change is
 			// picked up without an external nudge. (This asserts the observable
 			// outcome; it does not attempt to prove the watch is the sole trigger.)
-			By("observing the MCPServer eventually reflect the new hash")
+			By("observing the MCPRemoteProxy eventually reflect the new hash")
 			Eventually(func(g Gomega) {
-				var got mcpv1beta1.MCPServer
-				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: srvName, Namespace: namespace}, &got)).To(Succeed())
+				var got mcpv1beta1.MCPRemoteProxy
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: rpName, Namespace: namespace}, &got)).To(Succeed())
 				g.Expect(got.Status.AuthzConfigHash).To(Equal("hash-2"))
 			}, timeout, interval).Should(Succeed())
 		})
@@ -140,10 +141,10 @@ var _ = Describe("MCPServer AuthzConfigRef Integration Tests", func() {
 			})
 			Expect(k8sClient.Status().Update(ctx, &cfg)).To(Succeed())
 
-			By("observing the MCPServer condition flip to False/NotValid")
+			By("observing the MCPRemoteProxy condition flip to False/NotValid")
 			Eventually(func(g Gomega) {
-				var got mcpv1beta1.MCPServer
-				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: srvName, Namespace: namespace}, &got)).To(Succeed())
+				var got mcpv1beta1.MCPRemoteProxy
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: rpName, Namespace: namespace}, &got)).To(Succeed())
 				cond := meta.FindStatusCondition(got.Status.Conditions, mcpv1beta1.ConditionAuthzConfigRefValidated)
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))
@@ -153,22 +154,24 @@ var _ = Describe("MCPServer AuthzConfigRef Integration Tests", func() {
 	})
 
 	Context("when the referenced MCPAuthzConfig is not valid", Ordered, func() {
+		var namespace string
 		const (
-			namespace = "authzref-invalid"
-			cfgName   = "authz-invalid"
-			srvName   = "srv-invalid"
+			cfgName = "authz-invalid"
+			rpName  = "rp-invalid"
 		)
 		BeforeAll(func() {
-			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}
-			_ = k8sClient.Create(ctx, ns)
+			namespace = createTestNamespace(ctx)
 			seedAuthzConfig(cfgName, namespace, "cedarv1", cedarConfig, "", false)
-			Expect(k8sClient.Create(ctx, newServer(srvName, namespace, cfgName))).To(Succeed())
+			Expect(k8sClient.Create(ctx, newProxy(rpName, namespace, cfgName))).To(Succeed())
+		})
+		AfterAll(func() {
+			deleteTestNamespace(ctx, namespace)
 		})
 
 		It("sets AuthzConfigRefValidated=False with reason NotValid", func() {
 			Eventually(func(g Gomega) {
-				var got mcpv1beta1.MCPServer
-				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: srvName, Namespace: namespace}, &got)).To(Succeed())
+				var got mcpv1beta1.MCPRemoteProxy
+				g.Expect(k8sClient.Get(ctx, types.NamespacedName{Name: rpName, Namespace: namespace}, &got)).To(Succeed())
 				cond := meta.FindStatusCondition(got.Status.Conditions, mcpv1beta1.ConditionAuthzConfigRefValidated)
 				g.Expect(cond).NotTo(BeNil())
 				g.Expect(cond.Status).To(Equal(metav1.ConditionFalse))

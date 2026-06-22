@@ -8,34 +8,15 @@ import (
 	"encoding/json"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/kubernetes/configmaps"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
-
-// authzRefConfigMapName is the name of the ConfigMap materialized from a
-// referenced MCPAuthzConfig for a given workload. The "-authz-ref" suffix keeps
-// it distinct from the inline path's "-authz-inline" ConfigMap so the two
-// ConfigMaps never overwrite each other.
-//
-// The volume name and mount path ("authz-config", "/etc/toolhive/authz") are
-// deliberately shared with the inline GenerateAuthzVolumeConfig: a workload
-// mounts at most one authz volume because spec.authzConfig and
-// spec.authzConfigRef are mutually exclusive (enforced by CRD XValidation), so
-// the proxy reads authz.json from the same path regardless of the source. The
-// shared volume name is therefore intentional, not a collision risk.
-func authzRefConfigMapName(resourceName string) string {
-	return fmt.Sprintf("%s-authz-ref", resourceName)
-}
 
 // BuildFullAuthzConfigJSON reconstructs the full authorizer config JSON from a
 // MCPAuthzConfig spec and returns it alongside the resolved factory. The JSON
@@ -154,85 +135,4 @@ func AddAuthzConfigRefOptions(
 	}
 	*options = append(*options, runner.WithAuthzConfig(cfg))
 	return nil
-}
-
-// EnsureAuthzConfigMapFromRef materializes the referenced MCPAuthzConfig's
-// backend config into a ConfigMap (key DefaultAuthzKey) owned by the workload,
-// so the proxy can read it from a mounted volume — mirroring EnsureAuthzConfigMap
-// for the inline path. No-op when authzConfig is nil.
-func EnsureAuthzConfigMapFromRef(
-	ctx context.Context,
-	c client.Client,
-	scheme *runtime.Scheme,
-	owner client.Object,
-	namespace string,
-	resourceName string,
-	authzConfig *mcpv1beta1.MCPAuthzConfig,
-	labels map[string]string,
-) error {
-	if authzConfig == nil {
-		return nil
-	}
-
-	// Defense in depth: the workload controller validates readiness before
-	// materializing, but guard here too so this exported helper never writes a
-	// ConfigMap from a config its owning controller has flagged invalid.
-	if err := ValidateAuthzConfigReady(authzConfig); err != nil {
-		return err
-	}
-
-	data, _, err := BuildFullAuthzConfigJSON(authzConfig.Spec)
-	if err != nil {
-		return fmt.Errorf("failed to build authz config from MCPAuthzConfig %s/%s: %w",
-			authzConfig.Namespace, authzConfig.Name, err)
-	}
-
-	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      authzRefConfigMapName(resourceName),
-			Namespace: namespace,
-			Labels:    labels,
-		},
-		Data: map[string]string{
-			DefaultAuthzKey: string(data),
-		},
-	}
-
-	configMapsClient := configmaps.NewClient(c, scheme)
-	if _, err := configMapsClient.UpsertWithOwnerReference(ctx, configMap, owner); err != nil {
-		return fmt.Errorf("failed to upsert authz-ref ConfigMap: %w", err)
-	}
-	return nil
-}
-
-// GenerateAuthzVolumeConfigFromRef returns the volume mount + volume for the
-// ConfigMap materialized by EnsureAuthzConfigMapFromRef, mirroring
-// GenerateAuthzVolumeConfig for the inline path.
-//
-// Note: in operator-managed deployments this mounted file is NOT the active
-// enforcement path — the proxy builds its authz middleware from the authz config
-// embedded in the RunConfig (via AddAuthzConfigRefOptions → WithAuthzConfig). The
-// mount exists for parity with the inline path and for potential future
-// file-based consumption (config.AuthzConfigPath); the operator does not set
-// that path today.
-func GenerateAuthzVolumeConfigFromRef(resourceName string) (*corev1.VolumeMount, *corev1.Volume) {
-	volumeMount := &corev1.VolumeMount{
-		Name:      "authz-config",
-		MountPath: "/etc/toolhive/authz",
-		ReadOnly:  true,
-	}
-	volume := &corev1.Volume{
-		Name: "authz-config",
-		VolumeSource: corev1.VolumeSource{
-			ConfigMap: &corev1.ConfigMapVolumeSource{
-				LocalObjectReference: corev1.LocalObjectReference{
-					Name: authzRefConfigMapName(resourceName),
-				},
-				Items: []corev1.KeyToPath{
-					{Key: DefaultAuthzKey, Path: DefaultAuthzKey},
-				},
-			},
-		},
-	}
-	return volumeMount, volume
 }

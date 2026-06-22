@@ -138,10 +138,6 @@ const (
 
 	// authzLabelValueInline is the label value for inline authorization configuration
 	authzLabelValueInline = "inline"
-
-	// authzLabelValueRef is the label value for a ConfigMap materialized from a
-	// referenced MCPAuthzConfig (spec.authzConfigRef)
-	authzLabelValueRef = "ref"
 )
 
 const defaultTerminationGracePeriodSeconds = int64(30)
@@ -1259,21 +1255,12 @@ func (r *MCPServerReconciler) deploymentForMCPServer(
 	}
 
 	// Add volume mounts for authorization configuration (inline spec.authzConfig).
+	// A referenced MCPAuthzConfig (spec.authzConfigRef) is not mounted: it is
+	// enforced via the authz config embedded in the RunConfig, not a file mount.
 	authzVolumeMount, authzVolume := ctrlutil.GenerateAuthzVolumeConfig(m.Spec.AuthzConfig, m.Name)
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
 		volumes = append(volumes, *authzVolume)
-	}
-
-	// Add the volume mount for a referenced MCPAuthzConfig (spec.authzConfigRef).
-	// Inline and ref are mutually exclusive (CRD XValidation) and share the
-	// "authz-config" volume name, so only add the ref volume when the inline one
-	// was not added. This keeps a hypothetical CEL regression degrading to "one
-	// volume wins" rather than an invalid pod spec with a duplicate volume name.
-	if m.Spec.AuthzConfigRef != nil && authzVolumeMount == nil {
-		refMount, refVolume := ctrlutil.GenerateAuthzVolumeConfigFromRef(m.Name)
-		volumeMounts = append(volumeMounts, *refMount)
-		volumes = append(volumes, *refVolume)
 	}
 
 	// Add OIDC CA bundle volume if configured via MCPOIDCConfigRef
@@ -2130,14 +2117,6 @@ func labelsForInlineAuthzConfig(name string) map[string]string {
 	return labels
 }
 
-// labelsForAuthzConfigRef returns the labels for ConfigMaps materialized from a
-// referenced MCPAuthzConfig.
-func labelsForAuthzConfigRef(name string) map[string]string {
-	labels := labelsForMCPServer(name)
-	labels[authzLabelKey] = authzLabelValueRef
-	return labels
-}
-
 // getToolhiveRunnerImage returns the image to use for the toolhive runner container
 func getToolhiveRunnerImage() string {
 	// Get the image from the environment variable or use a default
@@ -2610,25 +2589,13 @@ func (r *MCPServerReconciler) handleWebhookConfig(ctx context.Context, m *mcpv1b
 }
 
 // ensureAuthzConfigMap ensures the authorization ConfigMap exists for inline
-// configuration (spec.authzConfig) and for a referenced MCPAuthzConfig
-// (spec.authzConfigRef). The two are mutually exclusive (CRD XValidation), so at
-// most one ConfigMap is materialized per reconcile.
+// configuration (spec.authzConfig). A referenced MCPAuthzConfig
+// (spec.authzConfigRef) is not materialized into a ConfigMap: it is enforced by
+// embedding the resolved authz config directly in the RunConfig (see
+// AddAuthzConfigRefOptions), which is the path the proxy actually reads.
 func (r *MCPServerReconciler) ensureAuthzConfigMap(ctx context.Context, m *mcpv1beta1.MCPServer) error {
-	if err := ctrlutil.EnsureAuthzConfigMap(
+	return ctrlutil.EnsureAuthzConfigMap(
 		ctx, r.Client, r.Scheme, m, m.Namespace, m.Name, m.Spec.AuthzConfig, labelsForInlineAuthzConfig(m.Name),
-	); err != nil {
-		return err
-	}
-
-	if m.Spec.AuthzConfigRef == nil {
-		return nil
-	}
-	authzConfig, err := ctrlutil.GetAuthzConfigForWorkload(ctx, r.Client, m.Namespace, m.Spec.AuthzConfigRef)
-	if err != nil {
-		return err
-	}
-	return ctrlutil.EnsureAuthzConfigMapFromRef(
-		ctx, r.Client, r.Scheme, m, m.Namespace, m.Name, authzConfig, labelsForAuthzConfigRef(m.Name),
 	)
 }
 

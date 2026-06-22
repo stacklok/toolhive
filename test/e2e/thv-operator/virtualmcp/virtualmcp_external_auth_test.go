@@ -16,7 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -868,13 +868,13 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Operational: &vmcpconfig.OperationalConfig{
-						FailureHandling: &vmcpconfig.FailureHandlingConfig{
+					Operational: &vmcpcrd.OperationalConfig{
+						FailureHandling: &vmcpcrd.FailureHandlingConfig{
 							// Short interval so several health checks run within the test timeout.
-							HealthCheckInterval: vmcpconfig.Duration(healthCheckAuthInterval),
-							HealthCheckTimeout:  vmcpconfig.Duration(2 * time.Second),
+							HealthCheckInterval: vmcpcrd.Duration(healthCheckAuthInterval),
+							HealthCheckTimeout:  vmcpcrd.Duration(2 * time.Second),
 							UnhealthyThreshold:  3,
 						},
 					},
@@ -1085,12 +1085,12 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Operational: &vmcpconfig.OperationalConfig{
-						FailureHandling: &vmcpconfig.FailureHandlingConfig{
-							HealthCheckInterval: vmcpconfig.Duration(healthCheckAuthInterval),
-							HealthCheckTimeout:  vmcpconfig.Duration(2 * time.Second),
+					Operational: &vmcpcrd.OperationalConfig{
+						FailureHandling: &vmcpcrd.FailureHandlingConfig{
+							HealthCheckInterval: vmcpcrd.Duration(healthCheckAuthInterval),
+							HealthCheckTimeout:  vmcpcrd.Duration(2 * time.Second),
 							UnhealthyThreshold:  3,
 						},
 					},

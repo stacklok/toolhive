@@ -11,8 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 func TestVirtualMCPServerPhaseTransitions(t *testing.T) {
@@ -147,8 +147,8 @@ func TestVirtualMCPServerDefaultValues(t *testing.T) {
 		},
 		Spec: VirtualMCPServerSpec{
 			GroupRef: &MCPGroupRef{Name: "test-group"},
-			Config: config.Config{
-				Aggregation: &config.AggregationConfig{
+			Config: vmcpcrd.Config{
+				Aggregation: &vmcpcrd.AggregationConfig{
 					ConflictResolution: "", // Should default to "prefix"
 				},
 			},
@@ -205,13 +205,13 @@ func TestConflictResolutionStrategies(t *testing.T) {
 	tests := []struct {
 		name        string
 		strategy    vmcp.ConflictResolutionStrategy
-		configValue *config.ConflictResolutionConfig
+		configValue *vmcpcrd.ConflictResolutionConfig
 		isValid     bool
 	}{
 		{
 			name:     "prefix_strategy_with_format",
 			strategy: vmcp.ConflictStrategyPrefix,
-			configValue: &config.ConflictResolutionConfig{
+			configValue: &vmcpcrd.ConflictResolutionConfig{
 				PrefixFormat: "{workload}_",
 			},
 			isValid: true,
@@ -219,7 +219,7 @@ func TestConflictResolutionStrategies(t *testing.T) {
 		{
 			name:     "priority_strategy_with_order",
 			strategy: vmcp.ConflictStrategyPriority,
-			configValue: &config.ConflictResolutionConfig{
+			configValue: &vmcpcrd.ConflictResolutionConfig{
 				PriorityOrder: []string{"github", "jira", "slack"},
 			},
 			isValid: true,
@@ -227,7 +227,7 @@ func TestConflictResolutionStrategies(t *testing.T) {
 		{
 			name:        "manual_strategy",
 			strategy:    vmcp.ConflictStrategyManual,
-			configValue: &config.ConflictResolutionConfig{},
+			configValue: &vmcpcrd.ConflictResolutionConfig{},
 			isValid:     true,
 		},
 	}
@@ -239,8 +239,8 @@ func TestConflictResolutionStrategies(t *testing.T) {
 			vmcpServer := &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
 					GroupRef: &MCPGroupRef{Name: "test-group"},
-					Config: config.Config{
-						Aggregation: &config.AggregationConfig{
+					Config: vmcpcrd.Config{
+						Aggregation: &vmcpcrd.AggregationConfig{
 							ConflictResolution:       tt.strategy,
 							ConflictResolutionConfig: tt.configValue,
 						},
@@ -320,13 +320,13 @@ func TestCompositeToolStepDependencies(t *testing.T) {
 
 	tests := []struct {
 		name    string
-		steps   []config.WorkflowStepConfig
+		steps   []vmcpcrd.WorkflowStepConfig
 		isValid bool
 		errMsg  string
 	}{
 		{
 			name: "valid_sequential_dependencies",
-			steps: []config.WorkflowStepConfig{
+			steps: []vmcpcrd.WorkflowStepConfig{
 				{ID: "step1", Type: "tool", Tool: "backend.tool1"},
 				{ID: "step2", Type: "tool", Tool: "backend.tool2", DependsOn: []string{"step1"}},
 				{ID: "step3", Type: "tool", Tool: "backend.tool3", DependsOn: []string{"step2"}},
@@ -335,7 +335,7 @@ func TestCompositeToolStepDependencies(t *testing.T) {
 		},
 		{
 			name: "valid_parallel_steps",
-			steps: []config.WorkflowStepConfig{
+			steps: []vmcpcrd.WorkflowStepConfig{
 				{ID: "step1", Type: "tool", Tool: "backend.tool1"},
 				{ID: "step2", Type: "tool", Tool: "backend.tool2"},
 				{ID: "step3", Type: "tool", Tool: "backend.tool3", DependsOn: []string{"step1", "step2"}},
@@ -344,7 +344,7 @@ func TestCompositeToolStepDependencies(t *testing.T) {
 		},
 		{
 			name: "valid_forward_reference",
-			steps: []config.WorkflowStepConfig{
+			steps: []vmcpcrd.WorkflowStepConfig{
 				{ID: "step1", Type: "tool", Tool: "backend.tool1", DependsOn: []string{"step2"}},
 				{ID: "step2", Type: "tool", Tool: "backend.tool2"},
 			},
@@ -359,8 +359,8 @@ func TestCompositeToolStepDependencies(t *testing.T) {
 			server := &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
 					GroupRef: &MCPGroupRef{Name: "test-group"},
-					Config: config.Config{
-						CompositeTools: []config.CompositeToolConfig{
+					Config: vmcpcrd.Config{
+						CompositeTools: []vmcpcrd.CompositeToolConfig{
 							{
 								Name:        "test-workflow",
 								Description: "Test workflow",
@@ -411,8 +411,8 @@ func TestValidateEmbeddingServer(t *testing.T) {
 			server: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
 					GroupRef: &MCPGroupRef{Name: "test-group"},
-					Config: config.Config{
-						Optimizer: &config.OptimizerConfig{},
+					Config: vmcpcrd.Config{
+						Optimizer: &vmcpcrd.OptimizerConfig{},
 					},
 					EmbeddingServerRef: &EmbeddingServerRef{
 						Name: "my-embedding",
@@ -426,8 +426,8 @@ func TestValidateEmbeddingServer(t *testing.T) {
 			server: &VirtualMCPServer{
 				Spec: VirtualMCPServerSpec{
 					GroupRef: &MCPGroupRef{Name: "test-group"},
-					Config: config.Config{
-						Optimizer: &config.OptimizerConfig{},
+					Config: vmcpcrd.Config{
+						Optimizer: &vmcpcrd.OptimizerConfig{},
 					},
 				},
 			},

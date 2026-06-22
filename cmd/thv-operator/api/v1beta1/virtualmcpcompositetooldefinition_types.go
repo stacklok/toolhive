@@ -6,14 +6,17 @@ package v1beta1
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	"github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 )
 
 // VirtualMCPCompositeToolDefinitionSpec defines the desired state of VirtualMCPCompositeToolDefinition.
 // This embeds the CompositeToolConfig from pkg/vmcp/config to share the configuration model
 // between CLI and operator usage.
 type VirtualMCPCompositeToolDefinitionSpec struct {
-	config.CompositeToolConfig `json:",inline"` // nolint:revive // inline is valid
+	// The embedded type is the operator-owned vmcpcrd.CompositeToolConfig mirror (a field-for-field
+	// duplicate of pkg/vmcp/config.CompositeToolConfig) so the CRD schema is generated solely from
+	// operator-owned types. See the vmcpcrd package doc for the decoupling rationale.
+	vmcpcrd.CompositeToolConfig `json:",inline"` // nolint:revive // inline is valid
 }
 
 // VirtualMCPCompositeToolDefinitionStatus defines the observed state of VirtualMCPCompositeToolDefinition
@@ -129,9 +132,10 @@ type VirtualMCPCompositeToolDefinitionList struct {
 
 // Validate performs validation for VirtualMCPCompositeToolDefinition
 // This method is called by the controller during reconciliation
-// It delegates to the shared ValidateCompositeToolConfig in pkg/vmcp/config
+// It delegates to the operator-owned ValidateCompositeToolConfig in the vmcpcrd mirror,
+// kept behaviourally in lock-step with pkg/vmcp/config.
 func (r *VirtualMCPCompositeToolDefinition) Validate() error {
-	return config.ValidateCompositeToolConfig("spec", &r.Spec.CompositeToolConfig)
+	return vmcpcrd.ValidateCompositeToolConfig("spec", &r.Spec.CompositeToolConfig)
 }
 
 // GetValidationErrors returns a list of validation errors

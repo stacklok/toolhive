@@ -33,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -170,8 +171,8 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						Operational: &vmcpconfig.OperationalConfig{
+					Config: vmcpcrd.Config{
+						Operational: &vmcpcrd.OperationalConfig{
 							LogLevel: "debug",
 						},
 					},

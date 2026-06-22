@@ -6,6 +6,7 @@ package vmcpconfig
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/go-logr/logr"
@@ -18,12 +19,35 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
+
+// crdToRuntime transcodes an operator-owned vmcpcrd mirror value into its
+// runtime config counterpart via JSON. The vmcpcrd.* types are a field-for-field
+// duplicate of the pkg/vmcp/config types (identical JSON tags), so this is a
+// total, lossless mapping for every passthrough field — the single boundary that
+// keeps the CRD schema decoupled from the internal config model. Fields that
+// require Kubernetes resolution (auth, tool config refs, telemetry refs, session
+// storage) are overwritten by the explicit converters after this base mapping.
+//
+// Field-for-field parity is enforced by AssertNoDrift and the round-trip fuzz
+// test; a transcode error here would indicate a genuine schema divergence.
+func crdToRuntime[T any](src any) (*T, error) {
+	data, err := json.Marshal(src)
+	if err != nil {
+		return nil, fmt.Errorf("marshal CRD config: %w", err)
+	}
+	out := new(T)
+	if err := json.Unmarshal(data, out); err != nil {
+		return nil, fmt.Errorf("decode into runtime config: %w", err)
+	}
+	return out, nil
+}
 
 const (
 	// authzLabelValueInline is the string value for inline authz configuration
@@ -69,10 +93,12 @@ func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client) (*Convert
 // Convert converts VirtualMCPServer CRD spec to a vmcp Config and an optional
 // auth server RunConfig.
 //
-// The conversion starts with a DeepCopy of the embedded config.Config from the CRD spec.
-// This ensures that simple fields (like Optimizer, Metadata, etc.) are automatically
-// passed through without explicit mapping. Only fields that require special handling
-// (auth, aggregation, composite tools, telemetry) are explicitly converted below.
+// The conversion starts by transcoding the embedded vmcpcrd.Config (the CRD-owned
+// mirror) into the runtime config.Config via crdToRuntime. This passes every
+// simple field (Optimizer, Metadata, Backends, etc.) through losslessly without
+// per-field mapping. Only fields that require Kubernetes resolution (auth,
+// aggregation, composite tools, telemetry, session storage) are explicitly
+// overwritten below.
 //
 // telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced).
 // It is passed in by the controller to avoid redundant API calls; normalizeTelemetry
@@ -85,10 +111,13 @@ func (c *Converter) Convert(
 	vmcp *mcpv1beta1.VirtualMCPServer,
 	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 ) (*vmcpconfig.Config, *authserver.RunConfig, error) {
-	// Start with a deep copy of the embedded config for automatic field passthrough.
-	// This ensures new fields added to config.Config are automatically included
+	// Transcode the CRD-owned mirror into the runtime config for automatic field
+	// passthrough. New passthrough fields added to both schemas flow through here
 	// without requiring explicit mapping in this converter.
-	config := vmcp.Spec.Config.DeepCopy()
+	config, err := crdToRuntime[vmcpconfig.Config](&vmcp.Spec.Config)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to transcode base config: %w", err)
+	}
 
 	// Promoted top-level field takes precedence over spec.config.passthroughHeaders.
 	if len(vmcp.Spec.PassthroughHeaders) > 0 {
@@ -133,8 +162,8 @@ func (c *Converter) Convert(
 		config.CompositeTools = compositeTools
 	}
 
-	// Use Operational from spec.config directly
-	config.Operational = vmcp.Spec.Config.Operational
+	// Operational is passed through by crdToRuntime above (no Kubernetes
+	// resolution required); EnsureOperationalDefaults fills in any gaps below.
 
 	// Normalize telemetry config: prefer TelemetryConfigRef (shared MCPTelemetryConfig resource),
 	// The inline config.telemetry field is no longer read by the operator.
@@ -740,7 +769,7 @@ func (c *Converter) convertAggregation(
 
 // applyConflictResolutionDefaults applies defaults for conflict resolution
 func (*Converter) applyConflictResolutionDefaults(
-	srcAgg *vmcpconfig.AggregationConfig,
+	srcAgg *vmcpcrd.AggregationConfig,
 	agg *vmcpconfig.AggregationConfig,
 ) {
 	// Apply default strategy if not set
@@ -770,7 +799,7 @@ func (*Converter) applyConflictResolutionDefaults(
 func (c *Converter) resolveToolConfigRefs(
 	ctx context.Context,
 	vmcp *mcpv1beta1.VirtualMCPServer,
-	srcAgg *vmcpconfig.AggregationConfig,
+	srcAgg *vmcpcrd.AggregationConfig,
 	agg *vmcpconfig.AggregationConfig,
 ) error {
 	if len(srcAgg.Tools) == 0 {
@@ -788,12 +817,16 @@ func (c *Converter) resolveToolConfigRefs(
 			ExcludeAll: toolConfig.ExcludeAll,
 		}
 
-		// Copy inline overrides first
+		// Copy inline overrides first, transcoding each from the CRD mirror.
 		if len(toolConfig.Overrides) > 0 {
 			wtc.Overrides = make(map[string]*vmcpconfig.ToolOverride)
 			for name, override := range toolConfig.Overrides {
 				if override != nil {
-					wtc.Overrides[name] = override.DeepCopy()
+					converted, err := crdToRuntime[vmcpconfig.ToolOverride](override)
+					if err != nil {
+						return fmt.Errorf("failed to convert tool override %q: %w", name, err)
+					}
+					wtc.Overrides[name] = converted
 				}
 			}
 		}
@@ -813,7 +846,7 @@ func (c *Converter) resolveToolConfigRef(
 	ctx context.Context,
 	ctxLogger logr.Logger,
 	namespace string,
-	toolConfig *vmcpconfig.WorkloadToolConfig,
+	toolConfig *vmcpcrd.WorkloadToolConfig,
 	wtc *vmcpconfig.WorkloadToolConfig,
 ) error {
 	if toolConfig.ToolConfigRef == nil {
@@ -915,8 +948,19 @@ func (c *Converter) convertAllCompositeTools(
 		return nil, fmt.Errorf("failed to resolve composite tool references: %w", err)
 	}
 
+	// Transcode inline composite tools from the CRD mirror into the runtime model.
+	inlineTools := make([]vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.Config.CompositeTools))
+	for i := range vmcp.Spec.Config.CompositeTools {
+		tool, err := crdToRuntime[vmcpconfig.CompositeToolConfig](&vmcp.Spec.Config.CompositeTools[i])
+		if err != nil {
+			return nil, fmt.Errorf("failed to convert inline composite tool %q: %w",
+				vmcp.Spec.Config.CompositeTools[i].Name, err)
+		}
+		inlineTools = append(inlineTools, *tool)
+	}
+
 	// Merge inline and referenced tools
-	allTools := append(vmcp.Spec.Config.CompositeTools, referencedTools...)
+	allTools := append(inlineTools, referencedTools...)
 
 	// Validate for duplicate names
 	if err := validateCompositeToolNames(allTools); err != nil {
@@ -951,7 +995,10 @@ func (c *Converter) resolveCompositeToolRefs(
 		}
 
 		// Convert the referenced definition to CompositeToolConfig
-		tool := c.convertCompositeToolDefinition(compositeToolDef)
+		tool, err := c.convertCompositeToolDefinition(compositeToolDef)
+		if err != nil {
+			return nil, err
+		}
 		referencedTools = append(referencedTools, tool)
 	}
 
@@ -959,13 +1006,16 @@ func (c *Converter) resolveCompositeToolRefs(
 }
 
 // convertCompositeToolDefinition converts a VirtualMCPCompositeToolDefinition to CompositeToolConfig.
-// Since VirtualMCPCompositeToolDefinitionSpec embeds config.CompositeToolConfig directly,
-// this is a simple copy operation.
+// VirtualMCPCompositeToolDefinitionSpec embeds the CRD-owned vmcpcrd.CompositeToolConfig mirror,
+// so this transcodes it into the runtime config model via crdToRuntime.
 func (*Converter) convertCompositeToolDefinition(
 	def *mcpv1beta1.VirtualMCPCompositeToolDefinition,
-) vmcpconfig.CompositeToolConfig {
-	// The spec directly embeds CompositeToolConfig, so we can return it directly
-	return def.Spec.CompositeToolConfig
+) (vmcpconfig.CompositeToolConfig, error) {
+	tool, err := crdToRuntime[vmcpconfig.CompositeToolConfig](&def.Spec.CompositeToolConfig)
+	if err != nil {
+		return vmcpconfig.CompositeToolConfig{}, fmt.Errorf("failed to convert composite tool %q: %w", def.Name, err)
+	}
+	return *tool, nil
 }
 
 // validateCompositeToolNames checks for duplicate tool names across all composite tools.

@@ -19,8 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // TestNewK8sReporter_Validation tests parameter validation in NewK8sReporter.
@@ -660,7 +660,7 @@ func createTestVirtualMCPServer(t *testing.T, fakeClient client.Client, name, na
 			Generation: 1,
 		},
 		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			Config: vmcpconfig.Config{
+			Config: vmcpcrd.Config{
 				Group: "test-group",
 			},
 			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{

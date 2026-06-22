@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -86,7 +87,7 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
 						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group-telemetry-hash"},
-						Config:   vmcpconfig.Config{Group: "test-group-telemetry-hash"},
+						Config:   vmcpcrd.Config{Group: "test-group-telemetry-hash"},
 						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
@@ -221,7 +222,7 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
 						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group-telemetry-update"},
-						Config:   vmcpconfig.Config{Group: "test-group-telemetry-update"},
+						Config:   vmcpcrd.Config{Group: "test-group-telemetry-update"},
 						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 							Type: "anonymous",
 						},
@@ -331,7 +332,7 @@ var _ = Describe("VirtualMCPServer TelemetryConfig Integration",
 					},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
 						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group-telemetry-notfound"},
-						Config:   vmcpconfig.Config{Group: "test-group-telemetry-notfound"},
+						Config:   vmcpcrd.Config{Group: "test-group-telemetry-notfound"},
 						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 							Type: "anonymous",
 						},

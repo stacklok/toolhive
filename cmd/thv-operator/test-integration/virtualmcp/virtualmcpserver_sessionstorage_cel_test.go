@@ -12,7 +12,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 )
 
 func newVirtualMCPServerWithSessionStorage(name string, ss *mcpv1beta1.SessionStorageConfig) *mcpv1beta1.VirtualMCPServer {
@@ -26,7 +26,7 @@ func newVirtualMCPServerWithSessionStorage(name string, ss *mcpv1beta1.SessionSt
 			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 				Type: "anonymous",
 			},
-			Config: vmcpconfig.Config{
+			Config: vmcpcrd.Config{
 				Group: "test-group",
 			},
 			SessionStorage: ss,

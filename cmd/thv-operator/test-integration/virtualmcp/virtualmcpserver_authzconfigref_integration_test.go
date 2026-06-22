@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -73,7 +74,7 @@ var _ = Describe("VirtualMCPServer AuthzConfigRef Integration", Label("k8s", "au
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-				Config:   vmcpconfig.Config{Group: groupName},
+				Config:   vmcpcrd.Config{Group: groupName},
 				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 					Type:           "anonymous",
 					AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: authzRefName},

@@ -26,7 +26,7 @@ import (
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 )
 
 // TestMapMCPGroupToVirtualMCPServer tests the MCPGroup watch handler
@@ -1093,11 +1093,11 @@ func TestMapToolConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{
-							Aggregation: &vmcpconfig.AggregationConfig{
-								Tools: []*vmcpconfig.WorkloadToolConfig{
+						Config: vmcpcrd.Config{
+							Aggregation: &vmcpcrd.AggregationConfig{
+								Tools: []*vmcpcrd.WorkloadToolConfig{
 									{
-										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										ToolConfigRef: &vmcpcrd.ToolConfigRef{
 											Name: "test-tool-config",
 										},
 									},
@@ -1145,11 +1145,11 @@ func TestMapToolConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{
-							Aggregation: &vmcpconfig.AggregationConfig{
-								Tools: []*vmcpconfig.WorkloadToolConfig{
+						Config: vmcpcrd.Config{
+							Aggregation: &vmcpcrd.AggregationConfig{
+								Tools: []*vmcpcrd.WorkloadToolConfig{
 									{
-										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										ToolConfigRef: &vmcpcrd.ToolConfigRef{
 											Name: "test-tool-config",
 										},
 									},
@@ -1164,16 +1164,16 @@ func TestMapToolConfigToVirtualMCPServer(t *testing.T) {
 						Namespace: "default",
 					},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						Config: vmcpconfig.Config{
-							Aggregation: &vmcpconfig.AggregationConfig{
-								Tools: []*vmcpconfig.WorkloadToolConfig{
+						Config: vmcpcrd.Config{
+							Aggregation: &vmcpcrd.AggregationConfig{
+								Tools: []*vmcpcrd.WorkloadToolConfig{
 									{
-										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										ToolConfigRef: &vmcpcrd.ToolConfigRef{
 											Name: "test-tool-config",
 										},
 									},
 									{
-										ToolConfigRef: &vmcpconfig.ToolConfigRef{
+										ToolConfigRef: &vmcpcrd.ToolConfigRef{
 											Name: "other-tool-config",
 										},
 									},
@@ -1245,11 +1245,11 @@ func TestVmcpReferencesToolConfig(t *testing.T) {
 			name: "VirtualMCPServer references ToolConfig",
 			vmcp: &mcpv1beta1.VirtualMCPServer{
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{
-						Aggregation: &vmcpconfig.AggregationConfig{
-							Tools: []*vmcpconfig.WorkloadToolConfig{
+					Config: vmcpcrd.Config{
+						Aggregation: &vmcpcrd.AggregationConfig{
+							Tools: []*vmcpcrd.WorkloadToolConfig{
 								{
-									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+									ToolConfigRef: &vmcpcrd.ToolConfigRef{
 										Name: "test-config",
 									},
 								},
@@ -1265,11 +1265,11 @@ func TestVmcpReferencesToolConfig(t *testing.T) {
 			name: "VirtualMCPServer does not reference ToolConfig",
 			vmcp: &mcpv1beta1.VirtualMCPServer{
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{
-						Aggregation: &vmcpconfig.AggregationConfig{
-							Tools: []*vmcpconfig.WorkloadToolConfig{
+					Config: vmcpcrd.Config{
+						Aggregation: &vmcpcrd.AggregationConfig{
+							Tools: []*vmcpcrd.WorkloadToolConfig{
 								{
-									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+									ToolConfigRef: &vmcpcrd.ToolConfigRef{
 										Name: "other-config",
 									},
 								},
@@ -1293,21 +1293,21 @@ func TestVmcpReferencesToolConfig(t *testing.T) {
 			name: "VirtualMCPServer references ToolConfig among multiple tools",
 			vmcp: &mcpv1beta1.VirtualMCPServer{
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					Config: vmcpconfig.Config{
-						Aggregation: &vmcpconfig.AggregationConfig{
-							Tools: []*vmcpconfig.WorkloadToolConfig{
+					Config: vmcpcrd.Config{
+						Aggregation: &vmcpcrd.AggregationConfig{
+							Tools: []*vmcpcrd.WorkloadToolConfig{
 								{
-									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+									ToolConfigRef: &vmcpcrd.ToolConfigRef{
 										Name: "other-config",
 									},
 								},
 								{
-									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+									ToolConfigRef: &vmcpcrd.ToolConfigRef{
 										Name: "test-config",
 									},
 								},
 								{
-									ToolConfigRef: &vmcpconfig.ToolConfigRef{
+									ToolConfigRef: &vmcpcrd.ToolConfigRef{
 										Name: "another-config",
 									},
 								},

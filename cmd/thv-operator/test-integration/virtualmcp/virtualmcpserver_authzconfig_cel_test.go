@@ -9,7 +9,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 )
 
 // newVirtualMCPServerWithIncomingAuth builds a minimal VirtualMCPServer whose
@@ -29,7 +29,7 @@ func newVirtualMCPServerWithIncomingAuth(
 				AuthzConfig:    authzConfig,
 				AuthzConfigRef: authzConfigRef,
 			},
-			Config: vmcpconfig.Config{
+			Config: vmcpcrd.Config{
 				Group: "test-group",
 			},
 		},

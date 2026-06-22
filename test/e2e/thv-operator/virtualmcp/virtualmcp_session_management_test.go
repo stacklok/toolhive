@@ -25,7 +25,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -80,7 +80,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config: vmcpconfig.Config{
+					Config: vmcpcrd.Config{
 						Group: mcpGroupName,
 					},
 					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
@@ -471,7 +471,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Session Management", func() {
 				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config: vmcpconfig.Config{
+					Config: vmcpcrd.Config{
 						Group: mcpGroupName,
 					},
 					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{

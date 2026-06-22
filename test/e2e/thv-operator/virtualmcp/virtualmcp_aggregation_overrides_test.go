@@ -14,7 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -51,18 +51,18 @@ var _ = Describe("VirtualMCPServer Tool Overrides", Ordered, func() {
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
 						// Tool overrides: rename echo to custom_echo_tool with new description
 						// Note: Filter uses the user-facing name (after override), so we filter by
 						// the renamed tool name, not the original name.
-						Tools: []*vmcpconfig.WorkloadToolConfig{
+						Tools: []*vmcpcrd.WorkloadToolConfig{
 							{
 								Workload: backendName,
 								Filter:   []string{renamedToolName}, // Filter by user-facing name (after override)
-								Overrides: map[string]*vmcpconfig.ToolOverride{
+								Overrides: map[string]*vmcpcrd.ToolOverride{
 									originalToolName: {
 										Name:        renamedToolName,
 										Description: newDescription,

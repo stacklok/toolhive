@@ -15,7 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -72,15 +72,15 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
-						Tools: []*vmcpconfig.WorkloadToolConfig{
+						Tools: []*vmcpcrd.WorkloadToolConfig{
 							{
 								Workload: backend1Name,
 								// Reference MCPToolConfig instead of inline Filter
-								ToolConfigRef: &vmcpconfig.ToolConfigRef{
+								ToolConfigRef: &vmcpcrd.ToolConfigRef{
 									Name: toolConfigName,
 								},
 							},
@@ -287,7 +287,7 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 			Expect(vmcpServer.Spec.Config.Aggregation.Tools).To(HaveLen(2))
 
 			// Verify backend1 has ToolConfigRef
-			var backend1Config *vmcpconfig.WorkloadToolConfig
+			var backend1Config *vmcpcrd.WorkloadToolConfig
 			for i := range vmcpServer.Spec.Config.Aggregation.Tools {
 				if vmcpServer.Spec.Config.Aggregation.Tools[i].Workload == backend1Name {
 					backend1Config = vmcpServer.Spec.Config.Aggregation.Tools[i]
@@ -363,14 +363,14 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
-						Tools: []*vmcpconfig.WorkloadToolConfig{
+						Tools: []*vmcpcrd.WorkloadToolConfig{
 							{
 								Workload: backendName,
-								ToolConfigRef: &vmcpconfig.ToolConfigRef{
+								ToolConfigRef: &vmcpcrd.ToolConfigRef{
 									Name: toolConfigName,
 								},
 							},

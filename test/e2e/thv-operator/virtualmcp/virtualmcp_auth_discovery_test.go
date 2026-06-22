@@ -25,7 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -852,10 +852,10 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
 					// No TokenCache configured - tokens should be fetched on each request
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
 					},
 				},

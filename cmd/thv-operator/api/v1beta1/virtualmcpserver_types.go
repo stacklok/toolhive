@@ -10,8 +10,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // VirtualMCPServerSpec defines the desired state of VirtualMCPServer
@@ -83,7 +83,7 @@ type VirtualMCPServerSpec struct {
 	// Config is the Virtual MCP server configuration.
 	// The audit config from here is also supported, but not required.
 	// +optional
-	Config config.Config `json:"config,omitempty"`
+	Config vmcpcrd.Config `json:"config,omitempty"`
 
 	// TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
 	// The referenced MCPTelemetryConfig must exist in the same namespace as this VirtualMCPServer.
@@ -623,7 +623,7 @@ func (r *VirtualMCPServer) validateEmbeddingServer() error {
 	// optimizer with default values so the embedding server is actually used.
 	// The controller emits a Kubernetes event for this case.
 	if hasRef && !hasOptimizer {
-		r.Spec.Config.Optimizer = &config.OptimizerConfig{}
+		r.Spec.Config.Optimizer = &vmcpcrd.OptimizerConfig{}
 	}
 
 	return nil
@@ -726,7 +726,7 @@ func (r *VirtualMCPServer) validateCompositeTools() error {
 		toolNames[tool.Name] = true
 
 		// Use shared validation
-		if err := config.ValidateCompositeToolConfig(
+		if err := vmcpcrd.ValidateCompositeToolConfig(
 			fmt.Sprintf("spec.config.compositeTools[%d]", i), tool,
 		); err != nil {
 			return err

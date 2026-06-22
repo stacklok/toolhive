@@ -13,8 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -50,7 +50,7 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 				Namespace: testNamespace,
 			},
 			Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-				CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+				CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 					Name:        "parse_json_workflow",
 					Description: "Workflow that parses JSON text responses using fromJson",
 					Parameters: thvjson.NewMap(map[string]any{
@@ -63,7 +63,7 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 						},
 						"required": []any{"query"},
 					}),
-					Steps: []vmcpconfig.WorkflowStepConfig{
+					Steps: []vmcpcrd.WorkflowStepConfig{
 						{
 							ID:   "search",
 							Type: "tool",
@@ -84,7 +84,7 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 							}),
 						},
 					},
-					Timeout: vmcpconfig.Duration(30 * time.Second),
+					Timeout: vmcpcrd.Duration(30 * time.Second),
 				},
 			},
 		}
@@ -108,12 +108,12 @@ var _ = Describe("VirtualMCPServer Composite Tool Template Functions", Ordered, 
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
 					},
-					CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+					CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 						{
 							Name: compositeToolDefName,
 						},

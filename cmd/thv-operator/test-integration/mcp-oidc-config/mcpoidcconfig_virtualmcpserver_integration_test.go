@@ -14,6 +14,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -103,7 +104,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-					Config:   vmcpconfig.Config{Group: groupName},
+					Config:   vmcpcrd.Config{Group: groupName},
 					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
@@ -281,7 +282,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-					Config:   vmcpconfig.Config{Group: groupName},
+					Config:   vmcpcrd.Config{Group: groupName},
 					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
@@ -417,7 +418,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-					Config:   vmcpconfig.Config{Group: groupName},
+					Config:   vmcpcrd.Config{Group: groupName},
 					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
@@ -543,7 +544,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-					Config:   vmcpconfig.Config{Group: groupName},
+					Config:   vmcpcrd.Config{Group: groupName},
 					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
@@ -683,7 +684,7 @@ var _ = Describe("MCPOIDCConfig and VirtualMCPServer Cross-Resource Integration 
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-					Config:   vmcpconfig.Config{Group: groupName},
+					Config:   vmcpcrd.Config{Group: groupName},
 					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
 						Type: "oidc",
 						OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{

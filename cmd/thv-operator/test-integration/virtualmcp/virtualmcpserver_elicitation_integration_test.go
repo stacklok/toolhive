@@ -13,8 +13,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
@@ -70,17 +70,17 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-					CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+					CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 						Name:        "interactive_workflow",
 						Description: "Workflow with user interactions via elicitations",
-						Timeout:     vmcpconfig.Duration(15 * time.Minute),
-						Steps: []vmcpconfig.WorkflowStepConfig{
+						Timeout:     vmcpcrd.Duration(15 * time.Minute),
+						Steps: []vmcpcrd.WorkflowStepConfig{
 							// Step 1: Tool call
 							{
 								ID:      "prepare",
 								Type:    mcpv1beta1.WorkflowStepTypeToolCall,
 								Tool:    "echo",
-								Timeout: vmcpconfig.Duration(1 * time.Minute),
+								Timeout: vmcpcrd.Duration(1 * time.Minute),
 							},
 							// Step 2: Elicitation with OnDecline and OnCancel handlers
 							{
@@ -89,11 +89,11 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 								Message:   "Proceed with deployment?",
 								Schema:    thvjson.NewMap(map[string]any{"type": "object", "properties": map[string]any{"proceed": map[string]any{"type": "boolean"}}}),
 								DependsOn: []string{"prepare"},
-								Timeout:   vmcpconfig.Duration(5 * time.Minute),
-								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+								Timeout:   vmcpcrd.Duration(5 * time.Minute),
+								OnDecline: &vmcpcrd.ElicitationResponseConfig{
 									Action: "skip_remaining",
 								},
-								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+								OnCancel: &vmcpcrd.ElicitationResponseConfig{
 									Action: "abort",
 								},
 							},
@@ -104,11 +104,11 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 								Message:   "Select target environment",
 								Schema:    thvjson.NewMap(map[string]any{"type": "object", "properties": map[string]any{"environment": map[string]any{"type": "string", "enum": []any{"staging", "production"}}}}),
 								DependsOn: []string{"confirm_deploy"},
-								Timeout:   vmcpconfig.Duration(5 * time.Minute),
-								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+								Timeout:   vmcpcrd.Duration(5 * time.Minute),
+								OnDecline: &vmcpcrd.ElicitationResponseConfig{
 									Action: "continue",
 								},
-								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+								OnCancel: &vmcpcrd.ElicitationResponseConfig{
 									Action: "abort",
 								},
 							},
@@ -118,7 +118,7 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 								Type:      mcpv1beta1.WorkflowStepTypeToolCall,
 								Tool:      "deploy_app",
 								DependsOn: []string{"select_env"},
-								Timeout:   vmcpconfig.Duration(2 * time.Minute),
+								Timeout:   vmcpcrd.Duration(2 * time.Minute),
 							},
 						},
 					},
@@ -134,9 +134,9 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config: vmcpconfig.Config{
+					Config: vmcpcrd.Config{
 						Group: mcpGroupName,
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 							{Name: compositeToolDefName},
 						},
 					},
@@ -281,20 +281,20 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-					CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+					CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 						Name:        "all_handlers_workflow",
 						Description: "Test all valid elicitation handler actions",
-						Steps: []vmcpconfig.WorkflowStepConfig{
+						Steps: []vmcpcrd.WorkflowStepConfig{
 							// Test skip_remaining
 							{
 								ID:      "elicit_skip",
 								Type:    mcpv1beta1.WorkflowStepTypeElicitation,
 								Message: "Test skip_remaining",
 								Schema:  thvjson.NewMap(map[string]any{"type": "object"}),
-								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+								OnDecline: &vmcpcrd.ElicitationResponseConfig{
 									Action: "skip_remaining",
 								},
-								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+								OnCancel: &vmcpcrd.ElicitationResponseConfig{
 									Action: "skip_remaining",
 								},
 							},
@@ -304,10 +304,10 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 								Type:    mcpv1beta1.WorkflowStepTypeElicitation,
 								Message: "Test abort",
 								Schema:  thvjson.NewMap(map[string]any{"type": "object"}),
-								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+								OnDecline: &vmcpcrd.ElicitationResponseConfig{
 									Action: "abort",
 								},
-								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+								OnCancel: &vmcpcrd.ElicitationResponseConfig{
 									Action: "abort",
 								},
 							},
@@ -317,10 +317,10 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 								Type:    mcpv1beta1.WorkflowStepTypeElicitation,
 								Message: "Test continue",
 								Schema:  thvjson.NewMap(map[string]any{"type": "object"}),
-								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+								OnDecline: &vmcpcrd.ElicitationResponseConfig{
 									Action: "continue",
 								},
-								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+								OnCancel: &vmcpcrd.ElicitationResponseConfig{
 									Action: "continue",
 								},
 							},
@@ -338,9 +338,9 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config: vmcpconfig.Config{
+					Config: vmcpcrd.Config{
 						Group: mcpGroupName,
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 							{Name: compositeToolDefName},
 						},
 					},
@@ -465,10 +465,10 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 					Namespace: namespace,
 				},
 				Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
-					CompositeToolConfig: vmcpconfig.CompositeToolConfig{
+					CompositeToolConfig: vmcpcrd.CompositeToolConfig{
 						Name:        "mixed_steps_workflow",
 						Description: "Workflow with alternating tool calls and elicitations",
-						Steps: []vmcpconfig.WorkflowStepConfig{
+						Steps: []vmcpcrd.WorkflowStepConfig{
 							// Tool call
 							{
 								ID:   "tool1",
@@ -482,7 +482,7 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 								Message:   "Confirm step 1?",
 								Schema:    thvjson.NewMap(map[string]any{"type": "object"}),
 								DependsOn: []string{"tool1"},
-								OnDecline: &vmcpconfig.ElicitationResponseConfig{
+								OnDecline: &vmcpcrd.ElicitationResponseConfig{
 									Action: "abort",
 								},
 							},
@@ -500,7 +500,7 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 								Message:   "Confirm step 2?",
 								Schema:    thvjson.NewMap(map[string]any{"type": "object"}),
 								DependsOn: []string{"tool2"},
-								OnCancel: &vmcpconfig.ElicitationResponseConfig{
+								OnCancel: &vmcpcrd.ElicitationResponseConfig{
 									Action: "abort",
 								},
 							},
@@ -525,9 +525,9 @@ var _ = Describe("VirtualMCPServer Elicitation Integration Tests", func() {
 				},
 				Spec: mcpv1beta1.VirtualMCPServerSpec{
 					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config: vmcpconfig.Config{
+					Config: vmcpcrd.Config{
 						Group: mcpGroupName,
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						CompositeToolRefs: []vmcpcrd.CompositeToolRef{
 							{Name: compositeToolDefName},
 						},
 					},

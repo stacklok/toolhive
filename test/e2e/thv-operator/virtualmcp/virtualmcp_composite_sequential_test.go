@@ -14,8 +14,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -50,13 +50,13 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 			},
 			Spec: mcpv1beta1.VirtualMCPServerSpec{
 				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
 					},
 					// Define a composite tool that echoes input, then echoes the result again
-					CompositeTools: []vmcpconfig.CompositeToolConfig{
+					CompositeTools: []vmcpcrd.CompositeToolConfig{
 						{
 							Name:        compositeToolName,
 							Description: "Echoes the input message twice in sequence",
@@ -70,8 +70,8 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 								},
 								"required": []any{"message"},
 							}),
-							Timeout: vmcpconfig.Duration(30 * time.Second),
-							Steps: []vmcpconfig.WorkflowStepConfig{
+							Timeout: vmcpcrd.Duration(30 * time.Second),
+							Steps: []vmcpcrd.WorkflowStepConfig{
 								{
 									ID:   "first_echo",
 									Type: "tool",

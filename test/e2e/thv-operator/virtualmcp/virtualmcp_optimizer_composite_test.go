@@ -15,8 +15,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	vmcpcrd "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpcrd"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
-	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
 
@@ -94,12 +94,12 @@ var _ = Describe("VirtualMCPServer Optimizer Composite Tools", Ordered, func() {
 				},
 				// Use embeddingService directly instead of EmbeddingServerRef
 				// to avoid depending on the heavyweight TEI image.
-				Config: vmcpconfig.Config{
+				Config: vmcpcrd.Config{
 					Group: mcpGroupName,
-					Optimizer: &vmcpconfig.OptimizerConfig{
+					Optimizer: &vmcpcrd.OptimizerConfig{
 						EmbeddingService: embeddingURL,
 					},
-					CompositeTools: []vmcpconfig.CompositeToolConfig{
+					CompositeTools: []vmcpcrd.CompositeToolConfig{
 						{
 							Name:        compositeToolName,
 							Description: "Fetches a URL twice in sequence for verification",
@@ -113,7 +113,7 @@ var _ = Describe("VirtualMCPServer Optimizer Composite Tools", Ordered, func() {
 								},
 								"required": []string{"url"},
 							}),
-							Steps: []vmcpconfig.WorkflowStepConfig{
+							Steps: []vmcpcrd.WorkflowStepConfig{
 								{
 									ID:        "first_fetch",
 									Type:      "tool",
@@ -130,12 +130,12 @@ var _ = Describe("VirtualMCPServer Optimizer Composite Tools", Ordered, func() {
 							},
 						},
 					},
-					Aggregation: &vmcpconfig.AggregationConfig{
+					Aggregation: &vmcpcrd.AggregationConfig{
 						ConflictResolution: "prefix",
-						Tools: []*vmcpconfig.WorkloadToolConfig{
+						Tools: []*vmcpcrd.WorkloadToolConfig{
 							{
 								Workload: backendName,
-								Overrides: map[string]*vmcpconfig.ToolOverride{
+								Overrides: map[string]*vmcpcrd.ToolOverride{
 									backendFetchToolName: {
 										Name:        vmcpFetchToolName,
 										Description: vmcpFetchToolDescription,

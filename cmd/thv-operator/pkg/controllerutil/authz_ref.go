@@ -88,10 +88,12 @@ func ValidateAuthzConfigReady(authzConfig *mcpv1beta1.MCPAuthzConfig) error {
 	return nil
 }
 
-// buildAuthzConfigFromRef builds a validated *authz.Config from a referenced
+// BuildAuthzConfigFromRef builds a validated *authz.Config from a referenced
 // MCPAuthzConfig, backend-agnostically (cedarv1, httpv1, ...). The resulting
-// config is safe to embed into a RunConfig via runner.WithAuthzConfig.
-func buildAuthzConfigFromRef(authzConfig *mcpv1beta1.MCPAuthzConfig) (*authz.Config, error) {
+// config is safe to embed into a RunConfig via runner.WithAuthzConfig, or to
+// unwrap into backend-specific options (e.g. via ExtractCedarAuthzOptions for
+// the Cedar-only VirtualMCPServer converter path).
+func BuildAuthzConfigFromRef(authzConfig *mcpv1beta1.MCPAuthzConfig) (*authz.Config, error) {
 	data, _, err := BuildFullAuthzConfigJSON(authzConfig.Spec)
 	if err != nil {
 		return nil, err
@@ -129,7 +131,7 @@ func AddAuthzConfigRefOptions(
 	if err := ValidateAuthzConfigReady(authzConfig); err != nil {
 		return err
 	}
-	cfg, err := buildAuthzConfigFromRef(authzConfig)
+	cfg, err := BuildAuthzConfigFromRef(authzConfig)
 	if err != nil {
 		return err
 	}

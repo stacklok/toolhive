@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestCalculateConfigHash(t *testing.T) {
@@ -92,8 +92,7 @@ func TestCalculateConfigHash(t *testing.T) {
 func TestFindReferencingMCPServers(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	t.Run("finds servers referencing toolconfig", func(t *testing.T) {
 		t.Parallel()
@@ -397,8 +396,7 @@ func TestWorkloadRefsEqual(t *testing.T) {
 func TestFindWorkloadRefsFromMCPServers(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	t.Run("returns sorted refs", func(t *testing.T) {
 		t.Parallel()
@@ -463,8 +461,7 @@ func TestFindWorkloadRefsFromMCPServers(t *testing.T) {
 func TestGetTelemetryConfigForMCPRemoteProxy(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	tests := []struct {
 		name            string
@@ -558,8 +555,7 @@ func TestGetTelemetryConfigForMCPRemoteProxy(t *testing.T) {
 func TestGetTelemetryConfigForVirtualMCPServer(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	tests := []struct {
 		name            string

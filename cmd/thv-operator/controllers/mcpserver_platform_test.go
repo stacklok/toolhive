@@ -11,9 +11,9 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -105,8 +105,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_Kubernetes(t *testing.T) {
 	}
 
 	// Create reconciler with mock platform detector for Kubernetes
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 	mockDetector := &mockPlatformDetector{
 		platform: kubernetes.PlatformKubernetes,
 		err:      nil,
@@ -178,8 +177,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_OpenShift(t *testing.T) {
 	}
 
 	// Create reconciler with mock platform detector for OpenShift
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 	mockDetector := &mockPlatformDetector{
 		platform: kubernetes.PlatformOpenShift,
 		err:      nil,
@@ -257,8 +255,7 @@ func TestMCPServerReconciler_DeploymentForMCPServer_PlatformDetectionError(t *te
 	}
 
 	// Create reconciler with mock platform detector that returns error
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 	mockDetector := &mockPlatformDetector{
 		platform: kubernetes.PlatformKubernetes,
 		err:      assert.AnError,

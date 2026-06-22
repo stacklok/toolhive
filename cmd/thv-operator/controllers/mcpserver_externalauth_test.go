@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -221,9 +222,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			// Build objects for fake client
 			objs := []runtime.Object{tt.mcpServer}
@@ -268,9 +267,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_SameNamespace(t *testing.T
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// External auth config in a different namespace
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
@@ -332,9 +329,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_HashUpdateTrigger(t *testi
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -409,9 +404,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_NoHashInConfig(t *testing.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// External auth config without hash in status
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
@@ -561,9 +554,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_MirrorsInvalidCondition(t 
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: authName, Namespace: namespace},
@@ -639,9 +630,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnRefRemoved(t
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
@@ -682,9 +671,7 @@ func TestMCPServerReconciler_handleExternalAuthConfig_ClearsMirrorOnSourceNotFou
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	t.Cleanup(cancel)
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-server", Namespace: "default"},
@@ -746,9 +733,7 @@ func TestMCPServerDeployment_OBOSecretEnvVars(t *testing.T) {
 	}
 	ctrlutil.RegisterOBOHandler(stub)
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},
@@ -805,9 +790,7 @@ func TestMCPServerDeployment_OBOSecretEnvVars_GenuineErrorDivergence(t *testing.
 	}
 	ctrlutil.RegisterOBOHandler(stub)
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: "default"},

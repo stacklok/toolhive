@@ -13,24 +13,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
-
-// replicasTestScheme registers the types the replica tests seed into the fake
-// client: the CRDs plus core and apps (Deployments).
-func replicasTestScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, appsv1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	return scheme
-}
 
 func replicasTestProxy(replicas *int32) *mcpv1beta1.MCPRemoteProxy {
 	return &mcpv1beta1.MCPRemoteProxy{
@@ -62,7 +51,7 @@ func TestDeploymentForMCPRemoteProxyReplicas(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := replicasTestScheme(t)
+			scheme := testutil.NewScheme(t)
 			r := &MCPRemoteProxyReconciler{
 				Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
 				Scheme: scheme,
@@ -104,7 +93,7 @@ func TestMCPRemoteProxyDeploymentNeedsUpdateReplicas(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := replicasTestScheme(t)
+			scheme := testutil.NewScheme(t)
 			r := &MCPRemoteProxyReconciler{
 				Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
 				Scheme: scheme,
@@ -144,7 +133,7 @@ func TestMCPRemoteProxyEnsureDeploymentReplicaSync(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := replicasTestScheme(t)
+			scheme := testutil.NewScheme(t)
 			proxy := replicasTestProxy(tt.specReplicas)
 
 			// Seed the RunConfig ConfigMap so getRunConfigChecksum resolves the

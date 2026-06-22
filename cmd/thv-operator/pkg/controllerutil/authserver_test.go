@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
@@ -638,9 +639,7 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 func TestGenerateAuthServerConfigByName(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	tests := []struct {
 		name            string
@@ -1653,9 +1652,7 @@ func TestBuildAuthServerRunConfig_InvalidDCR(t *testing.T) {
 func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	// Helper function to create a fresh external auth config for each test
 	// This avoids data races when running subtests in parallel
@@ -2345,9 +2342,7 @@ func TestBuildAuthServerRunConfig_WithRedisStorage(t *testing.T) {
 func TestAddAuthServerRefOptions(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	newValidEmbeddedAuthConfig := func() *mcpv1beta1.MCPExternalAuthConfig {
 		return &mcpv1beta1.MCPExternalAuthConfig{
@@ -2521,9 +2516,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	newEmbeddedAuthConfig := func() *mcpv1beta1.MCPExternalAuthConfig {
 		return &mcpv1beta1.MCPExternalAuthConfig{

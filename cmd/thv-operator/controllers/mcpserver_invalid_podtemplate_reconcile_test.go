@@ -13,7 +13,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -21,6 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
@@ -102,9 +102,7 @@ func TestMCPServerReconciler_InvalidPodTemplateSpec(t *testing.T) {
 			ctx := t.Context()
 
 			// Setup the test environment for each test to avoid race conditions
-			s := runtime.NewScheme()
-			require.NoError(t, scheme.AddToScheme(s))
-			require.NoError(t, mcpv1beta1.AddToScheme(s))
+			s := testutil.NewScheme(t)
 
 			// Create a fake event recorder for each test
 			eventRecorder := events.NewFakeRecorder(10)
@@ -183,9 +181,7 @@ func TestDeploymentArgsWithInvalidPodTemplateSpec(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	s := runtime.NewScheme()
-	require.NoError(t, scheme.AddToScheme(s))
-	require.NoError(t, mcpv1beta1.AddToScheme(s))
+	s := testutil.NewScheme(t)
 
 	// MCPServer with invalid PodTemplateSpec
 	mcpServer := &mcpv1beta1.MCPServer{

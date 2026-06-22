@@ -10,12 +10,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	// Blank-imported so the cedarv1 and httpv1 authorizer factories register
 	// themselves; BuildFullAuthzConfigJSON / AddAuthzConfigRefOptions resolve
 	// the backend via the authorizers registry.
@@ -29,14 +29,6 @@ const cedarRefConfig = `{"policies":["permit(principal, action, resource);"],"en
 
 // httpRefConfig is the backend-specific config blob an httpv1 MCPAuthzConfig holds.
 const httpRefConfig = `{"http":{"url":"https://pdp.example.com"},"claim_mapping":"standard"}`
-
-func authzScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-	return scheme
-}
 
 func newAuthzConfig(name, typ, rawConfig string, valid bool) *mcpv1beta1.MCPAuthzConfig {
 	cfg := &mcpv1beta1.MCPAuthzConfig{
@@ -117,7 +109,7 @@ func TestBuildFullAuthzConfigJSON(t *testing.T) {
 func TestGetAuthzConfigForWorkload(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	scheme := authzScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	cfg := newAuthzConfig("authz", "cedarv1", cedarRefConfig, true)
 	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(cfg).Build()
@@ -173,7 +165,7 @@ func TestValidateAuthzConfigReady(t *testing.T) {
 func TestAddAuthzConfigRefOptions(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	scheme := authzScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	cedarCfg := newAuthzConfig("cedar-authz", "cedarv1", cedarRefConfig, true)
 	httpCfg := newAuthzConfig("http-authz", "httpv1", httpRefConfig, true)

@@ -15,7 +15,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -24,6 +23,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestMCPWebhookConfigReconciler_Reconcile(t *testing.T) {
@@ -94,10 +94,7 @@ func TestMCPWebhookConfigReconciler_Reconcile(t *testing.T) {
 			t.Parallel()
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := []client.Object{tt.webhookConfig}
 			if tt.existingMCPServer != nil {
@@ -160,9 +157,7 @@ func TestMCPWebhookConfigReconciler_Reconcile(t *testing.T) {
 
 	t.Run("resource not found", func(t *testing.T) {
 		t.Parallel()
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 		fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 		r := &MCPWebhookConfigReconciler{
 			Client: fakeClient,
@@ -183,9 +178,7 @@ func TestMCPWebhookConfigReconciler_Reconcile(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		webhookConfig := &mcpv1alpha1.MCPWebhookConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -228,9 +221,7 @@ func TestMCPWebhookConfigReconciler_Reconcile(t *testing.T) {
 func TestMCPWebhookConfigReconciler_handleDeletion(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	webhookConfig := &mcpv1alpha1.MCPWebhookConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -300,9 +291,7 @@ func TestMCPWebhookConfigReconciler_handleDeletion(t *testing.T) {
 func TestMCPWebhookConfigReconciler_handleDeletionClearsBlockedCondition(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	webhookConfig := &mcpv1alpha1.MCPWebhookConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -347,10 +336,7 @@ func TestMCPWebhookConfigReconciler_mapMCPServerToWebhookConfig(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	server := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "server", Namespace: "default"},
@@ -471,9 +457,7 @@ func TestMCPWebhookConfigReconciler_updateReferencingWorkloads(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	webhookConfig := &mcpv1alpha1.MCPWebhookConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "webhook-config", Namespace: "default"},
@@ -527,9 +511,7 @@ func TestMCPWebhookConfigReconciler_updateReferencingWorkloadsListError(t *testi
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	webhookConfig := &mcpv1alpha1.MCPWebhookConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "webhook-config", Namespace: "default"},

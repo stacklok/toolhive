@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 )
@@ -56,7 +57,7 @@ func TestEmbeddingServer_DefaultImagePullSecrets(t *testing.T) {
 				"model",
 			)
 
-			scheme := createEmbeddingServerTestScheme()
+			scheme := testutil.NewScheme(t)
 			reconciler := &EmbeddingServerReconciler{
 				Scheme:                   scheme,
 				PlatformDetector:         ctrlutil.NewSharedPlatformDetector(),

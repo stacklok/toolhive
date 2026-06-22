@@ -14,14 +14,13 @@ import (
 	"go.uber.org/mock/gomock"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 )
 
@@ -44,7 +43,7 @@ func TestNewManager(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 
-			scheme := runtime.NewScheme()
+			scheme := testutil.NewScheme(t)
 
 			// Create manager
 			manager := NewManager(nil, scheme, imagepullsecrets.Defaults{})
@@ -67,11 +66,7 @@ func TestReconcileAPIService(t *testing.T) {
 		defer ctrl.Finish()
 
 		// Create scheme and fake client
-		scheme := runtime.NewScheme()
-		_ = mcpv1beta1.AddToScheme(scheme)
-		_ = appsv1.AddToScheme(scheme)
-		_ = corev1.AddToScheme(scheme)
-		_ = rbacv1.AddToScheme(scheme)
+		scheme := testutil.NewScheme(t)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -131,10 +126,7 @@ func TestReconcileAPIService(t *testing.T) {
 		defer ctrl.Finish()
 
 		// Create scheme and a client that will fail on ConfigMap operations
-		scheme := runtime.NewScheme()
-		_ = mcpv1beta1.AddToScheme(scheme)
-		_ = appsv1.AddToScheme(scheme)
-		_ = corev1.AddToScheme(scheme)
+		scheme := testutil.NewScheme(t)
 
 		// Create a fake client that will return an error when trying to create ConfigMaps
 		err := errors.New("simulated ConfigMap operation failure")

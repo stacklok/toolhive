@@ -29,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 )
@@ -202,7 +203,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			reconciler := &MCPRemoteProxyReconciler{
 				Scheme:           scheme,
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
@@ -310,7 +311,7 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			reconciler := &MCPRemoteProxyReconciler{
 				Scheme: scheme,
 			}
@@ -594,7 +595,7 @@ func TestEnsureDeployment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			// Add RBAC and Apps types to scheme
 			_ = rbacv1.AddToScheme(scheme)
 			_ = appsv1.AddToScheme(scheme)
@@ -672,7 +673,7 @@ func TestEnsureService(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			// Add RBAC and Apps types to scheme
 			_ = rbacv1.AddToScheme(scheme)
 			_ = appsv1.AddToScheme(scheme)
@@ -705,7 +706,7 @@ func TestEnsureService(t *testing.T) {
 func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T) {
 	t.Parallel()
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -767,7 +768,7 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *test
 func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(t *testing.T) {
 	t.Parallel()
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -830,7 +831,7 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(
 func TestMCPRemoteProxyDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testing.T) {
 	t.Parallel()
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -908,7 +909,7 @@ func TestMCPRemoteProxyDeployment_OBOSecretEnvVars(t *testing.T) {
 	}
 	ctrlutil.RegisterOBOHandler(stub)
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1014,7 +1015,7 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 			proxy := &mcpv1beta1.MCPRemoteProxy{
@@ -1268,7 +1269,7 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.proxy}
 			if tt.externalAuth != nil {
 				objects = append(objects, tt.externalAuth)

@@ -17,6 +17,7 @@ import (
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -119,10 +120,7 @@ func TestMCPServerReconciler_handleWebhookConfig(t *testing.T) {
 			t.Parallel()
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := []runtime.Object{tt.mcpServer}
 			if tt.webhookConfig != nil {
@@ -162,10 +160,7 @@ func TestMCPServerReconciler_mapWebhookConfigToServers(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	servers := []runtime.Object{
 		&mcpv1beta1.MCPServer{
@@ -225,10 +220,7 @@ func TestMCPServerReconciler_mapWebhookConfigToServers(t *testing.T) {
 func TestMCPServerReconciler_deploymentForMCPServerWebhookConfigError(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},

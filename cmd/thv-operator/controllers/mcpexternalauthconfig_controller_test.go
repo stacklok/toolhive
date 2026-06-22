@@ -15,13 +15,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -202,9 +202,7 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			// Create fake client with objects
 			objs := []client.Object{tt.externalAuthConfig}
@@ -272,8 +270,7 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -435,8 +432,7 @@ func TestGetExternalAuthConfigForMCPServer(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := []client.Object{}
 			if tt.existingConfig != nil {
@@ -552,8 +548,7 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			// Build objects list
 			objs := []client.Object{tt.externalAuthConfig}
@@ -600,9 +595,7 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -707,9 +700,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashC
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -797,9 +788,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDele
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -885,8 +874,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDele
 func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -971,8 +959,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(
 func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_bothRefsOnSameServer(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// A server has externalAuthConfigRef pointing to "token-exchange-config"
 	// AND authServerRef pointing to "embedded-auth-config".
@@ -1074,8 +1061,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_bothRefsOnSame
 func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers_deduplicates(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// A server has both externalAuthConfigRef and authServerRef pointing to the SAME config.
 	// The server should appear only once in the results.
@@ -1135,8 +1121,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers_deduplicates(
 func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_mcpRemoteProxy(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	config := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1335,9 +1320,7 @@ func TestMCPExternalAuthConfigReconciler_IdentitySynthesizedCondition(t *testing
 				Spec: tt.spec,
 			}
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
@@ -1412,9 +1395,7 @@ func TestMCPExternalAuthConfigReconciler_IdentitySynthesizedTransitionsOnValidat
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -1493,9 +1474,7 @@ func findCondition(conditions []metav1.Condition, t string) *metav1.Condition {
 func TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequired(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	cfg := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1559,9 +1538,7 @@ func TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequir
 func TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Construct a config that is already in the obo type but has a stale
 	// IdentitySynthesized condition left over from a prior embeddedAuthServer
@@ -1714,9 +1691,7 @@ func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile(t *testing.T
 			stub.Validate = func(*mcpv1beta1.MCPExternalAuthConfig) error { return tt.validateErr }
 			ctrlutil.RegisterOBOHandler(stub)
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			cfg := &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1793,9 +1768,7 @@ func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "default", Generation: 1},

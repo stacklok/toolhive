@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
@@ -597,7 +598,7 @@ func TestAddExternalAuthConfigOptions(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.mcpServer}
 			if tt.externalAuth != nil {
 				objects = append(objects, tt.externalAuth)
@@ -830,7 +831,7 @@ func TestCreateRunConfigFromMCPServer_WithExternalAuth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.mcpServer}
 			if tt.externalAuth != nil {
 				objects = append(objects, tt.externalAuth)
@@ -1101,7 +1102,7 @@ func TestGenerateTokenExchangeEnvVars(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.mcpServer}
 			if tt.externalAuth != nil {
 				objects = append(objects, tt.externalAuth)

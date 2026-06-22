@@ -3292,13 +3292,9 @@ func TestGetExternalAuthConfigNameFromWorkload(t *testing.T) {
 	}
 
 	mcpRemoteProxyMap := map[string]*mcpv1beta1.MCPRemoteProxy{
-		"proxy-with-auth": {
-			Spec: mcpv1beta1.MCPRemoteProxySpec{
-				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-					Name: "proxy-auth-config",
-				},
-			},
-		},
+		"proxy-with-auth": v1beta1test.NewMCPRemoteProxy("proxy-with-auth", "default",
+			v1beta1test.WithRemoteProxyExternalAuthConfigRef("proxy-auth-config"),
+		),
 	}
 
 	mcpServerEntryMap := map[string]*mcpv1beta1.MCPServerEntry{

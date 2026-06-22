@@ -19,13 +19,13 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -153,9 +153,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.mcpGroup}
@@ -197,9 +195,7 @@ func TestMapMCPGroupToVirtualMCPServer(t *testing.T) {
 func TestMapMCPGroupToVirtualMCPServer_InvalidObject(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &VirtualMCPServerReconciler{
@@ -208,12 +204,7 @@ func TestMapMCPGroupToVirtualMCPServer_InvalidObject(t *testing.T) {
 	}
 
 	// Pass wrong object type
-	wrongObj := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "default",
-		},
-	}
+	wrongObj := v1beta1test.NewMCPServer("test-server", "default")
 
 	requests := r.mapMCPGroupToVirtualMCPServer(context.Background(), wrongObj)
 	assert.Nil(t, requests, "Expected nil for invalid object type")
@@ -232,13 +223,8 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 		expectedNames     []string
 	}{
 		{
-			name: "MCPServer is member of MCPGroup referenced by VirtualMCPServer",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-			},
+			name:      "MCPServer is member of MCPGroup referenced by VirtualMCPServer",
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default"),
 			mcpGroups: []mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -265,13 +251,8 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 			expectedNames:    []string{"vmcp-1"},
 		},
 		{
-			name: "MCPServer is not member of any MCPGroup",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-			},
+			name:      "MCPServer is not member of any MCPGroup",
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default"),
 			mcpGroups: []mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -298,13 +279,8 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 			expectedNames:    []string{},
 		},
 		{
-			name: "MCPServer is member of MCPGroup but no VirtualMCPServers reference it",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-			},
+			name:      "MCPServer is member of MCPGroup but no VirtualMCPServers reference it",
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default"),
 			mcpGroups: []mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -331,13 +307,8 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 			expectedNames:    []string{},
 		},
 		{
-			name: "MCPServer is member of multiple MCPGroups with multiple VirtualMCPServers",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-			},
+			name:      "MCPServer is member of multiple MCPGroups with multiple VirtualMCPServers",
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default"),
 			mcpGroups: []mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -397,9 +368,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.mcpServer}
@@ -447,9 +416,7 @@ func TestMapMCPServerToVirtualMCPServer(t *testing.T) {
 func TestMapMCPServerToVirtualMCPServer_InvalidObject(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &VirtualMCPServerReconciler{
@@ -647,9 +614,7 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.mcpRemoteProxy}
@@ -697,9 +662,7 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 func TestMapMCPRemoteProxyToVirtualMCPServer_InvalidObject(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &VirtualMCPServerReconciler{
@@ -893,18 +856,10 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-server",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "test-auth",
-						},
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-server", "default",
+					v1beta1test.WithMCPGroupRef("test-group"),
+					v1beta1test.WithExternalAuthConfigRef("test-auth"),
+				),
 			},
 			expectedRequests: 1,
 			expectedNames:    []string{"vmcp-discovered"},
@@ -940,18 +895,10 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-server",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "other-auth",
-						},
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-server", "default",
+					v1beta1test.WithMCPGroupRef("test-group"),
+					v1beta1test.WithExternalAuthConfigRef("other-auth"),
+				),
 			},
 			expectedRequests: 0,
 			expectedNames:    []string{},
@@ -1057,9 +1004,7 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.authConfig}
@@ -1248,9 +1193,7 @@ func TestMapToolConfigToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.toolConfig}
@@ -1524,18 +1467,10 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-server",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "test-auth",
-						},
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-server", "default",
+					v1beta1test.WithMCPGroupRef("test-group"),
+					v1beta1test.WithExternalAuthConfigRef("test-auth"),
+				),
 			},
 			authConfigName: "test-auth",
 			expected:       true,
@@ -1563,18 +1498,10 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-server",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "other-auth",
-						},
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-server", "default",
+					v1beta1test.WithMCPGroupRef("test-group"),
+					v1beta1test.WithExternalAuthConfigRef("other-auth"),
+				),
 			},
 			authConfigName: "test-auth",
 			expected:       false,
@@ -1619,39 +1546,17 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-server-1",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "other-auth",
-						},
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-server-2",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "test-auth",
-						},
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-server-3",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-server-1", "default",
+					v1beta1test.WithMCPGroupRef("test-group"),
+					v1beta1test.WithExternalAuthConfigRef("other-auth"),
+				),
+				*v1beta1test.NewMCPServer("backend-server-2", "default",
+					v1beta1test.WithMCPGroupRef("test-group"),
+					v1beta1test.WithExternalAuthConfigRef("test-auth"),
+				),
+				*v1beta1test.NewMCPServer("backend-server-3", "default",
+					v1beta1test.WithMCPGroupRef("test-group"),
+				),
 			},
 			authConfigName: "test-auth",
 			expected:       true,
@@ -1741,9 +1646,7 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{}
@@ -1889,9 +1792,7 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 			t.Parallel()
 
 			// Create scheme
-			scheme := runtime.NewScheme()
-			err := mcpv1beta1.AddToScheme(scheme)
-			require.NoError(t, err)
+			scheme := testutil.NewScheme(t)
 
 			// Create objects slice
 			objs := []client.Object{tt.embeddingServer}
@@ -1933,9 +1834,7 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 func TestMapEmbeddingServerToVirtualMCPServer_InvalidObject(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := &VirtualMCPServerReconciler{
@@ -1944,12 +1843,7 @@ func TestMapEmbeddingServerToVirtualMCPServer_InvalidObject(t *testing.T) {
 	}
 
 	// Pass wrong object type
-	wrongObj := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "default",
-		},
-	}
+	wrongObj := v1beta1test.NewMCPServer("test-server", "default")
 
 	requests := r.mapEmbeddingServerToVirtualMCPServer(context.Background(), wrongObj)
 	assert.Nil(t, requests, "Expected nil for invalid object type")

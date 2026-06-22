@@ -103,6 +103,36 @@ func TestStatusCollector_SetOIDCConfigHash_Clear(t *testing.T) {
 	assert.Empty(t, status.OIDCConfigHash)
 }
 
+func TestStatusCollector_SetAuthzConfigHash(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetAuthzConfigHash("authz-hash-789")
+
+	status := &mcpv1beta1.VirtualMCPServerStatus{}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Equal(t, "authz-hash-789", status.AuthzConfigHash)
+}
+
+func TestStatusCollector_SetAuthzConfigHash_Clear(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetAuthzConfigHash("")
+
+	status := &mcpv1beta1.VirtualMCPServerStatus{AuthzConfigHash: "old-hash"}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Empty(t, status.AuthzConfigHash)
+}
+
 func TestStatusCollector_SetGroupRefValidatedCondition(t *testing.T) {
 	t.Parallel()
 

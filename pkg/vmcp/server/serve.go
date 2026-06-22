@@ -4,7 +4,6 @@
 package server
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -69,9 +68,18 @@ type ServerConfig struct {
 	// If nil, no authentication is required.
 	AuthMiddleware func(http.Handler) http.Handler
 
+	// RateLimitMiddleware is the optional rate-limit middleware to apply after
+	// authentication and MCP request parsing.
+	RateLimitMiddleware func(http.Handler) http.Handler
+
 	// AuthInfoHandler is the optional handler for the
 	// /.well-known/oauth-protected-resource endpoint.
 	AuthInfoHandler http.Handler
+
+	// PassthroughHeaders is an allowlist of incoming client header names the vMCP
+	// forwards, unchanged, to every backend it calls (see headerforward.CaptureMiddleware).
+	// Empty disables capture.
+	PassthroughHeaders []string
 
 	// AuthServer is the optional embedded authorization server. When non-nil, its
 	// routes are registered on the mux alongside the protected resource metadata.
@@ -119,6 +127,23 @@ type ServerConfig struct {
 	// definitions before assembling this config (sessionmanager.New only checks the
 	// WorkflowDefs/ComposerFactory pairing). This responsibility moves here with the
 	// relocation and matters when server.New is routed through Serve in Phase 3.
+	//
+	// Caller responsibility (AC2, the single-aggregation contract): FactoryConfig.Base
+	// MUST be constructed WITHOUT a session.WithAggregator option on the Serve path. On
+	// this path the core is the single source of truth — session registration sources the
+	// advertised set from core.ListTools/ListResources and routes calls through the core
+	// (handleSessionRegistrationImpl/serve_handlers.go); the factory's role is reduced to
+	// opening the session's backend connections and binding identity. A factory that also
+	// aggregates would produce a second, divergent capability set (drift) whose routing
+	// table this path discards — exactly the double-aggregation AC2 forbids. This is an
+	// unenforced contract today because no production composition root wires the Serve path
+	// yet; it becomes load-bearing when one does.
+	//
+	// Caller responsibility (optimizer): to enable the optimizer on the Serve path, set
+	// FactoryConfig.OptimizerConfig/OptimizerFactory AND FactoryConfig.AdvertiseFromCore.
+	// Serve then builds a per-session optimizer over the core's tools (serve_optimizer.go);
+	// AdvertiseFromCore suppresses the factory's own optimizer decorator so the shared FTS5
+	// store is not double-indexed (see FactoryConfig.AdvertiseFromCore).
 	SessionManagerConfig *sessionmanager.FactoryConfig
 
 	// TelemetryProvider is the cross-cutting telemetry provider (also consumed by
@@ -144,24 +169,35 @@ type ServerConfig struct {
 // .well-known endpoints, and any embedded auth-server routes) when Serve's *Server
 // is served.
 //
-// The remaining transport concerns — the authenticated middleware chain (#5441), the
-// direct VMCP request path (#5442), and the AS runner / status reporter / optimizer /
-// health monitor lifecycle (#5443) — are relocated under Serve by the subsequent
-// Phase 2 tasks. server.New is not yet routed through Serve and keeps its own copy of
-// the session wiring until Phase 3, so this is purely additive and observable behavior
-// is unchanged.
+// The authenticated middleware chain is produced by the shared (*Server).Handler that
+// the Serve-built *Server already uses, with the authz and annotation-enrichment layers
+// guarded off via a nil AuthzMiddleware (#5441); authorization moves to the core
+// admission seam (#5438). The injected core is stored on the *Server, which makes the
+// "/" MCP route serveable: the shared Handler guards the discovery middleware to the
+// legacy path (s.core == nil), and on the Serve path session registration and request
+// handlers call the core directly (#5442). The last transport subsystems — the embedded
+// AS runner routes, the status reporter (and its periodic goroutine), the optimizer
+// cleanup, and the health monitor's Start/Stop (#5443) — are driven from the
+// carried-forward shared (*Server).Handler/Start/Stop using the fields Serve populates
+// from ServerConfig below. Serve does NOT construct the health monitor: it receives the
+// pre-built *health.Monitor via ServerConfig (nil ⇒ disabled) and owns only its
+// lifecycle, while the composition root injects the same instance into the core as a
+// health.StatusProvider. server.New is not yet routed through Serve and keeps its own
+// copy of the session wiring until Phase 3, so this is purely additive and observable
+// behavior is unchanged.
 //
 // Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
 // nil required collaborator (SessionManagerConfig or BackendRegistry). The session
 // hooks close over the constructed *Server, so they are registered after it is
 // assembled.
 //
-// Contract: the returned *Server now has a live session manager and backend registry,
-// but a nil discovery manager, router, and backend client at this phase. It must NOT
-// be Start()ed or served on the "/" MCP route until #5441/#5442 wire those fields —
-// the carried-forward Handler passes them to discovery.Middleware, which would
-// nil-deref. The unauthenticated routes (registered as direct mux entries) are safe
-// to serve.
+// Contract: the returned *Server has a live session manager, backend registry, and core,
+// but a nil discovery manager, router, and backend client — the request path goes
+// through the core, so those legacy collaborators are unused on the Serve path. The
+// shared Handler skips the discovery middleware when s.core != nil, so serving the "/"
+// MCP route no longer nil-derefs. The embedded AS runner routes, the status reporter,
+// the optimizer cleanup, and the health monitor's Start/Stop are driven from the shared
+// Handler/Start/Stop via the fields Serve populates from ServerConfig (#5443).
 func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("%w: nil server config", vmcp.ErrInvalidConfig)
@@ -229,14 +265,20 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 
 	srv := &Server{
 		config:             serveCfg,
+		core:               v,
 		mcpServer:          mcpServer,
 		backendRegistry:    cfg.BackendRegistry,
 		sessionManager:     sessionManager,
 		sessionDataStorage: sessionDataStorage,
 		vmcpSessionMgr:     vmcpSessMgr,
-		ready:              make(chan struct{}),
-		healthMonitor:      cfg.HealthMonitor,
-		statusReporter:     cfg.StatusReporter,
+		// Surface the resolved (telemetry-wrapped) optimizer factory so Serve-path
+		// session registration builds a per-session optimizer over the core's tools.
+		// Nil when the optimizer is disabled; the store/cleanup stay owned by the
+		// session manager (optimizerCleanup, appended to shutdownFuncs below).
+		optimizerFactory: vmcpSessMgr.OptimizerFactory(),
+		ready:            make(chan struct{}),
+		healthMonitor:    cfg.HealthMonitor,
+		statusReporter:   cfg.StatusReporter,
 	}
 
 	if optimizerCleanup != nil {
@@ -269,16 +311,18 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	return srv, nil
 }
 
-// buildServeConfig maps the transport-only ServerConfig onto the existing *Config
-// the carried-forward (*Server) methods read from, applying the same transport
-// defaults server.New applies today. Defaults are applied here rather than by
-// mutating the caller's ServerConfig (go-style: copy before mutating caller input).
-// Port 0 is left untouched to mean "OS-assigned".
+// buildServeConfig maps the transport-only ServerConfig onto the existing *Config the
+// carried-forward (*Server) methods read from. It is a pure pass-through: transport
+// defaults are resolved once at the composition root via WithDefaults, so the
+// incoming ServerConfig is already resolved and buildServeConfig applies no defaulting of
+// its own. Port 0 still means "OS-assigned".
 //
 // Several Config fields are deliberately NOT mapped at this phase (see
 // TestBuildServeConfigMapsSharedFields, which guards this list against drift):
-//   - AuthzMiddleware: the authenticated/authz middleware chain is relocated under
-//     Serve by #5441, after which authorization moves to the core admission seam.
+//   - AuthzMiddleware: intentionally left nil on the Serve path. The shared
+//     (*Server).Handler omits both the authz and annotation-enrichment blocks when
+//     AuthzMiddleware is nil; authorization moves to the core admission seam (#5438).
+//     The inert blocks stay in the shared Handler until Phase 3 (#5445) removes them.
 //   - HealthMonitorConfig: Serve receives the already-built *health.Monitor via
 //     ServerConfig.HealthMonitor (A2) and assigns it to the Server directly, so it
 //     never needs the monitor's construction config.
@@ -291,15 +335,17 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 //     wiring), not via Config→New, so these Config fields are unused on the Serve path.
 func buildServeConfig(cfg *ServerConfig) *Config {
 	return &Config{
-		Name:                    cmp.Or(cfg.Name, defaultServerName),
-		Version:                 cmp.Or(cfg.Version, defaultServerVersion),
+		Name:                    cfg.Name,
+		Version:                 cfg.Version,
 		GroupRef:                cfg.GroupRef,
-		Host:                    cmp.Or(cfg.Host, defaultHost),
+		Host:                    cfg.Host,
 		Port:                    cfg.Port,
-		EndpointPath:            cmp.Or(cfg.EndpointPath, defaultEndpointPath),
-		SessionTTL:              cmp.Or(cfg.SessionTTL, defaultSessionTTL),
+		EndpointPath:            cfg.EndpointPath,
+		SessionTTL:              cfg.SessionTTL,
 		AuthMiddleware:          cfg.AuthMiddleware,
+		RateLimitMiddleware:     cfg.RateLimitMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
+		PassthroughHeaders:      cfg.PassthroughHeaders,
 		AuthServer:              cfg.AuthServer,
 		TelemetryProvider:       cfg.TelemetryProvider,
 		AuditConfig:             cfg.AuditConfig,

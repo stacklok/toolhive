@@ -125,6 +125,12 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
+	// Resolve a referenced MCPAuthzConfig (spec.authzConfigRef) into runtime authz.
+	// Inline and ref are mutually exclusive (CRD XValidation), so at most one is active.
+	if err := ctrlutil.AddAuthzConfigRefOptions(apiCtx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfigRef, &options); err != nil {
+		return nil, fmt.Errorf("failed to process AuthzConfigRef: %w", err)
+	}
+
 	// Add OIDC configuration if referenced via MCPOIDCConfigRef
 	resolvedOIDCConfig, err := r.resolveAndAddOIDCConfig(apiCtx, proxy, &options)
 	if err != nil {
@@ -168,6 +174,14 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 		return nil, err
 	}
 
+	// Populate ScalingConfig.SessionRedis from spec.sessionStorage so the
+	// proxy runner has the address/db/keyPrefix needed to construct a
+	// shared Redis-backed session store. The Redis password is intentionally
+	// excluded here — it is injected as the THV_SESSION_REDIS_PASSWORD env
+	// var by buildRedisPasswordEnvVar in mcpremoteproxy_deployment.go.
+	// Must run before PopulateMiddlewareConfigs because rate limiting reads SessionRedis.
+	populateScalingConfigForRemoteProxy(runConfig, proxy)
+
 	// Populate middleware configs from the configuration fields
 	// This ensures that middleware_configs is properly set for serialization
 	if err := runner.PopulateMiddlewareConfigs(runConfig); err != nil {
@@ -175,6 +189,27 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 	}
 
 	return runConfig, nil
+}
+
+// populateScalingConfigForRemoteProxy mirrors populateScalingConfig from
+// mcpserver_runconfig.go but for MCPRemoteProxy (which has no
+// BackendReplicas concept). When MCPRemoteProxy.spec.sessionStorage uses
+// the redis provider, this populates runner.ScalingConfig.SessionRedis with
+// the non-sensitive connection parameters.
+func populateScalingConfigForRemoteProxy(runConfig *runner.RunConfig, proxy *mcpv1beta1.MCPRemoteProxy) {
+	if proxy.Spec.SessionStorage == nil ||
+		proxy.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis {
+		return
+	}
+
+	if runConfig.ScalingConfig == nil {
+		runConfig.ScalingConfig = &runner.ScalingConfig{}
+	}
+	runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
+		Address:   proxy.Spec.SessionStorage.Address,
+		DB:        proxy.Spec.SessionStorage.DB,
+		KeyPrefix: proxy.Spec.SessionStorage.KeyPrefix,
+	}
 }
 
 // resolveAndAddOIDCConfig resolves OIDC configuration from the shared MCPOIDCConfigRef,

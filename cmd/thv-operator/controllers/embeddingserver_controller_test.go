@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
@@ -331,14 +332,6 @@ func TestEmbeddingServer_ModelCacheConfig(t *testing.T) {
 
 // Test helpers
 
-func createEmbeddingServerTestScheme() *runtime.Scheme {
-	testScheme := runtime.NewScheme()
-	_ = corev1.AddToScheme(testScheme)
-	_ = appsv1.AddToScheme(testScheme)
-	_ = mcpv1beta1.AddToScheme(testScheme)
-	return testScheme
-}
-
 func createTestEmbeddingServer(name, namespace, image, model string) *mcpv1beta1.EmbeddingServer {
 	return &mcpv1beta1.EmbeddingServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -357,7 +350,7 @@ func createTestEmbeddingServer(name, namespace, image, model string) *mcpv1beta1
 func TestReconcile_NotFound(t *testing.T) {
 	t.Parallel()
 
-	scheme := createEmbeddingServerTestScheme()
+	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		Build()
@@ -386,7 +379,7 @@ func TestReconcile_CreateResources(t *testing.T) {
 
 	embedding := createTestEmbeddingServer("test-embedding", "test-ns", "test-image:latest", "test-model")
 
-	scheme := createEmbeddingServerTestScheme()
+	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(embedding).
@@ -446,7 +439,7 @@ func TestReconcile_CreateResources(t *testing.T) {
 func TestStatefulSetNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
-	scheme := createEmbeddingServerTestScheme()
+	scheme := testutil.NewScheme(t)
 	reconciler := &EmbeddingServerReconciler{
 		Scheme:           scheme,
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
@@ -563,7 +556,7 @@ func TestHandleDeletion(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createEmbeddingServerTestScheme()
+			scheme := testutil.NewScheme(t)
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithRuntimeObjects(tt.embedding).
@@ -673,7 +666,7 @@ func TestEnsureStatefulSet(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createEmbeddingServerTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.embedding}
 			if tt.existingSts != nil {
 				objects = append(objects, tt.existingSts)
@@ -768,7 +761,7 @@ func TestUpdateEmbeddingServerStatus(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createEmbeddingServerTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.embedding}
 			if tt.statefulSet != nil {
 				objects = append(objects, tt.statefulSet)
@@ -1023,7 +1016,7 @@ func TestEmbeddingServer_PodTemplateSpec_PreservesUserFields(t *testing.T) {
 			embedding := createTestEmbeddingServer("test", testNamespaceDefault, "test-image:latest", "test-model")
 			embedding.Spec.PodTemplateSpec = podTemplateSpecToRawExtension(t, tt.userPTS)
 
-			scheme := createEmbeddingServerTestScheme()
+			scheme := testutil.NewScheme(t)
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithRuntimeObjects(embedding).
@@ -1081,7 +1074,7 @@ func TestEmbeddingServer_PodTemplateSpec_SoftFailFallback(t *testing.T) {
 		Raw: []byte(`{"spec":{"containers":[{"name":"embedding","$patch":"invalid"}]}}`),
 	}
 
-	scheme := createEmbeddingServerTestScheme()
+	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(embedding).
@@ -1136,7 +1129,7 @@ func TestEmbeddingServer_PodTemplateSpec_EmptyObjectIsNoOp(t *testing.T) {
 	embedding := createTestEmbeddingServer("test", testNamespaceDefault, "test-image:latest", "test-model")
 	embedding.Spec.PodTemplateSpec = &runtime.RawExtension{Raw: []byte(`{}`)}
 
-	scheme := createEmbeddingServerTestScheme()
+	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(embedding).

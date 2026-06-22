@@ -9,18 +9,17 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	tests := []struct {
 		name               string
@@ -259,8 +258,7 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 func TestMapTelemetryConfigToMCPRemoteProxy(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	proxy1 := &mcpv1beta1.MCPRemoteProxy{
 		ObjectMeta: metav1.ObjectMeta{Name: "proxy1", Namespace: "default"},

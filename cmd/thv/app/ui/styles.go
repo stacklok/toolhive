@@ -71,6 +71,9 @@ var (
 	pillUnauthed = lipgloss.NewStyle().
 			Background(bgWarning).Foreground(ColorYellow).
 			Padding(0, 1).Render("⚠ unauthed")
+	pillAuthRetrying = lipgloss.NewStyle().
+				Background(bgWarning).Foreground(ColorYellow).
+				Padding(0, 1).Render("🔄 retrying")
 
 	keyStyle  = lipgloss.NewStyle().Foreground(ColorDim2)
 	portStyle = lipgloss.NewStyle().Foreground(ColorCyan).Bold(true)
@@ -96,6 +99,8 @@ func RenderStatusDot(status rt.WorkloadStatus) string {
 	case rt.WorkloadStatusUnhealthy:
 		return dotWarning
 	case rt.WorkloadStatusUnauthenticated:
+		return dotWarning
+	case rt.WorkloadStatusAuthRetrying:
 		return dotWarning
 	case rt.WorkloadStatusRemoving:
 		return dotWarning
@@ -128,6 +133,8 @@ func RenderStatusPill(status rt.WorkloadStatus) string {
 		return pillUnknown
 	case rt.WorkloadStatusUnauthenticated:
 		return pillUnauthed
+	case rt.WorkloadStatusAuthRetrying:
+		return pillAuthRetrying
 	case rt.WorkloadStatusPolicyStopped:
 		return pillStopped
 	default:

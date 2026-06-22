@@ -22,6 +22,7 @@ stateDiagram-v2
     Running --> Stopping: Stop
     Running --> Unhealthy: Health Failed
     Running --> Unauthenticated: Auth Failed
+    Running --> AuthRetrying: Transient Token Refresh Failures
     Running --> Stopped: Container Exit
 
     Stopping --> Stopped: Success
@@ -31,6 +32,9 @@ stateDiagram-v2
     Unauthenticated --> Starting: Re-authenticate
     Unauthenticated --> Removing: Delete
 
+    AuthRetrying --> Running: Refresh Succeeds
+    AuthRetrying --> Unauthenticated: Ceiling Exceeded or Permanent Error
+
     Removing --> [*]: Success
     Error --> Starting: Restart
     Error --> Removing: Delete
@@ -38,8 +42,16 @@ stateDiagram-v2
 
 **States**: `pkg/container/runtime/types.go`
 - `starting`, `running`, `stopping`, `stopped`
-- `removing`, `error`, `unhealthy`, `unauthenticated`
+- `removing`, `error`, `unhealthy`, `unauthenticated`, `auth_retrying`
 - `policy_stopped`, `unknown`
+
+The `auth_retrying` cadence and ceiling can be tuned via environment
+variables on the proxy process:
+
+- `TOOLHIVE_TOKEN_AUTH_RETRYING_TICK_INTERVAL` (default `10m`): cadence
+  between background refresh attempts during the AuthRetrying window.
+- `TOOLHIVE_TOKEN_AUTH_RETRYING_MAX_ELAPSED` (default `24h`): ceiling
+  before the workload is finally marked `unauthenticated`.
 
 ## Core Operations
 

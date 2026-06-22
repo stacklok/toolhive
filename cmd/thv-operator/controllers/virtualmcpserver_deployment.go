@@ -492,14 +492,14 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 
 	// Mount secret from Default ExternalAuthConfigRef
 	if vmcp.Spec.OutgoingAuth.Default != nil && vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef != nil {
-		defaultSecret, err := r.getExternalAuthConfigSecretEnvVar(
+		defaultSecrets, err := r.getExternalAuthConfigSecretEnvVars(
 			ctx, vmcp.Namespace, vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef.Name)
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.V(1).Info("Failed to get Default ExternalAuthConfig secret, continuing without it",
 				"error", err)
-		} else if defaultSecret != nil {
-			env = append(env, *defaultSecret)
+		} else {
+			env = append(env, defaultSecrets...)
 		}
 	}
 
@@ -697,16 +697,14 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 		seenConfigs[configName] = true
 
 		// Get the secret env var for this ExternalAuthConfig
-		secretEnvVar, err := r.getExternalAuthConfigSecretEnvVar(ctx, vmcp.Namespace, configName)
+		secretEnvVars, err := r.getExternalAuthConfigSecretEnvVars(ctx, vmcp.Namespace, configName)
 		if err != nil {
 			ctxLogger.V(1).Info("Failed to get ExternalAuthConfig secret, skipping",
 				"externalAuthConfig", configName,
 				"error", err)
 			continue
 		}
-		if secretEnvVar != nil {
-			envVars = append(envVars, *secretEnvVar)
-		}
+		envVars = append(envVars, secretEnvVars...)
 	}
 
 	// Sort by name for deterministic ordering. The Kubernetes informer cache returns
@@ -744,7 +742,7 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 		seenConfigs[configName] = true
 
 		// Get the secret env var for this ExternalAuthConfig
-		secretEnvVar, err := r.getExternalAuthConfigSecretEnvVar(ctx, vmcp.Namespace, configName)
+		secretEnvVars, err := r.getExternalAuthConfigSecretEnvVars(ctx, vmcp.Namespace, configName)
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.V(1).Info("Failed to get ExternalAuthConfig secret, skipping",
@@ -752,9 +750,7 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 				"error", err)
 			continue
 		}
-		if secretEnvVar != nil {
-			envVars = append(envVars, *secretEnvVar)
-		}
+		envVars = append(envVars, secretEnvVars...)
 	}
 
 	// Sort by name for the same reason as discoverExternalAuthConfigSecrets: Go map
@@ -767,15 +763,21 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 	return envVars
 }
 
-// getExternalAuthConfigSecretEnvVar returns an environment variable for secrets
-// from an ExternalAuthConfig (token exchange client secrets or header injection values).
-// Generates unique env var names per ExternalAuthConfig to avoid conflicts when multiple
-// configs of the same type reference different secrets.
-func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
+// getExternalAuthConfigSecretEnvVars returns the environment variables for
+// secrets from an ExternalAuthConfig (token exchange client secrets, header
+// injection values, or — for obo — whatever the registered OBO handler asks
+// for). Generates unique env var names per ExternalAuthConfig to avoid conflicts
+// when multiple configs of the same type reference different secrets.
+//
+// The obo arm forwards every env var the handler returns (matching MCPServer and
+// MCPRemoteProxy) and propagates obo.ErrEnterpriseRequired so the wired-but-
+// disabled state is not masked as a no-op (see #5328); callers log-and-continue
+// on error.
+func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 	ctx context.Context,
 	namespace string,
 	externalAuthConfigName string,
-) (*corev1.EnvVar, error) {
+) ([]corev1.EnvVar, error) {
 	// Fetch the MCPExternalAuthConfig
 	externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(
 		ctx, r.Client, namespace, externalAuthConfigName)
@@ -832,13 +834,19 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		return nil, nil
 
 	case mcpv1beta1.ExternalAuthTypeOBO:
-		return firstOBOSecretEnvVar(externalAuthConfig)
+		// Dispatch through the registered OBO handler, forwarding every env var
+		// it returns. OBOSecretEnvVars propagates obo.ErrEnterpriseRequired in
+		// upstream-only builds (unlike ctrlutil.AddOBOSecretEnvVars, which
+		// swallows it for MCPServer/MCPRemoteProxy builder/drift symmetry); vMCP
+		// must propagate it per #5328 so the wired-but-disabled state is not
+		// masked as a no-op.
+		return ctrlutil.OBOSecretEnvVars(externalAuthConfig)
 
 	default:
 		return nil, nil // Not applicable
 	}
 
-	return &corev1.EnvVar{
+	return []corev1.EnvVar{{
 		Name: envVarName,
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
@@ -848,21 +856,7 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 				Key: secretRef.Key,
 			},
 		},
-	}, nil
-}
-
-// firstOBOSecretEnvVar dispatches through the registered OBO handler and
-// returns the first env var (if any) or the dispatch error. In upstream-only
-// builds the default handler returns obo.ErrEnterpriseRequired; an out-of-tree
-// build registers a real handler via controllerutil.RegisterOBOHandler.
-// Extracted from getExternalAuthConfigSecretEnvVar to keep its cyclomatic
-// complexity below the project threshold.
-func firstOBOSecretEnvVar(cfg *mcpv1beta1.MCPExternalAuthConfig) (*corev1.EnvVar, error) {
-	envVars, err := ctrlutil.OBOSecretEnvVars(cfg)
-	if err != nil || len(envVars) == 0 {
-		return nil, err
-	}
-	return &envVars[0], nil
+	}}, nil
 }
 
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations

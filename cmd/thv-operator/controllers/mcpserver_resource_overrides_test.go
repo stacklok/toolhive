@@ -21,10 +21,10 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	checksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
@@ -33,9 +33,7 @@ import (
 func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -103,9 +101,7 @@ func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T
 func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -165,9 +161,7 @@ func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(t *te
 func TestMCPServerDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -219,8 +213,7 @@ func TestMCPServerDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testing.T) 
 func TestResourceOverrides(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Note: expectedPodTemplateAnns entries below carry
 	// "toolhive.stacklok.dev/mcpserver-generation": "0" because the controller
@@ -640,9 +633,7 @@ func TestResourceOverrides(t *testing.T) {
 func TestDeploymentForMCPServer_PodTemplateOverridesPreserveRunConfigChecksum(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
@@ -683,9 +674,7 @@ func TestDeploymentForMCPServer_PodTemplateOverridesPreserveRunConfigChecksum(t 
 func TestDeploymentNeedsUpdate_StableAfterBuildWithPodTemplateOverrides(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
@@ -767,8 +756,7 @@ func TestMergeStringMaps(t *testing.T) {
 func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
@@ -1008,8 +996,7 @@ func TestMCPServerDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 			r := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
@@ -1051,8 +1038,7 @@ func TestMCPServerDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T) {
 func TestMCPServerSessionAffinityNone(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1171,9 +1157,7 @@ func TestMCPServerServiceNeedsUpdate(t *testing.T) {
 func TestDeploymentForMCPServer_MCPServerGenerationDownwardAPI(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)

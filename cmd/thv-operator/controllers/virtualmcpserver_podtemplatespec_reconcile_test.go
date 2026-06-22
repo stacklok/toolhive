@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -32,10 +33,7 @@ const (
 // twice with the same PodTemplateSpec produces identical results (no spurious updates)
 func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 	t.Parallel()
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	namespace := testPodTemplateNamespace
 	vmcpName := testPodTemplateVmcpName
@@ -110,10 +108,7 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 // This is a regression test for the nil-slice-becomes-empty-array bug.
 func TestVirtualMCPServerPodTemplateSpecPreservesContainer(t *testing.T) {
 	t.Parallel()
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	namespace := testPodTemplateNamespace
 	vmcpName := testPodTemplateVmcpName
@@ -289,10 +284,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 // the default resource requirements via PodTemplateSpec using strategic merge patch.
 func TestVirtualMCPServerPodTemplateSpecResourceOverride(t *testing.T) {
 	t.Parallel()
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	namespace := testPodTemplateNamespace
 	vmcpName := testPodTemplateVmcpName

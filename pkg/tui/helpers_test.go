@@ -193,8 +193,9 @@ func TestCountStatuses(t *testing.T) {
 				{Status: rt.WorkloadStatusRunning},
 				{Status: rt.WorkloadStatusUnauthenticated},
 				{Status: rt.WorkloadStatusUnhealthy},
+				{Status: rt.WorkloadStatusAuthRetrying},
 			},
-			expectedRunning: 3,
+			expectedRunning: 4,
 			expectedStopped: 0,
 		},
 		{

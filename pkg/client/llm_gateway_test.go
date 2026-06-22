@@ -84,8 +84,9 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 			// ~/.claude/settings.json
 			clientType: ClaudeCode,
 			wantPointers: map[string]string{
-				"/apiKeyHelper":           `"thv" llm token`,
-				"/env/ANTHROPIC_BASE_URL": "https://gw.example.com",
+				"/apiKeyHelper":                          `"thv" llm token`,
+				"/env/ANTHROPIC_BASE_URL":                "https://gw.example.com",
+				"/env/CLAUDE_CODE_API_KEY_HELPER_TTL_MS": "300000",
 			},
 		},
 		{

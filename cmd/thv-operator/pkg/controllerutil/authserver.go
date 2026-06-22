@@ -582,6 +582,9 @@ func BuildAuthServerRunConfig(
 	}
 	config.Storage = storageCfg
 
+	// Wire through upstream token injection flag
+	config.DisableUpstreamTokenInjection = authConfig.DisableUpstreamTokenInjection
+
 	// Build CIMD configuration. CacheFallbackTTL is passed as-is (string);
 	// resolveCIMDConfig in the runner parses it to time.Duration at startup.
 	if authConfig.CIMD != nil && authConfig.CIMD.Enabled {

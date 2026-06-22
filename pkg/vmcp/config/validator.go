@@ -5,12 +5,15 @@ package config
 
 import (
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -81,6 +84,11 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 
 	// Validate composite tool references
 	if err := v.validateCompositeToolRefs(cfg.CompositeToolRefs); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	// Validate passthrough headers allowlist
+	if err := v.validatePassthroughHeaders(cfg); err != nil {
 		errors = append(errors, err.Error())
 	}
 
@@ -484,6 +492,25 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 		refNames[ref.Name] = true
 	}
 
+	return nil
+}
+
+func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
+	for i, name := range cfg.PassthroughHeaders {
+		if name == "" {
+			return fmt.Errorf("passthroughHeaders[%d]: header name must not be empty", i)
+		}
+
+		canonical := http.CanonicalHeaderKey(name)
+
+		if middleware.RestrictedHeaders[canonical] {
+			return fmt.Errorf("passthroughHeaders[%d]: %q is a restricted header and cannot be forwarded", i, canonical)
+		}
+
+		if err := httpval.ValidateHeaderName(name); err != nil {
+			return fmt.Errorf("passthroughHeaders[%d]: invalid header name %q: %w", i, name, err)
+		}
+	}
 	return nil
 }
 

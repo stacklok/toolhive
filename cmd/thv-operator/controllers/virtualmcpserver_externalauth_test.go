@@ -12,13 +12,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/authserver"
@@ -182,9 +182,7 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			_ = mcpv1beta1.AddToScheme(scheme)
-			_ = corev1.AddToScheme(scheme)
+			scheme := testutil.NewScheme(t)
 
 			// Set up fake client (no secrets needed - secrets are mounted as env vars, not resolved)
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
@@ -240,26 +238,10 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-1",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "auth-config-1",
-						},
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-2",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						// No ExternalAuthConfigRef
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-1", "default",
+					v1beta1test.WithExternalAuthConfigRef("auth-config-1"),
+				),
+				*v1beta1test.NewMCPServer("backend-2", "default"), // No ExternalAuthConfigRef
 			},
 			authConfigs: []mcpv1beta1.MCPExternalAuthConfig{
 				{
@@ -319,28 +301,12 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-1",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "auth-config-1",
-						},
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-2",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "auth-config-2",
-						},
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-1", "default",
+					v1beta1test.WithExternalAuthConfigRef("auth-config-1"),
+				),
+				*v1beta1test.NewMCPServer("backend-2", "default",
+					v1beta1test.WithExternalAuthConfigRef("auth-config-2"),
+				),
 			},
 			authConfigs: []mcpv1beta1.MCPExternalAuthConfig{
 				{
@@ -429,17 +395,9 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-1",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "auth-config-1",
-						},
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-1", "default",
+					v1beta1test.WithExternalAuthConfigRef("auth-config-1"),
+				),
 			},
 			authConfigs: []mcpv1beta1.MCPExternalAuthConfig{
 				{
@@ -575,17 +533,9 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-1",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "missing-auth-config",
-						},
-					},
-				},
+				*v1beta1test.NewMCPServer("backend-1", "default",
+					v1beta1test.WithExternalAuthConfigRef("missing-auth-config"),
+				),
 			},
 			workloadNames: []workloads.TypedWorkload{
 				{
@@ -710,8 +660,7 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			_ = mcpv1beta1.AddToScheme(scheme)
+			scheme := testutil.NewScheme(t)
 
 			// Build objects list for fake client
 			objects := []client.Object{tt.vmcp}
@@ -815,8 +764,7 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			_ = mcpv1beta1.AddToScheme(scheme)
+			scheme := testutil.NewScheme(t)
 
 			objects := []client.Object{}
 			for i := range tt.authConfigs {
@@ -861,8 +809,7 @@ func TestConvertBackendAuthConfigToVMCP(t *testing.T) {
 func TestConvertBackendAuthConfigToVMCP_MirrorsInvalidExternalAuthConfig(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	invalidSource := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "obo-source", Namespace: "default"},
@@ -1313,8 +1260,7 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 func TestBuildOutgoingAuthConfig_SubjectProviderInjection(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// A shared MCPExternalAuthConfig with token_exchange and no SubjectProviderName.
 	defaultAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
@@ -1345,17 +1291,9 @@ func TestBuildOutgoingAuthConfig_SubjectProviderInjection(t *testing.T) {
 		},
 	}
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "backend-1",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: "discovered-auth",
-			},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("backend-1", "default",
+		v1beta1test.WithExternalAuthConfigRef("discovered-auth"),
+	)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1471,8 +1409,7 @@ func TestDiscoverExternalAuthConfigSecrets_DeterministicOrdering(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			vmcp := &mcpv1beta1.VirtualMCPServer{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1489,34 +1426,18 @@ func TestDiscoverExternalAuthConfigSecrets_DeterministicOrdering(t *testing.T) {
 			// Four MCPServers each referencing a distinct MCPExternalAuthConfig.
 			// The MCPServer names match the workload Names in tt.workloadOrder.
 			mcpServers := []client.Object{
-				&mcpv1beta1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "server-alpha", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "alpha-auth"},
-					},
-				},
-				&mcpv1beta1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "server-beta", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "beta-auth"},
-					},
-				},
-				&mcpv1beta1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "server-mu", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "mu-auth"},
-					},
-				},
-				&mcpv1beta1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "server-zeta", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerSpec{
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "zeta-auth"},
-					},
-				},
+				v1beta1test.NewMCPServer("server-alpha", "default",
+					v1beta1test.WithExternalAuthConfigRef("alpha-auth")),
+				v1beta1test.NewMCPServer("server-beta", "default",
+					v1beta1test.WithExternalAuthConfigRef("beta-auth")),
+				v1beta1test.NewMCPServer("server-mu", "default",
+					v1beta1test.WithExternalAuthConfigRef("mu-auth")),
+				v1beta1test.NewMCPServer("server-zeta", "default",
+					v1beta1test.WithExternalAuthConfigRef("zeta-auth")),
 			}
 
 			// One MCPExternalAuthConfig per MCPServer, each with a client secret ref so
-			// getExternalAuthConfigSecretEnvVar returns a non-nil env var.
+			// getExternalAuthConfigSecretEnvVars returns a non-empty env var slice.
 			authConfigs := []client.Object{
 				&mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "alpha-auth", Namespace: "default"},
@@ -1624,8 +1545,7 @@ func TestDiscoverInlineExternalAuthConfigSecrets_DeterministicOrdering(t *testin
 	//
 	// Alphabetical order: ALPHA < BETA < MU < ZETA
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1755,8 +1675,7 @@ func TestDiscoverInlineExternalAuthConfigSecrets_DeterministicOrdering(t *testin
 func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// MCPExternalAuthConfig referenced by the inline Backends override.
 	inlineAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
@@ -1827,17 +1746,17 @@ func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testin
 		"inline backend SubjectProviderName should be injected from first upstream")
 }
 
-// TestGetExternalAuthConfigSecretEnvVar_OBO proves the obo arm of the
-// getExternalAuthConfigSecretEnvVar switch dispatches through the registered
+// TestGetExternalAuthConfigSecretEnvVars_OBO proves the obo arm of the
+// getExternalAuthConfigSecretEnvVars switch dispatches through the registered
 // OBO handler. With the default handler the method must return an error
 // wrapping obo.ErrEnterpriseRequired AND must not silently fall through to
-// nil, nil — that would mask the wired-but-disabled state behind a no-op.
-func TestGetExternalAuthConfigSecretEnvVar_OBO(t *testing.T) {
+// nil, nil — that would mask the wired-but-disabled state behind a no-op. This
+// propagate-on-disabled contract is why vMCP calls OBOSecretEnvVars directly
+// rather than the swallowing ctrlutil.AddOBOSecretEnvVars wrapper.
+func TestGetExternalAuthConfigSecretEnvVars_OBO(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	authCfg := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1861,11 +1780,11 @@ func TestGetExternalAuthConfigSecretEnvVar_OBO(t *testing.T) {
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 	}
 
-	envVar, err := r.getExternalAuthConfigSecretEnvVar(t.Context(), "default", authCfg.Name)
+	envVars, err := r.getExternalAuthConfigSecretEnvVars(t.Context(), "default", authCfg.Name)
 	require.Error(t, err)
 	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired,
 		"the default OBO handler returns obo.ErrEnterpriseRequired; the dispatch arm must propagate it")
-	assert.Nil(t, envVar, "no env var should be returned on the error path")
+	assert.Empty(t, envVars, "no env var should be returned on the error path")
 
 	// Generic-error guard: per issue #5328 AC, neither generic substring may
 	// leak from any of the three consumer dispatch paths.

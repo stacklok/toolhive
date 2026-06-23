@@ -1,0 +1,88 @@
+# Usage telemetry PoC — local ClickHouse for the operator to insert snapshots into.
+#
+# Namespace: defaults to toolhive-system (the operator's namespace) so the operator can
+# reach it at clickhouse.toolhive-system.svc:8123. To use a different namespace, change
+# every `namespace:` below AND set USAGE_CLICKHOUSE_URL on the operator accordingly
+# (e.g. http://clickhouse.<your-ns>.svc:8123).
+#
+# Ephemeral on purpose: storage is emptyDir, so ALL DATA IS LOST on pod restart. That is
+# fine for a PoC. The schema (schema.sql) must be re-applied after any restart.
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: clickhouse
+  namespace: toolhive-system
+  labels:
+    app: clickhouse
+    app.kubernetes.io/part-of: usage-telemetry-poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: clickhouse
+  template:
+    metadata:
+      labels:
+        app: clickhouse
+        app.kubernetes.io/part-of: usage-telemetry-poc
+    spec:
+      containers:
+        - name: clickhouse
+          image: clickhouse/clickhouse-server:24-alpine
+          ports:
+            - name: http
+              containerPort: 8123
+            - name: native
+              containerPort: 9000
+          # ClickHouse needs a higher nofile limit; the alpine image expects it.
+          securityContext:
+            capabilities:
+              add:
+                - SYS_NICE
+          readinessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /ping
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 15
+          resources:
+            limits:
+              cpu: "1"
+              memory: "1Gi"
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+      volumes:
+        # Ephemeral PoC storage — data is lost on pod restart. Swap for a PVC if you want
+        # snapshots to survive restarts.
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: clickhouse
+  namespace: toolhive-system
+  labels:
+    app: clickhouse
+    app.kubernetes.io/part-of: usage-telemetry-poc
+spec:
+  selector:
+    app: clickhouse
+  ports:
+    - name: http
+      port: 8123
+      targetPort: http
+    - name: native
+      port: 9000
+      targetPort: native

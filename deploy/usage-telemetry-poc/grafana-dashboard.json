@@ -1,0 +1,402 @@
+{
+  "__inputs": [
+    {
+      "name": "DS_CLICKHOUSE",
+      "label": "ClickHouse",
+      "description": "ClickHouse datasource for usage_events",
+      "type": "datasource",
+      "pluginId": "grafana-clickhouse-datasource",
+      "pluginName": "ClickHouse"
+    }
+  ],
+  "__requires": [
+    { "type": "grafana", "id": "grafana", "name": "Grafana", "version": "9.0.0" },
+    { "type": "datasource", "id": "grafana-clickhouse-datasource", "name": "ClickHouse", "version": "4.0.0" },
+    { "type": "panel", "id": "stat", "name": "Stat", "version": "" },
+    { "type": "panel", "id": "timeseries", "name": "Time series", "version": "" },
+    { "type": "panel", "id": "piechart", "name": "Pie chart", "version": "" },
+    { "type": "panel", "id": "barchart", "name": "Bar chart", "version": "" },
+    { "type": "panel", "id": "table", "name": "Table", "version": "" }
+  ],
+  "annotations": { "list": [] },
+  "description": "ToolHive operator usage telemetry — MCPServer counts, active installations, operator version distribution, cloud providers, feature-gate adoption.",
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "panels": [
+
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "Active Installations (window)",
+      "gridPos": { "h": 4, "w": 4, "x": 0, "y": 0 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "colorMode": "background", "graphMode": "none",
+        "justifyMode": "auto", "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "blue", "value": null }, { "color": "green", "value": 1 }
+          ]},
+          "unit": "short", "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT countDistinct(installation_id) AS active\nFROM usage_events\nWHERE event_time >= $__fromTime AND event_time <= $__toTime",
+        "format": "table"
+      }]
+    },
+
+    {
+      "id": 2,
+      "type": "stat",
+      "title": "Total MCPServers (fleet)",
+      "gridPos": { "h": 4, "w": 4, "x": 4, "y": 0 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "colorMode": "background", "graphMode": "none",
+        "justifyMode": "auto", "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "green", "value": null }, { "color": "orange", "value": 20 }
+          ]},
+          "unit": "short", "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT sum(c) AS total\nFROM (\n  SELECT installation_id, argMax(mcpserver_count, event_time) AS c\n  FROM usage_events\n  GROUP BY installation_id\n)",
+        "format": "table"
+      }]
+    },
+
+    {
+      "id": 3,
+      "type": "stat",
+      "title": "Installs Using External Auth",
+      "gridPos": { "h": 4, "w": 4, "x": 8, "y": 0 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "colorMode": "background", "graphMode": "none",
+        "justifyMode": "auto", "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [
+            { "color": "semi-dark-blue", "value": null }
+          ]},
+          "unit": "short", "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT countIf(c > 0) AS n\nFROM (\n  SELECT installation_id, argMax(mcpexternalauthconfig_count, event_time) AS c\n  FROM usage_events\n  GROUP BY installation_id\n)",
+        "format": "table"
+      }]
+    },
+
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Active Installations Over Time",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 2,
+            "fillOpacity": 20, "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "unit": "short", "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT\n  toStartOfInterval(event_time, INTERVAL 5 MINUTE) AS time,\n  countDistinct(installation_id) AS active\nFROM usage_events\nWHERE event_time >= $__fromTime AND event_time <= $__toTime\nGROUP BY time\nORDER BY time ASC",
+        "format": "timeseries"
+      }]
+    },
+
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "MCPServer Count per Installation Over Time",
+      "gridPos": { "h": 10, "w": 14, "x": 0, "y": 4 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 2,
+            "fillOpacity": 10, "showPoints": "auto", "spanNulls": false,
+            "stacking": { "group": "A", "mode": "none" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "unit": "short", "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT\n  event_time AS time,\n  installation_id,\n  mcpserver_count\nFROM usage_events\nWHERE event_time >= $__fromTime AND event_time <= $__toTime\nORDER BY event_time ASC",
+        "format": "timeseries"
+      }]
+    },
+
+    {
+      "id": 6,
+      "type": "barchart",
+      "title": "Fleet Size Distribution",
+      "gridPos": { "h": 10, "w": 10, "x": 14, "y": 8 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "barRadius": 0.05, "barWidth": 0.7, "groupWidth": 0.7,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "orientation": "auto", "stacking": "none",
+        "tooltip": { "mode": "single", "sort": "none" },
+        "xTickLabelRotation": 0, "xTickLabelSpacing": 100
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 80, "lineWidth": 0 },
+          "unit": "short", "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT\n  multiIf(c = 0, '0', c <= 5, '1-5', c <= 20, '6-20', '20+') AS bucket,\n  count() AS installations\nFROM (\n  SELECT installation_id, argMax(mcpserver_count, event_time) AS c\n  FROM usage_events\n  GROUP BY installation_id\n)\nGROUP BY bucket\nORDER BY installations DESC",
+        "format": "table"
+      }]
+    },
+
+    {
+      "id": 7,
+      "type": "piechart",
+      "title": "Operator Version Distribution",
+      "gridPos": { "h": 8, "w": 6, "x": 0, "y": 14 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "displayLabels": ["name", "percent"],
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "values": ["value"] },
+        "pieType": "pie",
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } },
+          "unit": "short", "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT\n  version,\n  count() AS installations\nFROM (\n  SELECT installation_id, argMax(operator_version, event_time) AS version\n  FROM usage_events\n  GROUP BY installation_id\n)\nGROUP BY version\nORDER BY installations DESC",
+        "format": "table"
+      }]
+    },
+
+    {
+      "id": 8,
+      "type": "timeseries",
+      "title": "Version Adoption Over Time (stacked)",
+      "gridPos": { "h": 8, "w": 18, "x": 6, "y": 14 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line", "lineInterpolation": "linear", "lineWidth": 1,
+            "fillOpacity": 60, "showPoints": "never", "spanNulls": true,
+            "stacking": { "group": "A", "mode": "normal" },
+            "thresholdsStyle": { "mode": "off" }
+          },
+          "unit": "short", "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT\n  toStartOfInterval(event_time, INTERVAL 10 MINUTE) AS time,\n  operator_version,\n  countDistinct(installation_id) AS installs\nFROM usage_events\nWHERE event_time >= $__fromTime AND event_time <= $__toTime\nGROUP BY time, operator_version\nORDER BY time ASC",
+        "format": "timeseries"
+      }]
+    },
+
+    {
+      "id": 9,
+      "type": "barchart",
+      "title": "Kubernetes Version Distribution",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 22 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "barRadius": 0.05, "barWidth": 0.7, "groupWidth": 0.7,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "orientation": "horizontal", "stacking": "none",
+        "tooltip": { "mode": "single", "sort": "none" },
+        "xTickLabelRotation": 0, "xTickLabelSpacing": 100
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 80, "lineWidth": 0 },
+          "unit": "short", "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT\n  k8s_version,\n  count() AS installations\nFROM (\n  SELECT installation_id, argMax(k8s_server_version, event_time) AS k8s_version\n  FROM usage_events\n  GROUP BY installation_id\n)\nGROUP BY k8s_version\nORDER BY installations DESC",
+        "format": "table"
+      }]
+    },
+
+    {
+      "id": 10,
+      "type": "piechart",
+      "title": "Cloud Provider Distribution",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 22 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "displayLabels": ["name", "percent"],
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true, "values": ["value"] },
+        "pieType": "donut",
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "hideFrom": { "legend": false, "tooltip": false, "viz": false } },
+          "unit": "short", "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT\n  cloud,\n  count() AS installations\nFROM (\n  SELECT installation_id, argMax(cloud_provider, event_time) AS cloud\n  FROM usage_events\n  GROUP BY installation_id\n)\nGROUP BY cloud\nORDER BY installations DESC",
+        "format": "table"
+      }]
+    },
+
+    {
+      "id": 11,
+      "type": "barchart",
+      "title": "Feature-Gate Adoption",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 22 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "barRadius": 0.05, "barWidth": 0.6, "groupWidth": 0.7,
+        "legend": { "calcs": [], "displayMode": "list", "placement": "bottom", "showLegend": false },
+        "orientation": "horizontal", "stacking": "none",
+        "tooltip": { "mode": "single", "sort": "none" },
+        "xTickLabelRotation": 0, "xTickLabelSpacing": 150
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": { "fillOpacity": 80, "lineWidth": 0 },
+          "unit": "short", "mappings": []
+        },
+        "overrides": []
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT\n  gate,\n  countIf(enabled = 1) AS installs_enabled\nFROM (\n  SELECT installation_id, argMax(feature_gates, event_time) AS fg\n  FROM usage_events\n  GROUP BY installation_id\n)\nARRAY JOIN mapKeys(fg) AS gate, mapValues(fg) AS enabled\nGROUP BY gate\nORDER BY installs_enabled DESC",
+        "format": "table"
+      }]
+    },
+
+    {
+      "id": 12,
+      "type": "table",
+      "title": "All Installations",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 30 },
+      "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+      "options": {
+        "cellHeight": "sm",
+        "footer": { "countRows": false, "fields": "", "reducer": ["sum"], "show": false },
+        "showHeader": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "custom": { "align": "auto", "cellOptions": { "type": "auto" }, "inspect": false },
+          "mappings": [],
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] }
+        },
+        "overrides": [
+          { "matcher": { "id": "byName", "options": "servers" }, "properties": [{ "id": "custom.width", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "ext_auth" }, "properties": [{ "id": "custom.width", "value": 80 }] },
+          { "matcher": { "id": "byName", "options": "last_seen" }, "properties": [{ "id": "custom.width", "value": 160 }] }
+        ]
+      },
+      "targets": [{
+        "refId": "A",
+        "datasource": { "type": "grafana-clickhouse-datasource", "uid": "clickhouse-usage-poc" },
+        "rawSql": "SELECT\n  installation_id,\n  argMax(operator_version, event_time) AS version,\n  argMax(k8s_server_version, event_time) AS k8s,\n  argMax(cloud_provider, event_time) AS cloud,\n  argMax(mcpserver_count, event_time) AS servers,\n  argMax(mcpexternalauthconfig_count, event_time) AS ext_auth,\n  max(event_time) AS last_seen\nFROM usage_events\nGROUP BY installation_id\nORDER BY last_seen DESC",
+        "format": "table"
+      }]
+    }
+
+  ],
+  "refresh": "30s",
+  "schemaVersion": 38,
+  "tags": ["toolhive", "usage-telemetry", "poc"],
+  "templating": { "list": [] },
+  "time": { "from": "now-3h", "to": "now" },
+  "timepicker": {},
+  "timezone": "utc",
+  "title": "ToolHive Usage Telemetry",
+  "uid": "toolhive-usage-poc",
+  "version": 2
+}

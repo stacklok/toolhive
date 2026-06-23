@@ -1,0 +1,46 @@
+# Usage telemetry PoC — local ClickHouse bench (no Kubernetes).
+#
+# Use this to test the reporter outside the cluster. Brings up ClickHouse with the HTTP
+# interface on localhost:8123 and the native protocol on localhost:9000.
+#
+#   docker compose -f docker-compose.yml up -d
+#
+# Apply the schema once it is up:
+#   curl --data-binary @schema.sql http://localhost:8123
+#
+# Point the operator (or the reporter, run locally) at it:
+#   - Running the operator/reporter on the host:
+#       USAGE_CLICKHOUSE_URL=http://localhost:8123
+#   - Running the operator/reporter inside another container (Docker Desktop):
+#       USAGE_CLICKHOUSE_URL=http://host.docker.internal:8123
+#     (on Linux, add: --add-host=host.docker.internal:host-gateway, or use the host's
+#      LAN/bridge IP instead.)
+#
+# Equivalent one-liner without compose:
+#   docker run --rm -d --name clickhouse-poc \
+#     -p 8123:8123 -p 9000:9000 \
+#     --ulimit nofile=262144:262144 \
+#     clickhouse/clickhouse-server:24-alpine
+#
+# Data lives in an anonymous volume; `docker compose down -v` wipes it.
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:24-alpine
+    container_name: clickhouse-poc
+    ports:
+      - "8123:8123" # HTTP interface (the operator inserts here)
+      - "9000:9000" # native protocol (clickhouse-client)
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  clickhouse-data:

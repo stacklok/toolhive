@@ -7,6 +7,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os/exec"
+	goruntime "runtime"
 	"testing"
 	"time"
 
@@ -2259,4 +2261,367 @@ func TestGetRemoteWorkloadsFromState_AuthRetryingVisibleWithoutAll(t *testing.T)
 		"remote workload in AuthRetrying should be visible in default thv list (listAll=false)")
 	assert.False(t, sawDead,
 		"remote workload in Unauthenticated should remain hidden in default thv list (listAll=false)")
+}
+
+// startKillableProcess starts a real, long-lived child process and returns its
+// PID. The process is killed and reaped on test cleanup. It is used to exercise
+// the path where stopProcess finds a valid PID and KillProcess succeeds. The
+// helper relies on the Unix `sleep` command, so it skips on Windows (the CI unit
+// test matrix is Linux-only) and if the process cannot be started.
+func startKillableProcess(t *testing.T) int {
+	t.Helper()
+	if goruntime.GOOS == "windows" {
+		t.Skip("startKillableProcess relies on the Unix sleep command")
+	}
+	cmd := exec.Command("sleep", "300")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("could not start helper process: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return cmd.Process.Pid
+}
+
+// TestDefaultManager_stopProcess verifies the boolean contract that the
+// stop/delete port-cleanup fallback relies on: stopProcess reports true only
+// when it found a tracked PID and killed it. A false return (no PID recorded —
+// e.g. a missing status file — or a failed kill) is what triggers the
+// port-based cleanup fallback in stopSingleContainerWorkload/deleteContainerWorkload.
+func TestDefaultManager_stopProcess(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		workload   string
+		setupMocks func(t *testing.T, sm *statusMocks.MockStatusManager)
+		want       bool
+	}{
+		{
+			name:     "empty name returns false",
+			workload: "",
+			setupMocks: func(_ *testing.T, _ *statusMocks.MockStatusManager) {
+				// No status manager calls expected for an empty name.
+			},
+			want: false,
+		},
+		{
+			name:     "GetWorkloadPID error returns false",
+			workload: "test-workload",
+			setupMocks: func(_ *testing.T, sm *statusMocks.MockStatusManager) {
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, errors.New("boom"))
+			},
+			want: false,
+		},
+		{
+			name:     "missing status file (pid 0) returns false",
+			workload: "test-workload",
+			setupMocks: func(_ *testing.T, sm *statusMocks.MockStatusManager) {
+				// A missing status file yields PID 0 with no error; KillProcess(0) fails,
+				// so no proxy is stopped. The PID is still reset.
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(0, nil)
+				sm.EXPECT().ResetWorkloadPID(gomock.Any(), "test-workload").Return(nil)
+			},
+			want: false,
+		},
+		{
+			name:     "valid running PID returns true",
+			workload: "test-workload",
+			setupMocks: func(t *testing.T, sm *statusMocks.MockStatusManager) {
+				t.Helper()
+				pid := startKillableProcess(t)
+				sm.EXPECT().GetWorkloadPID(gomock.Any(), "test-workload").Return(pid, nil)
+				sm.EXPECT().ResetWorkloadPID(gomock.Any(), "test-workload").Return(nil)
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+
+			sm := statusMocks.NewMockStatusManager(ctrl)
+			tt.setupMocks(t, sm)
+
+			manager := &DefaultManager{statuses: sm}
+
+			got := manager.stopProcess(context.Background(), tt.workload)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestDefaultManager_orphanProxyPortCleanup verifies that stop and rm fall back
+// to port-based proxy cleanup when the tracked PID is unavailable (the missing
+// status-file scenario), and that the fallback does not run on the normal path
+// where the proxy was stopped by PID.
+func TestDefaultManager_orphanProxyPortCleanup(t *testing.T) {
+	t.Parallel()
+
+	const workloadName = "test-workload"
+	containerInfo := func() runtime.ContainerInfo {
+		return runtime.ContainerInfo{
+			Name:   workloadName,
+			State:  "running",
+			Labels: map[string]string{"toolhive-basename": workloadName},
+		}
+	}
+
+	t.Run("stop frees orphan proxy port when status file missing", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		sm := statusMocks.NewMockStatusManager(ctrl)
+		rtMock := runtimeMocks.NewMockRuntime(ctrl)
+
+		// Missing status file: no tracked PID, so the proxy is not killed by PID.
+		sm.EXPECT().GetWorkloadPID(gomock.Any(), workloadName).Return(0, nil)
+		sm.EXPECT().ResetWorkloadPID(gomock.Any(), workloadName).Return(nil)
+		rtMock.EXPECT().StopWorkload(gomock.Any(), workloadName).Return(nil)
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusStopped, "").Return(nil)
+
+		var freed []*runner.RunConfig
+		runConfig := &runner.RunConfig{BaseName: workloadName, Port: 54321}
+		manager := &DefaultManager{statuses: sm, runtime: rtMock}
+		withPortFreer(func(_ context.Context, rc *runner.RunConfig) {
+			freed = append(freed, rc)
+		})(manager)
+
+		ci := containerInfo()
+		err := manager.stopSingleContainerWorkload(context.Background(), &ci, runConfig)
+		require.NoError(t, err)
+
+		require.Len(t, freed, 1, "port-cleanup fallback should run exactly once")
+		assert.Equal(t, workloadName, freed[0].BaseName, "fallback should receive the workload's run config")
+		assert.Equal(t, 54321, freed[0].Port, "fallback should receive the workload's proxy port")
+	})
+
+	t.Run("stop does not free port on normal shutdown", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		sm := statusMocks.NewMockStatusManager(ctrl)
+		rtMock := runtimeMocks.NewMockRuntime(ctrl)
+
+		// A valid, killable PID: the proxy is stopped by PID, so no fallback.
+		pid := startKillableProcess(t)
+		sm.EXPECT().GetWorkloadPID(gomock.Any(), workloadName).Return(pid, nil)
+		sm.EXPECT().ResetWorkloadPID(gomock.Any(), workloadName).Return(nil)
+		rtMock.EXPECT().StopWorkload(gomock.Any(), workloadName).Return(nil)
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusStopped, "").Return(nil)
+
+		freedCalls := 0
+		manager := &DefaultManager{statuses: sm, runtime: rtMock}
+		withPortFreer(func(_ context.Context, _ *runner.RunConfig) {
+			freedCalls++
+		})(manager)
+
+		ci := containerInfo()
+		err := manager.stopSingleContainerWorkload(
+			context.Background(), &ci, &runner.RunConfig{BaseName: workloadName, Port: 54321},
+		)
+		require.NoError(t, err)
+
+		assert.Zero(t, freedCalls, "port-cleanup fallback must not run when the proxy was stopped by PID")
+	})
+
+	t.Run("delete frees orphan proxy port when status file missing", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		sm := statusMocks.NewMockStatusManager(ctrl)
+		rtMock := runtimeMocks.NewMockRuntime(ctrl)
+
+		// Container is found and removed cleanly.
+		rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), workloadName).Return(containerInfo(), nil)
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusRemoving, "").Return(nil)
+		rtMock.EXPECT().RemoveWorkload(gomock.Any(), workloadName).Return(nil)
+		// removeContainer waits for the container to disappear from the runtime.
+		rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), workloadName).Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
+		// Missing status file: no tracked PID, so the proxy is not killed by PID.
+		sm.EXPECT().GetWorkloadPID(gomock.Any(), workloadName).Return(0, nil)
+		sm.EXPECT().ResetWorkloadPID(gomock.Any(), workloadName).Return(nil)
+		sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), workloadName).Return(nil)
+
+		var freed []*runner.RunConfig
+		runConfig := &runner.RunConfig{BaseName: workloadName, Port: 54321}
+		manager := &DefaultManager{statuses: sm, runtime: rtMock}
+		withPortFreer(func(_ context.Context, rc *runner.RunConfig) {
+			freed = append(freed, rc)
+		})(manager)
+
+		err := manager.deleteContainerWorkload(context.Background(), workloadName, runConfig)
+		require.NoError(t, err)
+
+		require.Len(t, freed, 1, "port-cleanup fallback should run exactly once")
+		assert.Equal(t, workloadName, freed[0].BaseName, "fallback should receive the workload's run config")
+		assert.Equal(t, 54321, freed[0].Port, "fallback should receive the workload's proxy port")
+	})
+
+	t.Run("delete does not free port on normal shutdown", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		sm := statusMocks.NewMockStatusManager(ctrl)
+		rtMock := runtimeMocks.NewMockRuntime(ctrl)
+
+		rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), workloadName).Return(containerInfo(), nil)
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusRemoving, "").Return(nil)
+		rtMock.EXPECT().RemoveWorkload(gomock.Any(), workloadName).Return(nil)
+		rtMock.EXPECT().GetWorkloadInfo(gomock.Any(), workloadName).Return(runtime.ContainerInfo{}, runtime.ErrWorkloadNotFound)
+		// A valid, killable PID: the proxy is stopped by PID, so no fallback.
+		pid := startKillableProcess(t)
+		sm.EXPECT().GetWorkloadPID(gomock.Any(), workloadName).Return(pid, nil)
+		sm.EXPECT().ResetWorkloadPID(gomock.Any(), workloadName).Return(nil)
+		sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), workloadName).Return(nil)
+
+		freedCalls := 0
+		manager := &DefaultManager{statuses: sm, runtime: rtMock}
+		withPortFreer(func(_ context.Context, _ *runner.RunConfig) {
+			freedCalls++
+		})(manager)
+
+		err := manager.deleteContainerWorkload(
+			context.Background(), workloadName, &runner.RunConfig{BaseName: workloadName, Port: 54321},
+		)
+		require.NoError(t, err)
+
+		assert.Zero(t, freedCalls, "port-cleanup fallback must not run when the proxy was stopped by PID")
+	})
+
+	t.Run("remote stop frees orphan proxy port when status file missing", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		sm := statusMocks.NewMockStatusManager(ctrl)
+
+		// Real orphan: the status file is gone, so GetWorkload cannot find the
+		// workload (a remote workload has no container to fall back to). The proxy
+		// may still be holding the port, so the fallback must still fire — and the
+		// status transitions are skipped since the workload is not "running".
+		sm.EXPECT().GetWorkload(gomock.Any(), workloadName).Return(core.Workload{}, runtime.ErrWorkloadNotFound)
+		// No tracked PID, so the proxy is not killed by PID.
+		sm.EXPECT().GetWorkloadPID(gomock.Any(), workloadName).Return(0, nil)
+		sm.EXPECT().ResetWorkloadPID(gomock.Any(), workloadName).Return(nil)
+
+		var freed []*runner.RunConfig
+		runConfig := &runner.RunConfig{BaseName: workloadName, Port: 54321}
+		manager := &DefaultManager{statuses: sm}
+		withPortFreer(func(_ context.Context, rc *runner.RunConfig) {
+			freed = append(freed, rc)
+		})(manager)
+
+		err := manager.stopRemoteWorkload(context.Background(), workloadName, runConfig)
+		require.NoError(t, err)
+
+		require.Len(t, freed, 1, "port-cleanup fallback should run exactly once")
+		assert.Equal(t, workloadName, freed[0].BaseName, "fallback should receive the workload's run config")
+		assert.Equal(t, 54321, freed[0].Port, "fallback should receive the workload's proxy port")
+	})
+
+	t.Run("remote delete frees orphan proxy port when status file missing", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		sm := statusMocks.NewMockStatusManager(ctrl)
+
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusRemoving, "").Return(nil)
+		// Missing status file: no tracked PID, so the proxy is not killed by PID.
+		sm.EXPECT().GetWorkloadPID(gomock.Any(), workloadName).Return(0, nil)
+		sm.EXPECT().ResetWorkloadPID(gomock.Any(), workloadName).Return(nil)
+		sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), workloadName).Return(nil)
+
+		var freed []*runner.RunConfig
+		runConfig := &runner.RunConfig{BaseName: workloadName, Port: 54321}
+		manager := &DefaultManager{statuses: sm}
+		withPortFreer(func(_ context.Context, rc *runner.RunConfig) {
+			freed = append(freed, rc)
+		})(manager)
+
+		err := manager.deleteRemoteWorkload(context.Background(), workloadName, runConfig)
+		require.NoError(t, err)
+
+		require.Len(t, freed, 1, "port-cleanup fallback should run exactly once")
+		assert.Equal(t, workloadName, freed[0].BaseName, "fallback should receive the workload's run config")
+		assert.Equal(t, 54321, freed[0].Port, "fallback should receive the workload's proxy port")
+	})
+
+	t.Run("remote stop does not free port on normal shutdown", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		sm := statusMocks.NewMockStatusManager(ctrl)
+
+		sm.EXPECT().GetWorkload(gomock.Any(), workloadName).Return(core.Workload{
+			Name:   workloadName,
+			Status: runtime.WorkloadStatusRunning,
+		}, nil)
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusStopping, "").Return(nil)
+		// A valid, killable PID: the proxy is stopped by PID, so no fallback.
+		pid := startKillableProcess(t)
+		sm.EXPECT().GetWorkloadPID(gomock.Any(), workloadName).Return(pid, nil)
+		sm.EXPECT().ResetWorkloadPID(gomock.Any(), workloadName).Return(nil)
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusStopped, "").Return(nil)
+
+		freedCalls := 0
+		manager := &DefaultManager{statuses: sm}
+		withPortFreer(func(_ context.Context, _ *runner.RunConfig) {
+			freedCalls++
+		})(manager)
+
+		err := manager.stopRemoteWorkload(
+			context.Background(), workloadName, &runner.RunConfig{BaseName: workloadName, Port: 54321},
+		)
+		require.NoError(t, err)
+
+		assert.Zero(t, freedCalls, "port-cleanup fallback must not run when the proxy was stopped by PID")
+	})
+
+	t.Run("remote delete does not free port on normal shutdown", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		defer ctrl.Finish()
+
+		sm := statusMocks.NewMockStatusManager(ctrl)
+
+		sm.EXPECT().SetWorkloadStatus(gomock.Any(), workloadName, runtime.WorkloadStatusRemoving, "").Return(nil)
+		// A valid, killable PID: the proxy is stopped by PID, so no fallback.
+		pid := startKillableProcess(t)
+		sm.EXPECT().GetWorkloadPID(gomock.Any(), workloadName).Return(pid, nil)
+		sm.EXPECT().ResetWorkloadPID(gomock.Any(), workloadName).Return(nil)
+		sm.EXPECT().DeleteWorkloadStatus(gomock.Any(), workloadName).Return(nil)
+
+		freedCalls := 0
+		manager := &DefaultManager{statuses: sm}
+		withPortFreer(func(_ context.Context, _ *runner.RunConfig) {
+			freedCalls++
+		})(manager)
+
+		err := manager.deleteRemoteWorkload(
+			context.Background(), workloadName, &runner.RunConfig{BaseName: workloadName, Port: 54321},
+		)
+		require.NoError(t, err)
+
+		assert.Zero(t, freedCalls, "port-cleanup fallback must not run when the proxy was stopped by PID")
+	})
 }

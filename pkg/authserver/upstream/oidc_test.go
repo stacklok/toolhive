@@ -465,8 +465,14 @@ func TestOIDCConfig_Validate_SubjectClaim(t *testing.T) {
 		{name: "empty is valid", subjectClaim: "", wantErr: false},
 		{name: "explicit sub is valid", subjectClaim: "sub", wantErr: false},
 		{name: "non-standard claim is valid", subjectClaim: "oid", wantErr: false},
+		{name: "underscore claim is valid", subjectClaim: "user_id", wantErr: false},
+		{name: "leading underscore is valid", subjectClaim: "_oid", wantErr: false},
 		{name: "whitespace-only is rejected", subjectClaim: "   ", wantErr: true},
 		{name: "surrounding whitespace is rejected", subjectClaim: "oid ", wantErr: true},
+		{name: "dotted claim is rejected", subjectClaim: "oid.sub", wantErr: true},
+		{name: "hyphenated claim is rejected", subjectClaim: "oid-id", wantErr: true},
+		{name: "colon-namespaced claim is rejected", subjectClaim: "custom:role", wantErr: true},
+		{name: "leading digit is rejected", subjectClaim: "1oid", wantErr: true},
 	}
 
 	for _, tt := range tests {
@@ -748,7 +754,8 @@ func TestOIDCProviderImpl_ExchangeCodeForIdentity(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
-		require.Error(t, err)
+		require.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		assert.Contains(t, err.Error(), "not present in ID token")
 	})
 
 	t.Run("configured SubjectClaim with empty value returns error", func(t *testing.T) {
@@ -787,7 +794,48 @@ func TestOIDCProviderImpl_ExchangeCodeForIdentity(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
-		require.Error(t, err)
+		require.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		assert.Contains(t, err.Error(), "is empty")
+	})
+
+	t.Run("configured SubjectClaim with non-string value returns error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// "oid" is present but numeric — must fail loud, not coerce or fall back.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "user-123", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": 12345},
+			)
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		assert.Contains(t, err.Error(), "is not a string")
 	})
 
 	t.Run("nonce mismatch returns error", func(t *testing.T) {
@@ -1238,6 +1286,91 @@ func TestOIDCProvider_RefreshTokens(t *testing.T) {
 		require.NoError(t, err)
 
 		_, err = provider.RefreshTokens(ctx, "old-refresh-token", "different-user")
+		require.ErrorIs(t, err, ErrSubjectMismatch)
+	})
+
+	t.Run("refresh resolves the configured SubjectClaim, not the raw sub", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// Mimic Entra: the stable per-user id is "oid"; "sub" differs from it.
+		// expectedSubject is the resolved "oid" value stored at initial login,
+		// so the refresh check must resolve the refreshed token's "oid" claim —
+		// comparing the raw "sub" would wrongly trip ErrSubjectMismatch.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "rotating-sub", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": "entra-oid-123"},
+			)
+			resp := testTokenResponse{
+				AccessToken:  "refreshed-access-token",
+				TokenType:    "Bearer",
+				RefreshToken: "new-refresh-token",
+				ExpiresIn:    3600,
+				IDToken:      idToken,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "entra-oid-123")
+		require.NoError(t, err)
+		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
+	})
+
+	t.Run("refresh with configured SubjectClaim and mismatched value returns ErrSubjectMismatch", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// The resolved "oid" differs from the stored expectedSubject — a genuine
+		// mismatch must still be caught when a custom SubjectClaim is configured.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "rotating-sub", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": "entra-oid-123"},
+			)
+			resp := testTokenResponse{
+				AccessToken:  "refreshed-access-token",
+				TokenType:    "Bearer",
+				RefreshToken: "new-refresh-token",
+				ExpiresIn:    3600,
+				IDToken:      idToken,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.RefreshTokens(ctx, "old-refresh-token", "different-oid")
 		require.ErrorIs(t, err, ErrSubjectMismatch)
 	})
 

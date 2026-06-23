@@ -1107,6 +1107,26 @@ func TestBuildOIDCConfig(t *testing.T) {
 		assert.Equal(t, map[string]string{"access_type": "offline"},
 			cfg.AdditionalAuthorizationParams)
 	})
+
+	t.Run("propagates SubjectClaim", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL:    "https://example.com",
+				ClientID:     "test-client-id",
+				RedirectURI:  "http://localhost:8080/callback",
+				SubjectClaim: "oid",
+			},
+		}
+
+		cfg, err := buildOIDCConfig(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.Equal(t, "oid", cfg.SubjectClaim)
+	})
 }
 
 func TestCreateStorage(t *testing.T) {

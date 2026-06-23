@@ -86,9 +86,11 @@ type UpstreamTokens struct {
 	// In multi-IDP scenarios, the same UserID may have tokens from multiple providers.
 	UserID string
 
-	// UpstreamSubject is the "sub" claim from the upstream IDP's ID token.
-	// This enables validation that tokens match the expected upstream identity
-	// and supports audit logging of which upstream identity was used.
+	// UpstreamSubject is the resolved subject of the upstream IDP's ID token:
+	// the "sub" claim by default, or the provider's configured SubjectClaim
+	// (e.g. Entra's "oid"). This enables validation that tokens match the
+	// expected upstream identity and supports audit logging of which upstream
+	// identity was used.
 	UpstreamSubject string
 
 	// ClientID is the OAuth client that initiated the authorization.

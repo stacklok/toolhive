@@ -787,6 +787,7 @@ func buildOIDCUpstreamRunConfig(
 		RedirectURI:                   redirectURI,
 		Scopes:                        cfg.Scopes,
 		AdditionalAuthorizationParams: cfg.AdditionalAuthorizationParams,
+		SubjectClaim:                  cfg.SubjectClaim,
 	}
 	if cfg.ClientSecretRef != nil {
 		runConfig.ClientSecretEnvVar = clientSecretEnvVar

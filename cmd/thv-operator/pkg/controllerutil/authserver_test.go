@@ -1122,6 +1122,40 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "OIDC upstream propagates SubjectClaim",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "entra",
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+							IssuerURL:    "https://login.microsoftonline.com/tenant/v2.0",
+							ClientID:     "entra-client-id",
+							RedirectURI:  "https://auth.example.com/callback",
+							Scopes:       []string{"openid", "profile"},
+							SubjectClaim: "oid",
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OIDCConfig)
+				assert.Equal(t, "oid", upstream.OIDCConfig.SubjectClaim)
+			},
+		},
+		{
 			name: "OAuth2 upstream propagates AdditionalAuthorizationParams",
 			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",

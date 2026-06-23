@@ -55,7 +55,8 @@ operator:
     # -- existingSecret is the name of a Secret containing the Redis password.
     existingSecret: ""
     # -- existingSecretKey is the key within existingSecret that holds the password.
-    existingSecretKey: "redis-password"
+    # Empty means use global.redis.existingSecretKey or fall back to "redis-password".
+    existingSecretKey: ""
 
   # -- Container image for the operator
   image: ghcr.io/stacklok/toolhive/operator:v0.30.0

@@ -73,6 +73,17 @@ func virtualToolInputSchema() map[string]any {
 // defers to inner — it never widens backend reachability, since a script's inner calls
 // flow back through inner.CallTool and are admission-checked there.
 //
+// Authorization: a script can only reach tools the caller is already permitted to use.
+// Tool bindings are built from inner.ListTools (admission-filtered per identity) and every
+// inner call is re-authorized by its real name through inner.CallTool, so Cedar policies
+// are fully enforced on what a script does. The execute_tool_script meta-tool itself is
+// NOT represented in the core admission seam — a Cedar policy cannot allow/deny code mode
+// per-principal — so unlike the optimizer's meta-tools (which server.New makes mutually
+// exclusive with Authz), code mode is intentionally allowed to coexist with Authz: the
+// per-VirtualMCPServer config flag is the grant for the feature, while Cedar remains the
+// grant for every tool the feature can call. This is safe precisely because code mode adds
+// no reachability beyond the caller's already-authorized tool set.
+//
 // The decorator is stateless and safe for concurrent use: a fresh [script.Executor] is
 // built per execution from the inner core's identity-filtered tool set, so two callers
 // never share an engine or a tool binding.

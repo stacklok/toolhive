@@ -958,6 +958,34 @@ func TestNew_AuthzWithOptimizer_ReturnsError(t *testing.T) {
 	assert.Contains(t, err.Error(), "OptimizerConfig")
 }
 
+// TestNew_AuthzWithoutName_ReturnsError guards the documented Config.Authz requirement:
+// Cedar resource entities are scoped to MCP::"<Name>", so an empty Name with Authz set would
+// silently key policies on MCP::"" and stop matching. server.New rejects it at the
+// construction root (core.New also enforces it, with a deeper message).
+func TestNew_AuthzWithoutName_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	t.Cleanup(ctrl.Finish)
+	mockRouter := routerMocks.NewMockRouter(ctrl)
+	mockBackendClient := mocks.NewMockBackendClient(ctrl)
+	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
+
+	_, err := server.New(t.Context(),
+		&server.Config{
+			// Name intentionally empty.
+			SessionFactory: newNoopMockFactory(t),
+			Aggregator:     newStubAggregator(nil),
+			Authz:          newTestAuthzConfig(t),
+		},
+		mockRouter, mockBackendClient, mockDiscoveryMgr,
+		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
+	)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "Name")
+}
+
 // TestNewIgnoresVestigialAuthzMiddleware proves that server.New — now routed through
 // core.New + Serve — does NOT apply the HTTP authz or annotation-enrichment layers even
 // when Config.AuthzMiddleware is set (alongside the now-required Config.Authz, mirroring

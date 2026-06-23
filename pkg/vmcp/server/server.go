@@ -388,8 +388,9 @@ func buildHealthMonitor(
 //     the single source of the advertised capability set.
 //   - Config.AuthzMiddleware is vestigial: the Serve path never applies it. Authorization
 //     is enforced by the core admission seam from Config.Authz. An embedder that enforced
-//     Cedar authz only via AuthzMiddleware must set Config.Authz instead (a WARN is logged
-//     below if AuthzMiddleware is set without Authz, to surface a silent allow-all).
+//     Cedar authz only via AuthzMiddleware must set Config.Authz instead — New returns an
+//     error (ErrInvalidConfig) if AuthzMiddleware is set without Authz, so a silent
+//     allow-all fails fast at construction.
 func New(
 	ctx context.Context,
 	cfg *Config,
@@ -425,6 +426,15 @@ func New(
 		return nil, fmt.Errorf("%w: Config.Authz and Config.OptimizerConfig are mutually "+
 			"exclusive; the optimizer meta-tools (find_tool, call_tool) are not represented "+
 			"in the core admission seam", vmcp.ErrInvalidConfig)
+	}
+
+	// Cedar resource entities are scoped to MCP::"<Name>" (see Config.Authz), so an empty
+	// Name with Authz set would key policies on MCP::"" and silently fail to match. core.New
+	// also rejects this (its admission seam), but fail at the construction root too for a
+	// clearer error consistent with the guards above.
+	if cfg.Authz != nil && cfg.Name == "" {
+		return nil, fmt.Errorf("%w: Config.Name is required when Config.Authz is set "+
+			"(it is the Cedar resource entity name)", vmcp.ErrInvalidConfig)
 	}
 
 	// Build the backend health monitor once at the composition root (A2). The same
@@ -555,18 +565,16 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth+parser → rate-limit → audit → discovery → annotation-enrichment →
-	//   authz → backend-enrichment → MCP-parsing → telemetry
+	// Code wraps: auth+parser → rate-limit → audit → discovery → backend-enrichment →
+	//   MCP-parsing → telemetry
 	// Execution order: recovery → header-val → auth+parser → rate-limit → audit →
-	//   discovery → annotation-enrichment → authz → backend-enrichment →
-	//   MCP-parsing → telemetry → handler
+	//   discovery → backend-enrichment → MCP-parsing → telemetry → handler
 	//
-	// The authz and annotation-enrichment layers are both guarded by
-	// s.config.AuthzMiddleware != nil: applied on the server.New path (authz on) and
-	// omitted on the Serve path, which leaves AuthzMiddleware nil so authorization
-	// moves to the core admission seam (#5438). Both blocks remain in this shared
-	// Handler — physical removal is deferred to Phase 3 (#5445), after server.New is
-	// routed through Serve and the legacy authz path is gone.
+	// The legacy HTTP authz and annotation-enrichment layers have been removed: every caller
+	// now routes through Serve, so authorization is enforced by the core admission seam
+	// (#5438) rather than HTTP middleware. The remaining legacy-only blocks (backend
+	// enrichment, discovery) are guarded by s.core == nil and are removed in the 302b
+	// follow-up.
 
 	var mcpHandler http.Handler = streamableServer
 
@@ -586,21 +594,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	// Apply backend enrichment middleware (legacy path only — see withBackendEnrichment).
 	mcpHandler = s.withBackendEnrichment(mcpHandler)
-
-	// Apply authorization middleware if configured (runs AFTER discovery in execution).
-	// Wrapping it here (before discovery wrap) means discovery runs first, then authz.
-	if s.config.AuthzMiddleware != nil {
-		mcpHandler = s.config.AuthzMiddleware(mcpHandler)
-		slog.Info("authorization middleware enabled for MCP endpoints (post-discovery)")
-	}
-
-	// Apply annotation enrichment middleware (runs after discovery, before authz in execution).
-	// Reads tool annotations from discovered capabilities and injects them into the
-	// request context so the authz middleware can make annotation-aware decisions.
-	if s.config.AuthzMiddleware != nil {
-		mcpHandler = AnnotationEnrichmentMiddleware(mcpHandler)
-		slog.Info("annotation enrichment middleware enabled for MCP endpoints")
-	}
 
 	// Apply discovery middleware (runs after audit/auth middleware) — legacy path only.
 	// Discovery middleware performs per-request capability aggregation with user context,

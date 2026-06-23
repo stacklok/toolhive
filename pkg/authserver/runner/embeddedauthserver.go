@@ -76,7 +76,9 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	// Fail loudly on operator-supplied misconfiguration (e.g. a baseline
 	// scope absent from scopes_supported) BEFORE touching storage or any
 	// other side-effecting work, so a bad config never reaches the network
-	// or filesystem.
+	// or filesystem. NewEmbeddedAuthServerWithStorage re-validates for callers
+	// that invoke it directly; this earlier check keeps the failure ahead of
+	// createStorage on this path.
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid run config: %w", err)
 	}
@@ -100,6 +102,16 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 // builds an EmbeddedAuthServer around a caller-supplied storage backend. It
 // lets external composition (e.g. an enterprise build) inject a decorated
 // storage.Storage aggregate.
+//
+// What the injection does NOT solve: the supplied storage is the sole
+// persistence boundary for this server instance. Injecting a shared backend
+// (e.g. Redis) lets replicas share persisted state — DCR registrations,
+// pending authorizations, upstream tokens — but it does not provide
+// cross-replica message delivery or fan-out, and it does not establish session
+// affinity. A request must still reach a replica that can resolve its session
+// from the shared store; pinning a session to a replica (or ensuring all
+// session state is in the shared store) remains the caller's responsibility,
+// typically at the load balancer.
 //
 // The supplied storage MUST also implement storage.DCRCredentialStore (both
 // OSS MemoryStorage and RedisStorage do); the constructor returns an error if

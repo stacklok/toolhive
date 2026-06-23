@@ -272,46 +272,83 @@ func (r *MCPOIDCConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
+// Field-index keys backing findReferencingWorkloads. MCPServer and MCPRemoteProxy
+// both reference the config via spec.oidcConfigRef; VirtualMCPServer nests it
+// under spec.incomingAuth. The indexes are registered in SetupWithManager.
+const (
+	oidcConfigRefIndexKey     = "spec.oidcConfigRef"
+	vmcpOIDCConfigRefIndexKey = "spec.incomingAuth.oidcConfigRef"
+)
+
+// indexMCPServerByOIDCConfigRef extracts the MCPOIDCConfig name an MCPServer
+// references, for the field index. Returns nil when there is no reference so
+// unreferencing servers are not indexed under the empty key.
+func indexMCPServerByOIDCConfigRef(obj client.Object) []string {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.OIDCConfigRef == nil || server.Spec.OIDCConfigRef.Name == "" {
+		return nil
+	}
+	return []string{server.Spec.OIDCConfigRef.Name}
+}
+
+// indexVirtualMCPServerByOIDCConfigRef extracts the MCPOIDCConfig name a
+// VirtualMCPServer references via spec.incomingAuth, for the field index.
+func indexVirtualMCPServerByOIDCConfigRef(obj client.Object) []string {
+	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
+	if !ok || vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.OIDCConfigRef == nil || vmcp.Spec.IncomingAuth.OIDCConfigRef.Name == "" {
+		return nil
+	}
+	return []string{vmcp.Spec.IncomingAuth.OIDCConfigRef.Name}
+}
+
+// indexMCPRemoteProxyByOIDCConfigRef extracts the MCPOIDCConfig name an
+// MCPRemoteProxy references, for the field index.
+func indexMCPRemoteProxyByOIDCConfigRef(obj client.Object) []string {
+	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
+	if !ok || proxy.Spec.OIDCConfigRef == nil || proxy.Spec.OIDCConfigRef.Name == "" {
+		return nil
+	}
+	return []string{proxy.Spec.OIDCConfigRef.Name}
+}
+
 // findReferencingWorkloads returns the workload resources (MCPServer, VirtualMCPServer, and MCPRemoteProxy)
 // that reference this MCPOIDCConfig via their OIDCConfigRef field.
+//
+// Each lookup is served by a field index (registered in SetupWithManager) so the
+// query returns only the referencing workloads instead of listing every workload
+// in the namespace and filtering in memory.
 func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	oidcConfig *mcpv1beta1.MCPOIDCConfig,
 ) ([]mcpv1beta1.WorkloadReference, error) {
-	// Find referencing MCPServers
-	refs, err := ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, oidcConfig.Namespace, oidcConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.OIDCConfigRef != nil {
-				return &server.Spec.OIDCConfigRef.Name
-			}
-			return nil
-		})
-	if err != nil {
-		return nil, err
+	var refs []mcpv1beta1.WorkloadReference
+
+	serverList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, serverList, client.InNamespace(oidcConfig.Namespace),
+		client.MatchingFields{oidcConfigRefIndexKey: oidcConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers by oidcConfigRef: %w", err)
+	}
+	for i := range serverList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: serverList.Items[i].Name})
 	}
 
-	// Also check VirtualMCPServers
 	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
-	if err := r.List(ctx, vmcpList, client.InNamespace(oidcConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list VirtualMCPServers: %w", err)
+	if err := r.List(ctx, vmcpList, client.InNamespace(oidcConfig.Namespace),
+		client.MatchingFields{vmcpOIDCConfigRefIndexKey: oidcConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list VirtualMCPServers by oidcConfigRef: %w", err)
 	}
-	for _, vmcp := range vmcpList.Items {
-		if vmcp.Spec.IncomingAuth != nil &&
-			vmcp.Spec.IncomingAuth.OIDCConfigRef != nil &&
-			vmcp.Spec.IncomingAuth.OIDCConfigRef.Name == oidcConfig.Name {
-			refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindVirtualMCPServer, Name: vmcp.Name})
-		}
+	for i := range vmcpList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindVirtualMCPServer, Name: vmcpList.Items[i].Name})
 	}
 
-	// Check MCPRemoteProxies
 	proxyList := &mcpv1beta1.MCPRemoteProxyList{}
-	if err := r.List(ctx, proxyList, client.InNamespace(oidcConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
+	if err := r.List(ctx, proxyList, client.InNamespace(oidcConfig.Namespace),
+		client.MatchingFields{oidcConfigRefIndexKey: oidcConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies by oidcConfigRef: %w", err)
 	}
-	for _, proxy := range proxyList.Items {
-		if proxy.Spec.OIDCConfigRef != nil && proxy.Spec.OIDCConfigRef.Name == oidcConfig.Name {
-			refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
-		}
+	for i := range proxyList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyList.Items[i].Name})
 	}
 
 	ctrlutil.SortWorkloadRefs(refs)
@@ -321,6 +358,25 @@ func (r *MCPOIDCConfigReconciler) findReferencingWorkloads(
 // SetupWithManager sets up the controller with the Manager.
 // Watches MCPServer, VirtualMCPServer, and MCPRemoteProxy changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Field indexes backing findReferencingWorkloads: each lets the controller
+	// query only the workloads referencing a given config rather than listing
+	// every workload in the namespace and filtering in memory.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPServer{}, oidcConfigRefIndexKey, indexMCPServerByOIDCConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPServer oidcConfigRef index: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.VirtualMCPServer{}, vmcpOIDCConfigRefIndexKey, indexVirtualMCPServerByOIDCConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up VirtualMCPServer oidcConfigRef index: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPRemoteProxy{}, oidcConfigRefIndexKey, indexMCPRemoteProxyByOIDCConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPRemoteProxy oidcConfigRef index: %w", err)
+	}
+
 	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPOIDCConfigs.
 	// This handler enqueues both the currently-referenced MCPOIDCConfig AND any
 	// MCPOIDCConfig that still lists this server in ReferencingWorkloads (covers the

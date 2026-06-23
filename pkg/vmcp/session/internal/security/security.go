@@ -104,17 +104,39 @@ func extractBindingID(identity *auth.Identity) (string, error) {
 }
 
 // validateCaller checks the caller against the session's bound identity.
+// It delegates to the free-function validateCallerBinding so the same audited
+// logic backs both the decorator path and the exported [ValidateCaller] seam.
+func (d sessionBindingDecorator) validateCaller(caller *auth.Identity) error {
+	return validateCallerBinding(d.boundIdentity, d.allowAnonymous, caller)
+}
+
+// ValidateCaller checks caller against a stored identity-binding string (the
+// value persisted under MetadataKeyIdentityBinding). It reproduces the
+// decorator's per-request check for call paths that do not go through the
+// [sessionBindingDecorator] — notably the Serve transport path, where the
+// advertised set and call routing are owned by the core but identity binding
+// must still be enforced by the session layer.
+//
+// allowAnonymous is derived from storedBinding: an anonymous session stores the
+// UnauthenticatedSentinel, so IsUnauthenticated(storedBinding) is exactly the
+// allowAnonymous flag BindSession recorded (BindSession writes the sentinel iff
+// ShouldAllowAnonymous(identity)).
+func ValidateCaller(storedBinding string, caller *auth.Identity) error {
+	return validateCallerBinding(storedBinding, binding.IsUnauthenticated(storedBinding), caller)
+}
+
+// validateCallerBinding checks caller against a bound identity.
 //
 // Returns:
-//   - ErrSessionOwnerUnknown when the decorator was constructed with neither
-//     an anonymous marker nor a real binding (programming error).
+//   - ErrSessionOwnerUnknown when neither an anonymous marker nor a real binding
+//     is present (programming error / corrupted metadata).
 //   - ErrNilCaller when a bound session receives nil.
 //   - ErrUnauthorizedCaller when:
 //   - an anonymous session receives a caller presenting a token (upgrade attack),
 //   - the caller's identity binding does not match the session's bound identity.
-func (d sessionBindingDecorator) validateCaller(caller *auth.Identity) error {
+func validateCallerBinding(boundIdentity string, allowAnonymous bool, caller *auth.Identity) error {
 	// Anonymous path: sessions that were created without a bound identity.
-	if d.allowAnonymous && binding.IsUnauthenticated(d.boundIdentity) {
+	if allowAnonymous && binding.IsUnauthenticated(boundIdentity) {
 		// Prevent session upgrade attack: anonymous sessions cannot accept tokens.
 		if caller != nil && caller.Token != "" {
 			slog.Warn("identity binding validation failed: session upgrade attack prevented",
@@ -136,8 +158,8 @@ func (d sessionBindingDecorator) validateCaller(caller *auth.Identity) error {
 	// Defensive check: the stored binding must be parsable. An unparsable value
 	// means the session was misconfigured at construction time — fail closed
 	// rather than accepting or rejecting based on garbage state.
-	if !binding.IsUnauthenticated(d.boundIdentity) {
-		if _, _, ok := binding.Parse(d.boundIdentity); !ok {
+	if !binding.IsUnauthenticated(boundIdentity) {
+		if _, _, ok := binding.Parse(boundIdentity); !ok {
 			slog.Error("identity binding validation failed: stored binding is not parsable",
 				"reason", "misconfigured_session",
 			)
@@ -159,7 +181,7 @@ func (d sessionBindingDecorator) validateCaller(caller *auth.Identity) error {
 	// length mismatch. Leaking binding length is acceptable: iss is the OIDC
 	// issuer (public, in the discovery document) and sub is an opaque
 	// identifier whose length is typically per-issuer. Neither is secret.
-	if subtle.ConstantTimeCompare([]byte(d.boundIdentity), []byte(callerBinding)) != 1 {
+	if subtle.ConstantTimeCompare([]byte(boundIdentity), []byte(callerBinding)) != 1 {
 		slog.Warn("identity binding validation failed: identity binding mismatch",
 			"reason", "identity_binding_mismatch",
 		)

@@ -5,6 +5,7 @@ package server
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -15,9 +16,33 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 )
 
+// withBackendEnrichment wraps h with the legacy audit backend-enrichment middleware
+// when audit is enabled on the legacy (server.New) path. On the Serve path
+// (s.core != nil) the per-session tool/resource handlers write the backend label
+// directly into the audit BackendInfo (serve_handlers.go), so the middleware — with
+// its per-request body re-read and routing-table lookup — is not wired and h is
+// returned unchanged (#5512 review). The legacy wiring is retired with the rest of the
+// discovery path in #5445.
+func (s *Server) withBackendEnrichment(h http.Handler) http.Handler {
+	if s.config.AuditConfig != nil && s.core == nil {
+		slog.Info("backend enrichment middleware enabled for audit events")
+		return backendEnrichmentMiddleware(h)
+	}
+	return h
+}
+
 // backendEnrichmentMiddleware wraps an HTTP handler to add backend routing information
-// to audit events by parsing MCP requests and looking up backends in the routing table.
-func (*Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
+// to audit events by parsing MCP requests and resolving the target backend.
+//
+// This is the legacy (server.New) path's audit labelling: it reads the routing table
+// the discovery middleware injected into the request context. It is only wired when
+// s.core == nil (see (*Server).Handler) — on the Serve path the per-session handlers
+// label the audit event directly (serve_handlers.go), so this middleware, with its
+// per-request body re-read, is not in the chain. Retired with the discovery path in #5445.
+//
+// It is a free function (not a *Server method): with the Serve branch gone it reads no
+// Server state — resolution comes entirely from the request context.
+func backendEnrichmentMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Read and parse the request body to extract MCP method and parameters
 		var requestBody []byte
@@ -43,16 +68,12 @@ func (*Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
 		}
 
 		if len(requestBody) > 0 && json.Unmarshal(requestBody, &mcpRequest) == nil {
-			// Get routing table from discovered capabilities in context
-			caps, ok := discovery.DiscoveredCapabilitiesFromContext(r.Context())
-			if ok && caps != nil && caps.RoutingTable != nil {
-				backendName := lookupBackendName(mcpRequest.Method, mcpRequest.Params, caps.RoutingTable)
+			backendName := resolveBackendName(r.Context(), mcpRequest.Method, mcpRequest.Params)
 
-				// Mutate the existing BackendInfo from audit middleware
-				if backendName != "" {
-					if backendInfo, ok := audit.BackendInfoFromContext(r.Context()); ok && backendInfo != nil {
-						backendInfo.BackendName = backendName
-					}
+			// Mutate the existing BackendInfo from audit middleware
+			if backendName != "" {
+				if backendInfo, ok := audit.BackendInfoFromContext(r.Context()); ok && backendInfo != nil {
+					backendInfo.BackendName = backendName
 				}
 			}
 		}
@@ -60,6 +81,17 @@ func (*Server) backendEnrichmentMiddleware(next http.Handler) http.Handler {
 		// Call next handler
 		next.ServeHTTP(w, r)
 	})
+}
+
+// resolveBackendName resolves the backend handling an MCP request from the routing
+// table the discovery middleware injected into the request context (legacy path).
+// The middleware is only wired when s.core == nil, so there is no Serve-path branch.
+func resolveBackendName(ctx context.Context, method string, params map[string]any) string {
+	caps, ok := discovery.DiscoveredCapabilitiesFromContext(ctx)
+	if !ok || caps == nil || caps.RoutingTable == nil {
+		return ""
+	}
+	return lookupBackendName(method, params, caps.RoutingTable)
 }
 
 // lookupBackendName looks up which backend handles a given MCP request.

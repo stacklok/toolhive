@@ -13,13 +13,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -30,9 +30,10 @@ type testContext struct {
 	proxyRunnerNameForRBAC string
 }
 
-func setupTest(name, namespace string) *testContext {
+func setupTest(t *testing.T, name, namespace string) *testContext {
+	t.Helper()
 	mcpServer := createTestMCPServer(name, namespace)
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).Build()
 	proxyRunnerNameForRBAC := fmt.Sprintf("%s-proxy-runner", name)
 	return &testContext{
@@ -109,7 +110,7 @@ func (tc *testContext) assertAllRBACResourcesExist(t *testing.T) {
 
 func TestEnsureRBACResources_ServiceAccount_Creation(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server", "default")
+	tc := setupTest(t, "test-server", "default")
 
 	err := tc.ensureRBACResources()
 	require.NoError(t, err)
@@ -119,7 +120,7 @@ func TestEnsureRBACResources_ServiceAccount_Creation(t *testing.T) {
 
 func TestEnsureRBACResources_ServiceAccount_Update(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-sa-update", "default")
+	tc := setupTest(t, "test-server-sa-update", "default")
 
 	existingSA := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
@@ -139,7 +140,7 @@ func TestEnsureRBACResources_ServiceAccount_Update(t *testing.T) {
 
 func TestEnsureRBACResources_Role_Creation(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server", "default")
+	tc := setupTest(t, "test-server", "default")
 
 	err := tc.ensureRBACResources()
 	require.NoError(t, err)
@@ -149,7 +150,7 @@ func TestEnsureRBACResources_Role_Creation(t *testing.T) {
 
 func TestEnsureRBACResources_Role_Update(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-role-update", "default")
+	tc := setupTest(t, "test-server-role-update", "default")
 
 	existingRole := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
@@ -175,7 +176,7 @@ func TestEnsureRBACResources_Role_Update(t *testing.T) {
 
 func TestEnsureRBACResources_RoleBinding_Creation(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server", "default")
+	tc := setupTest(t, "test-server", "default")
 
 	err := tc.ensureRBACResources()
 	require.NoError(t, err)
@@ -185,7 +186,7 @@ func TestEnsureRBACResources_RoleBinding_Creation(t *testing.T) {
 
 func TestEnsureRBACResources_RoleBinding_Update(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-rb-update", "default")
+	tc := setupTest(t, "test-server-rb-update", "default")
 
 	existingRB := &rbacv1.RoleBinding{
 		ObjectMeta: metav1.ObjectMeta{
@@ -228,7 +229,7 @@ func TestEnsureRBACResources_MultipleNamespaces(t *testing.T) {
 	for _, testCase := range testCases {
 		t.Run(testCase.name+"-"+testCase.namespace, func(t *testing.T) {
 			t.Parallel()
-			tc := setupTest(testCase.name, testCase.namespace)
+			tc := setupTest(t, testCase.name, testCase.namespace)
 
 			err := tc.ensureRBACResources()
 			require.NoError(t, err)
@@ -249,7 +250,7 @@ func TestEnsureRBACResources_ResourceNames(t *testing.T) {
 	for _, serverName := range testCases {
 		t.Run(serverName, func(t *testing.T) {
 			t.Parallel()
-			tc := setupTest(serverName, "default")
+			tc := setupTest(t, serverName, "default")
 
 			err := tc.ensureRBACResources()
 			require.NoError(t, err)
@@ -261,7 +262,7 @@ func TestEnsureRBACResources_ResourceNames(t *testing.T) {
 
 func TestEnsureRBACResources_NoChangesNeeded(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-no-changes", "default")
+	tc := setupTest(t, "test-server-no-changes", "default")
 
 	sa := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
@@ -311,7 +312,7 @@ func TestEnsureRBACResources_NoChangesNeeded(t *testing.T) {
 
 func TestEnsureRBACResources_Idempotency(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-idempotency", "default")
+	tc := setupTest(t, "test-server-idempotency", "default")
 
 	for i := 0; i < 3; i++ {
 		err := tc.ensureRBACResources()
@@ -324,21 +325,14 @@ func TestEnsureRBACResources_Idempotency(t *testing.T) {
 func TestEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 	t.Parallel()
 	customSA := "custom-mcpserver-sa"
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server-custom-sa",
-			Namespace: "default",
-			UID:       "test-uid",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:          "test-image:latest",
-			Transport:      "stdio",
-			ProxyPort:      8080,
-			ServiceAccount: &customSA,
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("test-server-custom-sa", "default",
+		v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+			m.UID = "test-uid"
+			m.Spec.ServiceAccount = &customSA
+		}),
+	)
 
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(mcpServer).Build()
 	reconciler := newTestMCPServerReconciler(fakeClient, testScheme, kubernetes.PlatformKubernetes)
 
@@ -383,7 +377,7 @@ func TestEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 
 func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 	t.Parallel()
-	tc := setupTest("test-server-pull-secrets", "default")
+	tc := setupTest(t, "test-server-pull-secrets", "default")
 
 	// Set ImagePullSecrets via ResourceOverrides
 	tc.mcpServer.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
@@ -425,22 +419,7 @@ func TestEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 }
 
 func createTestMCPServer(name, namespace string) *mcpv1beta1.MCPServer {
-	return &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-		},
-	}
-}
-
-func createTestScheme() *runtime.Scheme {
-	s := runtime.NewScheme()
-	_ = scheme.AddToScheme(s)
-	_ = mcpv1beta1.AddToScheme(s)
-	return s
+	// Builder defaults (image "test-image:latest", transport "stdio",
+	// proxyPort 8080) match this fixture exactly.
+	return v1beta1test.NewMCPServer(name, namespace)
 }

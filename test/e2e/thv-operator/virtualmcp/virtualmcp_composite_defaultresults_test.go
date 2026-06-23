@@ -13,6 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
@@ -42,74 +43,70 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 			images.YardstickServerImage, timeout, pollingInterval)
 
 		By("Creating VirtualMCPServer with composite tool using defaultResults")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-					},
-					// Define a composite tool with a conditional step that has defaultResults
-					CompositeTools: []vmcpconfig.CompositeToolConfig{
-						{
-							Name:        compositeToolName,
-							Description: "Conditionally echoes input, uses default when skipped",
-							Parameters: thvjson.NewMap(map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"run_step": map[string]any{
-										"type":        "boolean",
-										"description": "Whether to run the conditional step",
-									},
-									"message": map[string]any{
-										"type":        "string",
-										"description": "Message to echo if step runs",
-									},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
+				},
+				// Define a composite tool with a conditional step that has defaultResults
+				CompositeTools: []vmcpconfig.CompositeToolConfig{
+					{
+						Name:        compositeToolName,
+						Description: "Conditionally echoes input, uses default when skipped",
+						Parameters: thvjson.NewMap(map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"run_step": map[string]any{
+									"type":        "boolean",
+									"description": "Whether to run the conditional step",
 								},
-								"required": []any{"run_step", "message"},
-							}),
-							Timeout: vmcpconfig.Duration(30 * time.Second),
-							Steps: []vmcpconfig.WorkflowStepConfig{
-								{
-									ID:   "conditional_step",
-									Type: "tool",
-									Tool: fmt.Sprintf("%s_echo", backendName),
-									// Only run when run_step=true
-									Condition: "{{.params.run_step}}",
-									Arguments: thvjson.NewMap(map[string]any{
-										"input": "{{ .params.message }}",
-									}),
-									// When skipped, use this default value
-									// Uses "output" key to match yardstick 1.1.1 EchoResponse format
-									DefaultResults: thvjson.NewMap(map[string]any{
-										"output": "default_value_when_skipped",
-									}),
+								"message": map[string]any{
+									"type":        "string",
+									"description": "Message to echo if step runs",
 								},
 							},
-							// Output references the conditional step's output.output
-							Output: &vmcpconfig.OutputConfig{
-								Properties: map[string]vmcpconfig.OutputProperty{
-									"result": {
-										Type:        "string",
-										Description: "Result from conditional step",
-										Value:       "{{.steps.conditional_step.output.output}}",
-									},
+							"required": []any{"run_step", "message"},
+						}),
+						Timeout: vmcpconfig.Duration(30 * time.Second),
+						Steps: []vmcpconfig.WorkflowStepConfig{
+							{
+								ID:   "conditional_step",
+								Type: "tool",
+								Tool: fmt.Sprintf("%s_echo", backendName),
+								// Only run when run_step=true
+								Condition: "{{.params.run_step}}",
+								Arguments: thvjson.NewMap(map[string]any{
+									"input": "{{ .params.message }}",
+								}),
+								// When skipped, use this default value
+								// Uses "output" key to match yardstick 1.1.1 EchoResponse format
+								DefaultResults: thvjson.NewMap(map[string]any{
+									"output": "default_value_when_skipped",
+								}),
+							},
+						},
+						// Output references the conditional step's output.output
+						Output: &vmcpconfig.OutputConfig{
+							Properties: map[string]vmcpconfig.OutputProperty{
+								"result": {
+									Type:        "string",
+									Description: "Result from conditional step",
+									Value:       "{{.steps.conditional_step.output.output}}",
 								},
 							},
 						},
 					},
 				},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -124,12 +121,7 @@ var _ = Describe("VirtualMCPServer Composite Tool DefaultResults", Ordered, func
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace)
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up backend MCPServer")

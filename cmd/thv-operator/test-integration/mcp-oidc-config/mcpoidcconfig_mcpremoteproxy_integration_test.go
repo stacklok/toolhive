@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 const (
@@ -23,27 +24,21 @@ const (
 // newTestMCPRemoteProxy creates an MCPRemoteProxy with an optional OIDCConfigRef pointing
 // to a shared MCPOIDCConfig (when oidcConfigRefName is non-empty).
 func newTestMCPRemoteProxy(name, namespace string, oidcConfigRefName string) *mcpv1beta1.MCPRemoteProxy {
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: testRemoteURL,
-			ProxyPort: 8080,
-			Transport: "streamable-http",
-		},
+	opts := []v1beta1test.MCPRemoteProxyOption{
+		v1beta1test.WithRemoteProxyURL(testRemoteURL),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
 	}
 
 	if oidcConfigRefName != "" {
-		proxy.Spec.OIDCConfigRef = &mcpv1beta1.MCPOIDCConfigReference{
-			Name:     oidcConfigRefName,
-			Audience: "test-proxy-audience",
-			Scopes:   []string{"openid"},
-		}
+		opts = append(opts,
+			v1beta1test.WithRemoteProxyOIDCConfigRef(oidcConfigRefName, "test-proxy-audience"),
+			v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+				p.Spec.OIDCConfigRef.Scopes = []string{"openid"}
+			}),
+		)
 	}
 
-	return proxy
+	return v1beta1test.NewMCPRemoteProxy(name, namespace, opts...)
 }
 
 var _ = Describe("MCPOIDCConfig and MCPRemoteProxy Cross-Resource Integration Tests", func() {

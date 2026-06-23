@@ -145,6 +145,21 @@ spec:
                     required:
                     - enabled
                     type: object
+                  disableUpstreamTokenInjection:
+                    default: false
+                    description: |-
+                      DisableUpstreamTokenInjection prevents the embedded auth server from injecting
+                      upstream IdP tokens into requests forwarded to the backend MCP server.
+                      When true, the embedded auth server still handles OAuth flows for clients,
+                      but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS
+                      the client's credential headers (Authorization, Cookie, Proxy-Authorization)
+                      after validating the JWT — the backend receives an unauthenticated request.
+                      Use headerForward to attach static credentials (e.g. an API key) if the
+                      backend needs them. Cannot be combined with token exchange or AWS STS,
+                      which would re-add credentials after the strip.
+                      This is useful when the backend MCP server does not require authentication
+                      (e.g., public documentation servers) but you still want client authentication.
+                    type: boolean
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -2118,6 +2133,17 @@ spec:
                     required:
                     - source
                     type: object
+                  passthroughHeaders:
+                    description: |-
+                      PassthroughHeaders is an allowlist of incoming client request header names
+                      forwarded verbatim to all backends. Captured at the vMCP incoming edge by
+                      headerforward.CaptureMiddleware and consumed once at session creation
+                      when the per-session backend client's HeaderForwardConfig is built. Names
+                      must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                   rateLimiting:
                     description: |-
                       RateLimiting defines rate limiting configuration for the Virtual MCP server.
@@ -2452,8 +2478,9 @@ spec:
                 properties:
                   authzConfig:
                     description: |-
-                      AuthzConfig defines authorization policy configuration
-                      Reuses MCPServer authz patterns
+                      AuthzConfig defines authorization policy configuration.
+                      Reuses MCPServer authz patterns.
+                      AuthzConfig and AuthzConfigRef are mutually exclusive.
                     properties:
                       configMap:
                         description: |-
@@ -2561,6 +2588,24 @@ spec:
                     - message: inline must be set when type is 'inline', and must
                         not be set otherwise
                       rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+                  authzConfigRef:
+                    description: |-
+                      AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                      The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+                      Mutually exclusive with authzConfig.
+
+                      Only cedarv1 MCPAuthzConfig resources are supported for VirtualMCPServer
+                      today; referencing a non-Cedar config fails reconciliation with a clear
+                      error because the vMCP runtime authz middleware is Cedar-only.
+                    properties:
+                      name:
+                        description: Name is the name of the MCPAuthzConfig resource
+                          in the same namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
                   oidcConfigRef:
                     description: |-
                       OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
@@ -2612,6 +2657,9 @@ spec:
                 - message: spec.incomingAuth.oidcConfigRef is required when type is
                     oidc
                   rule: 'self.type == ''oidc'' ? has(self.oidcConfigRef) : true'
+                - message: authzConfig and authzConfigRef are mutually exclusive;
+                    use authzConfigRef to reference a shared MCPAuthzConfig
+                  rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
@@ -2685,6 +2733,17 @@ spec:
                     - inline
                     type: string
                 type: object
+              passthroughHeaders:
+                description: |-
+                  PassthroughHeaders is an allowlist of incoming client request header names
+                  forwarded verbatim to all backends (e.g. an API key the backend resolves to
+                  a user). Takes precedence over config.PassthroughHeaders. Names must not be
+                  restricted headers (Host, hop-by-hop, X-Forwarded-*). Forwarded headers are
+                  attacker-influenceable unless a trusted upstream sets them.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
               podTemplateSpec:
                 description: |-
                   PodTemplateSpec defines the pod template to use for the Virtual MCP server
@@ -2813,6 +2872,11 @@ spec:
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
+              authzConfigHash:
+                description: |-
+                  AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection.
+                  Only populated when IncomingAuth.AuthzConfigRef is set.
+                type: string
               backendCount:
                 description: |-
                   BackendCount is the number of routable backends (ready + unauthenticated).
@@ -3099,6 +3163,21 @@ spec:
                     required:
                     - enabled
                     type: object
+                  disableUpstreamTokenInjection:
+                    default: false
+                    description: |-
+                      DisableUpstreamTokenInjection prevents the embedded auth server from injecting
+                      upstream IdP tokens into requests forwarded to the backend MCP server.
+                      When true, the embedded auth server still handles OAuth flows for clients,
+                      but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS
+                      the client's credential headers (Authorization, Cookie, Proxy-Authorization)
+                      after validating the JWT — the backend receives an unauthenticated request.
+                      Use headerForward to attach static credentials (e.g. an API key) if the
+                      backend needs them. Cannot be combined with token exchange or AWS STS,
+                      which would re-add credentials after the strip.
+                      This is useful when the backend MCP server does not require authentication
+                      (e.g., public documentation servers) but you still want client authentication.
+                    type: boolean
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -5072,6 +5151,17 @@ spec:
                     required:
                     - source
                     type: object
+                  passthroughHeaders:
+                    description: |-
+                      PassthroughHeaders is an allowlist of incoming client request header names
+                      forwarded verbatim to all backends. Captured at the vMCP incoming edge by
+                      headerforward.CaptureMiddleware and consumed once at session creation
+                      when the per-session backend client's HeaderForwardConfig is built. Names
+                      must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                   rateLimiting:
                     description: |-
                       RateLimiting defines rate limiting configuration for the Virtual MCP server.
@@ -5406,8 +5496,9 @@ spec:
                 properties:
                   authzConfig:
                     description: |-
-                      AuthzConfig defines authorization policy configuration
-                      Reuses MCPServer authz patterns
+                      AuthzConfig defines authorization policy configuration.
+                      Reuses MCPServer authz patterns.
+                      AuthzConfig and AuthzConfigRef are mutually exclusive.
                     properties:
                       configMap:
                         description: |-
@@ -5515,6 +5606,24 @@ spec:
                     - message: inline must be set when type is 'inline', and must
                         not be set otherwise
                       rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+                  authzConfigRef:
+                    description: |-
+                      AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                      The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+                      Mutually exclusive with authzConfig.
+
+                      Only cedarv1 MCPAuthzConfig resources are supported for VirtualMCPServer
+                      today; referencing a non-Cedar config fails reconciliation with a clear
+                      error because the vMCP runtime authz middleware is Cedar-only.
+                    properties:
+                      name:
+                        description: Name is the name of the MCPAuthzConfig resource
+                          in the same namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
                   oidcConfigRef:
                     description: |-
                       OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
@@ -5566,6 +5675,9 @@ spec:
                 - message: spec.incomingAuth.oidcConfigRef is required when type is
                     oidc
                   rule: 'self.type == ''oidc'' ? has(self.oidcConfigRef) : true'
+                - message: authzConfig and authzConfigRef are mutually exclusive;
+                    use authzConfigRef to reference a shared MCPAuthzConfig
+                  rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
@@ -5639,6 +5751,17 @@ spec:
                     - inline
                     type: string
                 type: object
+              passthroughHeaders:
+                description: |-
+                  PassthroughHeaders is an allowlist of incoming client request header names
+                  forwarded verbatim to all backends (e.g. an API key the backend resolves to
+                  a user). Takes precedence over config.PassthroughHeaders. Names must not be
+                  restricted headers (Host, hop-by-hop, X-Forwarded-*). Forwarded headers are
+                  attacker-influenceable unless a trusted upstream sets them.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
               podTemplateSpec:
                 description: |-
                   PodTemplateSpec defines the pod template to use for the Virtual MCP server
@@ -5767,6 +5890,11 @@ spec:
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
+              authzConfigHash:
+                description: |-
+                  AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection.
+                  Only populated when IncomingAuth.AuthzConfigRef is set.
+                type: string
               backendCount:
                 description: |-
                   BackendCount is the number of routable backends (ready + unauthenticated).

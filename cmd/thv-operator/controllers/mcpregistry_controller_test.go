@@ -11,9 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8smeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -26,6 +24,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	registryapimocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/mocks"
 )
@@ -41,17 +40,6 @@ func toRawJSONSlice[T any](t *testing.T, items []T) []apiextensionsv1.JSON {
 		result[i] = apiextensionsv1.JSON{Raw: data}
 	}
 	return result
-}
-
-// newMCPRegistryTestScheme creates a runtime scheme with all required API groups registered.
-func newMCPRegistryTestScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	s := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(s))
-	require.NoError(t, corev1.AddToScheme(s))
-	require.NoError(t, appsv1.AddToScheme(s))
-	require.NoError(t, rbacv1.AddToScheme(s))
-	return s
 }
 
 // newMCPRegistryWithFinalizer creates an MCPRegistry with the controller finalizer
@@ -411,7 +399,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 
 			// arrange
 			ctx := log.IntoContext(t.Context(), log.Log)
-			s := newMCPRegistryTestScheme(t)
+			s := testutil.NewScheme(t)
 
 			builder, mcpRegistry := tt.setup(t, s)
 			fakeClient := builder.Build()

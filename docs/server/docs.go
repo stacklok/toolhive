@@ -539,6 +539,10 @@ const docTemplate = `{
                     "cimd": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig"
                     },
+                    "disable_upstream_token_injection": {
+                        "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange\nand AWS STS, which would re-add credentials after the strip.",
+                        "type": "boolean"
+                    },
                     "hmac_secret_files": {
                         "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",
                         "items": {
@@ -963,6 +967,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "auth_retrying",
                     "policy_stopped",
                     "running",
                     "stopped",
@@ -973,6 +978,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "auth_retrying",
                     "policy_stopped",
                     "running",
                     "stopped",
@@ -983,6 +989,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "auth_retrying",
                     "policy_stopped"
                 ],
                 "type": "string",
@@ -996,6 +1003,7 @@ const docTemplate = `{
                     "WorkloadStatusRemoving",
                     "WorkloadStatusUnknown",
                     "WorkloadStatusUnauthenticated",
+                    "WorkloadStatusAuthRetrying",
                     "WorkloadStatusPolicyStopped"
                 ]
             },
@@ -1233,6 +1241,14 @@ const docTemplate = `{
             },
             "github_com_stacklok_toolhive_pkg_runner.RunConfig": {
                 "properties": {
+                    "additional_middleware_configs": {
+                        "description": "AdditionalMiddlewareConfigs carries pre-built middleware configs injected by\nexternal-auth handlers (reached via *[]RunConfigBuilderOption) rather than\nderived from typed RunConfig fields. PopulateMiddlewareConfigs splices these\ninto the chain in the backend-egress group — after auth and before recovery —\ninstead of discarding them. Upstream carries these configs verbatim and never\ninspects their parameters; the middleware type identity (e.g. an enterprise\nauth type) is supplied by the caller via types.MiddlewareConfig.Type.\n\nEach entry's Type is expected to be a NEW egress middleware type (e.g. OBO),\nnot one already produced from a typed RunConfig field (auth, authz, audit,\ntokenExchange, awssts, …). Dispatch in the proxyrunner is purely by Type\nstring, so an injected Type that shadows a typed-field type would add a\nsecond instance of that middleware to the chain; the seam does not validate\nagainst this.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "allow_docker_gateway": {
                         "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.",
                         "type": "boolean"
@@ -2731,7 +2747,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "network_isolation": {
-                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.",
+                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.\nPointer so that omitting the field defaults to network isolation ENABLED (matching the\n` + "`" + `thv run` + "`" + ` CLI default); set it explicitly to false to disable network isolation.\nThis also applies on update: a request that omits this field enables isolation, so\nclients that build update requests from scratch should send it explicitly to avoid\nunintentionally turning isolation on for a workload that had it off.",
                         "type": "boolean"
                     },
                     "oauth_config": {
@@ -3413,7 +3429,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "network_isolation": {
-                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.",
+                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.\nPointer so that omitting the field defaults to network isolation ENABLED (matching the\n` + "`" + `thv run` + "`" + ` CLI default); set it explicitly to false to disable network isolation.\nThis also applies on update: a request that omits this field enables isolation, so\nclients that build update requests from scratch should send it explicitly to avoid\nunintentionally turning isolation on for a workload that had it off.",
                         "type": "boolean"
                     },
                     "oauth_config": {

@@ -204,6 +204,13 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
+	// Resolve a referenced MCPAuthzConfig (spec.authzConfigRef) into runtime authz.
+	// Mutually exclusive with the inline spec.authzConfig handled above. Backend-
+	// agnostic: the proxy runner's authz factory dispatches on type (cedarv1, httpv1).
+	if err := ctrlutil.AddAuthzConfigRefOptions(ctx, r.Client, m.Namespace, m.Spec.AuthzConfigRef, &options); err != nil {
+		return nil, fmt.Errorf("failed to process AuthzConfigRef: %w", err)
+	}
+
 	// Resolve OIDC configuration from either legacy OIDCConfig or new MCPOIDCConfigRef.
 	// Resolve once and reuse for both RunConfig options and embedded auth server config.
 	var resolvedOIDCConfig *oidc.OIDCConfig

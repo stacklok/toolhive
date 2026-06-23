@@ -13,12 +13,13 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -57,16 +58,13 @@ func newAuthzVmcpForConfigMap(
 		authzRefMutate(authzRef)
 	}
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type:        "anonymous",
-				AuthzConfig: authzRef,
-			},
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type:        "anonymous",
+			AuthzConfig: authzRef,
+		}),
+	)
 	if len(auth.upstreams) > 0 {
 		ups := make([]mcpv1beta1.UpstreamProviderConfig, 0, len(auth.upstreams))
 		for _, name := range auth.upstreams {
@@ -111,10 +109,7 @@ func newCedarV1Payload(mutate func(m map[string]any)) string {
 // dependencies (OIDC resolver) and arbitrary k8s objects (ConfigMaps for authz).
 func converterWithObjects(t *testing.T, objects ...client.Object) *Converter {
 	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-	k8sClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	k8sClient := fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).WithObjects(objects...).Build()
 	converter, err := NewConverter(newNoOpMockResolver(t), k8sClient)
 	require.NoError(t, err)
 	return converter
@@ -304,25 +299,22 @@ func TestConvertAuthzConfig_ConfigMapPath(t *testing.T) {
 func TestConvertAuthzConfig_InlinePath_NewFieldsSourcedFromAuthzConfigRef(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type: "anonymous",
-				AuthzConfig: &mcpv1beta1.AuthzConfigRef{
-					Type: mcpv1beta1.AuthzConfigTypeInline,
-					Inline: &mcpv1beta1.InlineAuthzConfig{
-						Policies:     []string{`permit(principal, action, resource);`},
-						EntitiesJSON: `[{"uid":{"type":"ClaimGroup","id":"engineering"}}]`,
-					},
-					GroupClaimName:  "groups",
-					RoleClaimName:   "roles",
-					GroupEntityType: "ClaimGroup",
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+			AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies:     []string{`permit(principal, action, resource);`},
+					EntitiesJSON: `[{"uid":{"type":"ClaimGroup","id":"engineering"}}]`,
 				},
+				GroupClaimName:  "groups",
+				RoleClaimName:   "roles",
+				GroupEntityType: "ClaimGroup",
 			},
-		},
-	}
+		}),
+	)
 
 	ctx := log.IntoContext(t.Context(), logr.Discard())
 	converter := converterWithObjects(t)
@@ -349,18 +341,15 @@ func TestConvertAuthzConfig_InlinePath_NewFieldsSourcedFromAuthzConfigRef(t *tes
 func TestConvertAuthzConfig_UnknownTypeIsRejected(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type: "anonymous",
-				AuthzConfig: &mcpv1beta1.AuthzConfigRef{
-					Type: "future-authorizer",
-				},
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+			AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: "future-authorizer",
 			},
-		},
-	}
+		}),
+	)
 
 	ctx := log.IntoContext(t.Context(), logr.Discard())
 	converter := converterWithObjects(t)

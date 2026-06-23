@@ -84,6 +84,16 @@ func TestNew(t *testing.T) {
 	}
 }
 
+func TestServer_ReadTimeoutConfigured(t *testing.T) {
+	t.Parallel()
+	s := newTestServer(t, &Config{Host: "localhost", Port: "8080"})
+	require.NotNil(t, s.httpServer)
+	// ReadTimeout bounds slow uploads; WriteTimeout must stay unset so long-lived
+	// streamable HTTP response streams are not severed.
+	assert.Equal(t, defaultReadTimeout, s.httpServer.ReadTimeout)
+	assert.Zero(t, s.httpServer.WriteTimeout)
+}
+
 func TestServer_GetAddress(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

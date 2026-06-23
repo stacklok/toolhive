@@ -27,6 +27,10 @@ func newTestRegistry(t *testing.T) vmcpauth.OutgoingAuthRegistry {
 	return reg
 }
 
+// mergeForwardedHeaders is now a one-line delegation to
+// headerforward.MergeForwardedHeaders; full coverage lives in
+// pkg/vmcp/headerforward/transport_test.go (TestMergeForwardedHeaders).
+
 func TestCreateMCPClient_UnsupportedTransport(t *testing.T) {
 	t.Parallel()
 

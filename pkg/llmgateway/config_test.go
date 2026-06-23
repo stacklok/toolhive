@@ -5,11 +5,30 @@ package llmgateway_test
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
 	"github.com/stacklok/toolhive/pkg/llmgateway"
 )
+
+// TestRefreshWindowExceedsHelperTTL guards the belt-and-suspenders invariant
+// between the two values ToolHive writes for Claude Code: the token source's
+// preemptive refresh window MUST exceed the apiKeyHelper TTL, so that every
+// helper invocation in the final window forces a proactive refresh and Claude
+// Code never receives an about-to-expire token. If either constant changes and
+// the invariant breaks, this test fails before the regression ships.
+func TestRefreshWindowExceedsHelperTTL(t *testing.T) {
+	t.Parallel()
+
+	assert.Greater(t, llmgateway.LLMTokenRefreshWindow, llmgateway.ClaudeCodeHelperTTL,
+		"refresh window must exceed the helper TTL so a helper call always lands inside it")
+	assert.Equal(t, 2*llmgateway.ClaudeCodeHelperTTL, llmgateway.LLMTokenRefreshWindow,
+		"refresh window is derived as 2x the helper TTL")
+	assert.Equal(t, int64(300000), llmgateway.ClaudeCodeHelperTTL.Milliseconds(),
+		"helper TTL is written to settings.json in milliseconds")
+	assert.Equal(t, 10*time.Minute, llmgateway.LLMTokenRefreshWindow)
+}
 
 func TestProxyOriginOf(t *testing.T) {
 	t.Parallel()

@@ -26,6 +26,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 // migrationCache
@@ -491,8 +493,7 @@ func testCRGVK() schema.GroupVersionKind {
 // fake client requires the kind to be in the scheme on List/Get/Update).
 func schemeForCRD(t *testing.T) *runtime.Scheme {
 	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, apiextensionsv1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t, apiextensionsv1.AddToScheme)
 	gvk := testCRGVK()
 	listGVK := gvk
 	listGVK.Kind = testCRListKind

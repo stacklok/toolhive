@@ -9,10 +9,11 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestCalculateConfigHash(t *testing.T) {
@@ -92,63 +93,32 @@ func TestCalculateConfigHash(t *testing.T) {
 func TestFindReferencingMCPServers(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	t.Run("finds servers referencing toolconfig", func(t *testing.T) {
 		t.Parallel()
 
 		ctx := t.Context()
 
-		server1 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server1",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "test-config",
-				},
-			},
-		}
+		server1 := v1beta1test.NewMCPServer("server1", "default",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("test-config"),
+		)
 
-		server2 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server2",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "test-config",
-				},
-			},
-		}
+		server2 := v1beta1test.NewMCPServer("server2", "default",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("test-config"),
+		)
 
-		server3 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server3",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "other-config",
-				},
-			},
-		}
+		server3 := v1beta1test.NewMCPServer("server3", "default",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("other-config"),
+		)
 
-		server4 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server4",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				// No ToolConfigRef
-			},
-		}
+		server4 := v1beta1test.NewMCPServer("server4", "default",
+			v1beta1test.WithImage("test-image"),
+			// No ToolConfigRef
+		)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -181,29 +151,15 @@ func TestFindReferencingMCPServers(t *testing.T) {
 
 		ctx := t.Context()
 
-		server1 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server1",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-					Name: "auth-config",
-				},
-			},
-		}
+		server1 := v1beta1test.NewMCPServer("server1", "default",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithExternalAuthConfigRef("auth-config"),
+		)
 
-		server2 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server2",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				// No ExternalAuthConfigRef
-			},
-		}
+		server2 := v1beta1test.NewMCPServer("server2", "default",
+			v1beta1test.WithImage("test-image"),
+			// No ExternalAuthConfigRef
+		)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -228,15 +184,9 @@ func TestFindReferencingMCPServers(t *testing.T) {
 
 		ctx := t.Context()
 
-		server := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server1",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-			},
-		}
+		server := v1beta1test.NewMCPServer("server1", "default",
+			v1beta1test.WithImage("test-image"),
+		)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -260,31 +210,15 @@ func TestFindReferencingMCPServers(t *testing.T) {
 
 		ctx := t.Context()
 
-		server1 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server1",
-				Namespace: "namespace1",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "test-config",
-				},
-			},
-		}
+		server1 := v1beta1test.NewMCPServer("server1", "namespace1",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("test-config"),
+		)
 
-		server2 := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "server2",
-				Namespace: "namespace2",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "test-config",
-				},
-			},
-		}
+		server2 := v1beta1test.NewMCPServer("server2", "namespace2",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("test-config"),
+		)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -397,8 +331,7 @@ func TestWorkloadRefsEqual(t *testing.T) {
 func TestFindWorkloadRefsFromMCPServers(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	t.Run("returns sorted refs", func(t *testing.T) {
 		t.Parallel()
@@ -406,18 +339,12 @@ func TestFindWorkloadRefsFromMCPServers(t *testing.T) {
 
 		// Create servers in reverse alphabetical order to verify sorting
 		servers := []mcpv1beta1.MCPServer{
-			{
-				ObjectMeta: metav1.ObjectMeta{Name: "charlie", Namespace: "ns"},
-				Spec:       mcpv1beta1.MCPServerSpec{Image: "img", ToolConfigRef: &mcpv1beta1.ToolConfigRef{Name: "cfg"}},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{Name: "alpha", Namespace: "ns"},
-				Spec:       mcpv1beta1.MCPServerSpec{Image: "img", ToolConfigRef: &mcpv1beta1.ToolConfigRef{Name: "cfg"}},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{Name: "bravo", Namespace: "ns"},
-				Spec:       mcpv1beta1.MCPServerSpec{Image: "img", ToolConfigRef: &mcpv1beta1.ToolConfigRef{Name: "cfg"}},
-			},
+			*v1beta1test.NewMCPServer("charlie", "ns",
+				v1beta1test.WithImage("img"), v1beta1test.WithToolConfigRef("cfg")),
+			*v1beta1test.NewMCPServer("alpha", "ns",
+				v1beta1test.WithImage("img"), v1beta1test.WithToolConfigRef("cfg")),
+			*v1beta1test.NewMCPServer("bravo", "ns",
+				v1beta1test.WithImage("img"), v1beta1test.WithToolConfigRef("cfg")),
 		}
 
 		builder := fake.NewClientBuilder().WithScheme(scheme)
@@ -463,8 +390,7 @@ func TestFindWorkloadRefsFromMCPServers(t *testing.T) {
 func TestGetTelemetryConfigForMCPRemoteProxy(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	tests := []struct {
 		name            string
@@ -475,22 +401,16 @@ func TestGetTelemetryConfigForMCPRemoteProxy(t *testing.T) {
 		expectedName    string
 	}{
 		{
-			name: "nil ref returns nil without error",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec:       mcpv1beta1.MCPRemoteProxySpec{TelemetryConfigRef: nil},
-			},
+			name:        "nil ref returns nil without error",
+			proxy:       v1beta1test.NewMCPRemoteProxy("test-proxy", "default"),
 			expectNil:   true,
 			expectError: false,
 		},
 		{
 			name: "fetches referenced config",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "my-telemetry"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("my-telemetry"),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "my-telemetry", Namespace: "default"},
 			},
@@ -500,23 +420,17 @@ func TestGetTelemetryConfigForMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "not found returns nil without error",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "missing"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("missing"),
+			),
 			expectNil:   true,
 			expectError: false,
 		},
 		{
 			name: "cross-namespace returns nil (not found)",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "namespace-b"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "shared-config"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "namespace-b",
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("shared-config"),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "shared-config", Namespace: "namespace-a"},
 			},
@@ -558,8 +472,7 @@ func TestGetTelemetryConfigForMCPRemoteProxy(t *testing.T) {
 func TestGetTelemetryConfigForVirtualMCPServer(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	tests := []struct {
 		name            string
@@ -570,22 +483,16 @@ func TestGetTelemetryConfigForVirtualMCPServer(t *testing.T) {
 		expectedName    string
 	}{
 		{
-			name: "nil ref returns nil without error",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec:       mcpv1beta1.VirtualMCPServerSpec{TelemetryConfigRef: nil},
-			},
+			name:        "nil ref returns nil without error",
+			vmcp:        v1beta1test.NewVirtualMCPServer("test-vmcp", "default"),
 			expectNil:   true,
 			expectError: false,
 		},
 		{
 			name: "fetches referenced config",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "my-telemetry"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPTelemetryConfigRef("my-telemetry"),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "my-telemetry", Namespace: "default"},
 			},
@@ -595,23 +502,17 @@ func TestGetTelemetryConfigForVirtualMCPServer(t *testing.T) {
 		},
 		{
 			name: "not found returns nil without error",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "missing"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPTelemetryConfigRef("missing"),
+			),
 			expectNil:   true,
 			expectError: false,
 		},
 		{
 			name: "cross-namespace returns nil (not found)",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "namespace-b"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "shared-config"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "namespace-b",
+				v1beta1test.WithVMCPTelemetryConfigRef("shared-config"),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "shared-config", Namespace: "namespace-a"},
 			},

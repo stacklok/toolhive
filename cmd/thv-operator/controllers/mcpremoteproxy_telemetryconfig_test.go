@@ -9,18 +9,18 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	tests := []struct {
 		name               string
@@ -36,25 +36,20 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 	}{
 		{
 			name: "nil ref clears hash and removes condition",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec:       mcpv1beta1.MCPRemoteProxySpec{TelemetryConfigRef: nil},
-				Status: mcpv1beta1.MCPRemoteProxyStatus{
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 					TelemetryConfigHash: "old-hash",
-				},
-			},
+				}),
+			),
 			expectError:       false,
 			expectNoCondition: true,
 			expectHashCleared: true,
 		},
 		{
 			name: "valid ref sets condition true and updates hash",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "my-telemetry"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("my-telemetry"),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "my-telemetry", Namespace: "default"},
 				Spec:       newTelemetrySpec("https://otel-collector:4317", true, false),
@@ -70,12 +65,9 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "not found sets condition false",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "missing"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("missing"),
+			),
 			expectError:        true,
 			expectedCondType:   mcpv1beta1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
 			expectedCondStatus: metav1.ConditionFalse,
@@ -83,12 +75,9 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "invalid config sets condition false",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "invalid-telemetry"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("invalid-telemetry"),
+			),
 			// Spec with endpoint but no tracing/metrics enabled → Validate() fails
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "invalid-telemetry", Namespace: "default"},
@@ -108,15 +97,12 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "hash change triggers update",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "my-telemetry"},
-				},
-				Status: mcpv1beta1.MCPRemoteProxyStatus{
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("my-telemetry"),
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 					TelemetryConfigHash: "old-hash",
-				},
-			},
+				}),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "my-telemetry", Namespace: "default"},
 				Spec:       newTelemetrySpec("https://otel-collector:4317", true, false),
@@ -132,12 +118,9 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "recovery from False condition persists True",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "my-telemetry"},
-				},
-				Status: mcpv1beta1.MCPRemoteProxyStatus{
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("my-telemetry"),
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 					TelemetryConfigHash: "abc123",
 					Conditions: []metav1.Condition{
 						{
@@ -146,8 +129,8 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 							Reason: mcpv1beta1.ConditionReasonMCPRemoteProxyTelemetryConfigRefFetchError,
 						},
 					},
-				},
-			},
+				}),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "my-telemetry", Namespace: "default"},
 				Spec:       newTelemetrySpec("https://otel-collector:4317", true, false),
@@ -163,10 +146,8 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "nil ref with stale condition persists removal",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec:       mcpv1beta1.MCPRemoteProxySpec{TelemetryConfigRef: nil},
-				Status: mcpv1beta1.MCPRemoteProxyStatus{
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 					Conditions: []metav1.Condition{
 						{
 							Type:   mcpv1beta1.ConditionTypeMCPRemoteProxyTelemetryConfigRefValidated,
@@ -174,8 +155,8 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 							Reason: mcpv1beta1.ConditionReasonMCPRemoteProxyTelemetryConfigRefNotFound,
 						},
 					},
-				},
-			},
+				}),
+			),
 			expectError:       false,
 			expectNoCondition: true,
 			expectHashCleared: true,
@@ -259,25 +240,15 @@ func TestHandleTelemetryConfig_MCPRemoteProxy(t *testing.T) {
 func TestMapTelemetryConfigToMCPRemoteProxy(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
-	proxy1 := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{Name: "proxy1", Namespace: "default"},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "shared-telemetry"},
-		},
-	}
-	proxy2 := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{Name: "proxy2", Namespace: "default"},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "other-telemetry"},
-		},
-	}
-	proxy3 := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{Name: "proxy3", Namespace: "default"},
-		Spec:       mcpv1beta1.MCPRemoteProxySpec{}, // no ref
-	}
+	proxy1 := v1beta1test.NewMCPRemoteProxy("proxy1", "default",
+		v1beta1test.WithRemoteProxyTelemetryConfigRef("shared-telemetry"),
+	)
+	proxy2 := v1beta1test.NewMCPRemoteProxy("proxy2", "default",
+		v1beta1test.WithRemoteProxyTelemetryConfigRef("other-telemetry"),
+	)
+	proxy3 := v1beta1test.NewMCPRemoteProxy("proxy3", "default") // no ref
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).

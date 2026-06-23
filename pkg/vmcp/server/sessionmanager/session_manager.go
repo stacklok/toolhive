@@ -30,6 +30,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
@@ -85,6 +86,12 @@ type Manager struct {
 	// session from stored metadata; on a cache hit it confirms liveness via
 	// storage.Load, which also refreshes the Redis TTL.
 	sessions *cache.ValidatingCache[string, vmcpsession.MultiSession]
+
+	// optimizerFactory is the resolved (telemetry-wrapped) optimizer factory, or
+	// nil when the optimizer is disabled. Surfaced via OptimizerFactory so the Serve
+	// path can build a per-session optimizer over the core's tools. The store and
+	// cleanup remain owned by this Manager (cleanup returned from New).
+	optimizerFactory func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error)
 }
 
 // New creates a Manager backed by the given SessionDataStorage and backend
@@ -142,6 +149,18 @@ func New(
 		backendReg: backendRegistry,
 	}
 
+	// Surface the resolved optimizer factory to the Serve path ONLY when
+	// AdvertiseFromCore is set. That makes the two store writers mutually exclusive:
+	// the session-factory decorator runs iff !AdvertiseFromCore (buildDecoratingFactory
+	// below), and OptimizerFactory() returns a non-nil factory iff AdvertiseFromCore —
+	// so a Serve composition root that enables the optimizer but forgets the flag gets a
+	// nil factory (no Serve-layer optimizer) rather than a silent double-index of the
+	// shared FTS5 store. The legacy server.New path leaves AdvertiseFromCore false and
+	// never calls OptimizerFactory(), so its decorator is unaffected.
+	if cfg.AdvertiseFromCore {
+		sm.optimizerFactory = optimizerFactory
+	}
+
 	sm.sessions = cache.New(
 		capacity,
 		sm.loadSession,
@@ -162,6 +181,20 @@ func New(
 		return optimizerCleanup(ctx)
 	}
 	return sm, cleanup, nil
+}
+
+// OptimizerFactory returns the resolved (telemetry-wrapped) optimizer factory, or
+// nil when the optimizer is disabled OR FactoryConfig.AdvertiseFromCore is false.
+//
+// It is consumed by the Serve path (FactoryConfig.AdvertiseFromCore), which builds
+// a per-session optimizer over the core's advertised tool set rather than via the
+// session decorator. Gating on AdvertiseFromCore makes the decorator and this getter
+// mutually exclusive store writers, so the shared FTS5 store can never be double-indexed
+// (see New). The optimizer's shared store and its cleanup remain owned by this Manager
+// (the cleanup function returned from New). On the legacy server.New path the factory is
+// applied internally via the session decorator and this getter is unused.
+func (m *Manager) OptimizerFactory() func(context.Context, []mcpserver.ServerTool) (optimizer.Optimizer, error) {
+	return m.optimizerFactory
 }
 
 // generateTimeout is the context deadline applied to the storage operations

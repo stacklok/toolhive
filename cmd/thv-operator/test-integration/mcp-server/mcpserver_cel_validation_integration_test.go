@@ -120,4 +120,48 @@ var _ = Describe("CEL Validation for AuthzConfigRef", Label("k8s", "cel", "valid
 		})
 	})
 
+	Context("authzConfig vs authzConfigRef mutual exclusion", func() {
+		It("should accept only inline authzConfig", func() {
+			server := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "authzmutex-inline-only", Namespace: "default"},
+				Spec: mcpv1beta1.MCPServerSpec{
+					Image: "example/mcp-server:latest",
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type:   "inline",
+						Inline: &mcpv1beta1.InlineAuthzConfig{Policies: []string{"permit(principal, action, resource);"}},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+		})
+
+		It("should accept only authzConfigRef", func() {
+			server := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "authzmutex-ref-only", Namespace: "default"},
+				Spec: mcpv1beta1.MCPServerSpec{
+					Image:          "example/mcp-server:latest",
+					AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "shared-authz"},
+				},
+			}
+			Expect(k8sClient.Create(ctx, server)).To(Succeed())
+		})
+
+		It("should reject when both authzConfig and authzConfigRef are set", func() {
+			server := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "authzmutex-both", Namespace: "default"},
+				Spec: mcpv1beta1.MCPServerSpec{
+					Image: "example/mcp-server:latest",
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type:   "inline",
+						Inline: &mcpv1beta1.InlineAuthzConfig{Policies: []string{"permit(principal, action, resource);"}},
+					},
+					AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "shared-authz"},
+				},
+			}
+			err := k8sClient.Create(ctx, server)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring("authzConfig and authzConfigRef are mutually exclusive"))
+		})
+	})
+
 })

@@ -12,6 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 const (
@@ -351,18 +352,11 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		}, timeout, interval).Should(BeTrue())
 
 		// Create an MCPRemoteProxy that references this config
-		proxy := &mcpv1beta1.MCPRemoteProxy{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "proxy-ref-tracking",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPRemoteProxySpec{
-				RemoteURL: "https://example.com/mcp",
-				TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-					Name: "test-proxy-ref-tracking",
-				},
-			},
-		}
+		proxy := v1beta1test.NewMCPRemoteProxy("proxy-ref-tracking", "default",
+			v1beta1test.WithRemoteProxyURL("https://example.com/mcp"),
+			v1beta1test.WithRemoteProxyPort(0),
+			v1beta1test.WithRemoteProxyTelemetryConfigRef("test-proxy-ref-tracking"),
+		)
 		Expect(k8sClient.Create(ctx, proxy)).To(Succeed())
 
 		// The MCPRemoteProxy watch should trigger reconciliation of MCPTelemetryConfig.
@@ -418,18 +412,11 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		}, timeout, interval).Should(BeTrue())
 
 		// Create an MCPRemoteProxy that references this config
-		proxy := &mcpv1beta1.MCPRemoteProxy{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "proxy-deletion-blocker",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPRemoteProxySpec{
-				RemoteURL: "https://example.com/mcp",
-				TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-					Name: "test-proxy-deletion-protection",
-				},
-			},
-		}
+		proxy := v1beta1test.NewMCPRemoteProxy("proxy-deletion-blocker", "default",
+			v1beta1test.WithRemoteProxyURL("https://example.com/mcp"),
+			v1beta1test.WithRemoteProxyPort(0),
+			v1beta1test.WithRemoteProxyTelemetryConfigRef("test-proxy-deletion-protection"),
+		)
 		Expect(k8sClient.Create(ctx, proxy)).To(Succeed())
 
 		// Wait for ReferencingWorkloads to include the proxy

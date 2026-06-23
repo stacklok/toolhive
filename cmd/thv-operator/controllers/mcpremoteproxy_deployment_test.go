@@ -29,7 +29,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
 // TestDeploymentForMCPRemoteProxy tests deployment generation
@@ -42,22 +45,13 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 		validate func(*testing.T, *appsv1.Deployment)
 	}{
 		{
-			name: "basic deployment",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "basic-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 8080,
-				},
-			},
+			name:  "basic deployment",
+			proxy: v1beta1test.NewMCPRemoteProxy("basic-proxy", "default"),
 			validate: func(t *testing.T, dep *appsv1.Deployment) {
 				t.Helper()
 				assert.Equal(t, "basic-proxy", dep.Name)
 				assert.Equal(t, "default", dep.Namespace)
-				assert.Equal(t, int32(1), *dep.Spec.Replicas)
+				assert.Nil(t, dep.Spec.Replicas, "nil spec.replicas leaves the count to the apiserver default")
 
 				// Verify labels
 				assert.Equal(t, labelsForMCPRemoteProxy("basic-proxy"), dep.Spec.Selector.MatchLabels)
@@ -88,15 +82,9 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "with resource limits",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "resources-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 8080,
-					Resources: mcpv1beta1.ResourceRequirements{
+			proxy: v1beta1test.NewMCPRemoteProxy("resources-proxy", "default",
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.Resources = mcpv1beta1.ResourceRequirements{
 						Limits: mcpv1beta1.ResourceList{
 							CPU:    "1",
 							Memory: "512Mi",
@@ -105,9 +93,9 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 							CPU:    "100m",
 							Memory: "128Mi",
 						},
-					},
-				},
-			},
+					}
+				}),
+			),
 			validate: func(t *testing.T, dep *appsv1.Deployment) {
 				t.Helper()
 				container := dep.Spec.Template.Spec.Containers[0]
@@ -119,15 +107,9 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "with resource overrides",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "override-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 8080,
-					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+			proxy: v1beta1test.NewMCPRemoteProxy("override-proxy", "default",
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
 						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
 							ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
 								Labels: map[string]string{
@@ -142,9 +124,9 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 								{Name: "TOOLHIVE_DEBUG", Value: "true"},
 							},
 						},
-					},
-				},
-			},
+					}
+				}),
+			),
 			validate: func(t *testing.T, dep *appsv1.Deployment) {
 				t.Helper()
 				// Verify custom labels
@@ -179,16 +161,9 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "custom proxyPort",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "custom-port-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 9090,
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("custom-port-proxy", "default",
+				v1beta1test.WithRemoteProxyPort(9090),
+			),
 			validate: func(t *testing.T, dep *appsv1.Deployment) {
 				t.Helper()
 				container := dep.Spec.Template.Spec.Containers[0]
@@ -201,7 +176,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			reconciler := &MCPRemoteProxyReconciler{
 				Scheme:           scheme,
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
@@ -227,17 +202,8 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 		validate func(*testing.T, *corev1.Service)
 	}{
 		{
-			name: "basic service",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "basic-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 8080,
-				},
-			},
+			name:  "basic service",
+			proxy: v1beta1test.NewMCPRemoteProxy("basic-proxy", "default"),
 			validate: func(t *testing.T, svc *corev1.Service) {
 				t.Helper()
 				assert.Equal(t, createProxyServiceName("basic-proxy"), svc.Name)
@@ -257,17 +223,11 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "service with session affinity None",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "basic-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL:       "https://mcp.example.com",
-					ProxyPort:       8080,
-					SessionAffinity: string(corev1.ServiceAffinityNone),
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("basic-proxy", "default",
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
+				}),
+			),
 			validate: func(t *testing.T, svc *corev1.Service) {
 				t.Helper()
 				assert.Equal(t, corev1.ServiceAffinityNone, svc.Spec.SessionAffinity)
@@ -275,15 +235,10 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "service with overrides",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "override-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 9090,
-					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+			proxy: v1beta1test.NewMCPRemoteProxy("override-proxy", "default",
+				v1beta1test.WithRemoteProxyPort(9090),
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
 						ProxyService: &mcpv1beta1.ResourceMetadataOverrides{
 							Labels: map[string]string{
 								"svc-label": "svc-value",
@@ -292,9 +247,9 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 								"svc-annotation": "svc-annotation-value",
 							},
 						},
-					},
-				},
-			},
+					}
+				}),
+			),
 			validate: func(t *testing.T, svc *corev1.Service) {
 				t.Helper()
 				assert.Equal(t, "svc-value", svc.Labels["svc-label"])
@@ -309,7 +264,7 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			reconciler := &MCPRemoteProxyReconciler{
 				Scheme: scheme,
 			}
@@ -388,25 +343,19 @@ func TestBuildHeaderForwardSecretEnvVars(t *testing.T) {
 	}{
 		{
 			name: "single header secret",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
-						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
-							{
-								HeaderName: "X-API-Key",
-								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
-									Name: "my-secret",
-									Key:  "api-key",
-								},
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyHeaderForward(&mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{
+							HeaderName: "X-API-Key",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+								Name: "my-secret",
+								Key:  "api-key",
 							},
 						},
 					},
-				},
-			},
+				}),
+			),
 			validate: func(t *testing.T, envVars []corev1.EnvVar) {
 				t.Helper()
 				require.Len(t, envVars, 1)
@@ -419,32 +368,26 @@ func TestBuildHeaderForwardSecretEnvVars(t *testing.T) {
 		},
 		{
 			name: "multiple header secrets",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "multi-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
-						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
-							{
-								HeaderName: "X-API-Key",
-								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
-									Name: "secret-a",
-									Key:  "key-a",
-								},
+			proxy: v1beta1test.NewMCPRemoteProxy("multi-proxy", "default",
+				v1beta1test.WithRemoteProxyHeaderForward(&mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{
+							HeaderName: "X-API-Key",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+								Name: "secret-a",
+								Key:  "key-a",
 							},
-							{
-								HeaderName: "X-Token",
-								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
-									Name: "secret-b",
-									Key:  "key-b",
-								},
+						},
+						{
+							HeaderName: "X-Token",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+								Name: "secret-b",
+								Key:  "key-b",
 							},
 						},
 					},
-				},
-			},
+				}),
+			),
 			validate: func(t *testing.T, envVars []corev1.EnvVar) {
 				t.Helper()
 				require.Len(t, envVars, 2)
@@ -458,29 +401,23 @@ func TestBuildHeaderForwardSecretEnvVars(t *testing.T) {
 		},
 		{
 			name: "skip entries with nil ValueSecretRef",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "skip-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
-						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
-							{
-								HeaderName:     "X-Invalid",
-								ValueSecretRef: nil, // Should be skipped
-							},
-							{
-								HeaderName: "X-Valid",
-								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
-									Name: "valid-secret",
-									Key:  "valid-key",
-								},
+			proxy: v1beta1test.NewMCPRemoteProxy("skip-proxy", "default",
+				v1beta1test.WithRemoteProxyHeaderForward(&mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{
+							HeaderName:     "X-Invalid",
+							ValueSecretRef: nil, // Should be skipped
+						},
+						{
+							HeaderName: "X-Valid",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+								Name: "valid-secret",
+								Key:  "valid-key",
 							},
 						},
 					},
-				},
-			},
+				}),
+			),
 			validate: func(t *testing.T, envVars []corev1.EnvVar) {
 				t.Helper()
 				require.Len(t, envVars, 1)
@@ -489,17 +426,11 @@ func TestBuildHeaderForwardSecretEnvVars(t *testing.T) {
 		},
 		{
 			name: "empty AddHeadersFromSecret",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "empty-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
-						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{},
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("empty-proxy", "default",
+				v1beta1test.WithRemoteProxyHeaderForward(&mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{},
+				}),
+			),
 			validate: func(t *testing.T, envVars []corev1.EnvVar) {
 				t.Helper()
 				assert.Empty(t, envVars)
@@ -547,32 +478,14 @@ func TestEnsureDeployment(t *testing.T) {
 		expectRequeue      bool
 	}{
 		{
-			name: "create new deployment",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "new-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 8080,
-				},
-			},
+			name:               "create new deployment",
+			proxy:              v1beta1test.NewMCPRemoteProxy("new-proxy", "default"),
 			existingDeployment: nil,
 			expectRequeue:      true,
 		},
 		{
-			name: "deployment exists - no update to allow HPA",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "replica-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 8080,
-				},
-			},
+			name:  "deployment exists - no update to allow HPA",
+			proxy: v1beta1test.NewMCPRemoteProxy("replica-proxy", "default"),
 			existingDeployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "replica-proxy",
@@ -593,7 +506,7 @@ func TestEnsureDeployment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			// Add RBAC and Apps types to scheme
 			_ = rbacv1.AddToScheme(scheme)
 			_ = appsv1.AddToScheme(scheme)
@@ -651,17 +564,8 @@ func TestEnsureService(t *testing.T) {
 		expectRequeue   bool
 	}{
 		{
-			name: "create new service",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "new-svc-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 8080,
-				},
-			},
+			name:            "create new service",
+			proxy:           v1beta1test.NewMCPRemoteProxy("new-svc-proxy", "default"),
 			existingService: nil,
 			expectRequeue:   true,
 		},
@@ -671,7 +575,7 @@ func TestEnsureService(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			// Add RBAC and Apps types to scheme
 			_ = rbacv1.AddToScheme(scheme)
 			_ = appsv1.AddToScheme(scheme)
@@ -704,7 +608,7 @@ func TestEnsureService(t *testing.T) {
 func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T) {
 	t.Parallel()
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -732,19 +636,9 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *test
 		},
 	}
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://mcp.example.com",
-			ProxyPort: 8080,
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: authConfig.Name,
-			},
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef(authConfig.Name),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -766,7 +660,7 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *test
 func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(t *testing.T) {
 	t.Parallel()
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -794,20 +688,9 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(
 		},
 	}
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://mcp.example.com",
-			ProxyPort: 8080,
-			AuthServerRef: &mcpv1beta1.AuthServerRef{
-				Kind: "MCPExternalAuthConfig",
-				Name: authConfig.Name,
-			},
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxyAuthServerRef("MCPExternalAuthConfig", authConfig.Name),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -829,7 +712,7 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(
 func TestMCPRemoteProxyDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testing.T) {
 	t.Parallel()
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -850,19 +733,9 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testin
 		},
 	}
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://mcp.example.com",
-			ProxyPort: 8080,
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: authConfig.Name,
-			},
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef(authConfig.Name),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -879,6 +752,71 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testin
 	require.NotNil(t, deployment)
 
 	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+}
+
+// TestMCPRemoteProxyDeployment_OBOSecretEnvVars verifies that an obo-typed
+// MCPExternalAuthConfig referenced from an MCPRemoteProxy injects the registered
+// OBOHandler.SecretEnvVars output into the proxy container, and that the
+// deployment builder and drift check agree on it so a correctly-configured
+// resource does not hot-loop. A stub OBO handler stands in for the out-of-tree
+// enterprise handler.
+//
+//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
+func TestMCPRemoteProxyDeployment_OBOSecretEnvVars(t *testing.T) {
+	t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
+
+	oboEnvVar := corev1.EnvVar{
+		Name: "TOOLHIVE_OBO_CLIENT_SECRET",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "obo-secret"},
+				Key:                  "client-secret",
+			},
+		},
+	}
+	stub := defaultOBOHandlerStub()
+	stub.SecretEnvVars = func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+		return []corev1.EnvVar{oboEnvVar}, nil
+	}
+	ctrlutil.RegisterOBOHandler(stub)
+
+	scheme := testutil.NewScheme(t)
+
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "obo-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
+		},
+	}
+
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef(authConfig.Name),
+	)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(authConfig).
+		Build()
+
+	reconciler := &MCPRemoteProxyReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+	require.NotNil(t, deployment)
+
+	container := deployment.Spec.Template.Spec.Containers[0]
+	assert.Contains(t, container.Env, oboEnvVar,
+		"OBO handler SecretEnvVars output must be injected into the proxy container")
+
+	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+		"freshly built deployment with an OBO env var must not be seen as drifted")
 }
 
 func TestMCPRemoteProxyDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T) {
@@ -938,19 +876,10 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
-			proxy := &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 8080,
-				},
-			}
+			proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default")
 			if tt.specSecrets != nil {
 				proxy.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
 					ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
@@ -991,16 +920,8 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 		validate     func(*testing.T, []corev1.EnvVar)
 	}{
 		{
-			name: "basic env vars",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "basic-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-				},
-			},
+			name:  "basic env vars",
+			proxy: v1beta1test.NewMCPRemoteProxy("basic-proxy", "default"),
 			validate: func(t *testing.T, envVars []corev1.EnvVar) {
 				t.Helper()
 				// Should have required env vars
@@ -1017,18 +938,9 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 		},
 		{
 			name: "with token exchange",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "exchange-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "exchange-config",
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("exchange-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("exchange-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "exchange-config",
@@ -1074,33 +986,26 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 		},
 		{
 			name: "with header forward secrets",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "header-forward-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					HeaderForward: &mcpv1beta1.HeaderForwardConfig{
-						AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
-							{
-								HeaderName: "X-API-Key",
-								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
-									Name: "api-key-secret",
-									Key:  "api-key",
-								},
+			proxy: v1beta1test.NewMCPRemoteProxy("header-forward-proxy", "default",
+				v1beta1test.WithRemoteProxyHeaderForward(&mcpv1beta1.HeaderForwardConfig{
+					AddHeadersFromSecret: []mcpv1beta1.HeaderFromSecret{
+						{
+							HeaderName: "X-API-Key",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+								Name: "api-key-secret",
+								Key:  "api-key",
 							},
-							{
-								HeaderName: "Authorization",
-								ValueSecretRef: &mcpv1beta1.SecretKeyRef{
-									Name: "auth-secret",
-									Key:  "token",
-								},
+						},
+						{
+							HeaderName: "Authorization",
+							ValueSecretRef: &mcpv1beta1.SecretKeyRef{
+								Name: "auth-secret",
+								Key:  "token",
 							},
 						},
 					},
-				},
-			},
+				}),
+			),
 			validate: func(t *testing.T, envVars []corev1.EnvVar) {
 				t.Helper()
 				// Should have env vars for both header secrets and TOOLHIVE_SECRETS_PROVIDER
@@ -1134,18 +1039,9 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 		},
 		{
 			name: "with bearer token",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "bearer-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "bearer-config",
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("bearer-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("bearer-config"),
+			),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "bearer-config",
@@ -1192,7 +1088,7 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.proxy}
 			if tt.externalAuth != nil {
 				objects = append(objects, tt.externalAuth)
@@ -1223,16 +1119,7 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
-	baseProxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://mcp.example.com",
-			ProxyPort: 8080,
-		},
-	}
+	baseProxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default")
 
 	baseService := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1303,6 +1190,68 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 			r := &MCPRemoteProxyReconciler{}
 			result := r.serviceNeedsUpdate(tt.service, tt.proxy)
 			assert.Equal(t, tt.needsUpdate, result)
+		})
+	}
+}
+
+// TestBuildRedisPasswordEnvVarForRemoteProxy mirrors VirtualMCPServer's
+// TestBuildRedisPasswordEnvVar — the env var must be injected only when
+// sessionStorage uses the redis provider AND a passwordRef is set, and it
+// must always be a SecretKeyRef (never a plaintext value).
+func TestBuildRedisPasswordEnvVarForRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	passwordRef := &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+
+	tests := []struct {
+		name        string
+		storage     *mcpv1beta1.SessionStorageConfig
+		expectEnVar bool
+	}{
+		{
+			name:        "nil sessionStorage produces no env var",
+			storage:     nil,
+			expectEnVar: false,
+		},
+		{
+			name:        "memory provider produces no env var",
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: "memory"},
+			expectEnVar: false,
+		},
+		{
+			name:        "redis without passwordRef produces no env var",
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: mcpv1beta1.SessionStorageProviderRedis, Address: "redis:6379"},
+			expectEnVar: false,
+		},
+		{
+			name: "redis with passwordRef produces THV_SESSION_REDIS_PASSWORD",
+			storage: &mcpv1beta1.SessionStorageConfig{
+				Provider:    mcpv1beta1.SessionStorageProviderRedis,
+				Address:     "redis:6379",
+				PasswordRef: passwordRef,
+			},
+			expectEnVar: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxySessionStorage(tc.storage),
+			)
+			env := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+			if tc.expectEnVar {
+				require.Len(t, env, 1)
+				assert.Equal(t, session.RedisPasswordEnvVar, env[0].Name)
+				assert.Empty(t, env[0].Value, "must not use plaintext Value")
+				require.NotNil(t, env[0].ValueFrom)
+				require.NotNil(t, env[0].ValueFrom.SecretKeyRef)
+				assert.Equal(t, passwordRef.Name, env[0].ValueFrom.SecretKeyRef.Name)
+				assert.Equal(t, passwordRef.Key, env[0].ValueFrom.SecretKeyRef.Key)
+			} else {
+				assert.Empty(t, env)
+			}
 		})
 	}
 }

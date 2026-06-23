@@ -4,20 +4,24 @@
 package controllers
 
 import (
+	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestMCPOIDCConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -92,8 +96,7 @@ func TestMCPOIDCConfigReconciler_ReconcileNotFound(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Empty client — no objects exist
 	fakeClient := fake.NewClientBuilder().
@@ -122,10 +125,6 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
@@ -141,16 +140,7 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -191,10 +181,6 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
 	// Start with invalid config: type=inline but no inline config
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -209,16 +195,7 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -310,8 +287,7 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := []client.Object{tt.oidcConfig}
 
@@ -343,10 +319,6 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
@@ -362,16 +334,7 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -421,10 +384,6 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
 	// Invalid config: type is inline but no inline config set
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -439,16 +398,7 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -572,9 +522,6 @@ func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
 
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -590,25 +537,12 @@ func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T
 			},
 		},
 	}
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server-to-track",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-				Name: "test-config",
-			},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("server-to-track", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithOIDCConfigRef("test-config", ""),
+	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig, mcpServer).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-	reconciler := &MCPOIDCConfigReconciler{Client: fakeClient, Scheme: scheme}
+	reconciler, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig, mcpServer)
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: oidcConfig.Name, Namespace: oidcConfig.Namespace}}
 
 	result, err := reconciler.Reconcile(ctx, req)
@@ -635,4 +569,184 @@ func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T
 	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &updatedConfig))
 	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads)
 	assert.EqualValues(t, 0, updatedConfig.Status.ReferenceCount)
+}
+
+// TestMCPOIDCConfigReconciler_ReconcileKeepsExistingForeignCondition verifies
+// that when the controller observes a foreign-owned condition already on the
+// object and then writes its own Valid=True, it folds its condition into the
+// existing set rather than dropping the foreign one. It catches the
+// mutate-outside-the-closure bug: if a condition were set before
+// MutateAndPatchStatus took its snapshot, the diff would be empty and the
+// controller-owned Valid condition would never land (the bottom assertion
+// catches that).
+//
+// This case does NOT prove the merge-patch-vs-PUT distinction on its own —
+// under the fake client there is no concurrent writer, so a full PUT of the
+// in-memory object (which still carries the foreign condition loaded at Get)
+// would also persist it. The concurrent-writer guarantee is exercised by
+// TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch.
+func TestMCPOIDCConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "default", Generation: 1},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+				Issuer:   "https://accounts.google.com",
+				ClientID: "test-client",
+			},
+		},
+		Status: mcpv1beta1.MCPOIDCConfigStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               "ForeignControllerSays",
+					Status:             metav1.ConditionTrue,
+					Reason:             "ExternallySet",
+					Message:            "set by a hypothetical sibling owner of this resource",
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
+	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: oidcConfig.Name, Namespace: oidcConfig.Namespace}}
+
+	// First reconcile adds the finalizer; second runs the success path and
+	// writes Valid=True without touching any foreign condition.
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var after mcpv1beta1.MCPOIDCConfig
+	require.NoError(t, fakeClient.Get(ctx, req.NamespacedName, &after))
+
+	foreign := meta.FindStatusCondition(after.Status.Conditions, "ForeignControllerSays")
+	require.NotNil(t, foreign,
+		"foreign condition must survive an MCPOIDCConfig reconcile — the controller must fold its own condition into the existing set, not replace it")
+	assert.Equal(t, metav1.ConditionTrue, foreign.Status, "foreign condition value must not be modified")
+	assert.Equal(t, "ExternallySet", foreign.Reason)
+
+	// And our own Valid=True landed.
+	own := meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeOIDCConfigValid)
+	require.NotNil(t, own, "controller-owned Valid condition must land")
+	assert.Equal(t, metav1.ConditionTrue, own.Status)
+}
+
+// TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch
+// proves the property the MutateAndPatchStatus migration actually buys over a
+// full r.Status().Update: a condition written by a disjoint owner that lands
+// between the reconciler's Get and its status patch survives, because the
+// reconciler sends a JSON merge-patch carrying only the fields it changed
+// (here referencingWorkloads/referenceCount) rather than sending a full PUT of
+// its stale view of the whole Status.Conditions array.
+//
+// The merge-patch-vs-PUT behaviour lives entirely in the shared
+// ctrlutil.MutateAndPatchStatus helper that all three config controllers use,
+// so this single end-to-end proof guards the mechanism for the OIDC,
+// ExternalAuth, and Authz reconcilers alike.
+//
+// A WithInterceptorFuncs Get hook simulates the concurrent writer: once armed,
+// it injects a foreign condition into the backing store immediately after the
+// reconciler reads the object. The reconcile that follows changes only the
+// reference list — the spec, and hence the generation and the Valid
+// condition's ObservedGeneration, is unchanged — so the merge-patch body omits
+// the conditions array and the foreign entry is preserved. A regression to
+// r.Status().Update would PUT conditions=[Valid] and erase it.
+func TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+	scheme := testutil.NewScheme(t)
+
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "concurrent-config", Namespace: "default", Generation: 1},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+				Issuer:   "https://accounts.google.com",
+				ClientID: "test-client",
+			},
+		},
+	}
+	key := client.ObjectKeyFromObject(oidcConfig)
+
+	foreign := metav1.Condition{
+		Type:               "ForeignControllerSays",
+		Status:             metav1.ConditionTrue,
+		Reason:             "ExternallySet",
+		Message:            "written by a concurrent owner between Get and Patch",
+		LastTransitionTime: metav1.Now(),
+	}
+
+	var armed atomic.Bool
+	inject := interceptor.Funcs{
+		Get: func(ctx context.Context, cl client.WithWatch, k client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if err := cl.Get(ctx, k, obj, opts...); err != nil {
+				return err
+			}
+			// Simulate a disjoint owner writing a condition into the store
+			// right after the reconciler's read of the config object. cl is the
+			// inner (non-intercepted) client, so this does not recurse.
+			if k == key && armed.CompareAndSwap(true, false) {
+				cur := &mcpv1beta1.MCPOIDCConfig{}
+				if err := cl.Get(ctx, k, cur); err != nil {
+					return err
+				}
+				meta.SetStatusCondition(&cur.Status.Conditions, foreign)
+				if err := cl.Status().Update(ctx, cur); err != nil {
+					return err
+				}
+			}
+			return nil
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(oidcConfig).
+		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
+		WithInterceptorFuncs(inject).
+		Build()
+	r := &MCPOIDCConfigReconciler{Client: fakeClient, Scheme: scheme}
+	req := reconcile.Request{NamespacedName: key}
+
+	// Reach steady state: finalizer added, then Valid=True + ConfigHash set.
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	// Introduce a referencing workload so the next reconcile patches only
+	// referencingWorkloads/referenceCount — not the conditions array, and
+	// without bumping the config's generation.
+	server := v1beta1test.NewMCPServer("referencing-server", "default",
+		v1beta1test.WithImage("img"),
+		v1beta1test.WithOIDCConfigRef(oidcConfig.Name, "aud"),
+	)
+	require.NoError(t, fakeClient.Create(ctx, server))
+
+	// Arm the concurrent writer and run the reference-refresh reconcile.
+	armed.Store(true)
+	_, err = r.Reconcile(ctx, req)
+	require.NoError(t, err)
+	require.False(t, armed.Load(), "interceptor must have fired on the config Get")
+
+	var after mcpv1beta1.MCPOIDCConfig
+	require.NoError(t, fakeClient.Get(ctx, key, &after))
+
+	foreignAfter := meta.FindStatusCondition(after.Status.Conditions, "ForeignControllerSays")
+	require.NotNil(t, foreignAfter,
+		"a concurrently-written foreign condition must survive the reconciler's merge-patch; a full PUT would erase it")
+	assert.Equal(t, metav1.ConditionTrue, foreignAfter.Status)
+
+	// The reconciler's own work still landed in the same patch cycle.
+	own := meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeOIDCConfigValid)
+	require.NotNil(t, own, "controller-owned Valid condition must remain")
+	assert.Equal(t, metav1.ConditionTrue, own.Status)
+	assert.EqualValues(t, 1, after.Status.ReferenceCount, "reference refresh must have been applied")
 }

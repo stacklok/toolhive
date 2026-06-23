@@ -22,6 +22,7 @@ stateDiagram-v2
     Running --> Stopping: Stop
     Running --> Unhealthy: Health Failed
     Running --> Unauthenticated: Auth Failed
+    Running --> AuthRetrying: Transient Token Refresh Failures
     Running --> Stopped: Container Exit
 
     Stopping --> Stopped: Success
@@ -31,6 +32,9 @@ stateDiagram-v2
     Unauthenticated --> Starting: Re-authenticate
     Unauthenticated --> Removing: Delete
 
+    AuthRetrying --> Running: Refresh Succeeds
+    AuthRetrying --> Unauthenticated: Ceiling Exceeded or Permanent Error
+
     Removing --> [*]: Success
     Error --> Starting: Restart
     Error --> Removing: Delete
@@ -38,8 +42,16 @@ stateDiagram-v2
 
 **States**: `pkg/container/runtime/types.go`
 - `starting`, `running`, `stopping`, `stopped`
-- `removing`, `error`, `unhealthy`, `unauthenticated`
+- `removing`, `error`, `unhealthy`, `unauthenticated`, `auth_retrying`
 - `policy_stopped`, `unknown`
+
+The `auth_retrying` cadence and ceiling can be tuned via environment
+variables on the proxy process:
+
+- `TOOLHIVE_TOKEN_AUTH_RETRYING_TICK_INTERVAL` (default `10m`): cadence
+  between background refresh attempts during the AuthRetrying window.
+- `TOOLHIVE_TOKEN_AUTH_RETRYING_MAX_ELAPSED` (default `24h`): ceiling
+  before the workload is finally marked `unauthenticated`.
 
 ## Core Operations
 
@@ -121,6 +133,12 @@ Steps 1–3 all complete before any destruction, so a failure while preparing th
 The same `Applier` backs both the CLI (`thv upgrade apply`) and the API (`POST /api/v1beta/workloads/{name}/upgrade`, with `GET .../{name}/upgrade-check` and `GET .../upgrade-check` for single and bulk checks), so the verify-then-pull ordering lives in exactly one place. `thv list --check-upgrades` annotates the workload list with each workload's check result.
 
 **Implementation**: `pkg/workloads/upgrade/`, `cmd/thv/app/upgrade.go`
+
+### Proxy termination
+
+Stop and delete terminate the proxy using its recorded PID. When PID-based termination is unavailable or fails (for example, the status file is missing, records no PID, or the process is already gone), they fall back to port-based cleanup: the process holding the proxy port is terminated only after it is confirmed to be this workload's proxy. This prevents an orphaned proxy from continuing to hold the port after the container has been stopped or removed.
+
+**Implementation**: `pkg/workloads/manager.go`
 
 ### List
 

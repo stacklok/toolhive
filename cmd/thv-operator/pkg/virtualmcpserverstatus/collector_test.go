@@ -11,6 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 func TestStatusCollector_SetPhase(t *testing.T) {
@@ -101,6 +102,36 @@ func TestStatusCollector_SetOIDCConfigHash_Clear(t *testing.T) {
 
 	assert.True(t, hasUpdates)
 	assert.Empty(t, status.OIDCConfigHash)
+}
+
+func TestStatusCollector_SetAuthzConfigHash(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetAuthzConfigHash("authz-hash-789")
+
+	status := &mcpv1beta1.VirtualMCPServerStatus{}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Equal(t, "authz-hash-789", status.AuthzConfigHash)
+}
+
+func TestStatusCollector_SetAuthzConfigHash_Clear(t *testing.T) {
+	t.Parallel()
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{}
+	collector := NewStatusManager(vmcp)
+
+	collector.SetAuthzConfigHash("")
+
+	status := &mcpv1beta1.VirtualMCPServerStatus{AuthzConfigHash: "old-hash"}
+	hasUpdates := collector.UpdateStatus(context.Background(), status)
+
+	assert.True(t, hasUpdates)
+	assert.Empty(t, status.AuthzConfigHash)
 }
 
 func TestStatusCollector_SetGroupRefValidatedCondition(t *testing.T) {
@@ -250,32 +281,30 @@ func TestStatusCollector_RemoveConditionsWithPrefix(t *testing.T) {
 	t.Parallel()
 
 	// Create a VirtualMCPServer with existing conditions
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		Status: mcpv1beta1.VirtualMCPServerStatus{
-			Conditions: []metav1.Condition{
-				{
-					Type:   "DiscoveredAuthConfig-backend-1",
-					Status: metav1.ConditionTrue,
-					Reason: "ConversionSucceeded",
-				},
-				{
-					Type:   "DiscoveredAuthConfig-backend-2",
-					Status: metav1.ConditionTrue,
-					Reason: "ConversionSucceeded",
-				},
-				{
-					Type:   "DiscoveredAuthConfig-backend-3",
-					Status: metav1.ConditionFalse,
-					Reason: "ConversionFailed",
-				},
-				{
-					Type:   "Ready",
-					Status: metav1.ConditionTrue,
-					Reason: "DeploymentReady",
-				},
+	vmcp := v1beta1test.NewVirtualMCPServer("", "", v1beta1test.WithVMCPStatus(mcpv1beta1.VirtualMCPServerStatus{
+		Conditions: []metav1.Condition{
+			{
+				Type:   "DiscoveredAuthConfig-backend-1",
+				Status: metav1.ConditionTrue,
+				Reason: "ConversionSucceeded",
+			},
+			{
+				Type:   "DiscoveredAuthConfig-backend-2",
+				Status: metav1.ConditionTrue,
+				Reason: "ConversionSucceeded",
+			},
+			{
+				Type:   "DiscoveredAuthConfig-backend-3",
+				Status: metav1.ConditionFalse,
+				Reason: "ConversionFailed",
+			},
+			{
+				Type:   "Ready",
+				Status: metav1.ConditionTrue,
+				Reason: "DeploymentReady",
 			},
 		},
-	}
+	}))
 	collector := NewStatusManager(vmcp)
 
 	// Remove all DiscoveredAuthConfig conditions except backend-1

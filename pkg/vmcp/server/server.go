@@ -292,13 +292,6 @@ type Server struct {
 	ready     chan struct{}
 	readyOnce sync.Once
 
-	// healthMonitor performs periodic health checks on backends.
-	// Nil if health monitoring is disabled.
-	// Protected by healthMonitorMu: RLock for reads (getter methods, HTTP handlers),
-	// Lock for writes (initialization, disabling on start failure).
-	healthMonitor   *health.Monitor
-	healthMonitorMu sync.RWMutex
-
 	// statusReporter enables vMCP to report operational status to control plane.
 	// Nil if status reporting is disabled.
 	statusReporter vmcpstatus.Reporter
@@ -342,37 +335,6 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 		"key_prefix", keyPrefix,
 	)
 	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, keyPrefix, cfg.SessionTTL)
-}
-
-// buildHealthMonitor builds the backend health monitor from cfg, or returns (nil, nil)
-// when health monitoring is not configured (cfg.HealthMonitorConfig == nil).
-//
-// New builds it once at the composition root (A2) so the same *health.Monitor can be
-// threaded both into the core as a health.StatusProvider (capability filtering) and into
-// Serve as the lifecycle owner (Start/Stop, #5443). Relocated from the old inline
-// server.New body.
-func buildHealthMonitor(
-	ctx context.Context,
-	cfg *Config,
-	backendClient vmcp.BackendClient,
-	backendRegistry vmcp.BackendRegistry,
-) (*health.Monitor, error) {
-	if cfg.HealthMonitorConfig == nil {
-		slog.Info("health monitoring disabled")
-		return nil, nil
-	}
-	// Get initial backends list from registry for health monitoring setup.
-	initialBackends := backendRegistry.List(ctx)
-	healthMon, err := health.NewMonitor(backendClient, initialBackends, *cfg.HealthMonitorConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create health monitor: %w", err)
-	}
-	slog.Info("health monitoring enabled",
-		"check_interval", cfg.HealthMonitorConfig.CheckInterval,
-		"unhealthy_threshold", cfg.HealthMonitorConfig.UnhealthyThreshold,
-		"timeout", cfg.HealthMonitorConfig.Timeout,
-		"degraded_threshold", cfg.HealthMonitorConfig.DegradedThreshold)
-	return healthMon, nil
 }
 
 // New creates a Virtual MCP Server by composing the domain core (core.New) with the
@@ -444,20 +406,6 @@ func New(
 			"(it is the Cedar resource entity name)", vmcp.ErrInvalidConfig)
 	}
 
-	// Build the backend health monitor once at the composition root (A2). The same
-	// instance is injected into the core as a health.StatusProvider (capability
-	// filtering) and into Serve as the lifecycle owner (Start/Stop).
-	healthMon, err := buildHealthMonitor(ctx, cfg, backendClient, backendRegistry)
-	if err != nil {
-		return nil, err
-	}
-	// Pass a true nil interface (not a typed-nil *health.Monitor) when disabled, so the
-	// core's nil check disables filtering rather than calling through a nil pointer.
-	var healthProvider health.StatusProvider
-	if healthMon != nil {
-		healthProvider = healthMon
-	}
-
 	// The SDK elicitation adapter wraps the mcp-go server Serve builds below, so it
 	// cannot exist before core.New. Give the core a late-bound requester now and bind the
 	// real adapter to Serve's server before serving begins (RequestElicitation is only
@@ -472,15 +420,15 @@ func New(
 
 	coreVMCP, err := core.New(deriveCoreConfig(
 		cfg, cachedAgg, rt, backendClient, backendRegistry, workflowDefs,
-		cfg.Authz, elicitation, healthProvider,
+		cfg.Authz, elicitation,
 	))
 	if err != nil {
 		return nil, err
 	}
-	// core.New started the workflow state store's background cleanup goroutine. If Serve
-	// fails after this point, close the core so that goroutine does not leak for the process
-	// lifetime (mirrors Serve's closeStorageOnErr guard for sessionDataStorage). On success
-	// the core's lifecycle is owned by srv.Stop, so the guard is disarmed before returning.
+	// core.New started the workflow state store's cleanup goroutine and the backend health
+	// monitor (both owned by the core now). If Serve fails after this point, close the core so
+	// neither leaks (mirrors Serve's closeStorageOnErr guard); on success the core's lifecycle
+	// is owned by srv.Stop, so the guard is disarmed before returning.
 	closeCoreOnErr := true
 	defer func() {
 		if closeCoreOnErr {
@@ -502,7 +450,7 @@ func New(
 		AdvertiseFromCore: true,
 	}
 
-	srv, err := Serve(ctx, coreVMCP, deriveServerConfig(resolved, healthMon, backendRegistry, sessMgrCfg))
+	srv, err := Serve(ctx, coreVMCP, deriveServerConfig(resolved, backendRegistry, sessMgrCfg))
 	if err != nil {
 		return nil, err
 	}
@@ -623,16 +571,12 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// initialize-skip behavior is preserved here on the legacy path; physical removal of the
 	// middleware and the context seam is deferred to Phase 3 (#5445).
 	if s.core == nil {
-		s.healthMonitorMu.RLock()
-		healthMon := s.healthMonitor
-		s.healthMonitorMu.RUnlock()
-
-		var healthStatusProvider health.StatusProvider
-		if healthMon != nil {
-			healthStatusProvider = healthMon
-		}
+		// Dead on the Serve path: s.core is never nil after #5445 routes New through Serve,
+		// and the health monitor now lives in the core, so no StatusProvider is available
+		// here. Kept (with nil health) only until 302b removes the discovery middleware and
+		// its context seam (anti-pattern #1).
 		mcpHandler = discovery.Middleware(
-			s.discoveryMgr, s.backendRegistry, s.vmcpSessionMgr, healthStatusProvider,
+			s.discoveryMgr, s.backendRegistry, s.vmcpSessionMgr, nil,
 			discovery.WithSessionScopedRouting(),
 		)(mcpHandler)
 		slog.Info("discovery middleware enabled for lazy per-user capability discovery")
@@ -763,23 +707,8 @@ func (s *Server) Start(ctx context.Context) error {
 		close(s.ready)
 	})
 
-	// Start health monitor if configured
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
-
-	if healthMon != nil {
-		if err := healthMon.Start(ctx); err != nil {
-			// Log error and disable health monitoring - treat as if it wasn't configured
-			// This ensures getter methods correctly report monitoring as disabled
-			slog.Warn("failed to start health monitor, disabling health monitoring", "error", err)
-			s.healthMonitorMu.Lock()
-			s.healthMonitor = nil
-			s.healthMonitorMu.Unlock()
-		} else {
-			slog.Info("health monitor started")
-		}
-	}
+	// The backend health monitor is owned by the core (built and started in core.New, stopped
+	// in core.Close), so the server no longer starts or stops it here.
 
 	// Start status reporter if configured
 	if s.statusReporter != nil {
@@ -849,16 +778,8 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.listener = nil
 	s.listenerMu.Unlock()
 
-	// Stop health monitor to clean up health check goroutines
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
-
-	if healthMon != nil {
-		if err := healthMon.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop health monitor: %w", err))
-		}
-	}
+	// The backend health monitor is stopped by core.Close (the core owns it); Serve registered
+	// a shutdown function that closes the core, run in the loop below.
 
 	// Run shutdown functions (e.g., status reporter cleanup, future components)
 	for _, shutdown := range s.shutdownFuncs {
@@ -1265,12 +1186,20 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 	return nil
 }
 
+// backendHealth returns the core-owned backend health reporter, or nil when health
+// monitoring is disabled (the core owns the monitor's lifecycle; #5443 reversal). The
+// s.core nil guard is defensive: a Serve-built server always has a non-nil core.
+func (s *Server) backendHealth() health.Reporter {
+	if s.core == nil {
+		return nil
+	}
+	return s.core.BackendHealth()
+}
+
 // GetBackendHealthStatus returns the health status of a specific backend.
 // Returns error if health monitoring is disabled or backend not found.
 func (s *Server) GetBackendHealthStatus(backendID string) (vmcp.BackendHealthStatus, error) {
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
+	healthMon := s.backendHealth()
 
 	if healthMon == nil {
 		return vmcp.BackendUnknown, fmt.Errorf("health monitoring is disabled")
@@ -1281,9 +1210,7 @@ func (s *Server) GetBackendHealthStatus(backendID string) (vmcp.BackendHealthSta
 // GetBackendHealthState returns the full health state of a specific backend.
 // Returns error if health monitoring is disabled or backend not found.
 func (s *Server) GetBackendHealthState(backendID string) (*health.State, error) {
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
+	healthMon := s.backendHealth()
 
 	if healthMon == nil {
 		return nil, fmt.Errorf("health monitoring is disabled")
@@ -1294,9 +1221,7 @@ func (s *Server) GetBackendHealthState(backendID string) (*health.State, error) 
 // GetAllBackendHealthStates returns the health states of all backends.
 // Returns empty map if health monitoring is disabled.
 func (s *Server) GetAllBackendHealthStates() map[string]*health.State {
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
+	healthMon := s.backendHealth()
 
 	if healthMon == nil {
 		return make(map[string]*health.State)
@@ -1307,9 +1232,7 @@ func (s *Server) GetAllBackendHealthStates() map[string]*health.State {
 // GetHealthSummary returns a summary of backend health across all backends.
 // Returns zero-valued summary if health monitoring is disabled.
 func (s *Server) GetHealthSummary() health.Summary {
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
+	healthMon := s.backendHealth()
 
 	if healthMon == nil {
 		return health.Summary{}
@@ -1337,9 +1260,7 @@ type BackendHealthResponse struct {
 // Security Note: This endpoint is unauthenticated and may expose backend topology.
 // Consider applying authentication middleware if operating in multi-tenant mode.
 func (s *Server) handleBackendHealth(w http.ResponseWriter, _ *http.Request) {
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
+	healthMon := s.backendHealth()
 
 	response := BackendHealthResponse{
 		MonitoringEnabled: healthMon != nil,

@@ -52,8 +52,8 @@ func TestServer_HealthMonitoring_Disabled(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, srv)
 
-	// Verify health monitor is nil
-	assert.Nil(t, srv.healthMonitor)
+	// Verify health monitoring is disabled (the core exposes no reporter).
+	assert.Nil(t, srv.backendHealth())
 
 	// Verify getter methods return appropriate responses when disabled
 	status, err := srv.GetBackendHealthStatus("backend-1")
@@ -121,8 +121,8 @@ func TestServer_HealthMonitoring_Enabled(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, srv)
 
-	// Verify health monitor is created
-	assert.NotNil(t, srv.healthMonitor)
+	// Verify the core built the health monitor (started in core.New) and exposes it.
+	assert.NotNil(t, srv.backendHealth())
 
 	// Start server in background
 	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
@@ -420,10 +420,8 @@ func TestServer_Stop_StopsHealthMonitor(t *testing.T) {
 		return statusErr == nil && status == vmcp.BackendHealthy
 	}, 2*time.Second, 10*time.Millisecond, "backend-1 should become healthy")
 
-	// Verify health monitor is running
-	srv.healthMonitorMu.RLock()
-	assert.NotNil(t, srv.healthMonitor)
-	srv.healthMonitorMu.RUnlock()
+	// Verify health monitor is running (owned by the core)
+	assert.NotNil(t, srv.backendHealth())
 
 	// Cancel context to trigger graceful shutdown
 	cancel()
@@ -436,11 +434,9 @@ func TestServer_Stop_StopsHealthMonitor(t *testing.T) {
 		t.Fatal("timeout waiting for server to stop")
 	}
 
-	// Verify health monitor still exists after stop (not set to nil)
-	// The monitor is stopped but the pointer remains valid
-	srv.healthMonitorMu.RLock()
-	assert.NotNil(t, srv.healthMonitor, "health monitor should still exist after stop")
-	srv.healthMonitorMu.RUnlock()
+	// Verify the reporter still exists after stop (core.Close stops the monitor but does not
+	// nil it), so the getter methods below keep working against the stopped monitor.
+	assert.NotNil(t, srv.backendHealth(), "health reporter should still exist after stop")
 
 	// Verify getter methods still work (they query the stopped monitor)
 	// This ensures no panics occur when accessing a stopped monitor

@@ -19,7 +19,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
 )
@@ -84,11 +83,6 @@ type ServerConfig struct {
 	// AuthServer is the optional embedded authorization server. When non-nil, its
 	// routes are registered on the mux alongside the protected resource metadata.
 	AuthServer *asrunner.EmbeddedAuthServer
-
-	// HealthMonitor is the already-built backend health monitor (constructed at the
-	// composition root so the same instance's StatusProvider can be injected into the
-	// core). Serve owns only its Start/Stop lifecycle. Nil disables health monitoring.
-	HealthMonitor *health.Monitor
 
 	// StatusReportingInterval is the interval for reporting status updates.
 	// If zero, the default reporting interval is used.
@@ -176,15 +170,11 @@ type ServerConfig struct {
 // "/" MCP route serveable: the shared Handler guards the discovery middleware to the
 // legacy path (s.core == nil), and on the Serve path session registration and request
 // handlers call the core directly (#5442). The last transport subsystems — the embedded
-// AS runner routes, the status reporter (and its periodic goroutine), the optimizer
-// cleanup, and the health monitor's Start/Stop (#5443) — are driven from the
-// carried-forward shared (*Server).Handler/Start/Stop using the fields Serve populates
-// from ServerConfig below. Serve does NOT construct the health monitor: it receives the
-// pre-built *health.Monitor via ServerConfig (nil ⇒ disabled) and owns only its
-// lifecycle, while the composition root injects the same instance into the core as a
-// health.StatusProvider. server.New is not yet routed through Serve and keeps its own
-// copy of the session wiring until Phase 3, so this is purely additive and observable
-// behavior is unchanged.
+// AS runner routes, the status reporter (and its periodic goroutine), and the optimizer
+// cleanup — are driven from the carried-forward shared (*Server).Handler/Start/Stop using
+// the fields Serve populates from ServerConfig below. The backend health monitor is owned
+// by the core (built/started in core.New, stopped in core.Close); Serve neither constructs
+// nor starts it, and the status reporter reads it back through the core (#5443 reversal).
 //
 // Serve returns a vmcp.ErrInvalidConfig-wrapped error for a nil cfg, a nil core, or a
 // nil required collaborator (SessionManagerConfig or BackendRegistry). The session
@@ -195,9 +185,9 @@ type ServerConfig struct {
 // but a nil discovery manager, router, and backend client — the request path goes
 // through the core, so those legacy collaborators are unused on the Serve path. The
 // shared Handler skips the discovery middleware when s.core != nil, so serving the "/"
-// MCP route no longer nil-derefs. The embedded AS runner routes, the status reporter,
-// the optimizer cleanup, and the health monitor's Start/Stop are driven from the shared
-// Handler/Start/Stop via the fields Serve populates from ServerConfig (#5443).
+// MCP route no longer nil-derefs. The embedded AS runner routes, the status reporter, and
+// the optimizer cleanup are driven from the shared Handler/Start/Stop via the fields Serve
+// populates from ServerConfig; the backend health monitor is owned by the core (#5443).
 func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("%w: nil server config", vmcp.ErrInvalidConfig)
@@ -277,7 +267,6 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		// session manager (optimizerCleanup, appended to shutdownFuncs below).
 		optimizerFactory: vmcpSessMgr.OptimizerFactory(),
 		ready:            make(chan struct{}),
-		healthMonitor:    cfg.HealthMonitor,
 		statusReporter:   cfg.StatusReporter,
 	}
 
@@ -323,12 +312,12 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 //     (*Server).Handler omits both the authz and annotation-enrichment blocks when
 //     AuthzMiddleware is nil; authorization moves to the core admission seam (#5438).
 //     The inert blocks stay in the shared Handler until Phase 3 (#5445) removes them.
-//   - HealthMonitorConfig: Serve receives the already-built *health.Monitor via
-//     ServerConfig.HealthMonitor (A2) and assigns it to the Server directly, so it
-//     never needs the monitor's construction config.
+//   - HealthMonitorConfig: the backend health monitor is owned by the core (built from the
+//     composition root's server.Config.HealthMonitorConfig in core.New, stopped in
+//     core.Close), so the Serve-path Server never needs the monitor or its config.
 //   - StatusReporter: Serve assigns ServerConfig.StatusReporter to the Server field
-//     directly (like HealthMonitor); nothing reads Config.StatusReporter on the Serve
-//     path, so mapping it here would be dead.
+//     directly; nothing reads Config.StatusReporter on the Serve path, so mapping it here
+//     would be dead.
 //   - SessionFactory, OptimizerFactory, OptimizerConfig: the vMCP session manager is
 //     built directly in Serve from ServerConfig.SessionManagerConfig (a pre-built
 //     *sessionmanager.FactoryConfig that carries the session factory and optimizer

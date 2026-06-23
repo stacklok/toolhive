@@ -74,6 +74,9 @@ type updateRequest struct {
 	// Whether network isolation is turned on. This applies the rules in the permission profile.
 	// Pointer so that omitting the field defaults to network isolation ENABLED (matching the
 	// `thv run` CLI default); set it explicitly to false to disable network isolation.
+	// This also applies on update: a request that omits this field enables isolation, so
+	// clients that build update requests from scratch should send it explicitly to avoid
+	// unintentionally turning isolation on for a workload that had it off.
 	NetworkIsolation *bool `json:"network_isolation,omitempty"`
 	// Whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers"`

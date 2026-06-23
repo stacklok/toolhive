@@ -1655,13 +1655,8 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 		expectedNames     []string
 	}{
 		{
-			name: "single VirtualMCPServer references EmbeddingServer",
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "shared-embedding",
-					Namespace: "default",
-				},
-			},
+			name:            "single VirtualMCPServer references EmbeddingServer",
+			embeddingServer: v1beta1test.NewEmbeddingServer("shared-embedding", "default"),
 			virtualMCPServers: []mcpv1beta1.VirtualMCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1678,13 +1673,8 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 			expectedNames:    []string{"vmcp-1"},
 		},
 		{
-			name: "multiple VirtualMCPServers share EmbeddingServer",
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "shared-embedding",
-					Namespace: "default",
-				},
-			},
+			name:            "multiple VirtualMCPServers share EmbeddingServer",
+			embeddingServer: v1beta1test.NewEmbeddingServer("shared-embedding", "default"),
 			virtualMCPServers: []mcpv1beta1.VirtualMCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1711,13 +1701,8 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 			expectedNames:    []string{"vmcp-1", "vmcp-2"},
 		},
 		{
-			name: "no VirtualMCPServers reference EmbeddingServer",
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "shared-embedding",
-					Namespace: "default",
-				},
-			},
+			name:            "no VirtualMCPServers reference EmbeddingServer",
+			embeddingServer: v1beta1test.NewEmbeddingServer("shared-embedding", "default"),
 			virtualMCPServers: []mcpv1beta1.VirtualMCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{

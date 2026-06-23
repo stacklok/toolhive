@@ -1941,23 +1941,17 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 
 			// Create the EmbeddingServer with Status.URL if one is expected
 			if tt.esName != "" {
-				es := &mcpv1beta1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      tt.esName,
-						Namespace: testNamespace,
-					},
-					Spec: mcpv1beta1.EmbeddingServerSpec{
-						Image: "ghcr.io/huggingface/text-embeddings-inference:cpu-1.5",
-						Model: "BAAI/bge-small-en-v1.5",
-						Port:  tt.esPort,
-					},
-					Status: mcpv1beta1.EmbeddingServerStatus{
+				es := v1beta1test.NewEmbeddingServer(tt.esName, testNamespace,
+					v1beta1test.WithEmbeddingImage("ghcr.io/huggingface/text-embeddings-inference:cpu-1.5"),
+					v1beta1test.WithEmbeddingModel("BAAI/bge-small-en-v1.5"),
+					v1beta1test.WithEmbeddingPort(tt.esPort),
+					v1beta1test.WithEmbeddingStatus(mcpv1beta1.EmbeddingServerStatus{
 						Phase:         mcpv1beta1.EmbeddingServerPhaseReady,
 						ReadyReplicas: 1,
 						URL: fmt.Sprintf("http://%s.%s.svc.cluster.local:%d",
 							tt.esName, testNamespace, tt.esPort),
-					},
-				}
+					}),
+				)
 				objects = append(objects, es)
 			}
 

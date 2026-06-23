@@ -2976,16 +2976,12 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					},
 				},
 			},
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "shared-embedding",
-					Namespace: "default",
-				},
-				Status: mcpv1beta1.EmbeddingServerStatus{
+			embeddingServer: v1beta1test.NewEmbeddingServer("shared-embedding", "default",
+				v1beta1test.WithEmbeddingStatus(mcpv1beta1.EmbeddingServerStatus{
 					Phase:         mcpv1beta1.EmbeddingServerPhaseReady,
 					ReadyReplicas: 1,
-				},
-			},
+				}),
+			),
 			expectError: false,
 		},
 		{
@@ -3020,16 +3016,12 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					},
 				},
 			},
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "pending-embedding",
-					Namespace: "default",
-				},
-				Status: mcpv1beta1.EmbeddingServerStatus{
+			embeddingServer: v1beta1test.NewEmbeddingServer("pending-embedding", "default",
+				v1beta1test.WithEmbeddingStatus(mcpv1beta1.EmbeddingServerStatus{
 					Phase:         mcpv1beta1.EmbeddingServerPhasePending,
 					ReadyReplicas: 0,
-				},
-			},
+				}),
+			),
 			expectError: false,
 		},
 		{
@@ -3046,16 +3038,12 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					},
 				},
 			},
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "no-replicas-embedding",
-					Namespace: "default",
-				},
-				Status: mcpv1beta1.EmbeddingServerStatus{
+			embeddingServer: v1beta1test.NewEmbeddingServer("no-replicas-embedding", "default",
+				v1beta1test.WithEmbeddingStatus(mcpv1beta1.EmbeddingServerStatus{
 					Phase:         mcpv1beta1.EmbeddingServerPhaseReady,
 					ReadyReplicas: 0,
-				},
-			},
+				}),
+			),
 			expectError: false,
 		},
 	}

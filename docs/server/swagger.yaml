@@ -2553,6 +2553,9 @@ components:
             Whether network isolation is turned on. This applies the rules in the permission profile.
             Pointer so that omitting the field defaults to network isolation ENABLED (matching the
             `thv run` CLI default); set it explicitly to false to disable network isolation.
+            This also applies on update: a request that omits this field enables isolation, so
+            clients that build update requests from scratch should send it explicitly to avoid
+            unintentionally turning isolation on for a workload that had it off.
           type: boolean
         oauth_config:
           $ref: '#/components/schemas/pkg_api_v1.remoteOAuthConfig'
@@ -3079,6 +3082,9 @@ components:
             Whether network isolation is turned on. This applies the rules in the permission profile.
             Pointer so that omitting the field defaults to network isolation ENABLED (matching the
             `thv run` CLI default); set it explicitly to false to disable network isolation.
+            This also applies on update: a request that omits this field enables isolation, so
+            clients that build update requests from scratch should send it explicitly to avoid
+            unintentionally turning isolation on for a workload that had it off.
           type: boolean
         oauth_config:
           $ref: '#/components/schemas/pkg_api_v1.remoteOAuthConfig'

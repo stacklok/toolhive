@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"regexp"
 	"slices"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -31,7 +32,29 @@ type OIDCConfig struct {
 	// Issuer is the URL of the upstream OIDC provider (e.g., https://accounts.google.com).
 	// The provider will fetch endpoints from {Issuer}/.well-known/openid-configuration.
 	Issuer string
+
+	// SubjectClaim names the validated ID-token claim to use as the upstream
+	// subject. Defaults to "sub" when empty (preserves current behavior). Set for
+	// IdPs where "sub" isn't stable per user (e.g. Entra/Azure AD's "oid"). This
+	// is the OIDC counterpart to OAuth2's IdentityFromTokenConfig.SubjectPath,
+	// but narrower: a verbatim top-level claim name (no nested paths) resolving
+	// to a non-empty string (no numeric claims).
+	//
+	// Effectively immutable once users exist: the claim value becomes the
+	// upstream subject that resolves to User.ID, so changing it (or fixing a
+	// typo) re-keys every existing user and orphans their stored upstream tokens.
+	//
+	// The claim must also be present on refreshed ID tokens — RefreshTokens
+	// resolves through the same path and fails closed if the IdP drops it.
+	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
 }
+
+// subjectClaimPattern is the allowed shape for SubjectClaim: a claim-name token
+// (letter/underscore start, then letters/digits/underscores). It must stay in
+// sync with the CEL rule on the operator CRD field
+// (cmd/thv-operator/api/v1beta1 OIDCUpstreamConfig.SubjectClaim) so the Go and
+// CRD layers reject the same values.
+var subjectClaimPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // Validate checks that OIDCConfig has all required fields and valid values.
 func (c *OIDCConfig) Validate() error {
@@ -41,6 +64,16 @@ func (c *OIDCConfig) Validate() error {
 	if err := networking.ValidateEndpointURL(c.Issuer); err != nil {
 		return fmt.Errorf("invalid issuer URL: %w", err)
 	}
+	// SubjectClaim is optional (empty defaults to "sub"). When set, require a
+	// claim-name shape: the claim is looked up verbatim, so values like "oid.sub"
+	// or "oid " can never match a real top-level claim. Rejecting at startup here
+	// (mirroring the CRD's CEL rule) avoids a silent miss at first login.
+	if c.SubjectClaim != "" && !subjectClaimPattern.MatchString(c.SubjectClaim) {
+		return fmt.Errorf(
+			"subject_claim %q must be a claim name: start with a letter or "+
+				"underscore and use only letters, digits, and underscores",
+			c.SubjectClaim)
+	}
 	return c.CommonOAuthConfig.Validate()
 }
 
@@ -48,9 +81,10 @@ func (c *OIDCConfig) Validate() error {
 // the expected nonce from the authorization request.
 var ErrNonceMismatch = errors.New("ID token nonce does not match expected value")
 
-// ErrSubjectMismatch is returned when the sub claim in a refreshed ID token does not
-// match the expected subject from the original token response.
-// Per OIDC Core Section 12.2, the sub claim MUST be identical.
+// ErrSubjectMismatch is returned when the resolved subject of a refreshed ID
+// token (the configured SubjectClaim, or "sub" by default) does not match the
+// expected subject from the original token response.
+// Per OIDC Core Section 12.2, the sub claim MUST be identical across refreshes.
 var ErrSubjectMismatch = errors.New("ID token subject does not match expected value")
 
 // ErrNonceMissing is returned when the ID token does not contain a nonce claim
@@ -286,12 +320,47 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 		)
 	}
 
+	subject, err := p.resolveSubject(validatedToken)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
+	}
+
 	return &Identity{
 		Tokens:  exchanged.tokens,
-		Subject: validatedToken.Subject,
+		Subject: subject,
 		Name:    idClaims.Name,
 		Email:   idClaims.Email,
 	}, nil
+}
+
+// resolveSubject returns the upstream subject for the validated ID token.
+// When SubjectClaim is unset or "sub", it uses the standard OIDC subject.
+// Otherwise it extracts the named claim as a non-empty string. It fails loud
+// if the claim is missing, empty, or not a string rather than falling back to
+// "sub" — a silent fallback would key the user under the wrong identifier.
+func (p *OIDCProviderImpl) resolveSubject(token *oidc.IDToken) (string, error) {
+	claim := p.oidcConfig.SubjectClaim
+	if claim == "" || claim == "sub" {
+		return token.Subject, nil
+	}
+
+	var allClaims map[string]any
+	if err := token.Claims(&allClaims); err != nil {
+		return "", fmt.Errorf("extracting claims for subject claim %q: %w", claim, err)
+	}
+
+	raw, ok := allClaims[claim]
+	if !ok {
+		return "", fmt.Errorf("configured subject claim %q not present in ID token", claim)
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("configured subject claim %q is not a string", claim)
+	}
+	if value == "" {
+		return "", fmt.Errorf("configured subject claim %q is empty", claim)
+	}
+	return value, nil
 }
 
 // validateIDToken validates an ID token and returns the parsed token.
@@ -409,8 +478,17 @@ func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expe
 		if err != nil {
 			return nil, fmt.Errorf("ID token validation failed: %w", err)
 		}
-		// OIDC Core Section 12.2: sub claim MUST be identical to the original.
-		if expectedSubject != "" && token.Subject != expectedSubject {
+		// The stored expectedSubject is the resolved subject (SubjectClaim, or
+		// "sub" by default). Resolve the refreshed token through the same path
+		// before comparing — comparing the raw "sub" would wrongly reject a
+		// refresh whenever a non-"sub" SubjectClaim is configured. OIDC Core
+		// Section 12.2 still holds: for the default "sub" this is identical to
+		// the original, and a custom claim must likewise be identical.
+		refreshedSubject, err := p.resolveSubject(token)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
+		}
+		if expectedSubject != "" && refreshedSubject != expectedSubject {
 			return nil, ErrSubjectMismatch
 		}
 	}

@@ -291,6 +291,11 @@ type OIDCUpstreamRunConfig struct {
 	// Google's access_type=offline.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
+
+	// SubjectClaim names the validated ID-token claim to use as the upstream
+	// subject. Defaults to "sub" when empty. Set for IdPs where "sub" isn't
+	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
+	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
 }
 
 // OAuth2UpstreamRunConfig contains configuration for pure OAuth 2.0 providers.

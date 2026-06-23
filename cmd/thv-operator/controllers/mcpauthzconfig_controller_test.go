@@ -295,15 +295,12 @@ func TestMCPAuthzConfigReconciler_handleDeletion(t *testing.T) {
 			name:        "referencing VirtualMCPServer blocks deletion",
 			authzConfig: deletingConfig(),
 			existingWorkloads: []client.Object{
-				&mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "referencing-vmcp", Namespace: "default"},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-							Type:           "anonymous",
-							AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
-						},
-					},
-				},
+				v1beta1test.NewVirtualMCPServer("referencing-vmcp", "default",
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+						Type:           "anonymous",
+						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
+					}),
+				),
 			},
 			expectRequeue: true,
 		},
@@ -650,15 +647,12 @@ func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
 					v1beta1test.WithImage("example/mcp:latest"),
 					v1beta1test.WithAuthzConfigRef("shared-config"),
 				),
-				&mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "my-vmcp", Namespace: "default"},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-							Type:           "anonymous",
-							AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "shared-config"},
-						},
-					},
-				},
+				v1beta1test.NewVirtualMCPServer("my-vmcp", "default",
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+						Type:           "anonymous",
+						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "shared-config"},
+					}),
+				),
 				v1beta1test.NewMCPRemoteProxy("my-proxy", "default",
 					v1beta1test.WithRemoteProxyURL("https://example.com"),
 					v1beta1test.WithRemoteProxyAuthzConfigRef("shared-config"),
@@ -678,12 +672,9 @@ func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
 					v1beta1test.WithImage("example/mcp:latest"),
 					v1beta1test.WithAuthzConfigRef("other-config"),
 				),
-				&mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "unrelated-vmcp", Namespace: "default"},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
-					},
-				},
+				v1beta1test.NewVirtualMCPServer("unrelated-vmcp", "default",
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+				),
 				v1beta1test.NewMCPRemoteProxy("unrelated-proxy", "default",
 					v1beta1test.WithRemoteProxyURL("https://example.com"),
 				),
@@ -750,15 +741,12 @@ func TestMCPAuthzConfigReconciler_watchHandlers(t *testing.T) {
 		},
 		{
 			name: "VirtualMCPServer with ref enqueues current and stale configs",
-			obj: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type:           "anonymous",
-						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "current-config"},
-					},
-				},
-			},
+			obj: v1beta1test.NewVirtualMCPServer("vmcp", "default",
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type:           "anonymous",
+					AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "current-config"},
+				}),
+			),
 			expected: map[string]struct{}{"current-config": {}, "stale-config": {}},
 		},
 		{

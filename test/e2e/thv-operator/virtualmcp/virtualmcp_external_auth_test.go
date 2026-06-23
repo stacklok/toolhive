@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -95,22 +96,18 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 		}, timeout, pollingInterval).Should(Succeed())
 
 		By("Creating VirtualMCPServer with discovered auth mode (should use unauthenticated)")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "discovered", // Will discover unauthenticated from backend
-				},
-				ServiceType: "NodePort",
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered", // Will discover unauthenticated from backend
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -127,9 +124,7 @@ var _ = Describe("VirtualMCPServer Unauthenticated Backend Auth", Ordered, func(
 
 	AfterAll(func() {
 		By("Cleaning up test resources")
-		_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
-		})
+		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace))
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: testNamespace},
 		})
@@ -266,31 +261,27 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 		}, timeout, pollingInterval).Should(Succeed())
 
 		By("Creating VirtualMCPServer with inline unauthenticated auth")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "inline",
-					// Explicitly configure unauthenticated for specific backend
-					Backends: map[string]mcpv1beta1.BackendAuthConfig{
-						backendName: {
-							Type: "externalAuthConfigRef",
-							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-								Name: externalAuthConfigName,
-							},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "inline",
+				// Explicitly configure unauthenticated for specific backend
+				Backends: map[string]mcpv1beta1.BackendAuthConfig{
+					backendName: {
+						Type: "externalAuthConfigRef",
+						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+							Name: externalAuthConfigName,
 						},
 					},
 				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -307,9 +298,7 @@ var _ = Describe("VirtualMCPServer Inline Unauthenticated Backend Auth", Ordered
 
 	AfterAll(func() {
 		By("Cleaning up test resources")
-		_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
-		})
+		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace))
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: testNamespace},
 		})
@@ -446,22 +435,18 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 		}, timeout, pollingInterval).Should(Succeed())
 
 		By("Creating VirtualMCPServer with discovered auth mode (should use headerInjection)")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "discovered", // Will discover headerInjection from backend
-				},
-				ServiceType: "NodePort",
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered", // Will discover headerInjection from backend
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -478,9 +463,7 @@ var _ = Describe("VirtualMCPServer HeaderInjection Backend Auth", Ordered, func(
 
 	AfterAll(func() {
 		By("Cleaning up test resources")
-		_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
-		})
+		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace))
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: testNamespace},
 		})
@@ -665,31 +648,27 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 		}, timeout, pollingInterval).Should(Succeed())
 
 		By("Creating VirtualMCPServer with inline headerInjection auth")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "inline",
-					// Explicitly configure headerInjection for specific backend
-					Backends: map[string]mcpv1beta1.BackendAuthConfig{
-						backendName: {
-							Type: "externalAuthConfigRef",
-							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-								Name: externalAuthConfigName,
-							},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "inline",
+				// Explicitly configure headerInjection for specific backend
+				Backends: map[string]mcpv1beta1.BackendAuthConfig{
+					backendName: {
+						Type: "externalAuthConfigRef",
+						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+							Name: externalAuthConfigName,
 						},
 					},
 				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -706,9 +685,7 @@ var _ = Describe("VirtualMCPServer Inline HeaderInjection Backend Auth", Ordered
 
 	AfterAll(func() {
 		By("Cleaning up test resources")
-		_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
-		})
+		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace))
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: testNamespace},
 		})
@@ -861,33 +838,29 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 		}, timeout, pollingInterval).Should(Succeed())
 
 		By("Creating VirtualMCPServer with discovered auth and health monitoring enabled")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Operational: &vmcpconfig.OperationalConfig{
-						FailureHandling: &vmcpconfig.FailureHandlingConfig{
-							// Short interval so several health checks run within the test timeout.
-							HealthCheckInterval: vmcpconfig.Duration(healthCheckAuthInterval),
-							HealthCheckTimeout:  vmcpconfig.Duration(2 * time.Second),
-							UnhealthyThreshold:  3,
-						},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				Operational: &vmcpconfig.OperationalConfig{
+					FailureHandling: &vmcpconfig.FailureHandlingConfig{
+						// Short interval so several health checks run within the test timeout.
+						HealthCheckInterval: vmcpconfig.Duration(healthCheckAuthInterval),
+						HealthCheckTimeout:  vmcpconfig.Duration(2 * time.Second),
+						UnhealthyThreshold:  3,
 					},
 				},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "discovered",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -902,9 +875,7 @@ var _ = Describe("VirtualMCPServer Health Check with HeaderInjection Auth", Orde
 
 	AfterAll(func() {
 		By("Cleaning up test resources")
-		_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
-		})
+		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace))
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: testNamespace},
 		})
@@ -1078,32 +1049,28 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 		}, timeout, pollingInterval).Should(Succeed())
 
 		By("Creating VirtualMCPServer with discovered auth and health monitoring enabled")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Operational: &vmcpconfig.OperationalConfig{
-						FailureHandling: &vmcpconfig.FailureHandlingConfig{
-							HealthCheckInterval: vmcpconfig.Duration(healthCheckAuthInterval),
-							HealthCheckTimeout:  vmcpconfig.Duration(2 * time.Second),
-							UnhealthyThreshold:  3,
-						},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				Operational: &vmcpconfig.OperationalConfig{
+					FailureHandling: &vmcpconfig.FailureHandlingConfig{
+						HealthCheckInterval: vmcpconfig.Duration(healthCheckAuthInterval),
+						HealthCheckTimeout:  vmcpconfig.Duration(2 * time.Second),
+						UnhealthyThreshold:  3,
 					},
 				},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "discovered",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -1115,9 +1082,7 @@ var _ = Describe("VirtualMCPServer Health Check with TokenExchange Auth", Ordere
 
 	AfterAll(func() {
 		By("Cleaning up test resources")
-		_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
-		})
+		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace))
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: testNamespace},
 		})

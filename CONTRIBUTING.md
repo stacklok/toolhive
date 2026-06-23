@@ -33,7 +33,7 @@ report unacceptable behavior to
 If you think you have found a security vulnerability in ToolHive please DO NOT
 disclose it publicly until we've had a chance to fix it. Please don't report
 security vulnerabilities using GitHub issues; instead, please follow this
-[process](https://github.com/stacklok/toolhive/blob/main/SECURITY.MD)
+[process](https://github.com/stacklok/toolhive/blob/main/SECURITY.md)
 
 ## How to contribute
 
@@ -73,7 +73,7 @@ with active contributors first.
 
 ### Pull request process
 
-- -All commits must include a Signed-off-by trailer at the end of each commit
+- All commits must include a Signed-off-by trailer at the end of each commit
   message to indicate that the contributor agrees to the Developer Certificate
   of Origin. For additional details, check out the [DCO instructions](dco.md).
 - Create an issue outlining the fix or feature.

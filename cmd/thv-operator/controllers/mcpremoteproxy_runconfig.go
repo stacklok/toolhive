@@ -198,16 +198,19 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 // the non-sensitive connection parameters. Falls back to
 // TOOLHIVE_DEFAULT_REDIS_ADDR when spec.sessionStorage is unset.
 func populateScalingConfigForRemoteProxy(runConfig *runner.RunConfig, proxy *mcpv1beta1.MCPRemoteProxy) {
-	if proxy.Spec.SessionStorage != nil &&
-		proxy.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis {
-		if runConfig.ScalingConfig == nil {
-			runConfig.ScalingConfig = &runner.ScalingConfig{}
+	if proxy.Spec.SessionStorage != nil {
+		if proxy.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis {
+			if runConfig.ScalingConfig == nil {
+				runConfig.ScalingConfig = &runner.ScalingConfig{}
+			}
+			runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
+				Address:   proxy.Spec.SessionStorage.Address,
+				DB:        proxy.Spec.SessionStorage.DB,
+				KeyPrefix: proxy.Spec.SessionStorage.KeyPrefix,
+			}
 		}
-		runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
-			Address:   proxy.Spec.SessionStorage.Address,
-			DB:        proxy.Spec.SessionStorage.DB,
-			KeyPrefix: proxy.Spec.SessionStorage.KeyPrefix,
-		}
+		// spec.sessionStorage was set explicitly — never fall through to the
+		// global default regardless of provider.
 		return
 	}
 

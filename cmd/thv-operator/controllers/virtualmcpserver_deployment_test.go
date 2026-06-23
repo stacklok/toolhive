@@ -335,6 +335,22 @@ func TestBuildRedisPasswordEnvVar_GlobalDefault(t *testing.T) {
 	assert.Equal(t, "redis-password", got[0].ValueFrom.SecretKeyRef.Key)
 }
 
+func TestBuildRedisPasswordEnvVar_NonRedisProviderNotOverriddenByGlobal(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_NAME", "global-secret")
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: "memory",
+			},
+		},
+	}
+	r := &VirtualMCPServerReconciler{}
+	got := r.buildRedisPasswordEnvVar(vmcp)
+	assert.Empty(t, got, "non-Redis provider should not receive global Redis password env var")
+}
+
 func TestBuildRedisPasswordEnvVar_NilWhenNoGlobal(t *testing.T) {
 	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "")
 

@@ -838,6 +838,21 @@ func TestPopulateScalingConfigForRemoteProxy_GlobalDefault(t *testing.T) {
 	assert.Equal(t, "global-redis:6379", runConfig.ScalingConfig.SessionRedis.Address)
 }
 
+func TestPopulateScalingConfigForRemoteProxy_NonRedisProviderNotOverriddenByGlobal(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+
+	proxy := &mcpv1beta1.MCPRemoteProxy{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
+			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: "memory", // explicit non-Redis provider
+			},
+		},
+	}
+	runConfig := &runner.RunConfig{ScalingConfig: &runner.ScalingConfig{}}
+	populateScalingConfigForRemoteProxy(runConfig, proxy)
+	assert.Nil(t, runConfig.ScalingConfig.SessionRedis, "non-Redis provider should not be overridden by global default")
+}
+
 func TestPopulateScalingConfigForRemoteProxy_SpecTakesPrecedence(t *testing.T) {
 	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
 

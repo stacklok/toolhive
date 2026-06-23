@@ -52,7 +52,7 @@ tests:
     template: deployment.yaml
     asserts:
       - contains: { path: 'spec.template.spec.containers[0].env', content: { name: ENABLE_EXPERIMENTAL_FEATURES, value: "false" } }
-      - contains: { path: 'spec.template.spec.containers[0].env', content: { name: TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR, value: "false" } }
+      - contains: { path: 'spec.template.spec.containers[0].env', content: { name: TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR, value: "true" } }
       - contains: { path: 'spec.template.spec.containers[0].env', content: { name: UNSTRUCTURED_LOGS, value: "false" } }
       - contains: { path: 'spec.template.spec.containers[0].env', content: { name: TOOLHIVE_USE_CONFIGMAP, value: "true" } }
       - contains: { path: 'spec.template.spec.containers[0].env', content: { name: GOGC, value: "75" } }

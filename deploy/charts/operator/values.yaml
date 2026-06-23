@@ -35,6 +35,29 @@ operator:
   # The two shapes are equivalent; the object form matches `operator.imagePullSecrets`
   # above for convenience.
   defaultImagePullSecrets: []
+
+  # -- Default Redis/Valkey address used by the operator when a workload CR has
+  # no sessionStorage configured. The operator injects this as
+  # TOOLHIVE_DEFAULT_REDIS_ADDR on pods it creates. When empty, no global Redis
+  # default is active. Override per-CR with spec.sessionStorage.
+  #
+  # global.redis.host (from a parent umbrella chart) is used as fallback when
+  # addr is empty here. Both express the same addr concept; addr takes precedence.
+  #
+  # For the password, reference a pre-existing Kubernetes Secret:
+  #   defaultRedis:
+  #     addr: "myredis.svc:6379"
+  #     existingSecret: "redis-credentials"
+  #     existingSecretKey: "password"
+  defaultRedis:
+    # -- addr is the Redis/Valkey address (host:port).
+    addr: ""
+    # -- existingSecret is the name of a Secret containing the Redis password.
+    existingSecret: ""
+    # -- existingSecretKey is the key within existingSecret that holds the password.
+    # Empty means use global.redis.existingSecretKey or fall back to "redis-password".
+    existingSecretKey: ""
+
   # -- Container image for the operator
   image: ghcr.io/stacklok/toolhive/operator:v0.30.0
   # -- Image pull policy for the operator container

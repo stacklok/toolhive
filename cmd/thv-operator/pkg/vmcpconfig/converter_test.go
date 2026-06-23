@@ -2085,6 +2085,36 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 // TestConverter_PassthroughHeaders verifies that spec.passthroughHeaders is promoted
 // correctly, takes precedence over spec.config.passthroughHeaders, and that the
 // auto-passthrough path (only spec.config.passthroughHeaders set) is preserved.
+func TestConvertSessionStorage_GlobalDefault(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			// sessionStorage is nil
+		},
+	}
+	got := convertSessionStorage(vmcp)
+	require.NotNil(t, got)
+	assert.Equal(t, mcpv1beta1.SessionStorageProviderRedis, got.Provider)
+	assert.Equal(t, "global-redis:6379", got.Address)
+}
+
+func TestConvertSessionStorage_SpecTakesPrecedence(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "local-redis:6379",
+			},
+		},
+	}
+	got := convertSessionStorage(vmcp)
+	require.NotNil(t, got)
+	assert.Equal(t, "local-redis:6379", got.Address)
+}
+
 func TestConverter_PassthroughHeaders(t *testing.T) {
 	t.Parallel()
 

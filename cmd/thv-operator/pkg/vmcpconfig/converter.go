@@ -498,8 +498,7 @@ func (*Converter) normalizeTelemetry(
 }
 
 // convertSessionStorage populates SessionStorage from the VirtualMCPServer spec.
-// spec.sessionStorage is the authoritative source; always overwrite whatever
-// the DeepCopy brought in from spec.config.sessionStorage.
+// Falls back to TOOLHIVE_DEFAULT_REDIS_ADDR when spec.sessionStorage is nil.
 // PasswordRef is K8s-specific and is resolved separately; the password is injected
 // as the THV_SESSION_REDIS_PASSWORD environment variable by the deployment builder.
 func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.SessionStorageConfig {
@@ -510,6 +509,13 @@ func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.Sessio
 			Address:   vmcp.Spec.SessionStorage.Address,
 			DB:        vmcp.Spec.SessionStorage.DB,
 			KeyPrefix: vmcp.Spec.SessionStorage.KeyPrefix,
+		}
+	}
+
+	if def := controllerutil.ReadDefaultRedisConfig(); def != nil {
+		return &vmcpconfig.SessionStorageConfig{
+			Provider: mcpv1beta1.SessionStorageProviderRedis,
+			Address:  def.Addr,
 		}
 	}
 	return nil

@@ -1063,14 +1063,59 @@ func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
 // setXForwardedHeaders populates the standard X-Forwarded-* headers on the
 // outbound request. For remote upstreams X-Forwarded-Host is removed: a
 // third-party server may use it to construct redirect URLs pointing back at
-// the proxy, producing 307 redirect loops. X-Forwarded-For and
-// X-Forwarded-Proto are kept so remote backends can still log the client IP
-// and scheme. Client-supplied X-Forwarded-* values never pass through either
-// way — httputil strips them from the outbound request before Rewrite runs.
+// the proxy, producing 307 redirect loops. X-Forwarded-For is kept so remote
+// backends can still log the client IP. Client-supplied X-Forwarded-* values
+// never pass through either way — httputil strips them from the outbound
+// request before Rewrite runs.
+//
+// X-Forwarded-Proto needs special handling for remote upstreams.
+// httputil.SetXForwarded() derives the scheme from the pod-local inbound
+// connection, which is always HTTP when the proxy runs behind a
+// TLS-terminating load balancer (e.g. an AWS ALB). Forwarding
+// "X-Forwarded-Proto: http" to an HTTPS upstream that enforces TLS based on
+// that header triggers an infinite HTTP->HTTPS redirect loop (#5567). For
+// remote upstreams the proxy therefore rewrites X-Forwarded-Proto to the
+// trusted inbound value (when trustProxyHeaders is enabled) or, failing that,
+// to the actual upstream connection scheme.
 func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest) {
+	// Capture the client-supplied X-Forwarded-Proto before SetXForwarded()
+	// overwrites it with the pod-local inbound scheme.
+	inboundProto := pr.In.Header.Get("X-Forwarded-Proto")
+
 	pr.SetXForwarded()
-	if p.isRemote {
-		pr.Out.Header.Del("X-Forwarded-Host")
+
+	if !p.isRemote {
+		return
+	}
+
+	pr.Out.Header.Del("X-Forwarded-Host")
+
+	if proto := p.upstreamForwardedProto(inboundProto); proto != "" {
+		pr.Out.Header.Set("X-Forwarded-Proto", proto)
+	}
+}
+
+// upstreamForwardedProto returns the X-Forwarded-Proto value to forward to a
+// remote upstream. When trustProxyHeaders is enabled and the inbound request
+// carried an X-Forwarded-Proto (e.g. set by a trusted load balancer), that
+// value is honored so the original client scheme survives the pod-local hop.
+// Otherwise the proxy falls back to the upstream connection scheme parsed from
+// the target URI, which always reflects the protocol the upstream actually
+// receives. Returns an empty string when no usable scheme is found, leaving
+// the value SetXForwarded() already set untouched.
+func (p *TransparentProxy) upstreamForwardedProto(inboundProto string) string {
+	if p.trustProxyHeaders && inboundProto != "" {
+		return inboundProto
+	}
+	u, err := url.Parse(p.targetURI)
+	if err != nil {
+		return ""
+	}
+	switch u.Scheme {
+	case "http", "https":
+		return u.Scheme
+	default:
+		return ""
 	}
 }
 

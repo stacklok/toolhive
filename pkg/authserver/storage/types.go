@@ -450,6 +450,14 @@ type PendingAuthorization struct {
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserEmail string
 
+	// SingleLeg scopes this authorization to exactly one upstream. When true, the
+	// callback issues the authorization code as soon as this leg completes instead
+	// of consulting nextMissingUpstream to continue the chain. This lets a caller
+	// connect a single specific provider without other configured-but-tokenless
+	// upstreams hijacking the flow into a full chain walk. Defaults to false, which
+	// preserves the multi-upstream chaining behavior.
+	SingleLeg bool
+
 	// CreatedAt is when the pending authorization was created.
 	CreatedAt time.Time
 }

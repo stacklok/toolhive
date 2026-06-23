@@ -396,6 +396,19 @@ func (h *Handler) continueChainOrComplete(
 	name string,
 	email string,
 ) {
+	// SingleLeg authorizations intentionally bypass chain continuation: the caller
+	// scoped this flow to one specific upstream (e.g. a UI-initiated "connect one
+	// backend" request), so other configured-but-tokenless upstreams must not
+	// hijack it into a full chain walk. Issue the authorization code immediately.
+	if pending.SingleLeg {
+		if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, name, email); err != nil {
+			slog.Error("failed to create authorization response", "error", err)
+			_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
+			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
+		}
+		return
+	}
+
 	nextProvider, err := h.nextMissingUpstream(ctx, sessionID)
 	if err != nil {
 		slog.Error("failed to determine next upstream", "error", err)

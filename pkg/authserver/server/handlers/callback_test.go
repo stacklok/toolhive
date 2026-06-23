@@ -515,6 +515,57 @@ func TestCallbackHandler_TwoUpstreams_SecondLeg_IssuesCode(t *testing.T) {
 	assert.False(t, ok, "second leg pending should be consumed")
 }
 
+func TestCallbackHandler_SingleLeg_IssuesCodeWithoutChaining(t *testing.T) {
+	t.Parallel()
+	handler, storState, provider1, _ := multiUpstreamTestSetup(t)
+
+	// A SingleLeg pending targets provider-1 only. provider-2 is configured but has
+	// no tokens for this session, so the default chain logic would redirect into it.
+	// SingleLeg must suppress that and issue the authorization code immediately.
+	sessionID := "single-leg-session"
+	legState := "single-leg-state-abc"
+	legVerifier := "single-leg-pkce-verifier-12345678901234567890"
+
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        legState,
+		UpstreamPKCEVerifier: legVerifier,
+		UpstreamNonce:        "single-leg-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		SingleLeg:            true,
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[legState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider1-code&state="+legState, nil)
+	rec := httptest.NewRecorder()
+
+	handler.CallbackHandler(rec, req)
+
+	// Should issue the authorization code (HTTP 303), not redirect to provider-2 (HTTP 302).
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "single-leg flow should issue auth code, not chain to provider-2")
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, testAuthRedirectURI, "redirect should be to client's redirect_uri")
+	assert.Contains(t, location, "code=", "redirect should include authorization code")
+	assert.NotContains(t, location, "idp2.example.com", "must not redirect into the second upstream")
+
+	// provider-1's code should have been exchanged and its tokens stored.
+	assert.Equal(t, "provider1-code", provider1.capturedCode, "provider-1 should have exchanged the code")
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1", "provider-1 tokens should be stored")
+
+	// No second-leg pending authorization should have been created for provider-2.
+	for state, p := range storState.pendingAuths {
+		assert.NotEqualf(t, "provider-2", p.UpstreamProviderName,
+			"no chain leg should be created for provider-2 (state=%s)", state)
+	}
+}
+
 func TestCallbackHandler_TwoUpstreams_IdentityFromFirstLeg(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, _ := multiUpstreamTestSetup(t)

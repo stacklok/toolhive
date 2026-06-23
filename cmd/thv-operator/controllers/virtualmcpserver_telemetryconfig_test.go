@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 )
@@ -37,10 +38,8 @@ func TestHandleTelemetryConfig_VirtualMCPServer(t *testing.T) {
 	}{
 		{
 			name: "nil ref clears hash and removes condition",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec:       mcpv1beta1.VirtualMCPServerSpec{TelemetryConfigRef: nil},
-				Status: mcpv1beta1.VirtualMCPServerStatus{
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPStatus(mcpv1beta1.VirtualMCPServerStatus{
 					TelemetryConfigHash: "old-hash",
 					Conditions: []metav1.Condition{
 						{
@@ -49,8 +48,8 @@ func TestHandleTelemetryConfig_VirtualMCPServer(t *testing.T) {
 							Reason: mcpv1beta1.ConditionReasonVirtualMCPServerTelemetryConfigRefValid,
 						},
 					},
-				},
-			},
+				}),
+			),
 			expectError:       false,
 			expectTelCfgNil:   true,
 			expectHashCleared: true,
@@ -58,12 +57,9 @@ func TestHandleTelemetryConfig_VirtualMCPServer(t *testing.T) {
 		},
 		{
 			name: "valid ref sets condition true and updates hash",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "my-telemetry"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPTelemetryConfigRef("my-telemetry"),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "my-telemetry", Namespace: "default"},
 				Spec:       newTelemetrySpec("https://otel-collector:4317", true, false),
@@ -79,12 +75,9 @@ func TestHandleTelemetryConfig_VirtualMCPServer(t *testing.T) {
 		},
 		{
 			name: "not found sets condition false",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "missing"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPTelemetryConfigRef("missing"),
+			),
 			expectError:        true,
 			expectedCondType:   mcpv1beta1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated,
 			expectedCondStatus: metav1.ConditionFalse,
@@ -92,12 +85,9 @@ func TestHandleTelemetryConfig_VirtualMCPServer(t *testing.T) {
 		},
 		{
 			name: "invalid config sets condition false",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "invalid-telemetry"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPTelemetryConfigRef("invalid-telemetry"),
+			),
 			// Spec with endpoint but no tracing/metrics enabled -> Validate() fails
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "invalid-telemetry", Namespace: "default"},
@@ -117,15 +107,12 @@ func TestHandleTelemetryConfig_VirtualMCPServer(t *testing.T) {
 		},
 		{
 			name: "hash change triggers update",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "my-telemetry"},
-				},
-				Status: mcpv1beta1.VirtualMCPServerStatus{
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPTelemetryConfigRef("my-telemetry"),
+				v1beta1test.WithVMCPStatus(mcpv1beta1.VirtualMCPServerStatus{
 					TelemetryConfigHash: "old-hash",
-				},
-			},
+				}),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "my-telemetry", Namespace: "default"},
 				Spec:       newTelemetrySpec("https://otel-collector:4317", true, false),
@@ -212,22 +199,13 @@ func TestMapTelemetryConfigToVirtualMCPServer(t *testing.T) {
 
 	scheme := testutil.NewScheme(t)
 
-	vmcp1 := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "vmcp1", Namespace: "default"},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "shared-telemetry"},
-		},
-	}
-	vmcp2 := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "vmcp2", Namespace: "default"},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "other-telemetry"},
-		},
-	}
-	vmcp3 := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "vmcp3", Namespace: "default"},
-		Spec:       mcpv1beta1.VirtualMCPServerSpec{}, // no ref
-	}
+	vmcp1 := v1beta1test.NewVirtualMCPServer("vmcp1", "default",
+		v1beta1test.WithVMCPTelemetryConfigRef("shared-telemetry"),
+	)
+	vmcp2 := v1beta1test.NewVirtualMCPServer("vmcp2", "default",
+		v1beta1test.WithVMCPTelemetryConfigRef("other-telemetry"),
+	)
+	vmcp3 := v1beta1test.NewVirtualMCPServer("vmcp3", "default") // no ref
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).

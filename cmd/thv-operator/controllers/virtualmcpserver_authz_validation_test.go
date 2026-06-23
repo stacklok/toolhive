@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	statusmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus/mocks"
 )
@@ -34,19 +35,16 @@ const validAuthzPayload = `{
 // authz ConfigMap. Other fields are omitted; tests only exercise the authz CM validation
 // path so most spec fields are not relevant.
 func vmcpWithAuthzConfigMap(cmName string) *mcpv1beta1.VirtualMCPServer {
-	return &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "vmcp", Namespace: "default"},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "g"},
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type: "anonymous",
-				AuthzConfig: &mcpv1beta1.AuthzConfigRef{
-					Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
-					ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{Name: cmName, Key: "authz.json"},
-				},
+	return v1beta1test.NewVirtualMCPServer("vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("g"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+			AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
+				ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{Name: cmName, Key: "authz.json"},
 			},
-		},
-	}
+		}),
+	)
 }
 
 // reconcilerWithObjects wires a VirtualMCPServerReconciler with a fake client containing
@@ -71,22 +69,19 @@ func TestValidateAuthzConfigMapRef(t *testing.T) {
 	}{
 		{
 			name:          "nil authzConfig is a no-op",
-			vmcp:          &mcpv1beta1.VirtualMCPServer{ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: "default"}},
+			vmcp:          v1beta1test.NewVirtualMCPServer("v", "default"),
 			expectNoError: true,
 		},
 		{
 			name: "inline authzConfig is a no-op",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "v", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						AuthzConfig: &mcpv1beta1.AuthzConfigRef{
-							Type:   mcpv1beta1.AuthzConfigTypeInline,
-							Inline: &mcpv1beta1.InlineAuthzConfig{Policies: []string{"permit(principal, action, resource);"}},
-						},
+			vmcp: v1beta1test.NewVirtualMCPServer("v", "default",
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+						Type:   mcpv1beta1.AuthzConfigTypeInline,
+						Inline: &mcpv1beta1.InlineAuthzConfig{Policies: []string{"permit(principal, action, resource);"}},
 					},
-				},
-			},
+				}),
+			),
 			expectNoError: true,
 		},
 		{

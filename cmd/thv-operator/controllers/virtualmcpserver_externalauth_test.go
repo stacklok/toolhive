@@ -225,18 +225,12 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 	}{
 		{
 			name: "discovered mode with external auth config",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-						Source: "discovered",
-					},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "discovered",
+				}),
+			),
 			mcpServers: []mcpv1beta1.MCPServer{
 				*v1beta1test.NewMCPServer("backend-1", "default",
 					v1beta1test.WithExternalAuthConfigRef("auth-config-1"),
@@ -280,26 +274,20 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		},
 		{
 			name: "discovered mode with inline overrides",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-						Source: "discovered",
-						Backends: map[string]mcpv1beta1.BackendAuthConfig{
-							"backend-1": {
-								Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
-								ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-									Name: "auth-config-override",
-								},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "discovered",
+					Backends: map[string]mcpv1beta1.BackendAuthConfig{
+						"backend-1": {
+							Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+								Name: "auth-config-override",
 							},
 						},
 					},
-				},
-			},
+				}),
+			),
 			mcpServers: []mcpv1beta1.MCPServer{
 				*v1beta1test.NewMCPServer("backend-1", "default",
 					v1beta1test.WithExternalAuthConfigRef("auth-config-1"),
@@ -374,26 +362,20 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		},
 		{
 			name: "inline mode ignores discovered configs",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-						Source: "inline",
-						Backends: map[string]mcpv1beta1.BackendAuthConfig{
-							"backend-1": {
-								Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
-								ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-									Name: "auth-config-1",
-								},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "inline",
+					Backends: map[string]mcpv1beta1.BackendAuthConfig{
+						"backend-1": {
+							Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+								Name: "auth-config-1",
 							},
 						},
 					},
-				},
-			},
+				}),
+			),
 			mcpServers: []mcpv1beta1.MCPServer{
 				*v1beta1test.NewMCPServer("backend-1", "default",
 					v1beta1test.WithExternalAuthConfigRef("auth-config-1"),
@@ -430,24 +412,18 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		},
 		{
 			name: "default auth config",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-						Source: "discovered",
-						Default: &mcpv1beta1.BackendAuthConfig{
-							Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
-							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-								Name: "default-auth-config",
-							},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "discovered",
+					Default: &mcpv1beta1.BackendAuthConfig{
+						Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+							Name: "default-auth-config",
 						},
 					},
-				},
-			},
+				}),
+			),
 			authConfigs: []mcpv1beta1.MCPExternalAuthConfig{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -472,26 +448,20 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		},
 		{
 			name: "inline mode with ExternalAuthConfigRef",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-						Source: "inline",
-						Backends: map[string]mcpv1beta1.BackendAuthConfig{
-							"backend-1": {
-								Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
-								ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-									Name: "auth-config-1",
-								},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "inline",
+					Backends: map[string]mcpv1beta1.BackendAuthConfig{
+						"backend-1": {
+							Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+								Name: "auth-config-1",
 							},
 						},
 					},
-				},
-			},
+				}),
+			),
 			authConfigs: []mcpv1beta1.MCPExternalAuthConfig{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -520,18 +490,12 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		},
 		{
 			name: "missing ExternalAuthConfig should be skipped gracefully",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-						Source: "discovered",
-					},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "discovered",
+				}),
+			),
 			mcpServers: []mcpv1beta1.MCPServer{
 				*v1beta1test.NewMCPServer("backend-1", "default",
 					v1beta1test.WithExternalAuthConfigRef("missing-auth-config"),
@@ -562,16 +526,10 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		},
 		{
 			name: "defaults to discovered mode when source not specified",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					// No OutgoingAuth specified
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				// No OutgoingAuth specified
+			),
 			workloadNames: []workloads.TypedWorkload{},
 			validate: func(t *testing.T, config *vmcpconfig.OutgoingAuthConfig) {
 				t.Helper()
@@ -580,24 +538,18 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		},
 		{
 			name: "default auth config error is collected but doesn't fail reconciliation",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-						Source: "discovered",
-						Default: &mcpv1beta1.BackendAuthConfig{
-							Type: "externalAuthConfigRef",
-							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-								Name: "missing-default-auth", // Auth config doesn't exist
-							},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "discovered",
+					Default: &mcpv1beta1.BackendAuthConfig{
+						Type: "externalAuthConfigRef",
+						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+							Name: "missing-default-auth", // Auth config doesn't exist
 						},
 					},
-				},
-			},
+				}),
+			),
 			workloadNames:    []workloads.TypedWorkload{},
 			expectAuthErrors: true, // Should collect default auth error
 			validateErrors: func(t *testing.T, errors []AuthConfigError) {
@@ -617,26 +569,20 @@ func TestBuildOutgoingAuthConfig(t *testing.T) {
 		},
 		{
 			name: "backend-specific auth config error is collected but doesn't fail reconciliation",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-						Source: "discovered",
-						Backends: map[string]mcpv1beta1.BackendAuthConfig{
-							"api-backend": {
-								Type: "externalAuthConfigRef",
-								ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-									Name: "missing-backend-auth",
-								},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "discovered",
+					Backends: map[string]mcpv1beta1.BackendAuthConfig{
+						"api-backend": {
+							Type: "externalAuthConfigRef",
+							ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+								Name: "missing-backend-auth",
 							},
 						},
 					},
-				},
-			},
+				}),
+			),
 			workloadNames:    []workloads.TypedWorkload{},
 			expectAuthErrors: true, // Should collect backend-specific auth error
 			validateErrors: func(t *testing.T, errors []AuthConfigError) {
@@ -1295,34 +1241,28 @@ func TestBuildOutgoingAuthConfig_SubjectProviderInjection(t *testing.T) {
 		v1beta1test.WithExternalAuthConfigRef("discovered-auth"),
 	)
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-				Source: "discovered",
-				// Default references an MCPExternalAuthConfig (the only supported form
-				// for a default auth in the CRD).
-				Default: &mcpv1beta1.BackendAuthConfig{
-					Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "default-auth",
-					},
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "discovered",
+			// Default references an MCPExternalAuthConfig (the only supported form
+			// for a default auth in the CRD).
+			Default: &mcpv1beta1.BackendAuthConfig{
+				Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+					Name: "default-auth",
 				},
 			},
-			AuthServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
-				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
-					{
-						Name: "myidp",
-						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
-					},
+		}),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{
+					Name: "myidp",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
 				},
 			},
-		},
-	}
+		}),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -1411,17 +1351,11 @@ func TestDiscoverExternalAuthConfigSecrets_DeterministicOrdering(t *testing.T) {
 
 			scheme := testutil.NewScheme(t)
 
-			vmcp := &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-						Source: "discovered",
-					},
-				},
-			}
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "discovered",
+				}),
+			)
 
 			// Four MCPServers each referencing a distinct MCPExternalAuthConfig.
 			// The MCPServer names match the workload Names in tt.workloadOrder.
@@ -1547,44 +1481,38 @@ func TestDiscoverInlineExternalAuthConfigSecrets_DeterministicOrdering(t *testin
 
 	scheme := testutil.NewScheme(t)
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-				Source: "inline",
-				// Map with four backends — Go map iteration order is non-deterministic.
-				Backends: map[string]mcpv1beta1.BackendAuthConfig{
-					"backend-zeta": {
-						Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "inline-zeta-auth",
-						},
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "inline",
+			// Map with four backends — Go map iteration order is non-deterministic.
+			Backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"backend-zeta": {
+					Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+						Name: "inline-zeta-auth",
 					},
-					"backend-mu": {
-						Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "inline-mu-auth",
-						},
+				},
+				"backend-mu": {
+					Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+						Name: "inline-mu-auth",
 					},
-					"backend-beta": {
-						Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "inline-beta-auth",
-						},
+				},
+				"backend-beta": {
+					Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+						Name: "inline-beta-auth",
 					},
-					"backend-alpha": {
-						Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "inline-alpha-auth",
-						},
+				},
+				"backend-alpha": {
+					Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+						Name: "inline-alpha-auth",
 					},
 				},
 			},
-		},
-	}
+		}),
+	)
 
 	authConfigs := []client.Object{
 		&mcpv1beta1.MCPExternalAuthConfig{
@@ -1692,35 +1620,29 @@ func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testin
 		},
 	}
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-				Source: "discovered",
-				// Inline Backends override — the path exercised by this test.
-				Backends: map[string]mcpv1beta1.BackendAuthConfig{
-					"inline-backend": {
-						Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "inline-auth",
-						},
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "discovered",
+			// Inline Backends override — the path exercised by this test.
+			Backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"inline-backend": {
+					Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+						Name: "inline-auth",
 					},
 				},
 			},
-			AuthServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
-				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
-					{
-						Name: "corporate-idp",
-						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
-					},
+		}),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{
+					Name: "corporate-idp",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
 				},
 			},
-		},
-	}
+		}),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).

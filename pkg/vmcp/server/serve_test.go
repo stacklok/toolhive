@@ -321,6 +321,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		"SessionFactory":      {}, // session manager built in Serve from ServerConfig.SessionManagerConfig
 		"OptimizerFactory":    {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
 		"OptimizerConfig":     {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
+		"CodeModeConfig":      {}, // consumed by New to wrap the core (code mode decorator) before Serve; not a transport field
 		"Aggregator":          {}, // core collaborator: fed to core.New via deriveCoreConfig, not the transport
 		"Authz":               {}, // core collaborator: fed to the core admission seam via deriveCoreConfig
 	}

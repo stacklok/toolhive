@@ -36,6 +36,7 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
@@ -193,6 +194,15 @@ type Config struct {
 	// and registers the store cleanup in shutdownFuncs.
 	// A nil value disables the optimizer.
 	OptimizerConfig *optimizer.Config
+
+	// CodeModeConfig enables vMCP code mode. When non-nil, New wraps the core with a
+	// codemode decorator that advertises the execute_tool_script virtual tool and runs
+	// submitted Starlark scripts, whose inner tool calls route back through core.CallTool
+	// (so the core admission seam authorizes each one). The decorator sits below any
+	// optimizer: execute_tool_script appears in the core's tool set, so an enabled
+	// optimizer indexes and routes to it like any other tool. A nil value (the default)
+	// leaves the core undecorated and execute_tool_script absent from tools/list.
+	CodeModeConfig *codemode.Config
 
 	// StatusReporter enables vMCP runtime to report operational status.
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
@@ -425,6 +435,16 @@ func New(
 	if err != nil {
 		return nil, err
 	}
+
+	// Wrap the core with the code mode decorator when enabled. It sits BELOW any optimizer:
+	// ListTools now advertises execute_tool_script alongside the backend tools, so the
+	// Serve-layer optimizer (if enabled) indexes it like any other tool, and the script's
+	// inner calls route back through core.CallTool for admission. The decorator delegates
+	// Close to the inner core, so the closeCoreOnErr guard below still releases it.
+	if cfg.CodeModeConfig != nil {
+		coreVMCP = codemode.NewDecorator(coreVMCP, cfg.CodeModeConfig)
+	}
+
 	// core.New started the workflow state store's cleanup goroutine and the backend health
 	// monitor (both owned by the core now). If Serve fails after this point, close the core so
 	// neither leaks (mirrors Serve's closeStorageOnErr guard); on success the core's lifecycle

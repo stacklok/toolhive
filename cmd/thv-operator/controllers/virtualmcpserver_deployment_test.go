@@ -318,6 +318,33 @@ func TestBuildRedisPasswordEnvVar(t *testing.T) {
 	}
 }
 
+func TestBuildRedisPasswordEnvVar_GlobalDefault(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_NAME", "global-redis-secret")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_KEY", "redis-password")
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{},
+	}
+	r := &VirtualMCPServerReconciler{}
+	got := r.buildRedisPasswordEnvVar(vmcp)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, vmcpconfig.RedisPasswordEnvVar, got[0].Name)
+	assert.Equal(t, "global-redis-secret", got[0].ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "redis-password", got[0].ValueFrom.SecretKeyRef.Key)
+}
+
+func TestBuildRedisPasswordEnvVar_NilWhenNoGlobal(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "")
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{Spec: mcpv1beta1.VirtualMCPServerSpec{}}
+	r := &VirtualMCPServerReconciler{}
+	got := r.buildRedisPasswordEnvVar(vmcp)
+
+	assert.Empty(t, got)
+}
+
 // TestBuildDeploymentMetadataForVmcp tests deployment metadata generation
 func TestBuildDeploymentMetadataForVmcp(t *testing.T) {
 	t.Parallel()

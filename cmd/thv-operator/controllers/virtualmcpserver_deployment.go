@@ -446,11 +446,27 @@ func (*VirtualMCPServerReconciler) buildHMACSecretEnvVar(vmcp *mcpv1beta1.Virtua
 }
 
 // buildRedisPasswordEnvVar returns the THV_SESSION_REDIS_PASSWORD env var when
-// sessionStorage.provider == "redis" and passwordRef is set; returns nil otherwise.
+// sessionStorage.provider == "redis" and passwordRef is set, or when
+// TOOLHIVE_DEFAULT_REDIS_SECRET_NAME is set via the global default.
 func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
-	if vmcp.Spec.SessionStorage == nil ||
-		vmcp.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis ||
-		vmcp.Spec.SessionStorage.PasswordRef == nil {
+	if vmcp.Spec.SessionStorage != nil &&
+		vmcp.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
+		vmcp.Spec.SessionStorage.PasswordRef != nil {
+		return []corev1.EnvVar{{
+			Name: vmcpconfig.RedisPasswordEnvVar,
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{
+						Name: vmcp.Spec.SessionStorage.PasswordRef.Name,
+					},
+					Key: vmcp.Spec.SessionStorage.PasswordRef.Key,
+				},
+			},
+		}}
+	}
+
+	def := ctrlutil.ReadDefaultRedisConfig()
+	if def == nil || def.SecretName == "" {
 		return nil
 	}
 	return []corev1.EnvVar{{
@@ -458,9 +474,9 @@ func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.Vir
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: vmcp.Spec.SessionStorage.PasswordRef.Name,
+					Name: def.SecretName,
 				},
-				Key: vmcp.Spec.SessionStorage.PasswordRef.Key,
+				Key: def.SecretKey,
 			},
 		},
 	}}

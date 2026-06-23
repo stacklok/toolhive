@@ -85,6 +85,13 @@ const (
 	defaultServerVersion = "0.1.0"
 	defaultHost          = "127.0.0.1"
 	defaultEndpointPath  = "/mcp"
+
+	// capabilityCacheTTL bounds how long the per-identity aggregated capability view is
+	// reused before re-sweeping backends. The core re-aggregates on every call (it holds no
+	// per-session cache), so without this the Serve path does a full backend tools/list sweep
+	// per tool call; a short TTL collapses bursts of calls into ~one sweep while keeping
+	// staleness tighter than the legacy once-per-session refresh.
+	capabilityCacheTTL = 30 * time.Second
 )
 
 //go:generate mockgen -destination=mocks/mock_watcher.go -package=mocks -source=server.go Watcher
@@ -457,8 +464,14 @@ func New(
 	// invoked at request time, after bind).
 	elicitation := newLateBoundElicitationRequester()
 
+	// Wrap the aggregator in a per-identity caching decorator: the core re-derives the
+	// advertised view on every call, so without this the Serve path re-sweeps every backend's
+	// tools/list per tool call. The cache is keyed on identity + forwarded credentials, so it
+	// never serves one caller's capability view to another.
+	cachedAgg := aggregator.NewCachingAggregator(cfg.Aggregator, capabilityCacheTTL)
+
 	coreVMCP, err := core.New(deriveCoreConfig(
-		cfg, cfg.Aggregator, rt, backendClient, backendRegistry, workflowDefs,
+		cfg, cachedAgg, rt, backendClient, backendRegistry, workflowDefs,
 		cfg.Authz, elicitation, healthProvider,
 	))
 	if err != nil {

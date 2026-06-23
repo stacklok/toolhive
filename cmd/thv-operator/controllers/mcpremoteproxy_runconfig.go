@@ -195,20 +195,29 @@ func (r *MCPRemoteProxyReconciler) createRunConfigFromMCPRemoteProxy(
 // mcpserver_runconfig.go but for MCPRemoteProxy (which has no
 // BackendReplicas concept). When MCPRemoteProxy.spec.sessionStorage uses
 // the redis provider, this populates runner.ScalingConfig.SessionRedis with
-// the non-sensitive connection parameters.
+// the non-sensitive connection parameters. Falls back to
+// TOOLHIVE_DEFAULT_REDIS_ADDR when spec.sessionStorage is unset.
 func populateScalingConfigForRemoteProxy(runConfig *runner.RunConfig, proxy *mcpv1beta1.MCPRemoteProxy) {
-	if proxy.Spec.SessionStorage == nil ||
-		proxy.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis {
+	if proxy.Spec.SessionStorage != nil &&
+		proxy.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis {
+		if runConfig.ScalingConfig == nil {
+			runConfig.ScalingConfig = &runner.ScalingConfig{}
+		}
+		runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
+			Address:   proxy.Spec.SessionStorage.Address,
+			DB:        proxy.Spec.SessionStorage.DB,
+			KeyPrefix: proxy.Spec.SessionStorage.KeyPrefix,
+		}
 		return
 	}
 
-	if runConfig.ScalingConfig == nil {
-		runConfig.ScalingConfig = &runner.ScalingConfig{}
-	}
-	runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
-		Address:   proxy.Spec.SessionStorage.Address,
-		DB:        proxy.Spec.SessionStorage.DB,
-		KeyPrefix: proxy.Spec.SessionStorage.KeyPrefix,
+	if def := ctrlutil.ReadDefaultRedisConfig(); def != nil {
+		if runConfig.ScalingConfig == nil {
+			runConfig.ScalingConfig = &runner.ScalingConfig{}
+		}
+		runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
+			Address: def.Addr,
+		}
 	}
 }
 

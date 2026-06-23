@@ -820,3 +820,37 @@ func TestPopulateScalingConfigForRemoteProxy(t *testing.T) {
 		})
 	}
 }
+
+func TestPopulateScalingConfigForRemoteProxy_GlobalDefault(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+
+	proxy := &mcpv1beta1.MCPRemoteProxy{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
+			// SessionStorage is nil
+		},
+	}
+	runConfig := &runner.RunConfig{
+		ScalingConfig: &runner.ScalingConfig{},
+	}
+	populateScalingConfigForRemoteProxy(runConfig, proxy)
+
+	require.NotNil(t, runConfig.ScalingConfig.SessionRedis)
+	assert.Equal(t, "global-redis:6379", runConfig.ScalingConfig.SessionRedis.Address)
+}
+
+func TestPopulateScalingConfigForRemoteProxy_SpecTakesPrecedence(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+
+	proxy := &mcpv1beta1.MCPRemoteProxy{
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
+			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "local-redis:6379",
+			},
+		},
+	}
+	runConfig := &runner.RunConfig{ScalingConfig: &runner.ScalingConfig{}}
+	populateScalingConfigForRemoteProxy(runConfig, proxy)
+
+	assert.Equal(t, "local-redis:6379", runConfig.ScalingConfig.SessionRedis.Address)
+}

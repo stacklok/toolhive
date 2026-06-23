@@ -1770,7 +1770,7 @@ func (s *closeTrackingStorage) Close() error {
 // crash-looping pod would leak one connection pool / goroutine per
 // restart.
 //
-// The test calls newEmbeddedAuthServerWithStorage (the test seam that
+// The test calls NewEmbeddedAuthServerWithStorage (the test seam that
 // production NewEmbeddedAuthServer dispatches into) so the storage
 // instance is observable: a closeTrackingStorage wrapper records every
 // Close call. The assertion is then a direct count rather than a
@@ -1810,7 +1810,7 @@ func TestNewEmbeddedAuthServer_ClosesStorageOnError(t *testing.T) {
 		AllowedAudiences: []string{"https://mcp.example.com"},
 	}
 
-	embed, err := newEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
+	embed, err := NewEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
 	require.Error(t, err,
 		"discovery returns 500, so DCR resolution must fail and the constructor must return an error")
 	assert.Nil(t, embed,
@@ -1940,7 +1940,7 @@ func (s *urlErrorOnCloseStorage) Close() error {
 
 // TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog pins the post-#5196
 // invariant that the deferred-cleanup slog.Warn at the top of
-// newEmbeddedAuthServerWithStorage routes both closeErr and retErr through
+// NewEmbeddedAuthServerWithStorage routes both closeErr and retErr through
 // dcr.SanitizeErrorForLog, so a future regression that drops the call (or that
 // changes the error chain to inline an upstream response body containing a
 // userinfo/query/fragment) cannot silently leak secrets to operator logs.
@@ -2015,7 +2015,7 @@ func TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	embed, err := newEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
+	embed, err := NewEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
 	require.Error(t, err)
 	assert.Nil(t, embed)
 

@@ -20,37 +20,33 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-// Defaults applied to enabled code mode when the serialized config leaves a field unset.
-// They mirror the kubebuilder defaults on [config.CodeModeConfig] so the operator/CRD path
-// and the standalone YAML path converge on the same behavior.
+// Default tuning values for enabled code mode, applied by resolve to any field left
+// unset or non-positive. They mirror the kubebuilder defaults on [config.CodeModeConfig]
+// so every entry point — the operator/CRD path, the standalone YAML path, and a direct
+// NewDecorator call — converges on the same bounded behavior. Both zero-value traps are
+// intentional to guard against: a zero ParallelMax means "unlimited" at the engine, and a
+// zero ToolCallTimeout means "no deadline".
 const (
-	// defaultParallelMax bounds parallel() fan-out. A zero ParallelMax means "unlimited"
-	// at the engine, so an unset value must resolve to this cap rather than to zero.
-	defaultParallelMax = 10
-
-	// defaultToolCallTimeout bounds each inner tool call. Zero imposes no deadline at the
-	// engine, so an unset value must resolve to this timeout rather than to zero.
+	defaultParallelMax     = 10
 	defaultToolCallTimeout = 30 * time.Second
 )
 
 // FromConfig translates the serialized vMCP code mode config into the runtime decorator
 // [Config]. It returns nil when c is nil or disabled, so the caller can hand the result
-// straight to the server config (a nil value leaves the core undecorated). Unset fields
-// fall back to the defaults above; a zero StepLimit is left for [script.New] to resolve to
-// [script.DefaultStepLimit].
+// straight to the server config (a nil value leaves the core undecorated). It performs no
+// defaulting: unset fields stay zero and are resolved to defaults by [NewDecorator] (see
+// resolve), so the operator/CRD, YAML, and direct-construction paths share one source of
+// defaults.
 func FromConfig(c *config.CodeModeConfig) *Config {
 	if c == nil || !c.Enabled {
 		return nil
 	}
-	out := &Config{ParallelMax: defaultParallelMax, ToolCallTimeout: defaultToolCallTimeout}
+	out := &Config{
+		ParallelMax:     c.ParallelMaxConcurrency,
+		ToolCallTimeout: time.Duration(c.ToolCallTimeout),
+	}
 	if c.StepLimit > 0 {
 		out.StepLimit = uint64(c.StepLimit)
-	}
-	if c.ParallelMaxConcurrency > 0 {
-		out.ParallelMax = c.ParallelMaxConcurrency
-	}
-	if c.ToolCallTimeout > 0 {
-		out.ToolCallTimeout = time.Duration(c.ToolCallTimeout)
 	}
 	return out
 }
@@ -59,24 +55,24 @@ func FromConfig(c *config.CodeModeConfig) *Config {
 // composition root is itself the opt-in toggle; a nil *Config (the default) leaves the
 // core undecorated and execute_tool_script absent from tools/list.
 //
-// A nil *Config passed to NewDecorator uses defaults for every field.
+// A nil *Config passed to NewDecorator, or any field left zero, resolves to the safe
+// defaults in resolve — never to the engine's unbounded zero-value behavior.
 type Config struct {
 	// StepLimit is the maximum number of Starlark execution steps per script.
-	// Zero uses [script.DefaultStepLimit].
+	// Zero resolves to [script.DefaultStepLimit].
 	StepLimit uint64
 
 	// ParallelMax is the maximum number of concurrent goroutines that parallel()
-	// may spawn within a script. Zero means unlimited; negative is treated as zero.
+	// may spawn within a script. Zero (or negative) resolves to defaultParallelMax.
 	ParallelMax int
 
 	// ToolCallTimeout bounds each individual inner tool call made from a script.
-	// Zero (or negative) means no per-call deadline is imposed by the decorator.
+	// Zero (or negative) resolves to defaultToolCallTimeout.
 	ToolCallTimeout time.Duration
 }
 
-// scriptConfig projects the decorator config onto the engine's [script.Config].
-// Step-limit and parallelism defaulting is delegated to script.New, which resolves
-// a zero StepLimit to script.DefaultStepLimit and a negative ParallelMax to zero.
+// scriptConfig projects the (already resolved) decorator config onto the engine's
+// [script.Config]. Defaulting happens in resolve, so the values here are concrete.
 func (c *Config) scriptConfig() *script.Config {
 	return &script.Config{
 		StepLimit:   c.StepLimit,
@@ -84,15 +80,24 @@ func (c *Config) scriptConfig() *script.Config {
 	}
 }
 
-// resolve returns a non-nil, normalized copy of cfg. A nil cfg yields zero-valued
-// defaults (which script.New in turn resolves to its own defaults).
+// resolve returns a non-nil, fully-defaulted copy of cfg. It is the single source of code
+// mode defaults: a nil cfg or any zero/negative field resolves to a safe bound, so callers
+// that construct a Config directly get the same caps as the FromConfig path. This is what
+// makes a zero ParallelMax (engine: unlimited) and a zero ToolCallTimeout (engine: no
+// deadline) safe at this layer.
 func resolve(cfg *Config) Config {
-	if cfg == nil {
-		return Config{}
+	c := Config{}
+	if cfg != nil {
+		c = *cfg
 	}
-	c := *cfg
-	if c.ToolCallTimeout < 0 {
-		c.ToolCallTimeout = 0
+	if c.StepLimit == 0 {
+		c.StepLimit = script.DefaultStepLimit
+	}
+	if c.ParallelMax <= 0 {
+		c.ParallelMax = defaultParallelMax
+	}
+	if c.ToolCallTimeout <= 0 {
+		c.ToolCallTimeout = defaultToolCallTimeout
 	}
 	return c
 }

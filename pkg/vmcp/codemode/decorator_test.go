@@ -212,6 +212,39 @@ func TestCallTool_DataArgsInjected(t *testing.T) {
 	assert.Contains(t, resultText(t, res), "alice")
 }
 
+// TestCallTool_StructuredContentRoundTrips covers the case where a backend tool returns
+// StructuredContent (a map) rather than JSON text: it must survive toMCPResult (the
+// typed-nil guard), be readable as a dict inside the script, and the script's result must
+// come back to the caller. This is the structured-data path the engine prefers over text.
+func TestCallTool_StructuredContentRoundTrips(t *testing.T) {
+	t.Parallel()
+	inner := echoBackend()
+	inner.callTool = func(_ context.Context, _ *auth.Identity, name string,
+		_, _ map[string]any) (*vmcp.ToolCallResult, error) {
+		if name != "lookup" {
+			return nil, errors.New("unknown tool")
+		}
+		return &vmcp.ToolCallResult{
+			StructuredContent: map[string]any{"id": 7, "name": "widget"},
+		}, nil
+	}
+	inner.listTools = func(_ context.Context, _ *auth.Identity) ([]vmcp.Tool, error) {
+		return []vmcp.Tool{{Name: "lookup", Description: "Looks something up"}}, nil
+	}
+	d := NewDecorator(inner, nil)
+
+	args := map[string]any{"script": `
+r = lookup()
+return {"got": r["name"], "id": r["id"]}
+`}
+	res, err := d.CallTool(context.Background(), nil, script.ExecuteToolScriptName, args, nil)
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+	text := resultText(t, res)
+	assert.Contains(t, text, "widget")
+	assert.Contains(t, text, "7")
+}
+
 func TestCallTool_MissingScriptArg(t *testing.T) {
 	t.Parallel()
 	d := NewDecorator(echoBackend(), nil)

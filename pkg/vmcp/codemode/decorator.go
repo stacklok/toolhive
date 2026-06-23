@@ -142,7 +142,8 @@ func (d *decorator) CallTool(
 
 	src, ok := args["script"].(string)
 	if !ok || src == "" {
-		return errorResult("execute_tool_script requires a non-empty 'script' string argument"), nil
+		return errorResult(fmt.Sprintf("%s requires a non-empty 'script' string argument",
+			script.ExecuteToolScriptName)), nil
 	}
 	data, err := extractData(args)
 	if err != nil {
@@ -275,6 +276,11 @@ func fromMCPResult(r *mcp.CallToolResult) *vmcp.ToolCallResult {
 		IsError: r.IsError,
 		Meta:    conversion.FromMCPMeta(r.Meta),
 	}
+	// Per the MCP spec, structuredContent is "returned as a JSON object", so it maps to
+	// map[string]any. A non-object value is a protocol violation; the type assertion
+	// intentionally drops it (leaving the text content as the result) rather than
+	// propagating malformed structured output. vmcp.ToolCallResult.StructuredContent is
+	// itself typed map[string]any, so a non-object could not round-trip regardless.
 	if sc, ok := r.StructuredContent.(map[string]any); ok {
 		out.StructuredContent = sc
 	}

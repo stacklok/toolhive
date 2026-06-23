@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 // The MCPAuthzConfig controller is not registered in this suite, so we pre-seed
@@ -53,14 +54,12 @@ var _ = Describe("MCPRemoteProxy AuthzConfigRef Integration Tests", func() {
 	}
 
 	newProxy := func(name, namespace, authzRefName string) *mcpv1beta1.MCPRemoteProxy {
-		return &mcpv1beta1.MCPRemoteProxy{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-			Spec: mcpv1beta1.MCPRemoteProxySpec{
-				RemoteURL:      "https://example.com",
-				Transport:      "streamable-http",
-				AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: authzRefName},
-			},
-		}
+		return v1beta1test.NewMCPRemoteProxy(name, namespace,
+			v1beta1test.WithRemoteProxyURL("https://example.com"),
+			v1beta1test.WithRemoteProxyPort(0),
+			v1beta1test.WithRemoteProxyTransport("streamable-http"),
+			v1beta1test.WithRemoteProxyAuthzConfigRef(authzRefName),
+		)
 	}
 
 	const (

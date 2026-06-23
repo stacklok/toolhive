@@ -997,18 +997,9 @@ func TestMCPGroupReconciler_findReferencingMCPRemoteProxies(t *testing.T) {
 			groupName: testGroupName,
 			namespace: "default",
 			mcpRemoteProxies: []*mcpv1beta1.MCPRemoteProxy{
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy1", Namespace: "default"},
-					Spec:       mcpv1beta1.MCPRemoteProxySpec{GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName}},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy2", Namespace: "default"},
-					Spec:       mcpv1beta1.MCPRemoteProxySpec{GroupRef: &mcpv1beta1.MCPGroupRef{Name: "other-group"}},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy3", Namespace: "default"},
-					Spec:       mcpv1beta1.MCPRemoteProxySpec{GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName}},
-				},
+				v1beta1test.NewMCPRemoteProxy("proxy1", "default", v1beta1test.WithRemoteProxyGroupRef(testGroupName)),
+				v1beta1test.NewMCPRemoteProxy("proxy2", "default", v1beta1test.WithRemoteProxyGroupRef("other-group")),
+				v1beta1test.NewMCPRemoteProxy("proxy3", "default", v1beta1test.WithRemoteProxyGroupRef(testGroupName)),
 			},
 			expectedCount: 2,
 			expectedNames: []string{"proxy1", "proxy3"},
@@ -1018,10 +1009,7 @@ func TestMCPGroupReconciler_findReferencingMCPRemoteProxies(t *testing.T) {
 			groupName: testGroupName,
 			namespace: "default",
 			mcpRemoteProxies: []*mcpv1beta1.MCPRemoteProxy{
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy1", Namespace: "default"},
-					Spec:       mcpv1beta1.MCPRemoteProxySpec{GroupRef: &mcpv1beta1.MCPGroupRef{Name: "other-group"}},
-				},
+				v1beta1test.NewMCPRemoteProxy("proxy1", "default", v1beta1test.WithRemoteProxyGroupRef("other-group")),
 			},
 			expectedCount: 0,
 			expectedNames: []string{},
@@ -1031,14 +1019,8 @@ func TestMCPGroupReconciler_findReferencingMCPRemoteProxies(t *testing.T) {
 			groupName: testGroupName,
 			namespace: "namespace-a",
 			mcpRemoteProxies: []*mcpv1beta1.MCPRemoteProxy{
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy1", Namespace: "namespace-a"},
-					Spec:       mcpv1beta1.MCPRemoteProxySpec{GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName}},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy2", Namespace: "namespace-b"},
-					Spec:       mcpv1beta1.MCPRemoteProxySpec{GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName}},
-				},
+				v1beta1test.NewMCPRemoteProxy("proxy1", "namespace-a", v1beta1test.WithRemoteProxyGroupRef(testGroupName)),
+				v1beta1test.NewMCPRemoteProxy("proxy2", "namespace-b", v1beta1test.WithRemoteProxyGroupRef(testGroupName)),
 			},
 			expectedCount: 1,
 			expectedNames: []string{"proxy1"},
@@ -1130,15 +1112,9 @@ func TestMCPGroupReconciler_findMCPGroupForMCPRemoteProxy(t *testing.T) {
 	}{
 		{
 			name: "remote proxy with groupRef finds matching group",
-			mcpRemoteProxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
-				},
-			},
+			mcpRemoteProxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyGroupRef(testGroupName),
+			),
 			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1151,16 +1127,8 @@ func TestMCPGroupReconciler_findMCPGroupForMCPRemoteProxy(t *testing.T) {
 			expectedGroupName: testGroupName,
 		},
 		{
-			name: "remote proxy without groupRef returns empty",
-			mcpRemoteProxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					// No GroupRef
-				},
-			},
+			name:           "remote proxy without groupRef returns empty",
+			mcpRemoteProxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default"),
 			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1173,15 +1141,9 @@ func TestMCPGroupReconciler_findMCPGroupForMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "remote proxy with non-existent groupRef returns empty",
-			mcpRemoteProxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "non-existent-group"},
-				},
-			},
+			mcpRemoteProxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyGroupRef("non-existent-group"),
+			),
 			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1194,15 +1156,9 @@ func TestMCPGroupReconciler_findMCPGroupForMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "remote proxy finds correct group among multiple groups",
-			mcpRemoteProxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "group-b"},
-				},
-			},
+			mcpRemoteProxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyGroupRef("group-b"),
+			),
 			mcpGroups: []*mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1296,24 +1252,8 @@ func TestMCPGroupReconciler_updateReferencingRemoteProxiesOnDeletion(t *testing.
 			name:      "updates conditions on remote proxies",
 			groupName: testGroupName,
 			mcpRemoteProxies: []mcpv1beta1.MCPRemoteProxy{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "proxy1",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "proxy2",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupName},
-					},
-				},
+				*v1beta1test.NewMCPRemoteProxy("proxy1", "default", v1beta1test.WithRemoteProxyGroupRef(testGroupName)),
+				*v1beta1test.NewMCPRemoteProxy("proxy2", "default", v1beta1test.WithRemoteProxyGroupRef(testGroupName)),
 			},
 			expectedUpdates: 2,
 		},

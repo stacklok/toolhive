@@ -17,19 +17,17 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 )
 
 func replicasTestProxy(replicas *int32) *mcpv1beta1.MCPRemoteProxy {
-	return &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{Name: "replicas-proxy", Namespace: "default"},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://mcp.example.com",
-			ProxyPort: 8080,
-			Replicas:  replicas,
-		},
-	}
+	return v1beta1test.NewMCPRemoteProxy("replicas-proxy", "default",
+		v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+			p.Spec.Replicas = replicas
+		}),
+	)
 }
 
 // TestDeploymentForMCPRemoteProxyReplicas verifies spec.replicas flows into

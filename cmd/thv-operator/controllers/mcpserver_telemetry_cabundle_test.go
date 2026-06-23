@@ -10,10 +10,11 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
 
@@ -109,29 +110,16 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithObjects(tt.telemetryConfig).
 				Build()
 
-			mcpServer := &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:     "test-image:latest",
-					Transport: "stdio",
-					ProxyPort: 8080,
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-						Name: "my-telemetry",
-					},
-				},
-			}
+			mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithTelemetryConfigRef("my-telemetry"),
+			)
 
 			r := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 			deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")
@@ -183,9 +171,7 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume_FetchError(t *testing.T)
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Build a client that does NOT have the MCPTelemetryConfig object.
 	// The MCPServer references it, so getTelemetryConfigForMCPServer returns nil (not found).
@@ -193,20 +179,9 @@ func TestDeploymentForMCPServer_TelemetryCABundleVolume_FetchError(t *testing.T)
 		WithScheme(scheme).
 		Build()
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:     "test-image:latest",
-			Transport: "stdio",
-			ProxyPort: 8080,
-			TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
-				Name: "missing-telemetry-config",
-			},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithTelemetryConfigRef("missing-telemetry-config"),
+	)
 
 	r := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
 	deployment, err := r.deploymentForMCPServer(ctx, mcpServer, "test-checksum")

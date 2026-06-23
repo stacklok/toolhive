@@ -161,6 +161,8 @@ const (
 	// This occurs when:
 	// - Health checks succeed but response times exceed the degraded threshold (slow but working)
 	// - Backend just recovered from failures and is in a stabilizing state
+	// - Background OAuth token refresh is failing transiently while the
+	//   workload monitor retries (auth_retrying workload status)
 	BackendDegraded BackendHealthStatus = "degraded"
 
 	// BackendUnhealthy indicates the backend is not responding to health checks.

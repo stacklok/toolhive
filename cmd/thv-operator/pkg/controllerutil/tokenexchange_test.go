@@ -12,11 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/auth/obo"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
@@ -248,9 +248,7 @@ func TestRegisterOBOHandler_PanicsOnNilField(t *testing.T) {
 func TestAddExternalAuthConfigOptions_OBO(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	authCfg := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -288,4 +286,195 @@ func TestAddExternalAuthConfigOptions_OBO(t *testing.T) {
 	assert.NotContains(t, err.Error(), "unsupported external auth type")
 	assert.NotContains(t, err.Error(), "unknown middleware type")
 	assert.Empty(t, options, "default OBO handler must not append to the options slice")
+}
+
+// TestAddOBOSecretEnvVars covers the OBO-only secret-env dispatcher across every
+// ExternalAuthType. Only obo contributes env vars (and only when a handler is
+// registered); every other type, plus a nil ref, yields no env vars. A build
+// with the default OBO handler treats obo as inert (no env vars, no error) so the
+// deployment builder and drift-check paths stay byte-identical.
+//
+// Regression guard: newConfig populates the secret-bearing sub-spec for the
+// non-obo types that have one (tokenExchange, bearerToken, headerInjection), so
+// the "must stay empty" assertions below would fail if a future dev ever wired
+// one of those types into AddOBOSecretEnvVars — the empty result is then a real
+// invariant, not an artifact of an absent secret ref.
+func TestAddOBOSecretEnvVars(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+
+	const ns = "default"
+
+	newConfig := func(name string, typ mcpv1beta1.ExternalAuthType) *mcpv1beta1.MCPExternalAuthConfig {
+		cfg := &mcpv1beta1.MCPExternalAuthConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns},
+			Spec:       mcpv1beta1.MCPExternalAuthConfigSpec{Type: typ},
+		}
+		switch typ {
+		case mcpv1beta1.ExternalAuthTypeTokenExchange:
+			cfg.Spec.TokenExchange = &mcpv1beta1.TokenExchangeConfig{
+				ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: name + "-secret", Key: "client-secret"},
+			}
+		case mcpv1beta1.ExternalAuthTypeBearerToken:
+			cfg.Spec.BearerToken = &mcpv1beta1.BearerTokenConfig{
+				TokenSecretRef: &mcpv1beta1.SecretKeyRef{Name: name + "-secret", Key: "token"},
+			}
+		case mcpv1beta1.ExternalAuthTypeHeaderInjection:
+			cfg.Spec.HeaderInjection = &mcpv1beta1.HeaderInjectionConfig{
+				ValueSecretRef: &mcpv1beta1.SecretKeyRef{Name: name + "-secret", Key: "value"},
+			}
+		case mcpv1beta1.ExternalAuthTypeOBO:
+			cfg.Spec.OBO = &mcpv1beta1.OBOConfig{}
+		case mcpv1beta1.ExternalAuthTypeUnauthenticated,
+			mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+			mcpv1beta1.ExternalAuthTypeAWSSts,
+			mcpv1beta1.ExternalAuthTypeUpstreamInject:
+			// No secret-bearing sub-spec to populate for these types.
+		}
+		return cfg
+	}
+
+	tests := []struct {
+		name    string
+		seed    *mcpv1beta1.MCPExternalAuthConfig // object stored in the fake client (nil = none)
+		ref     *mcpv1beta1.ExternalAuthConfigRef
+		wantErr bool
+	}{
+		{
+			name: "nil ref returns no env vars",
+			ref:  nil,
+		},
+		{
+			name:    "missing config returns error",
+			ref:     &mcpv1beta1.ExternalAuthConfigRef{Name: "does-not-exist"},
+			wantErr: true,
+		},
+		{
+			name: "tokenExchange type contributes no env vars here",
+			seed: newConfig("te", mcpv1beta1.ExternalAuthTypeTokenExchange),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "te"},
+		},
+		{
+			name: "bearerToken type contributes no env vars here",
+			seed: newConfig("bt", mcpv1beta1.ExternalAuthTypeBearerToken),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "bt"},
+		},
+		{
+			name: "headerInjection type contributes no env vars here",
+			seed: newConfig("hi", mcpv1beta1.ExternalAuthTypeHeaderInjection),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "hi"},
+		},
+		{
+			name: "unauthenticated type contributes no env vars here",
+			seed: newConfig("un", mcpv1beta1.ExternalAuthTypeUnauthenticated),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "un"},
+		},
+		{
+			name: "embeddedAuthServer type contributes no env vars here",
+			seed: newConfig("eas", mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "eas"},
+		},
+		{
+			name: "awsSts type contributes no env vars here",
+			seed: newConfig("aws", mcpv1beta1.ExternalAuthTypeAWSSts),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "aws"},
+		},
+		{
+			name: "upstreamInject type contributes no env vars here",
+			seed: newConfig("ui", mcpv1beta1.ExternalAuthTypeUpstreamInject),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "ui"},
+		},
+		{
+			name: "obo with default handler is inert",
+			seed: newConfig("obo", mcpv1beta1.ExternalAuthTypeOBO),
+			ref:  &mcpv1beta1.ExternalAuthConfigRef{Name: "obo"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if tt.seed != nil {
+				builder = builder.WithObjects(tt.seed)
+			}
+
+			envVars, err := AddOBOSecretEnvVars(t.Context(), builder.Build(), ns, tt.ref)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Empty(t, envVars, "only a registered OBO handler contributes env vars through this dispatcher")
+		})
+	}
+}
+
+// TestAddOBOSecretEnvVars_OBOHandlerRegistered proves the obo arm forwards a
+// registered handler's env vars verbatim and propagates a genuine
+// (non-enterprise) handler error, while still swallowing ErrEnterpriseRequired.
+//
+//nolint:paralleltest // Mutates package-level oboHandler; must not race other tests.
+func TestAddOBOSecretEnvVars_OBOHandlerRegistered(t *testing.T) {
+	withDefaultOBOHandler(t)
+
+	scheme := testutil.NewScheme(t)
+
+	const ns = "default"
+	authCfg := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "obo-config", Namespace: ns},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(authCfg).Build()
+	ref := &mcpv1beta1.ExternalAuthConfigRef{Name: authCfg.Name}
+
+	noopValidate := func(*mcpv1beta1.MCPExternalAuthConfig) error { return nil }
+	noopApply := func(
+		context.Context, client.Client, string,
+		*mcpv1beta1.MCPExternalAuthConfig, *[]runner.RunConfigBuilderOption,
+	) error {
+		return nil
+	}
+
+	// A registered handler's env vars are forwarded verbatim.
+	expected := []corev1.EnvVar{{
+		Name: "OBO_CLIENT_SECRET",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "obo-secret"},
+				Key:                  "token",
+			},
+		},
+	}}
+	RegisterOBOHandler(OBOHandler{
+		Validate:       noopValidate,
+		ApplyRunConfig: noopApply,
+		SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+			return expected, nil
+		},
+	})
+
+	envVars, err := AddOBOSecretEnvVars(t.Context(), fakeClient, ns, ref)
+	require.NoError(t, err)
+	assert.Equal(t, expected, envVars, "the dispatcher must forward the handler's env vars verbatim")
+
+	// A genuine (non-enterprise) handler error propagates to the caller.
+	sentinel := errors.New("secret not found")
+	RegisterOBOHandler(OBOHandler{
+		Validate:       noopValidate,
+		ApplyRunConfig: noopApply,
+		SecretEnvVars: func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+			return nil, sentinel
+		},
+	})
+
+	envVars, err = AddOBOSecretEnvVars(t.Context(), fakeClient, ns, ref)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, sentinel, "a genuine handler error must propagate, not be swallowed")
+	assert.Nil(t, envVars)
 }

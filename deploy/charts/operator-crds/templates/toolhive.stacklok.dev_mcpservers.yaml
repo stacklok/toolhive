@@ -222,14 +222,6 @@ spec:
                   AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
                   The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.
                   Mutually exclusive with authzConfig.
-
-                  resolve AuthzConfigRef into a runtime authz config.
-
-                  NOTE: this field is consumed by workload controllers in a follow-up PR.
-                  Until that lands, AuthzConfigRef is reference-tracked by the
-                  MCPAuthzConfig controller (deletion protection, status.referenceCount)
-                  but does NOT apply authorization to this MCPServer. Use the inline
-                  AuthzConfig field in the meantime.
                 properties:
                   name:
                     description: Name is the name of the MCPAuthzConfig resource in
@@ -862,6 +854,10 @@ spec:
                 description: |-
                   AuthServerConfigHash is the hash of the referenced authServerRef spec,
                   used to detect configuration changes and trigger reconciliation.
+                type: string
+              authzConfigHash:
+                description: AuthzConfigHash is the hash of the referenced MCPAuthzConfig
+                  spec for change detection
                 type: string
               conditions:
                 description: Conditions represent the latest available observations
@@ -1170,14 +1166,6 @@ spec:
                   AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
                   The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.
                   Mutually exclusive with authzConfig.
-
-                  resolve AuthzConfigRef into a runtime authz config.
-
-                  NOTE: this field is consumed by workload controllers in a follow-up PR.
-                  Until that lands, AuthzConfigRef is reference-tracked by the
-                  MCPAuthzConfig controller (deletion protection, status.referenceCount)
-                  but does NOT apply authorization to this MCPServer. Use the inline
-                  AuthzConfig field in the meantime.
                 properties:
                   name:
                     description: Name is the name of the MCPAuthzConfig resource in
@@ -1810,6 +1798,10 @@ spec:
                 description: |-
                   AuthServerConfigHash is the hash of the referenced authServerRef spec,
                   used to detect configuration changes and trigger reconciliation.
+                type: string
+              authzConfigHash:
+                description: AuthzConfigHash is the hash of the referenced MCPAuthzConfig
+                  spec for change detection
                 type: string
               conditions:
                 description: Conditions represent the latest available observations

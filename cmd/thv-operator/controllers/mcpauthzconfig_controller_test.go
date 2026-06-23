@@ -4,7 +4,6 @@
 package controllers
 
 import (
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -20,6 +19,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	// Import authorizer backends so they register with the factory registry.
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -43,9 +44,7 @@ func validHTTPPDPConfig() runtime.RawExtension {
 func newAuthzTestReconciler(t *testing.T, objs ...client.Object) (*MCPAuthzConfigReconciler, client.Client) {
 	t.Helper()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -54,96 +53,6 @@ func newAuthzTestReconciler(t *testing.T, objs ...client.Object) (*MCPAuthzConfi
 		Build()
 
 	return &MCPAuthzConfigReconciler{Client: fakeClient, Scheme: scheme}, fakeClient
-}
-
-func Test_buildFullAuthzConfigJSON(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name          string
-		spec          mcpv1beta1.MCPAuthzConfigSpec
-		expectError   bool
-		expectType    string
-		expectKey     string
-		expectVersion string
-	}{
-		{
-			name: "valid Cedar config produces correct JSON",
-			spec: mcpv1beta1.MCPAuthzConfigSpec{
-				Type:   "cedarv1",
-				Config: validCedarConfig(),
-			},
-			expectType:    "cedarv1",
-			expectKey:     "cedar",
-			expectVersion: "1.0",
-		},
-		{
-			name: "valid HTTP PDP config produces correct JSON",
-			spec: mcpv1beta1.MCPAuthzConfigSpec{
-				Type:   "httpv1",
-				Config: validHTTPPDPConfig(),
-			},
-			expectType:    "httpv1",
-			expectKey:     "pdp",
-			expectVersion: "1.0",
-		},
-		{
-			name: "unknown type returns error",
-			spec: mcpv1beta1.MCPAuthzConfigSpec{
-				Type:   "unknown-type",
-				Config: runtime.RawExtension{Raw: []byte(`{}`)},
-			},
-			expectError: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			result, factory, err := buildFullAuthzConfigJSON(tt.spec)
-
-			if tt.expectError {
-				require.Error(t, err)
-				assert.Nil(t, factory, "factory must be nil when buildFullAuthzConfigJSON errors")
-				return
-			}
-
-			require.NoError(t, err)
-			require.NotNil(t, factory, "factory must accompany a successful build")
-			assert.Equal(t, tt.expectKey, factory.ConfigKey(),
-				"returned factory's ConfigKey must match the nested envelope key")
-
-			var parsed map[string]json.RawMessage
-			require.NoError(t, json.Unmarshal(result, &parsed), "Output must be valid JSON")
-
-			var version string
-			require.NoError(t, json.Unmarshal(parsed["version"], &version))
-			assert.Equal(t, tt.expectVersion, version)
-
-			var typ string
-			require.NoError(t, json.Unmarshal(parsed["type"], &typ))
-			assert.Equal(t, tt.expectType, typ)
-
-			_, hasKey := parsed[tt.expectKey]
-			assert.True(t, hasKey, "Output JSON should contain key %q", tt.expectKey)
-		})
-	}
-}
-
-func Test_buildFullAuthzConfigJSON_EmptyConfigRaw(t *testing.T) {
-	t.Parallel()
-
-	spec := mcpv1beta1.MCPAuthzConfigSpec{
-		Type:   "cedarv1",
-		Config: runtime.RawExtension{Raw: []byte{}},
-	}
-
-	result, factory, err := buildFullAuthzConfigJSON(spec)
-	require.Error(t, err)
-	assert.Nil(t, result)
-	assert.Nil(t, factory, "factory must be nil when buildFullAuthzConfigJSON errors")
-	assert.Contains(t, err.Error(), "config field is empty")
 }
 
 func TestCanonicalizeSpecForHash(t *testing.T) {
@@ -386,13 +295,10 @@ func TestMCPAuthzConfigReconciler_handleDeletion(t *testing.T) {
 			name:        "referencing MCPServer blocks deletion",
 			authzConfig: deletingConfig(),
 			existingWorkloads: []client.Object{
-				&mcpv1beta1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "referencing-server", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerSpec{
-						Image:          "example/mcp:latest",
-						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
-					},
-				},
+				v1beta1test.NewMCPServer("referencing-server", "default",
+					v1beta1test.WithImage("example/mcp:latest"),
+					v1beta1test.WithAuthzConfigRef("test-config"),
+				),
 			},
 			expectRequeue: true,
 		},
@@ -473,13 +379,10 @@ func TestMCPAuthzConfigReconciler_FinalizerRemovedAfterLastRefDropped(t *testing
 		},
 		Spec: mcpv1beta1.MCPAuthzConfigSpec{Type: "cedarv1", Config: validCedarConfig()},
 	}
-	workload := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "ref-server", Namespace: "default"},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:          "example/mcp:latest",
-			AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
-		},
-	}
+	workload := v1beta1test.NewMCPServer("ref-server", "default",
+		v1beta1test.WithImage("example/mcp:latest"),
+		v1beta1test.WithAuthzConfigRef("test-config"),
+	)
 	r, fakeClient := newAuthzTestReconciler(t, authzConfig, workload)
 
 	// First call: workload references the config — finalizer stays.
@@ -498,22 +401,21 @@ func TestMCPAuthzConfigReconciler_FinalizerRemovedAfterLastRefDropped(t *testing
 		"finalizer must be removed when the last referencing workload disappears")
 }
 
-// TestMCPAuthzConfigReconciler_PreservesForeignConditions locks in the
-// property the MutateAndPatchStatus migration is meant to protect: the
-// controller's snapshot-and-diff machinery does not erase Status.Conditions
-// entries it doesn't own when building its patch body.
+// TestMCPAuthzConfigReconciler_ReconcileKeepsExistingForeignCondition verifies
+// that when the controller observes a foreign-owned condition already on the
+// object and then writes its own Valid=True, it folds its condition into the
+// existing set rather than dropping the foreign one. It catches the
+// mutate-outside-the-closure bug: a condition set before MutateAndPatchStatus
+// snapshots the object would produce an empty diff, and the controller-owned
+// Valid condition would never land (the bottom assertion catches that).
 //
-// The test fails if anyone mutates conditions outside the MutateAndPatchStatus
-// closure (the snapshot would already contain the in-memory mutation, the
-// diff would be empty, and the controller-owned Valid condition would never
-// land — the assertion at the bottom catches that).
-//
-// It does NOT catch a regression to r.Status().Update on its own: under the
-// fake client there is no concurrent writer between Get and Patch, so a full
-// PUT of the in-memory object (which still includes the foreign condition)
-// would persist successfully. Exercising the merge-patch-vs-PUT difference
-// for concurrent writers requires a WithInterceptorFuncs-backed scenario.
-func TestMCPAuthzConfigReconciler_PreservesForeignConditions(t *testing.T) {
+// The concurrent-writer guarantee — that a condition written by a disjoint
+// owner between the reconciler's Get and its patch survives because
+// MutateAndPatchStatus sends a partial merge-patch rather than a full PUT — is
+// proven against the shared ctrlutil.MutateAndPatchStatus helper (used by all
+// three config controllers) in
+// TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch.
+func TestMCPAuthzConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
@@ -547,7 +449,7 @@ func TestMCPAuthzConfigReconciler_PreservesForeignConditions(t *testing.T) {
 
 	foreign := meta.FindStatusCondition(after.Status.Conditions, "ForeignControllerSays")
 	require.NotNil(t, foreign,
-		"foreign condition must survive an MCPAuthzConfig reconcile — otherwise merge-patch is replacing the conditions array wholesale")
+		"foreign condition must survive an MCPAuthzConfig reconcile — the controller must fold its own condition into the existing set, not replace it")
 	assert.Equal(t, metav1.ConditionTrue, foreign.Status, "foreign condition value must not be modified")
 	assert.Equal(t, "ExternallySet", foreign.Reason)
 
@@ -611,13 +513,10 @@ func TestMCPAuthzConfigReconciler_HashAndRefsLandInOneReconcile(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "default", Generation: 1},
 		Spec:       mcpv1beta1.MCPAuthzConfigSpec{Type: "cedarv1", Config: validCedarConfig()},
 	}
-	server := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "ref-server", Namespace: "default"},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image:          "example/mcp:latest",
-			AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
-		},
-	}
+	server := v1beta1test.NewMCPServer("ref-server", "default",
+		v1beta1test.WithImage("example/mcp:latest"),
+		v1beta1test.WithAuthzConfigRef("test-config"),
+	)
 	r, fakeClient := newAuthzTestReconciler(t, authzConfig, server)
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: authzConfig.Name, Namespace: authzConfig.Namespace}}
 
@@ -761,13 +660,10 @@ func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
 			name:            "all three workload types referencing the same config",
 			authzConfigName: "shared-config",
 			existingWorkloads: []client.Object{
-				&mcpv1beta1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "my-server", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerSpec{
-						Image:          "example/mcp:latest",
-						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "shared-config"},
-					},
-				},
+				v1beta1test.NewMCPServer("my-server", "default",
+					v1beta1test.WithImage("example/mcp:latest"),
+					v1beta1test.WithAuthzConfigRef("shared-config"),
+				),
 				&mcpv1beta1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{Name: "my-vmcp", Namespace: "default"},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
@@ -795,13 +691,10 @@ func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
 			name:            "no workloads reference the config",
 			authzConfigName: "unused-config",
 			existingWorkloads: []client.Object{
-				&mcpv1beta1.MCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "unrelated-server", Namespace: "default"},
-					Spec: mcpv1beta1.MCPServerSpec{
-						Image:          "example/mcp:latest",
-						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "other-config"},
-					},
-				},
+				v1beta1test.NewMCPServer("unrelated-server", "default",
+					v1beta1test.WithImage("example/mcp:latest"),
+					v1beta1test.WithAuthzConfigRef("other-config"),
+				),
 				&mcpv1beta1.VirtualMCPServer{
 					ObjectMeta: metav1.ObjectMeta{Name: "unrelated-vmcp", Namespace: "default"},
 					Spec: mcpv1beta1.VirtualMCPServerSpec{
@@ -867,13 +760,10 @@ func TestMCPAuthzConfigReconciler_watchHandlers(t *testing.T) {
 	}{
 		{
 			name: "MCPServer with ref enqueues current and stale configs",
-			obj: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "srv", Namespace: "default"},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image:          "example/mcp:latest",
-					AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "current-config"},
-				},
-			},
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithAuthzConfigRef("current-config"),
+			),
 			expected: map[string]struct{}{"current-config": {}, "stale-config": {}},
 		},
 		{
@@ -902,10 +792,9 @@ func TestMCPAuthzConfigReconciler_watchHandlers(t *testing.T) {
 		},
 		{
 			name: "MCPServer without ref only enqueues stale config",
-			obj: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "srv", Namespace: "default"},
-				Spec:       mcpv1beta1.MCPServerSpec{Image: "example/mcp:latest"},
-			},
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+			),
 			expected: map[string]struct{}{"stale-config": {}},
 		},
 	}
@@ -915,7 +804,11 @@ func TestMCPAuthzConfigReconciler_watchHandlers(t *testing.T) {
 			t.Parallel()
 
 			ctx := t.Context()
-			r, _ := newAuthzTestReconciler(t, staleConfig, tt.obj)
+			// DeepCopy the shared fixture: newAuthzTestReconciler builds a fake
+			// client whose versionedTracker.Add mutates ObjectMeta.ResourceVersion
+			// in place. Passing the same staleConfig pointer into parallel subtests
+			// would race on that write (#5502); each subtest gets its own copy.
+			r, _ := newAuthzTestReconciler(t, staleConfig.DeepCopy(), tt.obj)
 
 			requests := func() []reconcile.Request {
 				switch tt.obj.(type) {

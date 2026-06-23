@@ -52,7 +52,7 @@ var (
 )
 
 func init() {
-	AddAllFlag(listCmd, &listAll, true, "Show all workloads (default shows just running)")
+	AddAllFlag(listCmd, &listAll, true, "Show all workloads (default shows running and auth_retrying)")
 	AddFormatFlag(listCmd, &listFormat, FormatJSON, FormatText, "mcpservers")
 	listCmd.Flags().StringArrayVarP(&listLabelFilter, "label", "l", []string{}, "Filter workloads by labels (format: key=value)")
 	AddGroupFlag(listCmd, &listGroupFilter, false)
@@ -248,7 +248,6 @@ func printTextOutput(workloadList []core.Workload, upgrades map[string]*upgrade.
 
 	// Print workload information
 	for _, c := range workloadList {
-		// Highlight unauthenticated and policy-stopped workloads with indicators
 		status := workloadStatusIndicator(c.Status)
 
 		// Print workload information

@@ -4,7 +4,6 @@
 package server
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"net/http"
@@ -139,6 +138,12 @@ type ServerConfig struct {
 	// table this path discards — exactly the double-aggregation AC2 forbids. This is an
 	// unenforced contract today because no production composition root wires the Serve path
 	// yet; it becomes load-bearing when one does.
+	//
+	// Caller responsibility (optimizer): to enable the optimizer on the Serve path, set
+	// FactoryConfig.OptimizerConfig/OptimizerFactory AND FactoryConfig.AdvertiseFromCore.
+	// Serve then builds a per-session optimizer over the core's tools (serve_optimizer.go);
+	// AdvertiseFromCore suppresses the factory's own optimizer decorator so the shared FTS5
+	// store is not double-indexed (see FactoryConfig.AdvertiseFromCore).
 	SessionManagerConfig *sessionmanager.FactoryConfig
 
 	// TelemetryProvider is the cross-cutting telemetry provider (also consumed by
@@ -266,9 +271,14 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 		sessionManager:     sessionManager,
 		sessionDataStorage: sessionDataStorage,
 		vmcpSessionMgr:     vmcpSessMgr,
-		ready:              make(chan struct{}),
-		healthMonitor:      cfg.HealthMonitor,
-		statusReporter:     cfg.StatusReporter,
+		// Surface the resolved (telemetry-wrapped) optimizer factory so Serve-path
+		// session registration builds a per-session optimizer over the core's tools.
+		// Nil when the optimizer is disabled; the store/cleanup stay owned by the
+		// session manager (optimizerCleanup, appended to shutdownFuncs below).
+		optimizerFactory: vmcpSessMgr.OptimizerFactory(),
+		ready:            make(chan struct{}),
+		healthMonitor:    cfg.HealthMonitor,
+		statusReporter:   cfg.StatusReporter,
 	}
 
 	if optimizerCleanup != nil {
@@ -301,11 +311,11 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 	return srv, nil
 }
 
-// buildServeConfig maps the transport-only ServerConfig onto the existing *Config
-// the carried-forward (*Server) methods read from, applying the same transport
-// defaults server.New applies today. Defaults are applied here rather than by
-// mutating the caller's ServerConfig (go-style: copy before mutating caller input).
-// Port 0 is left untouched to mean "OS-assigned".
+// buildServeConfig maps the transport-only ServerConfig onto the existing *Config the
+// carried-forward (*Server) methods read from. It is a pure pass-through: transport
+// defaults are resolved once at the composition root via WithDefaults, so the
+// incoming ServerConfig is already resolved and buildServeConfig applies no defaulting of
+// its own. Port 0 still means "OS-assigned".
 //
 // Several Config fields are deliberately NOT mapped at this phase (see
 // TestBuildServeConfigMapsSharedFields, which guards this list against drift):
@@ -325,13 +335,13 @@ func Serve(ctx context.Context, v core.VMCP, cfg *ServerConfig) (*Server, error)
 //     wiring), not via Config→New, so these Config fields are unused on the Serve path.
 func buildServeConfig(cfg *ServerConfig) *Config {
 	return &Config{
-		Name:                    cmp.Or(cfg.Name, defaultServerName),
-		Version:                 cmp.Or(cfg.Version, defaultServerVersion),
+		Name:                    cfg.Name,
+		Version:                 cfg.Version,
 		GroupRef:                cfg.GroupRef,
-		Host:                    cmp.Or(cfg.Host, defaultHost),
+		Host:                    cfg.Host,
 		Port:                    cfg.Port,
-		EndpointPath:            cmp.Or(cfg.EndpointPath, defaultEndpointPath),
-		SessionTTL:              cmp.Or(cfg.SessionTTL, defaultSessionTTL),
+		EndpointPath:            cfg.EndpointPath,
+		SessionTTL:              cfg.SessionTTL,
 		AuthMiddleware:          cfg.AuthMiddleware,
 		RateLimitMiddleware:     cfg.RateLimitMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,

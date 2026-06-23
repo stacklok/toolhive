@@ -19,15 +19,15 @@ import (
 // chain:
 //
 //	MCP client → headerforward.CaptureMiddleware → request-context value →
-//	per-session backend client (mergeForwardedHeaders) → backend HTTP request.
+//	MergeForwardedHeaders (client.go) → backend HTTP request.
 //
 // The test exercises the real server wiring (via helpers.WithPassthroughHeaders,
-// which sets vmcpserver.Config.PassthroughHeaders) so headerforward.CaptureMiddleware
+// which sets vmcpserver.ServerConfig.PassthroughHeaders) so headerforward.CaptureMiddleware
 // runs; it does NOT use a stub or reimplementation of the capture logic.
 //
-// Two assertions are made:
+// Two per-request forwarding assertions are made:
 //  1. Allowlisted header present: X-Test-Api-Key sent by the client arrives at
-//     the backend unchanged.
+//     the backend on every call with its current value.
 //  2. Non-allowlisted header absent: X-Secret sent by the client is dropped and
 //     does not arrive at the backend.
 func TestVMCPServer_PassthroughHeaders(t *testing.T) {
@@ -83,7 +83,7 @@ func TestVMCPServer_PassthroughHeaders(t *testing.T) {
 	t.Cleanup(apiBackend.Close)
 
 	// ── vMCP server ───────────────────────────────────────────────────────────
-	// WithPassthroughHeaders sets vmcpserver.Config.PassthroughHeaders, which
+	// WithPassthroughHeaders sets vmcpserver.ServerConfig.PassthroughHeaders, which
 	// installs headerforward.CaptureMiddleware so allowlisted headers are captured
 	// into the request context and forwarded to backends for each request.
 	backends := []vmcp.Backend{
@@ -135,12 +135,11 @@ func TestVMCPServer_PassthroughHeaders(t *testing.T) {
 	assert.Contains(t, text, absentSentinel,
 		"non-allowlisted header slot should contain the absent sentinel")
 
-	// ── Second call: header changes mid-session, backend must not see the change ─
-	// Forwarded headers are captured once at backend-session creation and stay
-	// stable for the session's lifetime. Change the caller's X-Test-Api-Key and
-	// call again: the backend must still observe the ORIGINAL value, proving the
-	// session does not re-read forwarded headers per request (nor drop them after
-	// the first call).
+	// ── Second call: header changes mid-request, backend must see the new value ──
+	// Passthrough headers are forwarded per-request: each backend call reads the
+	// current incoming header value from the request context. Change the caller's
+	// X-Test-Api-Key and call again — the backend must observe the UPDATED value,
+	// proving the header is re-read on every request.
 	const changedValue = "caller-key-CHANGED"
 	mcpClient.SetHeader(allowlistedHeader, changedValue)
 
@@ -149,10 +148,10 @@ func TestVMCPServer_PassthroughHeaders(t *testing.T) {
 
 	t.Logf("backend response (second call): %s", text2)
 
-	assert.Contains(t, text2, allowlistedValue,
-		"second call must still see the header value captured at session creation (%q)",
-		allowlistedValue)
-	assert.NotContains(t, text2, changedValue,
-		"changed header value %q must not reach the backend — forwarded headers are session-stable",
+	assert.Contains(t, text2, changedValue,
+		"second call must see the updated header value %q (headers are forwarded per-request)",
 		changedValue)
+	assert.NotContains(t, text2, allowlistedValue,
+		"original value %q must not appear on the second call after the header was changed",
+		allowlistedValue)
 }

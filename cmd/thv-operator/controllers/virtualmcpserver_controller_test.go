@@ -26,7 +26,6 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/events"
@@ -35,6 +34,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
@@ -82,26 +83,18 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 				},
 			},
 			mcpServers: []mcpv1beta1.MCPServer{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-1",
-						Namespace: "default",
-					},
-					Status: mcpv1beta1.MCPServerStatus{
+				*v1beta1test.NewMCPServer("backend-1", "default",
+					v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
 						Phase: mcpv1beta1.MCPServerPhaseReady,
 						URL:   "http://backend-1.default.svc.cluster.local:8080",
-					},
-				},
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-2",
-						Namespace: "default",
-					},
-					Status: mcpv1beta1.MCPServerStatus{
+					}),
+				),
+				*v1beta1test.NewMCPServer("backend-2", "default",
+					v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
 						Phase: mcpv1beta1.MCPServerPhaseReady,
 						URL:   "http://backend-2.default.svc.cluster.local:8080",
-					},
-				},
+					}),
+				),
 			},
 			expectError:    false,
 			expectedReason: mcpv1beta1.ConditionReasonVirtualMCPServerGroupRefValid,
@@ -152,11 +145,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 			t.Parallel()
 
 			// Setup fake client with resources
-			scheme := runtime.NewScheme()
-			_ = mcpv1beta1.AddToScheme(scheme)
-			_ = corev1.AddToScheme(scheme)
-			_ = appsv1.AddToScheme(scheme)
-			_ = rbacv1.AddToScheme(scheme)
+			scheme := testutil.NewScheme(t)
 
 			objs := []client.Object{tt.vmcp}
 			if tt.mcpGroup != nil {
@@ -225,10 +214,7 @@ func TestVirtualMCPServerEnsureRBACResources(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -309,10 +295,7 @@ func TestVirtualMCPServerEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, rbacv1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -353,10 +336,7 @@ func TestVirtualMCPServerEnsureRBACResources_Update(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	saName := vmcpServiceAccountName(vmcp.Name)
 
@@ -436,10 +416,7 @@ func TestVirtualMCPServerEnsureRBACResources_Idempotency(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -502,10 +479,7 @@ func TestVirtualMCPServerEnsureRBACResources_InlineMode(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -572,10 +546,7 @@ func TestVirtualMCPServerEnsureRBACResources_DiscoveredMode(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -638,10 +609,7 @@ func TestVirtualMCPServerEnsureRBACResources_CustomServiceAccount(t *testing.T) 
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -721,10 +689,7 @@ func TestVirtualMCPServerEnsureDeployment(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -779,9 +744,7 @@ func TestVirtualMCPServerEnsureService(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -859,9 +822,7 @@ func TestVirtualMCPServerServiceType(t *testing.T) {
 				},
 			}
 
-			scheme := runtime.NewScheme()
-			_ = mcpv1beta1.AddToScheme(scheme)
-			_ = corev1.AddToScheme(scheme)
+			scheme := testutil.NewScheme(t)
 
 			r := &VirtualMCPServerReconciler{
 				Scheme: scheme,
@@ -1115,9 +1076,7 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			_ = mcpv1beta1.AddToScheme(scheme)
-			_ = corev1.AddToScheme(scheme)
+			scheme := testutil.NewScheme(t)
 
 			objs := []client.Object{tt.vmcp}
 			for i := range tt.pods {
@@ -1187,9 +1146,7 @@ func TestVirtualMCPServerNaming(t *testing.T) {
 func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	tests := []struct {
 		name                string
@@ -1397,11 +1354,7 @@ func TestVirtualMCPServerReconcile_NotFound(t *testing.T) {
 	t.Parallel()
 
 	// Setup
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	k8sClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
@@ -1512,11 +1465,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			_ = mcpv1beta1.AddToScheme(scheme)
-			_ = corev1.AddToScheme(scheme)
-			_ = appsv1.AddToScheme(scheme)
-			_ = rbacv1.AddToScheme(scheme)
+			scheme := testutil.NewScheme(t)
 
 			vmcp := tt.setupVMCP()
 			k8sClient := fake.NewClientBuilder().
@@ -1559,11 +1508,7 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 func TestVirtualMCPServerApplyStatusUpdates_ResourceNotFound(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1619,11 +1564,7 @@ func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
 				}
 			},
 			setupClient: func(_ *testing.T, vmcp *mcpv1beta1.VirtualMCPServer) client.Client {
-				scheme := runtime.NewScheme()
-				_ = mcpv1beta1.AddToScheme(scheme)
-				_ = corev1.AddToScheme(scheme)
-				_ = appsv1.AddToScheme(scheme)
-				_ = rbacv1.AddToScheme(scheme)
+				scheme := testutil.NewScheme(t)
 
 				mcpGroup := &mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1672,10 +1613,7 @@ func TestVirtualMCPServerEnsureAllResources_Errors(t *testing.T) {
 func TestVirtualMCPServerContainerNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	reconciler := &VirtualMCPServerReconciler{
 		Scheme: scheme,
@@ -2022,8 +1960,7 @@ func TestVirtualMCPServerDeploymentMetadataNeedsUpdate(t *testing.T) {
 func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	reconciler := &VirtualMCPServerReconciler{
 		Scheme: scheme,
@@ -2156,10 +2093,7 @@ func TestVirtualMCPServerPodTemplateMetadataNeedsUpdate(t *testing.T) {
 func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	reconciler := &VirtualMCPServerReconciler{
 		Scheme: scheme,
@@ -2330,11 +2264,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2463,11 +2393,7 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2519,11 +2445,7 @@ func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
-	_ = rbacv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2584,8 +2506,7 @@ func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 func TestVirtualMCPServerReconcile_GetError(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	// Create empty client - resource won't be found but we'll test non-NotFound errors
 	// by using a client that returns a generic error
@@ -2615,10 +2536,7 @@ func TestVirtualMCPServerReconcile_GetError(t *testing.T) {
 func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2651,10 +2569,7 @@ func TestVirtualMCPServerEnsureDeployment_ConfigMapNotFound(t *testing.T) {
 func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2708,10 +2623,7 @@ func TestVirtualMCPServerEnsureDeployment_CreateDeployment(t *testing.T) {
 func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2791,10 +2703,7 @@ func TestVirtualMCPServerEnsureDeployment_UpdateDeployment(t *testing.T) {
 func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2878,9 +2787,7 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2920,9 +2827,7 @@ func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
 func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -2982,9 +2887,7 @@ func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
 func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -3162,11 +3065,7 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 			t.Parallel()
 
 			// Setup fake client with resources
-			scheme := runtime.NewScheme()
-			_ = mcpv1beta1.AddToScheme(scheme)
-			_ = corev1.AddToScheme(scheme)
-			_ = appsv1.AddToScheme(scheme)
-			_ = rbacv1.AddToScheme(scheme)
+			scheme := testutil.NewScheme(t)
 
 			objs := []client.Object{tt.vmcp}
 			if tt.embeddingServer != nil {
@@ -3262,10 +3161,7 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_SpecDriven(t *testing.T) {
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -3341,10 +3237,7 @@ func TestVirtualMCPServerEnsureDeployment_ReplicaSync_NilPassthrough(t *testing.
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -4341,65 +4234,4 @@ func TestVirtualMCPServerReconciler_IdentitySynthesizedTransitionsOnValidationFa
 	assert.Equal(t, mcpv1beta1.ConditionReasonIdentitySynthesizedInactive, cond.Reason)
 	assert.NotContains(t, cond.Message, "atlassian",
 		"stale message naming the now-removed upstream must not survive the broken edit")
-}
-
-func TestVirtualMCPServerReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) {
-	t.Parallel()
-
-	existingRef := mcpv1beta1.WorkloadReference{
-		Kind: mcpv1beta1.WorkloadKindVirtualMCPServer,
-		Name: "existing",
-	}
-	newRef := mcpv1beta1.WorkloadReference{
-		Kind: mcpv1beta1.WorkloadKindVirtualMCPServer,
-		Name: "new",
-	}
-
-	tests := []struct {
-		name          string
-		vmcpName      string
-		expectedRefs  []mcpv1beta1.WorkloadReference
-		expectedCount int32
-	}{
-		{
-			name:          "adds new virtual server reference",
-			vmcpName:      "new",
-			expectedRefs:  []mcpv1beta1.WorkloadReference{existingRef, newRef},
-			expectedCount: 2,
-		},
-		{
-			name:          "does not duplicate existing reference",
-			vmcpName:      "existing",
-			expectedRefs:  []mcpv1beta1.WorkloadReference{existingRef},
-			expectedCount: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctx := t.Context()
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-
-			oidcConfig := &mcpv1beta1.MCPOIDCConfig{
-				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-				Status: mcpv1beta1.MCPOIDCConfigStatus{
-					ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
-					ReferenceCount:       1,
-				},
-			}
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(oidcConfig).
-				WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-				Build()
-			reconciler := &VirtualMCPServerReconciler{Client: fakeClient, Scheme: scheme}
-
-			require.NoError(t, reconciler.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, tt.vmcpName))
-			assert.ElementsMatch(t, tt.expectedRefs, oidcConfig.Status.ReferencingWorkloads)
-			assert.Equal(t, tt.expectedCount, oidcConfig.Status.ReferenceCount)
-		})
-	}
 }

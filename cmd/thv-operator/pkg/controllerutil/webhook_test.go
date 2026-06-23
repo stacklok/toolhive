@@ -9,23 +9,20 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
 func TestWebhookConfigHelpers(t *testing.T) {
 	t.Parallel()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	timeout := metav1.Duration{Duration: 10 * time.Second}
 
@@ -57,15 +54,9 @@ func TestWebhookConfigHelpers(t *testing.T) {
 		},
 	}
 
-	server := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			WebhookConfigRef: &mcpv1beta1.WebhookConfigRef{Name: "test-webhook"},
-		},
-	}
+	server := v1beta1test.NewMCPServer("test-server", "default",
+		v1beta1test.WithWebhookConfigRef("test-webhook"),
+	)
 
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(config, server).Build()
 	ctx := t.Context()

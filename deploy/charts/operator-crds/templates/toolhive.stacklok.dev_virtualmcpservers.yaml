@@ -2594,13 +2594,9 @@ spec:
                       The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
                       Mutually exclusive with authzConfig.
 
-                      resolve AuthzConfigRef into a runtime authz config.
-
-                      NOTE: this field is consumed by workload controllers in a follow-up PR.
-                      Until that lands, AuthzConfigRef is reference-tracked by the
-                      MCPAuthzConfig controller (deletion protection, status.referenceCount)
-                      but does NOT apply authorization to this VirtualMCPServer. Use the
-                      inline AuthzConfig field in the meantime.
+                      Only cedarv1 MCPAuthzConfig resources are supported for VirtualMCPServer
+                      today; referencing a non-Cedar config fails reconciliation with a clear
+                      error because the vMCP runtime authz middleware is Cedar-only.
                     properties:
                       name:
                         description: Name is the name of the MCPAuthzConfig resource
@@ -2876,6 +2872,11 @@ spec:
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
+              authzConfigHash:
+                description: |-
+                  AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection.
+                  Only populated when IncomingAuth.AuthzConfigRef is set.
+                type: string
               backendCount:
                 description: |-
                   BackendCount is the number of routable backends (ready + unauthenticated).
@@ -5611,13 +5612,9 @@ spec:
                       The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
                       Mutually exclusive with authzConfig.
 
-                      resolve AuthzConfigRef into a runtime authz config.
-
-                      NOTE: this field is consumed by workload controllers in a follow-up PR.
-                      Until that lands, AuthzConfigRef is reference-tracked by the
-                      MCPAuthzConfig controller (deletion protection, status.referenceCount)
-                      but does NOT apply authorization to this VirtualMCPServer. Use the
-                      inline AuthzConfig field in the meantime.
+                      Only cedarv1 MCPAuthzConfig resources are supported for VirtualMCPServer
+                      today; referencing a non-Cedar config fails reconciliation with a clear
+                      error because the vMCP runtime authz middleware is Cedar-only.
                     properties:
                       name:
                         description: Name is the name of the MCPAuthzConfig resource
@@ -5893,6 +5890,11 @@ spec:
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
+              authzConfigHash:
+                description: |-
+                  AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection.
+                  Only populated when IncomingAuth.AuthzConfigRef is set.
+                type: string
               backendCount:
                 description: |-
                   BackendCount is the number of routable backends (ready + unauthenticated).

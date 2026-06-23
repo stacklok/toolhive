@@ -967,6 +967,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "auth_retrying",
                     "policy_stopped",
                     "running",
                     "stopped",
@@ -977,6 +978,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "auth_retrying",
                     "policy_stopped",
                     "running",
                     "stopped",
@@ -987,6 +989,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "auth_retrying",
                     "policy_stopped"
                 ],
                 "type": "string",
@@ -1000,6 +1003,7 @@ const docTemplate = `{
                     "WorkloadStatusRemoving",
                     "WorkloadStatusUnknown",
                     "WorkloadStatusUnauthenticated",
+                    "WorkloadStatusAuthRetrying",
                     "WorkloadStatusPolicyStopped"
                 ]
             },

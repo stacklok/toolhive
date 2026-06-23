@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
@@ -20,6 +21,8 @@ import (
 	runtimeMocks "github.com/stacklok/toolhive/pkg/container/runtime/mocks"
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/runner"
+	"github.com/stacklok/toolhive/pkg/transport/types"
+	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
 	statusMocks "github.com/stacklok/toolhive/pkg/workloads/statuses/mocks"
 )
@@ -2146,4 +2149,114 @@ func TestDefaultManager_ListWorkloadsUsingSecret(t *testing.T) {
 		listFunc := manager.ListWorkloadsUsingSecret
 		assert.NotNil(t, listFunc, "ListWorkloadsUsingSecret method should exist with correct signature")
 	})
+}
+
+func TestMapWorkloadStatusToVMCPHealth(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		in   runtime.WorkloadStatus
+		want vmcp.BackendHealthStatus
+	}{
+		{"running → healthy", runtime.WorkloadStatusRunning, vmcp.BackendHealthy},
+		{"unhealthy → unhealthy", runtime.WorkloadStatusUnhealthy, vmcp.BackendUnhealthy},
+		{"stopped → unhealthy", runtime.WorkloadStatusStopped, vmcp.BackendUnhealthy},
+		{"error → unhealthy", runtime.WorkloadStatusError, vmcp.BackendUnhealthy},
+		{"stopping → unhealthy", runtime.WorkloadStatusStopping, vmcp.BackendUnhealthy},
+		{"removing → unhealthy", runtime.WorkloadStatusRemoving, vmcp.BackendUnhealthy},
+		{"starting → unknown", runtime.WorkloadStatusStarting, vmcp.BackendUnknown},
+		{"unknown → unknown", runtime.WorkloadStatusUnknown, vmcp.BackendUnknown},
+		{"unauthenticated → unauthenticated", runtime.WorkloadStatusUnauthenticated, vmcp.BackendUnauthenticated},
+		{"auth_retrying → degraded", runtime.WorkloadStatusAuthRetrying, vmcp.BackendDegraded},
+		{"policy_stopped → unhealthy", runtime.WorkloadStatusPolicyStopped, vmcp.BackendUnhealthy},
+		{"unrecognized → unknown", runtime.WorkloadStatus("not_a_real_status"), vmcp.BackendUnknown},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := mapWorkloadStatusToVMCPHealth(tc.in)
+			assert.Equal(t, tc.want, got)
+		})
+	}
+}
+
+// TestGetRemoteWorkloadsFromState_AuthRetryingVisibleWithoutAll verifies the
+// visibility-by-default change for the remote-workload path. Remote workloads
+// in AuthRetrying must be surfaced in default `thv list` (listAll=false), and
+// Unauthenticated remote workloads must remain hidden, matching the filter in
+// pkg/workloads/statuses/file_status.go:ListWorkloads.
+//
+//nolint:paralleltest // t.Setenv is incompatible with t.Parallel
+func TestGetRemoteWorkloadsFromState_AuthRetryingVisibleWithoutAll(t *testing.T) {
+	// Isolate the run-config store to a temp dir so runner.LoadState picks
+	// up only the synthetic configs we write below. xdg.StateHome is cached
+	// at package init, so an explicit Reload is required after t.Setenv.
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	xdg.Reload()
+	t.Cleanup(xdg.Reload)
+
+	ctx := context.Background()
+
+	// Save two synthetic remote workload runconfigs. One will be reported
+	// as AuthRetrying and one as Unauthenticated by the status manager.
+	retrying := &runner.RunConfig{
+		SchemaVersion: runner.CurrentSchemaVersion,
+		Name:          "remote-retrying",
+		BaseName:      "remote-retrying",
+		RemoteURL:     "http://example.com/mcp",
+		Port:          12345,
+		Transport:     types.TransportTypeStreamableHTTP,
+		Group:         "default",
+	}
+	require.NoError(t, retrying.SaveState(ctx))
+
+	dead := &runner.RunConfig{
+		SchemaVersion: runner.CurrentSchemaVersion,
+		Name:          "remote-dead",
+		BaseName:      "remote-dead",
+		RemoteURL:     "http://example.com/mcp",
+		Port:          12346,
+		Transport:     types.TransportTypeStreamableHTTP,
+		Group:         "default",
+	}
+	require.NoError(t, dead.SaveState(ctx))
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockStatusMgr := statusMocks.NewMockStatusManager(ctrl)
+	// Container path returns no workloads — we are only testing the remote path.
+	mockStatusMgr.EXPECT().ListWorkloads(gomock.Any(), false, gomock.Any()).Return([]core.Workload{}, nil)
+	// GetWorkload returns AuthRetrying for the first remote and Unauthenticated for the second.
+	mockStatusMgr.EXPECT().GetWorkload(gomock.Any(), "remote-retrying").Return(core.Workload{
+		Name:      "remote-retrying",
+		Status:    runtime.WorkloadStatusAuthRetrying,
+		CreatedAt: time.Now(),
+	}, nil)
+	mockStatusMgr.EXPECT().GetWorkload(gomock.Any(), "remote-dead").Return(core.Workload{
+		Name:      "remote-dead",
+		Status:    runtime.WorkloadStatusUnauthenticated,
+		CreatedAt: time.Now(),
+	}, nil)
+
+	manager := &DefaultManager{statuses: mockStatusMgr}
+
+	result, err := manager.ListWorkloads(ctx, false)
+	require.NoError(t, err)
+
+	var sawRetrying, sawDead bool
+	for _, w := range result {
+		switch w.Name {
+		case "remote-retrying":
+			sawRetrying = true
+			assert.Equal(t, runtime.WorkloadStatusAuthRetrying, w.Status,
+				"remote-retrying workload should carry AuthRetrying status")
+		case "remote-dead":
+			sawDead = true
+		}
+	}
+	assert.True(t, sawRetrying,
+		"remote workload in AuthRetrying should be visible in default thv list (listAll=false)")
+	assert.False(t, sawDead,
+		"remote workload in Unauthenticated should remain hidden in default thv list (listAll=false)")
 }

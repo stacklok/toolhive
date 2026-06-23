@@ -58,6 +58,9 @@ const (
 const (
 	// ConditionOIDCConfigRefValidated indicates whether the OIDCConfigRef is valid
 	ConditionOIDCConfigRefValidated = "OIDCConfigRefValidated"
+
+	// ConditionAuthzConfigRefValidated indicates whether the AuthzConfigRef is valid
+	ConditionAuthzConfigRefValidated = "AuthzConfigRefValidated"
 )
 
 const (
@@ -72,6 +75,20 @@ const (
 
 	// ConditionReasonOIDCConfigRefError indicates an error occurred validating the OIDCConfigRef
 	ConditionReasonOIDCConfigRefError = "OIDCConfigRefError"
+)
+
+const (
+	// ConditionReasonAuthzConfigRefValid indicates the referenced MCPAuthzConfig is valid and ready
+	ConditionReasonAuthzConfigRefValid = "AuthzConfigRefValid"
+
+	// ConditionReasonAuthzConfigRefNotFound indicates the referenced MCPAuthzConfig was not found
+	ConditionReasonAuthzConfigRefNotFound = "AuthzConfigRefNotFound"
+
+	// ConditionReasonAuthzConfigRefNotValid indicates the referenced MCPAuthzConfig is not valid
+	ConditionReasonAuthzConfigRefNotValid = "AuthzConfigRefNotValid"
+
+	// ConditionReasonAuthzConfigRefError indicates an error occurred validating the AuthzConfigRef
+	ConditionReasonAuthzConfigRefError = "AuthzConfigRefError"
 )
 
 const (
@@ -307,15 +324,6 @@ type MCPServerSpec struct {
 	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
 	// The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.
 	// Mutually exclusive with authzConfig.
-	//
-	// TODO(#4778): remove the staging NOTE below once workload controllers
-	// resolve AuthzConfigRef into a runtime authz config.
-	//
-	// NOTE: this field is consumed by workload controllers in a follow-up PR.
-	// Until that lands, AuthzConfigRef is reference-tracked by the
-	// MCPAuthzConfig controller (deletion protection, status.referenceCount)
-	// but does NOT apply authorization to this MCPServer. Use the inline
-	// AuthzConfig field in the meantime.
 	// +optional
 	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 
@@ -897,6 +905,10 @@ type MCPServerStatus struct {
 	// used to detect configuration changes and trigger reconciliation.
 	// +optional
 	AuthServerConfigHash string `json:"authServerConfigHash,omitempty"`
+
+	// AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection
+	// +optional
+	AuthzConfigHash string `json:"authzConfigHash,omitempty"`
 
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
 	// +optional

@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
 )
@@ -76,7 +77,7 @@ func TestMCPRemoteProxy_DefaultImagePullSecrets(t *testing.T) {
 				}
 			}
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			_ = rbacv1.AddToScheme(scheme)
 
 			fakeClient := fake.NewClientBuilder().

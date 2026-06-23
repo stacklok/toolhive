@@ -29,7 +29,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 )
 
 // TestDeploymentForMCPRemoteProxy tests deployment generation
@@ -57,7 +59,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 				t.Helper()
 				assert.Equal(t, "basic-proxy", dep.Name)
 				assert.Equal(t, "default", dep.Namespace)
-				assert.Equal(t, int32(1), *dep.Spec.Replicas)
+				assert.Nil(t, dep.Spec.Replicas, "nil spec.replicas leaves the count to the apiserver default")
 
 				// Verify labels
 				assert.Equal(t, labelsForMCPRemoteProxy("basic-proxy"), dep.Spec.Selector.MatchLabels)
@@ -201,7 +203,7 @@ func TestDeploymentForMCPRemoteProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			reconciler := &MCPRemoteProxyReconciler{
 				Scheme:           scheme,
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
@@ -309,7 +311,7 @@ func TestServiceForMCPRemoteProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			reconciler := &MCPRemoteProxyReconciler{
 				Scheme: scheme,
 			}
@@ -593,7 +595,7 @@ func TestEnsureDeployment(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			// Add RBAC and Apps types to scheme
 			_ = rbacv1.AddToScheme(scheme)
 			_ = appsv1.AddToScheme(scheme)
@@ -671,7 +673,7 @@ func TestEnsureService(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			// Add RBAC and Apps types to scheme
 			_ = rbacv1.AddToScheme(scheme)
 			_ = appsv1.AddToScheme(scheme)
@@ -704,7 +706,7 @@ func TestEnsureService(t *testing.T) {
 func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T) {
 	t.Parallel()
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -766,7 +768,7 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *test
 func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(t *testing.T) {
 	t.Parallel()
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -829,7 +831,7 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(
 func TestMCPRemoteProxyDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testing.T) {
 	t.Parallel()
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -879,6 +881,81 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testin
 	require.NotNil(t, deployment)
 
 	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"))
+}
+
+// TestMCPRemoteProxyDeployment_OBOSecretEnvVars verifies that an obo-typed
+// MCPExternalAuthConfig referenced from an MCPRemoteProxy injects the registered
+// OBOHandler.SecretEnvVars output into the proxy container, and that the
+// deployment builder and drift check agree on it so a correctly-configured
+// resource does not hot-loop. A stub OBO handler stands in for the out-of-tree
+// enterprise handler.
+//
+//nolint:paralleltest // Mutates package-level oboHandler via RegisterOBOHandler.
+func TestMCPRemoteProxyDeployment_OBOSecretEnvVars(t *testing.T) {
+	t.Cleanup(func() { ctrlutil.RegisterOBOHandler(defaultOBOHandlerStub()) })
+
+	oboEnvVar := corev1.EnvVar{
+		Name: "TOOLHIVE_OBO_CLIENT_SECRET",
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{Name: "obo-secret"},
+				Key:                  "client-secret",
+			},
+		},
+	}
+	stub := defaultOBOHandlerStub()
+	stub.SecretEnvVars = func(*mcpv1beta1.MCPExternalAuthConfig) ([]corev1.EnvVar, error) {
+		return []corev1.EnvVar{oboEnvVar}, nil
+	}
+	ctrlutil.RegisterOBOHandler(stub)
+
+	scheme := testutil.NewScheme(t)
+
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "obo-config",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeOBO,
+			OBO:  &mcpv1beta1.OBOConfig{},
+		},
+	}
+
+	proxy := &mcpv1beta1.MCPRemoteProxy{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-proxy",
+			Namespace: "default",
+		},
+		Spec: mcpv1beta1.MCPRemoteProxySpec{
+			RemoteURL: "https://mcp.example.com",
+			ProxyPort: 8080,
+			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+				Name: authConfig.Name,
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(authConfig).
+		Build()
+
+	reconciler := &MCPRemoteProxyReconciler{
+		Client:           fakeClient,
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	deployment := reconciler.deploymentForMCPRemoteProxy(t.Context(), proxy, "test-checksum")
+	require.NotNil(t, deployment)
+
+	container := deployment.Spec.Template.Spec.Containers[0]
+	assert.Contains(t, container.Env, oboEnvVar,
+		"OBO handler SecretEnvVars output must be injected into the proxy container")
+
+	assert.False(t, reconciler.deploymentNeedsUpdate(t.Context(), deployment, proxy, "test-checksum"),
+		"freshly built deployment with an OBO env var must not be seen as drifted")
 }
 
 func TestMCPRemoteProxyDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T) {
@@ -938,7 +1015,7 @@ func TestMCPRemoteProxyDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T)
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 
 			proxy := &mcpv1beta1.MCPRemoteProxy{
@@ -1192,7 +1269,7 @@ func TestBuildEnvVarsForProxy(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.proxy}
 			if tt.externalAuth != nil {
 				objects = append(objects, tt.externalAuth)
@@ -1303,6 +1380,69 @@ func TestMCPRemoteProxyServiceNeedsUpdate(t *testing.T) {
 			r := &MCPRemoteProxyReconciler{}
 			result := r.serviceNeedsUpdate(tt.service, tt.proxy)
 			assert.Equal(t, tt.needsUpdate, result)
+		})
+	}
+}
+
+// TestBuildRedisPasswordEnvVarForRemoteProxy mirrors VirtualMCPServer's
+// TestBuildRedisPasswordEnvVar — the env var must be injected only when
+// sessionStorage uses the redis provider AND a passwordRef is set, and it
+// must always be a SecretKeyRef (never a plaintext value).
+func TestBuildRedisPasswordEnvVarForRemoteProxy(t *testing.T) {
+	t.Parallel()
+
+	passwordRef := &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+
+	tests := []struct {
+		name        string
+		storage     *mcpv1beta1.SessionStorageConfig
+		expectEnVar bool
+	}{
+		{
+			name:        "nil sessionStorage produces no env var",
+			storage:     nil,
+			expectEnVar: false,
+		},
+		{
+			name:        "memory provider produces no env var",
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: "memory"},
+			expectEnVar: false,
+		},
+		{
+			name:        "redis without passwordRef produces no env var",
+			storage:     &mcpv1beta1.SessionStorageConfig{Provider: mcpv1beta1.SessionStorageProviderRedis, Address: "redis:6379"},
+			expectEnVar: false,
+		},
+		{
+			name: "redis with passwordRef produces THV_SESSION_REDIS_PASSWORD",
+			storage: &mcpv1beta1.SessionStorageConfig{
+				Provider:    mcpv1beta1.SessionStorageProviderRedis,
+				Address:     "redis:6379",
+				PasswordRef: passwordRef,
+			},
+			expectEnVar: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			proxy := &mcpv1beta1.MCPRemoteProxy{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
+				Spec:       mcpv1beta1.MCPRemoteProxySpec{SessionStorage: tc.storage},
+			}
+			env := buildRedisPasswordEnvVarForRemoteProxy(proxy)
+			if tc.expectEnVar {
+				require.Len(t, env, 1)
+				assert.Equal(t, session.RedisPasswordEnvVar, env[0].Name)
+				assert.Empty(t, env[0].Value, "must not use plaintext Value")
+				require.NotNil(t, env[0].ValueFrom)
+				require.NotNil(t, env[0].ValueFrom.SecretKeyRef)
+				assert.Equal(t, passwordRef.Name, env[0].ValueFrom.SecretKeyRef.Name)
+				assert.Equal(t, passwordRef.Key, env[0].ValueFrom.SecretKeyRef.Key)
+			} else {
+				assert.Empty(t, env)
+			}
 		})
 	}
 }

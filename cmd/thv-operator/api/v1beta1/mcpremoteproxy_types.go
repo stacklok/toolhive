@@ -96,15 +96,6 @@ type MCPRemoteProxySpec struct {
 	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
 	// The referenced MCPAuthzConfig must exist in the same namespace as this MCPRemoteProxy.
 	// Mutually exclusive with authzConfig.
-	//
-	// TODO(#4778): remove the staging NOTE below once workload controllers
-	// resolve AuthzConfigRef into a runtime authz config.
-	//
-	// NOTE: this field is consumed by workload controllers in a follow-up PR.
-	// Until that lands, AuthzConfigRef is reference-tracked by the
-	// MCPAuthzConfig controller (deletion protection, status.referenceCount)
-	// but does NOT apply authorization to this MCPRemoteProxy. Use the
-	// inline AuthzConfig field in the meantime.
 	// +optional
 	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 
@@ -169,10 +160,49 @@ type MCPRemoteProxySpec struct {
 	// SessionAffinity controls whether the Service routes repeated client connections to the same pod.
 	// MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
 	// Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+	//
+	// Interaction with sessionStorage: when running multiple replicas with
+	// sessionStorage.provider "redis", set this to "None" so requests are
+	// distributed across replicas and sessions resolve via the shared store.
+	// Conversely, "None" without Redis-backed sessionStorage breaks session
+	// continuity — any request landing on a different pod fails with
+	// "Session not found".
 	// +kubebuilder:validation:Enum=ClientIP;None
 	// +kubebuilder:default=ClientIP
 	// +optional
 	SessionAffinity string `json:"sessionAffinity,omitempty"`
+
+	// Replicas is the desired number of proxy pod replicas.
+	// MCPRemoteProxy creates a single Deployment for the proxy process, so there
+	// is only one replicas field (mirrors VirtualMCPServer.spec.replicas).
+	// When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+	// management to an HPA or other external controller.
+	// When set above 1, also configure sessionStorage with the redis provider and
+	// sessionAffinity: "None" so sessions resolve across replicas; otherwise a
+	// SessionStorageWarning condition is surfaced on the resource status.
+	// +kubebuilder:validation:Minimum=0
+	// +optional
+	Replicas *int32 `json:"replicas,omitempty"`
+
+	// SessionStorage configures session storage for stateful horizontal scaling.
+	// When nil, no session storage is configured and the proxy falls back to
+	// pod-local in-memory session state — incompatible with multi-replica
+	// deployments behind load balancers that don't preserve client-IP affinity
+	// (e.g. AWS ALB across multiple AZs).
+	//
+	// The transparent proxy validates `Mcp-Session-Id` against this store on
+	// every non-initialize request (see pkg/transport/proxy/transparent/
+	// transparent_proxy.go) and rewrites client-facing session IDs to backend
+	// session IDs using session metadata. Both lookups require shared state
+	// across replicas.
+	//
+	// When using the Redis provider, also set sessionAffinity to "None" so the
+	// Service routes requests round-robin and all replicas rely on the shared
+	// session store rather than pod-local state.
+	//
+	// Mirrors MCPServer.spec.sessionStorage and VirtualMCPServer.spec.sessionStorage.
+	// +optional
+	SessionStorage *SessionStorageConfig `json:"sessionStorage,omitempty"`
 }
 
 // MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
@@ -215,6 +245,10 @@ type MCPRemoteProxyStatus struct {
 	// used to detect configuration changes and trigger reconciliation.
 	// +optional
 	AuthServerConfigHash string `json:"authServerConfigHash,omitempty"`
+
+	// AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection
+	// +optional
+	AuthzConfigHash string `json:"authzConfigHash,omitempty"`
 
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
 	// +optional

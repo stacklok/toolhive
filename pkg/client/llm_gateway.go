@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/tailscale/hujson"
@@ -296,6 +297,11 @@ func resolveApplyConfigField(valueField string, cfg llmgateway.ApplyConfig) (str
 		return cfg.TokenHelperCommand, true
 	case "PlaceholderAPIKey":
 		return llmPlaceholderAPIKey, true
+	case "ClaudeCodeHelperTTLMillis":
+		// Constant, independent of cfg: how often Claude Code re-invokes the
+		// apiKeyHelper. Kept in sync with the token source's preemptive refresh
+		// window (see pkg/llmgateway constants).
+		return strconv.FormatInt(llmgateway.ClaudeCodeHelperTTL.Milliseconds(), 10), true
 	case "NodeTLSRejectUnauthorized":
 		if cfg.TLSSkipVerify {
 			return "0", true

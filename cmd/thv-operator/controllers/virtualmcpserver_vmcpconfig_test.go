@@ -22,6 +22,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	statusmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus/mocks"
@@ -44,8 +46,7 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
 func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver) *vmcpconfigconv.Converter {
 	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	converter, err := vmcpconfigconv.NewConverter(resolver, fakeClient)
 	require.NoError(t, err)
@@ -233,8 +234,7 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 				}
 
 				// Create converter with fake client that has the external auth config
-				scheme := runtime.NewScheme()
-				require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+				scheme := testutil.NewScheme(t)
 				fakeClient := fake.NewClientBuilder().
 					WithScheme(scheme).
 					WithObjects(externalAuthConfig).
@@ -471,9 +471,7 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 		Spec: mcpv1beta1.MCPGroupSpec{},
 	}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -1181,7 +1179,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create a VirtualMCPCompositeToolDefinition
 	compositeToolDef := &mcpv1beta1.VirtualMCPCompositeToolDefinition{
@@ -1303,7 +1301,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create a referenced VirtualMCPCompositeToolDefinition
 	referencedTool := &mcpv1beta1.VirtualMCPCompositeToolDefinition{
@@ -1421,7 +1419,7 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create MCPGroup
 	mcpGroup := &mcpv1beta1.MCPGroup{
@@ -1484,7 +1482,7 @@ func TestConfigMapContent_DynamicMode(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create MCPGroup for workload discovery
 	mcpGroup := &mcpv1beta1.MCPGroup{
@@ -1568,7 +1566,7 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create MCPGroup for workload discovery
 	mcpGroup := &mcpv1beta1.MCPGroup{
@@ -1584,20 +1582,14 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 
 	// Create MCPServer in the group so static mode has something to discover
 	// This is needed because static mode validates that at least one backend exists
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-backend",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Transport: "sse", // Required for backend discovery
-		},
-		Status: mcpv1beta1.MCPServerStatus{
+	mcpServer := v1beta1test.NewMCPServer("test-backend", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"), // Required for backend discovery
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
 			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://test-backend.default.svc.cluster.local:8080",
-		},
-	}
+		}),
+	)
 
 	// Create VirtualMCPServer in static mode (source: inline)
 	vmcpServer := &mcpv1beta1.VirtualMCPServer{
@@ -1675,7 +1667,7 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create MCPGroup for workload discovery
 	mcpGroup := &mcpv1beta1.MCPGroup{
@@ -1701,23 +1693,15 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 	}
 
 	// Create MCPServer with ExternalAuthConfigRef and Status
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "discovered-backend",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Transport: "sse", // Required for static mode backend discovery
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: "test-auth-config",
-			},
-		},
-		Status: mcpv1beta1.MCPServerStatus{
+	mcpServer := v1beta1test.NewMCPServer("discovered-backend", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"), // Required for static mode backend discovery
+		v1beta1test.WithExternalAuthConfigRef("test-auth-config"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
 			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://discovered-backend.default.svc.cluster.local:8080",
-		},
-	}
+		}),
+	)
 
 	// Create VirtualMCPServer in static mode (source: inline) WITHOUT inline backends
 	vmcpServer := &mcpv1beta1.VirtualMCPServer{
@@ -1942,7 +1926,7 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 
 			mcpGroup := &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
@@ -2093,7 +2077,7 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 
 			mcpGroup := &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: testGroup, Namespace: testNamespace},
@@ -2211,9 +2195,7 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -2495,9 +2477,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := make([]client.Object, 0, len(tt.entries))
 			for i := range tt.entries {

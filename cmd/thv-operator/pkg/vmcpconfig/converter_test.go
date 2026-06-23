@@ -16,12 +16,12 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
@@ -42,9 +42,7 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 // newTestK8sClient creates a fake Kubernetes client for testing.
 func newTestK8sClient(t *testing.T, objects ...client.Object) client.Client {
 	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	return fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).WithObjects(objects...).Build()
 }
 
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
@@ -454,13 +452,6 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 	}
 }
 
-// createTestScheme creates a test scheme with required types
-func createTestScheme() *runtime.Scheme {
-	s := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(s)
-	return s
-}
-
 func TestConverter_CompositeToolRefs(t *testing.T) {
 	t.Parallel()
 
@@ -812,7 +803,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				fakeClient = tt.k8sClient
 			} else {
 				// Create fake client with objects (or nil if we want to test nil client behavior)
-				testScheme := createTestScheme()
+				testScheme := testutil.NewScheme(t)
 				objects := []client.Object{tt.vmcp}
 				for _, def := range tt.compositeDefs {
 					objects = append(objects, def)
@@ -936,7 +927,7 @@ func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
 	}
 
 	// Setup fake Kubernetes client
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(vmcpServer, compositeDef).

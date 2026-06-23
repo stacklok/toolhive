@@ -13,6 +13,7 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
@@ -56,7 +57,9 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 	// and passed explicitly to the core — the core never reads it from context.
 	identity, _ := auth.IdentityFromContext(ctx)
 
-	tools, err := s.coreSessionTools(ctx, sessionID, identity)
+	// serveSessionTools returns the core's advertised tools, or — when the optimizer
+	// is enabled on this path — the find_tool/call_tool meta-tools built over them.
+	tools, err := s.serveSessionTools(ctx, sessionID, identity)
 	if err != nil {
 		slog.Error("failed to list core tools for session", "session_id", sessionID, "error", err)
 		return err
@@ -91,6 +94,10 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 // adapts them to SDK ServerTools whose handlers route through core.CallTool. The
 // core owns conflict resolution and backend-name translation, so the SDK tool name
 // is forwarded as-is to core.CallTool.
+//
+// The backend display name is resolved here (once per session, from the same
+// ListTools aggregation) and captured in the handler closure, so the handler can
+// label the audit event without a per-request lookup (see coreToolHandler).
 func (s *Server) coreSessionTools(
 	ctx context.Context, sessionID string, identity *auth.Identity,
 ) ([]server.ServerTool, error) {
@@ -125,7 +132,7 @@ func (s *Server) coreSessionTools(
 
 		sdkTools = append(sdkTools, server.ServerTool{
 			Tool:    tool,
-			Handler: s.coreToolHandler(sessionID, domainTool.Name),
+			Handler: s.coreToolHandler(sessionID, domainTool.Name, s.backendDisplayName(ctx, domainTool.BackendID)),
 		})
 	}
 	return sdkTools, nil
@@ -133,7 +140,8 @@ func (s *Server) coreSessionTools(
 
 // coreSessionResources queries the core for the resources advertised to identity
 // and adapts them to SDK ServerResources whose handlers route through
-// core.ReadResource.
+// core.ReadResource. The backend display name is resolved here and captured in the
+// handler closure for audit labelling (see coreResourceHandler).
 func (s *Server) coreSessionResources(
 	ctx context.Context, sessionID string, identity *auth.Identity,
 ) ([]server.ServerResource, error) {
@@ -151,17 +159,27 @@ func (s *Server) coreSessionResources(
 				Description: domainResource.Description,
 				MIMEType:    domainResource.MimeType,
 			},
-			Handler: s.coreResourceHandler(sessionID, domainResource.URI),
+			Handler: s.coreResourceHandler(sessionID, domainResource.URI, s.backendDisplayName(ctx, domainResource.BackendID)),
 		})
 	}
 	return sdkResources, nil
 }
 
-// coreToolHandler builds the SDK handler for a Serve-path tool. It enforces the
-// session's identity binding, then delegates to core.CallTool with the caller's
-// explicit identity. Admission (authorization) is the core's responsibility.
-func (s *Server) coreToolHandler(sessionID, toolName string) server.ToolHandlerFunc {
+// coreToolHandler builds the SDK handler for a Serve-path tool. It labels the audit
+// event with backendName (the serving backend, pre-resolved at registration),
+// enforces the session's identity binding, then delegates to core.CallTool with the
+// caller's explicit identity. Admission (authorization) is the core's responsibility.
+func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		// Label the audit event with the backend serving this tool. The audit
+		// middleware created the BackendInfo upstream and reads it after this handler
+		// returns (auditor.Middleware), so writing the pre-resolved name here — where
+		// the call is actually handled — is what lets the Serve path drop the separate
+		// backend-enrichment middleware and its per-request lookup (#5512 review).
+		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
+			bi.BackendName = backendName
+		}
+
 		args, ok := req.Params.Arguments.(map[string]any)
 		if !ok {
 			wrappedErr := fmt.Errorf("%w: arguments must be object, got %T", vmcp.ErrInvalidInput, req.Params.Arguments)
@@ -195,11 +213,15 @@ func (s *Server) coreToolHandler(sessionID, toolName string) server.ToolHandlerF
 }
 
 // coreResourceHandler builds the SDK handler for a Serve-path resource. It mirrors
-// coreToolHandler: binding check, then core.ReadResource with explicit identity.
+// coreToolHandler: audit label, binding check, then core.ReadResource with explicit identity.
 func (s *Server) coreResourceHandler(
-	sessionID, uri string,
+	sessionID, uri, backendName string,
 ) func(ctx context.Context, req mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
 	return func(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
+		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
+			bi.BackendName = backendName
+		}
+
 		caller, _ := auth.IdentityFromContext(ctx)
 		if err := s.enforceSessionBinding(sessionID, caller); err != nil {
 			s.terminateOnBindingFailure(sessionID, uri, err)
@@ -248,4 +270,24 @@ func (s *Server) terminateOnBindingFailure(sessionID, capability string, err err
 		slog.Error("failed to terminate session after auth failure",
 			"session_id", sessionID, "error", termErr)
 	}
+}
+
+// backendDisplayName resolves a logical backend ID to its human-readable name via
+// the registry. For a registered backend it records backend.Name — the same value
+// the legacy path's WorkloadName carries, so audit events correlate across paths.
+//
+// For an orphan backend (advertised by the core but absent from the registry) it
+// falls back to the raw backendID, so audit records an identifier rather than
+// dropping the backend entirely. This does NOT match the legacy path in the orphan
+// case: the legacy aggregator's minimal-target fallback leaves WorkloadName empty,
+// so legacy records "" there. Recording the ID is the deliberate, arguably-better
+// behavior; it is not parity.
+func (s *Server) backendDisplayName(ctx context.Context, backendID string) string {
+	if backendID == "" {
+		return ""
+	}
+	if backend := s.backendRegistry.Get(ctx, backendID); backend != nil {
+		return backend.Name
+	}
+	return backendID
 }

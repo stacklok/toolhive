@@ -58,7 +58,7 @@ func TestEnsureRBACResources_DefaultImagePullSecrets(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc := setupTest("test-server-default-pull-secrets", "default")
+			tc := setupTest(t, "test-server-default-pull-secrets", "default")
 			tc.reconciler.ImagePullSecretsDefaults = imagepullsecrets.NewDefaults(tt.defaults)
 
 			if tt.crSecrets != nil {
@@ -102,7 +102,7 @@ func TestEnsureRBACResources_DefaultImagePullSecrets(t *testing.T) {
 func TestDeploymentNeedsUpdate_DefaultImagePullSecrets(t *testing.T) {
 	t.Parallel()
 
-	tc := setupTest("test-server-drift-pull-secrets", "default")
+	tc := setupTest(t, "test-server-drift-pull-secrets", "default")
 	tc.reconciler.ImagePullSecretsDefaults = imagepullsecrets.NewDefaults([]string{"chart-default"})
 
 	dep, err := tc.reconciler.deploymentForMCPServer(t.Context(), tc.mcpServer, "test-checksum")
@@ -149,7 +149,7 @@ func TestDeploymentForMCPServer_DefaultImagePullSecrets(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			tc := setupTest("test-server-default-pull-secrets-dep", "default")
+			tc := setupTest(t, "test-server-default-pull-secrets-dep", "default")
 			tc.reconciler.ImagePullSecretsDefaults = imagepullsecrets.NewDefaults(tt.defaults)
 
 			if tt.crSecrets != nil {

@@ -87,44 +87,29 @@ func testMinimalSessionManagerConfig() *sessionmanager.FactoryConfig {
 	return &sessionmanager.FactoryConfig{Base: testMinimalFactory()}
 }
 
-// testMinimalServeConfig returns a minimal valid ServerConfig for Serve tests that do
-// not exercise session creation: a non-nil SessionManagerConfig and an empty
-// BackendRegistry, the two required collaborators Serve validates.
+// testMinimalServeConfig returns a minimal valid, fully-resolved ServerConfig for Serve
+// tests that do not exercise session creation: the two required collaborators Serve
+// validates (a non-nil SessionManagerConfig and an empty BackendRegistry) plus the
+// transport scalars resolved to their defaults. Serve is a pure pass-through now —
+// transport defaulting moved to the composition root via WithDefaults — so the
+// scalars must be set here; in particular SessionTTL must be non-zero or the session data
+// storage construction fails ("ttl must be a positive duration").
 func testMinimalServeConfig() *ServerConfig {
 	return &ServerConfig{
+		Name:                 defaultServerName,
+		Version:              defaultServerVersion,
+		Host:                 defaultHost,
+		EndpointPath:         defaultEndpointPath,
+		SessionTTL:           defaultSessionTTL,
 		SessionManagerConfig: testMinimalSessionManagerConfig(),
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	}
 }
 
-func TestServeAppliesTransportDefaults(t *testing.T) {
-	t.Parallel()
-
-	// Empty transport fields exercise every default; Port is left zero.
-	cfg := testMinimalServeConfig()
-
-	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
-	require.NotNil(t, srv)
-	require.NotNil(t, srv.MCPServer())
-
-	// Defaults mirror server.New and are applied to the server's own config,
-	// leaving the caller's ServerConfig untouched. Asserting against the shared
-	// consts (not literals) keeps this test from being a third copy that can drift.
-	assert.Equal(t, defaultServerName, srv.config.Name)
-	assert.Equal(t, defaultServerVersion, srv.config.Version)
-	assert.Equal(t, defaultHost, srv.config.Host)
-	assert.Equal(t, defaultEndpointPath, srv.config.EndpointPath)
-	assert.Equal(t, defaultSessionTTL, srv.config.SessionTTL)
-	assert.Equal(t, 0, srv.config.Port) // Port 0 => OS-assigned
-
-	assert.Empty(t, cfg.Host, "caller config must not be mutated")
-
-	// Address reflects the defaulted host and unassigned port (no listener yet).
-	assert.Equal(t, defaultHost+":0", srv.Address())
-}
-
+// Transport defaulting is no longer Serve's job (it is resolved once at the
+// composition root via WithDefaults), so there is no "Serve applies defaults" test — the
+// WithDefaults resolver is covered by TestWithDefaults, and Serve's faithful pass-through
+// of an already-resolved config is covered by TestServePreservesExplicitConfig below.
 func TestServePreservesExplicitConfig(t *testing.T) {
 	t.Parallel()
 
@@ -235,6 +220,7 @@ func TestServeHandlerRegistersMetricsWhenTelemetryEnabled(t *testing.T) {
 	t.Cleanup(func() { _ = provider.Shutdown(ctx) })
 
 	srv, err := Serve(ctx, &stubVMCP{}, &ServerConfig{
+		SessionTTL:           defaultSessionTTL,
 		SessionManagerConfig: testMinimalSessionManagerConfig(),
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 		TelemetryProvider:    provider,
@@ -321,9 +307,9 @@ func TestServeValidation(t *testing.T) {
 // reason, mirroring the buildServeConfig doc comment.
 //
 // This is a PRESENCE check only — with every source field non-zero it cannot catch a
-// wrong-source mapping or default-value drift. Value correctness is carried by
-// TestServePreservesExplicitConfig (pass-through scalars) and
-// TestServeAppliesTransportDefaults (the cmp.Or defaults).
+// wrong-source mapping. buildServeConfig is a pure pass-through (defaulting moved to the
+// composition root via WithDefaults), so value correctness is carried by
+// TestServePreservesExplicitConfig.
 func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 	t.Parallel()
 

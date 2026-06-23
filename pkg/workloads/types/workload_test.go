@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/adrg/xdg"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -21,9 +22,15 @@ import (
 func TestWorkloadFromContainerInfo(t *testing.T) {
 	ctx := context.Background()
 
-	// Create a temporary directory for XDG_STATE_HOME
+	// Create a temporary directory for XDG_STATE_HOME.
+	// xdg caches XDG_STATE_HOME at package init, so t.Setenv alone is not
+	// enough: we must call xdg.Reload() to re-read the env var before
+	// constructing the store, otherwise it writes to the developer's real
+	// state dir. Restore the cached value on cleanup.
 	tmpBase := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", tmpBase)
+	xdg.Reload()
+	t.Cleanup(xdg.Reload)
 
 	// Initialize the run config store
 	store, err := state.NewRunConfigStore(state.DefaultAppName)

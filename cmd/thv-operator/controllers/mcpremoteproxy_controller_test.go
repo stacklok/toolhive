@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
@@ -101,7 +102,7 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithRuntimeObjects(tt.proxy).
@@ -141,7 +142,7 @@ func TestMCPRemoteProxyReconcile_CreateResources(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	// Add RBAC types to scheme
 	_ = rbacv1.AddToScheme(scheme)
 	_ = appsv1.AddToScheme(scheme)
@@ -225,7 +226,7 @@ func TestMCPRemoteProxyReconcile_CreateResources(t *testing.T) {
 func TestMCPRemoteProxyReconcile_NotFound(t *testing.T) {
 	t.Parallel()
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		Build()
@@ -412,7 +413,7 @@ func TestHandleToolConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.proxy}
 			if tt.toolConfig != nil {
 				objects = append(objects, tt.toolConfig)
@@ -761,7 +762,7 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.proxy}
 			if tt.externalAuth != nil {
 				objects = append(objects, tt.externalAuth)
@@ -918,7 +919,7 @@ func TestEnsureRBACResources(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	// Add RBAC types to scheme
 	_ = rbacv1.AddToScheme(scheme)
 
@@ -978,7 +979,7 @@ func TestMCPRemoteProxyEnsureRBACResources_Update(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	_ = rbacv1.AddToScheme(scheme)
 
 	saName := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
@@ -1060,7 +1061,7 @@ func TestMCPRemoteProxyEnsureRBACResources_Idempotency(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	_ = rbacv1.AddToScheme(scheme)
 
 	fakeClient := fake.NewClientBuilder().
@@ -1123,7 +1124,7 @@ func TestMCPRemoteProxyEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	_ = rbacv1.AddToScheme(scheme)
 
 	fakeClient := fake.NewClientBuilder().
@@ -1189,7 +1190,7 @@ func TestMCPRemoteProxyEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	_ = rbacv1.AddToScheme(scheme)
 
 	fakeClient := fake.NewClientBuilder().
@@ -1332,7 +1333,7 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			objects := []runtime.Object{tt.proxy}
 			for i := range tt.pods {
 				objects = append(objects, &tt.pods[i])
@@ -1390,7 +1391,7 @@ func TestGetToolConfigForMCPRemoteProxy(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(toolConfig, proxy).
@@ -1428,7 +1429,7 @@ func TestGetExternalAuthConfigForMCPRemoteProxy(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithRuntimeObjects(externalAuth, proxy).
@@ -1438,65 +1439,4 @@ func TestGetExternalAuthConfigForMCPRemoteProxy(t *testing.T) {
 	assert.NoError(t, err)
 	assert.NotNil(t, result)
 	assert.Equal(t, "test-auth", result.Name)
-}
-
-func TestMCPRemoteProxyReconciler_updateOIDCConfigReferencingWorkloads(t *testing.T) {
-	t.Parallel()
-
-	existingRef := mcpv1beta1.WorkloadReference{
-		Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy,
-		Name: "existing",
-	}
-	newRef := mcpv1beta1.WorkloadReference{
-		Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy,
-		Name: "new",
-	}
-
-	tests := []struct {
-		name          string
-		proxyName     string
-		expectedRefs  []mcpv1beta1.WorkloadReference
-		expectedCount int32
-	}{
-		{
-			name:          "adds new proxy reference",
-			proxyName:     "new",
-			expectedRefs:  []mcpv1beta1.WorkloadReference{existingRef, newRef},
-			expectedCount: 2,
-		},
-		{
-			name:          "does not duplicate existing reference",
-			proxyName:     "existing",
-			expectedRefs:  []mcpv1beta1.WorkloadReference{existingRef},
-			expectedCount: 1,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			ctx := t.Context()
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-
-			oidcConfig := &mcpv1beta1.MCPOIDCConfig{
-				ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
-				Status: mcpv1beta1.MCPOIDCConfigStatus{
-					ReferencingWorkloads: []mcpv1beta1.WorkloadReference{existingRef},
-					ReferenceCount:       1,
-				},
-			}
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(oidcConfig).
-				WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-				Build()
-			reconciler := &MCPRemoteProxyReconciler{Client: fakeClient, Scheme: scheme}
-
-			require.NoError(t, reconciler.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, tt.proxyName))
-			assert.ElementsMatch(t, tt.expectedRefs, oidcConfig.Status.ReferencingWorkloads)
-			assert.Equal(t, tt.expectedCount, oidcConfig.Status.ReferenceCount)
-		})
-	}
 }

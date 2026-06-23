@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -204,6 +205,7 @@ func TestServeRegistersSessionHooks(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{testTool}}
 
 	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
@@ -302,6 +304,7 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{testTool}}
 
 	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
@@ -365,6 +368,7 @@ func TestServeReturnsErrorWhenSessionManagerConstructionFails(t *testing.T) {
 	t.Parallel()
 
 	srv, err := Serve(context.Background(), &stubVMCP{}, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: testMinimalFactory(), CacheCapacity: -1},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
@@ -460,6 +464,7 @@ func TestServeHandlerSkipsDiscoveryAndRoutesCallThroughCore(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{testTool}}
 
 	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
@@ -523,6 +528,7 @@ func TestServeEnforcesSessionBinding(t *testing.T) {
 	fc := &fakeCore{tools: []vmcp.Tool{testTool}}
 
 	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
 		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 	})
@@ -572,12 +578,23 @@ func TestServeEnforcesSessionBinding(t *testing.T) {
 // (anonymous-bound) session record; capabilities come from fc (the core).
 func registerServeSession(t *testing.T, fc *fakeCore) (*Server, string, string) {
 	t.Helper()
+	return registerServeSessionWithRegistry(t, fc, vmcp.NewImmutableRegistry([]vmcp.Backend{}))
+}
+
+// registerServeSessionWithRegistry is registerServeSession with a caller-supplied
+// backend registry, so a test can exercise registration-time backend-name resolution
+// (backendDisplayName maps a tool/resource BackendID to the registry's display name).
+func registerServeSessionWithRegistry(
+	t *testing.T, fc *fakeCore, reg vmcp.BackendRegistry,
+) (*Server, string, string) {
+	t.Helper()
 	ctrl := gomock.NewController(t)
 	factory, _ := newToolSessionFactory(t, ctrl, fc.tools)
 
 	srv, err := Serve(context.Background(), fc, &ServerConfig{
+		SessionTTL:           time.Minute,
 		SessionManagerConfig: &sessionmanager.FactoryConfig{Base: factory},
-		BackendRegistry:      vmcp.NewImmutableRegistry([]vmcp.Backend{}),
+		BackendRegistry:      reg,
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
@@ -642,7 +659,7 @@ func TestServeCoreToolHandler(t *testing.T) {
 			srv, sessionID, _ := registerServeSession(t, fc)
 
 			req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: tc.args}}
-			res, err := srv.coreToolHandler(sessionID, "t")(context.Background(), req)
+			res, err := srv.coreToolHandler(sessionID, "t", "")(context.Background(), req)
 			// Tool errors/denials surface as IsError results, not Go errors.
 			require.NoError(t, err)
 			require.NotNil(t, res)
@@ -677,7 +694,7 @@ func TestServeToolCallTerminatesOnBindingFailure(t *testing.T) {
 
 	ctx := auth.WithIdentity(context.Background(), &auth.Identity{Token: "attacker-token"})
 	req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
-	res, err := srv.coreToolHandler(sessionID, "t")(ctx, req)
+	res, err := srv.coreToolHandler(sessionID, "t", "")(ctx, req)
 	require.NoError(t, err)
 	require.NotNil(t, res)
 	assert.True(t, res.IsError)
@@ -707,7 +724,7 @@ func TestServeCoreResourceHandler(t *testing.T) {
 		require.Len(t, resources, 1)
 		assert.Equal(t, uri, resources[0].Resource.URI)
 
-		contents, err := srv.coreResourceHandler(sessionID, uri)(context.Background(), mcp.ReadResourceRequest{})
+		contents, err := srv.coreResourceHandler(sessionID, uri, "")(context.Background(), mcp.ReadResourceRequest{})
 		require.NoError(t, err)
 		require.NotEmpty(t, contents)
 		gotURI, _ := fc.lastReadURI.Load().(string)
@@ -722,11 +739,128 @@ func TestServeCoreResourceHandler(t *testing.T) {
 		}
 		srv, sessionID, _ := registerServeSession(t, fc)
 
-		_, err := srv.coreResourceHandler(sessionID, uri)(context.Background(), mcp.ReadResourceRequest{})
+		_, err := srv.coreResourceHandler(sessionID, uri, "")(context.Background(), mcp.ReadResourceRequest{})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "read denied by authorization policy")
 		assert.NotContains(t, err.Error(), "cedar said no", "the underlying authorizer error must not leak")
 	})
+}
+
+// TestServeHandlersLabelAuditBackend verifies the Serve-path audit labelling (#5512):
+// the per-session tool/resource handlers write the pre-resolved backend name into the
+// audit BackendInfo carried in the request context — the mechanism that lets the Serve
+// path drop the backend-enrichment middleware. It also locks in AC1 of #5493: labelling
+// is an O(1) write, never a re-aggregation (core.ListTools stays at its single
+// registration-time call).
+func TestServeHandlersLabelAuditBackend(t *testing.T) {
+	t.Parallel()
+
+	t.Run("tool handler labels the backend and does not re-aggregate", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+		require.Equal(t, int32(1), fc.listToolsCalls.Load(), "registration aggregates exactly once")
+
+		bi := &audit.BackendInfo{}
+		ctx := audit.WithBackendInfo(context.Background(), bi)
+		req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+		res, err := srv.coreToolHandler(sessionID, "t", "github-mcp")(ctx, req)
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.False(t, res.IsError)
+
+		assert.Equal(t, "github-mcp", bi.BackendName,
+			"the tool handler must label the audit event with the serving backend")
+		assert.Equal(t, int32(1), fc.listToolsCalls.Load(),
+			"labelling must not re-aggregate — core.ListTools stays at the single registration call")
+	})
+
+	t.Run("resource handler labels the backend and does not re-aggregate", func(t *testing.T) {
+		t.Parallel()
+		const uri = "file:///doc.txt"
+		fc := &fakeCore{resources: []vmcp.Resource{{Name: "doc", URI: uri}}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+		listResourcesAtRegistration := fc.listResourcesCalls.Load()
+
+		bi := &audit.BackendInfo{}
+		ctx := audit.WithBackendInfo(context.Background(), bi)
+		_, err := srv.coreResourceHandler(sessionID, uri, "docs-backend")(ctx, mcp.ReadResourceRequest{})
+		require.NoError(t, err)
+		assert.Equal(t, "docs-backend", bi.BackendName)
+		assert.Equal(t, listResourcesAtRegistration, fc.listResourcesCalls.Load(),
+			"labelling must not re-aggregate — core.ListResources is not called again during the resource read")
+	})
+
+	t.Run("no BackendInfo in context is a safe no-op", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{tools: []vmcp.Tool{{Name: "t"}}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+		res, err := srv.coreToolHandler(sessionID, "t", "github-mcp")(context.Background(), req)
+		require.NoError(t, err)
+		require.NotNil(t, res)
+		assert.False(t, res.IsError, "a missing BackendInfo must not break the call")
+	})
+}
+
+// TestBackendDisplayName covers backendDisplayName's three branches directly (the
+// handler tests above pass the name as a literal, so they don't exercise it). It also
+// locks in the deliberate orphan non-parity: a backend advertised by the core but
+// absent from the registry resolves to the raw BackendID, where the legacy
+// minimal-target fallback would leave WorkloadName empty.
+func TestBackendDisplayName(t *testing.T) {
+	t.Parallel()
+
+	reg := vmcp.NewImmutableRegistry([]vmcp.Backend{{ID: "backend-x", Name: "github-mcp"}})
+	srv := &Server{backendRegistry: reg}
+
+	tests := []struct {
+		name      string
+		backendID string
+		want      string
+	}{
+		{"empty ID resolves to empty", "", ""},
+		{"registered ID resolves to the display name", "backend-x", "github-mcp"},
+		{"orphan ID falls back to the raw ID (not legacy's empty WorkloadName)", "ghost", "ghost"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, srv.backendDisplayName(context.Background(), tc.backendID))
+		})
+	}
+}
+
+// TestServeResolvesBackendNameEndToEnd exercises the full Serve-path resolution wiring
+// that the literal-name handler tests bypass: coreSessionTools resolves a tool's
+// BackendID through backendDisplayName (against the session's registry) and bakes the
+// result into the handler closure, which writes it to the audit BackendInfo. The
+// registry maps the ID to a DISTINCT Name, so the assertion proves the ID was resolved
+// (not passed through).
+func TestServeResolvesBackendNameEndToEnd(t *testing.T) {
+	t.Parallel()
+
+	// BackendID "backend-x" != Name "github-mcp": a pass-through would record the ID.
+	fc := &fakeCore{tools: []vmcp.Tool{{Name: "t", BackendID: "backend-x"}}}
+	reg := vmcp.NewImmutableRegistry([]vmcp.Backend{{ID: "backend-x", Name: "github-mcp"}})
+	srv, sessionID, _ := registerServeSessionWithRegistry(t, fc, reg)
+
+	// Rebuild the tools the way registration did: the handler closure carries the
+	// registry-resolved backend name.
+	tools, err := srv.coreSessionTools(context.Background(), sessionID, nil)
+	require.NoError(t, err)
+	require.Len(t, tools, 1)
+
+	bi := &audit.BackendInfo{}
+	ctx := audit.WithBackendInfo(context.Background(), bi)
+	req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+	res, err := tools[0].Handler(ctx, req)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.False(t, res.IsError)
+	assert.Equal(t, "github-mcp", bi.BackendName,
+		"the handler must label the audit event with the registry-resolved name, not the raw BackendID")
 }
 
 // TestServeOmitsPrompts locks in the intentional prompt omission: even when the core

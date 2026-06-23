@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -23,7 +25,6 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
-	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 
 const (
@@ -32,9 +33,6 @@ const (
 
 	// authzConfigRequeueDelay is the delay before requeuing after adding a finalizer
 	authzConfigRequeueDelay = 500 * time.Millisecond
-
-	// authzConfigVersion is the default version for reconstructed authz configs
-	authzConfigVersion = "1.0"
 )
 
 // MCPAuthzConfigReconciler reconciles a MCPAuthzConfig object.
@@ -44,7 +42,8 @@ const (
 // reference tracking, and deletion protection when workloads reference this config.
 type MCPAuthzConfigReconciler struct {
 	client.Client
-	Scheme *runtime.Scheme
+	Scheme   *runtime.Scheme
+	Recorder events.EventRecorder
 }
 
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpauthzconfigs,verbs=get;list;watch;create;update;patch;delete
@@ -53,6 +52,7 @@ type MCPAuthzConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=virtualmcpservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch
+// +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
 // move the current state of the cluster closer to the desired state.
@@ -94,7 +94,11 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// method, then backend-specific validation via the authorizer factory registry.
 	if err := r.validateAuthzConfig(authzConfig); err != nil {
 		logger.Error(err, "MCPAuthzConfig spec validation failed")
-		if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
+		// Capture the transition before MutateAndPatchStatus mutates conditions
+		// in place, so the Warning fires only when entering the invalid state.
+		wasInvalid := conditionStatusIs(authzConfig.Status.Conditions,
+			mcpv1beta1.ConditionTypeAuthzConfigValid, metav1.ConditionFalse)
+		updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
 			meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 				Type:               mcpv1beta1.ConditionTypeAuthzConfigValid,
 				Status:             metav1.ConditionFalse,
@@ -102,11 +106,25 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 				Message:            err.Error(),
 				ObservedGeneration: c.Generation,
 			})
-		}); updateErr != nil {
+		})
+		if updateErr != nil {
 			logger.Error(updateErr, "Failed to update status after validation error")
+		}
+		// Emit the Warning only on the transition into the invalid state, and
+		// only once the condition persisted, so a failing status write does not
+		// re-fire the event every reconcile.
+		if !wasInvalid && updateErr == nil {
+			emitConfigEvent(r.Recorder, authzConfig, corev1.EventTypeWarning,
+				eventReasonConfigInvalid, eventActionValidate, "spec validation failed: %s", err.Error())
 		}
 		return ctrl.Result{}, nil // Don't requeue on validation errors - user must fix spec
 	}
+
+	// Whether we are recovering from a prior validation failure. Captured before
+	// the success patch below sets Valid=True so a single Normal event fires on
+	// the False->True transition.
+	wasInvalid := conditionStatusIs(authzConfig.Status.Conditions,
+		mcpv1beta1.ConditionTypeAuthzConfigValid, metav1.ConditionFalse)
 
 	// Refresh the referencing workloads list. If the lookup fails we must
 	// requeue with backoff rather than continuing with a stale slice — a
@@ -153,6 +171,7 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
+	emitConfigRecoveryEvent(r.Recorder, authzConfig, wasInvalid)
 	return ctrl.Result{}, nil
 }
 
@@ -185,46 +204,15 @@ func (*MCPAuthzConfigReconciler) validateAuthzConfig(authzConfig *mcpv1beta1.MCP
 		return err
 	}
 
-	// buildFullAuthzConfigJSON returns the registered factory alongside the
+	// BuildFullAuthzConfigJSON returns the registered factory alongside the
 	// envelope, so we don't have to re-Unmarshal the JSON or re-look-up the
-	// factory just to dispatch ValidateConfig.
-	fullConfigJSON, factory, err := buildFullAuthzConfigJSON(authzConfig.Spec)
+	// factory just to dispatch ValidateConfig. It lives in controllerutil so the
+	// workload controllers can reuse it without an import cycle.
+	fullConfigJSON, factory, err := ctrlutil.BuildFullAuthzConfigJSON(authzConfig.Spec)
 	if err != nil {
 		return err
 	}
 	return factory.ValidateConfig(fullConfigJSON)
-}
-
-// buildFullAuthzConfigJSON reconstructs the full authorizer config JSON from a
-// MCPAuthzConfig spec and returns it alongside the resolved factory. The JSON
-// shape is the same one accepted by authorizers.Config and stored in
-// ConfigMaps: {"version": "1.0", "type": "<type>", "<configKey>": {<config>}}.
-// Returning the factory together with the JSON lets callers (notably
-// validateAuthzConfig) skip a second registry lookup.
-func buildFullAuthzConfigJSON(spec mcpv1beta1.MCPAuthzConfigSpec) ([]byte, authorizers.AuthorizerFactory, error) {
-	factory := authorizers.GetFactory(spec.Type)
-	if factory == nil {
-		return nil, nil, fmt.Errorf("unsupported authorizer type: %s (registered types: %v)",
-			spec.Type, authorizers.RegisteredTypes())
-	}
-
-	if len(spec.Config.Raw) == 0 {
-		return nil, nil, fmt.Errorf("config field is empty")
-	}
-
-	versionJSON, _ := json.Marshal(authzConfigVersion)
-	typeJSON, _ := json.Marshal(spec.Type)
-	fullConfig := map[string]json.RawMessage{
-		"version":           versionJSON,
-		"type":              typeJSON,
-		factory.ConfigKey(): spec.Config.Raw,
-	}
-
-	result, err := json.Marshal(fullConfig)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to marshal full authz config: %w", err)
-	}
-	return result, factory, nil
 }
 
 // canonicalizeSpecForHash returns a copy of spec whose Config.Raw has been
@@ -277,7 +265,11 @@ func (r *MCPAuthzConfigReconciler) handleDeletion(
 				"authzConfig", authzConfig.Name,
 				"referencingWorkloads", referencingWorkloads)
 
-			if updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
+			// Capture the transition before the patch mutates conditions in
+			// place: emit the Warning only when entering the blocked state.
+			wasBlocked := conditionStatusIs(authzConfig.Status.Conditions,
+				mcpv1beta1.ConditionTypeDeletionBlocked, metav1.ConditionTrue)
+			updateErr := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
 				meta.SetStatusCondition(&c.Status.Conditions, metav1.Condition{
 					Type:               mcpv1beta1.ConditionTypeDeletionBlocked,
 					Status:             metav1.ConditionTrue,
@@ -287,8 +279,17 @@ func (r *MCPAuthzConfigReconciler) handleDeletion(
 				})
 				c.Status.ReferencingWorkloads = referencingWorkloads
 				c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
-			}); updateErr != nil {
+			})
+			if updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
+			}
+			// Emit the Warning only on the transition into the blocked state, and
+			// only once the condition persisted, so a failing status write does
+			// not re-fire the event every reconcile.
+			if !wasBlocked && updateErr == nil {
+				emitConfigEvent(r.Recorder, authzConfig, corev1.EventTypeWarning,
+					eventReasonDeletionBlocked, eventActionDelete,
+					"deletion blocked while still referenced by workloads: %v", referencingWorkloads)
 			}
 
 			// Requeue to check again later

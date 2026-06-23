@@ -331,6 +331,14 @@ func mapWorkloadStatusToVMCPHealth(status rt.WorkloadStatus) vmcp.BackendHealthS
 		return vmcp.BackendUnknown
 	case rt.WorkloadStatusUnauthenticated:
 		return vmcp.BackendUnauthenticated
+	case rt.WorkloadStatusAuthRetrying:
+		// Token refresh is in transient retry; the workload may yet recover
+		// without operator intervention. Map to BackendDegraded so vmcp
+		// distinguishes this from the terminal Unauthenticated case and
+		// keeps the backend in tool-discovery aggregation — tool invocation
+		// will still fail with 503 until the token refresh recovers, but
+		// discovery callers see the backend's capabilities throughout.
+		return vmcp.BackendDegraded
 	case rt.WorkloadStatusPolicyStopped:
 		return vmcp.BackendUnhealthy
 	default:
@@ -1742,8 +1750,14 @@ func (d *DefaultManager) getRemoteWorkloadsFromState(
 			continue
 		}
 
-		// Apply listAll filter - only include running workloads unless listAll is true
-		if !listAll && workloadStatus.Status != rt.WorkloadStatusRunning {
+		// Apply listAll filter. AuthRetrying is intentionally surfaced
+		// alongside Running because the workload is still self-recovering
+		// without user intervention on a longer cadence — every other
+		// non-Running status is terminal until external intervention,
+		// and is hidden. Mirrors the filter in file_status.go:ListWorkloads.
+		if !listAll &&
+			workloadStatus.Status != rt.WorkloadStatusRunning &&
+			workloadStatus.Status != rt.WorkloadStatusAuthRetrying {
 			continue
 		}
 

@@ -145,8 +145,6 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 			t.Parallel()
 
 			// Setup fake client with resources
-			scheme := testutil.NewScheme(t)
-
 			objs := []client.Object{tt.vmcp}
 			if tt.mcpGroup != nil {
 				objs = append(objs, tt.mcpGroup)
@@ -155,17 +153,7 @@ func TestVirtualMCPServerValidateGroupRef(t *testing.T) {
 				objs = append(objs, &tt.mcpServers[i])
 			}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
-				Build()
-
-			r := &VirtualMCPServerReconciler{
-				Client:           fakeClient,
-				Scheme:           scheme,
-				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-			}
+			r, _ := newTestVirtualMCPServerReconciler(t, objs...)
 
 			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
 			err := r.validateGroupRef(context.Background(), tt.vmcp, statusManager)
@@ -1076,23 +1064,12 @@ func TestVirtualMCPServerUpdateStatus(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := testutil.NewScheme(t)
-
 			objs := []client.Object{tt.vmcp}
 			for i := range tt.pods {
 				objs = append(objs, &tt.pods[i])
 			}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
-				Build()
-
-			r := &VirtualMCPServerReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			r, _ := newTestVirtualMCPServerReconciler(t, objs...)
 
 			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
 			err := r.updateVirtualMCPServerStatus(context.Background(), tt.vmcp, statusManager)
@@ -1145,8 +1122,6 @@ func TestVirtualMCPServerNaming(t *testing.T) {
 // with various secret validation scenarios
 func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 	t.Parallel()
-
-	scheme := testutil.NewScheme(t)
 
 	tests := []struct {
 		name                string
@@ -1308,17 +1283,7 @@ func TestVirtualMCPServerAuthConfiguredCondition(t *testing.T) {
 
 			objs := append([]client.Object{tt.vmcp}, tt.secrets...)
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1beta1.VirtualMCPServer{}).
-				Build()
-
-			r := &VirtualMCPServerReconciler{
-				Client:           fakeClient,
-				Scheme:           scheme,
-				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
-			}
+			r, _ := newTestVirtualMCPServerReconciler(t, objs...)
 
 			statusManager := virtualmcpserverstatus.NewStatusManager(tt.vmcp)
 			_, err := r.ensureAllResources(context.Background(), tt.vmcp, nil, statusManager)
@@ -1465,19 +1430,8 @@ func TestVirtualMCPServerApplyStatusUpdates(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := testutil.NewScheme(t)
-
 			vmcp := tt.setupVMCP()
-			k8sClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(vmcp).
-				WithStatusSubresource(vmcp).
-				Build()
-
-			reconciler := &VirtualMCPServerReconciler{
-				Client: k8sClient,
-				Scheme: scheme,
-			}
+			reconciler, k8sClient := newTestVirtualMCPServerReconciler(t, vmcp)
 
 			collector := tt.setupCollector(vmcp)
 
@@ -2264,8 +2218,6 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 	t.Parallel()
 
-	scheme := testutil.NewScheme(t)
-
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       testVmcpName,
@@ -2355,16 +2307,7 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 		},
 	}
 
-	k8sClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(vmcp, mcpGroup, deployment, service, pod).
-		WithStatusSubresource(vmcp).
-		Build()
-
-	reconciler := &VirtualMCPServerReconciler{
-		Client: k8sClient,
-		Scheme: scheme,
-	}
+	reconciler, k8sClient := newTestVirtualMCPServerReconciler(t, vmcp, mcpGroup, deployment, service, pod)
 
 	req := ctrl.Request{
 		NamespacedName: types.NamespacedName{
@@ -2393,8 +2336,6 @@ func TestVirtualMCPServerReconcile_HappyPath(t *testing.T) {
 func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 	t.Parallel()
 
-	scheme := testutil.NewScheme(t)
-
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       testVmcpName,
@@ -2407,16 +2348,7 @@ func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 	}
 
 	// Don't create the MCPGroup so validation fails
-	k8sClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(vmcp).
-		WithStatusSubresource(vmcp).
-		Build()
-
-	reconciler := &VirtualMCPServerReconciler{
-		Client: k8sClient,
-		Scheme: scheme,
-	}
+	reconciler, k8sClient := newTestVirtualMCPServerReconciler(t, vmcp)
 
 	req := ctrl.Request{
 		NamespacedName: types.NamespacedName{
@@ -2445,8 +2377,6 @@ func TestVirtualMCPServerReconcile_ValidateGroupRefError(t *testing.T) {
 func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 	t.Parallel()
 
-	scheme := testutil.NewScheme(t)
-
 	vmcp := &mcpv1beta1.VirtualMCPServer{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       testVmcpName,
@@ -2468,16 +2398,7 @@ func TestVirtualMCPServerReconcile_GroupNotReady(t *testing.T) {
 		},
 	}
 
-	k8sClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(vmcp, mcpGroup).
-		WithStatusSubresource(vmcp).
-		Build()
-
-	reconciler := &VirtualMCPServerReconciler{
-		Client: k8sClient,
-		Scheme: scheme,
-	}
+	reconciler, k8sClient := newTestVirtualMCPServerReconciler(t, vmcp, mcpGroup)
 
 	req := ctrl.Request{
 		NamespacedName: types.NamespacedName{

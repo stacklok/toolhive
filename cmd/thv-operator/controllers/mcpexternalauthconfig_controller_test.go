@@ -195,23 +195,12 @@ func TestMCPExternalAuthConfigReconciler_Reconcile(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := testutil.NewScheme(t)
-
 			// Create fake client with objects
 			objs := []client.Object{tt.externalAuthConfig}
 			if tt.existingMCPServer != nil {
 				objs = append(objs, tt.existingMCPServer)
 			}
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-				Build()
-
-			r := &MCPExternalAuthConfigReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, objs...)
 
 			// Reconcile
 			req := reconcile.Request{
@@ -489,24 +478,13 @@ func TestMCPExternalAuthConfigReconciler_handleDeletion(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := testutil.NewScheme(t)
-
 			// Build objects list
 			objs := []client.Object{tt.externalAuthConfig}
 			for _, server := range tt.referencingServers {
 				objs = append(objs, server)
 			}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-				Build()
-
-			r := &MCPExternalAuthConfigReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			r, _ := newTestMCPExternalAuthConfigReconciler(t, objs...)
 
 			// Call handleDeletion directly
 			result, err := r.handleDeletion(ctx, tt.externalAuthConfig)
@@ -536,8 +514,6 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 
 	ctx := t.Context()
 
-	scheme := testutil.NewScheme(t)
-
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
@@ -563,16 +539,7 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 		v1beta1test.WithExternalAuthConfigRef("test-config"),
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(externalAuthConfig, mcpServer).
-		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-		Build()
-
-	r := &MCPExternalAuthConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, externalAuthConfig, mcpServer)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -633,8 +600,6 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashC
 
 	ctx := t.Context()
 
-	scheme := testutil.NewScheme(t)
-
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
@@ -655,16 +620,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashC
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(externalAuthConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-		Build()
-
-	r := &MCPExternalAuthConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, externalAuthConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -713,8 +669,6 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDele
 
 	ctx := t.Context()
 
-	scheme := testutil.NewScheme(t)
-
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
@@ -740,16 +694,7 @@ func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsRemovedOnServerDele
 		v1beta1test.WithExternalAuthConfigRef("test-config"),
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(externalAuthConfig, mcpServer).
-		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-		Build()
-
-	r := &MCPExternalAuthConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, externalAuthConfig, mcpServer)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -1161,15 +1106,7 @@ func TestMCPExternalAuthConfigReconciler_IdentitySynthesizedCondition(t *testing
 				Spec: tt.spec,
 			}
 
-			scheme := testutil.NewScheme(t)
-
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(cfg).
-				WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-				Build()
-
-			r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+			r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
 			req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
 
 			// First reconcile adds the finalizer; second runs the body.
@@ -1236,15 +1173,7 @@ func TestMCPExternalAuthConfigReconciler_IdentitySynthesizedTransitionsOnValidat
 		},
 	}
 
-	scheme := testutil.NewScheme(t)
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cfg).
-		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-		Build()
-
-	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
 
 	// First reconcile adds the finalizer; the requeued reconcile runs the body.
@@ -1315,8 +1244,6 @@ func findCondition(conditions []metav1.Condition, t string) *metav1.Condition {
 func TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequired(t *testing.T) {
 	t.Parallel()
 
-	scheme := testutil.NewScheme(t)
-
 	cfg := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "obo-config",
@@ -1328,13 +1255,7 @@ func TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequir
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cfg).
-		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-		Build()
-
-	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
 	req := reconcile.Request{NamespacedName: types.NamespacedName{
 		Name:      cfg.Name,
 		Namespace: cfg.Namespace,
@@ -1379,8 +1300,6 @@ func TestMCPExternalAuthConfigReconciler_OBO_DefaultHandler_SetsEnterpriseRequir
 func TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized(t *testing.T) {
 	t.Parallel()
 
-	scheme := testutil.NewScheme(t)
-
 	// Construct a config that is already in the obo type but has a stale
 	// IdentitySynthesized condition left over from a prior embeddedAuthServer
 	// configuration. The reconciler must remove that condition on its next
@@ -1410,13 +1329,7 @@ func TestMCPExternalAuthConfigReconciler_OBO_ClearsStaleIdentitySynthesized(t *t
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cfg).
-		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-		Build()
-
-	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
 	req := reconcile.Request{NamespacedName: types.NamespacedName{
 		Name:      cfg.Name,
 		Namespace: cfg.Namespace,
@@ -1532,8 +1445,6 @@ func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile(t *testing.T
 			stub.Validate = func(*mcpv1beta1.MCPExternalAuthConfig) error { return tt.validateErr }
 			ctrlutil.RegisterOBOHandler(stub)
 
-			scheme := testutil.NewScheme(t)
-
 			cfg := &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "obo-config",
@@ -1545,13 +1456,7 @@ func TestMCPExternalAuthConfigReconciler_OBO_ErrorTriageInReconcile(t *testing.T
 				},
 			}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithObjects(cfg).
-				WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-				Build()
-
-			r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+			r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
 			req := reconcile.Request{NamespacedName: types.NamespacedName{
 				Name:      cfg.Name,
 				Namespace: cfg.Namespace,
@@ -1609,7 +1514,6 @@ func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := testutil.NewScheme(t)
 
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "default", Generation: 1},
@@ -1638,12 +1542,7 @@ func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(externalAuthConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-		Build()
-	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, externalAuthConfig)
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: externalAuthConfig.Name, Namespace: externalAuthConfig.Namespace}}
 
 	// First reconcile adds the finalizer; second runs the success path and

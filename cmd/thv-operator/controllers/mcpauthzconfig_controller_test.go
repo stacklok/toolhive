@@ -15,12 +15,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
-	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	// Import authorizer backends so they register with the factory registry.
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -43,16 +41,7 @@ func validHTTPPDPConfig() runtime.RawExtension {
 
 func newAuthzTestReconciler(t *testing.T, objs ...client.Object) (*MCPAuthzConfigReconciler, client.Client) {
 	t.Helper()
-
-	scheme := testutil.NewScheme(t)
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(objs...).
-		WithStatusSubresource(&mcpv1beta1.MCPAuthzConfig{}).
-		Build()
-
-	return &MCPAuthzConfigReconciler{Client: fakeClient, Scheme: scheme}, fakeClient
+	return newTestMCPAuthzConfigReconciler(t, objs...)
 }
 
 func TestCanonicalizeSpecForHash(t *testing.T) {

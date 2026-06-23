@@ -257,8 +257,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().BoolVar(&config.OtelUseLegacyAttributes, "otel-use-legacy-attributes", true,
 		"Emit legacy attribute names alongside new OTEL semantic convention names (default true)")
 
-	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
-		"Isolate the container network from the host (default false)")
+	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", true,
+		"Isolate the container network from the host. Use --isolate-network=false to opt out.")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
 		"Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). "+
 			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled.")

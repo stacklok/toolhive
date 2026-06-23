@@ -1,0 +1,75 @@
+suite: default redis config
+# TOOLHIVE_DEFAULT_REDIS_ADDR is injected from operator.defaultRedis.addr or
+# global.redis.host:port. Secret env vars only appear when existingSecret is set.
+templates:
+  - deployment.yaml
+tests:
+  - it: omits all REDIS env vars when not configured
+    asserts:
+      - notExists:
+          path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_ADDR")]'
+      - notExists:
+          path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_SECRET_NAME")]'
+
+  - it: injects TOOLHIVE_DEFAULT_REDIS_ADDR from operator.defaultRedis.addr
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_ADDR, value: "myredis:6379" }
+
+  - it: injects TOOLHIVE_DEFAULT_REDIS_ADDR from global.redis.host with default port
+    set:
+      global.redis.host: "global-redis.internal"
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_ADDR, value: "global-redis.internal:6379" }
+
+  - it: injects TOOLHIVE_DEFAULT_REDIS_ADDR from global.redis.host with custom port
+    set:
+      global.redis.host: "global-redis.internal"
+      global.redis.port: 6380
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_ADDR, value: "global-redis.internal:6380" }
+
+  - it: operator.defaultRedis.addr takes precedence over global.redis.host
+    set:
+      operator.defaultRedis.addr: "local-redis:6379"
+      global.redis.host: "global-redis.internal"
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_ADDR, value: "local-redis:6379" }
+
+  - it: injects secret env vars when existingSecret is set
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+      operator.defaultRedis.existingSecret: "redis-creds"
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_SECRET_NAME, value: "redis-creds" }
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_SECRET_KEY, value: "redis-password" }
+
+  - it: uses global.redis.existingSecretKey default when not overridden
+    set:
+      global.redis.host: "global-redis.internal"
+      global.redis.existingSecret: "global-creds"
+      global.redis.existingSecretKey: "my-password"
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: TOOLHIVE_DEFAULT_REDIS_SECRET_KEY, value: "my-password" }
+
+  - it: omits secret env vars when addr is set but no secret is configured
+    set:
+      operator.defaultRedis.addr: "myredis:6379"
+    asserts:
+      - notExists:
+          path: 'spec.template.spec.containers[0].env[?(@.name=="TOOLHIVE_DEFAULT_REDIS_SECRET_NAME")]'

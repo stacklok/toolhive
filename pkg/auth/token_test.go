@@ -2414,9 +2414,12 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		// BEFORE performing the load.
 		var loadCtxIdentity *Identity
 		var loadCtxHadIdentity bool
+		var loadCtxCanonicalUser string
+		var loadCtxHadCanonicalUser bool
 		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-xyz").
 			DoAndReturn(func(ctx context.Context, _ string) (map[string]string, error) {
 				loadCtxIdentity, loadCtxHadIdentity = IdentityFromContext(ctx)
+				loadCtxCanonicalUser, loadCtxHadCanonicalUser = CanonicalUserFromContext(ctx)
 				return map[string]string{"github": "gh-tok"}, nil
 			})
 		v := makeValidator(t, WithUpstreamTokenReader(reader))
@@ -2431,6 +2434,12 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		require.True(t, loadCtxHadIdentity,
 			"middleware must place the identity into the context before loading upstream tokens")
 		require.Equal(t, "test-user", loadCtxIdentity.PlatformUserID)
+		// Storage resolves the canonical user via CanonicalUserFromContext. On this
+		// request-serving path no dedicated platform-user key is set, so it must fall
+		// back to the Identity's PlatformUserID — verify that fallback resolves.
+		require.True(t, loadCtxHadCanonicalUser,
+			"CanonicalUserFromContext must resolve the user during the upstream-token load")
+		require.Equal(t, "test-user", loadCtxCanonicalUser)
 	})
 
 	t.Run("returns 503 when storage fails", func(t *testing.T) {

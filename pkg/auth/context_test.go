@@ -125,3 +125,87 @@ func TestClaimsToIdentity_PopulatesPlatformUserID(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "user123", id.PlatformUserID)
 }
+
+// TestPlatformUserContext_StoreAndRetrieve verifies the dedicated platform-user key
+// round-trips and that an empty userID leaves the context (and the identity key)
+// untouched.
+func TestPlatformUserContext_StoreAndRetrieve(t *testing.T) {
+	t.Parallel()
+
+	ctx := WithPlatformUser(context.Background(), "user-1")
+	uid, ok := PlatformUserFromContext(ctx)
+	require.True(t, ok)
+	assert.Equal(t, "user-1", uid)
+
+	// Empty userID is a no-op: context unchanged, nothing stored.
+	base := context.Background()
+	unchanged := WithPlatformUser(base, "")
+	assert.Equal(t, base, unchanged)
+	_, ok = PlatformUserFromContext(unchanged)
+	assert.False(t, ok)
+
+	// The platform-user key must NOT satisfy IdentityFromContext — that is the
+	// whole point of keeping the two structurally separate.
+	_, hasIdentity := IdentityFromContext(ctx)
+	assert.False(t, hasIdentity, "platform-user key must not read as an authenticated Identity")
+}
+
+// TestCanonicalUserFromContext verifies the precedence storage relies on: the
+// dedicated platform-user key wins, the authenticated Identity's PlatformUserID is
+// the fallback, and an empty PlatformUserID does not count as present.
+func TestCanonicalUserFromContext(t *testing.T) {
+	t.Parallel()
+
+	withIdentity := func(sub, platformUserID string) context.Context {
+		return WithIdentity(context.Background(), &Identity{
+			PrincipalInfo: PrincipalInfo{Subject: sub, PlatformUserID: platformUserID},
+		})
+	}
+
+	tests := []struct {
+		name   string
+		ctx    context.Context
+		wantID string
+		wantOK bool
+	}{
+		{
+			name:   "dedicated key only",
+			ctx:    WithPlatformUser(context.Background(), "key-user"),
+			wantID: "key-user",
+			wantOK: true,
+		},
+		{
+			name:   "identity fallback",
+			ctx:    withIdentity("sub-1", "identity-user"),
+			wantID: "identity-user",
+			wantOK: true,
+		},
+		{
+			name:   "dedicated key wins over identity",
+			ctx:    WithPlatformUser(withIdentity("sub-1", "identity-user"), "key-user"),
+			wantID: "key-user",
+			wantOK: true,
+		},
+		{
+			name:   "identity with empty platform user id is not present",
+			ctx:    withIdentity("sub-1", ""),
+			wantID: "",
+			wantOK: false,
+		},
+		{
+			name:   "neither set",
+			ctx:    context.Background(),
+			wantID: "",
+			wantOK: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			uid, ok := CanonicalUserFromContext(tt.ctx)
+			assert.Equal(t, tt.wantOK, ok)
+			assert.Equal(t, tt.wantID, uid)
+		})
+	}
+}

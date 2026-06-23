@@ -1014,9 +1014,9 @@ func TestRoutesIncludeAuthorizeAndCallback(t *testing.T) {
 	}
 }
 
-// TestCallbackHandler_PlacesIdentityInContext_OnChainRead verifies that during a
+// TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead verifies that during a
 // subsequent-leg OAuth callback, the chain-consistency read (GetAllUpstreamTokens)
-// runs with the resolved identity already in the request context.
+// runs with the resolved canonical user already in the request context.
 //
 // Why GetAllUpstreamTokens specifically, and not StoreUpstreamTokens: the callback
 // makes several storage calls. StoreUpstreamTokens carries the user in its tokens
@@ -1024,12 +1024,13 @@ func TestRoutesIncludeAuthorizeAndCallback(t *testing.T) {
 // there and does not need the context. GetAllUpstreamTokens and DeleteUpstreamTokens
 // take only (ctx, sessionID) — no tokens argument — so the decorator can resolve the
 // user only from ctx. This test pins the contract that the callback places the
-// identity into the context before those context-dependent reads run.
+// canonical user (via WithPlatformUser, not a stub Identity) into the context before
+// those context-dependent reads run.
 //
 // The resolved user is carried forward from the first leg (leg1User) and is
 // deliberately different from what provider-2's exchange returns, so the assertion
-// catches the callback using the wrong identity rather than merely a self-consistent one.
-func TestCallbackHandler_PlacesIdentityInContext_OnChainRead(t *testing.T) {
+// catches the callback using the wrong user rather than merely a self-consistent one.
+func TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, _ := multiUpstreamTestSetup(t)
 
@@ -1074,24 +1075,29 @@ func TestCallbackHandler_PlacesIdentityInContext_OnChainRead(t *testing.T) {
 
 	// The callback's chain-consistency check reads GetAllUpstreamTokens; the harness
 	// captured the ctx it ran with. Assert the callback had already placed the
-	// resolved identity into that ctx, and that it is the user carried from leg 1.
-	id, ok := auth.IdentityFromContext(storState.getAllUpstreamCtx)
-	require.True(t, ok, "callback must place identity in ctx before the chain-consistency GetAllUpstreamTokens")
-	require.Equal(t, leg1User, id.PlatformUserID)
+	// resolved canonical user into that ctx, and that it is the user carried from leg 1.
+	uid, ok := auth.PlatformUserFromContext(storState.getAllUpstreamCtx)
+	require.True(t, ok, "callback must place platform user in ctx before the chain-consistency GetAllUpstreamTokens")
+	require.Equal(t, leg1User, uid)
+
+	// The callback must NOT place a stub Identity: a value under the identity key
+	// would read as an authenticated principal to downstream consumers.
+	_, hasIdentity := auth.IdentityFromContext(storState.getAllUpstreamCtx)
+	require.False(t, hasIdentity, "callback must not place an Identity (only a platform user) in ctx")
 }
 
-// TestCallbackHandler_PlacesIdentityInContext_OnUpstreamErrorCleanup verifies that
+// TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup verifies that
 // when a subsequent-leg callback returns an upstream error, the earlier-leg cleanup
-// (DeleteUpstreamTokens in handleUpstreamError) runs with the resolved identity
+// (DeleteUpstreamTokens in handleUpstreamError) runs with the resolved canonical user
 // already in the request context.
 //
 // This is the error-path sibling of the chain-read test above. handleUpstreamError
 // runs from an early return at the top of CallbackHandler, before the happy-path
-// identity injection, so it must place the identity itself. DeleteUpstreamTokens
-// takes only (ctx, sessionID) — no tokens argument — so a context-keyed storage
-// decorator can resolve the canonical user only from ctx. The resolved user is
-// carried forward from leg 1 via pending.ResolvedUserID.
-func TestCallbackHandler_PlacesIdentityInContext_OnUpstreamErrorCleanup(t *testing.T) {
+// user injection, so it must place the user itself. DeleteUpstreamTokens takes only
+// (ctx, sessionID) — no tokens argument — so a context-keyed storage decorator can
+// resolve the canonical user only from ctx. The resolved user is carried forward from
+// leg 1 via pending.ResolvedUserID.
+func TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, _ := multiUpstreamTestSetup(t)
 
@@ -1133,8 +1139,12 @@ func TestCallbackHandler_PlacesIdentityInContext_OnUpstreamErrorCleanup(t *testi
 
 	// handleUpstreamError cleans up earlier-leg tokens via DeleteUpstreamTokens; the
 	// harness captured the ctx it ran with. Assert the callback placed the resolved
-	// identity into that ctx so a context-keyed decorator can delete the canonical row.
-	id, ok := auth.IdentityFromContext(storState.deleteUpstreamCtx)
-	require.True(t, ok, "handleUpstreamError must place identity in ctx before the cleanup DeleteUpstreamTokens")
-	require.Equal(t, leg1User, id.PlatformUserID)
+	// canonical user into that ctx so a context-keyed decorator can delete the row.
+	uid, ok := auth.PlatformUserFromContext(storState.deleteUpstreamCtx)
+	require.True(t, ok, "handleUpstreamError must place platform user in ctx before the cleanup DeleteUpstreamTokens")
+	require.Equal(t, leg1User, uid)
+
+	// The error path must NOT place a stub Identity under the identity key.
+	_, hasIdentity := auth.IdentityFromContext(storState.deleteUpstreamCtx)
+	require.False(t, hasIdentity, "handleUpstreamError must not place an Identity (only a platform user) in ctx")
 }

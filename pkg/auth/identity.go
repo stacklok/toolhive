@@ -31,9 +31,10 @@ type PrincipalInfo struct {
 	// the platform-canonical user identifier (e.g. a corporate IdP whose sub
 	// rotates per-application). Such middleware MUST override PlatformUserID
 	// (typically via a resolution call into a directory service) before calling
-	// WithIdentity. Storage layers that key on the canonical user trust this
-	// field; an unresolved PlatformUserID from a corporate-IdP bearer will
-	// silently mis-key writes.
+	// WithIdentity. On request-serving paths storage reads this value via
+	// CanonicalUserFromContext (which falls back to this field when no dedicated
+	// platform-user key is set); an unresolved PlatformUserID from a corporate-IdP
+	// bearer will silently mis-key writes.
 	//
 	// Only claimsToIdentity populates this field today. Other Identity
 	// constructors in this repo (local.go, anonymous.go, vmcp session restore)

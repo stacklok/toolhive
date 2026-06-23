@@ -1216,10 +1216,11 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// server is active (reader configured via WithUpstreamTokenReader). The
 		// load runs against a temporary load-scoped context carrying the Identity,
 		// so storage layers invoked during the load can resolve the canonical user
-		// from context. The in-place UpstreamTokens mutation completes here, before
-		// the publicly-reachable context is built below — so the Identity placed in
-		// the served context is never mutated afterwards (see the UpstreamTokens doc
-		// comment in identity.go).
+		// from context (via CanonicalUserFromContext, which falls back to the
+		// Identity's PlatformUserID on this request-serving path). The in-place
+		// UpstreamTokens mutation completes here, before the publicly-reachable
+		// context is built below — so the Identity placed in the served context is
+		// never mutated afterwards (see the UpstreamTokens doc comment in identity.go).
 		if v.upstreamTokenReader != nil {
 			loadCtx := WithIdentity(r.Context(), identity)
 			tokens, loadErr := v.loadUpstreamTokens(loadCtx, claims)

@@ -40,7 +40,7 @@ func TestHandler_RejectsOversizedBody(t *testing.T) {
 
 	srv, err := server.New(
 		t.Context(),
-		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t)},
+		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil)},
 		mockRouter,
 		mockBackendClient,
 		mockDiscoveryMgr,

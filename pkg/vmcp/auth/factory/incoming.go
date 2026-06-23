@@ -123,6 +123,40 @@ func newCedarAuthzMiddleware(
 
 	slog.Info("creating Cedar authorization middleware", "policies", len(authzCfg.Policies))
 
+	authzConfig, err := buildCedarAuthzConfig(authzCfg)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create authz config: %w", err)
+	}
+
+	// Create the middleware using the existing factory
+	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, serverName, passThroughTools)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Cedar middleware: %w", err)
+	}
+
+	return middlewareFn, nil
+}
+
+// BuildAuthzConfig builds the authorizer-agnostic *authz.Config that the vMCP core
+// admission seam (core.Config.Authz) consumes from the incoming-auth config, or
+// (nil, nil) when no Cedar policies are configured.
+//
+// It is the SAME config newCedarAuthzMiddleware builds the HTTP authz middleware from,
+// surfaced so the composition root can feed it to core.New via server.Config.Authz once
+// server.New routes through Serve. The nil return mirrors that middleware's nil result
+// for the no-policies case, preserving allow-all parity (a nil core Authz is allow-all).
+func BuildAuthzConfig(authzCfg *config.AuthzConfig) (*authz.Config, error) {
+	if authzCfg == nil || authzCfg.Type != "cedar" || len(authzCfg.Policies) == 0 {
+		return nil, nil
+	}
+	return buildCedarAuthzConfig(authzCfg)
+}
+
+// buildCedarAuthzConfig converts the vMCP Cedar authz config into the authorizer-agnostic
+// authorizers.Config (aliased as authz.Config) consumed by both the HTTP authz middleware
+// (newCedarAuthzMiddleware) and the core admission seam (via BuildAuthzConfig). Callers
+// guarantee authzCfg is non-nil with at least one policy.
+func buildCedarAuthzConfig(authzCfg *config.AuthzConfig) (*authz.Config, error) {
 	// Default EntitiesJSON to "[]" when the operator/CLI did not set it. Cedar
 	// requires a valid JSON array; an empty string would fail to parse.
 	entitiesJSON := authzCfg.EntitiesJSON
@@ -149,19 +183,7 @@ func newCedarAuthzMiddleware(
 		},
 	}
 
-	// Create the authz Config using the factory method
-	authzConfig, err := authorizers.NewConfig(cedarConfig)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create authz config: %w", err)
-	}
-
-	// Create the middleware using the existing factory
-	middlewareFn, err := authz.CreateMiddlewareFromConfig(authzConfig, serverName, passThroughTools)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create Cedar middleware: %w", err)
-	}
-
-	return middlewareFn, nil
+	return authorizers.NewConfig(cedarConfig)
 }
 
 // newOIDCAuthMiddleware creates OIDC authentication middleware.

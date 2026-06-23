@@ -9,6 +9,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
@@ -36,4 +37,48 @@ func (*minimalTestFactory) RestoreSession(
 	_ context.Context, _ string, _ map[string]string, _ []*vmcp.Backend,
 ) (vmcpsession.MultiSession, error) {
 	return nil, fmt.Errorf("minimalTestFactory: RestoreSession not implemented in test helper")
+}
+
+// stubAggregator is a drop-in aggregator.Aggregator for internal package server tests
+// that route through core.New (which requires a non-nil Aggregator). AggregateCapabilities
+// — the only method the core invokes — returns an empty result; the rest are unreachable on
+// the New/Serve path and fail loudly if called. Internal tests only need the empty
+// (no-capability) result; the external server_test stub (stub_aggregator_test.go) takes
+// configurable caps.
+type stubAggregator struct{}
+
+var _ aggregator.Aggregator = (*stubAggregator)(nil)
+
+func (*stubAggregator) AggregateCapabilities(
+	context.Context, []vmcp.Backend,
+) (*aggregator.AggregatedCapabilities, error) {
+	return &aggregator.AggregatedCapabilities{}, nil
+}
+
+func (*stubAggregator) QueryCapabilities(context.Context, vmcp.Backend) (*aggregator.BackendCapabilities, error) {
+	panic("stubAggregator.QueryCapabilities: unexpected call on the New/Serve path")
+}
+
+func (*stubAggregator) QueryAllCapabilities(
+	context.Context, []vmcp.Backend,
+) (map[string]*aggregator.BackendCapabilities, error) {
+	panic("stubAggregator.QueryAllCapabilities: unexpected call on the New/Serve path")
+}
+
+func (*stubAggregator) ResolveConflicts(
+	context.Context, map[string]*aggregator.BackendCapabilities,
+) (*aggregator.ResolvedCapabilities, error) {
+	panic("stubAggregator.ResolveConflicts: unexpected call on the New/Serve path")
+}
+
+func (*stubAggregator) MergeCapabilities(
+	context.Context, *aggregator.ResolvedCapabilities, vmcp.BackendRegistry,
+) (*aggregator.AggregatedCapabilities, error) {
+	panic("stubAggregator.MergeCapabilities: unexpected call on the New/Serve path")
+}
+
+func (*stubAggregator) ProcessPreQueriedCapabilities(
+	context.Context, map[string][]vmcp.Tool, map[string]*vmcp.BackendTarget,
+) ([]vmcp.Tool, []vmcp.Tool, map[string]*vmcp.BackendTarget, error) {
+	panic("stubAggregator.ProcessPreQueriedCapabilities: unexpected call on the New/Serve path")
 }

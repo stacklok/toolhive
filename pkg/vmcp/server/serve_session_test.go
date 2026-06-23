@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessionfactorymocks "github.com/stacklok/toolhive/pkg/vmcp/session/mocks"
@@ -187,6 +188,8 @@ func (*fakeCore) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Pr
 }
 
 func (*fakeCore) Close() error { return nil }
+
+func (*fakeCore) BackendHealth() health.Reporter { return nil }
 
 // TestServeRegistersSessionHooks verifies that Serve registers the OnRegisterSession
 // hook and wires two-phase session creation: an MCP initialize triggers the hook,

@@ -106,6 +106,10 @@ func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*
 			mock.EXPECT().GetMetadata().Return(map[string]string{
 				vmcpsession.MetadataKeyIdentityBinding: "unauthenticated",
 			}).AnyTimes()
+			// The Serve-path enforceSessionBinding reads the binding via the single-key
+			// GetMetadataValue (not the full-map GetMetadata); return the same sentinel.
+			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyIdentityBinding).
+				Return("unauthenticated", true).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			toolsCopy := make([]vmcp.Tool, len(tools))
 			copy(toolsCopy, tools)
@@ -149,8 +153,27 @@ func newMockFactory(t *testing.T, ctrl *gomock.Controller, tools []vmcp.Tool) (*
 
 // serverOptions holds optional configuration extensions for buildTestServerWithOptions.
 type serverOptions struct {
+	// tools is the advertised backend tool set. Now that server.New routes through
+	// core.New + Serve, the core sources the advertised set from the Aggregator (not the
+	// session factory), so tests provide it here; buildTestServerWithOptions builds a stub
+	// aggregator from it (and a routing table so composite-tool reachability and call
+	// routing work).
+	tools            []vmcp.Tool
 	workflowDefs     map[string]*composer.WorkflowDefinition
 	optimizerFactory func(context.Context, []mcpsdk.ServerTool) (optimizer.Optimizer, error)
+}
+
+// capsFromTools builds the AggregatedCapabilities the stub aggregator returns: the tools
+// plus a routing table mapping each tool name to a backend target keyed by the tool name.
+// This mirrors the routing table the legacy mock session built (newMockFactory), so the
+// core advertises the tools, resolves composite-tool reachability, and routes tools/call
+// through BackendClient.CallTool.
+func capsFromTools(tools []vmcp.Tool) *aggregator.AggregatedCapabilities {
+	rt := &vmcp.RoutingTable{Tools: make(map[string]*vmcp.BackendTarget, len(tools))}
+	for i := range tools {
+		rt.Tools[tools[i].Name] = &vmcp.BackendTarget{WorkloadID: tools[i].Name}
+	}
+	return &aggregator.AggregatedCapabilities{Tools: tools, RoutingTable: rt}
 }
 
 // buildTestServer constructs a vMCP server with session management enabled,
@@ -161,9 +184,10 @@ type serverOptions struct {
 func buildTestServer(
 	t *testing.T,
 	factory vmcpsession.MultiSessionFactory,
+	tools []vmcp.Tool,
 ) *httptest.Server {
 	t.Helper()
-	return buildTestServerWithOptions(t, factory, serverOptions{})
+	return buildTestServerWithOptions(t, factory, serverOptions{tools: tools})
 }
 
 // buildTestServerWithOptions is like buildTestServer but accepts optional workflow
@@ -183,14 +207,21 @@ func buildTestServerWithOptions(
 	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
-	// The discovery middleware calls List() + Discover() for every initialize request.
-	// Return an empty (non-nil) AggregatedCapabilities so the middleware does not
-	// dereference a nil pointer when logging tool/resource counts.
+	// List() is consumed by the core's on-demand aggregation; the discovery middleware
+	// is guarded off on the Serve path (s.core != nil), so Discover() is no longer called
+	// (the AnyTimes expectations tolerate zero calls). Return an empty (non-nil) result.
 	emptyAggCaps := &aggregator.AggregatedCapabilities{}
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
 	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(emptyAggCaps, nil).AnyTimes()
 	// Stop is called when the server is stopped (not via httptest but via session manager cleanup).
 	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
+	// tools/call routes through core.CallTool → BackendClient.CallTool (the session factory's
+	// own CallTool is bypassed on the Serve path). Return a deterministic result so call
+	// tests can assert on it.
+	mockBackendClient.EXPECT().
+		CallTool(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		Return(&vmcp.ToolCallResult{Content: []vmcp.Content{{Type: "text", Text: "fake result"}}}, nil).
+		AnyTimes()
 
 	rt := router.NewDefaultRouter()
 
@@ -202,6 +233,7 @@ func buildTestServerWithOptions(
 			SessionTTL:       5 * time.Minute,
 			SessionFactory:   factory,
 			OptimizerFactory: opts.optimizerFactory,
+			Aggregator:       newStubAggregator(capsFromTools(opts.tools)),
 		},
 		rt,
 		mockBackendClient,
@@ -255,7 +287,7 @@ func TestIntegration_SessionManagement_Initialize(t *testing.T) {
 	testTool := vmcp.Tool{Name: "test-tool", Description: "a test tool"}
 	factory, state := newMockFactory(t, ctrl, []vmcp.Tool{testTool})
 
-	ts := buildTestServer(t, factory)
+	ts := buildTestServer(t, factory, []vmcp.Tool{testTool})
 
 	// Step 1: Send initialize request.
 	initReq := map[string]any{
@@ -306,13 +338,15 @@ func TestIntegration_SessionManagement_Initialize(t *testing.T) {
 	require.Equal(t, http.StatusOK, toolResp.StatusCode,
 		"tool call should succeed; body: %s", string(body))
 
-	// The mock session's CallTool should have been invoked.
+	// On the New/Serve path the tool call routes through core.CallTool →
+	// BackendClient.CallTool; the factory session's own CallTool is bypassed. Assert the
+	// backend result surfaced rather than the (now-unused) mock-session CallTool flag.
 	state.mu.Lock()
 	lastSession := state.lastSession
 	state.mu.Unlock()
 	require.NotNil(t, lastSession, "factory should have created a session")
-	assert.True(t, state.callToolCalled.Load(),
-		"CallTool on the mock session should have been invoked by the tool call request")
+	assert.Contains(t, string(body), "fake result",
+		"tool call should route through the core to the backend client and return its result")
 }
 
 // deleteMCP sends a DELETE request to /mcp with the given session ID and
@@ -346,7 +380,7 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 	testTool := vmcp.Tool{Name: "test-tool", Description: "a test tool"}
 	factory, state := newMockFactory(t, ctrl, []vmcp.Tool{testTool})
 
-	ts := buildTestServer(t, factory)
+	ts := buildTestServer(t, factory, []vmcp.Tool{testTool})
 
 	// Step 1: Initialize and obtain a session ID.
 	initReq := map[string]any{
@@ -382,12 +416,9 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 	state.mu.Unlock()
 	require.NotNil(t, lastSession, "factory should have created a session")
 
-	// Subsequent requests with the terminated session ID are rejected.
-	// After Terminate() deletes the session from storage, the discovery middleware passes
-	// through (no session found → skip capability injection), and the SDK's Validate()
-	// returns HTTP 404 for the unknown session ID.
-	// This request also triggers the lazy eviction: GetMultiSession → checkSession →
-	// ErrExpired → onEvict → Close().
+	// Subsequent requests with the terminated session ID are rejected: Terminate()
+	// deleted the session from storage, so the SDK's Validate() returns HTTP 404 for the
+	// unknown session ID before any handler runs.
 	toolCallReq := map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
@@ -402,13 +433,14 @@ func TestIntegration_SessionManagement_Termination(t *testing.T) {
 	assert.Equal(t, http.StatusNotFound, postResp.StatusCode,
 		"request with terminated session ID should be rejected")
 
-	// Close() is called lazily by onEvict when the stale cache entry is
-	// evicted on the first GetMultiSession call after Terminate deleted the
-	// session from storage (triggered by the POST above).
-	assert.Eventually(t, func() bool {
-		return state.closed.Load()
-	}, 2*time.Second, 10*time.Millisecond,
-		"Close() should have been called on the MultiSession after termination")
+	// Note: unlike the legacy server.New path, a rejected request no longer drives lazy
+	// cache eviction. The legacy discovery middleware called GetMultiSession on every
+	// request (which evicted the stale entry and closed the MultiSession); on the
+	// New/Serve path that middleware is gone and the 404 is returned by the SDK's
+	// Validate() before any handler, so the node-local MultiSession is closed when the
+	// cache entry is later evicted by TTL or capacity. MultiSession.Close-on-eviction is
+	// covered by the sessionmanager cache tests; the parity target here — DELETE
+	// terminates the session and subsequent requests are rejected — is asserted above.
 }
 
 // TestIntegration_SessionManagement_TokenBinding verifies end-to-end token binding security:
@@ -436,7 +468,7 @@ func TestIntegration_SessionManagement_TokenBinding(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	testTool := vmcp.Tool{Name: "echo", Description: "echoes input"}
 	factory, state := newMockFactory(t, ctrl, []vmcp.Tool{testTool})
-	ts := buildTestServer(t, factory)
+	ts := buildTestServer(t, factory, []vmcp.Tool{testTool})
 
 	tokenA := "bearer-token-A"
 	tokenB := "bearer-token-B"
@@ -655,6 +687,7 @@ func TestIntegration_SessionManagement_CompositeTools(t *testing.T) {
 	}
 
 	ts := buildTestServerWithOptions(t, factory, serverOptions{
+		tools: []vmcp.Tool{backendTool},
 		workflowDefs: map[string]*composer.WorkflowDefinition{
 			"composite-tool": workflowDef,
 		},
@@ -717,6 +750,7 @@ func TestIntegration_SessionManagement_CompositeToolConflict(t *testing.T) {
 	}
 
 	ts := buildTestServerWithOptions(t, factory, serverOptions{
+		tools: []vmcp.Tool{{Name: sharedName, Description: "backend version"}},
 		workflowDefs: map[string]*composer.WorkflowDefinition{
 			sharedName: workflowDef,
 		},
@@ -813,6 +847,7 @@ func TestIntegration_SessionManagement_CompositeToolsFilteredForSession(t *testi
 	}
 
 	ts := buildTestServerWithOptions(t, factory, serverOptions{
+		tools: []vmcp.Tool{allowedTool},
 		workflowDefs: map[string]*composer.WorkflowDefinition{
 			"accessible-workflow": accessibleDef,
 			"restricted-workflow": restrictedDef,
@@ -864,6 +899,7 @@ func TestIntegration_SessionManagement_OptimizerMode(t *testing.T) {
 	factory, _ := newMockFactory(t, ctrl, []vmcp.Tool{testTool})
 
 	ts := buildTestServerWithOptions(t, factory, serverOptions{
+		tools: []vmcp.Tool{testTool},
 		optimizerFactory: func(_ context.Context, _ []mcpsdk.ServerTool) (optimizer.Optimizer, error) {
 			return &fakeOptimizer{}, nil
 		},

@@ -12,12 +12,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
-	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 )
@@ -73,123 +70,6 @@ func startServeInBackground(t *testing.T, srv *Server) (stop func() error) {
 	}
 	t.Cleanup(func() { _ = stop() })
 	return stop
-}
-
-// TestServeHealthMonitorDisabledWhenNil verifies that a nil ServerConfig.HealthMonitor
-// leaves monitoring disabled on the Serve path: Serve stores no monitor and the getters
-// report "disabled" without error, matching the no-monitor behavior of server.New.
-func TestServeHealthMonitorDisabledWhenNil(t *testing.T) {
-	t.Parallel()
-
-	srv, err := Serve(context.Background(), &stubVMCP{}, testMinimalServeConfig())
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
-
-	assert.Nil(t, srv.healthMonitor, "nil ServerConfig.HealthMonitor must leave the monitor unset")
-
-	status, err := srv.GetBackendHealthStatus("backend-1")
-	require.Error(t, err)
-	assert.Equal(t, vmcp.BackendUnknown, status)
-	assert.Contains(t, err.Error(), "health monitoring is disabled")
-
-	assert.Equal(t, health.Summary{}, srv.GetHealthSummary())
-}
-
-// TestServeStartsAndStopsInjectedHealthMonitor verifies the health-monitor lifecycle on
-// the Serve path: Serve stores the pre-built *health.Monitor it is given (it does NOT
-// construct one), Start runs it (backends report healthy), and Stop stops it while
-// retaining the struct so getters keep working — mirroring TestServer_Stop_StopsHealthMonitor
-// for a monitor Serve was handed rather than one it built.
-func TestServeStartsAndStopsInjectedHealthMonitor(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockBackendClient.EXPECT().
-		ListCapabilities(gomock.Any(), gomock.Any()).
-		Return(&vmcp.CapabilityList{}, nil).
-		AnyTimes()
-
-	backends := []vmcp.Backend{
-		{ID: "backend-1", Name: "Backend 1", BaseURL: "http://localhost:8080", TransportType: "sse"},
-	}
-	mon, err := health.NewMonitor(mockBackendClient, backends, health.MonitorConfig{
-		CheckInterval:      50 * time.Millisecond,
-		UnhealthyThreshold: 1,
-		Timeout:            5 * time.Second,
-	})
-	require.NoError(t, err)
-
-	cfg := testMinimalServeConfig()
-	cfg.HealthMonitor = mon
-	cfg.BackendRegistry = vmcp.NewImmutableRegistry(backends)
-
-	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
-	require.NoError(t, err)
-
-	// Serve must reuse the injected instance, not build a new one (AC2: Serve does not
-	// call health.NewMonitor).
-	assert.Same(t, mon, srv.healthMonitor)
-
-	stop := startServeInBackground(t, srv)
-
-	require.Eventually(t, func() bool {
-		status, statusErr := srv.GetBackendHealthStatus("backend-1")
-		return statusErr == nil && status == vmcp.BackendHealthy
-	}, 2*time.Second, 10*time.Millisecond, "backend-1 should become healthy via the Serve-started monitor")
-
-	require.NoError(t, stop())
-
-	// The monitor is stopped but the struct is retained (pointer stays valid).
-	srv.healthMonitorMu.RLock()
-	assert.Same(t, mon, srv.healthMonitor, "health monitor should still exist after Stop")
-	srv.healthMonitorMu.RUnlock()
-
-	status, err := srv.GetBackendHealthStatus("backend-1")
-	assert.NoError(t, err, "getter should not error after Stop")
-	assert.NotEqual(t, vmcp.BackendUnknown, status, "should return last known status")
-}
-
-// TestServeDisablesHealthMonitorOnStartFailure verifies graceful degradation when the
-// injected monitor cannot start: Start logs a WARN and sets healthMonitor to nil so the
-// getters report "disabled", and Serve.Start itself does not fail. The failure is forced
-// with a monitor that has already been stopped — health.Monitor.Start refuses to restart.
-func TestServeDisablesHealthMonitorOnStartFailure(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-
-	// No backends => Start spawns no health-check goroutines (ListCapabilities is never
-	// called) and Stop returns immediately, leaving the monitor in the "stopped" state.
-	mon, err := health.NewMonitor(mockBackendClient, nil, health.MonitorConfig{
-		CheckInterval:      time.Second,
-		UnhealthyThreshold: 1,
-		Timeout:            time.Second,
-	})
-	require.NoError(t, err)
-	require.NoError(t, mon.Start(context.Background()))
-	require.NoError(t, mon.Stop())
-
-	cfg := testMinimalServeConfig()
-	cfg.HealthMonitor = mon
-
-	srv, err := Serve(context.Background(), &stubVMCP{}, cfg)
-	require.NoError(t, err)
-
-	stop := startServeInBackground(t, srv)
-
-	// Start must not fail; the un-restartable monitor is disabled (set to nil) instead.
-	require.Eventually(t, func() bool {
-		srv.healthMonitorMu.RLock()
-		defer srv.healthMonitorMu.RUnlock()
-		return srv.healthMonitor == nil
-	}, 2*time.Second, 10*time.Millisecond, "a monitor whose Start fails must be disabled")
-
-	_, getErr := srv.GetBackendHealthStatus("backend-1")
-	assert.ErrorContains(t, getErr, "health monitoring is disabled")
-
-	require.NoError(t, stop())
 }
 
 // recordingReporter is a vmcpstatus.Reporter that records whether Start and its returned

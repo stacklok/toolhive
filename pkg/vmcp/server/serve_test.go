@@ -63,7 +63,8 @@ func (*stubVMCP) LookupResource(context.Context, *auth.Identity, string) (*vmcp.
 func (*stubVMCP) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Prompt, error) {
 	return nil, nil
 }
-func (s *stubVMCP) Close() error { s.closed = true; return nil }
+func (s *stubVMCP) Close() error                 { s.closed = true; return nil }
+func (*stubVMCP) BackendHealth() health.Reporter { return nil }
 
 // stubWatcher is a non-nil Watcher for the drift-guard test; its behavior is not
 // exercised there.
@@ -320,6 +321,8 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		"SessionFactory":      {}, // session manager built in Serve from ServerConfig.SessionManagerConfig
 		"OptimizerFactory":    {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
 		"OptimizerConfig":     {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
+		"Aggregator":          {}, // core collaborator: fed to core.New via deriveCoreConfig, not the transport
+		"Authz":               {}, // core collaborator: fed to the core admission seam via deriveCoreConfig
 	}
 
 	// Every field set to a non-zero value so a dropped mapping surfaces as a zero
@@ -339,7 +342,6 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		AuthInfoHandler:         http.NewServeMux(),
 		PassthroughHeaders:      []string{"x-test"},
 		AuthServer:              &asrunner.EmbeddedAuthServer{},
-		HealthMonitor:           &health.Monitor{},
 		StatusReportingInterval: time.Second,
 		StatusReporter:          stubServeReporter{},
 		Watcher:                 stubWatcher{},

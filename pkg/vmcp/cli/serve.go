@@ -378,6 +378,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
 
+	// Build the authorizer-agnostic authz config the core admission seam consumes. It is
+	// the same config the HTTP authz middleware above is built from; server.New routes
+	// through Serve, which ignores the (vestigial) AuthzMiddleware and enforces authz in
+	// the core from this config instead. Nil when no Cedar policies are configured
+	// (allow-all parity).
+	authzConfig, err := authfactory.BuildAuthzConfig(vmcpCfg.IncomingAuth.Authz)
+	if err != nil {
+		return fmt.Errorf("failed to build authorization config: %w", err)
+	}
+
 	slog.Info(fmt.Sprintf("Incoming authentication configured: %s", vmcpCfg.IncomingAuth.Type))
 
 	namespace := vmcpNamespace()
@@ -425,6 +435,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		OptimizerConfig:         optCfg,
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
+		// Core collaborators: server.New routes through core.New + Serve, so the core
+		// is the single aggregator and authorizer. The aggregator is the same instance
+		// that backs discovery; Authz feeds the core admission seam (nil = allow-all).
+		Aggregator: agg,
+		Authz:      authzConfig,
 	})
 
 	// Assign Watcher only when backendWatcher is non-nil. A typed nil

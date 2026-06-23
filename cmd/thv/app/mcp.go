@@ -34,9 +34,6 @@ func newMCPCommand() *cobra.Command {
 		Long:  `The mcp command provides subcommands to interact with MCP (Model Context Protocol) servers for debugging purposes.`,
 	}
 
-	// Add serve subcommand
-	cmd.AddCommand(newMCPServeCommand())
-
 	// Add call subcommand
 	cmd.AddCommand(newMCPCallCommand())
 

@@ -36,6 +36,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/controllers"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/imagepullsecrets"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/usage"
 	// Import authorizer backends so they register with the factory registry.
 	// Placed in the binary entrypoint (not the controller) to keep the
 	// MCPAuthzConfig controller backend-agnostic.
@@ -145,9 +146,46 @@ func Run() {
 		os.Exit(1)
 	}
 
+	setupUsageReporter(mgr, podNamespace)
+
 	setupLog.Info("starting manager")
 	if err := mgr.Start(ctrl.SetupSignalHandler()); err != nil {
 		setupLog.Error(err, "problem running manager")
+		os.Exit(1)
+	}
+}
+
+// setupUsageReporter wires the usage telemetry proof-of-concept reporter
+// (leader-only) into the manager. It is disabled by default and only runs when
+// USAGE_CLICKHOUSE_URL is set. This is a throwaway PoC, separate from the
+// in-cluster OTel pipeline and the update-check telemetry service. The k8s
+// version and cloud provider are discovered once here and cached on the
+// reporter; both discoveries are non-fatal and degrade to empty/"unknown".
+func setupUsageReporter(mgr ctrl.Manager, podNamespace string) {
+	usageCfg, usageCfgErr := usage.ConfigFromEnv()
+	if usageCfgErr != nil {
+		// Non-fatal: a bad interval falls back to the default.
+		setupLog.Info("usage reporter config issue, using defaults", "error", usageCfgErr.Error())
+	}
+	if !usageCfg.Enabled() {
+		setupLog.V(1).Info("usage reporter disabled (USAGE_CLICKHOUSE_URL not set)")
+		return
+	}
+
+	k8sVersion, verErr := usage.DiscoverK8sServerVersion(mgr.GetConfig())
+	if verErr != nil {
+		// Non-fatal: report with an empty k8s_server_version.
+		setupLog.Info("unable to discover kubernetes server version for usage reporter", "error", verErr.Error())
+	}
+	cloudProvider, cpErr := usage.DiscoverCloudProvider(mgr.GetConfig())
+	if cpErr != nil {
+		// Non-fatal: cloud detection needs node-read RBAC the operator may lack.
+		// Report with "unknown" and move on.
+		setupLog.Info("unable to detect cloud provider for usage reporter, using unknown", "error", cpErr.Error())
+	}
+	reporter := usage.NewReporter(mgr.GetClient(), usageCfg, podNamespace, k8sVersion, cloudProvider)
+	if err := mgr.Add(reporter); err != nil {
+		setupLog.Error(err, "unable to add usage reporter runnable")
 		os.Exit(1)
 	}
 }

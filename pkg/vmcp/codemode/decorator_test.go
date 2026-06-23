@@ -98,6 +98,8 @@ func TestListTools_AppendsVirtualTool(t *testing.T) {
 	virtual := tools[len(tools)-1]
 	assert.Equal(t, script.ExecuteToolScriptName, virtual.Name)
 	assert.NotEmpty(t, virtual.InputSchema)
+	// The schema must carry a usage example so the calling model sees the conventions.
+	assert.NotEmpty(t, virtual.InputSchema["examples"], "input schema should include an example invocation")
 	// The dynamic description must enumerate the callable backend tools.
 	assert.Contains(t, virtual.Description, "echo")
 	assert.Contains(t, virtual.Description, "status")

@@ -16,10 +16,27 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 )
 
+// exampleScript is a worked example shown in the execute_tool_script input schema so the
+// calling model can see the calling conventions (tool-as-function calls, parallel() fan-out,
+// data variables, and return) rather than inferring them from prose. Tool names here are
+// illustrative; the real callable names are listed in the tool's dynamic description.
+const exampleScript = `# 'deps' is supplied via the data argument below. Bind the loop variable with a
+# default arg (d=d) so each lambda captures its own value rather than the last one.
+results = parallel([
+    lambda d=d: osv_query_vulnerability(package=d["name"], version=d["version"])
+    for d in deps
+])
+vulnerable = [r for r in results if r.get("vulns")]
+return {"checked": len(results), "vulnerable": vulnerable}`
+
 // virtualToolInputSchema is the JSON Schema advertised for execute_tool_script.
 // It is a fixed shape (a script string plus an optional data object), so it is shared
 // across every ListTools/LookupTool call rather than rebuilt per request. Callers must
 // not mutate the returned map; build a fresh one per advertised tool to be safe.
+//
+// A top-level "examples" entry shows a complete, valid invocation so the model can see how
+// to combine a script with its data variables; "script" carries the example inline too,
+// since some clients surface per-property examples but not object-level ones.
 func virtualToolInputSchema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -28,6 +45,7 @@ func virtualToolInputSchema() map[string]any {
 				"type": "string",
 				"description": "A Starlark script. Call any listed tool as a function, use " +
 					"loops/conditionals, fan out with parallel(), and use 'return' to produce output.",
+				"examples": []any{exampleScript},
 			},
 			"data": map[string]any{
 				"type":        "object",
@@ -35,6 +53,17 @@ func virtualToolInputSchema() map[string]any {
 			},
 		},
 		"required": []any{"script"},
+		"examples": []any{
+			map[string]any{
+				"script": exampleScript,
+				"data": map[string]any{
+					"deps": []any{
+						map[string]any{"name": "lodash", "version": "4.17.20"},
+						map[string]any{"name": "express", "version": "4.17.1"},
+					},
+				},
+			},
+		},
 	}
 }
 

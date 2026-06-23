@@ -14,6 +14,7 @@ import (
 
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -138,6 +139,15 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 			h.userResolver.UpdateLastAuthenticated(ctx, providerID, providerSubject)
 		}
 	}
+
+	// Place the resolved canonical user in the request context so callback storage
+	// calls that carry no tokens argument — GetAllUpstreamTokens during chain
+	// consistency, DeleteUpstreamTokens on cleanup — can resolve the user from
+	// context. We use WithPlatformUser, not WithIdentity: no ToolHive bearer has
+	// been issued at the callback, so there is no authenticated identity to assert —
+	// only the canonical user for storage keying. (StoreUpstreamTokens does not need
+	// this; it keys off tokens.UserID below.)
+	ctx = auth.WithPlatformUser(ctx, subject)
 
 	// Convert IDP tokens to storage tokens with binding fields.
 	// SessionExpiresAt is set unconditionally as the Fosite session bound. Storage
@@ -342,8 +352,18 @@ func (h *Handler) handleUpstreamError(
 		if err == nil {
 			_ = h.storage.DeletePendingAuthorization(ctx, internalState)
 			// Clean up any upstream tokens stored by earlier legs of a multi-upstream chain.
+			// On a subsequent leg the resolved user is carried in pending.ResolvedUserID;
+			// place it in ctx via WithPlatformUser so a context-keyed storage decorator can
+			// resolve the canonical user for this delete (DeleteUpstreamTokens takes no tokens
+			// argument). WithPlatformUser, not WithIdentity: there is no authenticated identity
+			// at the callback, only the storage-scoped user. A first-leg error has no resolved
+			// user and no earlier-leg tokens to clean up, so the bare ctx is correct there.
 			if pending.SessionID != "" {
-				_ = h.storage.DeleteUpstreamTokens(ctx, pending.SessionID)
+				cleanupCtx := ctx
+				if pending.ResolvedUserID != "" {
+					cleanupCtx = auth.WithPlatformUser(ctx, pending.ResolvedUserID)
+				}
+				_ = h.storage.DeleteUpstreamTokens(cleanupCtx, pending.SessionID)
 			}
 			ar := h.buildAuthorizeRequesterFromPending(ctx, pending)
 			if ar != nil {

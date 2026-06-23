@@ -961,44 +961,21 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_mcpRemoteProxy
 	}
 
 	// MCPRemoteProxy referencing via externalAuthConfigRef
-	proxyViaExtAuth := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy-via-extauth",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote.example.com",
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: "auth-config",
-			},
-		},
-	}
+	proxyViaExtAuth := v1beta1test.NewMCPRemoteProxy("proxy-via-extauth", "default",
+		v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef("auth-config"),
+	)
 
 	// MCPRemoteProxy referencing via authServerRef
-	proxyViaAuthServerRef := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy-via-authserverref",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote.example.com",
-			AuthServerRef: &mcpv1beta1.AuthServerRef{
-				Kind: "MCPExternalAuthConfig",
-				Name: "auth-config",
-			},
-		},
-	}
+	proxyViaAuthServerRef := v1beta1test.NewMCPRemoteProxy("proxy-via-authserverref", "default",
+		v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+		v1beta1test.WithRemoteProxyAuthServerRef("MCPExternalAuthConfig", "auth-config"),
+	)
 
 	// MCPRemoteProxy not referencing this config
-	proxyNoRef := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy-no-ref",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote.example.com",
-		},
-	}
+	proxyNoRef := v1beta1test.NewMCPRemoteProxy("proxy-no-ref", "default",
+		v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+	)
 
 	// MCPServer also referencing the same config
 	server := v1beta1test.NewMCPServer("server-ref", "default",

@@ -311,13 +311,10 @@ func TestMCPAuthzConfigReconciler_handleDeletion(t *testing.T) {
 			name:        "referencing MCPRemoteProxy blocks deletion",
 			authzConfig: deletingConfig(),
 			existingWorkloads: []client.Object{
-				&mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "referencing-proxy", Namespace: "default"},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						RemoteURL:      "https://example.com",
-						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
-					},
-				},
+				v1beta1test.NewMCPRemoteProxy("referencing-proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://example.com"),
+					v1beta1test.WithRemoteProxyAuthzConfigRef("test-config"),
+				),
 			},
 			expectRequeue: true,
 		},
@@ -662,13 +659,10 @@ func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
 						},
 					},
 				},
-				&mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: "default"},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						RemoteURL:      "https://example.com",
-						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "shared-config"},
-					},
-				},
+				v1beta1test.NewMCPRemoteProxy("my-proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://example.com"),
+					v1beta1test.WithRemoteProxyAuthzConfigRef("shared-config"),
+				),
 			},
 			expectedRefs: []mcpv1beta1.WorkloadReference{
 				{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: "my-proxy"},
@@ -690,10 +684,9 @@ func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
 						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
 					},
 				},
-				&mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "unrelated-proxy", Namespace: "default"},
-					Spec:       mcpv1beta1.MCPRemoteProxySpec{RemoteURL: "https://example.com"},
-				},
+				v1beta1test.NewMCPRemoteProxy("unrelated-proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://example.com"),
+				),
 			},
 			expectEmpty: true,
 		},
@@ -770,13 +763,10 @@ func TestMCPAuthzConfigReconciler_watchHandlers(t *testing.T) {
 		},
 		{
 			name: "MCPRemoteProxy with ref enqueues current and stale configs",
-			obj: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL:      "https://example.com",
-					AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "current-config"},
-				},
-			},
+			obj: v1beta1test.NewMCPRemoteProxy("proxy", "default",
+				v1beta1test.WithRemoteProxyURL("https://example.com"),
+				v1beta1test.WithRemoteProxyAuthzConfigRef("current-config"),
+			),
 			expected: map[string]struct{}{"current-config": {}, "stale-config": {}},
 		},
 		{

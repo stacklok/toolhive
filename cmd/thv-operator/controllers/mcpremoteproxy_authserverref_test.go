@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
@@ -33,26 +34,22 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 		{
 			name: "nil authServerRef removes condition and clears hash",
 			proxy: func() *mcpv1beta1.MCPRemoteProxy {
-				return &mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec:       mcpv1beta1.MCPRemoteProxySpec{RemoteURL: "https://remote.example.com"},
-					Status: mcpv1beta1.MCPRemoteProxyStatus{
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 						AuthServerConfigHash: "old-hash",
-					},
-				}
+					}),
+				)
 			},
 			expectHash: "",
 		},
 		{
 			name: "unsupported kind sets InvalidKind condition",
 			proxy: func() *mcpv1beta1.MCPRemoteProxy {
-				return &mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						RemoteURL:     "https://remote.example.com",
-						AuthServerRef: &mcpv1beta1.AuthServerRef{Kind: "Secret", Name: "foo"},
-					},
-				}
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyAuthServerRef("Secret", "foo"),
+				)
 			},
 			expectError:     true,
 			errContains:     "unsupported authServerRef kind",
@@ -62,13 +59,10 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 		{
 			name: "not found sets NotFound condition",
 			proxy: func() *mcpv1beta1.MCPRemoteProxy {
-				return &mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						RemoteURL:     "https://remote.example.com",
-						AuthServerRef: &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "missing"},
-					},
-				}
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyAuthServerRef("MCPExternalAuthConfig", "missing"),
+				)
 			},
 			expectError:     true,
 			errContains:     "not found",
@@ -78,13 +72,10 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 		{
 			name: "wrong type sets InvalidType condition",
 			proxy: func() *mcpv1beta1.MCPRemoteProxy {
-				return &mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						RemoteURL:     "https://remote.example.com",
-						AuthServerRef: &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "sts-config"},
-					},
-				}
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyAuthServerRef("MCPExternalAuthConfig", "sts-config"),
+				)
 			},
 			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {
 				return &mcpv1beta1.MCPExternalAuthConfig{
@@ -105,13 +96,10 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 		{
 			name: "multi-upstream sets MultiUpstream condition",
 			proxy: func() *mcpv1beta1.MCPRemoteProxy {
-				return &mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						RemoteURL:     "https://remote.example.com",
-						AuthServerRef: &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "multi"},
-					},
-				}
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyAuthServerRef("MCPExternalAuthConfig", "multi"),
+				)
 			},
 			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {
 				return &mcpv1beta1.MCPExternalAuthConfig{
@@ -137,13 +125,10 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 		{
 			name: "valid ref sets Valid condition and updates hash",
 			proxy: func() *mcpv1beta1.MCPRemoteProxy {
-				return &mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						RemoteURL:     "https://remote.example.com",
-						AuthServerRef: &mcpv1beta1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "valid"},
-					},
-				}
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyAuthServerRef("MCPExternalAuthConfig", "valid"),
+				)
 			},
 			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {
 				return &mcpv1beta1.MCPExternalAuthConfig{

@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 func TestMCPRemoteProxyReconciler_handleAuthzConfig(t *testing.T) {
@@ -34,28 +35,24 @@ func TestMCPRemoteProxyReconciler_handleAuthzConfig(t *testing.T) {
 	}{
 		{
 			name: "no ref clears stored hash and condition",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"},
-				Status: mcpv1beta1.MCPRemoteProxyStatus{
+			proxy: v1beta1test.NewMCPRemoteProxy("p", "default",
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 					AuthzConfigHash: "old",
 					Conditions: []metav1.Condition{{
 						Type:   mcpv1beta1.ConditionAuthzConfigRefValidated,
 						Status: metav1.ConditionTrue,
 						Reason: mcpv1beta1.ConditionReasonAuthzConfigRefValid,
 					}},
-				},
-			},
+				}),
+			),
 			expectHashCleared:   true,
 			expectConditionGone: true,
 		},
 		{
 			name: "referenced config not found sets NotFound condition",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "missing"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("p", "default",
+				v1beta1test.WithRemoteProxyAuthzConfigRef("missing"),
+			),
 			expectError:           true,
 			expectErrContains:     "not found",
 			expectConditionStatus: conditionStatusPtr(metav1.ConditionFalse),
@@ -63,12 +60,9 @@ func TestMCPRemoteProxyReconciler_handleAuthzConfig(t *testing.T) {
 		},
 		{
 			name: "referenced config not valid sets NotValid condition",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "bad"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("p", "default",
+				v1beta1test.WithRemoteProxyAuthzConfigRef("bad"),
+			),
 			authzConfig:           authzConfigForTest("bad", false, ""),
 			expectError:           true,
 			expectErrContains:     "not valid",
@@ -77,12 +71,9 @@ func TestMCPRemoteProxyReconciler_handleAuthzConfig(t *testing.T) {
 		},
 		{
 			name: "valid ref sets condition True and tracks hash",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "ok"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("p", "default",
+				v1beta1test.WithRemoteProxyAuthzConfigRef("ok"),
+			),
 			authzConfig:           authzConfigForTest("ok", true, "hash-123"),
 			expectHash:            "hash-123",
 			expectConditionStatus: conditionStatusPtr(metav1.ConditionTrue),
@@ -154,12 +145,9 @@ func TestMCPRemoteProxyReconciler_handleAuthzConfig_Transitions(t *testing.T) {
 	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	authzConfig := authzConfigForTest("cfg", true, "h1")
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "default"},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "cfg"},
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("p", "default",
+		v1beta1test.WithRemoteProxyAuthzConfigRef("cfg"),
+	)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(proxy, authzConfig).
@@ -210,22 +198,13 @@ func TestMapAuthzConfigToMCPRemoteProxy(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
-	proxy1 := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{Name: "proxy1", Namespace: "default"},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "shared-authz"},
-		},
-	}
-	proxy2 := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{Name: "proxy2", Namespace: "default"},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "other-authz"},
-		},
-	}
-	proxy3 := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{Name: "proxy3", Namespace: "default"},
-		Spec:       mcpv1beta1.MCPRemoteProxySpec{}, // no ref
-	}
+	proxy1 := v1beta1test.NewMCPRemoteProxy("proxy1", "default",
+		v1beta1test.WithRemoteProxyAuthzConfigRef("shared-authz"),
+	)
+	proxy2 := v1beta1test.NewMCPRemoteProxy("proxy2", "default",
+		v1beta1test.WithRemoteProxyAuthzConfigRef("other-authz"),
+	)
+	proxy3 := v1beta1test.NewMCPRemoteProxy("proxy3", "default") // no ref
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).

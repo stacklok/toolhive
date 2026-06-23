@@ -449,13 +449,8 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 		expectedNames     []string
 	}{
 		{
-			name: "MCPRemoteProxy is member of MCPGroup referenced by VirtualMCPServer",
-			mcpRemoteProxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: "default",
-				},
-			},
+			name:           "MCPRemoteProxy is member of MCPGroup referenced by VirtualMCPServer",
+			mcpRemoteProxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default"),
 			mcpGroups: []mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -482,13 +477,8 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 			expectedNames:    []string{"vmcp-1"},
 		},
 		{
-			name: "MCPRemoteProxy is not member of any MCPGroup",
-			mcpRemoteProxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: "default",
-				},
-			},
+			name:           "MCPRemoteProxy is not member of any MCPGroup",
+			mcpRemoteProxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default"),
 			mcpGroups: []mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -515,13 +505,8 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 			expectedNames:    []string{},
 		},
 		{
-			name: "MCPRemoteProxy is member of MCPGroup but no VirtualMCPServers reference it",
-			mcpRemoteProxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: "default",
-				},
-			},
+			name:           "MCPRemoteProxy is member of MCPGroup but no VirtualMCPServers reference it",
+			mcpRemoteProxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default"),
 			mcpGroups: []mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -548,13 +533,8 @@ func TestMapMCPRemoteProxyToVirtualMCPServer(t *testing.T) {
 			expectedNames:    []string{},
 		},
 		{
-			name: "MCPRemoteProxy is member of multiple MCPGroups with multiple VirtualMCPServers",
-			mcpRemoteProxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: "default",
-				},
-			},
+			name:           "MCPRemoteProxy is member of multiple MCPGroups with multiple VirtualMCPServers",
+			mcpRemoteProxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default"),
 			mcpGroups: []mcpv1beta1.MCPGroup{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -934,18 +914,10 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 				},
 			},
 			mcpRemoteProxies: []mcpv1beta1.MCPRemoteProxy{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-proxy",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "test-auth",
-						},
-					},
-				},
+				*v1beta1test.NewMCPRemoteProxy("backend-proxy", "default",
+					v1beta1test.WithRemoteProxyGroupRef("test-group"),
+					v1beta1test.WithRemoteProxyExternalAuthConfigRef("test-auth"),
+				),
 			},
 			expectedRequests: 1,
 			expectedNames:    []string{"vmcp-discovered"},
@@ -981,18 +953,10 @@ func TestMapExternalAuthConfigToVirtualMCPServer(t *testing.T) {
 				},
 			},
 			mcpRemoteProxies: []mcpv1beta1.MCPRemoteProxy{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-proxy",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "other-auth",
-						},
-					},
-				},
+				*v1beta1test.NewMCPRemoteProxy("backend-proxy", "default",
+					v1beta1test.WithRemoteProxyGroupRef("test-group"),
+					v1beta1test.WithRemoteProxyExternalAuthConfigRef("other-auth"),
+				),
 			},
 			expectedRequests: 0,
 			expectedNames:    []string{},
@@ -1584,18 +1548,10 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 				},
 			},
 			mcpRemoteProxies: []mcpv1beta1.MCPRemoteProxy{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-proxy",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "test-auth",
-						},
-					},
-				},
+				*v1beta1test.NewMCPRemoteProxy("backend-proxy", "default",
+					v1beta1test.WithRemoteProxyGroupRef("test-group"),
+					v1beta1test.WithRemoteProxyExternalAuthConfigRef("test-auth"),
+				),
 			},
 			authConfigName: "test-auth",
 			expected:       true,
@@ -1623,18 +1579,10 @@ func TestVmcpReferencesExternalAuthConfig(t *testing.T) {
 				},
 			},
 			mcpRemoteProxies: []mcpv1beta1.MCPRemoteProxy{
-				{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "backend-proxy",
-						Namespace: "default",
-					},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-						ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-							Name: "other-auth",
-						},
-					},
-				},
+				*v1beta1test.NewMCPRemoteProxy("backend-proxy", "default",
+					v1beta1test.WithRemoteProxyGroupRef("test-group"),
+					v1beta1test.WithRemoteProxyExternalAuthConfigRef("other-auth"),
+				),
 			},
 			authConfigName: "test-auth",
 			expected:       false,
@@ -1707,13 +1655,8 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 		expectedNames     []string
 	}{
 		{
-			name: "single VirtualMCPServer references EmbeddingServer",
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "shared-embedding",
-					Namespace: "default",
-				},
-			},
+			name:            "single VirtualMCPServer references EmbeddingServer",
+			embeddingServer: v1beta1test.NewEmbeddingServer("shared-embedding", "default"),
 			virtualMCPServers: []mcpv1beta1.VirtualMCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1730,13 +1673,8 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 			expectedNames:    []string{"vmcp-1"},
 		},
 		{
-			name: "multiple VirtualMCPServers share EmbeddingServer",
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "shared-embedding",
-					Namespace: "default",
-				},
-			},
+			name:            "multiple VirtualMCPServers share EmbeddingServer",
+			embeddingServer: v1beta1test.NewEmbeddingServer("shared-embedding", "default"),
 			virtualMCPServers: []mcpv1beta1.VirtualMCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1763,13 +1701,8 @@ func TestMapEmbeddingServerToVirtualMCPServer(t *testing.T) {
 			expectedNames:    []string{"vmcp-1", "vmcp-2"},
 		},
 		{
-			name: "no VirtualMCPServers reference EmbeddingServer",
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "shared-embedding",
-					Namespace: "default",
-				},
-			},
+			name:            "no VirtualMCPServers reference EmbeddingServer",
+			embeddingServer: v1beta1test.NewEmbeddingServer("shared-embedding", "default"),
 			virtualMCPServers: []mcpv1beta1.VirtualMCPServer{
 				{
 					ObjectMeta: metav1.ObjectMeta{

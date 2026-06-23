@@ -2897,16 +2897,12 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					},
 				},
 			},
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "shared-embedding",
-					Namespace: "default",
-				},
-				Status: mcpv1beta1.EmbeddingServerStatus{
+			embeddingServer: v1beta1test.NewEmbeddingServer("shared-embedding", "default",
+				v1beta1test.WithEmbeddingStatus(mcpv1beta1.EmbeddingServerStatus{
 					Phase:         mcpv1beta1.EmbeddingServerPhaseReady,
 					ReadyReplicas: 1,
-				},
-			},
+				}),
+			),
 			expectError: false,
 		},
 		{
@@ -2941,16 +2937,12 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					},
 				},
 			},
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "pending-embedding",
-					Namespace: "default",
-				},
-				Status: mcpv1beta1.EmbeddingServerStatus{
+			embeddingServer: v1beta1test.NewEmbeddingServer("pending-embedding", "default",
+				v1beta1test.WithEmbeddingStatus(mcpv1beta1.EmbeddingServerStatus{
 					Phase:         mcpv1beta1.EmbeddingServerPhasePending,
 					ReadyReplicas: 0,
-				},
-			},
+				}),
+			),
 			expectError: false,
 		},
 		{
@@ -2967,16 +2959,12 @@ func TestVirtualMCPServerValidateEmbeddingServerRef(t *testing.T) {
 					},
 				},
 			},
-			embeddingServer: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "no-replicas-embedding",
-					Namespace: "default",
-				},
-				Status: mcpv1beta1.EmbeddingServerStatus{
+			embeddingServer: v1beta1test.NewEmbeddingServer("no-replicas-embedding", "default",
+				v1beta1test.WithEmbeddingStatus(mcpv1beta1.EmbeddingServerStatus{
 					Phase:         mcpv1beta1.EmbeddingServerPhaseReady,
 					ReadyReplicas: 0,
-				},
-			},
+				}),
+			),
 			expectError: false,
 		},
 	}
@@ -3213,13 +3201,9 @@ func TestGetExternalAuthConfigNameFromWorkload(t *testing.T) {
 	}
 
 	mcpRemoteProxyMap := map[string]*mcpv1beta1.MCPRemoteProxy{
-		"proxy-with-auth": {
-			Spec: mcpv1beta1.MCPRemoteProxySpec{
-				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-					Name: "proxy-auth-config",
-				},
-			},
-		},
+		"proxy-with-auth": v1beta1test.NewMCPRemoteProxy("proxy-with-auth", "default",
+			v1beta1test.WithRemoteProxyExternalAuthConfigRef("proxy-auth-config"),
+		),
 	}
 
 	mcpServerEntryMap := map[string]*mcpv1beta1.MCPServerEntry{

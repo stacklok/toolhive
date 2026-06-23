@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/test/e2e/images"
 	"github.com/stacklok/toolhive/test/e2e/thv-operator/testutil"
 )
@@ -102,21 +103,20 @@ var _ = ginkgo.Describe("MCPRemoteProxy Cross-Replica Session Routing with Redis
 				backendName, defaultNamespace, proxyPort)
 
 			ginkgo.By("Creating MCPRemoteProxy with replicas=2, Redis session storage, and sessionAffinity=None")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: proxyName, Namespace: defaultNamespace},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL:       backendURL,
-					Transport:       "streamable-http",
-					ProxyPort:       proxyPort,
-					Replicas:        &replicas,
-					SessionAffinity: "None",
-					SessionStorage: &mcpv1beta1.SessionStorageConfig{
-						Provider:  mcpv1beta1.SessionStorageProviderRedis,
-						Address:   redisAddr,
-						KeyPrefix: "thv:remoteproxy:e2e:",
-					},
-				},
-			})).To(gomega.Succeed())
+			gomega.Expect(k8sClient.Create(ctx, v1beta1test.NewMCPRemoteProxy(proxyName, defaultNamespace,
+				v1beta1test.WithRemoteProxyURL(backendURL),
+				v1beta1test.WithRemoteProxyTransport("streamable-http"),
+				v1beta1test.WithRemoteProxyPort(proxyPort),
+				v1beta1test.WithRemoteProxyReplicas(replicas),
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Spec.SessionAffinity = "None"
+				}),
+				v1beta1test.WithRemoteProxySessionStorage(&mcpv1beta1.SessionStorageConfig{
+					Provider:  mcpv1beta1.SessionStorageProviderRedis,
+					Address:   redisAddr,
+					KeyPrefix: "thv:remoteproxy:e2e:",
+				}),
+			))).To(gomega.Succeed())
 
 			ginkgo.By("Waiting for MCPRemoteProxy to reach the Ready phase")
 			gomega.Eventually(func() error {
@@ -144,9 +144,7 @@ var _ = ginkgo.Describe("MCPRemoteProxy Cross-Replica Session Routing with Redis
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: proxyName, Namespace: defaultNamespace},
-			})
+			_ = k8sClient.Delete(ctx, v1beta1test.NewMCPRemoteProxy(proxyName, defaultNamespace))
 			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
 			})

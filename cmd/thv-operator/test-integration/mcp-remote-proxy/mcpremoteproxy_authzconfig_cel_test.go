@@ -8,9 +8,9 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 // newRemoteProxyWithAuthz builds a minimal MCPRemoteProxy whose authz pair is
@@ -20,14 +20,14 @@ func newRemoteProxyWithAuthz(
 	authzConfig *mcpv1beta1.AuthzConfigRef,
 	authzConfigRef *mcpv1beta1.MCPAuthzConfigReference,
 ) *mcpv1beta1.MCPRemoteProxy {
-	return &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL:      "https://example.com",
-			AuthzConfig:    authzConfig,
-			AuthzConfigRef: authzConfigRef,
-		},
-	}
+	return v1beta1test.NewMCPRemoteProxy(name, namespace,
+		v1beta1test.WithRemoteProxyURL("https://example.com"),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyAuthzConfig(authzConfig),
+		v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+			p.Spec.AuthzConfigRef = authzConfigRef
+		}),
+	)
 }
 
 var _ = Describe("CEL Validation for authzConfig vs authzConfigRef on MCPRemoteProxy",

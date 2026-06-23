@@ -897,6 +897,7 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 		priorRow         *priorRow // nil = no prior row
 		idpRefreshToken  string    // RT returned by upstream exchange
 		idpSubject       string    // subject claim returned by upstream
+		synthetic        bool      // upstream identity is synthetic (rotating subject)
 		lookupErr        error     // if non-nil, storage lookup returns this error
 		expectedStoredRT string    // expected RefreshToken on the new row
 	}{
@@ -906,6 +907,29 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 			idpRefreshToken:  "",
 			idpSubject:       "user-123",
 			expectedStoredRT: "rt-prior",
+		},
+		{
+			// Synthetic providers mint a fresh rotating subject every flow, so the
+			// UpstreamSubject equality guard can never hold even though the stable
+			// user identity (carried from the first leg) does match. The RT must
+			// still be carried forward — otherwise refresh silently breaks for every
+			// userinfo-less OAuth2 backend.
+			name:             "synthetic carries prior RT despite rotating subject",
+			priorRow:         &priorRow{sessionID: "old-session", upstreamSubject: "tk-oldrotatingsubject", refreshToken: "rt-prior"},
+			idpRefreshToken:  "",
+			idpSubject:       "tk-newrotatingsubject",
+			synthetic:        true,
+			expectedStoredRT: "rt-prior",
+		},
+		{
+			// Guards the error state where the synthetic branch must not carry forward
+			// (or panic) when there is no prior row to read from.
+			name:             "synthetic with no prior row accepts empty RT",
+			priorRow:         nil,
+			idpRefreshToken:  "",
+			idpSubject:       "tk-newrotatingsubject",
+			synthetic:        true,
+			expectedStoredRT: "",
 		},
 		{
 			name:             "no carry across different upstream subjects",
@@ -969,7 +993,8 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 					IDToken:      "new-id-token",
 					ExpiresAt:    time.Now().Add(time.Hour),
 				},
-				Subject: tc.idpSubject,
+				Subject:   tc.idpSubject,
+				Synthetic: tc.synthetic,
 			}
 
 			// Pre-populate user + identity so ResolveUser is deterministic.
@@ -999,7 +1024,7 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 			}
 
 			internalState := testInternalState
-			storState.pendingAuths[internalState] = &storage.PendingAuthorization{
+			pendingAuth := &storage.PendingAuthorization{
 				ClientID:             testAuthClientID,
 				RedirectURI:          testAuthRedirectURI,
 				State:                "client-state",
@@ -1012,6 +1037,15 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 				UpstreamProviderName: providerName,
 				CreatedAt:            time.Now(),
 			}
+			if tc.synthetic {
+				// Synthetic carry-forward only applies on a subsequent leg, where the
+				// stable user identity is carried from the first leg (so the prior row
+				// is found by UserID) while the provider's own subject rotates per flow.
+				pendingAuth.ResolvedUserID = existingUserID
+				pendingAuth.ResolvedUserName = "First Leg User"
+				pendingAuth.ResolvedUserEmail = "firstleg@example.com"
+			}
+			storState.pendingAuths[internalState] = pendingAuth
 
 			req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=test-code&state="+internalState, nil)
 			rec := httptest.NewRecorder()

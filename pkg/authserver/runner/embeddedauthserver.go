@@ -576,7 +576,8 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 			Scopes:                        scopes,
 			AdditionalAuthorizationParams: oidc.AdditionalAuthorizationParams,
 		},
-		Issuer: oidc.IssuerURL,
+		Issuer:       oidc.IssuerURL,
+		SubjectClaim: oidc.SubjectClaim,
 	}, nil
 }
 

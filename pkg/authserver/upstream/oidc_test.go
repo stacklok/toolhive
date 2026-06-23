@@ -153,6 +153,14 @@ func (m *mockOIDCServer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 //
 //nolint:unparam // subject parameter kept for test flexibility
 func (m *mockOIDCServer) signIDToken(audience, subject, nonce string, expiry time.Time) string {
+	return m.signIDTokenWithClaims(audience, subject, nonce, expiry, nil)
+}
+
+// signIDTokenWithClaims creates a signed JWT ID token, merging any extra claims
+// over the standard set. Used to test non-standard subject claims (e.g. Entra's "oid").
+func (m *mockOIDCServer) signIDTokenWithClaims(
+	audience, subject, nonce string, expiry time.Time, extra map[string]any,
+) string {
 	signingKey := jose.SigningKey{Algorithm: jose.RS256, Key: m.privateKey}
 	signer, err := jose.NewSigner(signingKey, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", m.keyID))
 	if err != nil {
@@ -168,6 +176,9 @@ func (m *mockOIDCServer) signIDToken(audience, subject, nonce string, expiry tim
 	}
 	if nonce != "" {
 		claims["nonce"] = nonce
+	}
+	for k, v := range extra {
+		claims[k] = v
 	}
 
 	token, err := jwt.Signed(signer).Claims(claims).CompactSerialize()
@@ -432,6 +443,45 @@ func TestNewOIDCProvider(t *testing.T) {
 	})
 }
 
+func TestOIDCConfig_Validate_SubjectClaim(t *testing.T) {
+	t.Parallel()
+
+	base := func(subjectClaim string) *OIDCConfig {
+		return &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    testClientID,
+				RedirectURI: testRedirectURI,
+			},
+			Issuer:       testIssuer,
+			SubjectClaim: subjectClaim,
+		}
+	}
+
+	tests := []struct {
+		name         string
+		subjectClaim string
+		wantErr      bool
+	}{
+		{name: "empty is valid", subjectClaim: "", wantErr: false},
+		{name: "explicit sub is valid", subjectClaim: "sub", wantErr: false},
+		{name: "non-standard claim is valid", subjectClaim: "oid", wantErr: false},
+		{name: "whitespace-only is rejected", subjectClaim: "   ", wantErr: true},
+		{name: "surrounding whitespace is rejected", subjectClaim: "oid ", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := base(tt.subjectClaim).Validate()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
+}
+
 func TestValidateDiscoveryDocument(t *testing.T) {
 	t.Parallel()
 
@@ -582,6 +632,162 @@ func TestOIDCProviderImpl_ExchangeCodeForIdentity(t *testing.T) {
 		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
 		require.NoError(t, err)
 		assert.Equal(t, "user-123", result.Subject)
+	})
+
+	t.Run("empty SubjectClaim falls back to the sub claim", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// Token carries both sub and oid; with no SubjectClaim configured the
+		// resolved subject must be sub, not oid.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "sub-value", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": "oid-value"},
+			)
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+			// SubjectClaim intentionally unset.
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "sub-value", result.Subject)
+	})
+
+	t.Run("configured SubjectClaim is extracted instead of sub", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// Mimic Entra: the stable per-user id is "oid"; "sub" rotates per app.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "rotating-sub", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": "entra-oid-123"},
+			)
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "entra-oid-123", result.Subject)
+	})
+
+	t.Run("configured SubjectClaim missing from token returns error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// "oid" is configured but the token does not carry it.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDToken(testClientID, "user-123", "", time.Now().Add(time.Hour))
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.Error(t, err)
+	})
+
+	t.Run("configured SubjectClaim with empty value returns error", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// "oid" is present but empty — must fail loud, not fall back to sub.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "user-123", "", time.Now().Add(time.Hour),
+				map[string]any{"oid": ""},
+			)
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer:       mock.issuer,
+			SubjectClaim: "oid",
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.Error(t, err)
 	})
 
 	t.Run("nonce mismatch returns error", func(t *testing.T) {

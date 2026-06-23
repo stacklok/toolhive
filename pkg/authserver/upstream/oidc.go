@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"strings"
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
@@ -31,6 +32,12 @@ type OIDCConfig struct {
 	// Issuer is the URL of the upstream OIDC provider (e.g., https://accounts.google.com).
 	// The provider will fetch endpoints from {Issuer}/.well-known/openid-configuration.
 	Issuer string
+
+	// SubjectClaim names the validated ID-token claim to use as the upstream
+	// subject. Defaults to "sub" when empty (preserves current behavior). Brings
+	// OIDC to parity with OAuth2's IdentityFromTokenConfig.SubjectPath. Set for
+	// IdPs where "sub" isn't stable per user (e.g. Entra/Azure AD's "oid").
+	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
 }
 
 // Validate checks that OIDCConfig has all required fields and valid values.
@@ -40,6 +47,14 @@ func (c *OIDCConfig) Validate() error {
 	}
 	if err := networking.ValidateEndpointURL(c.Issuer); err != nil {
 		return fmt.Errorf("invalid issuer URL: %w", err)
+	}
+	// SubjectClaim is optional (empty defaults to "sub"). When set, reject blank
+	// or surrounding-whitespace values: we look the claim up verbatim, so a typo
+	// like "oid " must fail at startup rather than silently miss the claim at
+	// login. We reject rather than trim — silent normalization would mask the
+	// typo and would have to be duplicated across every config surface.
+	if c.SubjectClaim != "" && strings.TrimSpace(c.SubjectClaim) != c.SubjectClaim {
+		return errors.New("subject_claim must not have leading or trailing whitespace")
 	}
 	return c.CommonOAuthConfig.Validate()
 }
@@ -286,12 +301,47 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 		)
 	}
 
+	subject, err := p.resolveSubject(validatedToken)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
+	}
+
 	return &Identity{
 		Tokens:  exchanged.tokens,
-		Subject: validatedToken.Subject,
+		Subject: subject,
 		Name:    idClaims.Name,
 		Email:   idClaims.Email,
 	}, nil
+}
+
+// resolveSubject returns the upstream subject for the validated ID token.
+// When SubjectClaim is unset or "sub", it uses the standard OIDC subject.
+// Otherwise it extracts the named claim as a non-empty string. It fails loud
+// if the claim is missing, empty, or not a string rather than falling back to
+// "sub", which would key the user under the wrong identifier (see RFC D7).
+func (p *OIDCProviderImpl) resolveSubject(token *oidc.IDToken) (string, error) {
+	claim := p.oidcConfig.SubjectClaim
+	if claim == "" || claim == "sub" {
+		return token.Subject, nil
+	}
+
+	var allClaims map[string]any
+	if err := token.Claims(&allClaims); err != nil {
+		return "", fmt.Errorf("extracting claims for subject claim %q: %w", claim, err)
+	}
+
+	raw, ok := allClaims[claim]
+	if !ok {
+		return "", fmt.Errorf("configured subject claim %q not present in ID token", claim)
+	}
+	value, ok := raw.(string)
+	if !ok {
+		return "", fmt.Errorf("configured subject claim %q is not a string", claim)
+	}
+	if value == "" {
+		return "", fmt.Errorf("configured subject claim %q is empty", claim)
+	}
+	return value, nil
 }
 
 // validateIDToken validates an ID token and returns the parsed token.

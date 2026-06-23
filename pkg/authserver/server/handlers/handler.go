@@ -17,7 +17,9 @@ package handlers
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/ory/fosite"
@@ -41,6 +43,23 @@ type Handler struct {
 	storage      storage.Storage
 	upstreams    []NamedUpstream
 	userResolver *UserResolver
+	// refresher, when set, lets nextMissingUpstream transparently refresh an
+	// expired upstream leg during chain evaluation instead of re-prompting. Nil
+	// when no refresher is configured; an expired leg is then treated as missing.
+	refresher storage.UpstreamTokenRefresher
+}
+
+// Option configures optional Handler behavior at construction time.
+type Option func(*Handler)
+
+// WithUpstreamRefresher injects a refresher used by nextMissingUpstream to
+// transparently refresh expired upstream tokens while evaluating the
+// authorization chain. When unset, an expired leg is treated as missing and the
+// user is re-prompted — the behavior before this option existed.
+func WithUpstreamRefresher(r storage.UpstreamTokenRefresher) Option {
+	return func(h *Handler) {
+		h.refresher = r
+	}
 }
 
 // NewHandler creates a new Handler with the given dependencies.
@@ -56,6 +75,7 @@ func NewHandler(
 	config *server.AuthorizationServerConfig,
 	stor storage.Storage,
 	upstreams []NamedUpstream,
+	opts ...Option,
 ) (*Handler, error) {
 	if config == nil || config.Config == nil {
 		return nil, fmt.Errorf(
@@ -72,13 +92,17 @@ func NewHandler(
 			return nil, fmt.Errorf("handlers: upstream %q has nil provider", u.Name)
 		}
 	}
-	return &Handler{
+	h := &Handler{
 		provider:     provider,
 		config:       config,
 		storage:      stor,
 		upstreams:    upstreams,
 		userResolver: NewUserResolver(stor),
-	}, nil
+	}
+	for _, o := range opts {
+		o(h)
+	}
+	return h, nil
 }
 
 // Routes returns a router with all OAuth/OIDC endpoints registered.
@@ -116,20 +140,67 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 }
 
 // nextMissingUpstream returns the name of the next upstream provider in the
-// authorization chain that does not yet have stored tokens for this session.
-// Returns empty string if all upstreams are satisfied.
-// Returns an error if the storage lookup fails.
+// authorization chain that the user must (re-)authenticate with for this session.
+// Returns empty string if all upstreams are satisfied, or an error if the storage
+// lookup fails.
+//
+// A leg is satisfied when it has a stored token that is live (or asserts no
+// expiry). A present-but-expired token is NOT treated as satisfied by presence
+// alone: the leg is refreshed transparently (mirroring upstreamtoken
+// InProcessService.GetAllValidTokens) and only counts as satisfied if the refresh
+// succeeds. If refresh is impossible or fails, the leg is reported as missing so
+// the user is re-prompted up front, rather than the stale token surfacing as a
+// runtime auth error later at MCP-request token-swap time.
 func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string) (string, error) {
 	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
 	if err != nil {
 		return "", fmt.Errorf("failed to check upstream token state: %w", err)
 	}
 	for _, u := range h.upstreams {
-		if _, ok := stored[u.Name]; !ok {
+		tokens, ok := stored[u.Name]
+		if !ok || tokens == nil {
+			// No token stored for this leg — prompt.
+			return u.Name, nil
+		}
+		// A live token (or one with no asserted expiry) satisfies the leg.
+		if tokens.ExpiresAt.IsZero() || !tokens.IsExpired(time.Now()) {
+			continue
+		}
+		// Expired — attempt a transparent refresh; prompt now if it can't be done.
+		if !h.refreshExpiredLeg(ctx, sessionID, u.Name, tokens) {
 			return u.Name, nil
 		}
 	}
 	return "", nil
+}
+
+// refreshExpiredLeg attempts to refresh an expired upstream token for one chain
+// leg. It returns true when the leg can be treated as authenticated (refresh
+// succeeded) and false when the user must be re-prompted: no refresher configured,
+// no refresh token on the row, or the refresh itself failed (expired/revoked
+// refresh token, provider error). Mirrors the refresh-then-classify behavior in
+// upstreamtoken.InProcessService.GetAllValidTokens.
+func (h *Handler) refreshExpiredLeg(
+	ctx context.Context,
+	sessionID, providerName string,
+	expired *storage.UpstreamTokens,
+) bool {
+	if h.refresher == nil || expired.RefreshToken == "" {
+		return false
+	}
+	if _, err := h.refresher.RefreshAndStore(ctx, sessionID, expired); err != nil {
+		slog.WarnContext(ctx, "upstream token refresh failed during chain evaluation; re-prompting",
+			"session_id", sessionID,
+			"provider", providerName,
+			"error", err,
+		)
+		return false
+	}
+	slog.DebugContext(ctx, "refreshed expired upstream token during chain evaluation",
+		"session_id", sessionID,
+		"provider", providerName,
+	)
+	return true
 }
 
 // upstreamByName returns the upstream provider with the given name.

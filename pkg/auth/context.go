@@ -38,6 +38,13 @@ func WithIdentity(ctx context.Context, identity *Identity) context.Context {
 // IdentityFromContext retrieves an Identity from the context.
 // Returns the identity and true if present, nil and false otherwise.
 //
+// A typed-nil *Identity stored via context.WithValue (instead of the
+// canonical WithIdentity helper, which guards against nil) is treated as
+// "no identity" — the function returns (nil, false) rather than (nil, true).
+// This prevents callers that gate on the bool (e.g. identity round-trippers)
+// from suppressing fallback logic and allowing a nil pointer to flow
+// downstream.
+//
 // This function is typically called by authorization middleware or handlers that need
 // to check who the authenticated user is.
 //
@@ -50,7 +57,7 @@ func WithIdentity(ctx context.Context, identity *Identity) context.Context {
 //	log.Printf("Request from user: %s", identity.Subject)
 func IdentityFromContext(ctx context.Context) (*Identity, bool) {
 	identity, ok := ctx.Value(IdentityContextKey{}).(*Identity)
-	return identity, ok
+	return identity, ok && identity != nil
 }
 
 // PlatformUserContextKey is the key used to store the platform's canonical user

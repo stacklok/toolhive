@@ -533,6 +533,11 @@ type UpstreamTokenStorage interface {
 	// Returns ErrNotFound if the session does not exist.
 	DeleteUpstreamTokens(ctx context.Context, sessionID string) error
 
+	// DeleteUpstreamTokensForProvider removes tokens for a single (sessionID, providerName),
+	// leaving sibling providers' rows intact. Deleting an absent row is NOT an error (nil).
+	// Used as best-effort cleanup of a refresh token rotated at the IdP but not persisted.
+	DeleteUpstreamTokensForProvider(ctx context.Context, sessionID, providerName string) error
+
 	// GetLatestUpstreamTokensForUser returns the most recently stored upstream tokens
 	// for (userID, providerID) across any session. The "latest" winner is determined
 	// by treating non-expiring rows (zero ExpiresAt — providers like Slack and GitHub

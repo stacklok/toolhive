@@ -21,6 +21,18 @@ import (
 // triggering request's context so that waiting callers are not abandoned.
 const refreshTimeout = 30 * time.Second
 
+// upstreamStoreMaxAttempts is the maximum number of attempts to store refreshed
+// upstream tokens before giving up.
+const upstreamStoreMaxAttempts = 3
+
+// upstreamStoreRetryBackoff is the fixed delay between store retry attempts.
+const upstreamStoreRetryBackoff = 50 * time.Millisecond
+
+// upstreamDeleteTimeout bounds how long the best-effort per-provider delete may
+// take. A fresh detached context is used so a ctx deadline/cancel on the store
+// attempts does not also kill the delete, which would leave the stale row behind.
+const upstreamDeleteTimeout = 5 * time.Second
+
 // upstreamTokenRefresher implements storage.UpstreamTokenRefresher by wrapping
 // a set of upstream OAuth2Providers (keyed by provider name) and
 // UpstreamTokenStorage (for persisting the refreshed tokens). On each refresh
@@ -127,20 +139,47 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 		ClientID:         expired.ClientID,
 	}
 
-	// If the provider didn't rotate the refresh token, keep the original
+	// Detect rotation BEFORE the old-RT backfill below so the original
+	// (provider-issued) value is compared, not the backfilled fallback.
+	rotated := updated.RefreshToken != "" && updated.RefreshToken != expired.RefreshToken
+
+	// If the provider didn't rotate the refresh token, keep the original.
 	if updated.RefreshToken == "" {
 		updated.RefreshToken = expired.RefreshToken
 	}
 
-	// Store the refreshed tokens
-	if err := r.storage.StoreUpstreamTokens(ctx, sessionID, expired.ProviderID, updated); err != nil {
-		// Log but still return the refreshed tokens — the current request can
-		// proceed even if storage fails. The next request will retry the refresh.
-		slog.Warn("failed to store refreshed upstream tokens",
-			"session_id", sessionID,
-			"error", err,
+	if err := r.storeWithRetry(ctx, sessionID, expired.ProviderID, updated); err != nil {
+		if !rotated {
+			// The old refresh token is still valid in storage; the caller can
+			// proceed with the refreshed access token for this request.
+			slog.Warn("failed to persist refreshed upstream tokens; old refresh token still valid",
+				"session_id", sessionID,
+				"provider_id", expired.ProviderID,
+				"error", err,
+			)
+			return updated, nil
+		}
+
+		// The IdP rotated the refresh token: the new RT was redeemed but could
+		// not be persisted. The old RT is now dead in storage and will trigger
+		// reuse-detection lockout on the next refresh attempt.
+		//
+		// Residual window: if the process crashes here, the dead old RT stays in
+		// storage. ErrNotFound on the next refresh attempt forces re-auth, which
+		// is the backstop. Store-intent-before-redeem is out of scope for this fix.
+		deleteCtx, deleteCancel := context.WithTimeout(context.WithoutCancel(ctx), upstreamDeleteTimeout)
+		defer deleteCancel()
+		if delErr := r.storage.DeleteUpstreamTokensForProvider(deleteCtx, sessionID, expired.ProviderID); delErr != nil {
+			slog.Error("failed to delete stale upstream token row after rotation persist failure",
+				"session_id", sessionID,
+				"provider_id", expired.ProviderID,
+				"error", delErr,
+			)
+		}
+		return nil, fmt.Errorf(
+			"failed to persist rotated upstream refresh token for session %q provider %q: %w",
+			sessionID, expired.ProviderID, err,
 		)
-		return updated, nil
 	}
 
 	slog.Debug("upstream tokens refreshed successfully",
@@ -149,4 +188,37 @@ func (r *upstreamTokenRefresher) refreshAndStore(
 	)
 
 	return updated, nil
+}
+
+// storeWithRetry attempts to store updated tokens up to upstreamStoreMaxAttempts times,
+// waiting upstreamStoreRetryBackoff between attempts. Returns nil on first success.
+// Returns the last error after all attempts are exhausted. Ctx-cancellation short-circuits
+// between attempts and returns the last store error (not ctx.Err()).
+func (r *upstreamTokenRefresher) storeWithRetry(
+	ctx context.Context,
+	sessionID, providerID string,
+	updated *storage.UpstreamTokens,
+) error {
+	var lastErr error
+	for attempt := 1; attempt <= upstreamStoreMaxAttempts; attempt++ {
+		storeErr := r.storage.StoreUpstreamTokens(ctx, sessionID, providerID, updated)
+		if storeErr == nil {
+			return nil
+		}
+		lastErr = storeErr
+		slog.Debug("failed to store refreshed upstream tokens",
+			"session_id", sessionID,
+			"provider_id", providerID,
+			"attempt", attempt,
+			"error", lastErr,
+		)
+		if attempt < upstreamStoreMaxAttempts {
+			select {
+			case <-ctx.Done():
+				return lastErr
+			case <-time.After(upstreamStoreRetryBackoff):
+			}
+		}
+	}
+	return lastErr
 }

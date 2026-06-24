@@ -466,6 +466,14 @@ components:
             authorization requests. Useful for provider-specific parameters like
             Google's access_type=offline.
           type: object
+        allow_private_ips:
+          description: |-
+            AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+            private IP ranges (RFC-1918, link-local). Use only when the upstream is
+            hosted inside the same cluster and has no public endpoint. HTTP-scheme
+            restrictions are unchanged — HTTPS is still required for non-localhost hosts.
+            Defaults to false.
+          type: boolean
         authorization_endpoint:
           description: AuthorizationEndpoint is the URL for the OAuth authorization
             endpoint.
@@ -522,6 +530,14 @@ components:
             authorization requests. Useful for provider-specific parameters like
             Google's access_type=offline.
           type: object
+        allow_private_ips:
+          description: |-
+            AllowPrivateIPs permits the OIDC discovery and token HTTP clients to
+            connect to private IP ranges (RFC-1918, link-local). Use only when the
+            upstream is hosted inside the same cluster and has no public endpoint.
+            HTTP-scheme restrictions are unchanged — HTTPS is still required for
+            non-localhost hosts. Defaults to false.
+          type: boolean
         client_id:
           description: ClientID is the OAuth 2.0 client identifier registered with
             the upstream IDP.

@@ -11,6 +11,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -463,6 +465,184 @@ var _ = Describe("MCPExternalAuthConfig Controller Integration Tests", func() {
 				// Check if the hash has been updated
 				return updatedMCPServer.Status.ExternalAuthConfigHash != originalHash
 			}, timeout, interval).Should(BeTrue())
+		})
+	})
+
+	Context("When deleting an MCPExternalAuthConfig with active references", Ordered, func() {
+		// The block->unblock deletion transition is driven purely by the
+		// controller's periodic requeue (the workload watches were removed), so
+		// the unblock assertion below must tolerate the up-to-30s requeue delay.
+		const deletionRequeueTimeout = time.Second * 45
+
+		var (
+			namespace       string
+			authConfigName  string
+			authConfig      *mcpv1beta1.MCPExternalAuthConfig
+			mcpServerName   string
+			mcpServer       *mcpv1beta1.MCPServer
+			oauthSecret     *corev1.Secret
+			oauthSecretName string
+		)
+
+		BeforeAll(func() {
+			namespace = defaultNamespace
+			authConfigName = "test-external-auth-deletion"
+			mcpServerName = "external-auth-deletion-server"
+			oauthSecretName = "oauth-test-secret-deletion"
+
+			// Create namespace if it doesn't exist
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			// Create OAuth secret
+			oauthSecret = &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      oauthSecretName,
+					Namespace: namespace,
+				},
+				StringData: map[string]string{
+					"client-secret": "deletion-secret-value",
+				},
+			}
+			Expect(k8sClient.Create(ctx, oauthSecret)).Should(Succeed())
+
+			// Create MCPExternalAuthConfig
+			authConfig = &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      authConfigName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: "tokenExchange",
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+						TokenURL: "https://oauth.example.com/token",
+						ClientID: "deletion-client-id",
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
+							Name: oauthSecretName,
+							Key:  "client-secret",
+						},
+						Audience: "mcp-backend-deletion",
+						Scopes:   []string{"read"},
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, authConfig)).Should(Succeed())
+
+			// Create MCPServer referencing the auth config so it is observably
+			// referenced before we attempt deletion.
+			mcpServer = &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1beta1.MCPServerSpec{
+					Image:     "ghcr.io/stackloklabs/mcp-fetch:latest",
+					Transport: "stdio",
+					ProxyPort: 8080,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
+						Name: authConfigName,
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+
+			// Wait for the MCPServer to be wired to the config (the external auth
+			// config hash propagates to its status) so the reference is
+			// observable before deletion.
+			Eventually(func() bool {
+				updatedMCPServer := &mcpv1beta1.MCPServer{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				}, updatedMCPServer)
+				if err != nil {
+					return false
+				}
+				return updatedMCPServer.Status.ExternalAuthConfigHash != ""
+			}, timeout, interval).Should(BeTrue())
+		})
+
+		AfterAll(func() {
+			// Best-effort cleanup; the specs may have already removed these.
+			_ = k8sClient.Delete(ctx, mcpServer)
+			_ = k8sClient.Delete(ctx, oauthSecret)
+
+			// Ensure the MCPExternalAuthConfig is fully gone before the suite
+			// reuses the shared namespace.
+			Eventually(func() bool {
+				updated := &mcpv1beta1.MCPExternalAuthConfig{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      authConfigName,
+					Namespace: namespace,
+				}, updated)
+				return errors.IsNotFound(err)
+			}, deletionRequeueTimeout, interval).Should(BeTrue())
+		})
+
+		It("Should have the finalizer once it is being tracked", func() {
+			Eventually(func() []string {
+				updated := &mcpv1beta1.MCPExternalAuthConfig{}
+				if err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      authConfigName,
+					Namespace: namespace,
+				}, updated); err != nil {
+					return nil
+				}
+				return updated.Finalizers
+			}, timeout, interval).Should(ContainElement("mcpexternalauthconfig.toolhive.stacklok.dev/finalizer"))
+		})
+
+		It("Should not be deleted while referenced and should set DeletionBlocked condition", func() {
+			// Request deletion; the finalizer must keep the object alive.
+			Expect(k8sClient.Delete(ctx, authConfig)).Should(Succeed())
+
+			// The object should still exist (finalizer blocks deletion) with a
+			// pending deletion timestamp and a DeletionBlocked=True condition.
+			Eventually(func() bool {
+				updated := &mcpv1beta1.MCPExternalAuthConfig{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      authConfigName,
+					Namespace: namespace,
+				}, updated)
+				if err != nil {
+					return false
+				}
+				if updated.DeletionTimestamp.IsZero() {
+					return false
+				}
+				cond := meta.FindStatusCondition(updated.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked)
+				return cond != nil && cond.Status == metav1.ConditionTrue
+			}, timeout, interval).Should(BeTrue())
+
+			// Confirm it stays blocked (does not vanish) while still referenced.
+			Consistently(func() bool {
+				updated := &mcpv1beta1.MCPExternalAuthConfig{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      authConfigName,
+					Namespace: namespace,
+				}, updated)
+				return err == nil
+			}, time.Second*2, interval).Should(BeTrue())
+		})
+
+		It("Should be deleted after the referencing MCPServer is removed", func() {
+			// Remove the reference.
+			Expect(k8sClient.Delete(ctx, mcpServer)).Should(Succeed())
+
+			// With the workload watches removed, the unblock relies solely on the
+			// controller's periodic (up-to-30s) requeue, so allow extra time.
+			Eventually(func() bool {
+				updated := &mcpv1beta1.MCPExternalAuthConfig{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      authConfigName,
+					Namespace: namespace,
+				}, updated)
+				return errors.IsNotFound(err)
+			}, deletionRequeueTimeout, interval).Should(BeTrue())
 		})
 	})
 })

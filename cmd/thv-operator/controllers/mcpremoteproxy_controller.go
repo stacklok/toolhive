@@ -1083,34 +1083,38 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 // validateCABundleRef validates the OIDC CA bundle ConfigMap reference if specified.
 // The CA bundle is sourced from the referenced MCPOIDCConfig's inline configuration.
 // It mirrors MCPServer.validateCABundleRef so the proxy surfaces the same
-// CABundleRefValidated condition (see the Status Condition Parity rule), but persists
-// status only when the condition actually changes so a steady-state reconcile is a
-// no-op — matching the needsUpdate idiom used by handleOIDCConfig in this file and the
-// idempotency rule in operator.md, rather than MCPServer's unconditional status write.
+// CABundleRefValidated condition (see the Status Condition Parity rule).
+//
+// Writes go through MutateAndPatchStatus (per the operator.md Status Writes rule),
+// which diffs and skips the wire call when nothing changed, so a steady-state
+// reconcile is a no-op (idempotency) and only the condition is patched rather than
+// the whole status PUT.
+//
+// This validator runs before handleOIDCConfig, which is the authoritative validator
+// for the OIDCConfigRef itself. So when the MCPOIDCConfig cannot be resolved (e.g. a
+// transient apiserver/cache error), it leaves the existing condition untouched and
+// lets handleOIDCConfig's requeue drive recovery — clearing the condition only when
+// the config resolves and genuinely has no CA bundle.
 func (r *MCPRemoteProxyReconciler) validateCABundleRef(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) {
 	condType := mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated
-	prev := meta.FindStatusCondition(proxy.Status.Conditions, condType)
 
-	caBundleRef := r.resolveOIDCCABundleRef(ctx, proxy)
+	caBundleRef, resolved := r.resolveOIDCCABundleRef(ctx, proxy)
+	if !resolved {
+		// Could not resolve the MCPOIDCConfig; leave any existing condition in place.
+		return
+	}
 	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
-		// No CA bundle configured - clear any stale condition from a prior reconcile.
-		if prev != nil {
-			meta.RemoveStatusCondition(&proxy.Status.Conditions, condType)
-			r.updateCABundleStatus(ctx, proxy)
-		}
+		// Config resolved and has no CA bundle: clear any stale condition.
+		r.patchCABundleStatus(ctx, proxy, func(p *mcpv1beta1.MCPRemoteProxy) {
+			meta.RemoveStatusCondition(&p.Status.Conditions, condType)
+		})
 		return
 	}
 
 	status, reason, message := r.evaluateCABundleRef(ctx, proxy, caBundleRef)
-	setRemoteProxyCABundleRefCondition(proxy, status, reason, message)
-
-	if prev == nil ||
-		prev.Status != status ||
-		prev.Reason != reason ||
-		prev.Message != message ||
-		prev.ObservedGeneration != proxy.Generation {
-		r.updateCABundleStatus(ctx, proxy)
-	}
+	r.patchCABundleStatus(ctx, proxy, func(p *mcpv1beta1.MCPRemoteProxy) {
+		setRemoteProxyCABundleRefCondition(p, status, reason, message)
+	})
 }
 
 // evaluateCABundleRef checks the referenced CA bundle ConfigMap and returns the
@@ -1154,24 +1158,27 @@ func (r *MCPRemoteProxyReconciler) evaluateCABundleRef(
 }
 
 // resolveOIDCCABundleRef returns the CA bundle reference from the proxy's referenced
-// MCPOIDCConfig inline configuration, or nil if none is configured or the config
-// cannot be resolved. A fetch error returns nil: the OIDCConfigRef lookup is
-// validated authoritatively in handleOIDCConfig, so this avoids a duplicate failure
-// surface on the CABundleRefValidated condition.
+// MCPOIDCConfig inline configuration. The bool reports whether the OIDC config was
+// successfully resolved: (nil, true) means "resolved, no CA bundle" and (nil, false)
+// means "could not resolve" (no ref, or a transient fetch error). The caller must not
+// clear the condition when resolved is false, to avoid flapping it on a transient
+// apiserver/cache error — handleOIDCConfig is the authoritative validator for the ref.
 func (r *MCPRemoteProxyReconciler) resolveOIDCCABundleRef(
 	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
-) *mcpv1beta1.CABundleSource {
+) (ref *mcpv1beta1.CABundleSource, resolved bool) {
 	if proxy.Spec.OIDCConfigRef == nil {
-		return nil
+		// No OIDC reference at all: there is nothing to resolve and no CA bundle, so
+		// the condition should be cleared. Treat as resolved with no CA bundle.
+		return nil, true
 	}
 	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
 	if err != nil || oidcCfg == nil {
-		return nil
+		return nil, false
 	}
 	if oidcCfg.Spec.Type != mcpv1beta1.MCPOIDCConfigTypeInline || oidcCfg.Spec.Inline == nil {
-		return nil
+		return nil, true
 	}
-	return oidcCfg.Spec.Inline.CABundleRef
+	return oidcCfg.Spec.Inline.CABundleRef, true
 }
 
 // setRemoteProxyCABundleRefCondition sets the CA bundle ref validation condition on the proxy.
@@ -1187,11 +1194,14 @@ func setRemoteProxyCABundleRefCondition(
 	})
 }
 
-// updateCABundleStatus persists the proxy status after CA bundle validation. The error
-// is logged and swallowed: the CABundleRefValidated condition is advisory, and a failed
-// write is healed on the next reconcile rather than blocking the reconcile's objective.
-func (r *MCPRemoteProxyReconciler) updateCABundleStatus(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) {
-	if err := r.Status().Update(ctx, proxy); err != nil {
+// patchCABundleStatus applies the CA bundle condition mutation via MutateAndPatchStatus
+// (diff-only merge patch, skipped when nothing changed). The error is logged and
+// swallowed: the CABundleRefValidated condition is advisory, and a failed write is
+// healed on the next reconcile rather than blocking the reconcile's objective.
+func (r *MCPRemoteProxyReconciler) patchCABundleStatus(
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, mutate func(*mcpv1beta1.MCPRemoteProxy),
+) {
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, proxy, mutate); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to update MCPRemoteProxy status after CABundleRef validation")
 	}
 }

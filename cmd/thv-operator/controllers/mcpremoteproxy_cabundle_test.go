@@ -148,6 +148,25 @@ func TestMCPRemoteProxyValidateCABundleRef(t *testing.T) {
 			oidcConfig:        newOIDCConfigWithCABundle(nil),
 			expectNoCondition: true,
 		},
+		{
+			// OIDCConfig cannot be resolved (object absent → fetch error). The existing
+			// condition must NOT be cleared on a transient failure; handleOIDCConfig owns
+			// the OIDCConfigRef failure and requeues.
+			name: "transient OIDCConfig fetch error leaves the existing condition untouched",
+			proxy: v1beta1test.NewMCPRemoteProxy("p", testCABundleNamespace,
+				v1beta1test.WithRemoteProxyOIDCConfigRef(testProxyOIDCConfigName, "aud"),
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
+					Conditions: []metav1.Condition{{
+						Type:   mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated,
+						Status: metav1.ConditionTrue,
+						Reason: mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefValid,
+					}},
+				}),
+			),
+			oidcConfig:         nil, // absent from the client → GetOIDCConfigForServer errors
+			expectedCondStatus: metav1.ConditionTrue,
+			expectedCondReason: mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefValid,
+		},
 	}
 
 	for _, tt := range tests {
@@ -202,6 +221,7 @@ func TestAddOIDCCABundleVolumes(t *testing.T) {
 		proxy       *mcpv1beta1.MCPRemoteProxy
 		oidcConfig  *mcpv1beta1.MCPOIDCConfig
 		expectMount bool
+		expectNilM  bool // build aborts (returns nil) on a transient OIDCConfig fetch error
 	}{
 		{
 			name:        "no OIDCConfigRef mounts nothing",
@@ -217,12 +237,13 @@ func TestAddOIDCCABundleVolumes(t *testing.T) {
 		},
 		{
 			// OIDCConfigRef set but the MCPOIDCConfig object is absent: the fetch
-			// errors, addOIDCCABundleVolumes logs and returns, so nothing is mounted.
-			name: "OIDCConfigRef set but MCPOIDCConfig missing mounts nothing",
+			// errors, so the build aborts (returns nil) rather than producing a
+			// CA-less Deployment that would crash-loop.
+			name: "OIDCConfigRef set but MCPOIDCConfig missing aborts the build",
 			proxy: v1beta1test.NewMCPRemoteProxy("p", testCABundleNamespace,
 				v1beta1test.WithRemoteProxyOIDCConfigRef(testProxyOIDCConfigName, "aud")),
-			oidcConfig:  nil,
-			expectMount: false,
+			oidcConfig: nil,
+			expectNilM: true,
 		},
 		{
 			name: "OIDCConfig with CA bundle mounts the ConfigMap",
@@ -251,6 +272,10 @@ func TestAddOIDCCABundleVolumes(t *testing.T) {
 			}
 
 			dep := reconciler.deploymentForMCPRemoteProxy(t.Context(), tt.proxy, "test-checksum")
+			if tt.expectNilM {
+				assert.Nil(t, dep, "build should abort (nil) on a transient OIDCConfig fetch error")
+				return
+			}
 			require.NotNil(t, dep)
 
 			expectedVolumeName := validation.OIDCCABundleVolumePrefix + testCABundleConfigMapName

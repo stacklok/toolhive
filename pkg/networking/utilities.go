@@ -22,7 +22,7 @@ import (
 // reach internal addresses for that deployment.
 //
 // IP literals and "localhost" are classified without DNS. Hostnames are resolved
-// and reported private if ANY resolved address is private. Unparseable input or
+// and reported private if ANY resolved address is private. Unparsable input or
 // resolution failure returns false (treat as public — the SSRF guard then stays
 // engaged, failing secure).
 func TargetIsPrivate(ctx context.Context, rawURL string) bool {

@@ -24,7 +24,7 @@ func TestTargetIsPrivate(t *testing.T) {
 		{name: "loopback IPv4 literal", url: "http://127.0.0.1:8080", want: true},
 		{name: "localhost hostname", url: "http://localhost:9000", want: true},
 		{name: "public IPv4 literal", url: "https://8.8.8.8", want: false},
-		{name: "unparseable", url: "://nope", want: false},
+		{name: "unparsable", url: "://nope", want: false},
 		{name: "empty host", url: "/just/a/path", want: false},
 	}
 	for _, tt := range tests {

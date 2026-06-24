@@ -22,6 +22,15 @@ read-your-write need, and skipping `observedGeneration` on a CR with no
 generation semantics. Knowing *why* each rule exists is what tells you when
 you're in the exception.
 
+> **On the file references below.** Rules cite specific files as exemplars
+> ("the pattern to copy") and as counter-examples ("do not copy", "being
+> migrated", "fix first"). The *pattern* is authoritative; the file pointer is an
+> illustration accurate as of this rule's last edit. If a cited counter-example
+> has since been fixed, that is success, not a contradiction — apply the
+> structural rule and update or drop the stale pointer. Never treat a "do not
+> copy" pointer as license to assume the named file is still broken without
+> checking it.
+
 ## Reconciliation core
 
 - **Recompute, don't diff on the event.** Read the world, compute desired state,
@@ -112,8 +121,11 @@ write-path mechanics.)
   `kubectl apply` round-trip does not flip the hash and cause spurious writes.
 
 - **Use `metav1.Condition` + `meta.SetStatusCondition`.** Express discrete state
-  facts as conditions with `+listType=map`/`+listMapKey=type` markers and
-  condition-type constants centralized in `api/v1beta1/conditions.go`. Do not
+  facts as conditions with `+listType=map`/`+listMapKey=type` markers. Truly
+  shared condition types (`Valid`, `DeletionBlocked`) live in
+  `api/v1beta1/conditions.go`; per-CRD condition types are defined alongside their
+  own status struct in the respective `*_types.go` file — follow that convention,
+  don't dump CRD-specific types into the shared file. Do not
   invent a bespoke status string for something a condition already covers. A
   coarse `Phase` enum (validated with `+kubebuilder:validation:Enum`, shown via
   `+kubebuilder:printcolumn`) is acceptable *in addition to* conditions as a
@@ -144,8 +156,8 @@ write-path mechanics.)
 
 - **Owner-reference everything you create** so Kubernetes garbage-collects it on
   cascade delete — use `controllerutil.SetControllerReference`, or the upsert
-  helpers in `pkg/kubernetes/{configmaps,secrets,rbac}` and `pkg/registryapi`
-  that wire it in centrally. Do not write manual deletion logic in a finalizer
+  helpers in `cmd/thv-operator/pkg/kubernetes/{configmaps,secrets,rbac}` and
+  `cmd/thv-operator/pkg/registryapi` that wire it in centrally. Do not write manual deletion logic in a finalizer
   for same-namespace, same-or-narrower-scope children; GC already reclaims them,
   and the manual delete only adds RBAC surface and a finalizer failure path.
   Owner refs do not work cross-namespace or namespaced→cluster-scoped — for those
@@ -227,10 +239,11 @@ write-path mechanics.)
   `mcpwebhookconfig_controller.go`). Do NOT use a generation predicate on objects
   whose generation is meaningless or whose status changes you must react to
   (ConfigMaps, an MCPGroup readiness flip) — write a field-specific predicate
-  instead (see `configMapDataChangedPredicate`). Because status writes go through
-  `MutateAndPatchStatus` and don't bump `metadata.generation`, an explicit
-  self-loop predicate on the primary `For()` type is belt-and-suspenders here,
-  not mandatory.
+  instead (see `configMapDataChangedPredicate`). Do NOT add a
+  `GenerationChangedPredicate` to the primary `For()` type to "avoid self-reconcile
+  loops": status writes go through `MutateAndPatchStatus` and don't bump
+  `metadata.generation`, so the loop it guards against can't happen and the
+  predicate would only suppress legitimate spec reconciles.
 
 - **Bound concurrency explicitly.** Controller-runtime defaults to
   `MaxConcurrentReconciles: 1` and a bucketed exponential rate limiter — safe but
@@ -272,14 +285,20 @@ write-path mechanics.)
   endpoint (`Metrics.BindAddress`, default `:8080`), a health-probe endpoint
   (`HealthProbeBindAddress`, default `:8081`) with both `AddHealthzCheck` and
   `AddReadyzCheck`, and leader election (`LeaderElection` + `LeaderElectionID` +
-  `LeaderElectionNamespace`). Leader election is opt-in via `--leader-elect` and
-  must be enabled by the Helm chart whenever `replicaCount > 1`; the chart also
-  owns the leases/configmaps RBAC and the probe definitions against the health
-  port (see `deploy/charts/operator/tests/probes_test.yaml`).
+  `LeaderElectionNamespace`). The binary takes a `--leader-elect` flag, which the
+  Helm chart currently passes unconditionally (`deploy/charts/operator/templates/deployment.yaml`),
+  so leader election is on even at the default `replicaCount: 1` — do not "fix"
+  this into a `replicaCount`-gated conditional, which would disable it by default.
+  The chart also owns the leases/configmaps RBAC and the probe definitions against
+  the health port (see `deploy/charts/operator/tests/probes_test.yaml`).
 - "Reconcile metrics" are provided automatically by controller-runtime
   (`controller_runtime_reconcile_*`, workqueue metrics) once the metrics endpoint
-  is enabled — do not hand-roll them. Reserve custom instrumentation for domain
-  metrics, which here live in the leader-only OTEL telemetry service.
+  is enabled — do not hand-roll them. The operator currently exposes no custom
+  OTEL domain metrics; its only leader-only runnable
+  (`pkg/operator/telemetry`, `LeaderTelemetryRunnable`) is a usage/update-check
+  worker that polls the ToolHive update API and persists an instance-id ConfigMap —
+  not a metrics emitter. If you add domain metrics, register them on the
+  controller-runtime metrics registry.
 
 ## CRD vs PodTemplateSpec
 

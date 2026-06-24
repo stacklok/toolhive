@@ -168,6 +168,14 @@ type Config struct {
 	// +optional
 	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
 
+	// CodeMode configures vMCP code mode: server-side execution of Starlark scripts that
+	// orchestrate multiple backend tool calls in a single request via the execute_tool_script
+	// virtual tool. When enabled, execute_tool_script is advertised alongside the backend
+	// tools; a script's inner tool calls are authorized individually, so a script can only
+	// reach tools the caller is already permitted to use. Disabled by default.
+	// +optional
+	CodeMode *CodeModeConfig `json:"codeMode,omitempty" yaml:"codeMode,omitempty"`
+
 	// SessionStorage configures session storage for stateful horizontal scaling.
 	// When provider is "redis", the operator injects Redis connection parameters
 	// (address, db, keyPrefix) here. The Redis password is provided separately via
@@ -949,6 +957,40 @@ type OptimizerConfig struct {
 	// +kubebuilder:validation:Pattern=`^([0-9]*[.])?[0-9]+$`
 	// +optional
 	SemanticDistanceThreshold string `json:"semanticDistanceThreshold,omitempty" yaml:"semanticDistanceThreshold,omitempty"`
+}
+
+// CodeModeConfig configures vMCP code mode (the execute_tool_script virtual tool).
+// When enabled, agents can submit a Starlark script that calls multiple backend tools
+// server-side — with loops, conditionals, and parallel() fan-out — and receive a single
+// aggregated result, collapsing many tool-call round-trips into one.
+// +kubebuilder:object:generate=true
+// +gendoc
+type CodeModeConfig struct {
+	// Enabled turns code mode on. When false (the default), execute_tool_script is not
+	// advertised in tools/list and scripts cannot be executed.
+	// +optional
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// StepLimit is the maximum number of Starlark execution steps per script. It bounds
+	// runaway loops and computation. Defaults to 100000 if unset or zero.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=100000
+	// +optional
+	StepLimit int64 `json:"stepLimit,omitempty" yaml:"stepLimit,omitempty"`
+
+	// ParallelMaxConcurrency caps the number of goroutines a script's parallel() builtin
+	// may run concurrently. Defaults to 10 if unset or zero.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=10
+	// +optional
+	ParallelMaxConcurrency int `json:"parallelMaxConcurrency,omitempty" yaml:"parallelMaxConcurrency,omitempty"`
+
+	// ToolCallTimeout bounds each individual backend tool call made from within a script.
+	// A call exceeding it is cancelled and surfaces a timeout error to the script.
+	// Defaults to 30s if unset.
+	// +kubebuilder:default="30s"
+	// +optional
+	ToolCallTimeout Duration `json:"toolCallTimeout,omitempty" yaml:"toolCallTimeout,omitempty"`
 }
 
 // SessionStorageConfig configures session storage for stateful horizontal scaling.

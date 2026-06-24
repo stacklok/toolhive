@@ -1226,6 +1226,43 @@ spec:
                       - url
                       type: object
                     type: array
+                  codeMode:
+                    description: |-
+                      CodeMode configures vMCP code mode: server-side execution of Starlark scripts that
+                      orchestrate multiple backend tool calls in a single request via the execute_tool_script
+                      virtual tool. When enabled, execute_tool_script is advertised alongside the backend
+                      tools; a script's inner tool calls are authorized individually, so a script can only
+                      reach tools the caller is already permitted to use. Disabled by default.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled turns code mode on. When false (the default), execute_tool_script is not
+                          advertised in tools/list and scripts cannot be executed.
+                        type: boolean
+                      parallelMaxConcurrency:
+                        default: 10
+                        description: |-
+                          ParallelMaxConcurrency caps the number of goroutines a script's parallel() builtin
+                          may run concurrently. Defaults to 10 if unset or zero.
+                        minimum: 1
+                        type: integer
+                      stepLimit:
+                        default: 100000
+                        description: |-
+                          StepLimit is the maximum number of Starlark execution steps per script. It bounds
+                          runaway loops and computation. Defaults to 100000 if unset or zero.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      toolCallTimeout:
+                        default: 30s
+                        description: |-
+                          ToolCallTimeout bounds each individual backend tool call made from within a script.
+                          A call exceeding it is cancelled and surfaces a timeout error to the script.
+                          Defaults to 30s if unset.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                    type: object
                   compositeToolRefs:
                     description: |-
                       CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
@@ -4277,6 +4314,43 @@ spec:
                       - url
                       type: object
                     type: array
+                  codeMode:
+                    description: |-
+                      CodeMode configures vMCP code mode: server-side execution of Starlark scripts that
+                      orchestrate multiple backend tool calls in a single request via the execute_tool_script
+                      virtual tool. When enabled, execute_tool_script is advertised alongside the backend
+                      tools; a script's inner tool calls are authorized individually, so a script can only
+                      reach tools the caller is already permitted to use. Disabled by default.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled turns code mode on. When false (the default), execute_tool_script is not
+                          advertised in tools/list and scripts cannot be executed.
+                        type: boolean
+                      parallelMaxConcurrency:
+                        default: 10
+                        description: |-
+                          ParallelMaxConcurrency caps the number of goroutines a script's parallel() builtin
+                          may run concurrently. Defaults to 10 if unset or zero.
+                        minimum: 1
+                        type: integer
+                      stepLimit:
+                        default: 100000
+                        description: |-
+                          StepLimit is the maximum number of Starlark execution steps per script. It bounds
+                          runaway loops and computation. Defaults to 100000 if unset or zero.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      toolCallTimeout:
+                        default: 30s
+                        description: |-
+                          ToolCallTimeout bounds each individual backend tool call made from within a script.
+                          A call exceeding it is cancelled and surfaces a timeout error to the script.
+                          Defaults to 30s if unset.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                    type: object
                   compositeToolRefs:
                     description: |-
                       CompositeToolRefs references VirtualMCPCompositeToolDefinition resources

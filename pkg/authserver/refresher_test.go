@@ -6,6 +6,8 @@ package authserver
 import (
 	"context"
 	"errors"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -318,4 +320,217 @@ func TestUpstreamTokenRefresher_RefreshAndStore(t *testing.T) {
 			}
 		})
 	}
+}
+
+// waitGroupTimeout blocks until wg is done, failing the test if that takes
+// longer than d. Without it, a synchronization regression (or a panicking
+// goroutine) would hang the test until the global go test timeout instead of
+// failing fast with a clear message.
+func waitGroupTimeout(t *testing.T, wg *sync.WaitGroup, d time.Duration, msg string) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(d):
+		t.Fatal(msg)
+	}
+}
+
+// TestUpstreamTokenRefresher_SingleflightDedup proves that concurrent
+// RefreshAndStore calls for the same (session, provider) key result in exactly
+// one upstream redemption, and that distinct keys are independent.
+//
+// The same-key sub-test holds the leader's in-flight call open on a
+// test-controlled release channel while the followers join it, then asserts the
+// provider was invoked exactly once. singleflight exposes no hook for "a
+// follower is now parked in Do", so the test cannot be made fully deterministic;
+// it gates release on every goroutine having reached RefreshAndStore plus a
+// short settle for the followers to park — the same strategy used by
+// golang.org/x/sync/singleflight's own dup-suppression test. The leader holding
+// the key open for the whole window (rather than releasing as soon as the
+// callers are merely counted) is what keeps it robust.
+func TestUpstreamTokenRefresher_SingleflightDedup(t *testing.T) {
+	t.Parallel()
+
+	const n = 10
+	newExpiry := time.Now().Add(1 * time.Hour)
+
+	expired := &storage.UpstreamTokens{
+		ProviderID:       "github",
+		AccessToken:      "old-access",
+		RefreshToken:     "old-refresh",
+		ExpiresAt:        time.Now().Add(-1 * time.Hour),
+		SessionExpiresAt: time.Now().Add(7 * 24 * time.Hour),
+		UserID:           "user-1",
+		UpstreamSubject:  "sub-1",
+		ClientID:         "client-1",
+	}
+
+	t.Run("same key deduplicated to one redemption", func(t *testing.T) {
+		t.Parallel()
+
+		ctrl := gomock.NewController(t)
+		mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+		mockProvider := upstreammocks.NewMockOAuth2Provider(ctrl)
+
+		// inFlight is closed once the leader (goroutine 0) is inside the provider
+		// callback, so the followers start only after the singleflight key is
+		// already held in the group's map.
+		inFlight := make(chan struct{})
+
+		// release keeps the leader parked inside the callback — and therefore
+		// keeps the in-flight call open in the singleflight map — until the TEST
+		// closes it. Crucially the leader's exit is gated on the test, not on the
+		// followers (the previous version released as soon as all goroutines had
+		// merely reached their body, which let the leader clear the map entry
+		// before a follower had actually entered Do — a real flake). singleflight
+		// gives us no public hook for "follower is parked in Do", so determinism
+		// rests on the leader holding the entry open across the followers' join;
+		// the same approach golang.org/x/sync/singleflight's own dup-suppression
+		// test uses.
+		release := make(chan struct{})
+
+		// invokeCount tracks actual provider invocations.
+		var invokeCount atomic.Int64
+
+		mockProvider.EXPECT().
+			RefreshTokens(gomock.Any(), "old-refresh", "sub-1").
+			Times(1).
+			DoAndReturn(func(_ context.Context, _, _ string) (*upstream.Tokens, error) {
+				invokeCount.Add(1)
+				close(inFlight)
+				<-release
+				return &upstream.Tokens{
+					AccessToken:  "new-access",
+					RefreshToken: "new-refresh",
+					ExpiresAt:    newExpiry,
+				}, nil
+			})
+		mockStorage.EXPECT().
+			StoreUpstreamTokens(gomock.Any(), "session-1", "github", gomock.Any()).
+			Times(1).
+			Return(nil)
+
+		refresher := &upstreamTokenRefresher{
+			providers:            map[string]upstream.OAuth2Provider{"github": mockProvider},
+			storage:              mockStorage,
+			refreshTokenLifespan: 24 * time.Hour,
+		}
+
+		results := make([]*storage.UpstreamTokens, n)
+		errs := make([]error, n)
+		var entered atomic.Int64
+		var wg sync.WaitGroup
+		wg.Add(n)
+
+		// Leader: enters the provider callback (closing inFlight) and parks on
+		// release.
+		go func() {
+			defer wg.Done()
+			entered.Add(1)
+			results[0], errs[0] = refresher.RefreshAndStore(
+				context.Background(), "session-1", expired,
+			)
+		}()
+
+		// Start the followers only once the leader holds the singleflight key.
+		select {
+		case <-inFlight:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timeout waiting for the first refresh to enter the provider")
+		}
+		for i := 1; i < n; i++ {
+			go func(idx int) {
+				defer wg.Done()
+				entered.Add(1)
+				results[idx], errs[idx] = refresher.RefreshAndStore(
+					context.Background(), "session-1", expired,
+				)
+			}(i)
+		}
+
+		// Wait for every goroutine to have reached RefreshAndStore, then give the
+		// followers a brief settle to park inside sfGroup.Do before releasing the
+		// leader. The leader holds the key open the whole time, so once released
+		// it returns the single shared result to all joined followers.
+		require.Eventually(t, func() bool { return entered.Load() == n }, 5*time.Second, time.Millisecond,
+			"all goroutines should reach RefreshAndStore")
+		time.Sleep(100 * time.Millisecond)
+		close(release)
+
+		waitGroupTimeout(t, &wg, 5*time.Second,
+			"timeout waiting for concurrent RefreshAndStore callers to complete")
+
+		for i := range n {
+			require.NoError(t, errs[i], "goroutine %d got error", i)
+			require.NotNil(t, results[i], "goroutine %d got nil result", i)
+			assert.Equal(t, "new-access", results[i].AccessToken,
+				"goroutine %d got wrong access token", i)
+		}
+		assert.Equal(t, int64(1), invokeCount.Load(),
+			"upstream provider must be invoked exactly once despite %d concurrent callers", n)
+		// mockStorage Times(1) independently enforces exactly one store write.
+	})
+
+	t.Run("distinct keys are independent", func(t *testing.T) {
+		t.Parallel()
+
+		const numProviders = 3
+		ctrl := gomock.NewController(t)
+		mockStorage := storagemocks.NewMockUpstreamTokenStorage(ctrl)
+
+		providers := make(map[string]upstream.OAuth2Provider, numProviders)
+		for i := range numProviders {
+			providerID := "provider-" + string(rune('a'+i))
+			mockProvider := upstreammocks.NewMockOAuth2Provider(ctrl)
+			mockProvider.EXPECT().
+				RefreshTokens(gomock.Any(), "rt-"+providerID, gomock.Any()).
+				Times(1).
+				Return(&upstream.Tokens{
+					AccessToken: "at-" + providerID,
+					ExpiresAt:   newExpiry,
+				}, nil)
+			mockStorage.EXPECT().
+				StoreUpstreamTokens(gomock.Any(), "session-x", providerID, gomock.Any()).
+				Times(1).
+				Return(nil)
+			providers[providerID] = mockProvider
+		}
+
+		refresher := &upstreamTokenRefresher{
+			providers:            providers,
+			storage:              mockStorage,
+			refreshTokenLifespan: 24 * time.Hour,
+		}
+
+		var wg sync.WaitGroup
+		for i := range numProviders {
+			providerID := "provider-" + string(rune('a'+i))
+			tok := &storage.UpstreamTokens{
+				ProviderID:       providerID,
+				AccessToken:      "old",
+				RefreshToken:     "rt-" + providerID,
+				ExpiresAt:        time.Now().Add(-1 * time.Hour),
+				SessionExpiresAt: time.Now().Add(24 * time.Hour),
+				UserID:           "u",
+				UpstreamSubject:  "s",
+				ClientID:         "c",
+			}
+			wg.Add(1)
+			go func(tok *storage.UpstreamTokens) {
+				defer wg.Done()
+				result, err := refresher.RefreshAndStore(context.Background(), "session-x", tok)
+				assert.NoError(t, err)
+				assert.NotNil(t, result)
+			}(tok)
+		}
+		waitGroupTimeout(t, &wg, 5*time.Second,
+			"timeout waiting for distinct-key RefreshAndStore callers to complete")
+		// gomock Times(1) per mock provider asserts each distinct key ran
+		// exactly once through the actual upstream call.
+	})
 }

@@ -16,10 +16,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -378,158 +380,75 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	}
 
 	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPOIDCConfigs.
-	// This handler enqueues both the currently-referenced MCPOIDCConfig AND any
-	// MCPOIDCConfig that still lists this server in ReferencingWorkloads (covers the
-	// case where a server removes its oidcConfigRef — the previously-referenced
-	// config needs to reconcile and clean up the stale entry).
+	// The map function only returns the MCPOIDCConfig the server currently references.
+	// EnqueueRequestsFromMapFunc runs it on both the old and new object on update (and
+	// on the object for create/delete), so removing or changing the ref enqueues both
+	// the previously- and newly-referenced config — the previously-referenced config
+	// then reconciles and prunes the stale entry. No manual stale-reference scan needed.
 	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
-		func(ctx context.Context, obj client.Object) []reconcile.Request {
+		func(_ context.Context, obj client.Object) []reconcile.Request {
 			server, ok := obj.(*mcpv1beta1.MCPServer)
-			if !ok {
+			if !ok || server.Spec.OIDCConfigRef == nil || server.Spec.OIDCConfigRef.Name == "" {
 				return nil
 			}
-
-			seen := make(map[types.NamespacedName]struct{})
-			var requests []reconcile.Request
-
-			// Enqueue the currently-referenced MCPOIDCConfig (if any)
-			if server.Spec.OIDCConfigRef != nil {
-				nn := types.NamespacedName{
-					Name:      server.Spec.OIDCConfigRef.Name,
-					Namespace: server.Namespace,
-				}
-				seen[nn] = struct{}{}
-				requests = append(requests, reconcile.Request{NamespacedName: nn})
-			}
-
-			// Also enqueue any MCPOIDCConfig that still lists this server in
-			// ReferencingWorkloads — handles ref-removal and server-deletion cases.
-			oidcConfigList := &mcpv1beta1.MCPOIDCConfigList{}
-			if err := r.List(ctx, oidcConfigList, client.InNamespace(server.Namespace)); err != nil {
-				log.FromContext(ctx).Error(err, "Failed to list MCPOIDCConfigs for MCPServer watch")
-				return requests
-			}
-			for _, cfg := range oidcConfigList.Items {
-				nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
-				if _, already := seen[nn]; already {
-					continue
-				}
-				for _, ref := range cfg.Status.ReferencingWorkloads {
-					if ref.Kind == mcpv1beta1.WorkloadKindMCPServer && ref.Name == server.Name {
-						requests = append(requests, reconcile.Request{NamespacedName: nn})
-						break
-					}
-				}
-			}
-
-			return requests
+			return []reconcile.Request{{NamespacedName: types.NamespacedName{
+				Name:      server.Spec.OIDCConfigRef.Name,
+				Namespace: server.Namespace,
+			}}}
 		},
 	)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPOIDCConfig{}).
-		Watches(&mcpv1beta1.MCPServer{}, mcpServerHandler).
+		Watches(&mcpv1beta1.MCPServer{}, mcpServerHandler,
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(
 			&mcpv1beta1.VirtualMCPServer{},
 			handler.EnqueueRequestsFromMapFunc(r.mapVirtualMCPServerToOIDCConfig),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Watches(
 			&mcpv1beta1.MCPRemoteProxy{},
 			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToOIDCConfig),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Complete(r)
 }
 
-// mapVirtualMCPServerToOIDCConfig maps VirtualMCPServer changes to MCPOIDCConfig reconciliation requests.
-// Enqueues both the currently-referenced config and any config that still lists this
-// VirtualMCPServer in ReferencingWorkloads (handles ref-removal / deletion).
-func (r *MCPOIDCConfigReconciler) mapVirtualMCPServerToOIDCConfig(
-	ctx context.Context, obj client.Object,
+// mapVirtualMCPServerToOIDCConfig maps a VirtualMCPServer to the MCPOIDCConfig it
+// currently references via spec.incomingAuth. EnqueueRequestsFromMapFunc invokes this
+// on both the old and new object on update (and on the object for create/delete), so a
+// ref change or deletion automatically enqueues both the previously- and newly-referenced
+// config; the previously-referenced config then prunes the stale entry on reconcile. No
+// manual stale-reference scan needed.
+func (*MCPOIDCConfigReconciler) mapVirtualMCPServerToOIDCConfig(
+	_ context.Context, obj client.Object,
 ) []reconcile.Request {
 	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
-	if !ok {
+	if !ok || vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.OIDCConfigRef == nil || vmcp.Spec.IncomingAuth.OIDCConfigRef.Name == "" {
 		return nil
 	}
-
-	seen := make(map[types.NamespacedName]struct{})
-	var requests []reconcile.Request
-
-	// Enqueue the currently-referenced MCPOIDCConfig (if any)
-	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
-		nn := types.NamespacedName{
-			Name:      vmcp.Spec.IncomingAuth.OIDCConfigRef.Name,
-			Namespace: vmcp.Namespace,
-		}
-		seen[nn] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: nn})
-	}
-
-	// Also enqueue any MCPOIDCConfig that still lists this VirtualMCPServer in
-	// ReferencingWorkloads — handles ref-removal and deletion cases.
-	oidcConfigList := &mcpv1beta1.MCPOIDCConfigList{}
-	if err := r.List(ctx, oidcConfigList, client.InNamespace(vmcp.Namespace)); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list MCPOIDCConfigs for VirtualMCPServer watch")
-		return requests
-	}
-	for _, cfg := range oidcConfigList.Items {
-		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
-		if _, already := seen[nn]; already {
-			continue
-		}
-		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == mcpv1beta1.WorkloadKindVirtualMCPServer && ref.Name == vmcp.Name {
-				requests = append(requests, reconcile.Request{NamespacedName: nn})
-				break
-			}
-		}
-	}
-
-	return requests
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Name:      vmcp.Spec.IncomingAuth.OIDCConfigRef.Name,
+		Namespace: vmcp.Namespace,
+	}}}
 }
 
-// mapMCPRemoteProxyToOIDCConfig maps MCPRemoteProxy changes to MCPOIDCConfig reconciliation requests.
-// Enqueues both the currently-referenced config and any config that still lists this
-// MCPRemoteProxy in ReferencingWorkloads (handles ref-removal / deletion).
-func (r *MCPOIDCConfigReconciler) mapMCPRemoteProxyToOIDCConfig(
-	ctx context.Context, obj client.Object,
+// mapMCPRemoteProxyToOIDCConfig maps an MCPRemoteProxy to the MCPOIDCConfig it currently
+// references. EnqueueRequestsFromMapFunc invokes this on both the old and new object on
+// update (and on the object for create/delete), so a ref change or deletion automatically
+// enqueues both the previously- and newly-referenced config; the previously-referenced
+// config then prunes the stale entry on reconcile. No manual stale-reference scan needed.
+func (*MCPOIDCConfigReconciler) mapMCPRemoteProxyToOIDCConfig(
+	_ context.Context, obj client.Object,
 ) []reconcile.Request {
 	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
-	if !ok {
+	if !ok || proxy.Spec.OIDCConfigRef == nil || proxy.Spec.OIDCConfigRef.Name == "" {
 		return nil
 	}
-
-	seen := make(map[types.NamespacedName]struct{})
-	var requests []reconcile.Request
-
-	// Enqueue the currently-referenced MCPOIDCConfig (if any)
-	if proxy.Spec.OIDCConfigRef != nil {
-		nn := types.NamespacedName{
-			Name:      proxy.Spec.OIDCConfigRef.Name,
-			Namespace: proxy.Namespace,
-		}
-		seen[nn] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: nn})
-	}
-
-	// Also enqueue any MCPOIDCConfig that still lists this MCPRemoteProxy in
-	// ReferencingWorkloads — handles ref-removal and deletion cases.
-	oidcConfigList := &mcpv1beta1.MCPOIDCConfigList{}
-	if err := r.List(ctx, oidcConfigList, client.InNamespace(proxy.Namespace)); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list MCPOIDCConfigs for MCPRemoteProxy watch")
-		return requests
-	}
-	for _, cfg := range oidcConfigList.Items {
-		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
-		if _, already := seen[nn]; already {
-			continue
-		}
-		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == mcpv1beta1.WorkloadKindMCPRemoteProxy && ref.Name == proxy.Name {
-				requests = append(requests, reconcile.Request{NamespacedName: nn})
-				break
-			}
-		}
-	}
-
-	return requests
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Name:      proxy.Spec.OIDCConfigRef.Name,
+		Namespace: proxy.Namespace,
+	}}}
 }

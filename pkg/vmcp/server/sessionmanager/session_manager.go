@@ -14,7 +14,6 @@ package sessionmanager
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -22,14 +21,12 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/cache"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
@@ -823,219 +820,6 @@ func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiS
 	}
 	sm.sessions.Set(sessionID, decorated)
 	return nil
-}
-
-// GetAdaptedTools returns SDK-format tools for the given session, with handlers
-// that delegate tool invocations directly to the session's CallTool() method.
-//
-// When the session factory is configured with an aggregator (WithAggregator),
-// tools are in their final resolved form — overrides and conflict resolution
-// applied via ProcessPreQueriedCapabilities. Each handler passes the resolved
-// tool name to CallTool, which translates it back to the original backend name
-// via GetBackendCapabilityName.
-//
-// Without an aggregator, raw backend tool names are used as-is (no overrides
-// or conflict resolution applied).
-func (sm *Manager) GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error) {
-	multiSess, ok := sm.GetMultiSession(sessionID)
-	if !ok {
-		return nil, fmt.Errorf("Manager.GetAdaptedTools: session %q not found or not a multi-session", sessionID)
-	}
-
-	domainTools := multiSess.Tools()
-	sdkTools := make([]mcpserver.ServerTool, 0, len(domainTools))
-
-	for _, domainTool := range domainTools {
-		schemaJSON, err := json.Marshal(domainTool.InputSchema)
-		if err != nil {
-			return nil, fmt.Errorf("Manager.GetAdaptedTools: failed to marshal schema for tool %s: %w", domainTool.Name, err)
-		}
-
-		tool := mcp.Tool{
-			Name:           domainTool.Name,
-			Description:    domainTool.Description,
-			RawInputSchema: schemaJSON,
-			Annotations:    conversion.ToMCPToolAnnotations(domainTool.Annotations),
-		}
-		if domainTool.OutputSchema != nil {
-			outputSchemaJSON, marshalErr := json.Marshal(domainTool.OutputSchema)
-			if marshalErr != nil {
-				slog.Warn("failed to marshal tool output schema",
-					"tool", domainTool.Name, "error", marshalErr)
-			} else {
-				tool.RawOutputSchema = outputSchemaJSON
-			}
-		}
-
-		capturedSess := multiSess
-		capturedSessionID := sessionID
-		capturedToolName := domainTool.Name
-		handler := func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-			args, ok := req.Params.Arguments.(map[string]any)
-			if !ok {
-				wrappedErr := fmt.Errorf("%w: arguments must be object, got %T", vmcp.ErrInvalidInput, req.Params.Arguments)
-				slog.Warn("invalid arguments for tool", "tool", capturedToolName, "error", wrappedErr)
-				return mcp.NewToolResultError(wrappedErr.Error()), nil
-			}
-
-			meta := conversion.FromMCPMeta(req.Params.Meta)
-			caller, _ := auth.IdentityFromContext(ctx)
-
-			result, callErr := capturedSess.CallTool(ctx, caller, capturedToolName, args, meta)
-			if callErr != nil {
-				if errors.Is(callErr, sessiontypes.ErrUnauthorizedCaller) || errors.Is(callErr, sessiontypes.ErrNilCaller) {
-					slog.Warn("caller authorization failed, terminating session",
-						"session_id", capturedSessionID, "tool", capturedToolName, "error", callErr)
-					if _, termErr := sm.Terminate(capturedSessionID); termErr != nil {
-						slog.Error("failed to terminate session after auth failure",
-							"session_id", capturedSessionID, "error", termErr)
-					}
-					return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", callErr)), nil
-				}
-				return mcp.NewToolResultError(callErr.Error()), nil
-			}
-
-			return &mcp.CallToolResult{
-				Result: mcp.Result{
-					Meta: conversion.ToMCPMeta(result.Meta),
-				},
-				Content:           conversion.ToMCPContents(result.Content),
-				StructuredContent: result.StructuredContent,
-				IsError:           result.IsError,
-			}, nil
-		}
-
-		sdkTools = append(sdkTools, mcpserver.ServerTool{
-			Tool:    tool,
-			Handler: handler,
-		})
-		slog.Debug("Manager.GetAdaptedTools: adapted tool", "session_id", sessionID, "tool", domainTool.Name)
-	}
-
-	return sdkTools, nil
-}
-
-// GetAdaptedResources returns SDK-format resources for the given session, with handlers
-// that delegate read requests directly to the session's ReadResource() method.
-func (sm *Manager) GetAdaptedResources(sessionID string) ([]mcpserver.ServerResource, error) {
-	multiSess, ok := sm.GetMultiSession(sessionID)
-	if !ok {
-		return nil, fmt.Errorf("Manager.GetAdaptedResources: session %q not found or not a multi-session", sessionID)
-	}
-
-	domainResources := multiSess.Resources()
-	sdkResources := make([]mcpserver.ServerResource, 0, len(domainResources))
-
-	for _, domainResource := range domainResources {
-		resource := mcp.Resource{
-			Name:        domainResource.Name,
-			URI:         domainResource.URI,
-			Description: domainResource.Description,
-			MIMEType:    domainResource.MimeType,
-		}
-
-		capturedSess := multiSess
-		capturedSessionID := sessionID
-		capturedResourceURI := domainResource.URI
-		handler := func(ctx context.Context, _ mcp.ReadResourceRequest) ([]mcp.ResourceContents, error) {
-			caller, _ := auth.IdentityFromContext(ctx)
-
-			result, readErr := capturedSess.ReadResource(ctx, caller, capturedResourceURI)
-			if readErr != nil {
-				if errors.Is(readErr, sessiontypes.ErrUnauthorizedCaller) || errors.Is(readErr, sessiontypes.ErrNilCaller) {
-					slog.Warn("caller authorization failed, terminating session",
-						"session_id", capturedSessionID, "resource", capturedResourceURI, "error", readErr)
-					if _, termErr := sm.Terminate(capturedSessionID); termErr != nil {
-						slog.Error("failed to terminate session after auth failure",
-							"session_id", capturedSessionID, "error", termErr)
-					}
-					return nil, fmt.Errorf("unauthorized: %w", readErr)
-				}
-				return nil, readErr
-			}
-
-			return conversion.ToMCPResourceContents(result.Contents), nil
-		}
-
-		sdkResources = append(sdkResources, mcpserver.ServerResource{
-			Resource: resource,
-			Handler:  handler,
-		})
-		slog.Debug("Manager.GetAdaptedResources: adapted resource", "session_id", sessionID, "uri", domainResource.URI)
-	}
-
-	return sdkResources, nil
-}
-
-// GetAdaptedPrompts returns SDK-format prompts for the given session, with handlers
-// that delegate prompt requests directly to the session's GetPrompt() method.
-func (sm *Manager) GetAdaptedPrompts(sessionID string) ([]mcpserver.ServerPrompt, error) {
-	multiSess, ok := sm.GetMultiSession(sessionID)
-	if !ok {
-		return nil, fmt.Errorf("Manager.GetAdaptedPrompts: session %q not found or not a multi-session", sessionID)
-	}
-
-	domainPrompts := multiSess.Prompts()
-	sdkPrompts := make([]mcpserver.ServerPrompt, 0, len(domainPrompts))
-
-	for _, domainPrompt := range domainPrompts {
-		prompt := mcp.Prompt{
-			Name:        domainPrompt.Name,
-			Description: domainPrompt.Description,
-		}
-		for _, arg := range domainPrompt.Arguments {
-			prompt.Arguments = append(prompt.Arguments, mcp.PromptArgument{
-				Name:        arg.Name,
-				Description: arg.Description,
-				Required:    arg.Required,
-			})
-		}
-
-		capturedSess := multiSess
-		capturedSessionID := sessionID
-		capturedPromptName := domainPrompt.Name
-		handler := func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-			caller, _ := auth.IdentityFromContext(ctx)
-
-			args := make(map[string]any, len(req.Params.Arguments))
-			for k, v := range req.Params.Arguments {
-				args[k] = v
-			}
-			result, getErr := capturedSess.GetPrompt(ctx, caller, capturedPromptName, args)
-			if getErr != nil {
-				if errors.Is(getErr, sessiontypes.ErrUnauthorizedCaller) || errors.Is(getErr, sessiontypes.ErrNilCaller) {
-					slog.Warn("caller authorization failed, terminating session",
-						"session_id", capturedSessionID, "prompt", capturedPromptName, "error", getErr)
-					if _, termErr := sm.Terminate(capturedSessionID); termErr != nil {
-						slog.Error("failed to terminate session after auth failure",
-							"session_id", capturedSessionID, "error", termErr)
-					}
-					return nil, fmt.Errorf("unauthorized: %w", getErr)
-				}
-				return nil, getErr
-			}
-
-			mcpMessages := make([]mcp.PromptMessage, 0, len(result.Messages))
-			for _, msg := range result.Messages {
-				mcpMessages = append(mcpMessages, mcp.PromptMessage{
-					Role:    mcp.Role(msg.Role),
-					Content: conversion.ToMCPContent(msg.Content),
-				})
-			}
-			return &mcp.GetPromptResult{
-				Description: result.Description,
-				Messages:    mcpMessages,
-			}, nil
-		}
-
-		sdkPrompts = append(sdkPrompts, mcpserver.ServerPrompt{
-			Prompt:  prompt,
-			Handler: handler,
-		})
-		slog.Debug("Manager.GetAdaptedPrompts: adapted prompt", "session_id", sessionID, "prompt", domainPrompt.Name)
-	}
-
-	return sdkPrompts, nil
 }
 
 // listAllBackends returns all backends from the registry as a pointer slice.

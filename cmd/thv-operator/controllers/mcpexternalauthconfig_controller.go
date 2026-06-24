@@ -50,7 +50,7 @@ type MCPExternalAuthConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs/finalizers,verbs=update
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch
 // +kubebuilder:rbac:groups=events.k8s.io,resources=events,verbs=create;patch
 
 // Reconcile is part of the main kubernetes reconciliation loop which aims to
@@ -363,23 +363,6 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 		return ctrl.Result{}, err
 	}
 	emitConfigRecoveryEvent(r.Recorder, externalAuthConfig, wasInvalid)
-
-	// Trigger reconciliation of all referencing MCPServers
-	for _, server := range referencingServers {
-		logger.Info("Triggering reconciliation of MCPServer due to MCPExternalAuthConfig change",
-			"mcpserver", server.Name, "externalAuthConfig", externalAuthConfig.Name)
-
-		// Add an annotation to the MCPServer to trigger reconciliation.
-		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, &server, func(m *mcpv1beta1.MCPServer) {
-			if m.Annotations == nil {
-				m.Annotations = make(map[string]string)
-			}
-			m.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"] = configHash
-		}); err != nil {
-			logger.Error(err, "Failed to patch MCPServer annotation", "mcpserver", server.Name)
-			// Continue with other servers even if one fails
-		}
-	}
 
 	return ctrl.Result{}, nil
 }

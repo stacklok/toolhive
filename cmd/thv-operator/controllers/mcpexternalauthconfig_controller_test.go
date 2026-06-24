@@ -616,16 +616,16 @@ func TestMCPExternalAuthConfigReconciler_ConfigChangeTriggersReconciliation(t *t
 	assert.NotEqual(t, firstHash, finalConfig.Status.ConfigHash, "Hash should change when spec changes")
 	assert.Equal(t, int64(2), finalConfig.Status.ObservedGeneration, "ObservedGeneration should be updated")
 
-	// Verify MCPServer has annotation with new hash
+	// The config controller tracks references in status only. The MCPServer
+	// controller watches MCPExternalAuthConfig changes and reconciles itself.
 	var updatedServer mcpv1beta1.MCPServer
 	err = fakeClient.Get(ctx, types.NamespacedName{
 		Name:      mcpServer.Name,
 		Namespace: mcpServer.Namespace,
 	}, &updatedServer)
 	require.NoError(t, err)
-	assert.Equal(t, finalConfig.Status.ConfigHash,
-		updatedServer.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"],
-		"MCPServer should have annotation with new config hash")
+	_, found := updatedServer.Annotations["toolhive.stacklok.dev/externalauthconfig-hash"]
+	assert.False(t, found, "MCPExternalAuthConfig controller should not annotate MCPServers")
 }
 
 func TestMCPExternalAuthConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *testing.T) {

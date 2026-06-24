@@ -129,12 +129,12 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	logger.Info("MCPToolConfig configuration changed", "oldHash", toolConfig.Status.ConfigHash, "newHash", configHash)
 
 	// Find all MCPServers that reference this MCPToolConfig
-	referencingServers, err := r.findReferencingMCPServers(ctx, toolConfig)
+	refs, err := r.findReferencingWorkloads(ctx, toolConfig)
 	if err != nil {
 		logger.Error(err, "Failed to find referencing MCPServers")
 		// Don't persist the new hash on error — returning the error will requeue,
 		// and on the next attempt handleConfigHashChange will be re-entered so that
-		// MCPServer annotation updates are not permanently skipped.
+		// referencing workload status updates are not permanently skipped.
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
 
@@ -142,12 +142,6 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	toolConfig.Status.ConfigHash = configHash
 	toolConfig.Status.ObservedGeneration = toolConfig.Generation
 
-	// Update the status with the list of referencing workloads
-	refs := make([]mcpv1beta1.WorkloadReference, 0, len(referencingServers))
-	for _, server := range referencingServers {
-		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: server.Name})
-	}
-	ctrlutil.SortWorkloadRefs(refs)
 	toolConfig.Status.ReferencingWorkloads = refs
 	toolConfig.Status.ReferenceCount = workloadReferenceCount(refs)
 
@@ -155,21 +149,6 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	if err := r.Status().Update(ctx, toolConfig); err != nil {
 		logger.Error(err, "Failed to update MCPToolConfig status")
 		return ctrl.Result{}, err
-	}
-
-	// Trigger reconciliation of all referencing MCPServers
-	for _, server := range referencingServers {
-		logger.Info("Triggering reconciliation of MCPServer due to MCPToolConfig change",
-			"mcpserver", server.Name, "toolconfig", toolConfig.Name)
-
-		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, &server, func(m *mcpv1beta1.MCPServer) {
-			if m.Annotations == nil {
-				m.Annotations = make(map[string]string)
-			}
-			m.Annotations["toolhive.stacklok.dev/toolconfig-hash"] = configHash
-		}); err != nil {
-			logger.Error(err, "Failed to patch MCPServer annotation", "mcpserver", server.Name)
-		}
 	}
 
 	return ctrl.Result{}, nil
@@ -233,21 +212,6 @@ func (r *ToolConfigReconciler) findReferencingWorkloads(
 	toolConfig *mcpv1beta1.MCPToolConfig,
 ) ([]mcpv1beta1.WorkloadReference, error) {
 	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.ToolConfigRef != nil {
-				return &server.Spec.ToolConfigRef.Name
-			}
-			return nil
-		})
-}
-
-// findReferencingMCPServers finds all MCPServers that reference the given MCPToolConfig.
-// Returns the full MCPServer objects, used by handleConfigHashChange to update server annotations.
-func (r *ToolConfigReconciler) findReferencingMCPServers(
-	ctx context.Context,
-	toolConfig *mcpv1beta1.MCPToolConfig,
-) ([]mcpv1beta1.MCPServer, error) {
-	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
 		func(server *mcpv1beta1.MCPServer) *string {
 			if server.Spec.ToolConfigRef != nil {
 				return &server.Spec.ToolConfigRef.Name

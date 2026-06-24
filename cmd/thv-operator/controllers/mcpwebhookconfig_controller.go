@@ -12,7 +12,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -46,7 +45,7 @@ type MCPWebhookConfigReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpwebhookconfigs,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpwebhookconfigs/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpwebhookconfigs/finalizers,verbs=update
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpservers,verbs=get;list;watch
 
 // Reconcile is part of the main kubernetes reconciliation loop
 func (r *MCPWebhookConfigReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
@@ -160,36 +159,6 @@ func (r *MCPWebhookConfigReconciler) handleConfigHashChange(
 		})
 	}); err != nil {
 		logger.Error(err, "Failed to update MCPWebhookConfig status")
-		return ctrl.Result{}, err
-	}
-
-	var updateErrs []error
-	for _, server := range referencingServers {
-		logger.Info("Triggering reconciliation of MCPServer due to MCPWebhookConfig change",
-			"mcpserver", server.Name, "webhookConfig", webhookConfig.Name)
-
-		latestServer := &mcpv1beta1.MCPServer{}
-		if err := r.Get(ctx, client.ObjectKey{Name: server.Name, Namespace: server.Namespace}, latestServer); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
-			logger.Error(err, "Failed to get MCPServer before patching annotation", "mcpserver", server.Name)
-			updateErrs = append(updateErrs, err)
-			continue
-		}
-
-		if err := ctrlutil.MutateAndPatchSpec(ctx, r.Client, latestServer, func(m *mcpv1beta1.MCPServer) {
-			if m.Annotations == nil {
-				m.Annotations = make(map[string]string)
-			}
-			m.Annotations["toolhive.stacklok.dev/webhookconfig-hash"] = configHash
-		}); err != nil {
-			logger.Error(err, "Failed to patch MCPServer annotation", "mcpserver", server.Name)
-			updateErrs = append(updateErrs, err)
-		}
-	}
-
-	if err := utilerrors.NewAggregate(updateErrs); err != nil {
 		return ctrl.Result{}, err
 	}
 

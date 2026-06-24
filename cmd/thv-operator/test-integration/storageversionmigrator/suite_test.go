@@ -22,23 +22,15 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
-	"go.uber.org/zap/zapcore"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
-	"k8s.io/client-go/kubernetes/scheme"
-	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
-	logf "sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/log/zap"
+
+	"github.com/stacklok/toolhive/cmd/thv-operator/test-integration/testutil"
 )
 
 var (
-	cfg       *rest.Config
 	k8sClient client.Client
-	testEnv   *envtest.Environment
 	ctx       context.Context
-	cancel    context.CancelFunc
+	suiteEnv  *testutil.SuiteEnv
 )
 
 func TestStorageVersionMigrator(t *testing.T) {
@@ -54,30 +46,11 @@ func TestStorageVersionMigrator(t *testing.T) {
 }
 
 var _ = BeforeSuite(func() {
-	logLevel := zapcore.ErrorLevel
-	logf.SetLogger(zap.New(zap.WriteTo(GinkgoWriter), zap.UseDevMode(true), zap.Level(logLevel)))
-
-	ctx, cancel = context.WithCancel(context.TODO())
-
-	By("bootstrapping envtest")
-	testEnv = &envtest.Environment{
-		ErrorIfCRDPathMissing: false, // tests install CRDs on demand
-	}
-
-	var err error
-	cfg, err = testEnv.Start()
-	Expect(err).NotTo(HaveOccurred())
-	Expect(cfg).NotTo(BeNil())
-
-	utilruntime.Must(apiextensionsv1.AddToScheme(scheme.Scheme))
-
-	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme.Scheme})
-	Expect(err).NotTo(HaveOccurred())
-	Expect(k8sClient).NotTo(BeNil())
+	suiteEnv = testutil.StartMinimalSuite()
+	k8sClient = suiteEnv.Client
+	ctx = suiteEnv.Ctx
 })
 
 var _ = AfterSuite(func() {
-	By("tearing down envtest")
-	cancel()
-	Expect(testEnv.Stop()).NotTo(HaveOccurred())
+	suiteEnv.Stop()
 })

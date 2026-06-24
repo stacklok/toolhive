@@ -162,6 +162,13 @@ type OAuth2Config struct {
 	// (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) for the
 	// authoritative trust-model and uniqueness documentation.
 	IdentityFromToken *IdentityFromTokenConfig `json:"identity_from_token,omitempty" yaml:"identity_from_token,omitempty"`
+
+	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+	// private IP ranges (RFC-1918, link-local). Use only when the upstream is
+	// hosted inside the same cluster and has no public endpoint. HTTP-scheme
+	// restrictions are unchanged — HTTPS is still required for non-localhost hosts.
+	// Defaults to false.
+	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
 }
 
 // TokenResponseMapping configures extraction of token fields from non-standard
@@ -280,7 +287,7 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	httpClient, err := newHTTPClientForHost(hostForClient)
+	httpClient, err := newHTTPClientForHost(hostForClient, config.AllowPrivateIPs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
@@ -804,11 +811,14 @@ func formatOAuth2Error(err error, prefix string) error {
 // newHTTPClientForHost creates an HTTP client configured for the given host.
 // It enables HTTP and private IPs only for localhost (development/testing),
 // or when INSECURE_DISABLE_URL_VALIDATION is set (e.g. Kubernetes dev environments).
-func newHTTPClientForHost(host string) (*http.Client, error) {
+// allowPrivateIPs widens only the private-IP gate: it permits connections to
+// RFC-1918/link-local addresses (e.g. in-cluster providers) without enabling
+// the HTTP scheme for non-localhost hosts.
+func newHTTPClientForHost(host string, allowPrivateIPs bool) (*http.Client, error) {
 	allowInsecure := networking.IsLocalhost(host) ||
 		strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
 	return networking.NewHttpClientBuilder().
 		WithInsecureAllowHTTP(allowInsecure).
-		WithPrivateIPs(allowInsecure).
+		WithPrivateIPs(allowInsecure || allowPrivateIPs).
 		Build()
 }

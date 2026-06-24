@@ -422,6 +422,10 @@ const docTemplate = `{
                         "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
                         "type": "object"
                     },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits the upstream provider's HTTP client to connect to\nprivate IP ranges (RFC-1918, link-local). Use only when the upstream is\nhosted inside the same cluster and has no public endpoint. HTTP-scheme\nrestrictions are unchanged — HTTPS is still required for non-localhost hosts.\nDefaults to false.",
+                        "type": "boolean"
+                    },
                     "authorization_endpoint": {
                         "description": "AuthorizationEndpoint is the URL for the OAuth authorization endpoint.",
                         "type": "string"
@@ -478,6 +482,10 @@ const docTemplate = `{
                         },
                         "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
                         "type": "object"
+                    },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits the OIDC discovery and token HTTP clients to\nconnect to private IP ranges (RFC-1918, link-local). Use only when the\nupstream is hosted inside the same cluster and has no public endpoint.\nHTTP-scheme restrictions are unchanged — HTTPS is still required for\nnon-localhost hosts. Defaults to false.",
+                        "type": "boolean"
                     },
                     "client_id": {
                         "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.",

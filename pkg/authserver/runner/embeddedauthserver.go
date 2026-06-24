@@ -576,8 +576,9 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 			Scopes:                        scopes,
 			AdditionalAuthorizationParams: oidc.AdditionalAuthorizationParams,
 		},
-		Issuer:       oidc.IssuerURL,
-		SubjectClaim: oidc.SubjectClaim,
+		Issuer:          oidc.IssuerURL,
+		SubjectClaim:    oidc.SubjectClaim,
+		AllowPrivateIPs: oidc.AllowPrivateIPs,
 	}, nil
 }
 
@@ -612,6 +613,7 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
 		TokenEndpoint:         oauth2.TokenEndpoint,
 		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
+		AllowPrivateIPs:       oauth2.AllowPrivateIPs,
 	}
 
 	if oauth2.TokenResponseMapping != nil {

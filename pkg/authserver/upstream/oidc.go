@@ -47,6 +47,13 @@ type OIDCConfig struct {
 	// The claim must also be present on refreshed ID tokens — RefreshTokens
 	// resolves through the same path and fails closed if the IdP drops it.
 	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
+
+	// AllowPrivateIPs permits the OIDC discovery and token HTTP clients to
+	// connect to private IP ranges (RFC-1918, link-local). Use only when the
+	// upstream is hosted inside the same cluster and has no public endpoint.
+	// HTTP-scheme restrictions are unchanged — HTTPS is still required for
+	// non-localhost hosts. Defaults to false.
+	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
 }
 
 // subjectClaimPattern is the allowed shape for SubjectClaim: a claim-name token
@@ -160,7 +167,7 @@ func NewOIDCProvider(
 
 	// Create HTTP client for the issuer host
 	issuerURL, _ := url.Parse(config.Issuer) // Error already checked in config.Validate()
-	httpClient, err := newHTTPClientForHost(issuerURL.Host)
+	httpClient, err := newHTTPClientForHost(issuerURL.Host, config.AllowPrivateIPs)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
@@ -226,6 +233,7 @@ func NewOIDCProvider(
 		CommonOAuthConfig:     commonCfg,
 		AuthorizationEndpoint: p.endpoints.AuthorizationEndpoint,
 		TokenEndpoint:         p.endpoints.TokenEndpoint,
+		AllowPrivateIPs:       config.AllowPrivateIPs,
 	}
 	p.config = oauth2Config
 

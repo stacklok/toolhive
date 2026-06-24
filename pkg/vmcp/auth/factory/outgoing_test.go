@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive-core/env"
+	"github.com/stacklok/toolhive/pkg/auth/obo"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -34,6 +35,7 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 			authtypes.StrategyTypeTokenExchange,
 			authtypes.StrategyTypeUpstreamInject,
 			authtypes.StrategyTypeAwsSts,
+			authtypes.StrategyTypeOBO,
 		}
 
 		for _, strategyType := range strategyTypes {
@@ -146,6 +148,25 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 		assert.NoError(t, err, "unauthenticated strategy should accept empty strategy")
 	})
 
+	t.Run("obo strategy default stub returns ErrEnterpriseRequired", func(t *testing.T) {
+		t.Parallel()
+
+		ctx := context.Background()
+		envReader := &env.OSReader{}
+		registry, err := NewOutgoingAuthRegistry(ctx, envReader)
+		require.NoError(t, err)
+
+		strategy, err := registry.GetStrategy(authtypes.StrategyTypeOBO)
+		require.NoError(t, err, "obo strategy should be registered")
+		require.NotNil(t, strategy)
+
+		assert.Equal(t, authtypes.StrategyTypeOBO, strategy.Name())
+
+		err = strategy.Validate(&authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired, "default obo stub must return ErrEnterpriseRequired")
+	})
+
 	t.Run("all strategies have correct names", func(t *testing.T) {
 		t.Parallel()
 
@@ -166,6 +187,7 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 			{authtypes.StrategyTypeTokenExchange, "token_exchange"},
 			{authtypes.StrategyTypeUpstreamInject, "upstream_inject"},
 			{authtypes.StrategyTypeAwsSts, "aws_sts"},
+			{authtypes.StrategyTypeOBO, "obo"},
 		}
 
 		for _, tc := range testCases {

@@ -102,6 +102,7 @@ _Appears in:_
 | `tokenExchange` _[auth.types.TokenExchangeConfig](#authtypestokenexchangeconfig)_ | TokenExchange contains configuration for token exchange auth strategy.<br />Used when Type = "token_exchange". |  |  |
 | `upstreamInject` _[auth.types.UpstreamInjectConfig](#authtypesupstreaminjectconfig)_ | UpstreamInject contains configuration for upstream inject auth strategy.<br />Used when Type = "upstream_inject". |  |  |
 | `awsSts` _[auth.types.AwsStsConfig](#authtypesawsstsconfig)_ | AwsSts contains configuration for AWS STS auth strategy.<br />Used when Type = "aws_sts". |  |  |
+| `obo` _[auth.types.OBOConfig](#authtypesoboconfig)_ | OBO contains configuration for on-behalf-of (OBO) auth strategy.<br />Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;<br />an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy. |  |  |
 
 
 #### auth.types.HeaderInjectionConfig
@@ -121,6 +122,34 @@ _Appears in:_
 | `headerName` _string_ | HeaderName is the name of the header to inject (e.g., "Authorization"). |  |  |
 | `headerValue` _string_ | HeaderValue is the static header value to inject.<br />Either HeaderValue or HeaderValueEnv should be set, not both. |  |  |
 | `headerValueEnv` _string_ | HeaderValueEnv is the environment variable name containing the header value.<br />The value will be resolved at runtime from this environment variable.<br />Either HeaderValue or HeaderValueEnv should be set, not both. |  |  |
+
+
+#### auth.types.OBOConfig
+
+
+
+OBOConfig configures the on-behalf-of (OBO) authentication strategy.
+This strategy uses the Entra jwt-bearer / on_behalf_of grant to exchange
+the incoming user token for a backend-scoped token on behalf of the user.
+
+Field names follow the OBO runtime contract (the enterprise obo.MiddlewareParameters),
+not the RFC-8693 TokenExchangeConfig, because OBO uses a distinct Entra-specific grant.
+
+
+
+_Appears in:_
+- [auth.types.BackendAuthStrategy](#authtypesbackendauthstrategy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `tokenUrl` _string_ | TokenURL is the Entra token endpoint URL for the OBO exchange. |  |  |
+| `clientId` _string_ | ClientID is the OAuth client ID for the OBO request. |  |  |
+| `audience` _string_ | Audience is the target audience (resource URI) for the exchanged token. |  |  |
+| `scopes` _string array_ | Scopes are the requested scopes for the exchanged token. |  |  |
+| `clientSecret` _string_ | ClientSecret is the OAuth client secret (use ClientSecretEnv for security). |  |  |
+| `clientSecretEnv` _string_ | ClientSecretEnv is the environment variable name containing the client secret.<br />The value will be resolved at runtime from this environment variable. |  |  |
+| `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's token to use as the<br />subject token for the OBO exchange. When set, the token is looked up from<br />Identity.UpstreamTokens instead of using Identity.Token. |  |  |
+| `cacheSkewSeconds` _integer_ | CacheSkewSeconds is the number of seconds to subtract from a cached token's<br />expiry when deciding whether to refresh it. Defaults to zero (no skew). |  |  |
 
 
 #### auth.types.RoleMapping

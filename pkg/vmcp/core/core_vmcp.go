@@ -518,10 +518,9 @@ func workflowsRequireElicitation(defs map[string]*composer.WorkflowDefinition) b
 // health monitor is used (respects circuit breaker state). When nil, falls back
 // to the initial health status from the backend registry.
 //
-// This is an intentional, temporary duplication of discovery.filterHealthyBackends
-// (discovery/middleware.go:157, rules at 185-188): the discovery middleware keeps
-// its own copy on the legacy server.New path until that path is removed in Phase 3
-// (#5442/#5445). Keep the include/exclude rules identical across both copies.
+// This filtering previously had a second copy in the discovery middleware on the
+// legacy server.New path. That path and its copy were removed in Phase 3 (#5445),
+// so this is now the single source of truth for backend health filtering.
 func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.StatusProvider) []vmcp.Backend {
 	if len(backends) == 0 {
 		return backends

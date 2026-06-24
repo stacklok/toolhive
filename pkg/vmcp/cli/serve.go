@@ -40,7 +40,6 @@ import (
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
-	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
@@ -210,11 +209,6 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// DynamicRegistry tracks backends for dynamic discovery in Kubernetes mode.
 	dynamicRegistry := vmcp.NewDynamicRegistry(backends)
 	backendRegistry := vmcp.BackendRegistry(dynamicRegistry)
-
-	discoveryMgr, err := discovery.NewManager(agg)
-	if err != nil {
-		return fmt.Errorf("failed to create discovery manager: %w", err)
-	}
 	slog.Info("dynamic backend registry enabled for Kubernetes environment")
 
 	// Backend watcher for dynamic backend discovery.
@@ -249,8 +243,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		slog.Info("kubernetes backend watcher started for dynamic backend discovery")
 	}
 
-	// Create router.
-	rtr := vmcprouter.NewDefaultRouter()
+	// Workflow validation in core.New needs a non-nil Router, but the core routes per-call
+	// via NewSessionRouter and validation does not route — so an empty session router suffices.
+	rtr := vmcprouter.NewSessionRouter(&vmcp.RoutingTable{})
 
 	slog.Info(fmt.Sprintf("Setting up incoming authentication (type: %s)", vmcpCfg.IncomingAuth.Type))
 
@@ -462,8 +457,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		slog.Info(fmt.Sprintf("Loaded %d composite tool workflow definitions", len(workflowDefs)))
 	}
 
-	// Create server with discovery manager, backend registry, and workflow definitions.
-	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, discoveryMgr, backendRegistry, workflowDefs)
+	// Create server with the backend registry and workflow definitions.
+	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, backendRegistry, workflowDefs)
 	if err != nil {
 		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
 	}

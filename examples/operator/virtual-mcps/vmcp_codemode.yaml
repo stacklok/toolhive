@@ -73,6 +73,7 @@ spec:
   image: ghcr.io/stackloklabs/osv-mcp/server:0.0.7
   transport: streamable-http
   proxyPort: 8080
+  mcpPort: 8080
   resources:
     limits:
       cpu: "100m"

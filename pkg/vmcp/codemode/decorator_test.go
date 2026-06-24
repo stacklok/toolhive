@@ -121,6 +121,21 @@ func TestListTools_PropagatesError(t *testing.T) {
 	require.ErrorIs(t, err, sentinel)
 }
 
+func TestLookupTool_PropagatesListToolsError(t *testing.T) {
+	t.Parallel()
+	// Resolving execute_tool_script builds its description from inner.ListTools; an error
+	// there must propagate rather than yield a half-built virtual tool.
+	sentinel := errors.New("boom")
+	d := NewDecorator(&fakeCore{
+		listTools: func(_ context.Context, _ *auth.Identity) ([]vmcp.Tool, error) {
+			return nil, sentinel
+		},
+	}, nil)
+
+	_, err := d.LookupTool(context.Background(), nil, script.ExecuteToolScriptName)
+	require.ErrorIs(t, err, sentinel)
+}
+
 func TestLookupTool_VirtualAndDelegate(t *testing.T) {
 	t.Parallel()
 	inner := echoBackend()
@@ -291,11 +306,18 @@ func TestCallTool_VirtualToolNotCallableFromScript(t *testing.T) {
 	d := NewDecorator(echoBackend(), nil)
 
 	// execute_tool_script is advertised but must never be bound as a callable, so a
-	// script cannot recurse into it.
-	args := map[string]any{"script": `return call_tool("execute_tool_script")`}
-	res, err := d.CallTool(context.Background(), nil, script.ExecuteToolScriptName, args, nil)
-	require.NoError(t, err)
-	assert.True(t, res.IsError)
+	// script cannot recurse into it — via either dispatch path. The call_tool path errors
+	// with "unknown tool"; the direct-function path errors with "undefined" (the name is
+	// not a global). Both must surface as an IsError result, not a transport error.
+	for _, src := range []string{
+		`return call_tool("execute_tool_script")`,
+		`return execute_tool_script(script="return 1")`,
+	} {
+		args := map[string]any{"script": src}
+		res, err := d.CallTool(context.Background(), nil, script.ExecuteToolScriptName, args, nil)
+		require.NoError(t, err, "recursion attempt must not be a transport error: %s", src)
+		assert.True(t, res.IsError, "script must not be able to recurse into execute_tool_script: %s", src)
+	}
 }
 
 func TestCallTool_InnerCallErrorSurfaces(t *testing.T) {
@@ -322,7 +344,9 @@ func TestCallTool_ToolCallTimeout(t *testing.T) {
 		<-ctx.Done()
 		return nil, ctx.Err()
 	}
-	d := NewDecorator(inner, &Config{ToolCallTimeout: 10 * time.Millisecond})
+	// 100ms (not 10ms) leaves margin against Starlark compile + goroutine scheduling
+	// jitter on a loaded CI runner, while staying well under any reasonable test timeout.
+	d := NewDecorator(inner, &Config{ToolCallTimeout: 100 * time.Millisecond})
 
 	args := map[string]any{"script": `return echo(value="x")`}
 	res, err := d.CallTool(context.Background(), nil, script.ExecuteToolScriptName, args, nil)

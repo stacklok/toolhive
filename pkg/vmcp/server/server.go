@@ -202,6 +202,11 @@ type Config struct {
 	// optimizer: execute_tool_script appears in the core's tool set, so an enabled
 	// optimizer indexes and routes to it like any other tool. A nil value (the default)
 	// leaves the core undecorated and execute_tool_script absent from tools/list.
+	//
+	// Unlike the optimizer (which is mutually exclusive with Authz, see the guard in New),
+	// code mode may be combined with Authz: a script's inner tool calls are re-authorized
+	// by real name through the core admission seam, so Cedar remains the gate on everything
+	// a script can do. See the codemode.decorator doc for the full rationale.
 	CodeModeConfig *codemode.Config
 
 	// StatusReporter enables vMCP runtime to report operational status.

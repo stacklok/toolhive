@@ -5,7 +5,10 @@ package codemode
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 
@@ -15,6 +18,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 )
+
+// defaultScriptTimeout bounds the total wall-clock time of a single script execution.
+// The step limit caps CPU-equivalent work and Config.ToolCallTimeout caps each inner tool
+// call, but neither bounds a script that makes many sequential calls — without this an
+// execution could hold a goroutine for (number of calls × ToolCallTimeout). It is a fixed
+// safety bound rather than a tunable so an enabled-but-unconfigured deployment is always
+// protected; a configurable version can follow if a real workload needs longer.
+const defaultScriptTimeout = 1 * time.Minute
 
 // exampleScript is a worked example shown in the execute_tool_script input schema so the
 // calling model can see the calling conventions (tool-as-function calls, parallel() fan-out,
@@ -92,6 +103,8 @@ type decorator struct {
 	cfg Config
 }
 
+var _ core.VMCP = (*decorator)(nil)
+
 // NewDecorator wraps inner with vMCP code mode. The returned VMCP advertises
 // execute_tool_script in addition to inner's tools and executes submitted Starlark
 // scripts when that tool is called. A nil cfg uses defaults.
@@ -156,6 +169,13 @@ func (d *decorator) CallTool(
 		return errorResult(fmt.Sprintf("%s requires a non-empty 'script' string argument",
 			script.ExecuteToolScriptName)), nil
 	}
+
+	// Record that a script ran, without logging its body (which may carry sensitive
+	// arguments). Length + principal give post-incident investigation a foothold; richer
+	// auditing is tracked separately under the code mode observability story.
+	slog.DebugContext(ctx, "codemode: executing script",
+		"principal", principalOf(identity), "script_len", len(src))
+
 	data, err := extractData(args)
 	if err != nil {
 		return errorResult(err.Error()), nil
@@ -168,8 +188,14 @@ func (d *decorator) CallTool(
 		return nil, fmt.Errorf("codemode: list tools for script execution: %w", err)
 	}
 
+	// Bound the total wall-clock time of the whole script. This deadline is inherited by
+	// the inner tool calls (they derive their context from execCtx), so it caps both a
+	// single slow call and a long sequence of fast ones.
+	execCtx, cancel := context.WithTimeout(ctx, defaultScriptTimeout)
+	defer cancel()
+
 	exec := script.New(d.bindTools(identity, tools), d.cfg.scriptConfig())
-	result, err := exec.Execute(ctx, src, data)
+	result, err := exec.Execute(execCtx, src, data)
 	if err != nil {
 		// The engine already produces descriptive messages (runtime errors, step-limit
 		// and tool-timeout failures); surface them verbatim as an IsError result so the
@@ -221,6 +247,13 @@ func (d *decorator) bindTools(identity *auth.Identity, tools []vmcp.Tool) []scri
 				// no protocol metadata to forward.
 				res, err := d.VMCP.CallTool(callCtx, identity, name, arguments, nil)
 				if err != nil {
+					// Don't echo the denied tool name back into the script result: a generic
+					// message keeps code mode from becoming a probe for which tools exist vs.
+					// which are denied. (The admission filter already excludes denied tools
+					// from the bound set; this guards the narrower allow-list/deny-call gap.)
+					if errors.Is(err, vmcp.ErrAuthorizationFailed) {
+						return nil, errors.New("tool call denied by authorization policy")
+					}
 					return nil, err
 				}
 				return toMCPResult(res), nil
@@ -228,6 +261,15 @@ func (d *decorator) bindTools(identity *auth.Identity, tools []vmcp.Tool) []scri
 		})
 	}
 	return out
+}
+
+// principalOf returns a log-safe principal identifier for identity, or "anonymous" when
+// no identity is bound. It returns only the subject — never the token or other claims.
+func principalOf(identity *auth.Identity) string {
+	if identity == nil || identity.Subject == "" {
+		return "anonymous"
+	}
+	return identity.Subject
 }
 
 // extractData reads the optional "data" argument as a string-keyed map. A nil/absent

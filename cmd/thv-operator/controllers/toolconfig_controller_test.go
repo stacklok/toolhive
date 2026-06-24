@@ -497,3 +497,57 @@ func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {
 	assert.Equal(t, int64(2), cond.ObservedGeneration,
 		"ObservedGeneration should be updated to match new Generation")
 }
+
+// TestMCPToolConfigReconciler_watchHandlers verifies that the MCPServer watch map
+// function enqueues exactly the config the server currently references (or nothing
+// when the server has no ref). The previously-referenced config is enqueued by
+// EnqueueRequestsFromMapFunc, which runs the map function on both the old and new
+// object on update — no manual stale-reference scan in the handler.
+func TestMCPToolConfigReconciler_watchHandlers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		obj      client.Object
+		expected map[string]struct{}
+	}{
+		{
+			name: "MCPServer with ref enqueues the current config",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithToolConfigRef("current-config"),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "MCPServer without ref enqueues nothing",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+			),
+			expected: map[string]struct{}{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			scheme := testutil.NewScheme(t)
+			fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
+				WithObjects(tt.obj).
+				WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
+				Build()
+			r := &ToolConfigReconciler{Client: fakeClient, Scheme: scheme}
+
+			requests := r.mapMCPServerToToolConfig(ctx, tt.obj)
+
+			got := make(map[string]struct{}, len(requests))
+			for _, req := range requests {
+				assert.Equal(t, "default", req.Namespace)
+				got[req.Name] = struct{}{}
+			}
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}

@@ -315,6 +315,10 @@ func (r *MCPWebhookConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to set up MCPServer webhookConfigRef index: %w", err)
 	}
 
+	// GenerationChangedPredicate also suppresses the workload-watch resync; the self-heal
+	// backstop for a stale ReferencingWorkloads entry (e.g. a workload deleted while the
+	// operator was down) is this config's own For() resync, which re-runs Reconcile and
+	// rebuilds ReferencingWorkloads from the index.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPWebhookConfig{}).
 		Watches(
@@ -325,46 +329,20 @@ func (r *MCPWebhookConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Complete(r)
 }
 
-// mapMCPServerToWebhookConfig maps MCPServer changes to MCPWebhookConfig reconciliation requests.
-// It enqueues the currently referenced config and any config that still lists the server
-// in ReferencingWorkloads, which handles ref removal and server deletion.
-func (r *MCPWebhookConfigReconciler) mapMCPServerToWebhookConfig(
-	ctx context.Context, obj client.Object,
+// mapMCPServerToWebhookConfig maps an MCPServer to the MCPWebhookConfig it currently references.
+// EnqueueRequestsFromMapFunc invokes this on both the old and new object on update (and on the
+// object for create/delete), so a ref change or deletion automatically enqueues both the
+// previously- and newly-referenced config; the previously-referenced config then prunes the stale
+// entry on reconcile. No manual stale-reference scan needed.
+func (*MCPWebhookConfigReconciler) mapMCPServerToWebhookConfig(
+	_ context.Context, obj client.Object,
 ) []reconcile.Request {
 	server, ok := obj.(*mcpv1beta1.MCPServer)
-	if !ok {
+	if !ok || server.Spec.WebhookConfigRef == nil || server.Spec.WebhookConfigRef.Name == "" {
 		return nil
 	}
-
-	seen := make(map[client.ObjectKey]struct{})
-	var requests []reconcile.Request
-
-	if server.Spec.WebhookConfigRef != nil {
-		nn := client.ObjectKey{
-			Name:      server.Spec.WebhookConfigRef.Name,
-			Namespace: server.Namespace,
-		}
-		seen[nn] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: nn})
-	}
-
-	webhookConfigList := &mcpv1alpha1.MCPWebhookConfigList{}
-	if err := r.List(ctx, webhookConfigList, client.InNamespace(server.Namespace)); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list MCPWebhookConfigs for MCPServer watch")
-		return requests
-	}
-	for _, cfg := range webhookConfigList.Items {
-		nn := client.ObjectKey{Name: cfg.Name, Namespace: cfg.Namespace}
-		if _, already := seen[nn]; already {
-			continue
-		}
-		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == mcpv1beta1.WorkloadKindMCPServer && ref.Name == server.Name {
-				requests = append(requests, reconcile.Request{NamespacedName: nn})
-				break
-			}
-		}
-	}
-
-	return requests
+	return []reconcile.Request{{NamespacedName: client.ObjectKey{
+		Name:      server.Spec.WebhookConfigRef.Name,
+		Namespace: server.Namespace,
+	}}}
 }

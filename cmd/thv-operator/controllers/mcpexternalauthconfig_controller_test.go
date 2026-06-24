@@ -1561,3 +1561,116 @@ func TestMCPExternalAuthConfigReconciler_ReconcileKeepsExistingForeignCondition(
 	require.NotNil(t, own, "controller-owned Valid condition must land")
 	assert.Equal(t, metav1.ConditionTrue, own.Status)
 }
+
+// TestMCPExternalAuthConfigReconciler_watchHandlers verifies that the workload
+// watch map functions enqueue exactly the config(s) the workload currently
+// references via either externalAuthConfigRef or a MCPExternalAuthConfig-kind
+// authServerRef, deduplicating when both name the same config. The
+// previously-referenced config is enqueued by EnqueueRequestsFromMapFunc, which
+// runs the map function on both the old and new object on update — no manual
+// stale-reference scan in the handler.
+func TestMCPExternalAuthConfigReconciler_watchHandlers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		obj      client.Object
+		expected map[string]struct{}
+	}{
+		{
+			name: "MCPServer externalAuthConfigRef enqueues the current config",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithExternalAuthConfigRef("cfg-a"),
+			),
+			expected: map[string]struct{}{"cfg-a": {}},
+		},
+		{
+			name: "MCPServer authServerRef of MCPExternalAuthConfig kind enqueues it",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithAuthServerRef(authServerRefKindMCPExternalAuthConfig, "cfg-b"),
+			),
+			expected: map[string]struct{}{"cfg-b": {}},
+		},
+		{
+			name: "MCPServer with both refs to different configs enqueues both",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithExternalAuthConfigRef("cfg-a"),
+				v1beta1test.WithAuthServerRef(authServerRefKindMCPExternalAuthConfig, "cfg-b"),
+			),
+			expected: map[string]struct{}{"cfg-a": {}, "cfg-b": {}},
+		},
+		{
+			name: "MCPServer with both refs to the same config enqueues it once",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithExternalAuthConfigRef("cfg-a"),
+				v1beta1test.WithAuthServerRef(authServerRefKindMCPExternalAuthConfig, "cfg-a"),
+			),
+			expected: map[string]struct{}{"cfg-a": {}},
+		},
+		{
+			name: "MCPServer authServerRef of another kind is ignored",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithAuthServerRef("MCPOIDCConfig", "cfg-x"),
+			),
+			expected: map[string]struct{}{},
+		},
+		{
+			name: "MCPServer without refs enqueues nothing",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+			),
+			expected: map[string]struct{}{},
+		},
+		{
+			name: "MCPRemoteProxy with both refs to different configs enqueues both",
+			obj: v1beta1test.NewMCPRemoteProxy("proxy", "default",
+				v1beta1test.WithRemoteProxyURL("https://example.com"),
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("cfg-a"),
+				v1beta1test.WithRemoteProxyAuthServerRef(authServerRefKindMCPExternalAuthConfig, "cfg-b"),
+			),
+			expected: map[string]struct{}{"cfg-a": {}, "cfg-b": {}},
+		},
+		{
+			name: "MCPRemoteProxy with both refs to the same config enqueues it once",
+			obj: v1beta1test.NewMCPRemoteProxy("proxy", "default",
+				v1beta1test.WithRemoteProxyURL("https://example.com"),
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("cfg-a"),
+				v1beta1test.WithRemoteProxyAuthServerRef(authServerRefKindMCPExternalAuthConfig, "cfg-a"),
+			),
+			expected: map[string]struct{}{"cfg-a": {}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			r, _ := newTestMCPExternalAuthConfigReconciler(t)
+
+			requests := func() []reconcile.Request {
+				switch tt.obj.(type) {
+				case *mcpv1beta1.MCPServer:
+					return r.mapMCPServerToExternalAuthConfig(ctx, tt.obj)
+				case *mcpv1beta1.MCPRemoteProxy:
+					return r.mapMCPRemoteProxyToExternalAuthConfig(ctx, tt.obj)
+				default:
+					t.Fatalf("unexpected object type %T", tt.obj)
+					return nil
+				}
+			}()
+
+			got := make(map[string]struct{}, len(requests))
+			for _, req := range requests {
+				assert.Equal(t, "default", req.Namespace)
+				got[req.Name] = struct{}{}
+			}
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}

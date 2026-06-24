@@ -112,8 +112,7 @@ func TestMCPTelemetryConfigReconciler_SteadyStateNoOp(t *testing.T) {
 		Spec: newTelemetrySpec("https://otel-collector:4317", true, true),
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig).
 		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
@@ -182,8 +181,7 @@ func TestMCPTelemetryConfigReconciler_ValidationRecovery(t *testing.T) {
 		}(),
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig).
 		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
@@ -277,8 +275,7 @@ func TestMCPTelemetryConfigReconciler_handleDeletion(t *testing.T) {
 
 			scheme := testutil.NewScheme(t)
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
+			fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 				WithObjects(tt.telemetryConfig).
 				Build()
 
@@ -316,8 +313,7 @@ func TestMCPTelemetryConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.
 		Spec: newTelemetrySpec("https://otel-collector:4317", true, false),
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig).
 		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
@@ -566,8 +562,7 @@ func TestMCPTelemetryConfigReconciler_ConditionOnlyUpdate(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig).
 		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
@@ -635,8 +630,7 @@ func TestMCPTelemetryConfigReconciler_ReferenceTracking(t *testing.T) {
 		// No TelemetryConfigRef
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig, server1, server2, server3).
 		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
@@ -698,8 +692,7 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_BlocksWhenReferenced(t *tes
 		v1beta1test.WithTelemetryConfigRef("referenced-config"),
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig, server).
 		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
@@ -743,8 +736,7 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *
 		// No TelemetryConfigRef
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig, server).
 		Build()
 

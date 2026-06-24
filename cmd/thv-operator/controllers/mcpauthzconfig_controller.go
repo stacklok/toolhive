@@ -308,46 +308,83 @@ func (r *MCPAuthzConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
+// Field-index keys backing findReferencingWorkloads. MCPServer and MCPRemoteProxy
+// both reference the config via spec.authzConfigRef; VirtualMCPServer nests it
+// under spec.incomingAuth. The indexes are registered in SetupWithManager.
+const (
+	authzConfigRefIndexKey     = "spec.authzConfigRef"
+	vmcpAuthzConfigRefIndexKey = "spec.incomingAuth.authzConfigRef"
+)
+
+// indexMCPServerByAuthzConfigRef extracts the MCPAuthzConfig name an MCPServer
+// references, for the field index. Returns nil when there is no reference so
+// unreferencing servers are not indexed under the empty key.
+func indexMCPServerByAuthzConfigRef(obj client.Object) []string {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.AuthzConfigRef == nil || server.Spec.AuthzConfigRef.Name == "" {
+		return nil
+	}
+	return []string{server.Spec.AuthzConfigRef.Name}
+}
+
+// indexMCPRemoteProxyByAuthzConfigRef extracts the MCPAuthzConfig name an
+// MCPRemoteProxy references, for the field index.
+func indexMCPRemoteProxyByAuthzConfigRef(obj client.Object) []string {
+	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
+	if !ok || proxy.Spec.AuthzConfigRef == nil || proxy.Spec.AuthzConfigRef.Name == "" {
+		return nil
+	}
+	return []string{proxy.Spec.AuthzConfigRef.Name}
+}
+
+// indexVirtualMCPServerByAuthzConfigRef extracts the MCPAuthzConfig name a
+// VirtualMCPServer references via spec.incomingAuth, for the field index.
+func indexVirtualMCPServerByAuthzConfigRef(obj client.Object) []string {
+	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
+	if !ok || vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.AuthzConfigRef == nil || vmcp.Spec.IncomingAuth.AuthzConfigRef.Name == "" {
+		return nil
+	}
+	return []string{vmcp.Spec.IncomingAuth.AuthzConfigRef.Name}
+}
+
 // findReferencingWorkloads returns the workload resources (MCPServer, VirtualMCPServer,
 // and MCPRemoteProxy) that reference this MCPAuthzConfig via their AuthzConfigRef field.
+//
+// Each lookup is served by a field index (registered in SetupWithManager) so the
+// query returns only the referencing workloads instead of listing every workload
+// in the namespace and filtering in memory.
 func (r *MCPAuthzConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	authzConfig *mcpv1beta1.MCPAuthzConfig,
 ) ([]mcpv1beta1.WorkloadReference, error) {
-	// Find referencing MCPServers
-	refs, err := ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, authzConfig.Namespace, authzConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.AuthzConfigRef != nil {
-				return &server.Spec.AuthzConfigRef.Name
-			}
-			return nil
-		})
-	if err != nil {
-		return nil, err
+	var refs []mcpv1beta1.WorkloadReference
+
+	serverList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, serverList, client.InNamespace(authzConfig.Namespace),
+		client.MatchingFields{authzConfigRefIndexKey: authzConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers by authzConfigRef: %w", err)
+	}
+	for i := range serverList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: serverList.Items[i].Name})
 	}
 
-	// Check VirtualMCPServers
 	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
-	if err := r.List(ctx, vmcpList, client.InNamespace(authzConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list VirtualMCPServers: %w", err)
+	if err := r.List(ctx, vmcpList, client.InNamespace(authzConfig.Namespace),
+		client.MatchingFields{vmcpAuthzConfigRefIndexKey: authzConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list VirtualMCPServers by authzConfigRef: %w", err)
 	}
-	for _, vmcp := range vmcpList.Items {
-		if vmcp.Spec.IncomingAuth != nil &&
-			vmcp.Spec.IncomingAuth.AuthzConfigRef != nil &&
-			vmcp.Spec.IncomingAuth.AuthzConfigRef.Name == authzConfig.Name {
-			refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindVirtualMCPServer, Name: vmcp.Name})
-		}
+	for i := range vmcpList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindVirtualMCPServer, Name: vmcpList.Items[i].Name})
 	}
 
-	// Check MCPRemoteProxies
 	proxyList := &mcpv1beta1.MCPRemoteProxyList{}
-	if err := r.List(ctx, proxyList, client.InNamespace(authzConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
+	if err := r.List(ctx, proxyList, client.InNamespace(authzConfig.Namespace),
+		client.MatchingFields{authzConfigRefIndexKey: authzConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies by authzConfigRef: %w", err)
 	}
-	for _, proxy := range proxyList.Items {
-		if proxy.Spec.AuthzConfigRef != nil && proxy.Spec.AuthzConfigRef.Name == authzConfig.Name {
-			refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
-		}
+	for i := range proxyList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyList.Items[i].Name})
 	}
 
 	ctrlutil.SortWorkloadRefs(refs)
@@ -358,6 +395,25 @@ func (r *MCPAuthzConfigReconciler) findReferencingWorkloads(
 // Watches MCPServer, VirtualMCPServer, and MCPRemoteProxy changes to maintain
 // accurate ReferencingWorkloads status.
 func (r *MCPAuthzConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Field indexes backing findReferencingWorkloads: each lets the controller
+	// query only the workloads referencing a given config rather than listing
+	// every workload in the namespace and filtering in memory.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPServer{}, authzConfigRefIndexKey, indexMCPServerByAuthzConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPServer authzConfigRef index: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPRemoteProxy{}, authzConfigRefIndexKey, indexMCPRemoteProxyByAuthzConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPRemoteProxy authzConfigRef index: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.VirtualMCPServer{}, vmcpAuthzConfigRefIndexKey, indexVirtualMCPServerByAuthzConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up VirtualMCPServer authzConfigRef index: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPAuthzConfig{}).
 		Watches(&mcpv1beta1.MCPServer{},

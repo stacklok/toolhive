@@ -173,10 +173,10 @@ write-path mechanics.)
   controllers and `MCPGroup` do). Do not add a finalizer solely to delete
   same-namespace owned children — owner references already handle that.
 - Add and remove finalizers through `ctrlutil.MutateAndPatchSpec`, never bare
-  `r.Update` (see **Spec / metadata patching** — `r.Update` is a full PUT that
-  can clobber finalizers or spec fields written by sibling controllers; the
+  `r.Update` — see **Spec / metadata patching** below for why (that section is the
+  authoritative home for the merge-patch finalizer-protection guarantee). The
   `mcpgroup` and `mcpregistry` controllers still use raw `r.Update` and should be
-  migrated).
+  migrated.
 - The handler MUST be idempotent and tolerate the target already being gone (use
   a NotFound-swallowing delete like `deleteIfExists`), and every code path MUST
   eventually remove the finalizer on success — a handler that can return without
@@ -206,31 +206,31 @@ write-path mechanics.)
 
 - **Own your fields; don't blind-PUT.** When more than one writer (another
   controller, a user, kube-apiserver) may touch the same object, only write the
-  fields you own. This repo's mechanism is **optimistic-lock JSON merge-patch,
-  not server-side apply**: `MutateAndPatchSpec` for spec/metadata and
-  `MutateAndPatchStatus` for status. The patch body carries only the fields the
-  mutate closure changed, so co-owned fields are never sent and never clobbered.
-  Do NOT introduce server-side apply (`client.Apply`, `FieldOwner`) as a one-off —
-  toolhive has standardized on the merge-patch helpers, and mixing the two
-  field-ownership models invites confusion. A full-PUT `r.Update` on a CR's spec
-  or metadata is the anti-pattern this replaces. Selective-field `r.Update` on
-  operator-exclusive child objects (Deployments, Services) is tolerated because
-  the operator is the sole writer of the touched fields and the preceding `Get`
-  supplies the resourceVersion precondition.
+  fields you own — use the merge-patch helpers (`MutateAndPatchSpec` for
+  spec/metadata, `MutateAndPatchStatus` for status), which send only the fields
+  the mutate closure changed so co-owned fields are never clobbered (see **Spec /
+  metadata patching** and **Status Writes** below for the mechanics). The
+  repo-specific rules: do NOT introduce server-side apply (`client.Apply`,
+  `FieldOwner`) as a one-off — toolhive has standardized on the merge-patch
+  helpers, and mixing the two field-ownership models invites confusion. A
+  full-PUT `r.Update` on a CR's spec or metadata is the anti-pattern this
+  replaces. Selective-field `r.Update` on operator-exclusive child objects
+  (Deployments, Services) is tolerated because the operator is the sole writer of
+  the touched fields and the preceding `Get` supplies the resourceVersion
+  precondition.
 
 ## Scale and event plumbing
 
-- **Index every field you `List`-filter by.** When a watch handler or reconcile
-  path filters `List` results by a field on a referenced object (especially
-  reverse-reference lookups — "find every X that references this Y"), register a
-  field index with `mgr.GetFieldIndexer().IndexField` and query with
-  `client.MatchingFields`. List-everything-then-filter-in-memory turns a single
-  config change into an O(all-CRs-in-namespace) scan on every event. The
-  `spec.groupRef` indexes in `app.go` and the ref indexes in
-  `mcpserverentry_controller.go` are the pattern to copy. The config-fan-out
-  controllers (`mcpserver`, `mcpoidcconfig`, `mcptelemetryconfig`,
-  `mcpauthzconfig`, `mcpexternalauthconfig`) currently list-and-filter and are
-  the place to fix first.
+- **Index every field you `List`-filter by.** Register a field index with
+  `mgr.GetFieldIndexer().IndexField` and query with `client.MatchingFields`
+  rather than listing everything and filtering in memory — the latter turns a
+  single config change into an O(all-CRs-in-namespace) scan on every event. Any
+  `List`-filter qualifies, but the dominant case is reverse-reference ("find
+  every X that references this Y") lookups; see **Reverse References** below for
+  the worked pattern and exemplars. The config-fan-out controllers (`mcpserver`,
+  `mcpoidcconfig`, `mcptelemetryconfig`, `mcpauthzconfig`,
+  `mcpexternalauthconfig`) currently list-and-filter and are the place to fix
+  first.
 
 - **Watch and map, don't poll; filter watches with predicates.** Use
   `Owns`/`Watches` + `handler.EnqueueRequestsFromMapFunc` for related objects.

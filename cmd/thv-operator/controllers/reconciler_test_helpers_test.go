@@ -108,11 +108,28 @@ func newTestMCPExternalAuthConfigReconciler(
 	t *testing.T, objs ...client.Object,
 ) (*MCPExternalAuthConfigReconciler, client.Client) {
 	t.Helper()
-	fakeClient, scheme := newTestFakeClient(t, &mcpv1beta1.MCPExternalAuthConfig{}, objs...)
+	scheme := testutil.NewScheme(t)
+	fakeClient := withExternalAuthConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
+		WithObjects(objs...).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+		Build()
 	return &MCPExternalAuthConfigReconciler{
 		Client: fakeClient,
 		Scheme: scheme,
 	}, fakeClient
+}
+
+// withExternalAuthConfigRefIndexes registers the combined field indexes that
+// MCPExternalAuthConfigReconciler.findReferencingMCPServers /
+// findReferencingMCPRemoteProxies rely on, so fake-client MatchingFields lookups
+// (which the real cache populates via SetupWithManager) work in unit tests.
+// Without these, the fake client returns "no index with name ... has been
+// registered" for MCPServer/MCPRemoteProxy. The index covers both
+// spec.externalAuthConfigRef and spec.authServerRef.
+func withExternalAuthConfigRefIndexes(b *fake.ClientBuilder) *fake.ClientBuilder {
+	return b.
+		WithIndex(&mcpv1beta1.MCPServer{}, externalAuthConfigRefIndexKey, indexMCPServerByExternalAuthConfigRef).
+		WithIndex(&mcpv1beta1.MCPRemoteProxy{}, externalAuthConfigRefIndexKey, indexMCPRemoteProxyByExternalAuthConfigRef)
 }
 
 // withOIDCConfigRefIndexes registers the field indexes that

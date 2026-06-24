@@ -288,8 +288,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads(t *testing.T) 
 		// No ExternalAuthConfigRef
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withExternalAuthConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(externalAuthConfig, mcpServer1, mcpServer2, mcpServer3).
 		Build()
 
@@ -775,8 +774,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_authServerRef(
 		v1beta1test.WithImage("test-image"),
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withExternalAuthConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(externalAuthConfig, serverViaAuthServerRef, serverViaExtAuth, serverNoRef).
 		Build()
 
@@ -850,8 +848,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_bothRefsOnSame
 		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "embedded-auth-config"),
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withExternalAuthConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(tokenExchangeConfig, embeddedAuthConfig, serverWithBothRefs).
 		Build()
 
@@ -918,8 +915,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingMCPServers_deduplicates(
 		v1beta1test.WithAuthServerRef("MCPExternalAuthConfig", "shared-config"),
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withExternalAuthConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(config, server).
 		Build()
 
@@ -983,8 +979,7 @@ func TestMCPExternalAuthConfigReconciler_findReferencingWorkloads_mcpRemoteProxy
 		v1beta1test.WithExternalAuthConfigRef("auth-config"),
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withExternalAuthConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(config, proxyViaExtAuth, proxyViaAuthServerRef, proxyNoRef, server).
 		Build()
 

@@ -199,7 +199,12 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	slog.Debug("creating fosite OAuth2 provider")
 	fositeProvider := createProvider(authServerConfig, stor)
 
-	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams)
+	// Give the handler a refresher so the authorization chain can transparently
+	// refresh an expired upstream leg during login instead of skipping it and
+	// failing later at MCP-request token-swap time.
+	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
+	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
+		handlers.WithUpstreamRefresher(refresher))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -240,17 +245,29 @@ func (s *server) DCRStore() storage.DCRCredentialStore {
 // and storage to transparently refresh expired upstream tokens. The refresher
 // dispatches to the correct provider based on each token's ProviderID.
 func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
-	if len(s.upstreams) == 0 {
+	return newUpstreamTokenRefresher(s.upstreams, s.storage, s.refreshTokenLifespan)
+}
+
+// newUpstreamTokenRefresher builds a refresher over the given upstreams, or nil
+// when there are none. Shared by the Handler (chain-evaluation refresh) and the
+// server's UpstreamTokenRefresher() accessor so both observe identical provider
+// wiring.
+func newUpstreamTokenRefresher(
+	upstreams []handlers.NamedUpstream,
+	stor storage.UpstreamTokenStorage,
+	refreshTokenLifespan time.Duration,
+) storage.UpstreamTokenRefresher {
+	if len(upstreams) == 0 {
 		return nil
 	}
-	providers := make(map[string]upstream.OAuth2Provider, len(s.upstreams))
-	for _, u := range s.upstreams {
+	providers := make(map[string]upstream.OAuth2Provider, len(upstreams))
+	for _, u := range upstreams {
 		providers[u.Name] = u.Provider
 	}
 	return &upstreamTokenRefresher{
 		providers:            providers,
-		storage:              s.storage,
-		refreshTokenLifespan: s.refreshTokenLifespan,
+		storage:              stor,
+		refreshTokenLifespan: refreshTokenLifespan,
 	}
 }
 

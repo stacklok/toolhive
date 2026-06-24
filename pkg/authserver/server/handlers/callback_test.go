@@ -515,6 +515,57 @@ func TestCallbackHandler_TwoUpstreams_SecondLeg_IssuesCode(t *testing.T) {
 	assert.False(t, ok, "second leg pending should be consumed")
 }
 
+func TestCallbackHandler_SingleLeg_IssuesCodeWithoutChaining(t *testing.T) {
+	t.Parallel()
+	handler, storState, provider1, _ := multiUpstreamTestSetup(t)
+
+	// A SingleLeg pending targets provider-1 only. provider-2 is configured but has
+	// no tokens for this session, so the default chain logic would redirect into it.
+	// SingleLeg must suppress that and issue the authorization code immediately.
+	sessionID := "single-leg-session"
+	legState := "single-leg-state-abc"
+	legVerifier := "single-leg-pkce-verifier-12345678901234567890"
+
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        legState,
+		UpstreamPKCEVerifier: legVerifier,
+		UpstreamNonce:        "single-leg-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		SingleLeg:            true,
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[legState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider1-code&state="+legState, nil)
+	rec := httptest.NewRecorder()
+
+	handler.CallbackHandler(rec, req)
+
+	// Should issue the authorization code (HTTP 303), not redirect to provider-2 (HTTP 302).
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "single-leg flow should issue auth code, not chain to provider-2")
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, testAuthRedirectURI, "redirect should be to client's redirect_uri")
+	assert.Contains(t, location, "code=", "redirect should include authorization code")
+	assert.NotContains(t, location, "idp2.example.com", "must not redirect into the second upstream")
+
+	// provider-1's code should have been exchanged and its tokens stored.
+	assert.Equal(t, "provider1-code", provider1.capturedCode, "provider-1 should have exchanged the code")
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1", "provider-1 tokens should be stored")
+
+	// No second-leg pending authorization should have been created for provider-2.
+	for state, p := range storState.pendingAuths {
+		assert.NotEqualf(t, "provider-2", p.UpstreamProviderName,
+			"no chain leg should be created for provider-2 (state=%s)", state)
+	}
+}
+
 func TestCallbackHandler_TwoUpstreams_IdentityFromFirstLeg(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, _ := multiUpstreamTestSetup(t)
@@ -846,6 +897,7 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 		priorRow         *priorRow // nil = no prior row
 		idpRefreshToken  string    // RT returned by upstream exchange
 		idpSubject       string    // subject claim returned by upstream
+		synthetic        bool      // upstream identity is synthetic (rotating subject)
 		lookupErr        error     // if non-nil, storage lookup returns this error
 		expectedStoredRT string    // expected RefreshToken on the new row
 	}{
@@ -855,6 +907,29 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 			idpRefreshToken:  "",
 			idpSubject:       "user-123",
 			expectedStoredRT: "rt-prior",
+		},
+		{
+			// Synthetic providers mint a fresh rotating subject every flow, so the
+			// UpstreamSubject equality guard can never hold even though the stable
+			// user identity (carried from the first leg) does match. The RT must
+			// still be carried forward — otherwise refresh silently breaks for every
+			// userinfo-less OAuth2 backend.
+			name:             "synthetic carries prior RT despite rotating subject",
+			priorRow:         &priorRow{sessionID: "old-session", upstreamSubject: "tk-oldrotatingsubject", refreshToken: "rt-prior"},
+			idpRefreshToken:  "",
+			idpSubject:       "tk-newrotatingsubject",
+			synthetic:        true,
+			expectedStoredRT: "rt-prior",
+		},
+		{
+			// Guards the error state where the synthetic branch must not carry forward
+			// (or panic) when there is no prior row to read from.
+			name:             "synthetic with no prior row accepts empty RT",
+			priorRow:         nil,
+			idpRefreshToken:  "",
+			idpSubject:       "tk-newrotatingsubject",
+			synthetic:        true,
+			expectedStoredRT: "",
 		},
 		{
 			name:             "no carry across different upstream subjects",
@@ -918,7 +993,8 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 					IDToken:      "new-id-token",
 					ExpiresAt:    time.Now().Add(time.Hour),
 				},
-				Subject: tc.idpSubject,
+				Subject:   tc.idpSubject,
+				Synthetic: tc.synthetic,
 			}
 
 			// Pre-populate user + identity so ResolveUser is deterministic.
@@ -948,7 +1024,7 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 			}
 
 			internalState := testInternalState
-			storState.pendingAuths[internalState] = &storage.PendingAuthorization{
+			pendingAuth := &storage.PendingAuthorization{
 				ClientID:             testAuthClientID,
 				RedirectURI:          testAuthRedirectURI,
 				State:                "client-state",
@@ -961,6 +1037,15 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 				UpstreamProviderName: providerName,
 				CreatedAt:            time.Now(),
 			}
+			if tc.synthetic {
+				// Synthetic carry-forward only applies on a subsequent leg, where the
+				// stable user identity is carried from the first leg (so the prior row
+				// is found by UserID) while the provider's own subject rotates per flow.
+				pendingAuth.ResolvedUserID = existingUserID
+				pendingAuth.ResolvedUserName = "First Leg User"
+				pendingAuth.ResolvedUserEmail = "firstleg@example.com"
+			}
+			storState.pendingAuths[internalState] = pendingAuth
 
 			req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=test-code&state="+internalState, nil)
 			rec := httptest.NewRecorder()

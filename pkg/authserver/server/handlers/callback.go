@@ -168,7 +168,7 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		UpstreamSubject:  providerSubject, // Upstream IDP's subject claim
 	}
 
-	h.maybeCarryForwardRefreshToken(ctx, storageTokens, subject, providerSubject, providerID)
+	h.maybeCarryForwardRefreshToken(ctx, storageTokens, subject, providerSubject, providerID, result.Synthetic)
 
 	if err := h.storage.StoreUpstreamTokens(ctx, sessionID, providerID, storageTokens); err != nil {
 		slog.Error("failed to store upstream tokens",
@@ -191,13 +191,18 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 //
 // The UpstreamSubject == providerSubject guard is defense-in-depth against account-linking
 // edge cases where one internal user might have two distinct upstream subjects on the
-// same provider.
+// same provider. It is skipped for synthetic providers: a synthetic identity (OAuth2 with
+// no userinfo/identity config) mints a fresh rotating subject every flow, so the equality
+// can never hold and would block carry-forward entirely. There is no stable upstream
+// subject to link by in that case, so the guard protects nothing — gating on a non-empty
+// prior refresh token is sufficient.
 //
 // storageTokens is mutated in-place only when a carry-forward is warranted.
 func (h *Handler) maybeCarryForwardRefreshToken(
 	ctx context.Context,
 	storageTokens *storage.UpstreamTokens,
 	subject, providerSubject, providerID string,
+	synthetic bool,
 ) {
 	if storageTokens.RefreshToken != "" {
 		return
@@ -205,10 +210,22 @@ func (h *Handler) maybeCarryForwardRefreshToken(
 	prior, err := h.storage.GetLatestUpstreamTokensForUser(ctx, subject, providerID)
 	switch {
 	case err == nil:
-		if prior != nil && prior.UpstreamSubject == providerSubject && prior.RefreshToken != "" {
+		// Defensive: the contract returns ErrNotFound (handled below) on a miss
+		// rather than a nil row, but guard anyway so a (nil, nil) return — or an
+		// empty prior refresh token — can never be carried forward or panic. This
+		// runs before the synthetic branch precisely so "synthetic" can never imply
+		// "carry forward from a non-existent prior row".
+		if prior == nil || prior.RefreshToken == "" {
+			return
+		}
+		// Non-synthetic: defense-in-depth account-linking guard requires the prior
+		// row's upstream subject to match. Synthetic providers mint a fresh rotating
+		// subject every flow, so that equality can never hold and there is no stable
+		// subject to link by — skip the guard and rely on the prior RT alone.
+		if synthetic || prior.UpstreamSubject == providerSubject {
 			storageTokens.RefreshToken = prior.RefreshToken
 			slog.Debug("preserved upstream refresh token from prior row",
-				"user_id", subject, "provider_id", providerID,
+				"user_id", subject, "provider_id", providerID, "synthetic", synthetic,
 			)
 		}
 	case errors.Is(err, storage.ErrNotFound):
@@ -396,6 +413,26 @@ func (h *Handler) continueChainOrComplete(
 	name string,
 	email string,
 ) {
+	// SingleLeg authorizations intentionally bypass chain continuation: the caller
+	// scoped this flow to one specific upstream (e.g. a UI-initiated "connect one
+	// backend" request), so other configured-but-tokenless upstreams must not
+	// hijack it into a full chain walk. Issue the authorization code immediately.
+	//
+	// On failure we deliberately do NOT delete the stored upstream tokens. The
+	// leg's token was already fetched and stored validly before we got here; the
+	// errors writeAuthorizationResponse can return are all server-side and
+	// unrelated to that credential (client lookup, redirect-URI parse, or fosite
+	// failing to mint the authorization code). Wiping a good upstream token would
+	// force a needless re-auth on what is a retryable error, so we keep it and
+	// just surface the failure to the client.
+	if pending.SingleLeg {
+		if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, name, email); err != nil {
+			slog.Error("failed to create authorization response", "error", err)
+			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
+		}
+		return
+	}
+
 	nextProvider, err := h.nextMissingUpstream(ctx, sessionID)
 	if err != nil {
 		slog.Error("failed to determine next upstream", "error", err)

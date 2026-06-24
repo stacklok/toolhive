@@ -947,6 +947,7 @@ func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state strin
 		ResolvedUserID:       pending.ResolvedUserID,
 		ResolvedUserName:     pending.ResolvedUserName,
 		ResolvedUserEmail:    pending.ResolvedUserEmail,
+		SingleLeg:            pending.SingleLeg,
 		CreatedAt:            pending.CreatedAt,
 	}
 
@@ -996,6 +997,7 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 		ResolvedUserID:       pending.ResolvedUserID,
 		ResolvedUserName:     pending.ResolvedUserName,
 		ResolvedUserEmail:    pending.ResolvedUserEmail,
+		SingleLeg:            pending.SingleLeg,
 		CreatedAt:            pending.CreatedAt,
 	}, nil
 }

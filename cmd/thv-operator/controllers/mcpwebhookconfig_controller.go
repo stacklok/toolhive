@@ -14,13 +14,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -120,7 +116,7 @@ func (r *MCPWebhookConfigReconciler) Reconcile(ctx context.Context, req ctrl.Req
 		}
 	}
 
-	return r.updateReferencingWorkloads(ctx, webhookConfig)
+	return ctrl.Result{}, nil
 }
 
 // calculateConfigHash calculates a hash of the MCPWebhookConfig spec
@@ -145,12 +141,9 @@ func (r *MCPWebhookConfigReconciler) handleConfigHashChange(
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
 
-	refs := workloadRefsFromMCPServers(referencingServers)
-
 	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, webhookConfig, func(cfg *mcpv1alpha1.MCPWebhookConfig) {
 		cfg.Status.ConfigHash = configHash
 		cfg.Status.ObservedGeneration = cfg.Generation
-		cfg.Status.ReferencingWorkloads = refs
 		meta.SetStatusCondition(&cfg.Status.Conditions, metav1.Condition{
 			Type:               mcpv1beta1.ConditionTypeValid,
 			Status:             metav1.ConditionTrue,
@@ -224,7 +217,6 @@ func (r *MCPWebhookConfigReconciler) handleDeletion(
 						Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", refs),
 						ObservedGeneration: cfg.Generation,
 					})
-					cfg.Status.ReferencingWorkloads = refs
 				}); err != nil {
 				logger.Error(err, "Failed to update MCPWebhookConfig status during deletion")
 				return ctrl.Result{}, err
@@ -237,7 +229,6 @@ func (r *MCPWebhookConfigReconciler) handleDeletion(
 			if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, webhookConfig,
 				func(cfg *mcpv1alpha1.MCPWebhookConfig) {
 					meta.RemoveStatusCondition(&cfg.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked)
-					cfg.Status.ReferencingWorkloads = nil
 				}); err != nil {
 				logger.Error(err, "Failed to clear MCPWebhookConfig deletion block status")
 				return ctrl.Result{}, err
@@ -294,33 +285,6 @@ func (r *MCPWebhookConfigReconciler) findReferencingMCPServers(
 	return serverList.Items, nil
 }
 
-// updateReferencingWorkloads updates the list of workloads referencing this config
-func (r *MCPWebhookConfigReconciler) updateReferencingWorkloads(
-	ctx context.Context,
-	webhookConfig *mcpv1alpha1.MCPWebhookConfig,
-) (ctrl.Result, error) {
-	logger := log.FromContext(ctx)
-
-	referencingServers, err := r.findReferencingMCPServers(ctx, webhookConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing MCPServers")
-		return ctrl.Result{}, err
-	}
-
-	refs := workloadRefsFromMCPServers(referencingServers)
-	if !ctrlutil.WorkloadRefsEqual(webhookConfig.Status.ReferencingWorkloads, refs) {
-		if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, webhookConfig,
-			func(cfg *mcpv1alpha1.MCPWebhookConfig) {
-				cfg.Status.ReferencingWorkloads = refs
-			}); err != nil {
-			logger.Error(err, "Failed to update referencing workloads list")
-			return ctrl.Result{}, err
-		}
-	}
-
-	return ctrl.Result{}, nil
-}
-
 func workloadRefsFromMCPServers(servers []mcpv1beta1.MCPServer) []mcpv1beta1.WorkloadReference {
 	refs := make([]mcpv1beta1.WorkloadReference, 0, len(servers))
 	for _, server := range servers {
@@ -346,34 +310,7 @@ func (r *MCPWebhookConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to set up MCPServer webhookConfigRef index: %w", err)
 	}
 
-	// GenerationChangedPredicate also suppresses the workload-watch resync; the self-heal
-	// backstop for a stale ReferencingWorkloads entry (e.g. a workload deleted while the
-	// operator was down) is this config's own For() resync, which re-runs Reconcile and
-	// rebuilds ReferencingWorkloads from the index.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPWebhookConfig{}).
-		Watches(
-			&mcpv1beta1.MCPServer{},
-			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToWebhookConfig),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		).
 		Complete(r)
-}
-
-// mapMCPServerToWebhookConfig maps an MCPServer to the MCPWebhookConfig it currently references.
-// EnqueueRequestsFromMapFunc invokes this on both the old and new object on update (and on the
-// object for create/delete), so a ref change or deletion automatically enqueues both the
-// previously- and newly-referenced config; the previously-referenced config then prunes the stale
-// entry on reconcile. No manual stale-reference scan needed.
-func (*MCPWebhookConfigReconciler) mapMCPServerToWebhookConfig(
-	_ context.Context, obj client.Object,
-) []reconcile.Request {
-	server, ok := obj.(*mcpv1beta1.MCPServer)
-	if !ok || server.Spec.WebhookConfigRef == nil || server.Spec.WebhookConfigRef.Name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: client.ObjectKey{
-		Name:      server.Spec.WebhookConfigRef.Name,
-		Namespace: server.Namespace,
-	}}}
 }

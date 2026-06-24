@@ -112,8 +112,6 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 		require.NoError(t, err)
 		assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
-		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-			mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "test-server"})
 	})
 
 	t.Run("reconcile with changed spec", func(t *testing.T) {
@@ -237,89 +235,6 @@ func (c *errorClient) List(ctx context.Context, list client.ObjectList, opts ...
 
 func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 	t.Parallel()
-
-	t.Run("multiple MCPServers referencing same MCPToolConfig", func(t *testing.T) {
-		t.Parallel()
-		ctx := t.Context()
-
-		scheme := testutil.NewScheme(t)
-
-		toolConfig := &mcpv1beta1.MCPToolConfig{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "shared-config",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPToolConfigSpec{
-				ToolsFilter: []string{"tool1", "tool2", "tool3"},
-				ToolsOverride: map[string]mcpv1beta1.ToolOverride{
-					"tool1": {
-						Name:        "custom-tool1",
-						Description: "Customized tool 1",
-					},
-				},
-			},
-		}
-
-		// Create multiple MCPServers referencing the same MCPToolConfig
-		mcpServers := []*mcpv1beta1.MCPServer{
-			v1beta1test.NewMCPServer("server1", "default",
-				v1beta1test.WithImage("test-image"),
-				v1beta1test.WithToolConfigRef("shared-config"),
-			),
-			v1beta1test.NewMCPServer("server2", "default",
-				v1beta1test.WithImage("test-image"),
-				v1beta1test.WithToolConfigRef("shared-config"),
-			),
-			v1beta1test.NewMCPServer("server3", "default",
-				v1beta1test.WithImage("test-image"),
-				v1beta1test.WithToolConfigRef("shared-config"),
-			),
-		}
-
-		objs := []client.Object{toolConfig}
-		for _, server := range mcpServers {
-			objs = append(objs, server)
-		}
-
-		fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
-			WithObjects(objs...).
-			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
-			Build()
-
-		r := &ToolConfigReconciler{
-			Client: fakeClient,
-			Scheme: scheme,
-		}
-
-		req := reconcile.Request{
-			NamespacedName: types.NamespacedName{
-				Name:      toolConfig.Name,
-				Namespace: toolConfig.Namespace,
-			},
-		}
-
-		// First reconciliation adds finalizer
-		result, err := r.Reconcile(ctx, req)
-		require.NoError(t, err)
-		assert.Greater(t, result.RequeueAfter, time.Duration(0))
-
-		// Second reconciliation updates status
-		result, err = r.Reconcile(ctx, req)
-		require.NoError(t, err)
-		assert.Equal(t, time.Duration(0), result.RequeueAfter)
-
-		// Verify all servers are listed in status
-		var updatedConfig mcpv1beta1.MCPToolConfig
-		err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
-		require.NoError(t, err)
-		assert.Len(t, updatedConfig.Status.ReferencingWorkloads, 3)
-		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-			mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server1"})
-		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-			mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server2"})
-		assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-			mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server3"})
-	})
 
 	t.Run("empty MCPToolConfig spec", func(t *testing.T) {
 		t.Parallel()

@@ -12,15 +12,10 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -37,7 +32,8 @@ const (
 // MCPTelemetryConfigReconciler reconciles a MCPTelemetryConfig object.
 //
 // This controller manages the lifecycle of MCPTelemetryConfig resources: validation,
-// config hash computation, finalizer management, reference tracking, and deletion protection.
+// config hash computation, finalizer management, and deletion protection. The set of
+// referencing workloads is recomputed on demand during deletion rather than tracked in status.
 type MCPTelemetryConfigReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
@@ -109,17 +105,9 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 	// Calculate the hash of the current configuration
 	configHash := r.calculateConfigHash(telemetryConfig.Spec)
 
-	// Track referencing workloads
-	referencingWorkloads, err := r.findReferencingWorkloads(ctx, telemetryConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing workloads")
-		return ctrl.Result{}, err
-	}
-
 	// Check what changed
 	hashChanged := telemetryConfig.Status.ConfigHash != configHash
-	refsChanged := !ctrlutil.WorkloadRefsEqual(telemetryConfig.Status.ReferencingWorkloads, referencingWorkloads)
-	needsUpdate := hashChanged || refsChanged || conditionChanged
+	needsUpdate := hashChanged || conditionChanged
 
 	if hashChanged {
 		logger.Info("MCPTelemetryConfig configuration changed",
@@ -130,7 +118,6 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 	if needsUpdate {
 		telemetryConfig.Status.ConfigHash = configHash
 		telemetryConfig.Status.ObservedGeneration = telemetryConfig.Generation
-		telemetryConfig.Status.ReferencingWorkloads = referencingWorkloads
 
 		if err := r.Status().Update(ctx, telemetryConfig); err != nil {
 			logger.Error(err, "Failed to update MCPTelemetryConfig status")
@@ -178,7 +165,6 @@ func indexVirtualMCPServerByTelemetryConfigRef(obj client.Object) []string {
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// Watches MCPServer changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Field indexes backing findReferencingWorkloads: each lets the controller
 	// query only the workloads referencing a given config rather than listing
@@ -199,89 +185,9 @@ func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error 
 		return fmt.Errorf("failed to set up VirtualMCPServer telemetryConfigRef index: %w", err)
 	}
 
-	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPTelemetryConfigs.
-	// The map function only returns the MCPTelemetryConfig the server currently references.
-	// EnqueueRequestsFromMapFunc runs it on both the old and new object on update (and
-	// on the object for create/delete), so removing or changing the ref enqueues both
-	// the previously- and newly-referenced config — the previously-referenced config
-	// then reconciles and prunes the stale entry. No manual stale-reference scan needed.
-	//
-	// GenerationChangedPredicate also suppresses the workload-watch resync; the self-heal
-	// backstop for a stale ReferencingWorkloads entry (e.g. a workload deleted while the
-	// operator was down) is this config's own For() resync, which re-runs Reconcile and
-	// rebuilds ReferencingWorkloads from the index.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPTelemetryConfig{}).
-		Watches(&mcpv1beta1.MCPServer{},
-			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToTelemetryConfig),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Watches(
-			&mcpv1beta1.MCPRemoteProxy{},
-			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToTelemetryConfig),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		).
-		Watches(
-			&mcpv1beta1.VirtualMCPServer{},
-			handler.EnqueueRequestsFromMapFunc(r.mapVirtualMCPServerToTelemetryConfig),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		).
 		Complete(r)
-}
-
-// mapMCPServerToTelemetryConfig maps an MCPServer to the MCPTelemetryConfig it currently
-// references. EnqueueRequestsFromMapFunc invokes this on both the old and new object on
-// update (and on the object for create/delete), so a ref change or deletion automatically
-// enqueues both the previously- and newly-referenced config; the previously-referenced
-// config then prunes the stale entry on reconcile. No manual stale-reference scan needed.
-func (*MCPTelemetryConfigReconciler) mapMCPServerToTelemetryConfig(
-	_ context.Context, obj client.Object,
-) []reconcile.Request {
-	server, ok := obj.(*mcpv1beta1.MCPServer)
-	if !ok || server.Spec.TelemetryConfigRef == nil || server.Spec.TelemetryConfigRef.Name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{
-		Name:      server.Spec.TelemetryConfigRef.Name,
-		Namespace: server.Namespace,
-	}}}
-}
-
-// mapMCPRemoteProxyToTelemetryConfig maps an MCPRemoteProxy to the MCPTelemetryConfig it
-// currently references. EnqueueRequestsFromMapFunc invokes this on both the old and new
-// object on update (and on the object for create/delete), so a ref change or deletion
-// automatically enqueues both the previously- and newly-referenced config; the
-// previously-referenced config then prunes the stale entry on reconcile. No manual
-// stale-reference scan needed.
-func (*MCPTelemetryConfigReconciler) mapMCPRemoteProxyToTelemetryConfig(
-	_ context.Context, obj client.Object,
-) []reconcile.Request {
-	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
-	if !ok || proxy.Spec.TelemetryConfigRef == nil || proxy.Spec.TelemetryConfigRef.Name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{
-		Name:      proxy.Spec.TelemetryConfigRef.Name,
-		Namespace: proxy.Namespace,
-	}}}
-}
-
-// mapVirtualMCPServerToTelemetryConfig maps a VirtualMCPServer to the MCPTelemetryConfig
-// it currently references. EnqueueRequestsFromMapFunc invokes this on both the old and new
-// object on update (and on the object for create/delete), so a ref change or deletion
-// automatically enqueues both the previously- and newly-referenced config; the
-// previously-referenced config then prunes the stale entry on reconcile. No manual
-// stale-reference scan needed.
-func (*MCPTelemetryConfigReconciler) mapVirtualMCPServerToTelemetryConfig(
-	_ context.Context, obj client.Object,
-) []reconcile.Request {
-	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
-	if !ok || vmcp.Spec.TelemetryConfigRef == nil || vmcp.Spec.TelemetryConfigRef.Name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{
-		Name:      vmcp.Spec.TelemetryConfigRef.Name,
-		Namespace: vmcp.Namespace,
-	}}}
 }
 
 // calculateConfigHash calculates a hash of the MCPTelemetryConfig spec using Kubernetes utilities

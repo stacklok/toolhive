@@ -124,6 +124,9 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Validate the GroupRef if specified
 	r.validateGroupRef(ctx, proxy)
 
+	// Validate the OIDC CA bundle reference if specified
+	r.validateCABundleRef(ctx, proxy)
+
 	// Surface advisory condition when primaryUpstreamProvider is set but ignored
 	r.validateAuthzPrimaryUpstreamProviderIgnored(proxy)
 
@@ -1074,6 +1077,111 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 			Message:            fmt.Sprintf("MCPGroup '%s' is valid and ready", groupName),
 			ObservedGeneration: proxy.Generation,
 		})
+	}
+}
+
+// validateCABundleRef validates the OIDC CA bundle ConfigMap reference if specified.
+// The CA bundle is sourced from the referenced MCPOIDCConfig's inline configuration.
+// It mirrors MCPServer.validateCABundleRef so the proxy surfaces the same
+// CABundleRefValidated condition (see the Status Condition Parity rule). Like
+// validateGroupRef this sets the condition, but — like MCPServer — it also persists
+// status itself so a CA bundle ConfigMap appearing or disappearing is reflected even
+// when no other handler triggers a status write this reconcile.
+func (r *MCPRemoteProxyReconciler) validateCABundleRef(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) {
+	caBundleRef := r.resolveOIDCCABundleRef(ctx, proxy)
+	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
+		// No CA bundle configured - clear any stale condition from a prior reconcile.
+		if meta.FindStatusCondition(proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated) != nil {
+			meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated)
+			r.updateCABundleStatus(ctx, proxy)
+		}
+		return
+	}
+
+	ctxLogger := log.FromContext(ctx)
+
+	// Validate the CABundleRef configuration
+	if err := validation.ValidateCABundleSource(caBundleRef); err != nil {
+		ctxLogger.Error(err, "Invalid CABundleRef configuration")
+		setRemoteProxyCABundleRefCondition(proxy, metav1.ConditionFalse,
+			mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid, err.Error())
+		r.updateCABundleStatus(ctx, proxy)
+		return
+	}
+
+	// Check if the referenced ConfigMap exists
+	cmName := caBundleRef.ConfigMapRef.Name
+	configMap := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: proxy.Namespace, Name: cmName}, configMap); err != nil {
+		ctxLogger.Error(err, "Failed to find CA bundle ConfigMap", "configMap", cmName)
+		setRemoteProxyCABundleRefCondition(proxy, metav1.ConditionFalse,
+			mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefNotFound,
+			fmt.Sprintf("CA bundle ConfigMap '%s' not found in namespace '%s'", cmName, proxy.Namespace))
+		r.updateCABundleStatus(ctx, proxy)
+		return
+	}
+
+	// Verify the key exists in the ConfigMap
+	key := caBundleRef.ConfigMapRef.Key
+	if key == "" {
+		key = validation.OIDCCABundleDefaultKey
+	}
+	if _, exists := configMap.Data[key]; !exists {
+		ctxLogger.Error(nil, "CA bundle key not found in ConfigMap", "configMap", cmName, "key", key)
+		setRemoteProxyCABundleRefCondition(proxy, metav1.ConditionFalse,
+			mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid,
+			fmt.Sprintf("Key '%s' not found in ConfigMap '%s'", key, cmName))
+		r.updateCABundleStatus(ctx, proxy)
+		return
+	}
+
+	// Validation passed
+	setRemoteProxyCABundleRefCondition(proxy, metav1.ConditionTrue,
+		mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefValid,
+		fmt.Sprintf("CA bundle ConfigMap '%s' is valid (key: %s)", cmName, key))
+	r.updateCABundleStatus(ctx, proxy)
+}
+
+// resolveOIDCCABundleRef returns the CA bundle reference from the proxy's referenced
+// MCPOIDCConfig inline configuration, or nil if none is configured or the config
+// cannot be resolved. A fetch error returns nil: the OIDCConfigRef lookup is
+// validated authoritatively in handleOIDCConfig, so this avoids a duplicate failure
+// surface on the CABundleRefValidated condition.
+func (r *MCPRemoteProxyReconciler) resolveOIDCCABundleRef(
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
+) *mcpv1beta1.CABundleSource {
+	if proxy.Spec.OIDCConfigRef == nil {
+		return nil
+	}
+	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
+	if err != nil || oidcCfg == nil {
+		return nil
+	}
+	if oidcCfg.Spec.Type != mcpv1beta1.MCPOIDCConfigTypeInline || oidcCfg.Spec.Inline == nil {
+		return nil
+	}
+	return oidcCfg.Spec.Inline.CABundleRef
+}
+
+// setRemoteProxyCABundleRefCondition sets the CA bundle ref validation condition on the proxy.
+func setRemoteProxyCABundleRefCondition(
+	proxy *mcpv1beta1.MCPRemoteProxy, status metav1.ConditionStatus, reason, message string,
+) {
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: proxy.Generation,
+	})
+}
+
+// updateCABundleStatus persists the proxy status after CA bundle validation. The error
+// is logged and swallowed: the CABundleRefValidated condition is advisory, and a failed
+// write is healed on the next reconcile rather than blocking the reconcile's objective.
+func (r *MCPRemoteProxyReconciler) updateCABundleStatus(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) {
+	if err := r.Status().Update(ctx, proxy); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to update MCPRemoteProxy status after CABundleRef validation")
 	}
 }
 

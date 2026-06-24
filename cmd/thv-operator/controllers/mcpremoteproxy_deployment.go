@@ -32,6 +32,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	r.addTelemetryCABundleVolumes(ctx, proxy, &volumes, &volumeMounts)
+	r.addOIDCCABundleVolumes(ctx, proxy, &volumes, &volumeMounts)
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 
 	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
@@ -170,6 +171,35 @@ func (r *MCPRemoteProxyReconciler) addTelemetryCABundleVolumes(
 	}
 	if telCfg != nil {
 		caVolumes, caMounts := ctrlutil.AddTelemetryCABundleVolumes(telCfg)
+		*volumes = append(*volumes, caVolumes...)
+		*volumeMounts = append(*volumeMounts, caMounts...)
+	}
+}
+
+// addOIDCCABundleVolumes appends the CA bundle volume and mount for the referenced
+// MCPOIDCConfig's inline CA bundle, so the runner pod can read the CA file at the
+// path the RunConfig points it at (resolved.ThvCABundlePath). Mirrors MCPServer's
+// OIDC CA bundle mount. The CA bundle reference is validated separately in
+// validateCABundleRef; failures here are advisory and log-and-continue so a
+// transient fetch error does not abort the deployment build.
+//
+// Must be called from deploymentForMCPRemoteProxy where the client is available.
+func (r *MCPRemoteProxyReconciler) addOIDCCABundleVolumes(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	volumes *[]corev1.Volume,
+	volumeMounts *[]corev1.VolumeMount,
+) {
+	if proxy.Spec.OIDCConfigRef == nil {
+		return
+	}
+	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to fetch MCPOIDCConfig for CA bundle volume")
+		return
+	}
+	if oidcCfg != nil {
+		caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
 		*volumes = append(*volumes, caVolumes...)
 		*volumeMounts = append(*volumeMounts, caMounts...)
 	}

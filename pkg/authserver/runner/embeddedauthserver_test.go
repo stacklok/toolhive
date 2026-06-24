@@ -595,6 +595,27 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 		require.NotNil(t, cfg)
 		assert.Empty(t, cfg.ClientID)
 	})
+
+	t.Run("propagates AllowPrivateIPs", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				ClientID:              "my-client-id",
+				RedirectURI:           "https://my-app.com/callback",
+				AllowPrivateIPs:       true,
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.True(t, cfg.AllowPrivateIPs)
+	})
 }
 
 // TestBuildPureOAuth2ConfigWithEnvVar tests buildPureOAuth2Config with environment variables.
@@ -1126,6 +1147,26 @@ func TestBuildOIDCConfig(t *testing.T) {
 		require.NotNil(t, cfg)
 
 		assert.Equal(t, "oid", cfg.SubjectClaim)
+	})
+
+	t.Run("propagates AllowPrivateIPs", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL:       "https://idp.example.com",
+				ClientID:        "my-client-id",
+				RedirectURI:     "http://localhost:8080/callback",
+				AllowPrivateIPs: true,
+			},
+		}
+
+		cfg, err := buildOIDCConfig(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.True(t, cfg.AllowPrivateIPs)
 	})
 }
 

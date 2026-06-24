@@ -103,3 +103,42 @@ the guard doing its job, not a bug.
 Status-subresource patching uses the sibling helper
 `controllerutil.MutateAndPatchStatus` (see the "Status Writes" section
 above).
+
+## Reverse References (who-references-me lookups)
+
+When a controller tracks which other objects reference it — e.g. a config CRD
+referenced by workloads through a `*Ref` spec field — follow these rules. They
+are the level-triggered, indexed pattern controller-runtime is built for;
+deviating re-implements (usually less correctly) what the framework already
+gives you. See #5607 / #5608 for the worked example.
+
+- **Use a field index for the reverse lookup.** To find "which objects reference
+  X", register `mgr.GetFieldIndexer().IndexField(...)` on the referrer's ref
+  field and query with `client.MatchingFields`. Do **not** `List` every object
+  and filter in memory — that is O(all objects) on the hot path. Mirror the
+  existing `setupGroupRefFieldIndexes` / `mcpserverentry_controller` indexes. The
+  extractor func must return `nil` for objects with no ref so they aren't indexed
+  under the empty key.
+
+- **Don't hand-roll stale-reference detection in watch handlers.**
+  `handler.EnqueueRequestsFromMapFunc` already runs the map function on **both**
+  the old and new object on update events (and on the object for create/delete),
+  so a map function that just returns "the object this referrer points at"
+  automatically enqueues both the newly- *and* previously-referenced object — you
+  do not need to scan every object's status to find the one holding a now-stale
+  entry. Pair the handler with a predicate so it only fires when the ref actually
+  changes (avoids status churn).
+
+- **Reconcile is level-triggered.** Rebuild reverse-reference state from current
+  cluster truth on every reconcile; never treat stored status as authoritative.
+  Watch handlers are latency hints, not correctness — missed events are healed by
+  periodic resync.
+
+- **Don't store a denormalized reverse-reference list** (e.g.
+  `Status.ReferencingWorkloads`) unless a concrete consumer needs it materialized
+  on the object itself, such as a `kubectl` printer column. For deletion
+  protection, have the finalizer recompute referrers **on demand** (the
+  Kubernetes PVC-protection model: `pkg/controller/volume/pvcprotection`). A
+  finalizer that re-queries live makes a stored list redundant for protection,
+  and maintaining the list means watching every referrer purely to keep a count
+  fresh.

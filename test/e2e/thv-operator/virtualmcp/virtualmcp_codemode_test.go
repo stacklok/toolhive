@@ -147,10 +147,12 @@ var _ = Describe("VirtualMCPServer Code Mode", Ordered, func() {
 		// aggregated result. If either inner call failed (auth, transport, missing tool),
 		// the engine surfaces it and IsError would be true — so a clean count of 2 proves
 		// both calls reached the backend through the proxy and came back.
+		// Input values must be alphanumeric: the yardstick echo tool validates `input`
+		// against ^[a-zA-Z0-9]+$, so hyphens/spaces would be rejected by the backend.
 		script := fmt.Sprintf(`
 results = parallel([
-    lambda: call_tool(%q, input="codemode-alpha"),
-    lambda: call_tool(%q, input="codemode-beta"),
+    lambda: call_tool(%q, input="codemodealpha"),
+    lambda: call_tool(%q, input="codemodebeta"),
 ])
 return {"count": len(results), "results": results}
 `, echoTool, echoTool)

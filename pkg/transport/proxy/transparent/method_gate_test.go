@@ -66,8 +66,28 @@ func TestStatelessMethodGate(t *testing.T) {
 
 			assert.Equal(t, tc.expectedStatus, rec.Code)
 			if tc.expectAllow {
-				assert.Equal(t, "POST, OPTIONS", rec.Header().Get("Allow"))
+				assert.Equal(t, statelessAllowedMethods, rec.Header().Get("Allow"))
 			}
 		})
 	}
+}
+
+// TestCORSAllowedMethodsMatchGate guards the invariant that the CORS preflight
+// advertises exactly the methods the server actually accepts. A stateless proxy
+// only allows POST/OPTIONS, so a browser must not be told it can preflight GET
+// or DELETE and then have the real request 405.
+func TestCORSAllowedMethodsMatchGate(t *testing.T) {
+	t.Parallel()
+
+	stateful := &TransparentProxy{stateless: false}
+	assert.Equal(t, statefulAllowedMethods, stateful.corsAllowedMethods(),
+		"stateful proxy must advertise the full method set")
+
+	stateless := &TransparentProxy{stateless: true}
+	assert.Equal(t, statelessAllowedMethods, stateless.corsAllowedMethods(),
+		"stateless proxy must advertise only the methods the gate permits")
+
+	// The stateless preflight must never advertise a method the gate rejects.
+	assert.NotContains(t, stateless.corsAllowedMethods(), "GET")
+	assert.NotContains(t, stateless.corsAllowedMethods(), "DELETE")
 }

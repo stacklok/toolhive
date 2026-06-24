@@ -85,6 +85,23 @@ func TestMatchCORSOrigin(t *testing.T) {
 			allowed:        []string{"http://localhost:6274"},
 			expectedResult: "",
 		},
+		{
+			// Invariant: the entry+":" colon boundary must prevent an evil
+			// subdomain from matching a scheme+host entry. Without the trailing
+			// ":" check, "http://localhost" would also match
+			// "http://localhost.evil.com".
+			name:           "colon boundary: evil subdomain must NOT match scheme+host entry",
+			requestOrigin:  "http://localhost.evil.com",
+			allowed:        []string{"http://localhost"},
+			expectedResult: "",
+		},
+		{
+			// Same invariant with a port-bearing evil host.
+			name:           "colon boundary: evil subdomain with port must NOT match",
+			requestOrigin:  "http://localhost.evil.com:6274",
+			allowed:        []string{"http://localhost"},
+			expectedResult: "",
+		},
 	}
 
 	for _, tc := range tests {
@@ -100,7 +117,7 @@ func TestCORS_EmptyOrigins_IsNoop(t *testing.T) {
 	t.Parallel()
 
 	inner, called := newCallTracker()
-	mwFn := CORS(nil)(inner)
+	mwFn := CORS(nil, defaultCORSAllowedMethods)(inner)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodGet, "/mcp", nil)
@@ -116,7 +133,7 @@ func TestCORS_NonOptions_MatchingOrigin_AddsCORSHeaders(t *testing.T) {
 	t.Parallel()
 
 	inner, _ := newCallTracker()
-	mwFn := CORS([]string{"http://localhost:6274"})(inner)
+	mwFn := CORS([]string{"http://localhost:6274"}, defaultCORSAllowedMethods)(inner)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
@@ -126,7 +143,7 @@ func TestCORS_NonOptions_MatchingOrigin_AddsCORSHeaders(t *testing.T) {
 
 	assert.Equal(t, http.StatusOK, rec.Code)
 	assert.Equal(t, "http://localhost:6274", rec.Header().Get("Access-Control-Allow-Origin"))
-	assert.Equal(t, corsAllowedMethods, rec.Header().Get("Access-Control-Allow-Methods"))
+	assert.Equal(t, defaultCORSAllowedMethods, rec.Header().Get("Access-Control-Allow-Methods"))
 	assert.Equal(t, corsAllowedHeaders, rec.Header().Get("Access-Control-Allow-Headers"))
 	assert.Equal(t, corsExposedHeaders, rec.Header().Get("Access-Control-Expose-Headers"))
 	assert.Contains(t, rec.Header().Get("Vary"), "Origin")
@@ -136,7 +153,7 @@ func TestCORS_NonOptions_NonMatchingOrigin_NoCORSHeaders(t *testing.T) {
 	t.Parallel()
 
 	inner, called := newCallTracker()
-	mwFn := CORS([]string{"http://localhost:6274"})(inner)
+	mwFn := CORS([]string{"http://localhost:6274"}, defaultCORSAllowedMethods)(inner)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
@@ -152,7 +169,7 @@ func TestCORS_Preflight_MatchingOrigin_Returns204WithHeaders(t *testing.T) {
 	t.Parallel()
 
 	inner, called := newCallTracker()
-	mwFn := CORS([]string{"http://localhost:6274"})(inner)
+	mwFn := CORS([]string{"http://localhost:6274"}, defaultCORSAllowedMethods)(inner)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodOptions, "/mcp", nil)
@@ -165,7 +182,7 @@ func TestCORS_Preflight_MatchingOrigin_Returns204WithHeaders(t *testing.T) {
 	require.Equal(t, http.StatusNoContent, rec.Code, "preflight must return 204 No Content")
 	assert.False(t, *called, "inner handler must NOT be called for preflight")
 	assert.Equal(t, "http://localhost:6274", rec.Header().Get("Access-Control-Allow-Origin"))
-	assert.Equal(t, corsAllowedMethods, rec.Header().Get("Access-Control-Allow-Methods"))
+	assert.Equal(t, defaultCORSAllowedMethods, rec.Header().Get("Access-Control-Allow-Methods"))
 	assert.Equal(t, corsAllowedHeaders, rec.Header().Get("Access-Control-Allow-Headers"))
 	assert.Equal(t, corsMaxAge, rec.Header().Get("Access-Control-Max-Age"))
 }
@@ -174,7 +191,7 @@ func TestCORS_Preflight_NonMatchingOrigin_Returns204NoHeaders(t *testing.T) {
 	t.Parallel()
 
 	inner, called := newCallTracker()
-	mwFn := CORS([]string{"http://localhost:6274"})(inner)
+	mwFn := CORS([]string{"http://localhost:6274"}, defaultCORSAllowedMethods)(inner)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodOptions, "/mcp", nil)
@@ -193,7 +210,7 @@ func TestCORS_PrefixMatch_LocalhostAnyPort(t *testing.T) {
 
 	inner, _ := newCallTracker()
 	// "http://localhost" should match http://localhost on any port
-	mwFn := CORS([]string{"http://localhost"})(inner)
+	mwFn := CORS([]string{"http://localhost"}, defaultCORSAllowedMethods)(inner)
 
 	origins := []string{
 		"http://localhost:6274",
@@ -220,7 +237,7 @@ func TestCORS_Wildcard_MatchesAnyOrigin(t *testing.T) {
 	t.Parallel()
 
 	inner, _ := newCallTracker()
-	mwFn := CORS([]string{"*"})(inner)
+	mwFn := CORS([]string{"*"}, defaultCORSAllowedMethods)(inner)
 
 	origins := []string{
 		"http://localhost:6274",
@@ -247,7 +264,7 @@ func TestCORS_NoOriginHeader_NoCORSHeaders(t *testing.T) {
 	t.Parallel()
 
 	inner, called := newCallTracker()
-	mwFn := CORS([]string{"http://localhost:6274"})(inner)
+	mwFn := CORS([]string{"http://localhost:6274"}, defaultCORSAllowedMethods)(inner)
 
 	rec := httptest.NewRecorder()
 	req := httptest.NewRequest(http.MethodPost, "/mcp", nil)
@@ -257,4 +274,103 @@ func TestCORS_NoOriginHeader_NoCORSHeaders(t *testing.T) {
 
 	assert.True(t, *called, "non-browser requests must reach the backend")
 	assert.Empty(t, rec.Header().Get("Access-Control-Allow-Origin"))
+}
+
+func TestCORS_AllowMethods_ReflectsCallerSet(t *testing.T) {
+	t.Parallel()
+
+	// The advertised preflight methods must be whatever the caller passes (so a
+	// stateless proxy can advertise only "POST, OPTIONS"), not a hard-coded set.
+	const statelessMethods = "POST, OPTIONS"
+
+	inner, _ := newCallTracker()
+	mwFn := CORS([]string{"http://localhost:6274"}, statelessMethods)(inner)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/mcp", nil)
+	req.Header.Set("Origin", "http://localhost:6274")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+
+	mwFn.ServeHTTP(rec, req)
+
+	assert.Equal(t, statelessMethods, rec.Header().Get("Access-Control-Allow-Methods"),
+		"preflight must advertise exactly the caller-supplied method set")
+}
+
+func TestCORS_AllowHeaders_IncludeMCPProtocolVersion(t *testing.T) {
+	t.Parallel()
+
+	inner, _ := newCallTracker()
+	mwFn := CORS([]string{"http://localhost:6274"}, defaultCORSAllowedMethods)(inner)
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodOptions, "/mcp", nil)
+	req.Header.Set("Origin", "http://localhost:6274")
+
+	mwFn.ServeHTTP(rec, req)
+
+	allowHeaders := rec.Header().Get("Access-Control-Allow-Headers")
+	assert.Contains(t, allowHeaders, "MCP-Protocol-Version",
+		"MCP-Protocol-Version must be allow-listed so browser clients can send it")
+
+	exposeHeaders := rec.Header().Get("Access-Control-Expose-Headers")
+	assert.Contains(t, exposeHeaders, "MCP-Protocol-Version",
+		"MCP-Protocol-Version must be exposed so browser clients can read the negotiated version")
+	assert.NotContains(t, exposeHeaders, "Content-Type",
+		"Content-Type is CORS-safelisted and should not be redundantly exposed")
+}
+
+func TestValidateAndNormalizeOrigins(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    []string
+		expected []string
+		wantErr  bool
+	}{
+		{
+			name:     "valid origins pass through unchanged",
+			input:    []string{"http://localhost:6274", "https://app.example.com"},
+			expected: []string{"http://localhost:6274", "https://app.example.com"},
+		},
+		{
+			name:     "wildcard passes through",
+			input:    []string{"*"},
+			expected: []string{"*"},
+		},
+		{
+			name:     "trailing slash is normalized away",
+			input:    []string{"http://localhost:6274/"},
+			expected: []string{"http://localhost:6274"},
+		},
+		{
+			name:     "surrounding whitespace is trimmed",
+			input:    []string{"  http://localhost:6274  "},
+			expected: []string{"http://localhost:6274"},
+		},
+		{
+			name:    "missing scheme is rejected",
+			input:   []string{"localhost:6274"},
+			wantErr: true,
+		},
+		{
+			name:    "bare host is rejected",
+			input:   []string{"example.com"},
+			wantErr: true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := ValidateAndNormalizeOrigins(tc.input)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.expected, got)
+		})
+	}
 }

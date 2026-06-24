@@ -163,6 +163,10 @@ func init() {
 	// CORS — disabled by default; opt in explicitly to avoid widening the attack surface
 	proxyCmd.Flags().StringArrayVar(&proxyCORSOrigins, "allow-origins", []string{},
 		`Allowed CORS origins for the MCP proxy endpoint (repeatable).
+CORS is disabled by default; if you handle CORS at a gateway or reverse proxy,
+leaving this unset is the correct, secure choice. Each origin must include a
+scheme (e.g. http://) and no trailing slash, otherwise it can never match a
+browser request.
 Supported forms:
   exact:          http://localhost:6274
   scheme+host:    http://localhost   (matches any port on localhost)
@@ -279,7 +283,13 @@ func proxyCmdFunc(cmd *cobra.Command, args []string) error {
 	// Build optional functional options (e.g. CORS), only when configured.
 	var proxyOptions []transparent.Option
 	if len(proxyCORSOrigins) > 0 {
-		proxyOptions = append(proxyOptions, transparent.WithAllowedOrigins(proxyCORSOrigins))
+		// Validate origins at startup so a misconfigured entry (missing scheme,
+		// trailing slash) fails loudly instead of silently never matching.
+		corsOrigins, err := middleware.ValidateAndNormalizeOrigins(proxyCORSOrigins)
+		if err != nil {
+			return fmt.Errorf("invalid --allow-origins: %w", err)
+		}
+		proxyOptions = append(proxyOptions, transparent.WithAllowedOrigins(corsOrigins))
 	}
 
 	// Create the transparent proxy with middlewares

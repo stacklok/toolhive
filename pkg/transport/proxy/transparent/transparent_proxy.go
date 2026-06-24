@@ -362,6 +362,11 @@ func WithAllowedOrigins(origins []string) Option {
 // The endpointPrefix parameter specifies an explicit prefix to prepend to SSE endpoint URLs.
 // The trustProxyHeaders parameter indicates whether to trust X-Forwarded-* headers from reverse proxies.
 // The prefixHandlers parameter is a map of path prefixes to HTTP handlers mounted before the catch-all proxy handler.
+//
+// It is a stable positional-argument convenience wrapper around
+// NewTransparentProxyWithOptions and is retained for existing callers. New
+// configuration knobs (such as WithAllowedOrigins) are exposed only as
+// functional Options; reach for NewTransparentProxyWithOptions when you need them.
 func NewTransparentProxy(
 	host string,
 	port int,
@@ -1243,8 +1248,10 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// before the method gate or backend can reject them. Only active when
 	// corsOrigins is non-empty (opt-in, no behaviour change by default).
 	if len(p.corsOrigins) > 0 {
-		finalHandler = middleware.CORS(p.corsOrigins)(finalHandler)
-		slog.Debug("CORS middleware applied", "allowed_origins", p.corsOrigins)
+		corsMethods := p.corsAllowedMethods()
+		finalHandler = middleware.CORS(p.corsOrigins, corsMethods)(finalHandler)
+		slog.Debug("CORS middleware applied",
+			"allowed_origins", p.corsOrigins, "allowed_methods", corsMethods)
 	}
 
 	mux.Handle("/", finalHandler)
@@ -1503,6 +1510,30 @@ func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
 }
 
+// HTTP method sets advertised to clients. These are the single source of truth
+// shared by statelessMethodGate's "Allow" header and the CORS preflight
+// (Access-Control-Allow-Methods) so a browser never preflights a method the
+// backend would then reject.
+const (
+	// statelessAllowedMethods are the methods a stateless (POST-only) MCP server
+	// accepts. OPTIONS is included for CORS preflight handling.
+	statelessAllowedMethods = "POST, OPTIONS"
+
+	// statefulAllowedMethods are the methods a full streamable-HTTP MCP server
+	// accepts (GET for the SSE stream, DELETE for session teardown).
+	statefulAllowedMethods = "GET, POST, DELETE, OPTIONS"
+)
+
+// corsAllowedMethods returns the method set the CORS preflight should advertise
+// for this proxy, derived from the same source of truth the request path
+// enforces (see statelessMethodGate).
+func (p *TransparentProxy) corsAllowedMethods() string {
+	if p.stateless {
+		return statelessAllowedMethods
+	}
+	return statefulAllowedMethods
+}
+
 // statelessMethodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405.
 // Used in stateless mode where the server only supports POST.
 // HEAD is blocked alongside GET because HEAD is semantically a GET without a response body;
@@ -1510,7 +1541,7 @@ func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.
 func statelessMethodGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodDelete {
-			w.Header().Set("Allow", "POST, OPTIONS")
+			w.Header().Set("Allow", statelessAllowedMethods)
 			http.Error(w, "method not allowed: server is stateless (POST only)", http.StatusMethodNotAllowed)
 			return
 		}

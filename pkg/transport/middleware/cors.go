@@ -4,6 +4,7 @@
 package middleware
 
 import (
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -12,14 +13,24 @@ import (
 )
 
 const (
-	// corsAllowedMethods lists the HTTP methods the MCP proxy accepts.
-	corsAllowedMethods = "GET, POST, DELETE, OPTIONS"
+	// defaultCORSAllowedMethods is the fallback preflight method list used when
+	// the caller does not supply an explicit set. The proxy passes a set derived
+	// from the server's actual capabilities (see the stateless/stateful method
+	// sources of truth in the transparent proxy) so the preflight never
+	// advertises a method the backend will reject.
+	defaultCORSAllowedMethods = "GET, POST, DELETE, OPTIONS"
 
-	// corsAllowedHeaders lists request headers MCP clients may send.
-	corsAllowedHeaders = "Content-Type, Accept, Mcp-Session-Id, Authorization"
+	// corsAllowedHeaders lists request headers MCP clients may send. MCP-Protocol-Version
+	// must be allow-listed: ToolHive reads and validates it on the request path
+	// (an unsupported value yields 400), so a browser MCP client cannot send it
+	// through CORS unless it is listed here.
+	corsAllowedHeaders = "Content-Type, Accept, Mcp-Session-Id, MCP-Protocol-Version, Authorization"
 
-	// corsExposedHeaders lists response headers that browsers may read.
-	corsExposedHeaders = "Mcp-Session-Id, Content-Type"
+	// corsExposedHeaders lists response headers that browsers may read. MCP-Protocol-Version
+	// is exposed so a browser client can read the negotiated protocol version back.
+	// Content-Type is omitted because it is already a CORS-safelisted response
+	// header and does not need to be exposed explicitly.
+	corsExposedHeaders = "Mcp-Session-Id, MCP-Protocol-Version"
 
 	// corsMaxAge is the preflight cache lifetime in seconds (24 hours).
 	corsMaxAge = "86400"
@@ -38,12 +49,22 @@ const (
 // All OPTIONS requests are handled directly (returning 204) when this middleware
 // is active so that CORS preflights never reach the backend, which previously
 // returned 405 Method Not Allowed.
-func CORS(allowedOrigins []string) types.MiddlewareFunction {
+//
+// allowedMethods is the value advertised in Access-Control-Allow-Methods. It
+// should reflect the methods the backend actually accepts so a preflight never
+// succeeds for a method the real request would reject. When empty,
+// defaultCORSAllowedMethods is used.
+func CORS(allowedOrigins []string, allowedMethods string) types.MiddlewareFunction {
 	if len(allowedOrigins) == 0 {
 		return func(next http.Handler) http.Handler { return next }
 	}
 
-	slog.Debug("CORS middleware configured", "allowed_origins", strings.Join(allowedOrigins, ", "))
+	if allowedMethods == "" {
+		allowedMethods = defaultCORSAllowedMethods
+	}
+
+	slog.Debug("CORS middleware configured",
+		"allowed_origins", strings.Join(allowedOrigins, ", "), "allowed_methods", allowedMethods)
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -53,7 +74,7 @@ func CORS(allowedOrigins []string) types.MiddlewareFunction {
 			if matched != "" {
 				h := w.Header()
 				h.Set("Access-Control-Allow-Origin", matched)
-				h.Set("Access-Control-Allow-Methods", corsAllowedMethods)
+				h.Set("Access-Control-Allow-Methods", allowedMethods)
 				h.Set("Access-Control-Allow-Headers", corsAllowedHeaders)
 				h.Set("Access-Control-Expose-Headers", corsExposedHeaders)
 				h.Add("Vary", "Origin")
@@ -93,9 +114,51 @@ func matchCORSOrigin(requestOrigin string, allowed []string) string {
 		case entry == requestOrigin:
 			return requestOrigin
 		case strings.HasPrefix(requestOrigin, entry+":"):
-			// "http://localhost" matches "http://localhost:6274", etc.
+			// The trailing ":" boundary is load-bearing: it ensures the entry
+			// matches only "<entry>:<port>" and never a longer host. Without it,
+			// the entry "http://localhost" would also match
+			// "http://localhost.evil.com". See cors_test.go for the invariant.
 			return requestOrigin
 		}
 	}
 	return ""
+}
+
+// ValidateAndNormalizeOrigins validates configured CORS origins and returns a
+// normalized copy. It surfaces misconfiguration at startup instead of letting an
+// origin silently never match (which produces a broken browser experience with
+// no signal):
+//
+//   - "*" (wildcard) is passed through unchanged.
+//   - A trailing slash (e.g. "http://localhost:6274/") is stripped — a browser
+//     Origin header never carries one — with a warning, so the entry still matches.
+//   - An entry without a scheme (e.g. "localhost:6274") can never match a browser
+//     Origin header (always scheme://host[:port]) and is rejected with an error.
+func ValidateAndNormalizeOrigins(origins []string) ([]string, error) {
+	normalized := make([]string, 0, len(origins))
+	for _, origin := range origins {
+		entry := strings.TrimSpace(origin)
+
+		if entry == "*" {
+			normalized = append(normalized, entry)
+			continue
+		}
+
+		if strings.HasSuffix(entry, "/") {
+			stripped := strings.TrimRight(entry, "/")
+			slog.Warn("CORS origin has a trailing slash that browsers never send; normalizing",
+				"origin", origin, "normalized", stripped)
+			entry = stripped
+		}
+
+		// A browser Origin is scheme://host[:port]; without a scheme the entry
+		// can never match an incoming Origin header.
+		if !strings.Contains(entry, "://") {
+			return nil, fmt.Errorf(
+				"invalid CORS origin %q: missing scheme (expected e.g. %q)", origin, "http://localhost:6274")
+		}
+
+		normalized = append(normalized, entry)
+	}
+	return normalized, nil
 }

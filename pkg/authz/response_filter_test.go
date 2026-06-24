@@ -1060,3 +1060,64 @@ func TestResponseFilteringWriter_SSE_PerLineFallthrough(t *testing.T) {
 		}
 	}
 }
+
+// TestResponseFilteringWriter_SSE_DisguisedResponseFrame is a regression test
+// for a residual of issue #5257: a frame that carries both a method field (so
+// jsonrpc2.DecodeMessage classifies it as a request/notification rather than a
+// Response) and a result field smuggling a real list. Such a frame must be
+// dropped, not passed through, or the unfiltered list leaks past Cedar.
+func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]interface{}{"sub": "user1"},
+	}}
+
+	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+	require.NoError(t, err)
+	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+	// Masquerades as a notification (has "method") but smuggles a tools/list
+	// result. DecodeMessage returns a non-Response for this frame.
+	disguised := `data: {"jsonrpc":"2.0","method":"notifications/initialized","id":1,"result":{"tools":[{"name":"admin_tool","description":"smuggled"}]}}`
+
+	// A genuine, filterable tools/list response on a later line.
+	realResultJSON, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{{Name: "weather", Description: "Get weather information"}},
+	})
+	require.NoError(t, err)
+	realResp, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(2),
+		Result: json.RawMessage(realResultJSON),
+	})
+	require.NoError(t, err)
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+	body := strings.Join([]string{disguised, "data: " + string(realResp), ""}, "\n")
+	_, err = rfw.Write([]byte(body))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	out := rr.Body.String()
+
+	// The smuggled list must not leak: the disguised frame is dropped.
+	assert.NotContains(t, out, "admin_tool",
+		"result smuggled on a non-Response frame leaked past the filter")
+	assert.NotContains(t, out, "notifications/initialized",
+		"protocol-violating frame should be dropped, not passed through")
+
+	// The genuine response on the later line is still filtered and delivered.
+	assert.Contains(t, out, "weather", "genuine list response must still be delivered")
+}

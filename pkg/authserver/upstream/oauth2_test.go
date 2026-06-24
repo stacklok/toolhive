@@ -2579,9 +2579,14 @@ func TestNewHTTPClientForHost(t *testing.T) {
 			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+privateIP+":9999", nil)
 			require.NoError(t, err)
 
-			// Attempt a connection to the private IP. The request will always
-			// fail — we only care whether the failure is "private IP blocked"
-			// or something else (TLS, connection refused, context deadline, etc.).
+			// The private-IP guard fires synchronously inside the dialer's control
+			// function, before any TCP packets are sent, so the "private IP address"
+			// error is immediate and deterministic when the guard is active.
+			// When the guard is absent the dial proceeds over the network; the
+			// 500 ms context deadline bounds the test. Any non-guard error
+			// (context deadline exceeded, connection refused, TLS) does not contain
+			// "private IP address", so the NotContains assertion is not vacuous:
+			// an incorrectly-active guard would fail the check immediately.
 			_, dialErr := client.Do(req)
 			require.Error(t, dialErr)
 

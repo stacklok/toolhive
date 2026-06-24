@@ -233,6 +233,7 @@ func NewOIDCProvider(
 		CommonOAuthConfig:     commonCfg,
 		AuthorizationEndpoint: p.endpoints.AuthorizationEndpoint,
 		TokenEndpoint:         p.endpoints.TokenEndpoint,
+		AllowPrivateIPs:       config.AllowPrivateIPs,
 	}
 	p.config = oauth2Config
 

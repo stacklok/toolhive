@@ -13,6 +13,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/secrets"
 )
@@ -352,12 +353,19 @@ func (h *Handler) discoverIssuerAndScopes(
 	authInfo *discovery.AuthInfo,
 	remoteURL string,
 ) (string, []string, *discovery.AuthServerInfo, error) {
+	// Decide once whether discovery fetches derived from untrusted server input
+	// (realm, resource_metadata, authorization_servers) may reach private
+	// addresses. If the operator-configured target is itself internal they may;
+	// otherwise block them to contain SSRF (CWE-918). The configured-issuer path
+	// below is exempt because that URL comes from the operator, not the server.
+	blockPrivateIPs := !networking.TargetIsPrivate(ctx, remoteURL)
+
 	// Priority 1: Use configured issuer if available. Fetch discovery to populate
 	// AuthServerInfo (including ClientIDMetadataDocumentSupported) even when the
 	// issuer is pre-configured, so CIMD detection works on this path.
 	if h.config.Issuer != "" {
 		slog.Debug("Using configured issuer", "issuer", h.config.Issuer)
-		authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, h.config.Issuer)
+		authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, h.config.Issuer, false)
 		return h.config.Issuer, h.config.Scopes, authServerInfo, nil
 	}
 
@@ -367,14 +375,14 @@ func (h *Handler) discoverIssuerAndScopes(
 		derivedIssuer := discovery.DeriveIssuerFromRealm(authInfo.Realm)
 		if derivedIssuer != "" {
 			slog.Debug("Derived issuer from realm", "issuer", derivedIssuer)
-			authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, derivedIssuer)
+			authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, derivedIssuer, blockPrivateIPs)
 			return derivedIssuer, h.config.Scopes, authServerInfo, nil
 		}
 	}
 
 	// Priority 3: Fetch from resource metadata (RFC 9728)
 	if authInfo.ResourceMetadata != "" {
-		issuer, scopes, authServerInfo, err := h.tryDiscoverFromResourceMetadata(ctx, authInfo.ResourceMetadata)
+		issuer, scopes, authServerInfo, err := h.tryDiscoverFromResourceMetadata(ctx, authInfo.ResourceMetadata, blockPrivateIPs)
 		if err == nil {
 			return issuer, scopes, authServerInfo, nil
 		}
@@ -383,7 +391,7 @@ func (h *Handler) discoverIssuerAndScopes(
 
 	// Priority 4: Try to discover actual issuer from the server's well-known endpoint
 	// This handles cases where the issuer differs from the server URL (e.g., Atlassian)
-	issuer, scopes, authServerInfo, err := h.tryDiscoverFromWellKnown(ctx, remoteURL)
+	issuer, scopes, authServerInfo, err := h.tryDiscoverFromWellKnown(ctx, remoteURL, blockPrivateIPs)
 	if err == nil {
 		return issuer, scopes, authServerInfo, nil
 	}
@@ -401,14 +409,17 @@ func (h *Handler) discoverIssuerAndScopes(
 		"or ensure the server provides a valid realm parameter or resource_metadata URL in the WWW-Authenticate header")
 }
 
-// tryDiscoverFromResourceMetadata attempts to discover issuer and scopes from resource metadata
+// tryDiscoverFromResourceMetadata attempts to discover issuer and scopes from resource metadata.
+// blockPrivateIPs is propagated to the SSRF guard on the server-supplied metadata
+// and authorization-server fetches.
 func (h *Handler) tryDiscoverFromResourceMetadata(
 	ctx context.Context,
 	resourceMetadataURL string,
+	blockPrivateIPs bool,
 ) (string, []string, *discovery.AuthServerInfo, error) {
 	slog.Debug("Fetching resource metadata", "url", resourceMetadataURL)
 
-	metadata, err := discovery.FetchResourceMetadata(ctx, resourceMetadataURL)
+	metadata, err := discovery.FetchResourceMetadata(ctx, resourceMetadataURL, blockPrivateIPs)
 	if err != nil {
 		slog.Debug("Failed to fetch resource metadata", "error", err)
 		return "", nil, nil, fmt.Errorf("could not determine OAuth issuer")
@@ -419,7 +430,7 @@ func (h *Handler) tryDiscoverFromResourceMetadata(
 	}
 
 	// Try to find a valid authorization server from the list
-	authServerInfo, issuer := h.findValidAuthServer(ctx, metadata.AuthorizationServers)
+	authServerInfo, issuer := h.findValidAuthServer(ctx, metadata.AuthorizationServers, blockPrivateIPs)
 	if authServerInfo == nil {
 		if len(metadata.AuthorizationServers) > 0 {
 			slog.Warn("Resource metadata contained authorization_servers, " +
@@ -442,11 +453,12 @@ func (h *Handler) tryDiscoverFromResourceMetadata(
 func (*Handler) findValidAuthServer(
 	ctx context.Context,
 	authServers []string,
+	blockPrivateIPs bool,
 ) (*discovery.AuthServerInfo, string) {
 	for _, authServer := range authServers {
 		slog.Debug("Validating authorization server", "server", authServer)
 
-		authServerInfo, err := discovery.ValidateAndDiscoverAuthServer(ctx, authServer)
+		authServerInfo, err := discovery.ValidateAndDiscoverAuthServer(ctx, authServer, blockPrivateIPs)
 		if err != nil {
 			slog.Debug("Authorization server validation failed", "server", authServer, "error", err)
 			continue
@@ -467,6 +479,7 @@ func (*Handler) findValidAuthServer(
 func (h *Handler) tryDiscoverFromWellKnown(
 	ctx context.Context,
 	remoteURL string,
+	blockPrivateIPs bool,
 ) (string, []string, *discovery.AuthServerInfo, error) {
 	// First try to derive a base URL from the remote URL
 	derivedURL := discovery.DeriveIssuerFromURL(remoteURL)
@@ -476,7 +489,7 @@ func (h *Handler) tryDiscoverFromWellKnown(
 
 	// Try to discover the actual issuer without validation
 	// This uses DiscoverActualIssuer which doesn't validate issuer match
-	authServerInfo, err := discovery.ValidateAndDiscoverAuthServer(ctx, derivedURL)
+	authServerInfo, err := discovery.ValidateAndDiscoverAuthServer(ctx, derivedURL, blockPrivateIPs)
 	if err != nil {
 		return "", nil, nil, fmt.Errorf("well-known discovery failed: %w", err)
 	}

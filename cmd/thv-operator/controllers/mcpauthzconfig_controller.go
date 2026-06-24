@@ -17,10 +17,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -417,113 +419,68 @@ func (r *MCPAuthzConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPAuthzConfig{}).
 		Watches(&mcpv1beta1.MCPServer{},
-			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToAuthzConfig)).
+			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToAuthzConfig),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&mcpv1beta1.VirtualMCPServer{},
-			handler.EnqueueRequestsFromMapFunc(r.mapVirtualMCPServerToAuthzConfig)).
+			handler.EnqueueRequestsFromMapFunc(r.mapVirtualMCPServerToAuthzConfig),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&mcpv1beta1.MCPRemoteProxy{},
-			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToAuthzConfig)).
+			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToAuthzConfig),
+			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
 }
 
-// mapMCPServerToAuthzConfig maps MCPServer changes to MCPAuthzConfig reconciliation requests.
-func (r *MCPAuthzConfigReconciler) mapMCPServerToAuthzConfig(
-	ctx context.Context, obj client.Object,
+// mapMCPServerToAuthzConfig maps an MCPServer to the MCPAuthzConfig it currently references.
+// EnqueueRequestsFromMapFunc invokes this on both the old and new object on update (and on the
+// object for create/delete), so a ref change or deletion automatically enqueues both the
+// previously- and newly-referenced config; the previously-referenced config then prunes the
+// stale entry on reconcile. No manual stale-reference scan needed.
+func (*MCPAuthzConfigReconciler) mapMCPServerToAuthzConfig(
+	_ context.Context, obj client.Object,
 ) []reconcile.Request {
 	server, ok := obj.(*mcpv1beta1.MCPServer)
-	if !ok {
+	if !ok || server.Spec.AuthzConfigRef == nil || server.Spec.AuthzConfigRef.Name == "" {
 		return nil
 	}
-
-	seen := make(map[types.NamespacedName]struct{})
-	var requests []reconcile.Request
-
-	// Enqueue the currently-referenced MCPAuthzConfig (if any)
-	if server.Spec.AuthzConfigRef != nil {
-		nn := types.NamespacedName{Name: server.Spec.AuthzConfigRef.Name, Namespace: server.Namespace}
-		seen[nn] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: nn})
-	}
-
-	// Also enqueue any MCPAuthzConfig that still lists this server in
-	// ReferencingWorkloads — handles ref-removal and server-deletion cases.
-	requests = append(requests, r.findStaleRefs(ctx, server.Namespace, mcpv1beta1.WorkloadKindMCPServer, server.Name, seen)...)
-
-	return requests
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Name:      server.Spec.AuthzConfigRef.Name,
+		Namespace: server.Namespace,
+	}}}
 }
 
-// mapVirtualMCPServerToAuthzConfig maps VirtualMCPServer changes to MCPAuthzConfig reconciliation requests.
-func (r *MCPAuthzConfigReconciler) mapVirtualMCPServerToAuthzConfig(
-	ctx context.Context, obj client.Object,
+// mapVirtualMCPServerToAuthzConfig maps a VirtualMCPServer to the MCPAuthzConfig it currently
+// references via spec.incomingAuth. EnqueueRequestsFromMapFunc invokes this on both the old and
+// new object on update (and on the object for create/delete), so a ref change or deletion
+// automatically enqueues both the previously- and newly-referenced config; the previously-
+// referenced config then prunes the stale entry on reconcile. No manual stale-reference scan needed.
+func (*MCPAuthzConfigReconciler) mapVirtualMCPServerToAuthzConfig(
+	_ context.Context, obj client.Object,
 ) []reconcile.Request {
 	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
-	if !ok {
+	if !ok || vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.AuthzConfigRef == nil || vmcp.Spec.IncomingAuth.AuthzConfigRef.Name == "" {
 		return nil
 	}
-
-	seen := make(map[types.NamespacedName]struct{})
-	var requests []reconcile.Request
-
-	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.AuthzConfigRef != nil {
-		nn := types.NamespacedName{Name: vmcp.Spec.IncomingAuth.AuthzConfigRef.Name, Namespace: vmcp.Namespace}
-		seen[nn] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: nn})
-	}
-
-	requests = append(requests, r.findStaleRefs(ctx, vmcp.Namespace, mcpv1beta1.WorkloadKindVirtualMCPServer, vmcp.Name, seen)...)
-
-	return requests
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Name:      vmcp.Spec.IncomingAuth.AuthzConfigRef.Name,
+		Namespace: vmcp.Namespace,
+	}}}
 }
 
-// mapMCPRemoteProxyToAuthzConfig maps MCPRemoteProxy changes to MCPAuthzConfig reconciliation requests.
-func (r *MCPAuthzConfigReconciler) mapMCPRemoteProxyToAuthzConfig(
-	ctx context.Context, obj client.Object,
+// mapMCPRemoteProxyToAuthzConfig maps an MCPRemoteProxy to the MCPAuthzConfig it currently
+// references. EnqueueRequestsFromMapFunc invokes this on both the old and new object on update
+// (and on the object for create/delete), so a ref change or deletion automatically enqueues both
+// the previously- and newly-referenced config; the previously-referenced config then prunes the
+// stale entry on reconcile. No manual stale-reference scan needed.
+func (*MCPAuthzConfigReconciler) mapMCPRemoteProxyToAuthzConfig(
+	_ context.Context, obj client.Object,
 ) []reconcile.Request {
 	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
-	if !ok {
+	if !ok || proxy.Spec.AuthzConfigRef == nil || proxy.Spec.AuthzConfigRef.Name == "" {
 		return nil
 	}
-
-	seen := make(map[types.NamespacedName]struct{})
-	var requests []reconcile.Request
-
-	if proxy.Spec.AuthzConfigRef != nil {
-		nn := types.NamespacedName{Name: proxy.Spec.AuthzConfigRef.Name, Namespace: proxy.Namespace}
-		seen[nn] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: nn})
-	}
-
-	requests = append(requests, r.findStaleRefs(ctx, proxy.Namespace, mcpv1beta1.WorkloadKindMCPRemoteProxy, proxy.Name, seen)...)
-
-	return requests
-}
-
-// findStaleRefs finds MCPAuthzConfig resources that still list a workload in their
-// ReferencingWorkloads status but are not in the seen set. This handles ref-removal
-// and workload-deletion cases.
-func (r *MCPAuthzConfigReconciler) findStaleRefs(
-	ctx context.Context,
-	namespace, workloadKind, workloadName string,
-	seen map[types.NamespacedName]struct{},
-) []reconcile.Request {
-	authzConfigList := &mcpv1beta1.MCPAuthzConfigList{}
-	if err := r.List(ctx, authzConfigList, client.InNamespace(namespace)); err != nil {
-		log.FromContext(ctx).Error(err, "Failed to list MCPAuthzConfigs for workload watch",
-			"workloadKind", workloadKind, "workloadName", workloadName)
-		return nil
-	}
-
-	var requests []reconcile.Request
-	for _, cfg := range authzConfigList.Items {
-		nn := types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}
-		if _, already := seen[nn]; already {
-			continue
-		}
-		for _, ref := range cfg.Status.ReferencingWorkloads {
-			if ref.Kind == workloadKind && ref.Name == workloadName {
-				requests = append(requests, reconcile.Request{NamespacedName: nn})
-				break
-			}
-		}
-	}
-	return requests
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Name:      proxy.Spec.AuthzConfigRef.Name,
+		Namespace: proxy.Namespace,
+	}}}
 }

@@ -1039,6 +1039,70 @@ func TestDeploymentForVirtualMCPServer_ImagePullSecrets_UpdatePath(t *testing.T)
 	}
 }
 
+// TestDeploymentForVirtualMCPServer_AuthServerConfig_NoUpdateLoop is a regression
+// test for #5616: a VirtualMCPServer with an embedded auth server (AuthServerConfig)
+// hot-looped Deployment updates forever. deploymentForVirtualMCPServer injected the
+// auth-server client-secret env var into the container, but buildEnvVarsForVmcp (used
+// by containerNeedsUpdate to compute the expected env) did not, so the reflect.DeepEqual
+// drift check never matched and the operator issued a no-op Update on every reconcile.
+//
+// The test builds a Deployment for a vMCP with AuthServerConfig set, then asserts that
+// a drift check against that freshly-built Deployment reports no update needed. Before
+// the fix this fails (deploymentNeedsUpdate returns true); after it, the env is symmetric
+// and the check settles.
+func TestDeploymentForVirtualMCPServer_AuthServerConfig_NoUpdateLoop(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+
+	r := &VirtualMCPServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	// An OIDC upstream provider with a ClientSecretRef makes GenerateAuthServerEnvVars
+	// emit TOOLHIVE_UPSTREAM_CLIENT_SECRET_OKTA — the env var that was present on the
+	// built container but absent from the expected set.
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{
+					Name: "okta",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL:       "https://example.okta.com",
+						ClientID:        "test-client",
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "okta-secret", Key: "client-secret"},
+					},
+				},
+			},
+		}),
+	)
+
+	const cfgChecksum = "test-checksum"
+	dep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, cfgChecksum, nil, []workloads.TypedWorkload{})
+	require.NotNil(t, dep)
+
+	// Sanity: the auth-server client-secret env var must actually be on the built
+	// container, otherwise this test isn't exercising the asymmetry it guards against.
+	require.NotEmpty(t, dep.Spec.Template.Spec.Containers)
+	var hasAuthEnv bool
+	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "TOOLHIVE_UPSTREAM_CLIENT_SECRET_OKTA" {
+			hasAuthEnv = true
+			break
+		}
+	}
+	require.True(t, hasAuthEnv, "built container must carry the auth-server client-secret env var")
+
+	// The freshly-built Deployment is steady state: a drift check against it must
+	// not request an update. Before the fix this returned true on every reconcile.
+	needsUpdate := r.deploymentNeedsUpdate(t.Context(), dep, vmcp, cfgChecksum, nil, []workloads.TypedWorkload{})
+	assert.False(t, needsUpdate,
+		"deploymentNeedsUpdate must not loop on a vMCP with AuthServerConfig (regression #5616)")
+}
+
 // TestImagePullSecretsHash verifies the hash helper normalizes order, treats an
 // empty list as the sentinel "" hash, and produces stable hashes across calls.
 func TestImagePullSecretsHash(t *testing.T) {

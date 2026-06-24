@@ -174,13 +174,13 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		volumeMounts = append(volumeMounts, telMounts...)
 	}
 
-	// Add embedded auth server volumes and env vars if configured (inline config)
+	// Add embedded auth server volumes if configured (inline config). The matching
+	// env vars are injected by buildEnvVarsForVmcp above so the drift check stays
+	// symmetric with what is built here (see #5616).
 	if vmcp.Spec.AuthServerConfig != nil {
 		authServerVolumes, authServerMounts := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
-		authServerEnvVars := ctrlutil.GenerateAuthServerEnvVars(vmcp.Spec.AuthServerConfig)
 		volumes = append(volumes, authServerVolumes...)
 		volumeMounts = append(volumeMounts, authServerMounts...)
-		env = append(env, authServerEnvVars...)
 	}
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
@@ -382,6 +382,16 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		otelEnv := ctrlutil.GenerateOpenTelemetryEnvVarsFromRef(
 			telemetryCfg, vmcp.Spec.TelemetryConfigRef, vmcp.Name, vmcp.Namespace)
 		env = append(env, otelEnv...)
+	}
+
+	// Mount embedded auth server upstream client secrets (and Redis ACL creds).
+	// This must live here, not only in deploymentForVirtualMCPServer, so that the
+	// env-var drift check in containerNeedsUpdate compares against the same set.
+	// Otherwise the live container carries these env vars but the expected set
+	// does not, reflect.DeepEqual never matches, and the operator updates the
+	// Deployment on every reconcile (see #5616).
+	if vmcp.Spec.AuthServerConfig != nil {
+		env = append(env, ctrlutil.GenerateAuthServerEnvVars(vmcp.Spec.AuthServerConfig)...)
 	}
 
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env), nil

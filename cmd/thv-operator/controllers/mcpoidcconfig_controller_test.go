@@ -291,8 +291,7 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 
 			objs := []client.Object{tt.oidcConfig}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
+			fakeClient := withOIDCConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 				WithObjects(objs...).
 				Build()
 
@@ -706,8 +705,7 @@ func TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch(t 
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withOIDCConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(oidcConfig).
 		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
 		WithInterceptorFuncs(inject).

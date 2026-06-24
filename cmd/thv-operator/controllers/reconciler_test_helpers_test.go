@@ -115,12 +115,29 @@ func newTestMCPExternalAuthConfigReconciler(
 	}, fakeClient
 }
 
+// withOIDCConfigRefIndexes registers the field indexes that
+// MCPOIDCConfigReconciler.findReferencingWorkloads relies on, so fake-client
+// MatchingFields lookups (which the real cache populates via SetupWithManager)
+// work in unit tests. Without these, the fake client returns "no index with
+// name ... has been registered" for MCPServer/VirtualMCPServer/MCPRemoteProxy.
+func withOIDCConfigRefIndexes(b *fake.ClientBuilder) *fake.ClientBuilder {
+	return b.
+		WithIndex(&mcpv1beta1.MCPServer{}, oidcConfigRefIndexKey, indexMCPServerByOIDCConfigRef).
+		WithIndex(&mcpv1beta1.VirtualMCPServer{}, vmcpOIDCConfigRefIndexKey, indexVirtualMCPServerByOIDCConfigRef).
+		WithIndex(&mcpv1beta1.MCPRemoteProxy{}, oidcConfigRefIndexKey, indexMCPRemoteProxyByOIDCConfigRef)
+}
+
 // newTestMCPOIDCConfigReconciler builds an MCPOIDCConfigReconciler backed by a
-// fake client seeded with objs, with the MCPOIDCConfig status subresource enabled.
+// fake client seeded with objs, with the MCPOIDCConfig status subresource enabled
+// and the OIDC config-ref field indexes registered (see withOIDCConfigRefIndexes).
 // See newTestMCPExternalAuthConfigReconciler for the Recorder convention.
 func newTestMCPOIDCConfigReconciler(t *testing.T, objs ...client.Object) (*MCPOIDCConfigReconciler, client.Client) {
 	t.Helper()
-	fakeClient, scheme := newTestFakeClient(t, &mcpv1beta1.MCPOIDCConfig{}, objs...)
+	scheme := testutil.NewScheme(t)
+	fakeClient := withOIDCConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
+		WithObjects(objs...).
+		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
+		Build()
 	return &MCPOIDCConfigReconciler{
 		Client: fakeClient,
 		Scheme: scheme,

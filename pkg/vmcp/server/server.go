@@ -553,9 +553,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// when auth middleware is nil.
 	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
-	// Apply backend enrichment middleware (legacy path only — see withBackendEnrichment).
-	mcpHandler = s.withBackendEnrichment(mcpHandler)
-
 	// Apply discovery middleware (runs after audit/auth middleware) — legacy path only.
 	// Discovery middleware performs per-request capability aggregation with user context,
 	// injecting the routing table into the request context (the discovery-into-context seam).
@@ -1044,26 +1041,19 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 	sessionID := sess.SessionID()
 
 	// Re-derive the tool set the same way registration did, so cross-pod re-injection
-	// matches the advertised set. On the Serve path (s.core != nil) that means a fresh
-	// core.ListTools for the request identity (the core is stateless, so re-deriving on
-	// pod B is the cache-miss equivalent of the once-per-session registration call),
-	// optimizer-wrapped into find_tool/call_tool when the optimizer is enabled — both
-	// via serveSessionTools, the same helper registration uses; on the legacy path it
-	// reads the factory-built session's tools via GetAdaptedTools.
+	// matches the advertised set: a fresh core.ListTools for the request identity (the core
+	// is stateless, so re-deriving on pod B is the cache-miss equivalent of the
+	// once-per-session registration call), optimizer-wrapped into find_tool/call_tool when
+	// the optimizer is enabled — via serveSessionTools, the same helper registration uses.
 	//
-	// Note: on the Serve path this lists under the CURRENT request identity, not the
-	// session's bound identity. For the realistic same-principal load-balanced case they
-	// are equal, so the advertised set is identical across pods. A cross-identity re-hydration
-	// would advertise the requester's own filtered set, but the call-time binding check
-	// (enforceSessionBinding, run before core.CallTool/ReadResource) is the backstop — it
-	// rejects a mismatched caller, so no other principal's capabilities can be invoked.
-	adaptedTools, err := func() ([]server.ServerTool, error) {
-		if s.core != nil {
-			identity, _ := auth.IdentityFromContext(ctx)
-			return s.serveSessionTools(ctx, sessionID, identity)
-		}
-		return s.vmcpSessionMgr.GetAdaptedTools(sessionID)
-	}()
+	// Note: this lists under the CURRENT request identity, not the session's bound identity.
+	// For the realistic same-principal load-balanced case they are equal, so the advertised
+	// set is identical across pods. A cross-identity re-hydration would advertise the
+	// requester's own filtered set, but the call-time binding check (enforceSessionBinding,
+	// run before core.CallTool/ReadResource) is the backstop — it rejects a mismatched
+	// caller, so no other principal's capabilities can be invoked.
+	identity, _ := auth.IdentityFromContext(ctx)
+	adaptedTools, err := s.serveSessionTools(ctx, sessionID, identity)
 	if err != nil || len(adaptedTools) == 0 {
 		slog.Debug("lazyInjectSessionTools: no tools available for session", "session_id", sessionID)
 		return
@@ -1137,53 +1127,12 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 		return retErr
 	}
 
-	// Serve path: the core is the single authoritative aggregation. Source the
-	// advertised tool/resource set from core.ListTools/ListResources (called once
-	// per session here) and install handlers that route through the core; the
-	// session factory's own aggregation is not used. CreateSession above still
-	// establishes the bound session record (identity binding, TTL, Validate). The
-	// returned error becomes retErr (named return), so the defer terminates the
-	// session on failure.
-	if s.core != nil {
-		return s.injectCoreSessionCapabilities(ctx, session)
-	}
-
-	// Legacy server.New path: uniform registration — same code path regardless of
-	// which decorators are active. session.Tools() returns the final decorated tool list.
-	adaptedTools, retErr := s.vmcpSessionMgr.GetAdaptedTools(sessionID)
-	if retErr != nil {
-		slog.Error("failed to get session-scoped tools",
-			"session_id", sessionID,
-			"error", retErr)
-		return retErr
-	}
-
-	adaptedResources, retErr := s.vmcpSessionMgr.GetAdaptedResources(sessionID)
-	if retErr != nil {
-		slog.Error("failed to get session-scoped resources",
-			"session_id", sessionID,
-			"error", retErr)
-		return retErr
-	}
-
-	if len(adaptedResources) > 0 {
-		if err := setSessionResourcesDirect(session, adaptedResources); err != nil {
-			slog.Error("failed to add session resources", "session_id", sessionID, "error", err)
-			return err
-		}
-	}
-
-	if len(adaptedTools) > 0 {
-		if err := setSessionToolsDirect(session, adaptedTools); err != nil {
-			slog.Error("failed to add session tools", "session_id", sessionID, "error", err)
-			return err
-		}
-	}
-
-	slog.Info("session capabilities injected",
-		"session_id", sessionID,
-		"tool_count", len(adaptedTools))
-	return nil
+	// The core is the single authoritative aggregation: source the advertised tool/resource
+	// set from core.ListTools/ListResources (called once per session here) and install
+	// handlers that route through the core. CreateSession above still establishes the bound
+	// session record (identity binding, TTL, Validate). The returned error becomes retErr
+	// (named return), so the defer terminates the session on failure.
+	return s.injectCoreSessionCapabilities(ctx, session)
 }
 
 // backendHealth returns the core-owned backend health reporter, or nil when health

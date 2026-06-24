@@ -27,15 +27,6 @@ type SessionManager interface {
 	// connections and replaces the placeholder with a fully-formed MultiSession.
 	CreateSession(ctx context.Context, sessionID string) (vmcpsession.MultiSession, error)
 
-	// GetAdaptedTools returns SDK-format tools for the given session with session-scoped
-	// handlers. This enables session-scoped routing: each tool call goes through the
-	// session's backend connections rather than the global router.
-	GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error)
-
-	// GetAdaptedResources returns SDK-format resources for the given session with
-	// session-scoped handlers, analogous to GetAdaptedTools for resources.
-	GetAdaptedResources(sessionID string) ([]mcpserver.ServerResource, error)
-
 	// GetMultiSession retrieves the fully-formed MultiSession for the given session ID.
 	// Returns (nil, false) if the session does not exist or is still a placeholder.
 	// Used to access session-scoped backend tool metadata (e.g. for conflict validation).

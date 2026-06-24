@@ -139,9 +139,64 @@ func (r *MCPTelemetryConfigReconciler) Reconcile(ctx context.Context, req ctrl.R
 	return ctrl.Result{}, nil
 }
 
+// Field-index keys backing findReferencingWorkloads. MCPServer, MCPRemoteProxy,
+// and VirtualMCPServer all reference the config via a top-level
+// spec.telemetryConfigRef. The indexes are registered in SetupWithManager.
+const telemetryConfigRefIndexKey = "spec.telemetryConfigRef"
+
+// indexMCPServerByTelemetryConfigRef extracts the MCPTelemetryConfig name an
+// MCPServer references, for the field index. Returns nil when there is no
+// reference so unreferencing servers are not indexed under the empty key.
+func indexMCPServerByTelemetryConfigRef(obj client.Object) []string {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.TelemetryConfigRef == nil || server.Spec.TelemetryConfigRef.Name == "" {
+		return nil
+	}
+	return []string{server.Spec.TelemetryConfigRef.Name}
+}
+
+// indexMCPRemoteProxyByTelemetryConfigRef extracts the MCPTelemetryConfig name an
+// MCPRemoteProxy references, for the field index.
+func indexMCPRemoteProxyByTelemetryConfigRef(obj client.Object) []string {
+	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
+	if !ok || proxy.Spec.TelemetryConfigRef == nil || proxy.Spec.TelemetryConfigRef.Name == "" {
+		return nil
+	}
+	return []string{proxy.Spec.TelemetryConfigRef.Name}
+}
+
+// indexVirtualMCPServerByTelemetryConfigRef extracts the MCPTelemetryConfig name a
+// VirtualMCPServer references via its top-level spec.telemetryConfigRef.
+func indexVirtualMCPServerByTelemetryConfigRef(obj client.Object) []string {
+	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
+	if !ok || vmcp.Spec.TelemetryConfigRef == nil || vmcp.Spec.TelemetryConfigRef.Name == "" {
+		return nil
+	}
+	return []string{vmcp.Spec.TelemetryConfigRef.Name}
+}
+
 // SetupWithManager sets up the controller with the Manager.
 // Watches MCPServer changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPTelemetryConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Field indexes backing findReferencingWorkloads: each lets the controller
+	// query only the workloads referencing a given config rather than listing
+	// every workload in the namespace and filtering in memory.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPServer{}, telemetryConfigRefIndexKey, indexMCPServerByTelemetryConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPServer telemetryConfigRef index: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPRemoteProxy{}, telemetryConfigRefIndexKey, indexMCPRemoteProxyByTelemetryConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPRemoteProxy telemetryConfigRef index: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.VirtualMCPServer{}, telemetryConfigRefIndexKey, indexVirtualMCPServerByTelemetryConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up VirtualMCPServer telemetryConfigRef index: %w", err)
+	}
+
 	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPTelemetryConfigs.
 	// This handler enqueues both the currently-referenced MCPTelemetryConfig AND any
 	// MCPTelemetryConfig that still lists this server in ReferencingWorkloads (covers the
@@ -351,50 +406,46 @@ func (r *MCPTelemetryConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
-// findReferencingWorkloads returns a sorted list of workload references in the same namespace
-// that reference this MCPTelemetryConfig via TelemetryConfigRef.
+// findReferencingWorkloads returns a sorted list of workload references
+// (MCPServer, MCPRemoteProxy, and VirtualMCPServer) in the same namespace that
+// reference this MCPTelemetryConfig via TelemetryConfigRef.
+//
+// Each lookup is served by a field index (registered in SetupWithManager) so the
+// query returns only the referencing workloads instead of listing every workload
+// in the namespace and filtering in memory.
 func (r *MCPTelemetryConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	telemetryConfig *mcpv1beta1.MCPTelemetryConfig,
 ) ([]mcpv1beta1.WorkloadReference, error) {
-	serverRefs, err := ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, telemetryConfig.Namespace, telemetryConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.TelemetryConfigRef != nil {
-				return &server.Spec.TelemetryConfigRef.Name
-			}
-			return nil
-		})
-	if err != nil {
-		return nil, err
+	var refs []mcpv1beta1.WorkloadReference
+
+	serverList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, serverList, client.InNamespace(telemetryConfig.Namespace),
+		client.MatchingFields{telemetryConfigRefIndexKey: telemetryConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers by telemetryConfigRef: %w", err)
+	}
+	for i := range serverList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: serverList.Items[i].Name})
 	}
 
-	proxies, err := ctrlutil.FindReferencingMCPRemoteProxies(ctx, r.Client, telemetryConfig.Namespace, telemetryConfig.Name,
-		func(proxy *mcpv1beta1.MCPRemoteProxy) *string {
-			if proxy.Spec.TelemetryConfigRef != nil {
-				return &proxy.Spec.TelemetryConfigRef.Name
-			}
-			return nil
-		})
-	if err != nil {
-		return nil, err
+	proxyList := &mcpv1beta1.MCPRemoteProxyList{}
+	if err := r.List(ctx, proxyList, client.InNamespace(telemetryConfig.Namespace),
+		client.MatchingFields{telemetryConfigRefIndexKey: telemetryConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies by telemetryConfigRef: %w", err)
+	}
+	for i := range proxyList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxyList.Items[i].Name})
 	}
 
-	// Check VirtualMCPServers
 	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
-	if err := r.List(ctx, vmcpList, client.InNamespace(telemetryConfig.Namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list VirtualMCPServers: %w", err)
+	if err := r.List(ctx, vmcpList, client.InNamespace(telemetryConfig.Namespace),
+		client.MatchingFields{telemetryConfigRefIndexKey: telemetryConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list VirtualMCPServers by telemetryConfigRef: %w", err)
+	}
+	for i := range vmcpList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindVirtualMCPServer, Name: vmcpList.Items[i].Name})
 	}
 
-	refs := make([]mcpv1beta1.WorkloadReference, 0, len(serverRefs)+len(proxies)+len(vmcpList.Items))
-	refs = append(refs, serverRefs...)
-	for _, proxy := range proxies {
-		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: proxy.Name})
-	}
-	for _, vmcp := range vmcpList.Items {
-		if vmcp.Spec.TelemetryConfigRef != nil && vmcp.Spec.TelemetryConfigRef.Name == telemetryConfig.Name {
-			refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindVirtualMCPServer, Name: vmcp.Name})
-		}
-	}
 	ctrlutil.SortWorkloadRefs(refs)
 	return refs, nil
 }

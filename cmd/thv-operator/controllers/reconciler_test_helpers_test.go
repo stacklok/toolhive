@@ -108,11 +108,28 @@ func newTestMCPExternalAuthConfigReconciler(
 	t *testing.T, objs ...client.Object,
 ) (*MCPExternalAuthConfigReconciler, client.Client) {
 	t.Helper()
-	fakeClient, scheme := newTestFakeClient(t, &mcpv1beta1.MCPExternalAuthConfig{}, objs...)
+	scheme := testutil.NewScheme(t)
+	fakeClient := withExternalAuthConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
+		WithObjects(objs...).
+		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
+		Build()
 	return &MCPExternalAuthConfigReconciler{
 		Client: fakeClient,
 		Scheme: scheme,
 	}, fakeClient
+}
+
+// withExternalAuthConfigRefIndexes registers the combined field indexes that
+// MCPExternalAuthConfigReconciler.findReferencingMCPServers /
+// findReferencingMCPRemoteProxies rely on, so fake-client MatchingFields lookups
+// (which the real cache populates via SetupWithManager) work in unit tests.
+// Without these, the fake client returns "no index with name ... has been
+// registered" for MCPServer/MCPRemoteProxy. The index covers both
+// spec.externalAuthConfigRef and spec.authServerRef.
+func withExternalAuthConfigRefIndexes(b *fake.ClientBuilder) *fake.ClientBuilder {
+	return b.
+		WithIndex(&mcpv1beta1.MCPServer{}, externalAuthConfigRefIndexKey, indexMCPServerByExternalAuthConfigRef).
+		WithIndex(&mcpv1beta1.MCPRemoteProxy{}, externalAuthConfigRefIndexKey, indexMCPRemoteProxyByExternalAuthConfigRef)
 }
 
 // withOIDCConfigRefIndexes registers the field indexes that
@@ -125,6 +142,49 @@ func withOIDCConfigRefIndexes(b *fake.ClientBuilder) *fake.ClientBuilder {
 		WithIndex(&mcpv1beta1.MCPServer{}, oidcConfigRefIndexKey, indexMCPServerByOIDCConfigRef).
 		WithIndex(&mcpv1beta1.VirtualMCPServer{}, vmcpOIDCConfigRefIndexKey, indexVirtualMCPServerByOIDCConfigRef).
 		WithIndex(&mcpv1beta1.MCPRemoteProxy{}, oidcConfigRefIndexKey, indexMCPRemoteProxyByOIDCConfigRef)
+}
+
+// withTelemetryConfigRefIndexes registers the field indexes that
+// MCPTelemetryConfigReconciler.findReferencingWorkloads relies on, so fake-client
+// MatchingFields lookups (which the real cache populates via SetupWithManager)
+// work in unit tests. Without these, the fake client returns "no index with
+// name spec.telemetryConfigRef has been registered" for
+// MCPServer/MCPRemoteProxy/VirtualMCPServer.
+func withTelemetryConfigRefIndexes(b *fake.ClientBuilder) *fake.ClientBuilder {
+	return b.
+		WithIndex(&mcpv1beta1.MCPServer{}, telemetryConfigRefIndexKey, indexMCPServerByTelemetryConfigRef).
+		WithIndex(&mcpv1beta1.MCPRemoteProxy{}, telemetryConfigRefIndexKey, indexMCPRemoteProxyByTelemetryConfigRef).
+		WithIndex(&mcpv1beta1.VirtualMCPServer{}, telemetryConfigRefIndexKey, indexVirtualMCPServerByTelemetryConfigRef)
+}
+
+// withAuthzConfigRefIndexes registers the field indexes that
+// MCPAuthzConfigReconciler.findReferencingWorkloads relies on, so fake-client
+// MatchingFields lookups (which the real cache populates via SetupWithManager)
+// work in unit tests. Without these, the fake client returns "no index with
+// name ... has been registered" for MCPServer/MCPRemoteProxy/VirtualMCPServer.
+func withAuthzConfigRefIndexes(b *fake.ClientBuilder) *fake.ClientBuilder {
+	return b.
+		WithIndex(&mcpv1beta1.MCPServer{}, authzConfigRefIndexKey, indexMCPServerByAuthzConfigRef).
+		WithIndex(&mcpv1beta1.MCPRemoteProxy{}, authzConfigRefIndexKey, indexMCPRemoteProxyByAuthzConfigRef).
+		WithIndex(&mcpv1beta1.VirtualMCPServer{}, vmcpAuthzConfigRefIndexKey, indexVirtualMCPServerByAuthzConfigRef)
+}
+
+// withToolConfigRefIndex registers the field index that
+// ToolConfigReconciler.findReferencingWorkloads / findReferencingMCPServers rely
+// on, so fake-client MatchingFields lookups (which the real cache populates via
+// SetupWithManager) work in unit tests. Without it, the fake client returns "no
+// index with name spec.toolConfigRef has been registered".
+func withToolConfigRefIndex(b *fake.ClientBuilder) *fake.ClientBuilder {
+	return b.WithIndex(&mcpv1beta1.MCPServer{}, toolConfigRefIndexKey, indexMCPServerByToolConfigRef)
+}
+
+// withWebhookConfigRefIndex registers the field index that
+// MCPWebhookConfigReconciler.findReferencingMCPServers relies on, so fake-client
+// MatchingFields lookups (which the real cache populates via SetupWithManager)
+// work in unit tests. Without it, the fake client returns "no index with name
+// spec.webhookConfigRef has been registered".
+func withWebhookConfigRefIndex(b *fake.ClientBuilder) *fake.ClientBuilder {
+	return b.WithIndex(&mcpv1beta1.MCPServer{}, webhookConfigRefIndexKey, indexMCPServerByWebhookConfigRef)
 }
 
 // newTestMCPOIDCConfigReconciler builds an MCPOIDCConfigReconciler backed by a
@@ -145,11 +205,16 @@ func newTestMCPOIDCConfigReconciler(t *testing.T, objs ...client.Object) (*MCPOI
 }
 
 // newTestMCPAuthzConfigReconciler builds an MCPAuthzConfigReconciler backed by a
-// fake client seeded with objs, with the MCPAuthzConfig status subresource enabled.
+// fake client seeded with objs, with the MCPAuthzConfig status subresource enabled
+// and the authz config-ref field indexes registered (see withAuthzConfigRefIndexes).
 // See newTestMCPExternalAuthConfigReconciler for the Recorder convention.
 func newTestMCPAuthzConfigReconciler(t *testing.T, objs ...client.Object) (*MCPAuthzConfigReconciler, client.Client) {
 	t.Helper()
-	fakeClient, scheme := newTestFakeClient(t, &mcpv1beta1.MCPAuthzConfig{}, objs...)
+	scheme := testutil.NewScheme(t)
+	fakeClient := withAuthzConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
+		WithObjects(objs...).
+		WithStatusSubresource(&mcpv1beta1.MCPAuthzConfig{}).
+		Build()
 	return &MCPAuthzConfigReconciler{
 		Client: fakeClient,
 		Scheme: scheme,

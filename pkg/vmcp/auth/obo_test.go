@@ -59,10 +59,11 @@ func TestOBOStrategyStub_Authenticate_ReturnsEnterpriseRequired(t *testing.T) {
 	t.Parallel()
 
 	s := &oboStrategyStub{}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://example.com", nil)
+	ctx := context.Background()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.com", nil)
 	require.NoError(t, err)
 
-	err = s.Authenticate(context.Background(), req, &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO})
+	err = s.Authenticate(req.Context(), req, &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 }
@@ -76,8 +77,8 @@ func TestOBOStrategyStub_Validate_ReturnsEnterpriseRequired(t *testing.T) {
 	assert.ErrorIs(t, err, obo.ErrEnterpriseRequired)
 }
 
+//nolint:paralleltest // Reads package-level currentOBOStrategyFactory; must not race other tests.
 func TestNewOBOStrategy_DefaultReturnsStub(t *testing.T) {
-	t.Parallel()
 	withDefaultOBOFactory(t)
 
 	strategy := NewOBOStrategy(nil)

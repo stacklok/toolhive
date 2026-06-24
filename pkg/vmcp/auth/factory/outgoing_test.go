@@ -5,6 +5,7 @@ package factory
 
 import (
 	"context"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -162,9 +163,17 @@ func TestNewOutgoingAuthRegistry(t *testing.T) {
 
 		assert.Equal(t, authtypes.StrategyTypeOBO, strategy.Name())
 
-		err = strategy.Validate(&authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO})
+		cfg := &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeOBO}
+
+		err = strategy.Validate(cfg)
 		require.Error(t, err)
-		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired, "default obo stub must return ErrEnterpriseRequired")
+		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired, "Validate: default obo stub must return ErrEnterpriseRequired")
+
+		req, reqErr := http.NewRequestWithContext(ctx, http.MethodGet, "http://example.com", nil)
+		require.NoError(t, reqErr)
+		err = strategy.Authenticate(req.Context(), req, cfg)
+		require.Error(t, err)
+		assert.ErrorIs(t, err, obo.ErrEnterpriseRequired, "Authenticate: default obo stub must return ErrEnterpriseRequired")
 	})
 
 	t.Run("all strategies have correct names", func(t *testing.T) {

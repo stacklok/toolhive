@@ -113,30 +113,10 @@ func New(
 	if capacity == 0 {
 		capacity = defaultCacheCapacity
 	}
-	if len(cfg.WorkflowDefs) > 0 && cfg.ComposerFactory == nil {
-		return nil, nil, fmt.Errorf("sessionmanager.New: ComposerFactory is required when WorkflowDefs are provided")
-	}
-
 	// Resolve optimizer factory from config, applying telemetry wrapping if needed.
 	optimizerFactory, optimizerCleanup, err := resolveOptimizer(cfg)
 	if err != nil {
 		return nil, nil, err
-	}
-
-	// Pre-create workflow telemetry instruments once so they are reused across
-	// all per-session executor wrappers without re-registering metrics.
-	var instruments *workflowExecutorInstruments
-	if cfg.TelemetryProvider != nil && len(cfg.WorkflowDefs) > 0 {
-		instruments, err = newWorkflowExecutorInstruments(
-			cfg.TelemetryProvider.MeterProvider(),
-			cfg.TelemetryProvider.TracerProvider(),
-		)
-		if err != nil {
-			if cleanupErr := optimizerCleanup(context.Background()); cleanupErr != nil {
-				slog.Warn("failed to clean up optimizer after instrument creation error", "error", cleanupErr)
-			}
-			return nil, nil, fmt.Errorf("failed to create workflow executor telemetry: %w", err)
-		}
 	}
 
 	// Build the Manager first so we can reference sm.Terminate and sm.sessions
@@ -172,7 +152,7 @@ func New(
 		},
 	)
 
-	sm.factory = buildDecoratingFactory(cfg, optimizerFactory, instruments, sm.Terminate)
+	sm.factory = buildDecoratingFactory(cfg, optimizerFactory, sm.Terminate)
 
 	cleanup := func(ctx context.Context) error {
 		return optimizerCleanup(ctx)

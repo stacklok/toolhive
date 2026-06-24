@@ -1083,30 +1083,48 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 // validateCABundleRef validates the OIDC CA bundle ConfigMap reference if specified.
 // The CA bundle is sourced from the referenced MCPOIDCConfig's inline configuration.
 // It mirrors MCPServer.validateCABundleRef so the proxy surfaces the same
-// CABundleRefValidated condition (see the Status Condition Parity rule). Like
-// validateGroupRef this sets the condition, but — like MCPServer — it also persists
-// status itself so a CA bundle ConfigMap appearing or disappearing is reflected even
-// when no other handler triggers a status write this reconcile.
+// CABundleRefValidated condition (see the Status Condition Parity rule), but persists
+// status only when the condition actually changes so a steady-state reconcile is a
+// no-op — matching the needsUpdate idiom used by handleOIDCConfig in this file and the
+// idempotency rule in operator.md, rather than MCPServer's unconditional status write.
 func (r *MCPRemoteProxyReconciler) validateCABundleRef(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) {
+	condType := mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated
+	prev := meta.FindStatusCondition(proxy.Status.Conditions, condType)
+
 	caBundleRef := r.resolveOIDCCABundleRef(ctx, proxy)
 	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
 		// No CA bundle configured - clear any stale condition from a prior reconcile.
-		if meta.FindStatusCondition(proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated) != nil {
-			meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated)
+		if prev != nil {
+			meta.RemoveStatusCondition(&proxy.Status.Conditions, condType)
 			r.updateCABundleStatus(ctx, proxy)
 		}
 		return
 	}
 
+	status, reason, message := r.evaluateCABundleRef(ctx, proxy, caBundleRef)
+	setRemoteProxyCABundleRefCondition(proxy, status, reason, message)
+
+	if prev == nil ||
+		prev.Status != status ||
+		prev.Reason != reason ||
+		prev.Message != message ||
+		prev.ObservedGeneration != proxy.Generation {
+		r.updateCABundleStatus(ctx, proxy)
+	}
+}
+
+// evaluateCABundleRef checks the referenced CA bundle ConfigMap and returns the
+// resulting CABundleRefValidated condition status, reason, and message. It performs
+// no status mutation or persistence. Mirrors MCPServer.validateCABundleRef's checks.
+func (r *MCPRemoteProxyReconciler) evaluateCABundleRef(
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, caBundleRef *mcpv1beta1.CABundleSource,
+) (metav1.ConditionStatus, string, string) {
 	ctxLogger := log.FromContext(ctx)
 
 	// Validate the CABundleRef configuration
 	if err := validation.ValidateCABundleSource(caBundleRef); err != nil {
 		ctxLogger.Error(err, "Invalid CABundleRef configuration")
-		setRemoteProxyCABundleRefCondition(proxy, metav1.ConditionFalse,
-			mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid, err.Error())
-		r.updateCABundleStatus(ctx, proxy)
-		return
+		return metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid, err.Error()
 	}
 
 	// Check if the referenced ConfigMap exists
@@ -1114,32 +1132,25 @@ func (r *MCPRemoteProxyReconciler) validateCABundleRef(ctx context.Context, prox
 	configMap := &corev1.ConfigMap{}
 	if err := r.Get(ctx, types.NamespacedName{Namespace: proxy.Namespace, Name: cmName}, configMap); err != nil {
 		ctxLogger.Error(err, "Failed to find CA bundle ConfigMap", "configMap", cmName)
-		setRemoteProxyCABundleRefCondition(proxy, metav1.ConditionFalse,
-			mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefNotFound,
-			fmt.Sprintf("CA bundle ConfigMap '%s' not found in namespace '%s'", cmName, proxy.Namespace))
-		r.updateCABundleStatus(ctx, proxy)
-		return
+		return metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefNotFound,
+			fmt.Sprintf("CA bundle ConfigMap '%s' not found in namespace '%s'", cmName, proxy.Namespace)
 	}
 
-	// Verify the key exists in the ConfigMap
+	// Verify the key exists in the ConfigMap. A missing key is a configuration state
+	// surfaced through the condition, not a Go error, so it logs at Info (the two
+	// branches above carry a real error and log at Error).
 	key := caBundleRef.ConfigMapRef.Key
 	if key == "" {
 		key = validation.OIDCCABundleDefaultKey
 	}
 	if _, exists := configMap.Data[key]; !exists {
-		ctxLogger.Error(nil, "CA bundle key not found in ConfigMap", "configMap", cmName, "key", key)
-		setRemoteProxyCABundleRefCondition(proxy, metav1.ConditionFalse,
-			mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid,
-			fmt.Sprintf("Key '%s' not found in ConfigMap '%s'", key, cmName))
-		r.updateCABundleStatus(ctx, proxy)
-		return
+		ctxLogger.Info("CA bundle key not found in ConfigMap", "configMap", cmName, "key", key)
+		return metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid,
+			fmt.Sprintf("Key '%s' not found in ConfigMap '%s'", key, cmName)
 	}
 
-	// Validation passed
-	setRemoteProxyCABundleRefCondition(proxy, metav1.ConditionTrue,
-		mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefValid,
-		fmt.Sprintf("CA bundle ConfigMap '%s' is valid (key: %s)", cmName, key))
-	r.updateCABundleStatus(ctx, proxy)
+	return metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefValid,
+		fmt.Sprintf("CA bundle ConfigMap '%s' is valid (key: %s)", cmName, key)
 }
 
 // resolveOIDCCABundleRef returns the CA bundle reference from the proxy's referenced

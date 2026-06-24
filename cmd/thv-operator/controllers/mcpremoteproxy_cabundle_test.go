@@ -46,12 +46,12 @@ func newOIDCConfigWithCABundle(caRef *mcpv1beta1.CABundleSource) *mcpv1beta1.MCP
 	}
 }
 
-// caBundleConfigMap builds the CA bundle ConfigMap in the test namespace with the
-// given key holding a dummy certificate.
-func caBundleConfigMap(key string) *corev1.ConfigMap {
+// caBundleConfigMap builds the CA bundle ConfigMap in the test namespace holding a
+// dummy certificate under the default CA bundle key.
+func caBundleConfigMap() *corev1.ConfigMap {
 	return &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{Name: testCABundleConfigMapName, Namespace: testCABundleNamespace},
-		Data:       map[string]string{key: "cert"},
+		Data:       map[string]string{validation.OIDCCABundleDefaultKey: "cert"},
 	}
 }
 
@@ -95,7 +95,7 @@ func TestMCPRemoteProxyValidateCABundleRef(t *testing.T) {
 			proxy: v1beta1test.NewMCPRemoteProxy("p", testCABundleNamespace,
 				v1beta1test.WithRemoteProxyOIDCConfigRef(testProxyOIDCConfigName, "aud")),
 			oidcConfig:         newOIDCConfigWithCABundle(configMapCABundleRef(testCABundleConfigMapName, "ca.crt")),
-			configMap:          caBundleConfigMap("ca.crt"),
+			configMap:          caBundleConfigMap(),
 			expectedCondStatus: metav1.ConditionTrue,
 			expectedCondReason: mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefValid,
 		},
@@ -104,7 +104,7 @@ func TestMCPRemoteProxyValidateCABundleRef(t *testing.T) {
 			proxy: v1beta1test.NewMCPRemoteProxy("p", testCABundleNamespace,
 				v1beta1test.WithRemoteProxyOIDCConfigRef(testProxyOIDCConfigName, "aud")),
 			oidcConfig:         newOIDCConfigWithCABundle(configMapCABundleRef(testCABundleConfigMapName, "")),
-			configMap:          caBundleConfigMap(validation.OIDCCABundleDefaultKey),
+			configMap:          caBundleConfigMap(),
 			expectedCondStatus: metav1.ConditionTrue,
 			expectedCondReason: mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefValid,
 		},
@@ -129,7 +129,7 @@ func TestMCPRemoteProxyValidateCABundleRef(t *testing.T) {
 			proxy: v1beta1test.NewMCPRemoteProxy("p", testCABundleNamespace,
 				v1beta1test.WithRemoteProxyOIDCConfigRef(testProxyOIDCConfigName, "aud")),
 			oidcConfig:         newOIDCConfigWithCABundle(configMapCABundleRef(testCABundleConfigMapName, "missing-key")),
-			configMap:          caBundleConfigMap("ca.crt"),
+			configMap:          caBundleConfigMap(),
 			expectedCondStatus: metav1.ConditionFalse,
 			expectedCondReason: mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid,
 		},
@@ -216,6 +216,15 @@ func TestAddOIDCCABundleVolumes(t *testing.T) {
 			expectMount: false,
 		},
 		{
+			// OIDCConfigRef set but the MCPOIDCConfig object is absent: the fetch
+			// errors, addOIDCCABundleVolumes logs and returns, so nothing is mounted.
+			name: "OIDCConfigRef set but MCPOIDCConfig missing mounts nothing",
+			proxy: v1beta1test.NewMCPRemoteProxy("p", testCABundleNamespace,
+				v1beta1test.WithRemoteProxyOIDCConfigRef(testProxyOIDCConfigName, "aud")),
+			oidcConfig:  nil,
+			expectMount: false,
+		},
+		{
 			name: "OIDCConfig with CA bundle mounts the ConfigMap",
 			proxy: v1beta1test.NewMCPRemoteProxy("p", testCABundleNamespace,
 				v1beta1test.WithRemoteProxyOIDCConfigRef(testProxyOIDCConfigName, "aud")),
@@ -276,4 +285,48 @@ func containerVolumeMounts(dep *appsv1.Deployment) []corev1.VolumeMount {
 		return nil
 	}
 	return dep.Spec.Template.Spec.Containers[0].VolumeMounts
+}
+
+// TestMCPRemoteProxyValidateCABundleRefIdempotent asserts that a second validation
+// pass over a steady-state proxy performs no status write (resourceVersion unchanged),
+// per the operator idempotency rule.
+func TestMCPRemoteProxyValidateCABundleRefIdempotent(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+
+	scheme := testutil.NewScheme(t)
+	proxy := v1beta1test.NewMCPRemoteProxy("p", testCABundleNamespace,
+		v1beta1test.WithRemoteProxyOIDCConfigRef(testProxyOIDCConfigName, "aud"))
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&mcpv1beta1.MCPRemoteProxy{}).
+		WithObjects(
+			proxy,
+			newOIDCConfigWithCABundle(configMapCABundleRef(testCABundleConfigMapName, "ca.crt")),
+			caBundleConfigMap(),
+		).
+		Build()
+
+	reconciler := &MCPRemoteProxyReconciler{Client: fakeClient, Scheme: scheme}
+	key := types.NamespacedName{Name: proxy.Name, Namespace: proxy.Namespace}
+
+	// First pass reconciles to steady state and persists the True condition.
+	first := &mcpv1beta1.MCPRemoteProxy{}
+	require.NoError(t, fakeClient.Get(ctx, key, first))
+	reconciler.validateCABundleRef(ctx, first)
+
+	afterFirst := &mcpv1beta1.MCPRemoteProxy{}
+	require.NoError(t, fakeClient.Get(ctx, key, afterFirst))
+	require.NotNil(t,
+		meta.FindStatusCondition(afterFirst.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated),
+		"first pass should set the CABundleRefValidated condition")
+	steadyRV := afterFirst.ResourceVersion
+
+	// Second pass over the now-steady object must not write status again.
+	reconciler.validateCABundleRef(ctx, afterFirst)
+
+	afterSecond := &mcpv1beta1.MCPRemoteProxy{}
+	require.NoError(t, fakeClient.Get(ctx, key, afterSecond))
+	assert.Equal(t, steadyRV, afterSecond.ResourceVersion,
+		"steady-state reconcile must not bump resourceVersion")
 }

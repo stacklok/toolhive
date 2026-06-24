@@ -76,7 +76,9 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	// Fail loudly on operator-supplied misconfiguration (e.g. a baseline
 	// scope absent from scopes_supported) BEFORE touching storage or any
 	// other side-effecting work, so a bad config never reaches the network
-	// or filesystem.
+	// or filesystem. NewEmbeddedAuthServerWithStorage re-validates for callers
+	// that invoke it directly; this earlier check keeps the failure ahead of
+	// createStorage on this path.
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid run config: %w", err)
 	}
@@ -93,11 +95,29 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
-	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor)
+	return NewEmbeddedAuthServerWithStorage(ctx, cfg, stor)
 }
 
-// newEmbeddedAuthServerWithStorage is the unexported core constructor that
-// builds an EmbeddedAuthServer around a caller-supplied storage backend.
+// NewEmbeddedAuthServerWithStorage is the exported core constructor that
+// builds an EmbeddedAuthServer around a caller-supplied storage backend. It
+// lets external composition (e.g. an enterprise build) inject a decorated
+// storage.Storage aggregate.
+//
+// What the injection does NOT solve: the supplied storage is the sole
+// persistence boundary for this server instance. Injecting a shared backend
+// (e.g. Redis) lets replicas share persisted state — DCR registrations,
+// pending authorizations, upstream tokens — but it does not provide
+// cross-replica message delivery or fan-out, and it does not establish session
+// affinity. A request must still reach a replica that can resolve its session
+// from the shared store; pinning a session to a replica (or ensuring all
+// session state is in the shared store) remains the caller's responsibility,
+// typically at the load balancer.
+//
+// The supplied storage MUST also implement storage.DCRCredentialStore (both
+// OSS MemoryStorage and RedisStorage do); the constructor returns an error if
+// it does not. It also validates cfg, so direct callers get the same
+// fail-loud config check NewEmbeddedAuthServer performs before dispatch.
+//
 // NewEmbeddedAuthServer dispatches into this helper after running
 // createStorage; tests dispatch into it directly so they can supply a
 // closeTrackingStorage wrapper to verify the deferred-cleanup contract.
@@ -108,7 +128,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 // crash-looping caller (typical when DCR's network I/O fails) does not
 // leak the Redis client connection pool / MemoryStorage cleanup goroutine
 // on every restart. The named return retErr is the gate.
-func newEmbeddedAuthServerWithStorage(
+func NewEmbeddedAuthServerWithStorage(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
 	stor storage.Storage,
@@ -136,6 +156,15 @@ func newEmbeddedAuthServerWithStorage(
 			}
 		}
 	}()
+
+	// Validate cfg here too. NewEmbeddedAuthServer validates before
+	// createStorage, but direct callers of this exported constructor would
+	// otherwise skip the check. Placed inside the deferred-cleanup gate above so
+	// a validation failure still closes the caller-supplied storage per the
+	// resource-ownership contract.
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid run config: %w", err)
+	}
 
 	// 1. Create key provider from RunConfig.SigningKeyConfig
 	keyProvider, err := createKeyProvider(cfg.SigningKeyConfig)
@@ -547,7 +576,9 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 			Scopes:                        scopes,
 			AdditionalAuthorizationParams: oidc.AdditionalAuthorizationParams,
 		},
-		Issuer: oidc.IssuerURL,
+		Issuer:          oidc.IssuerURL,
+		SubjectClaim:    oidc.SubjectClaim,
+		AllowPrivateIPs: oidc.AllowPrivateIPs,
 	}, nil
 }
 
@@ -582,6 +613,7 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
 		TokenEndpoint:         oauth2.TokenEndpoint,
 		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
+		AllowPrivateIPs:       oauth2.AllowPrivateIPs,
 	}
 
 	if oauth2.TokenResponseMapping != nil {

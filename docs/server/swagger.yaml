@@ -466,6 +466,14 @@ components:
             authorization requests. Useful for provider-specific parameters like
             Google's access_type=offline.
           type: object
+        allow_private_ips:
+          description: |-
+            AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+            private IP ranges (RFC-1918, link-local). Use only when the upstream is
+            hosted inside the same cluster and has no public endpoint. HTTP-scheme
+            restrictions are unchanged — HTTPS is still required for non-localhost hosts.
+            Defaults to false.
+          type: boolean
         authorization_endpoint:
           description: AuthorizationEndpoint is the URL for the OAuth authorization
             endpoint.
@@ -522,6 +530,14 @@ components:
             authorization requests. Useful for provider-specific parameters like
             Google's access_type=offline.
           type: object
+        allow_private_ips:
+          description: |-
+            AllowPrivateIPs permits the OIDC discovery and token HTTP clients to
+            connect to private IP ranges (RFC-1918, link-local). Use only when the
+            upstream is hosted inside the same cluster and has no public endpoint.
+            HTTP-scheme restrictions are unchanged — HTTPS is still required for
+            non-localhost hosts. Defaults to false.
+          type: boolean
         client_id:
           description: ClientID is the OAuth 2.0 client identifier registered with
             the upstream IDP.
@@ -557,6 +573,12 @@ components:
             type: string
           type: array
           uniqueItems: false
+        subject_claim:
+          description: |-
+            SubjectClaim names the validated ID-token claim to use as the upstream
+            subject. Defaults to "sub" when empty. Set for IdPs where "sub" isn't
+            stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
+          type: string
         userinfo_override:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig'
       type: object
@@ -2549,8 +2571,13 @@ components:
           description: Name of the workload
           type: string
         network_isolation:
-          description: Whether network isolation is turned on. This applies the rules
-            in the permission profile.
+          description: |-
+            Whether network isolation is turned on. This applies the rules in the permission profile.
+            Pointer so that omitting the field defaults to network isolation ENABLED (matching the
+            `thv run` CLI default); set it explicitly to false to disable network isolation.
+            This also applies on update: a request that omits this field enables isolation, so
+            clients that build update requests from scratch should send it explicitly to avoid
+            unintentionally turning isolation on for a workload that had it off.
           type: boolean
         oauth_config:
           $ref: '#/components/schemas/pkg_api_v1.remoteOAuthConfig'
@@ -3073,8 +3100,13 @@ components:
           description: Docker image to use
           type: string
         network_isolation:
-          description: Whether network isolation is turned on. This applies the rules
-            in the permission profile.
+          description: |-
+            Whether network isolation is turned on. This applies the rules in the permission profile.
+            Pointer so that omitting the field defaults to network isolation ENABLED (matching the
+            `thv run` CLI default); set it explicitly to false to disable network isolation.
+            This also applies on update: a request that omits this field enables isolation, so
+            clients that build update requests from scratch should send it explicitly to avoid
+            unintentionally turning isolation on for a workload that had it off.
           type: boolean
         oauth_config:
           $ref: '#/components/schemas/pkg_api_v1.remoteOAuthConfig'

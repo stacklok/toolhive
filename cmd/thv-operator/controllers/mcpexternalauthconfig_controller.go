@@ -433,103 +433,116 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
+// externalAuthConfigRefIndexKey is the field-index key backing the reverse
+// lookups in findReferencingMCPServers / findReferencingMCPRemoteProxies. A
+// workload references an MCPExternalAuthConfig through EITHER spec field, so a
+// single combined index covers both: the extractors below return every config
+// name the object names via either field, deduplicated. The index is registered
+// per workload type in SetupWithManager.
+const externalAuthConfigRefIndexKey = "spec.externalAuthConfigRef+authServerRef"
+
+// indexMCPServerByExternalAuthConfigRef extracts the MCPExternalAuthConfig
+// name(s) an MCPServer references, for the combined field index. It covers both
+// spec.externalAuthConfigRef and spec.authServerRef (the latter only when its
+// Kind identifies an MCPExternalAuthConfig), deduplicating so a server naming the
+// same config via both fields is indexed once. Returns nil when there is no
+// reference so unreferencing servers are not indexed under the empty key.
+func indexMCPServerByExternalAuthConfigRef(obj client.Object) []string {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok {
+		return nil
+	}
+	names := map[string]struct{}{}
+	if server.Spec.ExternalAuthConfigRef != nil && server.Spec.ExternalAuthConfigRef.Name != "" {
+		names[server.Spec.ExternalAuthConfigRef.Name] = struct{}{}
+	}
+	if server.Spec.AuthServerRef != nil &&
+		server.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig &&
+		server.Spec.AuthServerRef.Name != "" {
+		names[server.Spec.AuthServerRef.Name] = struct{}{}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	for n := range names {
+		out = append(out, n)
+	}
+	return out
+}
+
+// indexMCPRemoteProxyByExternalAuthConfigRef extracts the MCPExternalAuthConfig
+// name(s) an MCPRemoteProxy references, for the combined field index. It mirrors
+// indexMCPServerByExternalAuthConfigRef: it covers both spec.externalAuthConfigRef
+// and spec.authServerRef (the latter only when its Kind identifies an
+// MCPExternalAuthConfig), deduplicating so a proxy naming the same config via both
+// fields is indexed once. Returns nil when there is no reference.
+func indexMCPRemoteProxyByExternalAuthConfigRef(obj client.Object) []string {
+	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
+	if !ok {
+		return nil
+	}
+	names := map[string]struct{}{}
+	if proxy.Spec.ExternalAuthConfigRef != nil && proxy.Spec.ExternalAuthConfigRef.Name != "" {
+		names[proxy.Spec.ExternalAuthConfigRef.Name] = struct{}{}
+	}
+	if proxy.Spec.AuthServerRef != nil &&
+		proxy.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig &&
+		proxy.Spec.AuthServerRef.Name != "" {
+		names[proxy.Spec.AuthServerRef.Name] = struct{}{}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(names))
+	for n := range names {
+		out = append(out, n)
+	}
+	return out
+}
+
 // findReferencingMCPServers finds all MCPServers that reference the given MCPExternalAuthConfig
 // via either externalAuthConfigRef or authServerRef.
-// It queries separately for each ref field and merges with deduplication, so a server
-// that has externalAuthConfigRef pointing to config "A" and authServerRef pointing to
-// config "B" will be found when reconciling either config.
+//
+// The combined field index (externalAuthConfigRefIndexKey, registered in
+// SetupWithManager) returns each server once regardless of which field — or both —
+// names the config, so a single indexed query replaces the prior two-query merge
+// and dedup.
 func (r *MCPExternalAuthConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) ([]mcpv1beta1.MCPServer, error) {
-	byExtAuth, err := ctrlutil.FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.ExternalAuthConfigRef != nil {
-				return &server.Spec.ExternalAuthConfigRef.Name
-			}
-			return nil
-		})
-	if err != nil {
-		return nil, err
+	serverList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, serverList, client.InNamespace(externalAuthConfig.Namespace),
+		client.MatchingFields{externalAuthConfigRefIndexKey: externalAuthConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers by externalAuthConfigRef: %w", err)
 	}
-
-	byAuthServer, err := ctrlutil.FindReferencingMCPServers(ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.AuthServerRef != nil && server.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig {
-				return &server.Spec.AuthServerRef.Name
-			}
-			return nil
-		})
-	if err != nil {
-		return nil, err
-	}
-
-	// Merge and deduplicate
-	seen := make(map[string]struct{}, len(byExtAuth))
-	result := make([]mcpv1beta1.MCPServer, 0, len(byExtAuth)+len(byAuthServer))
-	for _, s := range byExtAuth {
-		seen[s.Name] = struct{}{}
-		result = append(result, s)
-	}
-	for _, s := range byAuthServer {
-		if _, ok := seen[s.Name]; !ok {
-			result = append(result, s)
-		}
-	}
-	return result, nil
+	return serverList.Items, nil
 }
 
 // findReferencingMCPRemoteProxies finds all MCPRemoteProxies that reference the given MCPExternalAuthConfig
 // via either externalAuthConfigRef or authServerRef.
-// It queries separately for each ref field and merges with deduplication, so a proxy
-// that has externalAuthConfigRef pointing to config "A" and authServerRef pointing to
-// config "B" will be found when reconciling either config.
+//
+// The combined field index (externalAuthConfigRefIndexKey, registered in
+// SetupWithManager) returns each proxy once regardless of which field — or both —
+// names the config, so a single indexed query replaces the prior two-query merge
+// and dedup.
 func (r *MCPExternalAuthConfigReconciler) findReferencingMCPRemoteProxies(
 	ctx context.Context,
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) ([]mcpv1beta1.MCPRemoteProxy, error) {
-	byExtAuth, err := ctrlutil.FindReferencingMCPRemoteProxies(
-		ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
-		func(proxy *mcpv1beta1.MCPRemoteProxy) *string {
-			if proxy.Spec.ExternalAuthConfigRef != nil {
-				return &proxy.Spec.ExternalAuthConfigRef.Name
-			}
-			return nil
-		})
-	if err != nil {
-		return nil, err
+	proxyList := &mcpv1beta1.MCPRemoteProxyList{}
+	if err := r.List(ctx, proxyList, client.InNamespace(externalAuthConfig.Namespace),
+		client.MatchingFields{externalAuthConfigRefIndexKey: externalAuthConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPRemoteProxies by externalAuthConfigRef: %w", err)
 	}
-
-	byAuthServer, err := ctrlutil.FindReferencingMCPRemoteProxies(
-		ctx, r.Client, externalAuthConfig.Namespace, externalAuthConfig.Name,
-		func(proxy *mcpv1beta1.MCPRemoteProxy) *string {
-			if proxy.Spec.AuthServerRef != nil && proxy.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig {
-				return &proxy.Spec.AuthServerRef.Name
-			}
-			return nil
-		})
-	if err != nil {
-		return nil, err
-	}
-
-	// Merge and deduplicate
-	seen := make(map[string]struct{}, len(byExtAuth))
-	result := make([]mcpv1beta1.MCPRemoteProxy, 0, len(byExtAuth)+len(byAuthServer))
-	for _, p := range byExtAuth {
-		seen[p.Name] = struct{}{}
-		result = append(result, p)
-	}
-	for _, p := range byAuthServer {
-		if _, ok := seen[p.Name]; !ok {
-			result = append(result, p)
-		}
-	}
-	return result, nil
+	return proxyList.Items, nil
 }
 
 // findReferencingWorkloads returns the workload resources (MCPServer and MCPRemoteProxy)
 // that reference this MCPExternalAuthConfig via their ExternalAuthConfigRef or AuthServerRef field.
-// It queries separately for each ref field and merges the results, so both fields are always checked.
+// Both fields are covered by a single combined field index per workload type, so each
+// workload type is found with one indexed query.
 func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
@@ -558,6 +571,23 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
 // SetupWithManager sets up the controller with the Manager.
 // Watches MCPServer and MCPRemoteProxy changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Field indexes backing findReferencingMCPServers / findReferencingMCPRemoteProxies.
+	// Each is a combined index covering both spec.externalAuthConfigRef and
+	// spec.authServerRef, so a single MatchingFields query returns every workload
+	// referencing a given config via either field rather than listing every
+	// workload in the namespace and filtering in memory.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPServer{}, externalAuthConfigRefIndexKey, indexMCPServerByExternalAuthConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPServer externalAuthConfigRef index: %w", err)
+	}
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPRemoteProxy{}, externalAuthConfigRefIndexKey,
+		indexMCPRemoteProxyByExternalAuthConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPRemoteProxy externalAuthConfigRef index: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPExternalAuthConfig{}).
 		Watches(

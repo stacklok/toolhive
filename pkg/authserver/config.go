@@ -291,6 +291,18 @@ type OIDCUpstreamRunConfig struct {
 	// Google's access_type=offline.
 	//nolint:lll // field tags require full JSON+YAML names
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
+
+	// SubjectClaim names the validated ID-token claim to use as the upstream
+	// subject. Defaults to "sub" when empty. Set for IdPs where "sub" isn't
+	// stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
+	SubjectClaim string `json:"subject_claim,omitempty" yaml:"subject_claim,omitempty"`
+
+	// AllowPrivateIPs permits the OIDC discovery and token HTTP clients to
+	// connect to private IP ranges (RFC-1918, link-local). Use only when the
+	// upstream is hosted inside the same cluster and has no public endpoint.
+	// HTTP-scheme restrictions are unchanged — HTTPS is still required for
+	// non-localhost hosts. Defaults to false.
+	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
 }
 
 // OAuth2UpstreamRunConfig contains configuration for pure OAuth 2.0 providers.
@@ -355,6 +367,13 @@ type OAuth2UpstreamRunConfig struct {
 	// ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
 	// Mutually exclusive with ClientID.
 	DCRConfig *DCRUpstreamConfig `json:"dcr_config,omitempty" yaml:"dcr_config,omitempty"`
+
+	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+	// private IP ranges (RFC-1918, link-local). Use only when the upstream is
+	// hosted inside the same cluster and has no public endpoint. HTTP-scheme
+	// restrictions are unchanged — HTTPS is still required for non-localhost hosts.
+	// Defaults to false.
+	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
 }
 
 // DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an

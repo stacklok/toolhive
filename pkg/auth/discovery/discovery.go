@@ -89,13 +89,16 @@ func DetectAuthenticationFromServer(ctx context.Context, targetURI string, confi
 	detectCtx, cancel := context.WithTimeout(ctx, config.Timeout)
 	defer cancel()
 
-	// Make a test request to the target server to see if it returns WWW-Authenticate
+	// Make a test request to the target server to see if it returns WWW-Authenticate.
+	// The remote MCP server is untrusted, so refuse cross-host / scheme-downgrade
+	// redirects to prevent it driving the host into an SSRF (CWE-918).
 	client := &http.Client{
 		Timeout: config.Timeout,
 		Transport: &http.Transport{
 			TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
 			ResponseHeaderTimeout: config.ResponseHeaderTimeout,
 		},
+		CheckRedirect: networking.SameHostRedirectPolicy(),
 	}
 
 	// First try a GET request
@@ -162,7 +165,9 @@ func detectAuthWithRequest(
 		}
 	}
 
-	resp, err := client.Do(req) // #nosec G704 -- targetURI is the MCP server endpoint URL from internal config
+	// #nosec G704 -- targetURI is server-controlled; the client refuses cross-host and
+	// HTTPS->HTTP redirects (networking.SameHostRedirectPolicy) to contain SSRF.
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make %s request: %w", method, err)
 	}
@@ -216,7 +221,9 @@ func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri strin
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req) // #nosec G704 -- uri is built from the MCP server endpoint for auth discovery
+	// #nosec G704 -- uri is server-controlled; the client refuses cross-host and
+	// HTTPS->HTTP redirects (networking.SameHostRedirectPolicy) to contain SSRF.
+	resp, err := client.Do(req)
 	if err != nil {
 		//nolint:gosec // G706: uri is from server endpoint discovery
 		slog.Debug("Failed to check well-known URI", "uri", uri, "error", err)
@@ -895,8 +902,17 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 	}, nil
 }
 
-// FetchResourceMetadata as specified in RFC 9728
-func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC9728AuthInfo, error) {
+// FetchResourceMetadata fetches RFC 9728 protected-resource metadata from a
+// server-supplied URL.
+//
+// The metadataURL originates from untrusted remote-server discovery (the
+// WWW-Authenticate resource_metadata parameter), so the client refuses
+// cross-host and HTTPS->HTTP redirects (CWE-918). When blockPrivateIPs is true
+// it additionally refuses to dial private/loopback/link-local addresses on
+// every hop. Callers set blockPrivateIPs when the operator-configured target is
+// public; when the operator deliberately targets an internal network it is
+// false so legitimately-internal auth metadata stays reachable.
+func FetchResourceMetadata(ctx context.Context, metadataURL string, blockPrivateIPs bool) (*auth.RFC9728AuthInfo, error) {
 	if metadataURL == "" {
 		return nil, fmt.Errorf("metadata URL is empty")
 	}
@@ -912,13 +928,21 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 		return nil, fmt.Errorf("metadata URL must use HTTPS: %s", metadataURL)
 	}
 
-	// Create HTTP client with timeout
+	// The HTTPS check above runs once on the initial URL only, so refuse
+	// cross-host and scheme-downgrade redirects to stop a 30x reaching an
+	// internal address; optionally block private dials on every hop.
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+	}
+	if blockPrivateIPs {
+		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
+		transport.DisableKeepAlives = true
+	}
 	client := &http.Client{
-		Timeout: DefaultHTTPTimeout,
-		Transport: &http.Transport{
-			TLSHandshakeTimeout:   5 * time.Second,
-			ResponseHeaderTimeout: 5 * time.Second,
-		},
+		Timeout:       DefaultHTTPTimeout,
+		Transport:     transport,
+		CheckRedirect: networking.SameHostRedirectPolicy(),
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metadataURL, nil)
@@ -928,7 +952,9 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req) // #nosec G704 -- URL is the OIDC well-known metadata endpoint
+	// #nosec G704 -- metadataURL is server-controlled; the client refuses cross-host and
+	// HTTPS->HTTP redirects (networking.SameHostRedirectPolicy) to contain SSRF.
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
 	}
@@ -968,10 +994,15 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 // and discover its actual issuer by fetching its metadata.
 // This handles the case where the URL used to fetch metadata differs from the actual issuer
 // (e.g., Stripe's case where https://mcp.stripe.com hosts metadata for https://marketplace.stripe.com)
-func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string) (*AuthServerInfo, error) {
+//
+// When blockPrivateIPs is true the underlying discovery refuses to dial
+// private/loopback/link-local addresses (SSRF guard for server-supplied issuer
+// URLs); callers pass false when the issuer is operator-configured or the
+// configured target is itself internal.
+func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string, blockPrivateIPs bool) (*AuthServerInfo, error) {
 	// Use DiscoverActualIssuer which doesn't validate issuer match
 	// This allows us to discover the real issuer even when it differs from the metadata URL
-	doc, err := oauth.DiscoverActualIssuer(ctx, potentialIssuer)
+	doc, err := oauth.DiscoverActualIssuer(ctx, potentialIssuer, blockPrivateIPs)
 	if err == nil && doc != nil && doc.Issuer != "" {
 		// Found valid authorization server metadata, return the actual issuer and endpoints
 		if doc.Issuer != potentialIssuer {

@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
@@ -41,15 +42,9 @@ import (
 func TestDeploymentForVirtualMCPServer(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+	)
 
 	scheme := testutil.NewScheme(t)
 
@@ -98,20 +93,14 @@ func TestDeploymentForVirtualMCPServer_WithRedisPassword(t *testing.T) {
 
 	passwordRef := &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"}
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp-redis",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			SessionStorage: &mcpv1beta1.SessionStorageConfig{
-				Provider:    mcpv1beta1.SessionStorageProviderRedis,
-				Address:     "redis:6379",
-				PasswordRef: passwordRef,
-			},
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp-redis", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPSessionStorage(&mcpv1beta1.SessionStorageConfig{
+			Provider:    mcpv1beta1.SessionStorageProviderRedis,
+			Address:     "redis:6379",
+			PasswordRef: passwordRef,
+		}),
+	)
 
 	scheme := testutil.NewScheme(t)
 
@@ -150,33 +139,21 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 	}{
 		{
 			name: "without log level",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+			),
 			wantArgs: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483"},
 		},
 		{
 			name: "with log level debug",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						Operational: &vmcpconfig.OperationalConfig{
-							LogLevel: "debug",
-						},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					Operational: &vmcpconfig.OperationalConfig{
+						LogLevel: "debug",
 					},
-				},
-			},
+				}),
+			),
 			wantArgs: []string{"serve", "--config=/etc/vmcp-config/config.yaml", "--host=0.0.0.0", "--port=4483", "--debug"},
 		},
 	}
@@ -197,15 +174,9 @@ func TestBuildContainerArgsForVmcp(t *testing.T) {
 func TestBuildVolumesForVmcp(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+	)
 
 	r := &VirtualMCPServerReconciler{}
 	volumeMounts, volumes, err := r.buildVolumesForVmcp(context.Background(), vmcp)
@@ -227,15 +198,9 @@ func TestBuildVolumesForVmcp(t *testing.T) {
 func TestBuildEnvVarsForVmcp(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "test-namespace",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "test-namespace",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+	)
 
 	r := &VirtualMCPServerReconciler{}
 	env, err := r.buildEnvVarsForVmcp(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
@@ -298,10 +263,9 @@ func TestBuildRedisPasswordEnvVar(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			vmcp := &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec:       mcpv1beta1.VirtualMCPServerSpec{SessionStorage: tc.storage},
-			}
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPSessionStorage(tc.storage),
+			)
 			env := r.buildRedisPasswordEnvVar(vmcp)
 			if tc.expectEnVar {
 				require.Len(t, env, 1)
@@ -318,17 +282,55 @@ func TestBuildRedisPasswordEnvVar(t *testing.T) {
 	}
 }
 
+func TestBuildRedisPasswordEnvVar_GlobalDefault(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_NAME", "global-redis-secret")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_KEY", "redis-password")
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{},
+	}
+	r := &VirtualMCPServerReconciler{}
+	got := r.buildRedisPasswordEnvVar(vmcp)
+
+	require.Len(t, got, 1)
+	assert.Equal(t, vmcpconfig.RedisPasswordEnvVar, got[0].Name)
+	assert.Equal(t, "global-redis-secret", got[0].ValueFrom.SecretKeyRef.Name)
+	assert.Equal(t, "redis-password", got[0].ValueFrom.SecretKeyRef.Key)
+}
+
+func TestBuildRedisPasswordEnvVar_NonRedisProviderNotOverriddenByGlobal(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_SECRET_NAME", "global-secret")
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: "memory",
+			},
+		},
+	}
+	r := &VirtualMCPServerReconciler{}
+	got := r.buildRedisPasswordEnvVar(vmcp)
+	assert.Empty(t, got, "non-Redis provider should not receive global Redis password env var")
+}
+
+func TestBuildRedisPasswordEnvVar_NilWhenNoGlobal(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "")
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{Spec: mcpv1beta1.VirtualMCPServerSpec{}}
+	r := &VirtualMCPServerReconciler{}
+	got := r.buildRedisPasswordEnvVar(vmcp)
+
+	assert.Empty(t, got)
+}
+
 // TestBuildDeploymentMetadataForVmcp tests deployment metadata generation
 func TestBuildDeploymentMetadataForVmcp(t *testing.T) {
 	t.Parallel()
 
 	baseLabels := labelsForVirtualMCPServer("test-vmcp")
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 	r := &VirtualMCPServerReconciler{}
 	labels, annotations := r.buildDeploymentMetadataForVmcp(baseLabels, vmcp)
@@ -342,12 +344,7 @@ func TestBuildPodTemplateMetadata(t *testing.T) {
 	t.Parallel()
 
 	baseLabels := labelsForVirtualMCPServer("test-vmcp")
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 	checksumValue := "test-checksum-123"
 
 	r := &VirtualMCPServerReconciler{}
@@ -361,12 +358,7 @@ func TestBuildPodTemplateMetadata(t *testing.T) {
 func TestBuildSecurityContextsForVmcp(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 	r := &VirtualMCPServerReconciler{
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
@@ -382,12 +374,7 @@ func TestBuildSecurityContextsForVmcp(t *testing.T) {
 func TestBuildContainerPortsForVmcp(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 	r := &VirtualMCPServerReconciler{}
 	ports := r.buildContainerPortsForVmcp(vmcp)
@@ -402,15 +389,9 @@ func TestBuildContainerPortsForVmcp(t *testing.T) {
 func TestServiceForVirtualMCPServer(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+	)
 
 	scheme := testutil.NewScheme(t)
 
@@ -440,16 +421,12 @@ func TestServiceForVirtualMCPServer(t *testing.T) {
 func TestServiceForVirtualMCPServerSessionAffinityNone(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef:        &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			SessionAffinity: string(corev1.ServiceAffinityNone),
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Spec.SessionAffinity = string(corev1.ServiceAffinityNone)
+		}),
+	)
 
 	scheme := testutil.NewScheme(t)
 
@@ -468,12 +445,7 @@ func TestBuildServiceMetadataForVmcp(t *testing.T) {
 	t.Parallel()
 
 	baseLabels := labelsForVirtualMCPServer("test-vmcp")
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 	r := &VirtualMCPServerReconciler{}
 	labels, annotations := r.buildServiceMetadataForVmcp(baseLabels, vmcp)
@@ -533,12 +505,7 @@ func TestDeploymentNeedsUpdate(t *testing.T) {
 	// Test nil inputs
 	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, nil, "", nil, []workloads.TypedWorkload{}))
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 	// Test with nil deployment
 	assert.True(t, r.deploymentNeedsUpdate(context.Background(), nil, vmcp, "checksum", nil, []workloads.TypedWorkload{}))
@@ -553,12 +520,7 @@ func TestServiceNeedsUpdate(t *testing.T) {
 	// Test nil inputs
 	assert.True(t, r.serviceNeedsUpdate(nil, nil))
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 	// Test with nil service
 	assert.True(t, r.serviceNeedsUpdate(nil, vmcp))
@@ -942,13 +904,11 @@ func TestDeploymentForVirtualMCPServer_ImagePullSecrets(t *testing.T) {
 
 			scheme := testutil.NewScheme(t)
 
-			vmcp := &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: tt.spec,
-			}
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Spec = tt.spec
+				}),
+			)
 
 			r := &VirtualMCPServerReconciler{
 				Scheme:           scheme,
@@ -1032,13 +992,12 @@ func TestDeploymentForVirtualMCPServer_ImagePullSecrets_UpdatePath(t *testing.T)
 				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
 			}
 
-			vmcp := &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef:         &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					ImagePullSecrets: tt.initial,
-				},
-			}
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Spec.ImagePullSecrets = tt.initial
+				}),
+			)
 			if tt.podTemplateRaw != nil {
 				vmcp.Spec.PodTemplateSpec = &runtime.RawExtension{Raw: tt.podTemplateRaw}
 			}
@@ -1078,6 +1037,70 @@ func TestDeploymentForVirtualMCPServer_ImagePullSecrets_UpdatePath(t *testing.T)
 			assert.False(t, settled, "drift check must settle once Deployment is rebuilt")
 		})
 	}
+}
+
+// TestDeploymentForVirtualMCPServer_AuthServerConfig_NoUpdateLoop is a regression
+// test for #5616: a VirtualMCPServer with an embedded auth server (AuthServerConfig)
+// hot-looped Deployment updates forever. deploymentForVirtualMCPServer injected the
+// auth-server client-secret env var into the container, but buildEnvVarsForVmcp (used
+// by containerNeedsUpdate to compute the expected env) did not, so the reflect.DeepEqual
+// drift check never matched and the operator issued a no-op Update on every reconcile.
+//
+// The test builds a Deployment for a vMCP with AuthServerConfig set, then asserts that
+// a drift check against that freshly-built Deployment reports no update needed. Before
+// the fix this fails (deploymentNeedsUpdate returns true); after it, the env is symmetric
+// and the check settles.
+func TestDeploymentForVirtualMCPServer_AuthServerConfig_NoUpdateLoop(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+
+	r := &VirtualMCPServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	// An OIDC upstream provider with a ClientSecretRef makes GenerateAuthServerEnvVars
+	// emit TOOLHIVE_UPSTREAM_CLIENT_SECRET_OKTA — the env var that was present on the
+	// built container but absent from the expected set.
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{
+					Name: "okta",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL:       "https://example.okta.com",
+						ClientID:        "test-client",
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{Name: "okta-secret", Key: "client-secret"},
+					},
+				},
+			},
+		}),
+	)
+
+	const cfgChecksum = "test-checksum"
+	dep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, cfgChecksum, nil, []workloads.TypedWorkload{})
+	require.NotNil(t, dep)
+
+	// Sanity: the auth-server client-secret env var must actually be on the built
+	// container, otherwise this test isn't exercising the asymmetry it guards against.
+	require.NotEmpty(t, dep.Spec.Template.Spec.Containers)
+	var hasAuthEnv bool
+	for _, e := range dep.Spec.Template.Spec.Containers[0].Env {
+		if e.Name == "TOOLHIVE_UPSTREAM_CLIENT_SECRET_OKTA" {
+			hasAuthEnv = true
+			break
+		}
+	}
+	require.True(t, hasAuthEnv, "built container must carry the auth-server client-secret env var")
+
+	// The freshly-built Deployment is steady state: a drift check against it must
+	// not request an update. Before the fix this returned true on every reconcile.
+	needsUpdate := r.deploymentNeedsUpdate(t.Context(), dep, vmcp, cfgChecksum, nil, []workloads.TypedWorkload{})
+	assert.False(t, needsUpdate,
+		"deploymentNeedsUpdate must not loop on a vMCP with AuthServerConfig (regression #5616)")
 }
 
 // TestImagePullSecretsHash verifies the hash helper normalizes order, treats an

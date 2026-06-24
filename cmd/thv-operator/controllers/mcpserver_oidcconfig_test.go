@@ -266,8 +266,6 @@ func TestMCPOIDCConfigReconciler_handleDeletion_BlocksWhenReferenced(t *testing.
 	t.Parallel()
 	ctx := t.Context()
 
-	scheme := testutil.NewScheme(t)
-
 	now := metav1.Now()
 	cfg := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -287,10 +285,7 @@ func TestMCPOIDCConfigReconciler_handleDeletion_BlocksWhenReferenced(t *testing.
 		},
 	}
 
-	fc := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(cfg, server).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
-	r := &MCPOIDCConfigReconciler{Client: fc, Scheme: scheme}
+	r, fc := newTestMCPOIDCConfigReconciler(t, cfg, server)
 
 	result, err := r.handleDeletion(ctx, cfg)
 	require.NoError(t, err)
@@ -314,8 +309,6 @@ func TestMCPOIDCConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *testi
 	t.Parallel()
 	ctx := t.Context()
 
-	scheme := testutil.NewScheme(t)
-
 	now := metav1.Now()
 	cfg := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -330,10 +323,7 @@ func TestMCPOIDCConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *testi
 	// Unrelated server -- does NOT reference this config
 	unrelated := v1beta1test.NewMCPServer("other", "default", v1beta1test.WithImage("img"))
 
-	fc := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(cfg, unrelated).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
-	r := &MCPOIDCConfigReconciler{Client: fc, Scheme: scheme}
+	r, _ := newTestMCPOIDCConfigReconciler(t, cfg, unrelated)
 
 	result, err := r.handleDeletion(ctx, cfg)
 	require.NoError(t, err)
@@ -345,8 +335,6 @@ func TestMCPOIDCConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *testi
 func TestMCPOIDCConfigReconciler_handleDeletion_IgnoresCrossNamespaceRef(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-
-	scheme := testutil.NewScheme(t)
 
 	now := metav1.Now()
 	cfg := &mcpv1beta1.MCPOIDCConfig{
@@ -368,10 +356,7 @@ func TestMCPOIDCConfigReconciler_handleDeletion_IgnoresCrossNamespaceRef(t *test
 		},
 	}
 
-	fc := fake.NewClientBuilder().WithScheme(scheme).
-		WithObjects(cfg, crossNS).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).Build()
-	r := &MCPOIDCConfigReconciler{Client: fc, Scheme: scheme}
+	r, _ := newTestMCPOIDCConfigReconciler(t, cfg, crossNS)
 
 	result, err := r.handleDeletion(ctx, cfg)
 	require.NoError(t, err)

@@ -104,7 +104,13 @@ type VMCP interface {
 	// unadvertised name. Applies the same admission filter as ListPrompts.
 	LookupPrompt(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Prompt, error)
 
-	// Close releases core-held resources (backend connections, etc.).
+	// BackendHealth returns the backend health reporter the core owns, or nil when health
+	// monitoring is disabled. The core builds, starts, and (via Close) stops the monitor and
+	// filters capabilities with it; the transport layer uses this only to report on or sync
+	// backend health (e.g. the /health route and periodic status reporting).
+	BackendHealth() health.Reporter
+
+	// Close releases core-held resources (backend connections, the health monitor, etc.).
 	// Implementations must be idempotent: calling Close multiple times returns nil.
 	Close() error
 }
@@ -114,9 +120,9 @@ type VMCP interface {
 // *coreVMCP) lands in a later change.
 //
 // Cross-cutting TelemetryProvider/AuditConfig are consumed by both New and Serve
-// (not a clean partition). HealthStatusProvider is the read-only health view
-// built at the composition root and injected here; a nil provider means no health
-// filtering (all backends included), matching today's no-monitor behavior.
+// (not a clean partition). HealthMonitorConfig is the backend health monitoring
+// configuration; the core builds, starts, and stops the monitor from it (a nil config
+// disables monitoring, including all backends — matching today's no-monitor behavior).
 type Config struct {
 	// Aggregator discovers and merges backend capabilities into the advertised set.
 	Aggregator aggregator.Aggregator
@@ -153,9 +159,10 @@ type Config struct {
 	// AuditConfig is the cross-cutting audit configuration (also consumed by Serve).
 	AuditConfig *audit.Config
 
-	// HealthStatusProvider is the read-only backend health view built at the
-	// composition root. Nil means no health filtering (all backends included).
-	HealthStatusProvider health.StatusProvider
+	// HealthMonitorConfig configures backend health monitoring. The core builds, starts, and
+	// (via Close) stops the monitor from it, filters capabilities with it, and exposes it via
+	// BackendHealth. Nil disables monitoring (no health filtering; all backends included).
+	HealthMonitorConfig *health.MonitorConfig
 
 	// Elicitation sends MCP elicitation requests to the client and blocks for the
 	// response. It is the domain-typed seam (vmcp anti-pattern #5: no mcp-go types)

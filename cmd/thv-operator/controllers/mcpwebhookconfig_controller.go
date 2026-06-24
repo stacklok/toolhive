@@ -229,18 +229,38 @@ func (r *MCPWebhookConfigReconciler) handleDeletion(
 	return ctrl.Result{}, nil
 }
 
-// findReferencingMCPServers finds all MCPServers that reference the given MCPWebhookConfig
+// webhookConfigRefIndexKey is the field-index key backing the reverse lookup in
+// findReferencingMCPServers. MCPServer references the config via
+// spec.webhookConfigRef; the index is registered in SetupWithManager. The
+// MCPWebhookConfig CR is v1alpha1, but the index is on the v1beta1 MCPServer.
+const webhookConfigRefIndexKey = "spec.webhookConfigRef"
+
+// indexMCPServerByWebhookConfigRef extracts the MCPWebhookConfig name an MCPServer
+// references, for the field index. Returns nil when there is no reference so
+// unreferencing servers are not indexed under the empty key.
+func indexMCPServerByWebhookConfigRef(obj client.Object) []string {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.WebhookConfigRef == nil || server.Spec.WebhookConfigRef.Name == "" {
+		return nil
+	}
+	return []string{server.Spec.WebhookConfigRef.Name}
+}
+
+// findReferencingMCPServers finds all MCPServers that reference the given MCPWebhookConfig.
+//
+// The lookup is served by a field index (registered in SetupWithManager) so the
+// query returns only the referencing MCPServers instead of listing every MCPServer
+// in the namespace and filtering in memory.
 func (r *MCPWebhookConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
 	webhookConfig *mcpv1alpha1.MCPWebhookConfig,
 ) ([]mcpv1beta1.MCPServer, error) {
-	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, webhookConfig.Namespace, webhookConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.WebhookConfigRef != nil {
-				return &server.Spec.WebhookConfigRef.Name
-			}
-			return nil
-		})
+	serverList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, serverList, client.InNamespace(webhookConfig.Namespace),
+		client.MatchingFields{webhookConfigRefIndexKey: webhookConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers by webhookConfigRef: %w", err)
+	}
+	return serverList.Items, nil
 }
 
 // updateReferencingWorkloads updates the list of workloads referencing this config
@@ -286,6 +306,15 @@ func conditionWouldChange(conditions []metav1.Condition, desired metav1.Conditio
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPWebhookConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Field index backing findReferencingMCPServers: lets the controller query only
+	// the MCPServers referencing a given config rather than listing every MCPServer
+	// in the namespace and filtering in memory.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPServer{}, webhookConfigRefIndexKey, indexMCPServerByWebhookConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPServer webhookConfigRef index: %w", err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1alpha1.MCPWebhookConfig{}).
 		Watches(

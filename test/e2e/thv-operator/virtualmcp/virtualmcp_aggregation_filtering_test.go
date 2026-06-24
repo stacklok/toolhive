@@ -15,6 +15,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -43,36 +44,32 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 		}, timeout, pollingInterval)
 
 		By("Creating VirtualMCPServer with tool filtering - only expose tools from backend1")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-						// Tool filtering: only allow echo from backend1, nothing from backend2
-						Tools: []*vmcpconfig.WorkloadToolConfig{
-							{
-								Workload: backend1Name,
-								Filter:   []string{"echo"}, // Only expose echo tool
-							},
-							{
-								Workload:   backend2Name,
-								ExcludeAll: true, // Exclude all tools from backend2
-							},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
+					// Tool filtering: only allow echo from backend1, nothing from backend2
+					Tools: []*vmcpconfig.WorkloadToolConfig{
+						{
+							Workload: backend1Name,
+							Filter:   []string{"echo"}, // Only expose echo tool
+						},
+						{
+							Workload:   backend2Name,
+							ExcludeAll: true, // Exclude all tools from backend2
 						},
 					},
 				},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -86,12 +83,7 @@ var _ = Describe("VirtualMCPServer Aggregation Filtering", Ordered, func() {
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace)
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up backend MCPServers")

@@ -163,8 +163,7 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 			if tt.existingMCPServer != nil {
 				objs = append(objs, tt.existingMCPServer)
 			}
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
+			fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 				WithObjects(objs...).
 				WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 				Build()
@@ -258,8 +257,7 @@ func TestToolConfigReconciler_findReferencingWorkloads(t *testing.T) {
 		// No ToolConfigRef
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig, mcpServer1, mcpServer2, mcpServer3).
 		Build()
 
@@ -295,8 +293,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *te
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig).
 		WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 		Build()
@@ -375,8 +372,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *tes
 		v1beta1test.WithToolConfigRef("test-config"),
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig, mcpServer).
 		WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 		Build()
@@ -441,8 +437,7 @@ func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig).
 		WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 		Build()

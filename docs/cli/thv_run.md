@@ -127,7 +127,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --host string                                 Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --ignore-globally                             Load global ignore patterns from ~/.config/toolhive/thvignore (default true)
       --image-verification string                   Set image verification mode (warn, enabled, disabled) (default "warn")
-      --isolate-network                             Isolate the container network from the host (default false)
+      --isolate-network                             Isolate the container network from the host. Use --isolate-network=false to opt out. (default true)
       --jwks-allow-private-ip                       Allow JWKS/OIDC endpoints on private IP addresses (use with caution) (default false)
       --jwks-auth-token-file string                 Path to file containing bearer token for authenticating JWKS/OIDC requests
   -l, --label stringArray                           Set labels on the container (format: key=value)

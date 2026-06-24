@@ -72,7 +72,12 @@ type updateRequest struct {
 	// Proxy mode to use
 	ProxyMode string `json:"proxy_mode"`
 	// Whether network isolation is turned on. This applies the rules in the permission profile.
-	NetworkIsolation bool `json:"network_isolation"`
+	// Pointer so that omitting the field defaults to network isolation ENABLED (matching the
+	// `thv run` CLI default); set it explicitly to false to disable network isolation.
+	// This also applies on update: a request that omits this field enables isolation, so
+	// clients that build update requests from scratch should send it explicitly to avoid
+	// unintentionally turning isolation on for a workload that had it off.
+	NetworkIsolation *bool `json:"network_isolation,omitempty"`
 	// Whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers"`
 	// Tools filter
@@ -247,6 +252,15 @@ func validateBulkOperationRequest(req bulkOperationRequest) error {
 	return nil
 }
 
+// networkIsolationEnabled defaults network isolation to ON when the client
+// omits the field (nil), matching the CLI default. Explicit false disables it.
+func networkIsolationEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
+}
+
 // runConfigToCreateRequest converts a RunConfig to createRequest for API responses
 func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 	if runConfig == nil {
@@ -357,7 +371,7 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 			OIDC:              oidcConfig,
 			PermissionProfile: runConfig.PermissionProfile,
 			ProxyMode:         string(runConfig.ProxyMode),
-			NetworkIsolation:  runConfig.IsolateNetwork,
+			NetworkIsolation:  &runConfig.IsolateNetwork,
 			TrustProxyHeaders: runConfig.TrustProxyHeaders,
 			ToolsFilter:       runConfig.ToolsFilter,
 			ToolsOverride:     toolsOverride,

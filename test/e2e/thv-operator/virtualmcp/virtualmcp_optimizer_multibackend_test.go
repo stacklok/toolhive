@@ -16,6 +16,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcp "github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
@@ -164,48 +165,36 @@ var _ = Describe("VirtualMCPServer Optimizer Multi-Backend", Ordered, func() {
 		CreateMultipleMCPServersInParallel(ctx, k8sClient, allBackends, timeout, pollingInterval)
 
 		By("Creating EmbeddingServer for optimizer multi-backend")
-		embeddingServer := &mcpv1beta1.EmbeddingServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      embeddingName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.EmbeddingServerSpec{
-				Model: "BAAI/bge-small-en-v1.5",
-				Image: images.TextEmbeddingsInferenceImage,
-			},
-		}
+		embeddingServer := v1beta1test.NewEmbeddingServer(embeddingName, testNamespace,
+			v1beta1test.WithEmbeddingModel("BAAI/bge-small-en-v1.5"),
+			v1beta1test.WithEmbeddingImage(images.TextEmbeddingsInferenceImage),
+		)
 		Expect(k8sClient.Create(ctx, embeddingServer)).To(Succeed())
 
 		By("Creating VirtualMCPServer with optimizer enabled and prefix aggregation")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef:    &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				ServiceType: "NodePort",
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "discovered",
-				},
-				EmbeddingServerRef: &mcpv1beta1.EmbeddingServerRef{
-					Name: embeddingName,
-				},
-				Config: vmcpconfig.Config{
-					Group:     mcpGroupName,
-					Optimizer: &vmcpconfig.OptimizerConfig{},
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: vmcp.ConflictStrategyPrefix,
-						ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
-							PrefixFormat: "{workload}_",
-						},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered",
+			}),
+			v1beta1test.WithVMCPEmbeddingServerRef(embeddingName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group:     mcpGroupName,
+				Optimizer: &vmcpconfig.OptimizerConfig{},
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: vmcp.ConflictStrategyPrefix,
+					ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
+						PrefixFormat: "{workload}_",
 					},
 				},
-			},
-		}
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")

@@ -467,7 +467,7 @@ func TestTryDiscoverFromWellKnown(t *testing.T) {
 		}
 
 		ctx := t.Context()
-		issuer, scopes, authInfo, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL)
+		issuer, scopes, authInfo, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL, false)
 
 		require.NoError(t, err)
 		assert.Equal(t, mockServer.URL, issuer)                // For localhost, issuer matches server URL
@@ -488,7 +488,7 @@ func TestTryDiscoverFromWellKnown(t *testing.T) {
 		}
 
 		ctx := t.Context()
-		issuer, scopes, _, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL)
+		issuer, scopes, _, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL, false)
 
 		require.NoError(t, err)
 		assert.Equal(t, mockServer.URL, issuer) // For localhost, issuer matches server URL
@@ -505,7 +505,7 @@ func TestTryDiscoverFromWellKnown(t *testing.T) {
 		}
 
 		ctx := t.Context()
-		_, _, _, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL)
+		_, _, _, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL, false)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "well-known discovery failed")
@@ -674,7 +674,7 @@ func TestTryDiscoverFromResourceMetadata_EmptyScopes(t *testing.T) {
 			metadataURL := metadataServer.URL + "/.well-known/oauth-protected-resource"
 
 			// Call tryDiscoverFromResourceMetadata
-			issuer, scopes, authServerInfo, err := handler.tryDiscoverFromResourceMetadata(ctx, metadataURL)
+			issuer, scopes, authServerInfo, err := handler.tryDiscoverFromResourceMetadata(ctx, metadataURL, false)
 
 			// Verify results
 			require.NoError(t, err, tt.description)

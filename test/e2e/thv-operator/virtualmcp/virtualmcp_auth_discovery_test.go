@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -845,41 +846,37 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		podTemplateRaw, err := json.Marshal(podTemplateSpec)
 		Expect(err).ToNot(HaveOccurred())
 
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					// No TokenCache configured - tokens should be fetched on each request
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-					},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				// No TokenCache configured - tokens should be fetched on each request
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
 				},
-				// OIDC incoming auth - clients must present valid OIDC tokens
-				// vMCP will validate tokens and then exchange them for backend-specific tokens
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "oidc",
-					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-						Name:     "discovery-oidc-config",
-						Audience: "vmcp-audience",
-					},
+			}),
+			// OIDC incoming auth - clients must present valid OIDC tokens
+			// vMCP will validate tokens and then exchange them for backend-specific tokens
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "oidc",
+				OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+					Name:     "discovery-oidc-config",
+					Audience: "vmcp-audience",
 				},
-				// DISCOVERED MODE: vMCP will discover outgoing auth from backend MCPServers
-				// Backend has token exchange configured, vMCP will discover and use it
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "discovered",
-				},
-				ServiceType: "NodePort",
-				// Enable debug logging via PodTemplateSpec
-				PodTemplateSpec: &runtime.RawExtension{
-					Raw: podTemplateRaw,
-				},
-			},
-		}
+			}),
+			// DISCOVERED MODE: vMCP will discover outgoing auth from backend MCPServers
+			// Backend has token exchange configured, vMCP will discover and use it
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered",
+			}),
+			// Enable debug logging via PodTemplateSpec
+			v1beta1test.WithVMCPPodTemplateSpec(&runtime.RawExtension{
+				Raw: podTemplateRaw,
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -967,12 +964,7 @@ with socketserver.TCPServer(("", PORT), OIDCHandler) as httpd:
 		WaitForPodDeletion(ctx, k8sClient, "mock-oidc-server", testNamespace, cleanupTimeout, pollingInterval)
 
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace)
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up backend MCPServers")
@@ -1516,23 +1508,19 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 		}, timeout, pollingInterval).Should(Succeed(), "Valid backend should become Running")
 
 		By("Creating VirtualMCPServer with discovered auth mode")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				// Use discovered mode to trigger auth discovery
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "discovered",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			// Use discovered mode to trigger auth discovery
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		// Wait briefly for controller to reconcile
@@ -1541,9 +1529,7 @@ var _ = Describe("Auth Config Error Handling", Ordered, func() {
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: vmcpServerName, Namespace: testNamespace},
-		})
+		_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace))
 
 		By("Cleaning up MCPServers")
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{

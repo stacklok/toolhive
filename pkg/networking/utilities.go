@@ -4,6 +4,7 @@
 package networking
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net"
@@ -13,6 +14,43 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+// TargetIsPrivate reports whether the host in rawURL refers to — or resolves to —
+// a private, loopback, or link-local address. It is used to detect when an
+// operator has deliberately pointed ToolHive at an internal target, so that
+// discovery fetches derived from untrusted server input may also be allowed to
+// reach internal addresses for that deployment.
+//
+// IP literals and "localhost" are classified without DNS. Hostnames are resolved
+// and reported private if ANY resolved address is private. Unparsable input or
+// resolution failure returns false (treat as public — the SSRF guard then stays
+// engaged, failing secure).
+func TargetIsPrivate(ctx context.Context, rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+	if IsLocalhost(host) {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return IsPrivateIP(ip)
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return false
+	}
+	for _, a := range addrs {
+		if IsPrivateIP(a.IP) {
+			return true
+		}
+	}
+	return false
+}
 
 const (
 	// ErrPrivateIpAddress is the error returned when the provided URL redirects to a private IP address

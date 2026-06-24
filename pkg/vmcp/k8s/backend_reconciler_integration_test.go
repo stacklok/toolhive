@@ -25,6 +25,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
@@ -93,10 +94,10 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 	)
 
 	var (
-		registry         vmcp.DynamicRegistry
-		reconcilerMgr    ctrl.Manager
-		reconcilerCtx    context.Context
-		reconcilerStop   context.CancelFunc
+		registry          vmcp.DynamicRegistry
+		reconcilerMgr     ctrl.Manager
+		reconcilerCtx     context.Context
+		reconcilerStop    context.CancelFunc
 		reconcilerStopped chan struct{}
 	)
 
@@ -254,16 +255,11 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 	Context("MCPRemoteProxy Lifecycle", func() {
 		It("should add MCPRemoteProxy to registry when created with matching groupRef", func() {
 			// Create MCPRemoteProxy
-			proxy := &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy-add",
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: testGroupRef},
-					RemoteURL: "https://example.com/mcp",
-				},
-			}
+			proxy := v1beta1test.NewMCPRemoteProxy("test-proxy-add", testNamespace,
+				v1beta1test.WithRemoteProxyGroupRef(testGroupRef),
+				v1beta1test.WithRemoteProxyURL("https://example.com/mcp"),
+				v1beta1test.WithRemoteProxyPort(0),
+			)
 
 			Expect(k8sClient.Create(ctx, proxy)).Should(Succeed())
 			defer func() {
@@ -279,16 +275,11 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 
 		It("should NOT add MCPRemoteProxy with mismatched groupRef", func() {
 			// Create MCPRemoteProxy with different groupRef
-			proxy := &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy-mismatch",
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "other-group"},
-					RemoteURL: "https://example.com/mcp",
-				},
-			}
+			proxy := v1beta1test.NewMCPRemoteProxy("test-proxy-mismatch", testNamespace,
+				v1beta1test.WithRemoteProxyGroupRef("other-group"),
+				v1beta1test.WithRemoteProxyURL("https://example.com/mcp"),
+				v1beta1test.WithRemoteProxyPort(0),
+			)
 
 			Expect(k8sClient.Create(ctx, proxy)).Should(Succeed())
 			defer func() {
@@ -313,8 +304,8 @@ var _ = Describe("BackendReconciler Integration Tests", func() {
 					Namespace: testNamespace,
 				},
 				Spec: mcpv1beta1.MCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: testGroupRef},
-					Image:    "test-image:latest",
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: testGroupRef},
+					Image:     "test-image:latest",
 					Transport: "streamable-http",
 				},
 			}

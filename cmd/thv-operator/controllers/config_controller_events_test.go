@@ -15,12 +15,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
-	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 // drainEvents returns every event currently buffered on the fake recorder
@@ -53,7 +51,6 @@ func countContaining(evts []string, substr string) int {
 func TestMCPOIDCConfigReconciler_EmitsEvents(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := testutil.NewScheme(t)
 
 	// Invalid: type=inline but no inline config.
 	cfg := &mcpv1beta1.MCPOIDCConfig{
@@ -65,13 +62,9 @@ func TestMCPOIDCConfigReconciler_EmitsEvents(t *testing.T) {
 		},
 		Spec: mcpv1beta1.MCPOIDCConfigSpec{Type: mcpv1beta1.MCPOIDCConfigTypeInline},
 	}
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cfg).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
 	rec := events.NewFakeRecorder(10)
-	r := &MCPOIDCConfigReconciler{Client: fakeClient, Scheme: scheme, Recorder: rec}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, cfg)
+	r.Recorder = rec
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
 
 	// First reconcile: validation fails -> Warning ConfigInvalid.
@@ -104,7 +97,6 @@ func TestMCPOIDCConfigReconciler_EmitsEvents(t *testing.T) {
 func TestMCPOIDCConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := testutil.NewScheme(t)
 
 	cfg := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -122,13 +114,9 @@ func TestMCPOIDCConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 		v1beta1test.WithImage("example/mcp:latest"),
 		v1beta1test.WithOIDCConfigRef("oidc-del", ""),
 	)
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cfg, server).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
 	rec := events.NewFakeRecorder(10)
-	r := &MCPOIDCConfigReconciler{Client: fakeClient, Scheme: scheme, Recorder: rec}
+	r, _ := newTestMCPOIDCConfigReconciler(t, cfg, server)
+	r.Recorder = rec
 
 	res, err := r.handleDeletion(ctx, cfg)
 	require.NoError(t, err)
@@ -141,7 +129,6 @@ func TestMCPOIDCConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 func TestMCPOIDCConfigReconciler_NilRecorderNoPanic(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := testutil.NewScheme(t)
 
 	cfg := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -151,12 +138,7 @@ func TestMCPOIDCConfigReconciler_NilRecorderNoPanic(t *testing.T) {
 		},
 		Spec: mcpv1beta1.MCPOIDCConfigSpec{Type: mcpv1beta1.MCPOIDCConfigTypeInline},
 	}
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cfg).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-	r := &MCPOIDCConfigReconciler{Client: fakeClient, Scheme: scheme} // nil Recorder
+	r, _ := newTestMCPOIDCConfigReconciler(t, cfg) // nil Recorder
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
 	_, err := r.Reconcile(ctx, req)
 	require.NoError(t, err)
@@ -179,7 +161,6 @@ func validExternalAuthSpec() mcpv1beta1.MCPExternalAuthConfigSpec {
 func TestMCPExternalAuthConfigReconciler_EmitsEvents(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := testutil.NewScheme(t)
 
 	// Invalid: type=tokenExchange but no tokenExchange config block.
 	cfg := &mcpv1beta1.MCPExternalAuthConfig{
@@ -191,13 +172,9 @@ func TestMCPExternalAuthConfigReconciler_EmitsEvents(t *testing.T) {
 		},
 		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{Type: mcpv1beta1.ExternalAuthTypeTokenExchange},
 	}
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cfg).
-		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-		Build()
 	rec := events.NewFakeRecorder(10)
-	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme, Recorder: rec}
+	r, fakeClient := newTestMCPExternalAuthConfigReconciler(t, cfg)
+	r.Recorder = rec
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
 
 	_, err := r.Reconcile(ctx, req)
@@ -226,7 +203,6 @@ func TestMCPExternalAuthConfigReconciler_EmitsEvents(t *testing.T) {
 func TestMCPExternalAuthConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := testutil.NewScheme(t)
 
 	cfg := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -241,13 +217,9 @@ func TestMCPExternalAuthConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T)
 		v1beta1test.WithImage("example/mcp:latest"),
 		v1beta1test.WithExternalAuthConfigRef("extauth-del"),
 	)
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cfg, server).
-		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-		Build()
 	rec := events.NewFakeRecorder(10)
-	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme, Recorder: rec}
+	r, _ := newTestMCPExternalAuthConfigReconciler(t, cfg, server)
+	r.Recorder = rec
 
 	res, err := r.handleDeletion(ctx, cfg)
 	require.NoError(t, err)
@@ -272,7 +244,6 @@ func TestMCPExternalAuthConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T)
 func TestMCPExternalAuthConfigReconciler_EmitsRecoveryOnSteadyStatePath(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := testutil.NewScheme(t)
 
 	spec := validExternalAuthSpec()
 	hash := (&MCPExternalAuthConfigReconciler{}).calculateConfigHash(spec)
@@ -294,13 +265,9 @@ func TestMCPExternalAuthConfigReconciler_EmitsRecoveryOnSteadyStatePath(t *testi
 			}},
 		},
 	}
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cfg).
-		WithStatusSubresource(&mcpv1beta1.MCPExternalAuthConfig{}).
-		Build()
 	rec := events.NewFakeRecorder(10)
-	r := &MCPExternalAuthConfigReconciler{Client: fakeClient, Scheme: scheme, Recorder: rec}
+	r, _ := newTestMCPExternalAuthConfigReconciler(t, cfg)
+	r.Recorder = rec
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
 
 	_, err := r.Reconcile(ctx, req)
@@ -315,7 +282,6 @@ func TestMCPExternalAuthConfigReconciler_EmitsRecoveryOnSteadyStatePath(t *testi
 func TestMCPAuthzConfigReconciler_EmitsEvents(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := testutil.NewScheme(t)
 
 	// Invalid: cedarv1 type but empty policy set (fails backend validation).
 	cfg := &mcpv1beta1.MCPAuthzConfig{
@@ -330,13 +296,9 @@ func TestMCPAuthzConfigReconciler_EmitsEvents(t *testing.T) {
 			Config: runtime.RawExtension{Raw: []byte(`{"policies":[],"entities_json":"[]"}`)},
 		},
 	}
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cfg).
-		WithStatusSubresource(&mcpv1beta1.MCPAuthzConfig{}).
-		Build()
 	rec := events.NewFakeRecorder(10)
-	r := &MCPAuthzConfigReconciler{Client: fakeClient, Scheme: scheme, Recorder: rec}
+	r, fakeClient := newTestMCPAuthzConfigReconciler(t, cfg)
+	r.Recorder = rec
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: cfg.Name, Namespace: cfg.Namespace}}
 
 	_, err := r.Reconcile(ctx, req)
@@ -365,7 +327,6 @@ func TestMCPAuthzConfigReconciler_EmitsEvents(t *testing.T) {
 func TestMCPAuthzConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
-	scheme := testutil.NewScheme(t)
 
 	cfg := &mcpv1beta1.MCPAuthzConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -380,13 +341,9 @@ func TestMCPAuthzConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T) {
 		v1beta1test.WithImage("example/mcp:latest"),
 		v1beta1test.WithAuthzConfigRef("authz-del"),
 	)
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(cfg, server).
-		WithStatusSubresource(&mcpv1beta1.MCPAuthzConfig{}).
-		Build()
 	rec := events.NewFakeRecorder(10)
-	r := &MCPAuthzConfigReconciler{Client: fakeClient, Scheme: scheme, Recorder: rec}
+	r, _ := newTestMCPAuthzConfigReconciler(t, cfg, server)
+	r.Recorder = rec
 
 	res, err := r.handleDeletion(ctx, cfg)
 	require.NoError(t, err)

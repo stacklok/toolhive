@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessionfactorymocks "github.com/stacklok/toolhive/pkg/vmcp/session/mocks"
@@ -188,6 +189,8 @@ func (*fakeCore) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Pr
 
 func (*fakeCore) Close() error { return nil }
 
+func (*fakeCore) BackendHealth() health.Reporter { return nil }
+
 // TestServeRegistersSessionHooks verifies that Serve registers the OnRegisterSession
 // hook and wires two-phase session creation: an MCP initialize triggers the hook,
 // which creates the session record (MakeSessionWithID) and injects the core's advertised
@@ -335,11 +338,11 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
 	require.NotEmpty(t, sessionID)
 
-	// Wait until the session is fully registered with adapted tools in the manager.
+	// Wait until the session is fully registered in the manager.
 	require.Eventually(t, func() bool {
-		tools, gErr := srv.vmcpSessionMgr.GetAdaptedTools(sessionID)
-		return gErr == nil && len(tools) > 0
-	}, 2*time.Second, 10*time.Millisecond, "session should be registered with adapted tools")
+		_, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID)
+		return ok
+	}, 2*time.Second, 10*time.Millisecond, "session should be registered")
 
 	// Empty-store (cross-pod) branch: a fresh SDK session with no tools gets them injected.
 	rehydrated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{}}
@@ -347,7 +350,7 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 	assert.Contains(t, rehydrated.tools, testTool.Name,
 		"an empty per-session store should be re-injected from the vMCP session manager")
 
-	// No-op branch: a populated store is left untouched (early return before GetAdaptedTools).
+	// No-op branch: a populated store is left untouched (early return before re-derivation).
 	populated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{
 		"preexisting": {Tool: mcp.Tool{Name: "preexisting"}},
 	}}

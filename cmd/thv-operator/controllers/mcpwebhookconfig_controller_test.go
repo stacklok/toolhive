@@ -93,8 +93,7 @@ func TestMCPWebhookConfigReconciler_Reconcile(t *testing.T) {
 			if tt.existingMCPServer != nil {
 				objs = append(objs, tt.existingMCPServer)
 			}
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
+			fakeClient := withWebhookConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 				WithObjects(objs...).
 				WithStatusSubresource(&mcpv1alpha1.MCPWebhookConfig{}).
 				Build()
@@ -232,8 +231,7 @@ func TestMCPWebhookConfigReconciler_handleDeletion(t *testing.T) {
 		v1beta1test.WithWebhookConfigRef("test-config"),
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withWebhookConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(webhookConfig, mcpServer).
 		WithStatusSubresource(&mcpv1alpha1.MCPWebhookConfig{}).
 		Build()
@@ -297,8 +295,7 @@ func TestMCPWebhookConfigReconciler_handleDeletionClearsBlockedCondition(t *test
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withWebhookConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(webhookConfig).
 		WithStatusSubresource(&mcpv1alpha1.MCPWebhookConfig{}).
 		Build()
@@ -455,8 +452,7 @@ func TestMCPWebhookConfigReconciler_updateReferencingWorkloads(t *testing.T) {
 		v1beta1test.WithImage("test-image"),
 		v1beta1test.WithWebhookConfigRef("other-config"),
 	)
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withWebhookConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(webhookConfig, referencingServer, otherServer).
 		WithStatusSubresource(&mcpv1alpha1.MCPWebhookConfig{}).
 		Build()

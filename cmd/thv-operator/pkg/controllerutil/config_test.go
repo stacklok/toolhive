@@ -401,22 +401,16 @@ func TestGetTelemetryConfigForMCPRemoteProxy(t *testing.T) {
 		expectedName    string
 	}{
 		{
-			name: "nil ref returns nil without error",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec:       mcpv1beta1.MCPRemoteProxySpec{TelemetryConfigRef: nil},
-			},
+			name:        "nil ref returns nil without error",
+			proxy:       v1beta1test.NewMCPRemoteProxy("test-proxy", "default"),
 			expectNil:   true,
 			expectError: false,
 		},
 		{
 			name: "fetches referenced config",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "my-telemetry"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("my-telemetry"),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "my-telemetry", Namespace: "default"},
 			},
@@ -426,23 +420,17 @@ func TestGetTelemetryConfigForMCPRemoteProxy(t *testing.T) {
 		},
 		{
 			name: "not found returns nil without error",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "missing"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("missing"),
+			),
 			expectNil:   true,
 			expectError: false,
 		},
 		{
 			name: "cross-namespace returns nil (not found)",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-proxy", Namespace: "namespace-b"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "shared-config"},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("test-proxy", "namespace-b",
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("shared-config"),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "shared-config", Namespace: "namespace-a"},
 			},
@@ -495,22 +483,16 @@ func TestGetTelemetryConfigForVirtualMCPServer(t *testing.T) {
 		expectedName    string
 	}{
 		{
-			name: "nil ref returns nil without error",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec:       mcpv1beta1.VirtualMCPServerSpec{TelemetryConfigRef: nil},
-			},
+			name:        "nil ref returns nil without error",
+			vmcp:        v1beta1test.NewVirtualMCPServer("test-vmcp", "default"),
 			expectNil:   true,
 			expectError: false,
 		},
 		{
 			name: "fetches referenced config",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "my-telemetry"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPTelemetryConfigRef("my-telemetry"),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "my-telemetry", Namespace: "default"},
 			},
@@ -520,23 +502,17 @@ func TestGetTelemetryConfigForVirtualMCPServer(t *testing.T) {
 		},
 		{
 			name: "not found returns nil without error",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "missing"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPTelemetryConfigRef("missing"),
+			),
 			expectNil:   true,
 			expectError: false,
 		},
 		{
 			name: "cross-namespace returns nil (not found)",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "namespace-b"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{Name: "shared-config"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "namespace-b",
+				v1beta1test.WithVMCPTelemetryConfigRef("shared-config"),
+			),
 			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "shared-config", Namespace: "namespace-a"},
 			},

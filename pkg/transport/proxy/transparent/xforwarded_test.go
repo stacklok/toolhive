@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
+	"net/url"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -89,6 +90,26 @@ func TestSetXForwardedHeaders(t *testing.T) {
 			wantHost:     false,
 			wantProto:    "https",
 		},
+		{
+			// A client-controlled junk scheme must not be reflected even when
+			// trust is enabled; the proxy falls back to the upstream scheme.
+			name:              "junk trusted inbound proto is rejected, falls back to upstream scheme",
+			targetURI:         "https://mcp.example.com/mcp",
+			isRemote:          true,
+			trustProxyHeaders: true,
+			inboundProto:      "httpx",
+			wantHost:          false,
+			wantProto:         "https",
+		},
+		{
+			// A non-HTTP(S) upstream scheme yields no override, so the value
+			// SetXForwarded() set from the inbound HTTP hop is left intact.
+			name:      "non-http upstream scheme leaves SetXForwarded default",
+			targetURI: "ftp://mcp.example.com/mcp",
+			isRemote:  true,
+			wantHost:  false,
+			wantProto: "http",
+		},
 	}
 
 	for _, tt := range tests {
@@ -106,7 +127,9 @@ func TestSetXForwardedHeaders(t *testing.T) {
 			}
 			pr := &httputil.ProxyRequest{In: in, Out: in.Clone(in.Context())}
 
-			p.setXForwardedHeaders(pr)
+			upstreamURL, err := url.Parse(tt.targetURI)
+			assert.NoError(t, err)
+			p.setXForwardedHeaders(pr, upstreamURL.Scheme)
 
 			if tt.wantHost {
 				assert.Equal(t, "proxy.example.com", pr.Out.Header.Get("X-Forwarded-Host"))

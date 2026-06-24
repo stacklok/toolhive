@@ -132,7 +132,13 @@ type TransparentProxy struct {
 	// from the original registration URL are never silently dropped.
 	remoteRawQuery string
 
-	// Deprecated: trustProxyHeaders indicates whether to trust X-Forwarded-* headers (moved to SSEResponseProcessor)
+	// trustProxyHeaders indicates whether to trust inbound X-Forwarded-* headers
+	// from a fronting reverse proxy (e.g. a load balancer). It has two live read
+	// sites and is therefore load-bearing in both directions:
+	//   - SSEResponseProcessor reads X-Forwarded-Proto/Host/Prefix to rewrite SSE
+	//     endpoint URLs returned to the client (a copy is passed at construction); and
+	//   - setXForwardedHeaders honors a trusted inbound X-Forwarded-Proto when
+	//     forwarding requests to remote upstreams.
 	trustProxyHeaders bool
 
 	// Health check interval (default: 10 seconds)
@@ -1076,10 +1082,21 @@ func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
 // that header triggers an infinite HTTP->HTTPS redirect loop (#5567). For
 // remote upstreams the proxy therefore rewrites X-Forwarded-Proto to the
 // trusted inbound value (when trustProxyHeaders is enabled) or, failing that,
-// to the actual upstream connection scheme.
-func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest) {
-	// Capture the client-supplied X-Forwarded-Proto before SetXForwarded()
-	// overwrites it with the pod-local inbound scheme.
+// to the upstream connection scheme.
+//
+// upstreamScheme is the scheme of the statically-configured target URL, passed
+// in by the caller (already parsed in Start) to avoid re-parsing per request.
+// It is used deliberately instead of pr.Out.URL.Scheme: the per-session
+// backend_url override that can rewrite pr.Out.URL runs *after* this function,
+// so reading pr.Out.URL.Scheme here would observe a pre-override value. The
+// override only ever swaps the host for HTTP targets and preserves the scheme
+// for HTTPS targets (see podBackendURL), so upstreamScheme always matches the
+// wire protocol. Do not "simplify" this to read pr.Out.URL.Scheme.
+func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest, upstreamScheme string) {
+	// Read the client-supplied X-Forwarded-Proto from pr.In. We must read it
+	// from the inbound request (not pr.Out) because httputil.ReverseProxy strips
+	// all client-supplied X-Forwarded-* headers from the outbound request before
+	// Rewrite runs, so pr.Out never carries the original client value.
 	inboundProto := pr.In.Header.Get("X-Forwarded-Proto")
 
 	pr.SetXForwarded()
@@ -1090,33 +1107,48 @@ func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest) {
 
 	pr.Out.Header.Del("X-Forwarded-Host")
 
-	if proto := p.upstreamForwardedProto(inboundProto); proto != "" {
+	if proto := p.upstreamForwardedProto(inboundProto, upstreamScheme); proto != "" {
 		pr.Out.Header.Set("X-Forwarded-Proto", proto)
 	}
 }
 
 // upstreamForwardedProto returns the X-Forwarded-Proto value to forward to a
 // remote upstream. When trustProxyHeaders is enabled and the inbound request
-// carried an X-Forwarded-Proto (e.g. set by a trusted load balancer), that
-// value is honored so the original client scheme survives the pod-local hop.
-// Otherwise the proxy falls back to the upstream connection scheme parsed from
-// the target URI, which always reflects the protocol the upstream actually
-// receives. Returns an empty string when no usable scheme is found, leaving
-// the value SetXForwarded() already set untouched.
-func (p *TransparentProxy) upstreamForwardedProto(inboundProto string) string {
-	if p.trustProxyHeaders && inboundProto != "" {
+// carried a valid HTTP(S) X-Forwarded-Proto (e.g. set by a trusted load
+// balancer), that value is honored so the original client scheme survives the
+// pod-local hop. Otherwise the proxy falls back to upstreamScheme, the actual
+// upstream connection scheme.
+//
+// Both the trusted inbound value and the fallback are validated against
+// {http, https}. inboundProto is client-controllable (the proxy listener is
+// plain HTTP), so even on the trusted path an unvalidated value would let a
+// caller reflect arbitrary tokens — or "http" against an HTTPS upstream,
+// re-creating the redirect loop this fix exists to prevent. Validation bounds
+// the reflected value regardless of where the proxy is deployed.
+//
+// The value is computed once on the first hop; followRedirects re-issues
+// requests without re-running Rewrite, so a same-host HTTP->HTTPS upgrade
+// redirect within a chain would carry the first-hop scheme. That is acceptable:
+// the proxy refuses HTTPS->HTTP downgrades, and same-scheme redirects need no
+// recomputation.
+//
+// Returns an empty string when no usable scheme is found, leaving the value
+// SetXForwarded() already set untouched.
+func (p *TransparentProxy) upstreamForwardedProto(inboundProto, upstreamScheme string) string {
+	if p.trustProxyHeaders && isHTTPScheme(inboundProto) {
 		return inboundProto
 	}
-	u, err := url.Parse(p.targetURI)
-	if err != nil {
-		return ""
+	if isHTTPScheme(upstreamScheme) {
+		return upstreamScheme
 	}
-	switch u.Scheme {
-	case "http", "https":
-		return u.Scheme
-	default:
-		return ""
-	}
+	return ""
+}
+
+// isHTTPScheme reports whether s is the "http" or "https" URL scheme. It bounds
+// the X-Forwarded-Proto value forwarded to upstreams to known-safe schemes,
+// rejecting client-controlled junk even on the trusted path.
+func isHTTPScheme(s string) bool {
+	return s == "http" || s == "https"
 }
 
 // Start starts the transparent proxy.
@@ -1141,7 +1173,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
-			p.setXForwardedHeaders(pr)
+			p.setXForwardedHeaders(pr, targetURL.Scheme)
 
 			// Route to the originating backend pod when session metadata contains backend_url.
 			// Falls back to static targetURL when the session doesn't exist or has no backend_url.

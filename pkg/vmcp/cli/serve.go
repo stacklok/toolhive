@@ -350,7 +350,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		slog.Debug("VMCP_SESSION_HMAC_SECRET is set but no longer used after #5306; ignoring",
 			"env_var", "VMCP_SESSION_HMAC_SECRET")
 	}
-	sessionFactory := createSessionFactory(outgoingRegistry, agg)
+	// The factory never aggregates — the core is the single source of capability
+	// aggregation (agg feeds it via Config.Aggregator below).
+	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry)
 
 	// When the optimizer is enabled, its meta-tools must pass through the authz
 	// response filter so they appear in tools/list.
@@ -697,18 +699,4 @@ func runDiscovery(
 
 	slog.Info(fmt.Sprintf("Discovered %d backends", len(backends)))
 	return backends, backendClient, outgoingRegistry, nil
-}
-
-// createSessionFactory creates a MultiSessionFactory backed by the provided outgoing
-// auth registry and optional aggregator. When agg is non-nil, sessions gain access
-// to aggregated backend metadata; pass nil for single-backend deployments.
-func createSessionFactory(
-	outgoingRegistry vmcpauth.OutgoingAuthRegistry,
-	agg aggregator.Aggregator,
-) vmcpsession.MultiSessionFactory {
-	var opts []vmcpsession.MultiSessionFactoryOption
-	if agg != nil {
-		opts = append(opts, vmcpsession.WithAggregator(agg))
-	}
-	return vmcpsession.NewSessionFactory(outgoingRegistry, opts...)
 }

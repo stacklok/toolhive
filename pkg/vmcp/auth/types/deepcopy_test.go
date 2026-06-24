@@ -15,14 +15,14 @@ func TestOBOConfig_DeepCopy_Independence(t *testing.T) {
 
 	skew := int32(30)
 	orig := &OBOConfig{
-		TokenURL:            "https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
-		ClientID:            "client-id",
-		Audience:            "api://backend",
-		Scopes:              []string{"scope1", "scope2"},
-		ClientSecret:        "secret",
-		ClientSecretEnv:     "SECRET_ENV",
-		SubjectProviderName: "entra",
-		CacheSkewSeconds:    &skew,
+		TokenURL:                 "https://login.microsoftonline.com/tenant/oauth2/v2.0/token",
+		ClientID:                 "client-id",
+		Audience:                 "api://backend",
+		Scopes:                   []string{"scope1", "scope2"},
+		ClientSecret:             "secret",
+		ClientSecretEnv:          "SECRET_ENV",
+		SubjectTokenProviderName: "entra",
+		CacheSkewSeconds:         &skew,
 	}
 
 	cloned := orig.DeepCopy()

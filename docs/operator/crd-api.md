@@ -142,14 +142,14 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `tokenUrl` _string_ | TokenURL is the Entra token endpoint URL for the OBO exchange. |  |  |
+| `tokenUrl` _string_ | TokenURL is the Entra token endpoint URL for the OBO exchange. |  | Required: \{\} <br /> |
 | `clientId` _string_ | ClientID is the OAuth client ID for the OBO request. |  |  |
-| `audience` _string_ | Audience is the target audience (resource URI) for the exchanged token. |  |  |
-| `scopes` _string array_ | Scopes are the requested scopes for the exchanged token. |  |  |
 | `clientSecret` _string_ | ClientSecret is the OAuth client secret (use ClientSecretEnv for security). |  |  |
 | `clientSecretEnv` _string_ | ClientSecretEnv is the environment variable name containing the client secret.<br />The value will be resolved at runtime from this environment variable. |  |  |
-| `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's token to use as the<br />subject token for the OBO exchange. When set, the token is looked up from<br />Identity.UpstreamTokens instead of using Identity.Token. |  |  |
-| `cacheSkewSeconds` _integer_ | CacheSkewSeconds is the number of seconds to subtract from a cached token's<br />expiry when deciding whether to refresh it. Defaults to zero (no skew). |  |  |
+| `audience` _string_ | Audience is the target audience (resource URI) for the exchanged token. |  |  |
+| `scopes` _string array_ | Scopes are the requested scopes for the exchanged token. |  |  |
+| `subjectTokenProviderName` _string_ | SubjectTokenProviderName selects which upstream provider's token to use as the<br />subject (assertion) token for the OBO exchange. When set, the token is looked<br />up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the<br />inbound end-user token (Identity.Token) is used directly.<br />Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO<br />converter maps both to the runtime contract without renaming. |  |  |
+| `cacheSkewSeconds` _integer_ | CacheSkewSeconds is the number of seconds to subtract from a cached token's<br />expiry when deciding whether to refresh it. Defaults to zero (no skew).<br />The operator CRD stores this as CacheSkew *metav1.Duration and converts it<br />to an integer-seconds value for the vMCP runtime contract. |  |  |
 
 
 #### auth.types.RoleMapping

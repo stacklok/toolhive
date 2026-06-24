@@ -31,7 +31,7 @@ func withDefaultOBOFactory(t *testing.T) {
 	})
 }
 
-// fakeEnvReader is a minimal env.Reader for use in tests.
+// fakeEnvReader is a sentinel env.Reader used to verify that NewOBOStrategy forwards the reader to the factory.
 type fakeEnvReader struct{}
 
 func (*fakeEnvReader) Getenv(_ string) string            { return "" }

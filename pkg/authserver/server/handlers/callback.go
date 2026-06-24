@@ -417,10 +417,17 @@ func (h *Handler) continueChainOrComplete(
 	// scoped this flow to one specific upstream (e.g. a UI-initiated "connect one
 	// backend" request), so other configured-but-tokenless upstreams must not
 	// hijack it into a full chain walk. Issue the authorization code immediately.
+	//
+	// On failure we deliberately do NOT delete the stored upstream tokens. The
+	// leg's token was already fetched and stored validly before we got here; the
+	// errors writeAuthorizationResponse can return are all server-side and
+	// unrelated to that credential (client lookup, redirect-URI parse, or fosite
+	// failing to mint the authorization code). Wiping a good upstream token would
+	// force a needless re-auth on what is a retryable error, so we keep it and
+	// just surface the failure to the client.
 	if pending.SingleLeg {
 		if err := h.writeAuthorizationResponse(ctx, w, pending, sessionID, subject, name, email); err != nil {
 			slog.Error("failed to create authorization response", "error", err)
-			_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
 			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to create authorization code"))
 		}
 		return

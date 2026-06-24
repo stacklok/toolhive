@@ -188,6 +188,9 @@ func (h *Handler) refreshExpiredLeg(
 	if h.refresher == nil || expired.RefreshToken == "" {
 		return false
 	}
+	// RefreshAndStore persists the refreshed token to storage as its side effect;
+	// the token-swap path re-reads it from storage at MCP-request time, so the
+	// returned *UpstreamTokens is intentionally discarded here.
 	if _, err := h.refresher.RefreshAndStore(ctx, sessionID, expired); err != nil {
 		slog.WarnContext(ctx, "upstream token refresh failed during chain evaluation; re-prompting",
 			"session_id", sessionID,

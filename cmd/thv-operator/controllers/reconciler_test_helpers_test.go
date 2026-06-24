@@ -127,6 +127,24 @@ func withOIDCConfigRefIndexes(b *fake.ClientBuilder) *fake.ClientBuilder {
 		WithIndex(&mcpv1beta1.MCPRemoteProxy{}, oidcConfigRefIndexKey, indexMCPRemoteProxyByOIDCConfigRef)
 }
 
+// withToolConfigRefIndex registers the field index that
+// ToolConfigReconciler.findReferencingWorkloads / findReferencingMCPServers rely
+// on, so fake-client MatchingFields lookups (which the real cache populates via
+// SetupWithManager) work in unit tests. Without it, the fake client returns "no
+// index with name spec.toolConfigRef has been registered".
+func withToolConfigRefIndex(b *fake.ClientBuilder) *fake.ClientBuilder {
+	return b.WithIndex(&mcpv1beta1.MCPServer{}, toolConfigRefIndexKey, indexMCPServerByToolConfigRef)
+}
+
+// withWebhookConfigRefIndex registers the field index that
+// MCPWebhookConfigReconciler.findReferencingMCPServers relies on, so fake-client
+// MatchingFields lookups (which the real cache populates via SetupWithManager)
+// work in unit tests. Without it, the fake client returns "no index with name
+// spec.webhookConfigRef has been registered".
+func withWebhookConfigRefIndex(b *fake.ClientBuilder) *fake.ClientBuilder {
+	return b.WithIndex(&mcpv1beta1.MCPServer{}, webhookConfigRefIndexKey, indexMCPServerByWebhookConfigRef)
+}
+
 // newTestMCPOIDCConfigReconciler builds an MCPOIDCConfigReconciler backed by a
 // fake client seeded with objs, with the MCPOIDCConfig status subresource enabled
 // and the OIDC config-ref field indexes registered (see withOIDCConfigRefIndexes).

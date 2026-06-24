@@ -226,39 +226,74 @@ func (r *ToolConfigReconciler) handleDeletion(ctx context.Context, toolConfig *m
 	return ctrl.Result{}, nil
 }
 
+// toolConfigRefIndexKey is the field-index key backing the reverse lookups in
+// findReferencingWorkloads and findReferencingMCPServers. MCPServer references the
+// config via spec.toolConfigRef; the index is registered in SetupWithManager.
+const toolConfigRefIndexKey = "spec.toolConfigRef"
+
+// indexMCPServerByToolConfigRef extracts the MCPToolConfig name an MCPServer
+// references, for the field index. Returns nil when there is no reference so
+// unreferencing servers are not indexed under the empty key.
+func indexMCPServerByToolConfigRef(obj client.Object) []string {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.ToolConfigRef == nil || server.Spec.ToolConfigRef.Name == "" {
+		return nil
+	}
+	return []string{server.Spec.ToolConfigRef.Name}
+}
+
 // findReferencingWorkloads returns the workload resources (MCPServer)
 // that reference this MCPToolConfig via their ToolConfigRef field.
+//
+// The lookup is served by a field index (registered in SetupWithManager) so the
+// query returns only the referencing workloads instead of listing every workload
+// in the namespace and filtering in memory.
 func (r *ToolConfigReconciler) findReferencingWorkloads(
 	ctx context.Context,
 	toolConfig *mcpv1beta1.MCPToolConfig,
 ) ([]mcpv1beta1.WorkloadReference, error) {
-	return ctrlutil.FindWorkloadRefsFromMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.ToolConfigRef != nil {
-				return &server.Spec.ToolConfigRef.Name
-			}
-			return nil
-		})
+	serverList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, serverList, client.InNamespace(toolConfig.Namespace),
+		client.MatchingFields{toolConfigRefIndexKey: toolConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers by toolConfigRef: %w", err)
+	}
+	refs := make([]mcpv1beta1.WorkloadReference, 0, len(serverList.Items))
+	for i := range serverList.Items {
+		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: serverList.Items[i].Name})
+	}
+	ctrlutil.SortWorkloadRefs(refs)
+	return refs, nil
 }
 
 // findReferencingMCPServers finds all MCPServers that reference the given MCPToolConfig.
 // Returns the full MCPServer objects, used by handleConfigHashChange to update server annotations.
+//
+// The lookup is served by the same field index as findReferencingWorkloads
+// (registered in SetupWithManager), querying by spec.toolConfigRef.
 func (r *ToolConfigReconciler) findReferencingMCPServers(
 	ctx context.Context,
 	toolConfig *mcpv1beta1.MCPToolConfig,
 ) ([]mcpv1beta1.MCPServer, error) {
-	return ctrlutil.FindReferencingMCPServers(ctx, r.Client, toolConfig.Namespace, toolConfig.Name,
-		func(server *mcpv1beta1.MCPServer) *string {
-			if server.Spec.ToolConfigRef != nil {
-				return &server.Spec.ToolConfigRef.Name
-			}
-			return nil
-		})
+	serverList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, serverList, client.InNamespace(toolConfig.Namespace),
+		client.MatchingFields{toolConfigRefIndexKey: toolConfig.Name}); err != nil {
+		return nil, fmt.Errorf("failed to list MCPServers by toolConfigRef: %w", err)
+	}
+	return serverList.Items, nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 // Watches MCPServer changes to maintain accurate ReferencingWorkloads status.
 func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	// Field index backing findReferencingWorkloads / findReferencingMCPServers: lets
+	// the controller query only the MCPServers referencing a given config rather than
+	// listing every MCPServer in the namespace and filtering in memory.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(), &mcpv1beta1.MCPServer{}, toolConfigRefIndexKey, indexMCPServerByToolConfigRef,
+	); err != nil {
+		return fmt.Errorf("failed to set up MCPServer toolConfigRef index: %w", err)
+	}
+
 	// Watch MCPServer changes to update ReferencingWorkloads on referenced MCPToolConfigs.
 	// This handler enqueues both the currently-referenced MCPToolConfig AND any
 	// MCPToolConfig that still lists this server in ReferencingWorkloads (covers the

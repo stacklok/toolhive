@@ -25,7 +25,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
-	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -44,7 +43,6 @@ func newCedarAuthzTestServer(t *testing.T, backendURL string, policies ...string
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
 	backend := vmcp.Backend{
@@ -55,9 +53,6 @@ func newCedarAuthzTestServer(t *testing.T, backendURL string, policies ...string
 	}
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{backend}).AnyTimes()
 	mockBackendRegistry.EXPECT().Get(gomock.Any(), gomock.Any()).Return(&backend).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).
-		Return(&aggregator.AggregatedCapabilities{}, nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	authReg := vmcpauth.NewDefaultOutgoingAuthRegistry()
 	require.NoError(t, authReg.RegisterStrategy(
@@ -109,9 +104,8 @@ func newCedarAuthzTestServer(t *testing.T, backendURL string, policies ...string
 			AuthMiddleware: identityMiddleware,
 			Authz:          authzCfg,
 		},
-		router.NewDefaultRouter(),
+		router.NewSessionRouter(&vmcp.RoutingTable{}),
 		backendClient,
-		mockDiscoveryMgr,
 		mockBackendRegistry,
 		nil,
 	)

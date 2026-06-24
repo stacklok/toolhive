@@ -23,7 +23,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
-	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -45,7 +44,6 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	ctrl := gomock.NewController(t)
 	t.Cleanup(ctrl.Finish)
 
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
 	backend := vmcp.Backend{
@@ -61,9 +59,6 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	// off on the Serve path); the AnyTimes expectation tolerates zero calls.
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{backend}).AnyTimes()
 	mockBackendRegistry.EXPECT().Get(gomock.Any(), gomock.Any()).Return(&backend).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).
-		Return(&aggregator.AggregatedCapabilities{}, nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	authReg := vmcpauth.NewDefaultOutgoingAuthRegistry()
 	require.NoError(t, authReg.RegisterStrategy(
@@ -82,7 +77,7 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 	require.NoError(t, err)
 	agg := aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil)
 
-	rt := router.NewDefaultRouter()
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 	srv, err := server.New(
 		context.Background(),
 		&server.Config{
@@ -94,7 +89,6 @@ func newRealTestHandler(t *testing.T, backendURL string) http.Handler {
 		},
 		rt,
 		backendClient,
-		mockDiscoveryMgr,
 		mockBackendRegistry,
 		nil,
 	)

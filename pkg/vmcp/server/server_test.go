@@ -21,7 +21,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	routerMocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
@@ -65,7 +64,6 @@ func TestServerStartFailsWhenReporterStartFails(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
 	srv, err := server.New(
@@ -73,7 +71,6 @@ func TestServerStartFailsWhenReporterStartFails(t *testing.T) {
 		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr, SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil)},
 		mockRouter,
 		mockBackendClient,
-		mockDiscoveryMgr,
 		mockBackendRegistry,
 		nil,
 	)
@@ -94,16 +91,13 @@ func TestServerStopRunsReporterShutdown(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
-	mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
 	srv, err := server.New(
 		context.Background(),
 		&server.Config{Host: "127.0.0.1", Port: 0, StatusReporter: sr, SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil)},
 		mockRouter,
 		mockBackendClient,
-		mockDiscoveryMgr,
 		mockBackendRegistry,
 		nil,
 	)
@@ -202,9 +196,8 @@ func TestNew(t *testing.T) {
 
 			mockRouter := routerMocks.NewMockRouter(ctrl)
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
-			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-			s, err := server.New(context.Background(), tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
+			s, err := server.New(context.Background(), tt.config, mockRouter, mockBackendClient, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 			require.NoError(t, err)
 			require.NotNil(t, s)
 
@@ -339,9 +332,8 @@ func TestServer_Address(t *testing.T) {
 
 			mockRouter := routerMocks.NewMockRouter(ctrl)
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
-			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
-			s, err := server.New(context.Background(), tt.config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
+			s, err := server.New(context.Background(), tt.config, mockRouter, mockBackendClient, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 			require.NoError(t, err)
 			addr := s.Address()
 			assert.Equal(t, tt.expected, addr)
@@ -360,10 +352,8 @@ func TestServer_Stop(t *testing.T) {
 
 		mockRouter := routerMocks.NewMockRouter(ctrl)
 		mockBackendClient := mocks.NewMockBackendClient(ctrl)
-		mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-		mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
-		s, err := server.New(context.Background(), &server.Config{SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil)}, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
+		s, err := server.New(context.Background(), &server.Config{SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil)}, mockRouter, mockBackendClient, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 		require.NoError(t, err)
 		err = s.Stop(context.Background())
 		require.NoError(t, err)
@@ -378,7 +368,6 @@ func TestNew_NilSessionFactory_ReturnsError(t *testing.T) {
 
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
 	_, err := server.New(
 		context.Background(),
@@ -386,7 +375,7 @@ func TestNew_NilSessionFactory_ReturnsError(t *testing.T) {
 			SessionFactory: nil, // deliberately omitted
 			Aggregator:     newStubAggregator(nil),
 		},
-		mockRouter, mockBackendClient, mockDiscoveryMgr,
+		mockRouter, mockBackendClient,
 		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
 	)
 	require.Error(t, err)
@@ -404,7 +393,6 @@ func TestNew_NilAggregator_ReturnsError(t *testing.T) {
 
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
 	_, err := server.New(
 		context.Background(),
@@ -412,7 +400,7 @@ func TestNew_NilAggregator_ReturnsError(t *testing.T) {
 			SessionFactory: newNoopMockFactory(t),
 			Aggregator:     nil, // deliberately omitted: now a required field
 		},
-		mockRouter, mockBackendClient, mockDiscoveryMgr,
+		mockRouter, mockBackendClient,
 		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
 	)
 	require.Error(t, err)
@@ -488,14 +476,13 @@ func TestNew_WithAuditConfig(t *testing.T) {
 
 			mockRouter := routerMocks.NewMockRouter(ctrl)
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
-			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
 			config := &server.Config{
 				AuditConfig:    tt.auditConfig,
 				SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil),
 			}
 
-			s, err := server.New(context.Background(), config, mockRouter, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
+			s, err := server.New(context.Background(), config, mockRouter, mockBackendClient, vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -518,17 +505,13 @@ func TestServerStopClosesOptimizerStore(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
-
-	mockDiscoveryMgr.EXPECT().Stop().Times(1)
 
 	srv, err := server.New(
 		context.Background(),
 		&server.Config{Host: "127.0.0.1", Port: 0, OptimizerConfig: &optimizer.Config{}, SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil)},
 		mockRouter,
 		mockBackendClient,
-		mockDiscoveryMgr,
 		mockBackendRegistry,
 		nil,
 	)
@@ -569,19 +552,16 @@ func TestHandler_ReturnsNonNilHandler(t *testing.T) {
 
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
 	// Allow discovery middleware calls
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
 	srv, err := server.New(
 		t.Context(),
 		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil)},
 		mockRouter,
 		mockBackendClient,
-		mockDiscoveryMgr,
 		mockBackendRegistry,
 		nil,
 	)
@@ -607,7 +587,6 @@ func TestHandler_ReturnsErrorOnInvalidAuditConfig(t *testing.T) {
 
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
 	// AuditConfig with negative MaxDataSize fails validation inside Handler()
@@ -624,7 +603,6 @@ func TestHandler_ReturnsErrorOnInvalidAuditConfig(t *testing.T) {
 		},
 		mockRouter,
 		mockBackendClient,
-		mockDiscoveryMgr,
 		mockBackendRegistry,
 		nil,
 	)
@@ -648,18 +626,15 @@ func TestHandler_CanBeCalledMultipleTimes(t *testing.T) {
 
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
 	srv, err := server.New(
 		t.Context(),
 		&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil)},
 		mockRouter,
 		mockBackendClient,
-		mockDiscoveryMgr,
 		mockBackendRegistry,
 		nil,
 	)
@@ -690,11 +665,9 @@ func TestHandler_RegistersWellKnownRoutes(t *testing.T) {
 
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
 	// Stub AuthInfoHandler that responds with a fixed JSON body.
 	authInfoHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -718,7 +691,6 @@ func TestHandler_RegistersWellKnownRoutes(t *testing.T) {
 		},
 		mockRouter,
 		mockBackendClient,
-		mockDiscoveryMgr,
 		mockBackendRegistry,
 		nil,
 	)
@@ -815,18 +787,15 @@ func TestAcceptHeaderValidation(t *testing.T) {
 
 			mockRouter := routerMocks.NewMockRouter(ctrl)
 			mockBackendClient := mocks.NewMockBackendClient(ctrl)
-			mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 			mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 
 			mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-			mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
 
 			srv, err := server.New(
 				t.Context(),
 				&server.Config{Host: "127.0.0.1", Port: 0, SessionFactory: newNoopMockFactory(t), Aggregator: newStubAggregator(nil)},
 				mockRouter,
 				mockBackendClient,
-				mockDiscoveryMgr,
 				mockBackendRegistry,
 				nil,
 			)
@@ -914,7 +883,6 @@ func TestNew_AuthzMiddlewareWithoutAuthz_ReturnsError(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
 	_, err := server.New(t.Context(),
 		&server.Config{
@@ -922,7 +890,7 @@ func TestNew_AuthzMiddlewareWithoutAuthz_ReturnsError(t *testing.T) {
 			Aggregator:      newStubAggregator(nil),
 			AuthzMiddleware: func(h http.Handler) http.Handler { return h }, // set without Authz
 		},
-		mockRouter, mockBackendClient, mockDiscoveryMgr,
+		mockRouter, mockBackendClient,
 		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
 	)
 	require.Error(t, err)
@@ -940,7 +908,6 @@ func TestNew_AuthzWithOptimizer_ReturnsError(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
 	_, err := server.New(t.Context(),
 		&server.Config{
@@ -950,7 +917,7 @@ func TestNew_AuthzWithOptimizer_ReturnsError(t *testing.T) {
 			Authz:           newTestAuthzConfig(t),
 			OptimizerConfig: &optimizer.Config{},
 		},
-		mockRouter, mockBackendClient, mockDiscoveryMgr,
+		mockRouter, mockBackendClient,
 		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
 	)
 	require.Error(t, err)
@@ -969,7 +936,6 @@ func TestNew_AuthzWithoutName_ReturnsError(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 
 	_, err := server.New(t.Context(),
 		&server.Config{
@@ -978,7 +944,7 @@ func TestNew_AuthzWithoutName_ReturnsError(t *testing.T) {
 			Aggregator:     newStubAggregator(nil),
 			Authz:          newTestAuthzConfig(t),
 		},
-		mockRouter, mockBackendClient, mockDiscoveryMgr,
+		mockRouter, mockBackendClient,
 		vmcp.NewImmutableRegistry([]vmcp.Backend{}), nil,
 	)
 	require.Error(t, err)
@@ -1005,11 +971,8 @@ func TestNewIgnoresVestigialAuthzMiddleware(t *testing.T) {
 	t.Cleanup(ctrl.Finish)
 	mockRouter := routerMocks.NewMockRouter(ctrl)
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
 	mockBackendRegistry := mocks.NewMockBackendRegistry(ctrl)
 	mockBackendRegistry.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Discover(gomock.Any(), gomock.Any()).Return(nil, nil).AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	// If this authz middleware is ever applied it records the fact and short-circuits
 	// with the sentinel status.
@@ -1033,7 +996,7 @@ func TestNewIgnoresVestigialAuthzMiddleware(t *testing.T) {
 		AuthzMiddleware: authz,
 		Authz:           newTestAuthzConfig(t),
 	}
-	srv, err := server.New(t.Context(), cfg, mockRouter, mockBackendClient, mockDiscoveryMgr, mockBackendRegistry, nil)
+	srv, err := server.New(t.Context(), cfg, mockRouter, mockBackendClient, mockBackendRegistry, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
 

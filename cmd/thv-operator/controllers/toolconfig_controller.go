@@ -302,22 +302,33 @@ func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// on the object for create/delete), so removing or changing the ref enqueues both
 	// the previously- and newly-referenced config — the previously-referenced config
 	// then reconciles and prunes the stale entry. No manual stale-reference scan needed.
-	toolConfigHandler := handler.EnqueueRequestsFromMapFunc(
-		func(_ context.Context, obj client.Object) []reconcile.Request {
-			server, ok := obj.(*mcpv1beta1.MCPServer)
-			if !ok || server.Spec.ToolConfigRef == nil || server.Spec.ToolConfigRef.Name == "" {
-				return nil
-			}
-			return []reconcile.Request{{NamespacedName: types.NamespacedName{
-				Name:      server.Spec.ToolConfigRef.Name,
-				Namespace: server.Namespace,
-			}}}
-		},
-	)
-
+	//
+	// GenerationChangedPredicate also suppresses the workload-watch resync; the self-heal
+	// backstop for a stale ReferencingWorkloads entry (e.g. a workload deleted while the
+	// operator was down) is this config's own For() resync, which re-runs Reconcile and
+	// rebuilds ReferencingWorkloads from the index.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPToolConfig{}).
-		Watches(&mcpv1beta1.MCPServer{}, toolConfigHandler,
+		Watches(&mcpv1beta1.MCPServer{},
+			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToToolConfig),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
+}
+
+// mapMCPServerToToolConfig maps an MCPServer to the MCPToolConfig it currently
+// references. EnqueueRequestsFromMapFunc invokes this on both the old and new object on
+// update (and on the object for create/delete), so a ref change or deletion automatically
+// enqueues both the previously- and newly-referenced config; the previously-referenced
+// config then prunes the stale entry on reconcile. No manual stale-reference scan needed.
+func (*ToolConfigReconciler) mapMCPServerToToolConfig(
+	_ context.Context, obj client.Object,
+) []reconcile.Request {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.ToolConfigRef == nil || server.Spec.ToolConfigRef.Name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Name:      server.Spec.ToolConfigRef.Name,
+		Namespace: server.Namespace,
+	}}}
 }

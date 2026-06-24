@@ -416,6 +416,10 @@ func (r *MCPAuthzConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to set up VirtualMCPServer authzConfigRef index: %w", err)
 	}
 
+	// GenerationChangedPredicate also suppresses the workload-watch resync; the self-heal
+	// backstop for a stale ReferencingWorkloads entry (e.g. a workload deleted while the
+	// operator was down) is this config's own For() resync, which re-runs Reconcile and
+	// rebuilds ReferencingWorkloads from the index.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPAuthzConfig{}).
 		Watches(&mcpv1beta1.MCPServer{},

@@ -385,22 +385,15 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// on the object for create/delete), so removing or changing the ref enqueues both
 	// the previously- and newly-referenced config — the previously-referenced config
 	// then reconciles and prunes the stale entry. No manual stale-reference scan needed.
-	mcpServerHandler := handler.EnqueueRequestsFromMapFunc(
-		func(_ context.Context, obj client.Object) []reconcile.Request {
-			server, ok := obj.(*mcpv1beta1.MCPServer)
-			if !ok || server.Spec.OIDCConfigRef == nil || server.Spec.OIDCConfigRef.Name == "" {
-				return nil
-			}
-			return []reconcile.Request{{NamespacedName: types.NamespacedName{
-				Name:      server.Spec.OIDCConfigRef.Name,
-				Namespace: server.Namespace,
-			}}}
-		},
-	)
-
+	//
+	// GenerationChangedPredicate also suppresses the workload-watch resync; the self-heal
+	// backstop for a stale ReferencingWorkloads entry (e.g. a workload deleted while the
+	// operator was down) is this config's own For() resync, which re-runs Reconcile and
+	// rebuilds ReferencingWorkloads from the index.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPOIDCConfig{}).
-		Watches(&mcpv1beta1.MCPServer{}, mcpServerHandler,
+		Watches(&mcpv1beta1.MCPServer{},
+			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToOIDCConfig),
 			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(
 			&mcpv1beta1.VirtualMCPServer{},
@@ -413,6 +406,24 @@ func (r *MCPOIDCConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
 		).
 		Complete(r)
+}
+
+// mapMCPServerToOIDCConfig maps an MCPServer to the MCPOIDCConfig it currently
+// references. EnqueueRequestsFromMapFunc invokes this on both the old and new object on
+// update (and on the object for create/delete), so a ref change or deletion automatically
+// enqueues both the previously- and newly-referenced config; the previously-referenced
+// config then prunes the stale entry on reconcile. No manual stale-reference scan needed.
+func (*MCPOIDCConfigReconciler) mapMCPServerToOIDCConfig(
+	_ context.Context, obj client.Object,
+) []reconcile.Request {
+	server, ok := obj.(*mcpv1beta1.MCPServer)
+	if !ok || server.Spec.OIDCConfigRef == nil || server.Spec.OIDCConfigRef.Name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{
+		Name:      server.Spec.OIDCConfigRef.Name,
+		Namespace: server.Namespace,
+	}}}
 }
 
 // mapVirtualMCPServerToOIDCConfig maps a VirtualMCPServer to the MCPOIDCConfig it

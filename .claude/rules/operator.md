@@ -80,7 +80,7 @@ you're in the exception.
   `ctrl.Result{RequeueAfter: D}, nil`, not a returned error.
 
 - **Separate terminal from transient errors.** A malformed or invalid spec (bad
-  URL, unparseable policy, schema violation) is NOT retryable: surface it via a
+  URL, malformed policy, schema violation) is NOT retryable: surface it via a
   `Valid=False` condition with `ObservedGeneration` set, optionally emit a
   one-shot Warning on the false-transition, and `return ctrl.Result{}, nil`.
   Returning the error instead requeues forever with backoff and buries the

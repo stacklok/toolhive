@@ -265,6 +265,7 @@ func TestInProcessService_GetAllValidTokens(t *testing.T) {
 		setupStorage   func(*storagemocks.MockUpstreamTokenStorage)
 		setupRefresher func(*storagemocks.MockUpstreamTokenRefresher)
 		wantResult     map[string]string
+		wantFailed     []string
 		wantErr        bool
 	}{
 		{
@@ -303,7 +304,7 @@ func TestInProcessService_GetAllValidTokens(t *testing.T) {
 			},
 		},
 		{
-			name:      "expired refresh fails omits provider",
+			name:      "expired refresh fails reports provider in failed slice",
 			sessionID: "session-3",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
 				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-3").
@@ -316,6 +317,7 @@ func TestInProcessService_GetAllValidTokens(t *testing.T) {
 					Return(nil, errors.New("upstream IDP unavailable"))
 			},
 			wantResult: map[string]string{},
+			wantFailed: []string{"github"},
 		},
 		{
 			name:      "empty session returns empty map",
@@ -353,7 +355,7 @@ func TestInProcessService_GetAllValidTokens(t *testing.T) {
 			},
 		},
 		{
-			name:      "expired with no refresh token omits provider",
+			name:      "expired with no refresh token reports provider in failed slice",
 			sessionID: "session-7",
 			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
 				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-7").
@@ -368,6 +370,7 @@ func TestInProcessService_GetAllValidTokens(t *testing.T) {
 			},
 			setupRefresher: func(_ *storagemocks.MockUpstreamTokenRefresher) {},
 			wantResult:     map[string]string{},
+			wantFailed:     []string{"github"},
 		},
 		{
 			name:      "zero ExpiresAt treated as non-expiring",
@@ -403,7 +406,7 @@ func TestInProcessService_GetAllValidTokens(t *testing.T) {
 
 			svc := NewInProcessService(mockStorage, mockRefresher)
 
-			result, err := svc.GetAllValidTokens(context.Background(), tt.sessionID)
+			result, failed, err := svc.GetAllValidTokens(context.Background(), tt.sessionID)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -413,6 +416,7 @@ func TestInProcessService_GetAllValidTokens(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantResult, result)
+			assert.Equal(t, tt.wantFailed, failed)
 		})
 	}
 }
@@ -438,8 +442,9 @@ func TestInProcessService_GetAllValidTokens_NilRefresher(t *testing.T) {
 
 	svc := NewInProcessService(mockStorage, nil)
 
-	result, err := svc.GetAllValidTokens(context.Background(), "session-1")
+	result, failed, err := svc.GetAllValidTokens(context.Background(), "session-1")
 
 	require.NoError(t, err)
 	assert.Equal(t, map[string]string{}, result)
+	assert.Equal(t, []string{"github"}, failed)
 }

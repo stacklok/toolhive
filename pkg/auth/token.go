@@ -1167,21 +1167,23 @@ func writeOAuthError(w http.ResponseWriter, errorCode, description string, statu
 }
 
 // loadUpstreamTokens extracts the token session ID from claims and loads
-// all upstream provider tokens for that session. Returns (nil, nil) if no
+// all upstream provider tokens for that session. Returns (nil, nil, nil) if no
 // tsid claim exists. Returns a non-nil error when a tsid claim is present
-// but token loading fails (infrastructure error).
-func (v *TokenValidator) loadUpstreamTokens(ctx context.Context, claims jwt.MapClaims) (map[string]string, error) {
+// but token loading fails due to an infrastructure error (storage unavailable).
+// A non-nil failed slice means one or more providers' tokens could not be
+// refreshed; the caller should return HTTP 401 to trigger re-authentication.
+func (v *TokenValidator) loadUpstreamTokens(ctx context.Context, claims jwt.MapClaims) (map[string]string, []string, error) {
 	tsid, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
 	if !ok || tsid == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	tokens, err := v.upstreamTokenReader.GetAllValidTokens(ctx, tsid)
+	tokens, failed, err := v.upstreamTokenReader.GetAllValidTokens(ctx, tsid)
 	if err != nil {
-		return nil, fmt.Errorf("load upstream tokens for session %s: %w", tsid, err)
+		return nil, nil, fmt.Errorf("load upstream tokens for session %s: %w", tsid, err)
 	}
 
-	return tokens, nil
+	return tokens, failed, nil
 }
 
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
@@ -1223,7 +1225,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// never mutated afterwards (see the UpstreamTokens doc comment in identity.go).
 		if v.upstreamTokenReader != nil {
 			loadCtx := WithIdentity(r.Context(), identity)
-			tokens, loadErr := v.loadUpstreamTokens(loadCtx, claims)
+			tokens, failed, loadErr := v.loadUpstreamTokens(loadCtx, claims)
 			if loadErr != nil {
 				slog.WarnContext(loadCtx, "upstream token storage unavailable",
 					"error", loadErr,
@@ -1232,6 +1234,15 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 				return
 			}
 			identity.UpstreamTokens = tokens
+			identity.FailedUpstreamProviders = failed
+			if len(failed) > 0 {
+				slog.WarnContext(loadCtx, "upstream token refresh failed; returning 401",
+					"providers", failed, "subject", identity.Subject)
+				w.Header().Set("WWW-Authenticate",
+					`Bearer error="invalid_token", error_description="upstream token is no longer valid; re-authentication required"`)
+				http.Error(w, "upstream authentication required", http.StatusUnauthorized)
+				return
+			}
 		}
 
 		// Add the fully-populated Identity to the request context and serve.

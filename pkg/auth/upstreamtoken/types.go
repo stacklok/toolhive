@@ -23,15 +23,18 @@ type UpstreamCredential struct {
 
 // TokenReader retrieves upstream provider access tokens for a session.
 // This narrow interface decouples the auth middleware from storage internals.
-//
-// TODO(auth): Consider enriching the return type from map[string]string to
-// map[string]UpstreamCredential to carry per-provider freshness/error metadata.
 type TokenReader interface {
 	// GetAllValidTokens returns access tokens for all upstream providers in a session.
-	// Expired tokens are refreshed transparently when possible; if refresh fails,
-	// the provider is omitted from the result.
-	// Returns an empty map (not error) for unknown sessions.
-	GetAllValidTokens(ctx context.Context, sessionID string) (map[string]string, error)
+	// Expired tokens are refreshed transparently when possible.
+	//
+	// The second return value contains the names of providers whose access tokens
+	// were expired and could not be refreshed (e.g. the refresh token is missing
+	// or the upstream IDP rejected the refresh). Those providers are omitted from
+	// the tokens map. Callers should treat a non-empty failed list as a signal to
+	// return HTTP 401 + WWW-Authenticate so the client can re-authenticate.
+	//
+	// Returns an empty map and nil failed slice (not error) for unknown sessions.
+	GetAllValidTokens(ctx context.Context, sessionID string) (tokens map[string]string, failed []string, err error)
 }
 
 // Service owns the upstream token lifecycle: read, refresh, error handling.

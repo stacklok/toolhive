@@ -90,6 +90,13 @@ type Identity struct {
 	// a load-scoped ctx, provided the loader does not share that ctx with
 	// concurrent code. See TokenValidator.Middleware for the canonical pattern.
 	UpstreamTokens map[string]string
+
+	// FailedUpstreamProviders contains the names of upstream providers whose
+	// access tokens were expired and could not be refreshed during identity
+	// enrichment. A non-empty slice means the auth middleware has already
+	// returned HTTP 401; downstream handlers will not see this field in normal
+	// operation. It is exposed on the type for observability and testing.
+	FailedUpstreamProviders []string
 }
 
 // String returns a string representation of the Identity with sensitive fields redacted.

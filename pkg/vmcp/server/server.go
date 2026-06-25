@@ -536,13 +536,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth → upstream-token-check → rate-limit → audit → MCP-parsing → telemetry
-	// Execution order: recovery → body-limit → header-val → auth → upstream-token-check →
+	// Code wraps: auth → rate-limit → audit → MCP-parsing → telemetry
+	// Execution order: recovery → body-limit → header-val → auth →
 	//   rate-limit → audit → MCP-parsing → telemetry → handler
 	//
-	// upstream-token-check sits immediately after auth so it can read the identity that
-	// AuthMiddleware just placed on the context and short-circuit with HTTP 401 +
-	// WWW-Authenticate if any required upstream provider token is missing (#5507).
+	// Upstream token refresh failures are detected inside AuthMiddleware itself:
+	// when GetAllValidTokens cannot refresh an expired token it populates
+	// Identity.FailedUpstreamProviders and the middleware short-circuits with
+	// HTTP 401 + WWW-Authenticate before the request reaches any inner layer.
 	//
 	// The legacy HTTP authz, annotation-enrichment, and discovery layers have all been
 	// removed: every caller now routes through Serve, so authorization is enforced by the
@@ -579,23 +580,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		}
 		mcpHandler = auditor.Middleware(mcpHandler)
 		slog.Info("audit middleware enabled for MCP endpoints")
-	}
-
-	// Execution order: AuthMiddleware fires first, populates the identity context,
-	// then rate-limiting, then this middleware checks upstream provider tokens,
-	// and so on inward. Wrapping order is therefore reversed: we wrap the inner
-	// handler here so that in execution the check runs after rate-limiting.
-	// When an upstream provider's token is absent (because GetAllValidTokens
-	// dropped it after a failed refresh) this middleware returns HTTP 401 +
-	// WWW-Authenticate before the mcp-go SDK handler commits to HTTP 200.
-	//
-	// Both conditions are required: AuthMiddleware populates the identity that
-	// the check reads; backendRegistry provides the list of backends whose auth
-	// strategies determine which provider tokens are required. Omitting either
-	// makes the check a no-op, so we skip wiring it entirely.
-	if s.config.AuthMiddleware != nil && s.backendRegistry != nil {
-		mcpHandler = upstreamTokenCheckMiddleware(s.backendRegistry)(mcpHandler)
-		slog.Debug("upstream-token-check middleware attached")
 	}
 
 	mcpHandler = s.applyRateLimiting(mcpHandler)

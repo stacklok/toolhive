@@ -394,9 +394,9 @@ func (f *defaultMultiSessionFactory) makeSession(
 // RestoreSession implements MultiSessionFactory.
 // It reconnects to the backends whose IDs are listed in storedMetadata, rebuilds
 // the routing table, and reapplies the session-binding decorator from the stored
-// identity binding. Because the original bearer token is not available at restore
-// time, identity is reconstructed from the (iss, sub) tuple in
-// MetadataKeyIdentityBinding.
+// identity binding. Because the original bearer token is not persisted, backend
+// connectors receive nil identity; live requests carry a fully-populated identity
+// on req.Context() from TokenValidator.Middleware.
 func (f *defaultMultiSessionFactory) RestoreSession(
 	ctx context.Context,
 	id string,

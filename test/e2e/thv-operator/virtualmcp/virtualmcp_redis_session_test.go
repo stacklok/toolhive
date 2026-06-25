@@ -235,6 +235,11 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			}, timeout, pollInterval).Should(gomega.BeTrue())
 		})
 
+		// TODO(#5336): extend this test with a tool call against a backend using
+		// upstreamInject outgoing auth after cross-pod restore. That scenario
+		// requires a live OIDC provider in the test environment and depends on
+		// #5323 + its sibling fix for the identityRoundTripper in
+		// pkg/vmcp/session/internal/backend/mcp_session.go being in place.
 		ginkgo.It("Should allow a session established on pod A to be reconstructed on pod B", func() {
 			ginkgo.By("Getting the two ready pods")
 			var pods []corev1.Pod

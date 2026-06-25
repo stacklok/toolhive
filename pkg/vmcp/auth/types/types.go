@@ -202,6 +202,7 @@ type OBOConfig struct {
 	Audience string `json:"audience,omitempty" yaml:"audience,omitempty"`
 
 	// Scopes are the requested scopes for the exchanged token.
+	// +listType=atomic
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
 	// SubjectTokenProviderName selects which upstream provider's token to use as the

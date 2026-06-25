@@ -143,6 +143,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
       --oidc-scopes strings                         OAuth scopes to advertise in the well-known endpoint (RFC 9728, defaults to 'openid' if not specified)
       --otel-custom-attributes string               Custom resource attributes for OpenTelemetry in key=value format (e.g., server_type=prod,region=us-east-1,team=platform)
       --otel-enable-prometheus-metrics-path         Enable Prometheus-style /metrics endpoint on the main transport port (default false)
+      --otel-enable-user-id-attribute               Emit the authenticated subject as the user.id span attribute on the MCP server span (default false; may expose personally- or tenant-identifying data)
       --otel-endpoint string                        OpenTelemetry OTLP endpoint URL (e.g., https://api.honeycomb.io)
       --otel-env-vars stringArray                   Environment variable names to include in OpenTelemetry spans (comma-separated: ENV1,ENV2)
       --otel-headers stringArray                    OpenTelemetry OTLP headers in key=value format (e.g., x-honeycomb-team=your-api-key)

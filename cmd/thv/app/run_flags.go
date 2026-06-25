@@ -1078,6 +1078,15 @@ type finalTelemetry struct {
 	OtelMetricsEnabled              bool
 }
 
+// boolFlagOrConfig returns the CLI flag value when the user explicitly set it,
+// otherwise it falls back to the supplied config value.
+func boolFlagOrConfig(cmd *cobra.Command, name string, flagValue, configValue bool) bool {
+	if cmd.Flags().Changed(name) {
+		return flagValue
+	}
+	return configValue
+}
+
 // getTelemetryFromFlags extracts telemetry configuration from command flags
 func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint string, otelSamplingRate float64,
 	otelEnvironmentVariables []string, otelInsecure bool, otelEnablePrometheusMetricsPath bool,
@@ -1099,15 +1108,11 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 		finalOtelEnvironmentVariables = config.OTEL.EnvVars
 	}
 
-	finalOtelInsecure := otelInsecure
-	if !cmd.Flags().Changed("otel-insecure") {
-		finalOtelInsecure = config.OTEL.Insecure
-	}
-
-	finalOtelEnablePrometheusMetricsPath := otelEnablePrometheusMetricsPath
-	if !cmd.Flags().Changed("otel-enable-prometheus-metrics-path") {
-		finalOtelEnablePrometheusMetricsPath = config.OTEL.EnablePrometheusMetricsPath
-	}
+	// Simple bool flags fall back to the config value whenever the flag was not
+	// explicitly set on the command line.
+	finalOtelInsecure := boolFlagOrConfig(cmd, "otel-insecure", otelInsecure, config.OTEL.Insecure)
+	finalOtelEnablePrometheusMetricsPath := boolFlagOrConfig(
+		cmd, "otel-enable-prometheus-metrics-path", otelEnablePrometheusMetricsPath, config.OTEL.EnablePrometheusMetricsPath)
 
 	finalOtelTracingEnabled := otelTracingEnabled
 	if !cmd.Flags().Changed("otel-tracing-enabled") && config.OTEL.TracingEnabled != nil {
@@ -1130,10 +1135,8 @@ func getTelemetryFromFlags(cmd *cobra.Command, config *cfg.Config, otelEndpoint 
 
 	// EnableUserIDAttribute defaults to false (opt-in). The config value is used
 	// as a fallback only when the CLI flag was not explicitly set.
-	finalOtelEnableUserIDAttribute := otelEnableUserIDAttribute
-	if !cmd.Flags().Changed("otel-enable-user-id-attribute") {
-		finalOtelEnableUserIDAttribute = config.OTEL.EnableUserIDAttribute
-	}
+	finalOtelEnableUserIDAttribute := boolFlagOrConfig(
+		cmd, "otel-enable-user-id-attribute", otelEnableUserIDAttribute, config.OTEL.EnableUserIDAttribute)
 
 	return finalTelemetry{
 		OtelEndpoint:                    finalOtelEndpoint,

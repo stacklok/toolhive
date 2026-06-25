@@ -134,9 +134,8 @@ func (r *ToolConfigReconciler) handleConfigHashChange(
 	refs, err := r.findReferencingWorkloads(ctx, toolConfig)
 	if err != nil {
 		logger.Error(err, "Failed to find referencing MCPServers")
-		// Don't persist the new hash on error — returning the error will requeue,
-		// and on the next attempt handleConfigHashChange will be re-entered so that
-		// referencing workload status updates are not permanently skipped.
+		// Don't persist the new hash on error; returning the error requeues so
+		// the next reconcile recomputes referencing workloads.
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
 
@@ -207,9 +206,9 @@ func (r *ToolConfigReconciler) handleDeletion(ctx context.Context, toolConfig *m
 	return ctrl.Result{}, nil
 }
 
-// toolConfigRefIndexKey is the field-index key backing the reverse lookups in
-// findReferencingWorkloads and findReferencingMCPServers. MCPServer references the
-// config via spec.toolConfigRef; the index is registered in SetupWithManager.
+// toolConfigRefIndexKey is the field-index key backing findReferencingWorkloads.
+// MCPServer references the config via spec.toolConfigRef; the index is registered
+// in SetupWithManager.
 const toolConfigRefIndexKey = "spec.toolConfigRef"
 
 // indexMCPServerByToolConfigRef extracts the MCPToolConfig name an MCPServer
@@ -246,29 +245,12 @@ func (r *ToolConfigReconciler) findReferencingWorkloads(
 	return refs, nil
 }
 
-// findReferencingMCPServers finds all MCPServers that reference the given MCPToolConfig.
-// Returns the full MCPServer objects, used by handleConfigHashChange to update server annotations.
-//
-// The lookup is served by the same field index as findReferencingWorkloads
-// (registered in SetupWithManager), querying by spec.toolConfigRef.
-func (r *ToolConfigReconciler) findReferencingMCPServers(
-	ctx context.Context,
-	toolConfig *mcpv1beta1.MCPToolConfig,
-) ([]mcpv1beta1.MCPServer, error) {
-	serverList := &mcpv1beta1.MCPServerList{}
-	if err := r.List(ctx, serverList, client.InNamespace(toolConfig.Namespace),
-		client.MatchingFields{toolConfigRefIndexKey: toolConfig.Name}); err != nil {
-		return nil, fmt.Errorf("failed to list MCPServers by toolConfigRef: %w", err)
-	}
-	return serverList.Items, nil
-}
-
 // SetupWithManager sets up the controller with the Manager.
 // Watches MCPServer changes to maintain accurate ReferencingWorkloads status.
 func (r *ToolConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	// Field index backing findReferencingWorkloads / findReferencingMCPServers: lets
-	// the controller query only the MCPServers referencing a given config rather than
-	// listing every MCPServer in the namespace and filtering in memory.
+	// Field index backing findReferencingWorkloads: lets the controller query only
+	// the MCPServers referencing a given config rather than listing every MCPServer
+	// in the namespace and filtering in memory.
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(), &mcpv1beta1.MCPServer{}, toolConfigRefIndexKey, indexMCPServerByToolConfigRef,
 	); err != nil {

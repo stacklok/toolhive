@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -147,8 +148,6 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 	})
 
 	Describe("Reaching the host with --allow-docker-gateway", func() {
-		const gatewayHost = "host.docker.internal"
-
 		// startFetchServer runs the fetch MCP server under network isolation with
 		// the given extra run args (e.g. --allow-docker-gateway), waits for it to
 		// be running, and returns its workload name. An empty profileJSON uses the
@@ -189,10 +188,10 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 			}
 		}
 
-		// fetchBlocked drives the fetch tool against the given server and reports
-		// whether the request was blocked (the fetch tool returns an error result
-		// when the egress proxy denies the request).
-		fetchBlocked := func(serverName, targetURL string) bool {
+		// fetchThrough drives the fetch tool against the given server and returns
+		// the tool result. A denied request comes back as an error result
+		// (result.IsError); a successful one carries the fetched body.
+		fetchThrough := func(serverName, targetURL string) *mcp.CallToolResult {
 			serverURL, err := e2e.GetMCPServerURL(config, serverName)
 			Expect(err).ToNot(HaveOccurred(), "Should be able to get server URL")
 			err = e2e.WaitForMCPServerReady(config, serverURL, "streamable-http", 60*time.Second)
@@ -208,7 +207,18 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 
 			result, err := mcpClient.CallTool(ctx, "fetch", map[string]interface{}{"url": targetURL})
 			Expect(err).ToNot(HaveOccurred(), "CallTool should complete without transport error")
-			return result.IsError
+			return result
+		}
+
+		// resultText concatenates the text content of a tool result.
+		resultText := func(result *mcp.CallToolResult) string {
+			var sb strings.Builder
+			for _, c := range result.Content {
+				if tc, ok := mcp.AsTextContent(c); ok {
+					sb.WriteString(tc.Text)
+				}
+			}
+			return sb.String()
 		}
 
 		// dockerBridgeGatewayIP returns the host gateway IP of the default Docker
@@ -222,7 +232,7 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 			return strings.TrimSpace(string(out))
 		}
 
-		It("blocks the docker gateway by default and reaches it with the flag", func() {
+		It("denies the bridge gateway IP by default and, where routable, reaches it with the flag", func() {
 			By("Starting a host service reachable from containers")
 			listener, err := net.Listen("tcp", ":0") //nolint:gosec // binds an ephemeral port for the test
 			Expect(err).ToNot(HaveOccurred(), "Should be able to listen on an ephemeral port")
@@ -234,30 +244,44 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 			go func() { _ = srv.Serve(listener) }()
 			DeferCleanup(func() { _ = srv.Close() })
 
+			// Target the bridge gateway IP, not host.docker.internal: an IP needs no
+			// DNS resolution, so a blocked fetch unambiguously means the egress
+			// `docker_gateway_ip` deny fired (see #5640 — the isolated resolver
+			// cannot resolve host.docker.internal, which would confound a
+			// hostname-based assertion). The hostname deny rule is pinned by the
+			// config test below instead.
 			gatewayIP := dockerBridgeGatewayIP()
 			target := fmt.Sprintf("http://%s:%d/", gatewayIP, port)
 
-			By("Confirming the gateway is blocked by default, even under allow-all")
+			By("Confirming the gateway IP is blocked by the egress proxy by default")
 			denyServer := startFetchServer("deny", "")
-			Expect(fetchBlocked(denyServer, target)).To(BeTrue(),
-				"gateway IP must be blocked without --allow-docker-gateway")
-			Expect(fetchBlocked(denyServer, fmt.Sprintf("http://%s:80/", gatewayHost))).To(BeTrue(),
-				"host.docker.internal must be blocked without --allow-docker-gateway")
+			Expect(fetchThrough(denyServer, target).IsError).To(BeTrue(),
+				"the egress proxy must deny the bridge gateway IP without --allow-docker-gateway")
 			retireServer(denyServer)
 
-			By("Confirming the flag removes the deny so the host becomes reachable")
+			By("Confirming --allow-docker-gateway removes the deny so the host is reachable")
 			allowServer := startFetchServer("allow", "", "--allow-docker-gateway")
-			if fetchBlocked(allowServer, target) {
-				// The deny removal is proven by the negative assertions above and
-				// the config test; whether the bridge gateway actually routes to a
-				// host service is environment-specific (works on Linux Docker
-				// Engine; on Docker Desktop the host lives behind host.docker.internal
-				// instead). Skip the positive reachability leg where it does not apply.
-				Skip("docker bridge gateway is not routable to the host in this environment")
+			result := fetchThrough(allowServer, target)
+			if result.IsError {
+				// The deny removal is pinned deterministically by the config test
+				// below; whether the bridge gateway actually routes to a host
+				// service is environment-specific — it works on Linux Docker Engine
+				// (where the bridge gateway is the host), but on Docker Desktop the
+				// host lives behind host.docker.internal, not the bridge gateway. Skip
+				// the positive reachability leg where the gateway is not host-routable.
+				Skip("docker bridge gateway is not routable to the host in this environment (e.g. Docker Desktop)")
 			}
+			Expect(resultText(result)).To(ContainSubstring("host-service-ok"),
+				"with --allow-docker-gateway the fetch must reach the host service through the egress proxy")
 		})
 
-		It("removes the egress proxy gateway deny rules only when the flag is set", func() {
+		// This test pins the egress ACL rules deterministically on a real, deployed
+		// container — both the hostname deny (which the traffic test above cannot
+		// exercise without the host.docker.internal DNS confounder of #5640) and the
+		// direct-IP deny. It complements, rather than duplicates, the unit test for
+		// createTempEgressSquidConf: it proves thv actually generates and mounts the
+		// config into the running egress proxy, alongside the real-traffic assertion above.
+		It("carries both gateway deny rules in the egress config by default and drops them with the flag", func() {
 			squidConf := func(serverName string) string {
 				//nolint:gosec // container name is test-controlled
 				out, err := exec.Command("docker", "exec", serverName+"-egress",
@@ -266,18 +290,22 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 				return string(out)
 			}
 
-			By("Default profile: gateway deny rules are present")
+			By("Default profile: both the hostname and direct-IP deny rules are present")
 			denyServer := startFetchServer("cfg-deny", "")
 			denyConf := squidConf(denyServer)
 			Expect(denyConf).To(ContainSubstring("http_access deny docker_gateway_hosts"),
 				"default config must deny the docker gateway hostnames")
-			Expect(denyConf).To(ContainSubstring("dstdomain host.docker.internal"))
+			Expect(denyConf).To(ContainSubstring("dstdomain host.docker.internal gateway.docker.internal"))
+			Expect(denyConf).To(ContainSubstring("http_access deny docker_gateway_ip"),
+				"default config must deny the docker gateway IP (the DNS-bypass path)")
 			retireServer(denyServer)
 
-			By("With --allow-docker-gateway: gateway deny rules are absent")
-			allowServer := startFetchServer("cfg-allow", "", "--allow-docker-gateway")
-			Expect(squidConf(allowServer)).ToNot(ContainSubstring("docker_gateway_hosts"),
-				"--allow-docker-gateway must remove the gateway deny rules")
+			By("With --allow-docker-gateway: both deny rules are absent")
+			allowConf := squidConf(startFetchServer("cfg-allow", "", "--allow-docker-gateway"))
+			Expect(allowConf).ToNot(ContainSubstring("docker_gateway_hosts"),
+				"--allow-docker-gateway must remove the gateway hostname deny rule")
+			Expect(allowConf).ToNot(ContainSubstring("docker_gateway_ip"),
+				"--allow-docker-gateway must remove the gateway IP deny rule")
 		})
 	})
 })

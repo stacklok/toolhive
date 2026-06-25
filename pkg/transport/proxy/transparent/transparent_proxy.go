@@ -1069,16 +1069,20 @@ func (p *TransparentProxy) modifyResponse(resp *http.Response) error {
 // request before Rewrite runs.
 //
 // For remote upstreams X-Forwarded-Proto is also rewritten to the scheme of
-// the actual upstream connection (the targetURI scheme). SetXForwarded derives
-// it from the inbound connection, which behind a TLS-terminating load balancer
-// is plain HTTP even though the upstream is reached over HTTPS. Upstreams that
-// redirect when X-Forwarded-Proto != https would otherwise 301-loop forever.
-func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest) {
+// the actual upstream connection. SetXForwarded derives it from the inbound
+// connection, which behind a TLS-terminating load balancer is plain HTTP even
+// though the upstream is reached over HTTPS. Upstreams that redirect when
+// X-Forwarded-Proto != https would otherwise 301-loop forever. The upstream
+// scheme is supplied by the caller (parsed once from targetURI in Start) to
+// avoid re-parsing on every request.
+func (p *TransparentProxy) setXForwardedHeaders(pr *httputil.ProxyRequest, upstreamScheme string) {
 	pr.SetXForwarded()
 	if p.isRemote {
 		pr.Out.Header.Del("X-Forwarded-Host")
-		if u, err := url.Parse(p.targetURI); err == nil && u.Scheme != "" {
-			pr.Out.Header.Set("X-Forwarded-Proto", u.Scheme)
+		if upstreamScheme != "" {
+			pr.Out.Header.Set("X-Forwarded-Proto", upstreamScheme)
+			slog.Debug("set X-Forwarded-Proto for remote upstream",
+				"scheme", upstreamScheme, "target", p.targetURI)
 		}
 	}
 }
@@ -1105,7 +1109,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		FlushInterval: -1,
 		Rewrite: func(pr *httputil.ProxyRequest) {
 			pr.SetURL(targetURL)
-			p.setXForwardedHeaders(pr)
+			p.setXForwardedHeaders(pr, targetURL.Scheme)
 
 			// Route to the originating backend pod when session metadata contains backend_url.
 			// Falls back to static targetURL when the session doesn't exist or has no backend_url.

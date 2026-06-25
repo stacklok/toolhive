@@ -31,6 +31,7 @@ func TestSetXForwardedHeaders(t *testing.T) {
 		name      string
 		isRemote  bool
 		targetURI string
+		scheme    string
 		wantHost  bool
 		wantProto string
 	}{
@@ -38,6 +39,7 @@ func TestSetXForwardedHeaders(t *testing.T) {
 			name:      "local backend keeps X-Forwarded-Host and inbound proto",
 			isRemote:  false,
 			targetURI: "http://127.0.0.1:8080",
+			scheme:    "http",
 			wantHost:  true,
 			wantProto: "http",
 		},
@@ -45,6 +47,7 @@ func TestSetXForwardedHeaders(t *testing.T) {
 			name:      "remote https upstream omits X-Forwarded-Host and forces https proto",
 			isRemote:  true,
 			targetURI: "https://mcp.example.com/mcp",
+			scheme:    "https",
 			wantHost:  false,
 			wantProto: "https",
 		},
@@ -52,6 +55,15 @@ func TestSetXForwardedHeaders(t *testing.T) {
 			name:      "remote http upstream omits X-Forwarded-Host and keeps http proto",
 			isRemote:  true,
 			targetURI: "http://mcp.example.com/mcp",
+			scheme:    "http",
+			wantHost:  false,
+			wantProto: "http",
+		},
+		{
+			name:      "remote upstream with empty scheme retains inbound proto",
+			isRemote:  true,
+			targetURI: "http://mcp.example.com/mcp",
+			scheme:    "",
 			wantHost:  false,
 			wantProto: "http",
 		},
@@ -71,7 +83,7 @@ func TestSetXForwardedHeaders(t *testing.T) {
 			in := httptest.NewRequest(http.MethodPost, "http://proxy.example.com/mcp", nil)
 			pr := &httputil.ProxyRequest{In: in, Out: in.Clone(in.Context())}
 
-			p.setXForwardedHeaders(pr)
+			p.setXForwardedHeaders(pr, tt.scheme)
 
 			if tt.wantHost {
 				assert.Equal(t, "proxy.example.com", pr.Out.Header.Get("X-Forwarded-Host"))

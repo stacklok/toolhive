@@ -1813,8 +1813,9 @@ spec:
                           optimizer use OpenAI, Azure OpenAI, or a gateway such as Bifrost or
                           LiteLLM. Defaults to "tei" when empty.
 
-                          The "openai" provider reads EmbeddingService directly and is not used with
-                          EmbeddingServerRef, which provisions a managed TEI server.
+                          The "openai" provider reads EmbeddingService directly and cannot be combined
+                          with EmbeddingServerRef, which provisions a managed TEI server; the operator
+                          rejects that combination at admission.
                         enum:
                         - tei
                         - openai
@@ -2963,6 +2964,12 @@ spec:
               rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
                 || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
                 && self.incomingAuth.type == ''oidc'')'
+            - message: embeddingServerRef provisions a managed TEI server and cannot
+                be combined with optimizer.embeddingProvider 'openai'; openai mode
+                uses embeddingService directly
+              rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
+                && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
+                == ''openai'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
@@ -4928,8 +4935,9 @@ spec:
                           optimizer use OpenAI, Azure OpenAI, or a gateway such as Bifrost or
                           LiteLLM. Defaults to "tei" when empty.
 
-                          The "openai" provider reads EmbeddingService directly and is not used with
-                          EmbeddingServerRef, which provisions a managed TEI server.
+                          The "openai" provider reads EmbeddingService directly and cannot be combined
+                          with EmbeddingServerRef, which provisions a managed TEI server; the operator
+                          rejects that combination at admission.
                         enum:
                         - tei
                         - openai
@@ -6078,6 +6086,12 @@ spec:
               rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
                 || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
                 && self.incomingAuth.type == ''oidc'')'
+            - message: embeddingServerRef provisions a managed TEI server and cannot
+                be combined with optimizer.embeddingProvider 'openai'; openai mode
+                uses embeddingService directly
+              rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
+                && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
+                == ''openai'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:

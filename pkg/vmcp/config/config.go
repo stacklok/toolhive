@@ -939,8 +939,9 @@ type OptimizerConfig struct {
 	// optimizer use OpenAI, Azure OpenAI, or a gateway such as Bifrost or
 	// LiteLLM. Defaults to "tei" when empty.
 	//
-	// The "openai" provider reads EmbeddingService directly and is not used with
-	// EmbeddingServerRef, which provisions a managed TEI server.
+	// The "openai" provider reads EmbeddingService directly and cannot be combined
+	// with EmbeddingServerRef, which provisions a managed TEI server; the operator
+	// rejects that combination at admission.
 	// +kubebuilder:validation:Enum=tei;openai
 	// +kubebuilder:default="tei"
 	// +optional

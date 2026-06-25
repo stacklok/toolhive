@@ -67,12 +67,12 @@ func TestGetAndValidateConfig(t *testing.T) {
 		{
 			name: "openai provider with service and model",
 			cfg: &vmcpconfig.OptimizerConfig{
-				EmbeddingService:  "http://bifrost:8080/v1",
+				EmbeddingService:  "http://gateway:8080/v1",
 				EmbeddingProvider: types.EmbeddingProviderOpenAI,
 				EmbeddingModel:    "text-embedding-3-small",
 			},
 			expected: &Config{
-				EmbeddingService:  "http://bifrost:8080/v1",
+				EmbeddingService:  "http://gateway:8080/v1",
 				EmbeddingProvider: types.EmbeddingProviderOpenAI,
 				EmbeddingModel:    "text-embedding-3-small",
 			},
@@ -88,7 +88,7 @@ func TestGetAndValidateConfig(t *testing.T) {
 		{
 			name: "error: openai provider without model",
 			cfg: &vmcpconfig.OptimizerConfig{
-				EmbeddingService:  "http://bifrost:8080/v1",
+				EmbeddingService:  "http://gateway:8080/v1",
 				EmbeddingProvider: types.EmbeddingProviderOpenAI,
 			},
 			errContains: "optimizer.embeddingModel is required",
@@ -291,7 +291,7 @@ func TestGetAndValidateConfig(t *testing.T) {
 func TestGetAndValidateConfig_OpenAIAPIKeyFromEnv(t *testing.T) {
 	openAICfg := func() *vmcpconfig.OptimizerConfig {
 		return &vmcpconfig.OptimizerConfig{
-			EmbeddingService:  "http://bifrost:8080/v1",
+			EmbeddingService:  "http://gateway:8080/v1",
 			EmbeddingProvider: types.EmbeddingProviderOpenAI,
 			EmbeddingModel:    "text-embedding-3-small",
 		}

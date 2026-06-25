@@ -2,7 +2,7 @@
 #
 # Instead of a managed TEI EmbeddingServer, this points the optimizer at an
 # external service that speaks the OpenAI /embeddings API — OpenAI, Azure
-# OpenAI, or a gateway such as Bifrost or LiteLLM. There is no EmbeddingServer
+# OpenAI, or another OpenAI-compatible gateway. There is no EmbeddingServer
 # or embeddingServerRef: the endpoint is reached directly via embeddingService.
 #
 # The API key is read from the OPENAI_API_KEY environment variable so it never
@@ -64,7 +64,7 @@ spec:
       # Speak the OpenAI /embeddings API instead of TEI.
       embeddingProvider: openai
       # Base URL of the OpenAI-compatible service; "/embeddings" is appended.
-      embeddingService: http://bifrost.ai.svc.cluster.local:8080/v1
+      embeddingService: http://llm-gateway.default.svc.cluster.local:8080/v1
       # Model requested from the service (required for the openai provider).
       embeddingModel: text-embedding-3-small
       embeddingServiceTimeout: 15s

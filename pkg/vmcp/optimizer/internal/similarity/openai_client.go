@@ -24,7 +24,7 @@ const (
 )
 
 // openAIClient implements types.EmbeddingClient against an OpenAI-compatible
-// /embeddings API (OpenAI, Azure OpenAI, or a gateway such as Bifrost or LiteLLM).
+// /embeddings API (OpenAI, Azure OpenAI, or another OpenAI-compatible gateway).
 type openAIClient struct {
 	baseURL      string
 	apiKey       string

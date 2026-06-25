@@ -936,8 +936,8 @@ type OptimizerConfig struct {
 	// EmbeddingProvider selects the wire protocol used to talk to the embedding
 	// service. "tei" speaks the HuggingFace Text Embeddings Inference API;
 	// "openai" speaks the OpenAI-compatible /embeddings API, which lets the
-	// optimizer use OpenAI, Azure OpenAI, or a gateway such as Bifrost or
-	// LiteLLM. Defaults to "tei" when empty.
+	// optimizer use OpenAI, Azure OpenAI, or another OpenAI-compatible gateway.
+	// Defaults to "tei" when empty.
 	//
 	// The "openai" provider reads EmbeddingService directly and cannot be combined
 	// with EmbeddingServerRef, which provisions a managed TEI server; the operator

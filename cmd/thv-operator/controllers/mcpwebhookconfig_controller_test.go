@@ -141,8 +141,8 @@ func TestMCPWebhookConfigReconciler_Reconcile(t *testing.T) {
 					Name:      tt.existingMCPServer.Name,
 					Namespace: tt.existingMCPServer.Namespace,
 				}, &updatedServer))
-				assert.Equal(t, updatedConfig.Status.ConfigHash,
-					updatedServer.Annotations["toolhive.stacklok.dev/webhookconfig-hash"])
+				_, found := updatedServer.Annotations["toolhive.stacklok.dev/webhookconfig-hash"]
+				assert.False(t, found, "MCPWebhookConfig controller should not annotate MCPServers")
 			}
 		})
 	}

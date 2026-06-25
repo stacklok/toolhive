@@ -22,6 +22,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 )
 
+const mcpRemoteProxyContainerName = "toolhive"
+
 // deploymentForMCPRemoteProxy returns a MCPRemoteProxy Deployment object
 func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, runConfigChecksum string,
@@ -79,7 +81,7 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 					ImagePullSecrets:   r.imagePullSecretsForRemoteProxy(proxy),
 					Containers: []corev1.Container{{
 						Image:           getToolhiveRunnerImage(),
-						Name:            "toolhive",
+						Name:            mcpRemoteProxyContainerName,
 						Args:            args,
 						Env:             env,
 						VolumeMounts:    volumeMounts,
@@ -95,6 +97,13 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 				},
 			},
 		},
+	}
+
+	if err := r.applyPodTemplateSpecToDeployment(ctx, proxy, dep); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to apply PodTemplateSpec to Deployment",
+			"mcpremoteproxy", proxy.Name,
+			"namespace", proxy.Namespace)
+		return nil
 	}
 
 	if err := controllerutil.SetControllerReference(proxy, dep, r.Scheme); err != nil {
@@ -355,6 +364,13 @@ func (*MCPRemoteProxyReconciler) buildDeploymentMetadata(
 	deploymentLabels := baseLabels
 	deploymentAnnotations := make(map[string]string)
 
+	if proxy.Spec.PodTemplateSpec != nil && len(proxy.Spec.PodTemplateSpec.Raw) > 0 {
+		hash, err := checksum.HashRawJSON(proxy.Spec.PodTemplateSpec.Raw)
+		if err == nil {
+			deploymentAnnotations[podTemplateSpecHashAnnotation] = hash
+		}
+	}
+
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if proxy.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
 			deploymentLabels = ctrlutil.MergeLabels(baseLabels, proxy.Spec.ResourceOverrides.ProxyDeployment.Labels)
@@ -367,6 +383,33 @@ func (*MCPRemoteProxyReconciler) buildDeploymentMetadata(
 	}
 
 	return deploymentLabels, deploymentAnnotations
+}
+
+// applyPodTemplateSpecToDeployment applies user-provided PodTemplateSpec customizations
+// to the generated MCPRemoteProxy Deployment using Kubernetes strategic merge semantics.
+func (*MCPRemoteProxyReconciler) applyPodTemplateSpecToDeployment(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	deployment *appsv1.Deployment,
+) error {
+	if proxy.Spec.PodTemplateSpec == nil || len(proxy.Spec.PodTemplateSpec.Raw) == 0 {
+		return nil
+	}
+
+	if _, err := ctrlutil.NewPodTemplateSpecBuilder(proxy.Spec.PodTemplateSpec, mcpRemoteProxyContainerName); err != nil {
+		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
+	}
+
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(deployment.Spec.Template, proxy.Spec.PodTemplateSpec.Raw)
+	if err != nil {
+		return err
+	}
+	deployment.Spec.Template = merged
+
+	log.FromContext(ctx).V(1).Info("Applied PodTemplateSpec customizations to deployment",
+		"mcpremoteproxy", proxy.Name,
+		"namespace", proxy.Namespace)
+	return nil
 }
 
 // buildPodTemplateMetadata builds pod template labels and annotations.

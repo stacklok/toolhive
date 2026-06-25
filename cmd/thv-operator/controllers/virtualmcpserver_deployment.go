@@ -35,10 +35,6 @@ import (
 )
 
 const (
-	// podTemplateSpecHashAnnotation tracks the SHA256 hash of the user-provided PodTemplateSpec.
-	// Used to detect changes without comparing full rendered templates (which include K8s-defaulted fields).
-	podTemplateSpecHashAnnotation = "toolhive.stacklok.io/podtemplatespec-hash"
-
 	// imagePullRefsHashAnnotation tracks the SHA256 hash of the desired
 	// imagePullSecrets list — chart-level defaults merged with
 	// vmcp.Spec.ImagePullSecrets — used by buildDeploymentMetadataForVmcp.

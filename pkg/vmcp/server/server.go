@@ -591,8 +591,14 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// When an upstream provider's token is absent (because GetAllValidTokens
 	// dropped it after a failed refresh) this middleware returns HTTP 401 +
 	// WWW-Authenticate before the mcp-go SDK handler commits to HTTP 200.
+	//
+	// Both conditions are required: AuthMiddleware populates the identity that
+	// the check reads; backendRegistry provides the list of backends whose auth
+	// strategies determine which provider tokens are required. Omitting either
+	// makes the check a no-op, so we skip wiring it entirely.
 	if s.config.AuthMiddleware != nil && s.backendRegistry != nil {
 		mcpHandler = upstreamTokenCheckMiddleware(s.backendRegistry)(mcpHandler)
+		slog.Debug("upstream-token-check middleware attached")
 	}
 
 	// Apply authentication middleware if configured (runs first in chain)

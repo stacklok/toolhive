@@ -5,6 +5,7 @@ package server
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -43,6 +44,8 @@ func upstreamTokenCheckMiddleware(registry vmcp.BackendRegistry) func(http.Handl
 			}
 
 			if missing := firstMissingProvider(r.Context(), registry, identity); missing != "" {
+				slog.DebugContext(r.Context(), "upstream token missing, returning 401",
+					"provider", missing, "subject", identity.Subject)
 				writeUpstreamTokenRequired(w)
 				return
 			}
@@ -71,6 +74,12 @@ func firstMissingProvider(ctx context.Context, registry vmcp.BackendRegistry, id
 // upstreamProviderName extracts the upstream provider name from an auth config
 // for strategies that require an upstream IDP token. Returns "" for strategies
 // that do not depend on an upstream provider (unauthenticated, header injection).
+//
+// For token_exchange and aws_sts strategies, SubjectProviderName is optional: when
+// empty the strategy uses identity.Token (the primary OIDC token) as the subject
+// assertion instead of a separate upstream provider token. In that case this
+// function returns "" and the middleware skips the pre-flight check — the primary
+// token is already validated by AuthMiddleware, so no additional check is needed.
 func upstreamProviderName(cfg *authtypes.BackendAuthStrategy) string {
 	if cfg == nil {
 		return ""

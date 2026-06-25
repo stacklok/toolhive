@@ -10,23 +10,17 @@ import (
 	"log/slog"
 	"time"
 
-	"golang.org/x/sync/singleflight"
-
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
-// refreshTimeout bounds how long a singleflight-deduplicated token refresh
-// may take before being cancelled. It is deliberately detached from the
-// triggering request's context so that waiting callers are not abandoned.
-const refreshTimeout = 30 * time.Second
-
 // InProcessService implements the Service interface for in-process use.
-// It composes storage (read), refresher (refresh + persist), and singleflight
-// (dedup) to provide a single GetValidTokens call.
+// It composes storage (read) and refresher (refresh + persist) to provide a
+// single GetValidTokens call. Concurrent-refresh deduplication is delegated to
+// the refresher's own singleflight.Group so the same Group covers both the
+// handler's chain-walk path and the runtime token-swap path.
 type InProcessService struct {
 	storage   storage.UpstreamTokenStorage
 	refresher storage.UpstreamTokenRefresher
-	sfGroup   singleflight.Group
 }
 
 // Compile-time checks.
@@ -95,7 +89,7 @@ func (s *InProcessService) GetAllValidTokens(ctx context.Context, sessionID stri
 
 	result := make(map[string]string, len(allTokens))
 	// TODO(auth): Refresh providers in parallel using errgroup to avoid
-	// worst-case latency of N * refreshTimeout when multiple providers need refresh.
+	// worst-case latency of N refreshes when multiple providers need refresh.
 	for providerName, tokens := range allTokens {
 		if tokens == nil {
 			continue
@@ -124,8 +118,9 @@ func (s *InProcessService) GetAllValidTokens(ctx context.Context, sessionID stri
 	return result, nil
 }
 
-// refreshOrFail attempts a singleflight-deduplicated refresh and maps errors
-// to the service's sentinel errors.
+// refreshOrFail attempts a refresh via the shared refresher and maps errors to
+// the service's sentinel errors. Deduplication of concurrent refreshes for the
+// same (session, provider) pair is handled inside the refresher.
 func (s *InProcessService) refreshOrFail(
 	ctx context.Context,
 	sessionID string,
@@ -144,18 +139,7 @@ func (s *InProcessService) refreshOrFail(
 		return nil, ErrNoRefreshToken
 	}
 
-	result, err, _ := s.sfGroup.Do(sessionID+":"+providerName, func() (any, error) {
-		// Detach from the triggering request's context so that if the first
-		// caller disconnects, the refresh still completes for waiting callers.
-		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
-		defer cancel()
-
-		refreshed, refreshErr := s.refresher.RefreshAndStore(refreshCtx, sessionID, expired)
-		if refreshErr != nil {
-			return nil, refreshErr
-		}
-		return refreshed, nil
-	})
+	refreshed, err := s.refresher.RefreshAndStore(ctx, sessionID, expired)
 	if err != nil {
 		slog.Warn("upstream token refresh failed",
 			"session_id", sessionID,
@@ -165,8 +149,7 @@ func (s *InProcessService) refreshOrFail(
 		return nil, fmt.Errorf("%w: %w", ErrRefreshFailed, err)
 	}
 
-	refreshed, ok := result.(*storage.UpstreamTokens)
-	if !ok || refreshed == nil {
+	if refreshed == nil {
 		return nil, ErrRefreshFailed
 	}
 

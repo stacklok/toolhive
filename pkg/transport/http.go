@@ -330,6 +330,14 @@ func (t *HTTPTransport) Start(ctx context.Context) error {
 		})
 	}
 
+	// Always inject user identity claims (sub, email, name) as headers so backend MCP servers
+	// can identify the authenticated user without needing to call /introspect themselves.
+	// When no identity is in context (anonymous request), this middleware is a no-op.
+	middlewares = append(middlewares, types.NamedMiddleware{
+		Name:     "claim-injection",
+		Function: middleware.NewClaimInjectionMiddleware(),
+	})
+
 	// Determine whether to enable health checks based on workload type
 	enableHealthCheck := shouldEnableHealthCheck(isRemote)
 

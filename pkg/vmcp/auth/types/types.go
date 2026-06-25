@@ -48,6 +48,13 @@ const (
 	// The default upstream implementation returns ErrEnterpriseRequired from
 	// every method; an out-of-tree build registers a real converter.
 	StrategyTypeOBO = "obo"
+
+	// StrategyTypeClaimInjection identifies the claim injection strategy.
+	// This strategy reads the authenticated user's identity from the request context
+	// and injects selected claims as X-User-* HTTP headers into backend requests.
+	// Backend MCP servers can read these headers to identify the caller without
+	// performing their own OAuth token introspection.
+	StrategyTypeClaimInjection = "claim_injection"
 )
 
 // BackendAuthStrategy defines how to authenticate to a specific backend.
@@ -57,7 +64,7 @@ const (
 // +kubebuilder:object:generate=true
 // +gendoc
 type BackendAuthStrategy struct {
-	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts", "obo"
+	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts", "obo", "claim_injection"
 	Type string `json:"type" yaml:"type"`
 
 	// HeaderInjection contains configuration for header injection auth strategy.
@@ -75,6 +82,10 @@ type BackendAuthStrategy struct {
 	// AwsSts contains configuration for AWS STS auth strategy.
 	// Used when Type = "aws_sts".
 	AwsSts *AwsStsConfig `json:"awsSts,omitempty" yaml:"awsSts,omitempty"`
+
+	// ClaimInjection contains configuration for the claim injection auth strategy.
+	// Used when Type = "claim_injection".
+	ClaimInjection *ClaimInjectionConfig `json:"claimInjection,omitempty" yaml:"claimInjection,omitempty"`
 }
 
 // HeaderInjectionConfig configures the header injection auth strategy.
@@ -143,6 +154,24 @@ type UpstreamInjectConfig struct {
 	// ProviderName is the name of the upstream provider configured in the
 	// embedded authorization server. Must match an entry in AuthServer.Upstreams.
 	ProviderName string `json:"providerName" yaml:"providerName"`
+}
+
+// ClaimInjectionConfig configures the claim injection auth strategy.
+// This strategy reads the authenticated user's identity from the request context
+// and injects selected claims as X-User-* HTTP headers into outgoing backend requests.
+// Backend MCP servers can read these headers to identify the caller without performing
+// their own OAuth token introspection or /introspect calls.
+// +kubebuilder:object:generate=true
+// +gendoc
+type ClaimInjectionConfig struct {
+	// Claims lists which identity claims to inject as X-User-* headers.
+	// Supported values: "sub", "email", "name"
+	//   - "sub"   → X-User-Sub   (OIDC subject; immutable across renames)
+	//   - "email" → X-User-Email (user email; mutable, prefer "sub" for stable identity)
+	//   - "name"  → X-User-Name  (display name)
+	// Defaults to ["sub"] when empty, injecting only X-User-Sub.
+	// Including "email" is opt-in to minimise PII forwarded to backends by default.
+	Claims []string `json:"claims,omitempty" yaml:"claims,omitempty"`
 }
 
 // RoleMapping defines a rule for mapping JWT claims to IAM roles.

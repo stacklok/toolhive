@@ -328,3 +328,4 @@ func TestIdentityRoundTripper_FallbackIdentity_InjectionClonesRequest(t *testing
 	require.NotNil(t, base.received)
 	assert.NotSame(t, orig, base.received, "fallback injection should clone the request")
 }
+

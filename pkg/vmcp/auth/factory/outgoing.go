@@ -81,6 +81,12 @@ func NewOutgoingAuthRegistry(
 	); err != nil {
 		return nil, err
 	}
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeClaimInjection,
+		strategies.NewClaimInjectionStrategy(),
+	); err != nil {
+		return nil, err
+	}
 
 	return registry, nil
 }

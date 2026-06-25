@@ -102,6 +102,27 @@ _Appears in:_
 | `tokenExchange` _[auth.types.TokenExchangeConfig](#authtypestokenexchangeconfig)_ | TokenExchange contains configuration for token exchange auth strategy.<br />Used when Type = "token_exchange". |  |  |
 | `upstreamInject` _[auth.types.UpstreamInjectConfig](#authtypesupstreaminjectconfig)_ | UpstreamInject contains configuration for upstream inject auth strategy.<br />Used when Type = "upstream_inject". |  |  |
 | `awsSts` _[auth.types.AwsStsConfig](#authtypesawsstsconfig)_ | AwsSts contains configuration for AWS STS auth strategy.<br />Used when Type = "aws_sts". |  |  |
+| `claimInjection` _[auth.types.ClaimInjectionConfig](#authtypesclaiminjectionconfig)_ | ClaimInjection contains configuration for the claim injection auth strategy.<br />Used when Type = "claim_injection". |  |  |
+
+
+#### auth.types.ClaimInjectionConfig
+
+
+
+ClaimInjectionConfig configures the claim injection auth strategy.
+This strategy reads the authenticated user's identity from the request context
+and injects selected claims as X-User-* HTTP headers into outgoing backend requests.
+Backend MCP servers can read these headers to identify the caller without performing
+their own OAuth token introspection or /introspect calls.
+
+
+
+_Appears in:_
+- [auth.types.BackendAuthStrategy](#authtypesbackendauthstrategy)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `claims` _string array_ | Claims lists which identity claims to inject as X-User-* headers.<br />Supported values: "sub" (→ X-User-Sub), "email" (→ X-User-Email), "name" (→ X-User-Name).<br />Defaults to ["sub"] when empty. Including "email" is opt-in to minimise PII forwarded to backends. |  |  |
 
 
 #### auth.types.HeaderInjectionConfig

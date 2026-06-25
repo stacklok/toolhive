@@ -304,6 +304,9 @@ func createMCPClient(
 	// the wire. Restricted header names (Host, hop-by-hop, X-Forwarded-*) are
 	// rejected at resolve time by resolveHeaderForward, so user-supplied
 	// HeaderForward cannot inject them in the first place.
+	//
+	// User identity claims (X-User-Sub etc.) are injected by authRoundTripper
+	// when outgoingAuth.type = "claim_injection" is configured for the backend.
 	// The per-transport sections below may add a size-limiting wrapper on top.
 	base := http.RoundTripper(http.DefaultTransport)
 	base = &authRoundTripper{

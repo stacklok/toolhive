@@ -581,13 +581,10 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Info("audit middleware enabled for MCP endpoints")
 	}
 
-	mcpHandler = s.applyRateLimiting(mcpHandler)
-
 	// Execution order: AuthMiddleware fires first, populates the identity context,
-	// then this middleware runs next to check upstream provider tokens, then
-	// rate-limiting, and so on inward. Wrapping order is therefore reversed:
-	// we wrap the rate-limited handler here so that in execution the check runs
-	// after auth but before rate-limiting.
+	// then rate-limiting, then this middleware checks upstream provider tokens,
+	// and so on inward. Wrapping order is therefore reversed: we wrap the inner
+	// handler here so that in execution the check runs after rate-limiting.
 	// When an upstream provider's token is absent (because GetAllValidTokens
 	// dropped it after a failed refresh) this middleware returns HTTP 401 +
 	// WWW-Authenticate before the mcp-go SDK handler commits to HTTP 200.
@@ -600,6 +597,8 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		mcpHandler = upstreamTokenCheckMiddleware(s.backendRegistry)(mcpHandler)
 		slog.Debug("upstream-token-check middleware attached")
 	}
+
+	mcpHandler = s.applyRateLimiting(mcpHandler)
 
 	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {

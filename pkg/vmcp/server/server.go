@@ -536,9 +536,13 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth → rate-limit → audit → MCP-parsing → telemetry
-	// Execution order: recovery → body-limit → header-val → auth → rate-limit →
-	//   audit → MCP-parsing → telemetry → handler
+	// Code wraps: auth → upstream-token-check → rate-limit → audit → MCP-parsing → telemetry
+	// Execution order: recovery → body-limit → header-val → auth → upstream-token-check →
+	//   rate-limit → audit → MCP-parsing → telemetry → handler
+	//
+	// upstream-token-check sits immediately after auth so it can read the identity that
+	// AuthMiddleware just placed on the context and short-circuit with HTTP 401 +
+	// WWW-Authenticate if any required upstream provider token is missing (#5507).
 	//
 	// The legacy HTTP authz, annotation-enrichment, and discovery layers have all been
 	// removed: every caller now routes through Serve, so authorization is enforced by the
@@ -578,6 +582,15 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	mcpHandler = s.applyRateLimiting(mcpHandler)
+
+	// Apply upstream token pre-check between rate-limiting and auth so that
+	// it fires immediately after AuthMiddleware populates the identity context.
+	// When an upstream provider's token is absent (because GetAllValidTokens
+	// dropped it after a failed refresh) this middleware returns HTTP 401 +
+	// WWW-Authenticate before the mcp-go SDK handler commits to HTTP 200.
+	if s.config.AuthMiddleware != nil && s.backendRegistry != nil {
+		mcpHandler = upstreamTokenCheckMiddleware(s.backendRegistry)(mcpHandler)
+	}
 
 	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {

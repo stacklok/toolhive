@@ -358,6 +358,45 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 				"http_access allow allowed_ports allowed_dsts",
 			},
 		},
+		{
+			// Listing host.docker.internal in allow_host is NOT sufficient on its
+			// own: without the opt-in the gateway deny is still written, and
+			// because Squid is first-match-wins the deny (asserted to precede the
+			// allow below) blocks the request before the allowed_dsts allow is
+			// reached. Reaching the gateway requires BOTH the flag and the host.
+			name: "host.docker.internal in allow_host without opt-in is still blocked",
+			permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"host.docker.internal"},
+					AllowPort: []int{8080},
+				},
+			},
+			allowDockerGateway: false,
+			expectDenyRule:     true,
+			expectAllowAll:     false,
+			expectContains: []string{
+				"acl allowed_dsts dstdomain host.docker.internal",
+				"http_access allow allowed_ports allowed_dsts",
+			},
+		},
+		{
+			// With the opt-in the deny is dropped and the ACL allow for
+			// host.docker.internal takes effect.
+			name: "host.docker.internal in allow_host with opt-in is allowed via ACL",
+			permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"host.docker.internal"},
+					AllowPort: []int{8080},
+				},
+			},
+			allowDockerGateway: true,
+			expectDenyRule:     false,
+			expectAllowAll:     false,
+			expectContains: []string{
+				"acl allowed_dsts dstdomain host.docker.internal",
+				"http_access allow allowed_ports allowed_dsts",
+			},
+		},
 	}
 
 	for _, tt := range tests {

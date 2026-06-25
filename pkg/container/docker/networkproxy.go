@@ -91,10 +91,15 @@ func newNetworkProxy(c *Client) (networkProxy, error) {
 	switch val {
 	case "", "squid":
 		return &squidProxy{client: c}, nil
+	case "envoy":
+		return &envoyProxy{client: c}, nil
 	default:
-		return nil, fmt.Errorf("unknown TOOLHIVE_NETWORK_PROXY value %q: supported values are \"squid\" (default)", val)
+		return nil, fmt.Errorf("unknown TOOLHIVE_NETWORK_PROXY value %q: supported values are \"squid\" (default), \"envoy\"", val)
 	}
 }
 
 // Compile-time assertion that squidProxy satisfies networkProxy.
 var _ networkProxy = (*squidProxy)(nil)
+
+// Compile-time assertion that envoyProxy satisfies networkProxy.
+var _ networkProxy = (*envoyProxy)(nil)

@@ -36,6 +36,7 @@ func NormalizeMCPTelemetryConfig(
 		config.Headers = otel.Headers
 		config.CustomAttributes = otel.ResourceAttributes
 		config.UseLegacyAttributes = otel.UseLegacyAttributes
+		config.EnableUserIDAttribute = otel.EnableUserIDAttribute
 
 		if otel.Tracing != nil {
 			config.TracingEnabled = otel.Tracing.Enabled

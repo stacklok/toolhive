@@ -107,6 +107,15 @@ spec:
                         type: object
                         x-kubernetes-map-type: atomic
                     type: object
+                  enableUserIDAttribute:
+                    default: false
+                    description: |-
+                      EnableUserIDAttribute controls whether the authenticated subject is emitted as the
+                      OTEL "user.id" span attribute on the inbound MCP server span. Defaults to false because
+                      the subject can be personally- or tenant-identifying. When enabled, the attribute is only
+                      set when an authenticated identity is present on the request context, so anonymous requests
+                      are unaffected. The attribute is high-cardinality and is never added to any metric instrument.
+                    type: boolean
                   enabled:
                     default: false
                     description: Enabled controls whether OpenTelemetry is enabled
@@ -408,6 +417,15 @@ spec:
                         type: object
                         x-kubernetes-map-type: atomic
                     type: object
+                  enableUserIDAttribute:
+                    default: false
+                    description: |-
+                      EnableUserIDAttribute controls whether the authenticated subject is emitted as the
+                      OTEL "user.id" span attribute on the inbound MCP server span. Defaults to false because
+                      the subject can be personally- or tenant-identifying. When enabled, the attribute is only
+                      set when an authenticated identity is present on the request context, so anonymous requests
+                      are unaffected. The attribute is high-cardinality and is never added to any metric instrument.
+                    type: boolean
                   enabled:
                     default: false
                     description: Enabled controls whether OpenTelemetry is enabled

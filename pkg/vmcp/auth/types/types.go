@@ -178,10 +178,7 @@ type RoleMapping struct {
 // Field names follow the OBO runtime contract (the enterprise obo.MiddlewareParameters),
 // not the RFC-8693 TokenExchangeConfig, because OBO uses a distinct Entra-specific grant.
 // +kubebuilder:object:generate=true
-// +kubebuilder:validation:XValidation:rule="!(has(self.clientSecret) && has(self.clientSecretEnv))",message="clientSecret and clientSecretEnv are mutually exclusive"
 // +gendoc
-//
-//nolint:lll // CEL validation rules exceed line length limit
 type OBOConfig struct {
 	// TokenURL is the Entra token endpoint URL for the OBO exchange.
 	// +kubebuilder:validation:Required

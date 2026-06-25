@@ -1966,10 +1966,6 @@ spec:
                               required:
                               - tokenUrl
                               type: object
-                              x-kubernetes-validations:
-                              - message: clientSecret and clientSecretEnv are mutually
-                                  exclusive
-                                rule: '!(has(self.clientSecret) && has(self.clientSecretEnv))'
                             tokenExchange:
                               description: |-
                                 TokenExchange contains configuration for token exchange auth strategy.
@@ -2195,10 +2191,6 @@ spec:
                             required:
                             - tokenUrl
                             type: object
-                            x-kubernetes-validations:
-                            - message: clientSecret and clientSecretEnv are mutually
-                                exclusive
-                              rule: '!(has(self.clientSecret) && has(self.clientSecretEnv))'
                           tokenExchange:
                             description: |-
                               TokenExchange contains configuration for token exchange auth strategy.
@@ -5133,10 +5125,6 @@ spec:
                               required:
                               - tokenUrl
                               type: object
-                              x-kubernetes-validations:
-                              - message: clientSecret and clientSecretEnv are mutually
-                                  exclusive
-                                rule: '!(has(self.clientSecret) && has(self.clientSecretEnv))'
                             tokenExchange:
                               description: |-
                                 TokenExchange contains configuration for token exchange auth strategy.
@@ -5362,10 +5350,6 @@ spec:
                             required:
                             - tokenUrl
                             type: object
-                            x-kubernetes-validations:
-                            - message: clientSecret and clientSecretEnv are mutually
-                                exclusive
-                              rule: '!(has(self.clientSecret) && has(self.clientSecretEnv))'
                           tokenExchange:
                             description: |-
                               TokenExchange contains configuration for token exchange auth strategy.

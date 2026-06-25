@@ -289,6 +289,9 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		if strategy.OBO.TokenURL == "" {
 			return fmt.Errorf("obo requires tokenUrl field")
 		}
+		if strategy.OBO.ClientSecret != "" && strategy.OBO.ClientSecretEnv != "" {
+			return fmt.Errorf("obo: clientSecret and clientSecretEnv are mutually exclusive")
+		}
 	}
 
 	return nil

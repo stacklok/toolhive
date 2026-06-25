@@ -5,15 +5,21 @@
 # ADVISORY -- the deterministic merge gate lives in .github/CODEOWNERS.
 #
 # Security notes:
-#   - Claude's tools are restricted (allowed_tools below) to reading repo files
-#     and requesting reviewers. It has NO shell and cannot push code; the
-#     GITHUB_TOKEN is scoped to `pull-requests: write` only, so the worst a
+#   - Trust gate: only same-repo (write-access) authors reach the Claude step.
+#     Fork/dependabot PRs receive no ANTHROPIC_API_KEY under `pull_request`
+#     (we deliberately avoid `pull_request_target`), so the step skips and those
+#     PRs fall back to the deterministic CODEOWNERS gate. The author_association
+#     guard below is belt-and-suspenders consistency with claude.yml.
+#   - Routing rules are read from the BASE commit, never the PR head (see the
+#     "Materialize trusted REVIEWERS.md" step). The PR head can rewrite the
+#     routing doc -- and the handle allowlist the prompt relies on -- in the same
+#     change, so trusting the head copy would let an author route their own PR.
+#     We mirror how GitHub evaluates CODEOWNERS: from the base branch.
+#   - Claude's tools are restricted to inspecting the PR and requesting
+#     reviewers; the GITHUB_TOKEN is scoped to `pull-requests: write`, so it
+#     cannot push code or change settings. Routing is advisory, so the worst a
 #     prompt-injected diff can achieve is requesting the wrong reviewer -- which
-#     is advisory and harmless (CODEOWNERS still gates the merge).
-#   - We use `pull_request`, NOT `pull_request_target` (which the repo
-#     deliberately avoids). Fork/dependabot PRs therefore receive no
-#     ANTHROPIC_API_KEY; the Claude step skips and those PRs fall back to the
-#     deterministic CODEOWNERS gate.
+#     CODEOWNERS still gates against.
 
 name: Assign Reviewers
 
@@ -30,10 +36,15 @@ jobs:
     name: Assign Reviewers
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    # Skip drafts and forks of this repo.
+    # Skip drafts and forks of this repo. The author_association guard blocks
+    # untrusted authors (consistency with claude.yml); same-repo PRs are always
+    # MEMBER/OWNER/COLLABORATOR since pushing a branch requires write access.
     if: >-
       github.event.pull_request.draft == false
       && github.repository == 'stacklok/toolhive'
+      && github.event.pull_request.author_association != 'NONE'
+      && github.event.pull_request.author_association != 'FIRST_TIMER'
+      && github.event.pull_request.author_association != 'FIRST_TIME_CONTRIBUTOR'
     permissions:
       contents: read
       pull-requests: write
@@ -43,20 +54,44 @@ jobs:
         with:
           fetch-depth: 1
 
+      # SECURITY (M4): never trust the PR head's copy of the routing rules. The
+      # head can rewrite REVIEWERS.md -- including the @handle allowlist the
+      # prompt depends on -- in the same PR. Read the rules from the BASE commit
+      # and overwrite the working copy, so the prompt's .github/REVIEWERS.md
+      # reference always resolves to trusted, already-merged rules.
+      - name: Materialize trusted REVIEWERS.md from the base branch
+        id: rules
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth 1 origin "$BASE_SHA"
+          if git show "$BASE_SHA:.github/REVIEWERS.md" > "$RUNNER_TEMP/REVIEWERS.md" 2>/dev/null; then
+            cp "$RUNNER_TEMP/REVIEWERS.md" .github/REVIEWERS.md
+            echo "have_rules=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::.github/REVIEWERS.md absent at base commit; skipping reviewer routing."
+            echo "have_rules=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Run Claude Code reviewer router
         id: claude
-        # Skipped automatically when the API key is unavailable (fork/dependabot
-        # PRs that do not receive secrets) -- those fall back to CODEOWNERS.
+        # Skip when there are no trusted rules at base, or when the API key is
+        # unavailable (fork/dependabot PRs that do not receive secrets).
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-        if: env.ANTHROPIC_API_KEY != ''
+        if: steps.rules.outputs.have_rules == 'true' && env.ANTHROPIC_API_KEY != ''
         uses: anthropics/claude-code-action@80b31826338489861333dc17217865dfe8085cdc # v1.0.155
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Restrict tools: read repo files + GitHub queries to inspect the PR
-          # and request reviewers. No Bash, no write to the repo.
-          allowed_tools: "Read,Glob,Grep,mcp__github__*"
+          # SECURITY (H1): restrict to reading repo files, inspecting this PR, and
+          # requesting reviewers. No Bash, no repo writes. NOTE: the exact GitHub
+          # MCP tool that requests human reviewers is unverified (see H2) -- if a
+          # live run shows reviewers are not actually requested, this list (and
+          # possibly the write mechanism) must be corrected.
+          allowed_tools: "Read,Glob,Grep,mcp__github__get_pull_request,mcp__github__get_pull_request_files,mcp__github__request_reviewers"
           claude_args: --model claude-sonnet-4-6
           prompt: |
             You are a reviewer-routing assistant for the ${{ github.repository }}
@@ -73,7 +108,8 @@ jobs:
 
             TASK:
             1. Read .github/REVIEWERS.md for the ownership rules and the set of
-               valid reviewer @handles.
+               valid reviewer @handles. (This file has already been set to the
+               trusted base-branch version; use it as-is.)
             2. Inspect the files changed in this pull request.
             3. Routing is currently scoped to KUBERNETES changes only. If the PR
                touches the paths in the "Kubernetes" section, request the

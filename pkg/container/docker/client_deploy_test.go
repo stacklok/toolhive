@@ -5,6 +5,7 @@ package docker
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/moby/moby/api/types/network"
@@ -31,13 +32,6 @@ type fakeDeployOps struct {
 	dnsID     string
 	dnsIP     string
 
-	egressCalled        bool
-	egressID            string
-	egressAllowDockerGW bool
-
-	ingressCalled bool
-	ingressPort   int
-
 	mcpCalled        bool
 	mcpName          string
 	mcpNetworkName   string
@@ -52,12 +46,13 @@ type fakeDeployOps struct {
 	mcpPortBindings  map[string][]runtime.PortBinding
 	mcpIsolate       bool
 
+	// callOrder tracks the sequence of operation calls for ordering assertions.
+	callOrder *[]string
+
 	// error injection
 	errExternalNetworks error
 	errCreateNetwork    error
 	errDNS              error
-	errEgress           error
-	errIngress          error
 	errMcp              error
 }
 
@@ -80,12 +75,6 @@ func (f *fakeDeployOps) createDnsContainer(_ context.Context, _ string, _ bool, 
 	return f.dnsID, f.dnsIP, f.errDNS
 }
 
-func (f *fakeDeployOps) createEgressSquidContainer(_ context.Context, _ string, _ string, _ bool, _ map[string]struct{}, _ map[string]*network.EndpointSettings, _ *permissions.NetworkPermissions, allowDockerGateway bool) (string, error) {
-	f.egressCalled = true
-	f.egressAllowDockerGW = allowDockerGateway
-	return f.egressID, f.errEgress
-}
-
 func (f *fakeDeployOps) createMcpContainer(
 	_ context.Context,
 	name string,
@@ -101,6 +90,9 @@ func (f *fakeDeployOps) createMcpContainer(
 	portBindings map[string][]runtime.PortBinding,
 	isolateNetwork bool,
 ) error {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "createMcpContainer")
+	}
 	f.mcpCalled = true
 	f.mcpName = name
 	f.mcpNetworkName = networkName
@@ -117,20 +109,48 @@ func (f *fakeDeployOps) createMcpContainer(
 	return f.errMcp
 }
 
-func (f *fakeDeployOps) createIngressContainer(_ context.Context, _ string, _ int, _ bool, _ map[string]*network.EndpointSettings, _ *permissions.NetworkPermissions) (int, error) {
-	f.ingressCalled = true
-	if f.errIngress != nil {
-		return 0, f.errIngress
-	}
-	return f.ingressPort, nil
+// fakeNetworkProxy implements networkProxy for testing DeployWorkload without real proxy containers.
+type fakeNetworkProxy struct {
+	setupCalled  bool
+	capturedSpec proxySpec
+	result       proxyResult
+	err          error
+	// callOrder tracks cross-component ordering when shared with fakeDeployOps.
+	callOrder *[]string
 }
 
-// newClientWithOps creates a minimal client with the provided ops and a fake dockerAPI.
-func newClientWithOps(ops deployOps) *Client {
-	return &Client{
-		api: opsToFakeDockerAPI(),
-		ops: ops,
+func (f *fakeNetworkProxy) SetupProxies(_ context.Context, spec proxySpec) (proxyResult, error) {
+	if f.callOrder != nil {
+		*f.callOrder = append(*f.callOrder, "SetupProxies")
 	}
+	f.setupCalled = true
+	f.capturedSpec = spec
+
+	// Return realistic env vars based on spec so MCP container env var assertions remain meaningful.
+	egressContainerName := fmt.Sprintf("%s-egress", spec.WorkloadName)
+	result := proxyResult{
+		IngressHostPort: f.result.IngressHostPort,
+		EnvVars:         addEgressEnvVars(nil, egressContainerName),
+	}
+	if f.err != nil {
+		return proxyResult{}, f.err
+	}
+	return result, nil
+}
+
+// newClientWithOpsAndProxy creates a minimal client with the provided ops, proxy, and a fake dockerAPI.
+func newClientWithOpsAndProxy(ops deployOps, proxy networkProxy) *Client {
+	return &Client{
+		api:   opsToFakeDockerAPI(),
+		ops:   ops,
+		proxy: proxy,
+	}
+}
+
+// newClientWithOps creates a minimal client with the provided ops and a zero fakeNetworkProxy.
+// Use this for tests that do not exercise isolated-network paths.
+func newClientWithOps(ops deployOps) *Client {
+	return newClientWithOpsAndProxy(ops, &fakeNetworkProxy{})
 }
 
 // opsToFakeDockerAPI returns a fake dockerAPI that won't be used by DeployWorkload tests directly.
@@ -142,10 +162,10 @@ func TestDeployWorkload_Stdio_IsolatedNetwork_SkipsIngressAndSetsEgressEnv(t *te
 	t.Parallel()
 
 	fops := &fakeDeployOps{
-		dnsIP:       "172.18.0.10",
-		ingressPort: 18080, // should be ignored for stdio
+		dnsIP: "172.18.0.10",
 	}
-	c := newClientWithOps(fops)
+	fproxy := &fakeNetworkProxy{}
+	c := newClientWithOpsAndProxy(fops, fproxy)
 
 	opts := runtime.NewDeployWorkloadOptions()
 	opts.AttachStdio = true
@@ -179,8 +199,13 @@ func TestDeployWorkload_Stdio_IsolatedNetwork_SkipsIngressAndSetsEgressEnv(t *te
 	require.Len(t, fops.createNetworkCalls, 1)
 	assert.True(t, fops.createNetworkCalls[0].internal)
 	assert.True(t, fops.dnsCalled)
-	assert.True(t, fops.egressCalled)
-	assert.False(t, fops.ingressCalled)
+
+	// Proxy must be invoked for isolated-network deployment
+	assert.True(t, fproxy.setupCalled)
+	// stdio transport: no ingress needed
+	assert.Equal(t, "stdio", fproxy.capturedSpec.TransportType)
+	// AllowDockerGateway was not set
+	assert.False(t, fproxy.capturedSpec.AllowDockerGateway)
 
 	// MCP container created with egress env vars present
 	require.True(t, fops.mcpCalled)
@@ -194,24 +219,24 @@ func TestDeployWorkload_Stdio_IsolatedNetwork_SkipsIngressAndSetsEgressEnv(t *te
 
 	// SELinux labeling should be disabled
 	assert.Contains(t, fops.mcpPermissionCfg.SecurityOpt, "label:disable", "expected SELinux labeling to be disabled")
-
-	// TODO: Test for disabled SELinux labeling in the rest of workload containers
 }
 
 func TestDeployWorkload_SSE_IsolatedNetwork_ReturnsIngressPortAndPassesDNS(t *testing.T) {
 	t.Parallel()
 
 	fops := &fakeDeployOps{
-		dnsIP:       "172.18.0.20",
-		ingressPort: 18081,
+		dnsIP: "172.18.0.20",
 	}
-	c := newClientWithOps(fops)
+	fproxy := &fakeNetworkProxy{
+		result: proxyResult{IngressHostPort: 18081},
+	}
+	c := newClientWithOpsAndProxy(fops, fproxy)
 
 	opts := runtime.NewDeployWorkloadOptions()
 	opts.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
 	opts.PortBindings = map[string][]runtime.PortBinding{
 		"8080/tcp": {
-			{HostIP: "127.0.0.1", HostPort: ""}, // random/non-deterministic is fine; will be overridden by ingress
+			{HostIP: "127.0.0.1", HostPort: ""},
 		},
 	}
 
@@ -231,9 +256,11 @@ func TestDeployWorkload_SSE_IsolatedNetwork_ReturnsIngressPortAndPassesDNS(t *te
 	)
 	require.NoError(t, err)
 
-	// For non-stdio with network isolation, returned port comes from ingress proxy
+	// For non-stdio with network isolation, returned port comes from ingress proxy.
 	assert.Equal(t, 18081, hostPort)
-	assert.True(t, fops.ingressCalled)
+	assert.True(t, fproxy.setupCalled)
+	// The upstream port should be the first exposed port (8080).
+	assert.Equal(t, 8080, fproxy.capturedSpec.UpstreamPort)
 	require.True(t, fops.mcpCalled)
 	assert.Equal(t, "172.18.0.20", fops.mcpAdditionalDNS, "additionalDNS passed to MCP container should come from DNS container IP")
 }
@@ -270,10 +297,8 @@ func TestDeployWorkload_NoIsolation_ReturnsPortFromBindingsAndSkipsAuxContainers
 	)
 	require.NoError(t, err)
 
-	// Should not create internal network, DNS, egress, or ingress
+	// Should not create internal network, DNS, or invoke the proxy
 	assert.False(t, fops.dnsCalled)
-	assert.False(t, fops.egressCalled)
-	assert.False(t, fops.ingressCalled)
 	assert.Empty(t, fops.createNetworkCalls, "internal network should not be created when isolation is disabled")
 
 	// MCP should be created on default network (empty name)
@@ -288,7 +313,8 @@ func TestDeployWorkload_AllowDockerGateway_ForwardedToEgress(t *testing.T) {
 	t.Parallel()
 
 	fops := &fakeDeployOps{dnsIP: "172.18.0.10"}
-	c := newClientWithOps(fops)
+	fproxy := &fakeNetworkProxy{}
+	c := newClientWithOpsAndProxy(fops, fproxy)
 
 	opts := runtime.NewDeployWorkloadOptions()
 	opts.AttachStdio = true
@@ -304,12 +330,12 @@ func TestDeployWorkload_AllowDockerGateway_ForwardedToEgress(t *testing.T) {
 		&permissions.Profile{},
 		"stdio",
 		opts,
-		true, // isolateNetwork required for egress container to be created
+		true, // isolateNetwork required for proxy to be invoked
 	)
 	require.NoError(t, err)
 
-	require.True(t, fops.egressCalled, "egress container must be created when isolateNetwork=true")
-	assert.True(t, fops.egressAllowDockerGW, "AllowDockerGateway must be forwarded to createEgressSquidContainer")
+	require.True(t, fproxy.setupCalled, "proxy must be set up when isolateNetwork=true")
+	assert.True(t, fproxy.capturedSpec.AllowDockerGateway, "AllowDockerGateway must be forwarded to SetupProxies")
 }
 
 // TestDeployWorkload_AllowDockerGateway_DefaultsToNotForwarded guards against a
@@ -320,7 +346,8 @@ func TestDeployWorkload_AllowDockerGateway_DefaultsToNotForwarded(t *testing.T) 
 	t.Parallel()
 
 	fops := &fakeDeployOps{dnsIP: "172.18.0.10"}
-	c := newClientWithOps(fops)
+	fproxy := &fakeNetworkProxy{}
+	c := newClientWithOpsAndProxy(fops, fproxy)
 
 	opts := runtime.NewDeployWorkloadOptions()
 	opts.AttachStdio = true
@@ -336,12 +363,12 @@ func TestDeployWorkload_AllowDockerGateway_DefaultsToNotForwarded(t *testing.T) 
 		&permissions.Profile{},
 		"stdio",
 		opts,
-		true, // isolateNetwork required for egress container to be created
+		true, // isolateNetwork required for the proxy to be set up
 	)
 	require.NoError(t, err)
 
-	require.True(t, fops.egressCalled, "egress container must be created when isolateNetwork=true")
-	assert.False(t, fops.egressAllowDockerGW,
+	require.True(t, fproxy.setupCalled, "network proxy must be set up when isolateNetwork=true")
+	assert.False(t, fproxy.capturedSpec.AllowDockerGateway,
 		"AllowDockerGateway must default to false so the gateway deny rules stay in place")
 	assert.True(t, fops.dnsCalled, "DNS container must be created on the isolation path")
 }
@@ -368,8 +395,9 @@ func TestDeployWorkload_NonBridgeNetwork_DropsIsolation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			fops := &fakeDeployOps{dnsIP: "172.18.0.10", ingressPort: 18081}
-			c := newClientWithOps(fops)
+			fops := &fakeDeployOps{dnsIP: "172.18.0.10"}
+			fproxy := &fakeNetworkProxy{result: proxyResult{IngressHostPort: 18081}}
+			c := newClientWithOpsAndProxy(fops, fproxy)
 
 			opts := runtime.NewDeployWorkloadOptions()
 			opts.ExposedPorts = map[string]struct{}{"8080/tcp": {}}
@@ -398,8 +426,7 @@ func TestDeployWorkload_NonBridgeNetwork_DropsIsolation(t *testing.T) {
 
 			// No isolation sidecars should be created.
 			assert.False(t, fops.dnsCalled, "DNS container must not be created for non-bridge modes")
-			assert.False(t, fops.egressCalled, "egress container must not be created for non-bridge modes")
-			assert.False(t, fops.ingressCalled, "ingress container must not be created for non-bridge modes")
+			assert.False(t, fproxy.setupCalled, "network proxy must not be set up for non-bridge modes")
 			assert.Empty(t, fops.createNetworkCalls, "internal network must not be created for non-bridge modes")
 
 			// The external network is a bridge-only construct.
@@ -448,4 +475,40 @@ func TestDeployWorkload_UnsupportedTransport_PropagatesError(t *testing.T) {
 	)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "unsupported transport type")
+}
+
+func TestDeployWorkload_Isolated_SetupProxiesBeforeCreateMcp(t *testing.T) {
+	t.Parallel()
+
+	callOrder := make([]string, 0, 2)
+	fops := &fakeDeployOps{
+		dnsIP:     "172.18.0.10",
+		callOrder: &callOrder,
+	}
+	fproxy := &fakeNetworkProxy{
+		result:    proxyResult{IngressHostPort: 0},
+		callOrder: &callOrder,
+	}
+	c := newClientWithOpsAndProxy(fops, fproxy)
+
+	opts := runtime.NewDeployWorkloadOptions()
+	opts.AttachStdio = true
+
+	_, err := c.DeployWorkload(
+		t.Context(),
+		"ghcr.io/example/mcp:latest",
+		"app",
+		[]string{"serve"},
+		map[string]string{},
+		map[string]string{},
+		&permissions.Profile{},
+		"stdio",
+		opts,
+		true,
+	)
+	require.NoError(t, err)
+
+	require.Len(t, callOrder, 2, "expected SetupProxies and createMcpContainer calls")
+	assert.Equal(t, "SetupProxies", callOrder[0], "SetupProxies must be called before createMcpContainer")
+	assert.Equal(t, "createMcpContainer", callOrder[1])
 }

@@ -353,6 +353,40 @@ func getSquidImage() string {
 	return defaultSquidImage
 }
 
+// squidProxy is the default networkProxy implementation. It creates egress and
+// ingress Squid-based proxy containers for isolated workloads.
+type squidProxy struct {
+	client *Client
+}
+
+// SetupProxies creates the egress Squid container and, for non-stdio transports,
+// the ingress Squid container for the workload described by spec.
+func (s *squidProxy) SetupProxies(ctx context.Context, spec proxySpec) (proxyResult, error) {
+	egressContainerName := fmt.Sprintf("%s-egress", spec.WorkloadName)
+	_, err := createEgressSquidContainer(
+		ctx, s.client, spec.WorkloadName, egressContainerName,
+		spec.AttachStdio, nil, spec.Endpoints, spec.Permissions,
+		spec.AllowDockerGateway, spec.GatewayIP,
+	)
+	if err != nil {
+		return proxyResult{}, fmt.Errorf("failed to create egress container: %w", err)
+	}
+
+	envVars := addEgressEnvVars(nil, egressContainerName)
+
+	if spec.TransportType == "stdio" || spec.UpstreamPort == 0 {
+		return proxyResult{EnvVars: envVars}, nil
+	}
+
+	ingressPort, err := s.client.setupIngressContainer(
+		ctx, spec.WorkloadName, spec.UpstreamPort, spec.AttachStdio, spec.Endpoints, spec.Permissions,
+	)
+	if err != nil {
+		return proxyResult{}, err
+	}
+	return proxyResult{IngressHostPort: ingressPort, EnvVars: envVars}, nil
+}
+
 func createTempIngressSquidConf(
 	serverHostname string,
 	upstreamPort int,

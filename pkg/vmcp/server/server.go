@@ -583,8 +583,11 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	mcpHandler = s.applyRateLimiting(mcpHandler)
 
-	// Apply upstream token pre-check between rate-limiting and auth so that
-	// it fires immediately after AuthMiddleware populates the identity context.
+	// Execution order: AuthMiddleware fires first, populates the identity context,
+	// then this middleware runs next to check upstream provider tokens, then
+	// rate-limiting, and so on inward. Wrapping order is therefore reversed:
+	// we wrap the rate-limited handler here so that in execution the check runs
+	// after auth but before rate-limiting.
 	// When an upstream provider's token is absent (because GetAllValidTokens
 	// dropped it after a failed refresh) this middleware returns HTTP 401 +
 	// WWW-Authenticate before the mcp-go SDK handler commits to HTTP 200.

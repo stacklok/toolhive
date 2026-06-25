@@ -537,14 +537,20 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	}
 	c.Port = selectedPort
 
-	// Select a target port for the container if using SSE or Streamable HTTP transport
+	// Select a target port for the container if using SSE or Streamable HTTP transport.
+	// Target ports are container-internal; do not validate them against host availability.
 	if c.Transport == types.TransportTypeSSE || c.Transport == types.TransportTypeStreamableHTTP {
-		selectedTargetPort, err := networking.FindOrUsePort(targetPort)
-		if err != nil {
-			return c, fmt.Errorf("target port error: %w", err)
+		if targetPort != 0 {
+			slog.Debug("using target port", "port", targetPort)
+			c.TargetPort = targetPort
+		} else {
+			selectedTargetPort, err := networking.FindOrUsePort(0)
+			if err != nil {
+				return c, fmt.Errorf("target port error: %w", err)
+			}
+			slog.Debug("using target port", "port", selectedTargetPort)
+			c.TargetPort = selectedTargetPort
 		}
-		slog.Debug("using target port", "port", selectedTargetPort)
-		c.TargetPort = selectedTargetPort
 	}
 
 	return c, nil

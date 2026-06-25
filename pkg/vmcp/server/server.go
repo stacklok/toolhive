@@ -30,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	baseratelimit "github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportmiddleware "github.com/stacklok/toolhive/pkg/transport/middleware"
@@ -43,6 +44,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	vmcpratelimit "github.com/stacklok/toolhive/pkg/vmcp/ratelimit"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -152,9 +154,13 @@ type Config struct {
 	// capture (no middleware is installed).
 	PassthroughHeaders []string
 
-	// RateLimitMiddleware is the optional rate-limit middleware to apply after
-	// authentication and MCP request parsing.
+	// RateLimitMiddleware is the optional HTTP-layer rate-limit middleware.
 	RateLimitMiddleware func(http.Handler) http.Handler
+
+	// RateLimiter is the optional core-layer limiter applied at CallTool.
+	// It runs below the session optimizer, so tool names are already resolved
+	// to the backend tool name before bucket selection.
+	RateLimiter baseratelimit.Limiter
 
 	// AuthServer is the optional embedded authorization server.
 	// When non-nil, the routes returned by Routes() are registered on the mux
@@ -430,6 +436,10 @@ func New(
 	))
 	if err != nil {
 		return nil, err
+	}
+
+	if cfg.RateLimiter != nil {
+		coreVMCP = vmcpratelimit.NewDecorator(coreVMCP, cfg.RateLimiter)
 	}
 
 	// Wrap the core with the code mode decorator when enabled. It sits BELOW any optimizer:

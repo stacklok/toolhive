@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/ratelimit/internal/bucket"
 )
 
@@ -34,6 +35,30 @@ type Decision struct {
 	// RetryAfter is populated when Allowed is false.
 	// It indicates the minimum wait before the next request may succeed.
 	RetryAfter time.Duration
+}
+
+// Allow checks whether identity may call toolName through limiter.
+func Allow(ctx context.Context, limiter Limiter, identity *auth.Identity, toolName string) error {
+	if limiter == nil {
+		return nil
+	}
+
+	// When no identity is present (unauthenticated), userID stays empty and
+	// per-user buckets are skipped — only shared limits apply. CEL validation
+	// ensures perUser rate limits require auth to be enabled.
+	var userID string
+	if identity != nil {
+		userID = identity.Subject
+	}
+
+	decision, err := limiter.Allow(ctx, toolName, userID)
+	if err != nil {
+		return err
+	}
+	if !decision.Allowed {
+		return &RateLimitedError{RetryAfter: decision.RetryAfter}
+	}
+	return nil
 }
 
 // NewLimiter constructs a Limiter from CRD configuration.

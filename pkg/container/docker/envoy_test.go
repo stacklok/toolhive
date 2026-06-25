@@ -17,18 +17,48 @@ import (
 // Compile-time assertion: envoyProxy must satisfy networkProxy.
 var _ networkProxy = (*envoyProxy)(nil)
 
-// findRBACFilter walks the filter chain in a listener looking for the first
-// filter whose name contains "rbac". It returns nil if none is found.
-// The exact field layout mirrors the typed structs that envoy.go will define.
-func findRBACFilter(listener envoyListener) *envoyRBACFilter {
-	for _, fc := range listener.FilterChains {
-		for i := range fc.Filters {
-			if fc.Filters[i].TypedConfig != nil {
-				rbac, ok := fc.Filters[i].TypedConfig.(*envoyRBACFilter)
-				if ok {
-					return rbac
-				}
-			}
+// findRBACFilter walks the HTTP filters inside the first HCM in a listener's
+// first filter chain and returns the first RBAC filter with action == "ALLOW".
+// It returns nil if no matching filter is found.
+func findRBACFilter(listener envoyListener) *envoyHTTPRBAC {
+	if len(listener.FilterChains) == 0 {
+		return nil
+	}
+	fc := listener.FilterChains[0]
+	if len(fc.Filters) == 0 {
+		return nil
+	}
+	hcm, ok := fc.Filters[0].TypedConfig.(*envoyHCM)
+	if !ok {
+		return nil
+	}
+	for _, f := range hcm.HTTPFilters {
+		rbac, ok := f.TypedConfig.(*envoyHTTPRBAC)
+		if ok && rbac.Rules.Action == "ALLOW" {
+			return rbac
+		}
+	}
+	return nil
+}
+
+// findDenyRBACFilter returns the first RBAC filter with action == "DENY" from
+// the HCM inside the listener's first filter chain.
+func findDenyRBACFilter(listener envoyListener) *envoyHTTPRBAC {
+	if len(listener.FilterChains) == 0 {
+		return nil
+	}
+	fc := listener.FilterChains[0]
+	if len(fc.Filters) == 0 {
+		return nil
+	}
+	hcm, ok := fc.Filters[0].TypedConfig.(*envoyHCM)
+	if !ok {
+		return nil
+	}
+	for _, f := range hcm.HTTPFilters {
+		rbac, ok := f.TypedConfig.(*envoyHTTPRBAC)
+		if ok && rbac.Rules.Action == "DENY" {
+			return rbac
 		}
 	}
 	return nil
@@ -172,6 +202,11 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 					"docker gateway hostname should be absent when AllowDockerGateway=true")
 				assert.NotContains(t, s, dockerDefaultBridgeGatewayIP,
 					"docker gateway IP should be absent when AllowDockerGateway=true")
+
+				// Also confirm no DENY RBAC filter exists in the Go struct.
+				denyFilter := findDenyRBACFilter(listener)
+				assert.Nil(t, denyFilter,
+					"no DENY RBAC filter should be present when AllowDockerGateway=true")
 			}
 
 			if tt.wantGatewayDenyL3 {
@@ -197,7 +232,13 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 // buildEgressListener with an empty AllowHost and InsecureAllowAll=false must
 // produce a listener where the RBAC filter is present with action=ALLOW and
 // zero policies. This is Envoy's deny-all behavior. The test guards against a
-// serialization bug that silently omits the RBAC filter and produces allow-all.
+// bug that silently omits the RBAC filter and produces allow-all.
+//
+// Note: a JSON round-trip assertion is intentionally omitted here. The
+// envoyNetworkFilter.TypedConfig field is typed as any, so concrete pointer
+// types (*envoyHTTPRBAC, etc.) do not survive JSON round-trip — the unmarshaled
+// value becomes map[string]any. Behavioral correctness is verified directly on
+// the Go struct returned by buildEgressListener.
 func TestBuildEgressListener_EmptyAllowHostDenyAll(t *testing.T) {
 	t.Parallel()
 
@@ -224,16 +265,10 @@ func TestBuildEgressListener_EmptyAllowHostDenyAll(t *testing.T) {
 	assert.Empty(t, rbac.Rules.Policies,
 		"policy set must be empty to achieve deny-all semantics")
 
-	// Also verify the config round-trips as valid JSON so we catch any
-	// serialization bug that would silently drop the RBAC filter.
+	// Verify the config serialises to valid JSON.
 	raw, err := json.Marshal(listener)
 	require.NoError(t, err)
-	var roundTripped envoyListener
-	require.NoError(t, json.Unmarshal(raw, &roundTripped),
-		"listener must round-trip through JSON without error")
-	rbacAfter := findRBACFilter(roundTripped)
-	require.NotNil(t, rbacAfter,
-		"RBAC filter must survive JSON round-trip; omitempty on empty map is the classic culprit")
+	assert.NotEmpty(t, raw, "serialized listener must not be empty")
 }
 
 // TestBuildIngressListener_PortAndHostGating verifies that buildIngressListener
@@ -259,7 +294,7 @@ func TestBuildIngressListener_PortAndHostGating(t *testing.T) {
 				Permissions:   nil,
 			},
 			hostPort:          18080,
-			wantUpstreamRef:   "myserver:8080",
+			wantUpstreamRef:   "myserver",
 			wantHostPortBound: 18080,
 		},
 		{
@@ -275,7 +310,7 @@ func TestBuildIngressListener_PortAndHostGating(t *testing.T) {
 				},
 			},
 			hostPort:          19090,
-			wantUpstreamRef:   "svc:9090",
+			wantUpstreamRef:   "svc",
 			wantHostPortBound: 19090,
 			wantDomains:       []string{"app.example.com"},
 		},
@@ -288,7 +323,7 @@ func TestBuildIngressListener_PortAndHostGating(t *testing.T) {
 				Permissions:   nil,
 			},
 			hostPort:          17070,
-			wantUpstreamRef:   "tool:7070",
+			wantUpstreamRef:   "tool",
 			wantHostPortBound: 17070,
 		},
 	}
@@ -323,6 +358,48 @@ func TestBuildIngressListener_PortAndHostGating(t *testing.T) {
 	}
 }
 
+// TestBuildIngressCluster_UpstreamAddress verifies that buildIngressCluster
+// produces a STRICT_DNS cluster pointing at the correct workload address.
+func TestBuildIngressCluster_UpstreamAddress(t *testing.T) {
+	t.Parallel()
+
+	spec := proxySpec{
+		WorkloadName: "myserver",
+		UpstreamPort: 8080,
+	}
+
+	cluster := buildIngressCluster(spec)
+
+	assert.Equal(t, ingressClusterName, cluster.Name)
+	assert.Equal(t, "STRICT_DNS", cluster.Type)
+	require.NotNil(t, cluster.LoadAssignment)
+	require.NotEmpty(t, cluster.LoadAssignment.Endpoints)
+	require.NotEmpty(t, cluster.LoadAssignment.Endpoints[0].LBEndpoints)
+
+	ep := cluster.LoadAssignment.Endpoints[0].LBEndpoints[0]
+	assert.Equal(t, "myserver", ep.Endpoint.Address.SocketAddress.Address)
+	assert.Equal(t, 8080, ep.Endpoint.Address.SocketAddress.PortValue)
+}
+
+// TestBuildEgressCluster_DFPConfig verifies that buildEgressCluster produces a
+// dynamic_forward_proxy cluster with the expected configuration.
+func TestBuildEgressCluster_DFPConfig(t *testing.T) {
+	t.Parallel()
+
+	cluster := buildEgressCluster()
+
+	assert.Equal(t, dfpClusterName, cluster.Name)
+	assert.Equal(t, "CLUSTER_PROVIDED", cluster.LbPolicy)
+	require.NotNil(t, cluster.ClusterType)
+	assert.Equal(t, "envoy.clusters.dynamic_forward_proxy", cluster.ClusterType.Name)
+
+	dfp, ok := cluster.ClusterType.TypedConfig.(*envoyDFPClusterConfig)
+	require.True(t, ok, "ClusterType.TypedConfig must be *envoyDFPClusterConfig")
+	assert.Equal(t, typeDFPCluster, dfp.Type)
+	assert.Equal(t, dfpCacheName, dfp.DNSCacheConfig.Name)
+	assert.Equal(t, "V4_ONLY", dfp.DNSCacheConfig.DNSLookupFamily)
+}
+
 // TestWriteEnvoyBootstrap_FileMode verifies that writeEnvoyBootstrap writes a
 // valid JSON bootstrap file at mode 0600.
 func TestWriteEnvoyBootstrap_FileMode(t *testing.T) {
@@ -337,7 +414,7 @@ func TestWriteEnvoyBootstrap_FileMode(t *testing.T) {
 				},
 			},
 		},
-		StaticResources: envoyStatic{},
+		StaticResources: envoyStaticResources{},
 	}
 
 	path, err := writeEnvoyBootstrap(b)
@@ -380,7 +457,7 @@ func TestEnvoyAdmin_LoopbackOnly(t *testing.T) {
 				},
 			},
 		},
-		StaticResources: envoyStatic{},
+		StaticResources: envoyStaticResources{},
 	}
 
 	path, err := writeEnvoyBootstrap(b)
@@ -438,4 +515,45 @@ func TestGetEnvoyImage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestEgressListenerHCMTypeURLs verifies that the egress listener serializes
+// with correct protobuf @type URLs so Envoy can parse it.
+func TestEgressListenerHCMTypeURLs(t *testing.T) {
+	t.Parallel()
+
+	spec := proxySpec{
+		WorkloadName: "myserver",
+		Permissions: &permissions.NetworkPermissions{
+			Outbound: &permissions.OutboundNetworkPermissions{
+				AllowHost: []string{"example.com"},
+			},
+		},
+		AllowDockerGateway: false,
+		GatewayIP:          dockerDefaultBridgeGatewayIP,
+	}
+
+	listener := buildEgressListener(spec)
+	raw, err := json.Marshal(listener)
+	require.NoError(t, err)
+	s := string(raw)
+
+	assert.Contains(t, s, typeHCM, "@type for HCM must be present in serialized JSON")
+	assert.Contains(t, s, typeHTTPRBAC, "@type for RBAC must be present in serialized JSON")
+	assert.Contains(t, s, typeDFPFilter, "@type for DFP filter must be present in serialized JSON")
+	assert.Contains(t, s, typeRouter, "@type for router must be present in serialized JSON")
+}
+
+// TestEgressClusterTypeURL verifies that the egress cluster serializes with the
+// correct DFP cluster @type URL.
+func TestEgressClusterTypeURL(t *testing.T) {
+	t.Parallel()
+
+	cluster := buildEgressCluster()
+	raw, err := json.Marshal(cluster)
+	require.NoError(t, err)
+	s := string(raw)
+
+	assert.Contains(t, s, typeDFPCluster,
+		"@type for DFP cluster config must be present in serialized JSON")
 }

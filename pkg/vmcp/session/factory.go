@@ -420,10 +420,9 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	// Filter allBackends to the subset originally connected in this session.
 	filteredBackends := filterBackendsByStoredIDs(allBackends, storedBackendIDs)
 
-	// Reconstruct identity from the stored identity binding so makeBaseSession
-	// can pass it to backend connectors (e.g. for outgoing auth injection).
-	// The original bearer token is not available at restore time — only the
-	// (iss, sub) tuple stored in MetadataKeyIdentityBinding is used.
+	// Validate and read the stored identity binding. This key is written by
+	// BindSession at session-creation time and identifies whether the session
+	// was bound to an authenticated identity or was anonymous.
 	storedBinding, hasBinding := storedMetadata[sessiontypes.MetadataKeyIdentityBinding]
 	if !hasBinding {
 		// Legacy token-hash key present confirms not corrupted — safe to invalidate.
@@ -437,26 +436,17 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 			sessiontypes.MetadataKeyIdentityBinding)
 	}
 
-	// Restore identity from the stored (iss, sub) binding. Token is intentionally
-	// empty — the original bearer token is not persisted. Outgoing-auth strategies
-	// must derive credentials from Claims or a token store keyed by tsid; a
-	// strategy that reads identity.Token will reject the request with an
-	// identity-has-no-token error. The anonymous sentinel (identity == nil) is
-	// handled by the IsUnauthenticated guard below.
-	var identity *auth.Identity
+	// Validate that the stored binding is parsable (or the unauthenticated
+	// sentinel) before proceeding. A malformed value indicates corrupted metadata.
+	// We do NOT construct a partial *auth.Identity here: the original bearer
+	// token is not persisted, so UpstreamTokens cannot be recovered. Fabricating
+	// a struct with empty Token and UpstreamTokens would violate the contract that
+	// a non-nil *auth.Identity is always fully populated (see pkg/auth/identity.go).
+	// Backend connectors receive nil identity; live tool calls already carry a
+	// complete identity on req.Context() from TokenValidator.Middleware. See #5336.
 	if !binding.IsUnauthenticated(storedBinding) {
-		iss, sub, ok := binding.Parse(storedBinding)
-		if !ok {
+		if _, _, ok := binding.Parse(storedBinding); !ok {
 			return nil, fmt.Errorf("RestoreSession: stored identity binding is malformed: %q", storedBinding)
-		}
-		identity = &auth.Identity{
-			PrincipalInfo: auth.PrincipalInfo{
-				Subject: sub,
-				Claims: map[string]any{
-					"iss": iss,
-					"sub": sub,
-				},
-			},
 		}
 	}
 
@@ -470,8 +460,8 @@ func (f *defaultMultiSessionFactory) RestoreSession(
 	}
 
 	// Build the base session (backend connections + routing table) without the
-	// security wrapper. The wrapper is applied separately below.
-	baseSession := f.makeBaseSession(ctx, id, identity, filteredBackends, sessionHints)
+	// security wrapper. Pass nil identity — see comment above.
+	baseSession := f.makeBaseSession(ctx, id, nil, filteredBackends, sessionHints)
 
 	// Restore only the identity-binding key from stored metadata. The other
 	// keys (MetadataKeyBackendIDs, MetadataKeyBackendSessionPrefix.*) are

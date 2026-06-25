@@ -37,11 +37,11 @@ type PrincipalInfo struct {
 	// bearer will silently mis-key writes.
 	//
 	// Only claimsToIdentity populates this field today. Other Identity
-	// constructors in this repo (local.go, anonymous.go, vmcp session restore)
-	// intentionally leave it unset for now: standalone OSS keys upstream-token
-	// storage on the session, not PlatformUserID, so those paths have no
-	// canonical-user reader to satisfy. Populating them is deferred until a
-	// storage layer that reads PlatformUserID on those paths exists.
+	// constructors in this repo (local.go, anonymous.go) intentionally leave it
+	// unset for now: standalone OSS keys upstream-token storage on the session,
+	// not PlatformUserID, so those paths have no canonical-user reader to
+	// satisfy. Populating them is deferred until a storage layer that reads
+	// PlatformUserID on those paths exists.
 	PlatformUserID string `json:"platform_user_id,omitempty"`
 
 	// Name is the human-readable name (from 'name' claim).
@@ -67,6 +67,21 @@ type PrincipalInfo struct {
 //
 // It embeds PrincipalInfo (the credential-free subset) and adds sensitive fields
 // (Token, TokenType) and internal metadata that must never be externalized.
+//
+// # Field-completeness contract
+//
+// A non-nil *Identity is always COMPLETE: all credential fields that are relevant
+// for its authentication path are populated by the constructor that created it.
+// Anonymous and "no principal known" states are represented by nil, not by a
+// struct with empty credential fields. Code that receives a non-nil *Identity is
+// entitled to assume it is fully initialized for its session-binding semantics.
+//
+// In particular, do NOT construct &Identity{Subject: …} with Token and
+// UpstreamTokens unset as a substitute for nil when no live bearer token is
+// available (e.g. during session restore). Pass nil instead and let downstream
+// consumers read the identity from the per-request context, where
+// TokenValidator.Middleware places a fully-populated identity on every incoming
+// request.
 type Identity struct {
 	PrincipalInfo
 

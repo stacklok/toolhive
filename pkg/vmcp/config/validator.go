@@ -226,6 +226,7 @@ func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error 
 	return nil
 }
 
+//nolint:gocyclo // Strategy-specific validation requires checking multiple fields per type
 func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtypes.BackendAuthStrategy) error {
 	if strategy == nil {
 		return fmt.Errorf("strategy is nil")
@@ -237,6 +238,7 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		authtypes.StrategyTypeTokenExchange,
 		authtypes.StrategyTypeUpstreamInject,
 		authtypes.StrategyTypeAwsSts,
+		authtypes.StrategyTypeOBO,
 	}
 	if !slices.Contains(validTypes, strategy.Type) {
 		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))
@@ -278,6 +280,17 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		}
 		if strategy.AwsSts.Region == "" {
 			return fmt.Errorf("aws_sts requires region field")
+		}
+
+	case authtypes.StrategyTypeOBO:
+		if strategy.OBO == nil {
+			return fmt.Errorf("obo requires OBO configuration")
+		}
+		if strategy.OBO.TokenURL == "" {
+			return fmt.Errorf("obo requires tokenUrl field")
+		}
+		if strategy.OBO.ClientSecret != "" && strategy.OBO.ClientSecretEnv != "" {
+			return fmt.Errorf("obo: clientSecret and clientSecretEnv are mutually exclusive")
 		}
 	}
 

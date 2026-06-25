@@ -1949,6 +1949,60 @@ spec:
                               required:
                               - headerName
                               type: object
+                            obo:
+                              description: |-
+                                OBO contains configuration for on-behalf-of (OBO) auth strategy.
+                                Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
+                                an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                              properties:
+                                audience:
+                                  description: Audience is the target audience (resource
+                                    URI) for the exchanged token.
+                                  type: string
+                                cacheSkewSeconds:
+                                  description: |-
+                                    CacheSkewSeconds is the number of seconds to subtract from a cached token's
+                                    expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                    The operator CRD stores this as CacheSkew *metav1.Duration and converts it
+                                    to an integer-seconds value for the vMCP runtime contract.
+                                  format: int32
+                                  type: integer
+                                clientId:
+                                  description: ClientID is the OAuth client ID for
+                                    the OBO request.
+                                  type: string
+                                clientSecret:
+                                  description: ClientSecret is the OAuth client secret
+                                    (use ClientSecretEnv for security).
+                                  type: string
+                                clientSecretEnv:
+                                  description: |-
+                                    ClientSecretEnv is the environment variable name containing the client secret.
+                                    The value will be resolved at runtime from this environment variable.
+                                  type: string
+                                scopes:
+                                  description: Scopes are the requested scopes for
+                                    the exchanged token.
+                                  items:
+                                    type: string
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                subjectTokenProviderName:
+                                  description: |-
+                                    SubjectTokenProviderName selects which upstream provider's token to use as the
+                                    subject (assertion) token for the OBO exchange. When set, the token is looked
+                                    up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
+                                    inbound end-user token (Identity.Token) is used directly.
+                                    Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
+                                    converter maps both to the runtime contract without renaming.
+                                  type: string
+                                tokenUrl:
+                                  description: TokenURL is the Entra token endpoint
+                                    URL for the OBO exchange.
+                                  type: string
+                              required:
+                              - tokenUrl
+                              type: object
                             tokenExchange:
                               description: |-
                                 TokenExchange contains configuration for token exchange auth strategy.
@@ -1977,6 +2031,7 @@ spec:
                                   items:
                                     type: string
                                   type: array
+                                  x-kubernetes-list-type: atomic
                                 subjectProviderName:
                                   description: |-
                                     SubjectProviderName selects which upstream provider's token to use as the
@@ -2120,6 +2175,60 @@ spec:
                             required:
                             - headerName
                             type: object
+                          obo:
+                            description: |-
+                              OBO contains configuration for on-behalf-of (OBO) auth strategy.
+                              Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
+                              an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                            properties:
+                              audience:
+                                description: Audience is the target audience (resource
+                                  URI) for the exchanged token.
+                                type: string
+                              cacheSkewSeconds:
+                                description: |-
+                                  CacheSkewSeconds is the number of seconds to subtract from a cached token's
+                                  expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                  The operator CRD stores this as CacheSkew *metav1.Duration and converts it
+                                  to an integer-seconds value for the vMCP runtime contract.
+                                format: int32
+                                type: integer
+                              clientId:
+                                description: ClientID is the OAuth client ID for the
+                                  OBO request.
+                                type: string
+                              clientSecret:
+                                description: ClientSecret is the OAuth client secret
+                                  (use ClientSecretEnv for security).
+                                type: string
+                              clientSecretEnv:
+                                description: |-
+                                  ClientSecretEnv is the environment variable name containing the client secret.
+                                  The value will be resolved at runtime from this environment variable.
+                                type: string
+                              scopes:
+                                description: Scopes are the requested scopes for the
+                                  exchanged token.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              subjectTokenProviderName:
+                                description: |-
+                                  SubjectTokenProviderName selects which upstream provider's token to use as the
+                                  subject (assertion) token for the OBO exchange. When set, the token is looked
+                                  up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
+                                  inbound end-user token (Identity.Token) is used directly.
+                                  Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
+                                  converter maps both to the runtime contract without renaming.
+                                type: string
+                              tokenUrl:
+                                description: TokenURL is the Entra token endpoint
+                                  URL for the OBO exchange.
+                                type: string
+                            required:
+                            - tokenUrl
+                            type: object
                           tokenExchange:
                             description: |-
                               TokenExchange contains configuration for token exchange auth strategy.
@@ -2148,6 +2257,7 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                                x-kubernetes-list-type: atomic
                               subjectProviderName:
                                 description: |-
                                   SubjectProviderName selects which upstream provider's token to use as the
@@ -5037,6 +5147,60 @@ spec:
                               required:
                               - headerName
                               type: object
+                            obo:
+                              description: |-
+                                OBO contains configuration for on-behalf-of (OBO) auth strategy.
+                                Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
+                                an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                              properties:
+                                audience:
+                                  description: Audience is the target audience (resource
+                                    URI) for the exchanged token.
+                                  type: string
+                                cacheSkewSeconds:
+                                  description: |-
+                                    CacheSkewSeconds is the number of seconds to subtract from a cached token's
+                                    expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                    The operator CRD stores this as CacheSkew *metav1.Duration and converts it
+                                    to an integer-seconds value for the vMCP runtime contract.
+                                  format: int32
+                                  type: integer
+                                clientId:
+                                  description: ClientID is the OAuth client ID for
+                                    the OBO request.
+                                  type: string
+                                clientSecret:
+                                  description: ClientSecret is the OAuth client secret
+                                    (use ClientSecretEnv for security).
+                                  type: string
+                                clientSecretEnv:
+                                  description: |-
+                                    ClientSecretEnv is the environment variable name containing the client secret.
+                                    The value will be resolved at runtime from this environment variable.
+                                  type: string
+                                scopes:
+                                  description: Scopes are the requested scopes for
+                                    the exchanged token.
+                                  items:
+                                    type: string
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                subjectTokenProviderName:
+                                  description: |-
+                                    SubjectTokenProviderName selects which upstream provider's token to use as the
+                                    subject (assertion) token for the OBO exchange. When set, the token is looked
+                                    up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
+                                    inbound end-user token (Identity.Token) is used directly.
+                                    Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
+                                    converter maps both to the runtime contract without renaming.
+                                  type: string
+                                tokenUrl:
+                                  description: TokenURL is the Entra token endpoint
+                                    URL for the OBO exchange.
+                                  type: string
+                              required:
+                              - tokenUrl
+                              type: object
                             tokenExchange:
                               description: |-
                                 TokenExchange contains configuration for token exchange auth strategy.
@@ -5065,6 +5229,7 @@ spec:
                                   items:
                                     type: string
                                   type: array
+                                  x-kubernetes-list-type: atomic
                                 subjectProviderName:
                                   description: |-
                                     SubjectProviderName selects which upstream provider's token to use as the
@@ -5208,6 +5373,60 @@ spec:
                             required:
                             - headerName
                             type: object
+                          obo:
+                            description: |-
+                              OBO contains configuration for on-behalf-of (OBO) auth strategy.
+                              Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
+                              an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                            properties:
+                              audience:
+                                description: Audience is the target audience (resource
+                                  URI) for the exchanged token.
+                                type: string
+                              cacheSkewSeconds:
+                                description: |-
+                                  CacheSkewSeconds is the number of seconds to subtract from a cached token's
+                                  expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                  The operator CRD stores this as CacheSkew *metav1.Duration and converts it
+                                  to an integer-seconds value for the vMCP runtime contract.
+                                format: int32
+                                type: integer
+                              clientId:
+                                description: ClientID is the OAuth client ID for the
+                                  OBO request.
+                                type: string
+                              clientSecret:
+                                description: ClientSecret is the OAuth client secret
+                                  (use ClientSecretEnv for security).
+                                type: string
+                              clientSecretEnv:
+                                description: |-
+                                  ClientSecretEnv is the environment variable name containing the client secret.
+                                  The value will be resolved at runtime from this environment variable.
+                                type: string
+                              scopes:
+                                description: Scopes are the requested scopes for the
+                                  exchanged token.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              subjectTokenProviderName:
+                                description: |-
+                                  SubjectTokenProviderName selects which upstream provider's token to use as the
+                                  subject (assertion) token for the OBO exchange. When set, the token is looked
+                                  up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
+                                  inbound end-user token (Identity.Token) is used directly.
+                                  Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
+                                  converter maps both to the runtime contract without renaming.
+                                type: string
+                              tokenUrl:
+                                description: TokenURL is the Entra token endpoint
+                                  URL for the OBO exchange.
+                                type: string
+                            required:
+                            - tokenUrl
+                            type: object
                           tokenExchange:
                             description: |-
                               TokenExchange contains configuration for token exchange auth strategy.
@@ -5236,6 +5455,7 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                                x-kubernetes-list-type: atomic
                               subjectProviderName:
                                 description: |-
                                   SubjectProviderName selects which upstream provider's token to use as the

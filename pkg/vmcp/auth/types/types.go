@@ -46,7 +46,8 @@ const (
 
 	// StrategyTypeOBO identifies the on-behalf-of (OBO) authentication strategy.
 	// The default upstream implementation returns ErrEnterpriseRequired from
-	// every method; an out-of-tree build registers a real converter.
+	// every method; an out-of-tree build registers a real OBO strategy executor
+	// via auth.RegisterOBOStrategy.
 	StrategyTypeOBO = "obo"
 )
 
@@ -75,6 +76,11 @@ type BackendAuthStrategy struct {
 	// AwsSts contains configuration for AWS STS auth strategy.
 	// Used when Type = "aws_sts".
 	AwsSts *AwsStsConfig `json:"awsSts,omitempty" yaml:"awsSts,omitempty"`
+
+	// OBO contains configuration for on-behalf-of (OBO) auth strategy.
+	// Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
+	// an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+	OBO *OBOConfig `json:"obo,omitempty" yaml:"obo,omitempty"`
 }
 
 // HeaderInjectionConfig configures the header injection auth strategy.
@@ -118,6 +124,7 @@ type TokenExchangeConfig struct {
 	Audience string `json:"audience,omitempty" yaml:"audience,omitempty"`
 
 	// Scopes are the requested scopes for the exchanged token.
+	// +listType=atomic
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
 	// SubjectTokenType is the token type of the incoming subject token.
@@ -163,6 +170,52 @@ type RoleMapping struct {
 	// Mirrors awssts.RoleMapping.Priority, which is *int because the role mapper
 	// uses math.MaxInt for nil-priority semantics in effectivePriority.
 	Priority *int `json:"priority,omitempty" yaml:"priority,omitempty"`
+}
+
+// OBOConfig configures the on-behalf-of (OBO) authentication strategy.
+// This strategy uses the Entra jwt-bearer / on_behalf_of grant to exchange
+// the incoming user token for a backend-scoped token on behalf of the user.
+//
+// Field names follow the OBO runtime contract (the enterprise obo.MiddlewareParameters),
+// not the RFC-8693 TokenExchangeConfig, because OBO uses a distinct Entra-specific grant.
+// +kubebuilder:object:generate=true
+// +gendoc
+type OBOConfig struct {
+	// TokenURL is the Entra token endpoint URL for the OBO exchange.
+	// +kubebuilder:validation:Required
+	TokenURL string `json:"tokenUrl" yaml:"tokenUrl"`
+
+	// ClientID is the OAuth client ID for the OBO request.
+	ClientID string `json:"clientId,omitempty" yaml:"clientId,omitempty"`
+
+	// ClientSecret is the OAuth client secret (use ClientSecretEnv for security).
+	//nolint:gosec // G117: field legitimately holds sensitive data
+	ClientSecret string `json:"clientSecret,omitempty" yaml:"clientSecret,omitempty"`
+
+	// ClientSecretEnv is the environment variable name containing the client secret.
+	// The value will be resolved at runtime from this environment variable.
+	ClientSecretEnv string `json:"clientSecretEnv,omitempty" yaml:"clientSecretEnv,omitempty"`
+
+	// Audience is the target audience (resource URI) for the exchanged token.
+	Audience string `json:"audience,omitempty" yaml:"audience,omitempty"`
+
+	// Scopes are the requested scopes for the exchanged token.
+	// +listType=atomic
+	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+
+	// SubjectTokenProviderName selects which upstream provider's token to use as the
+	// subject (assertion) token for the OBO exchange. When set, the token is looked
+	// up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
+	// inbound end-user token (Identity.Token) is used directly.
+	// Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
+	// converter maps both to the runtime contract without renaming.
+	SubjectTokenProviderName string `json:"subjectTokenProviderName,omitempty" yaml:"subjectTokenProviderName,omitempty"`
+
+	// CacheSkewSeconds is the number of seconds to subtract from a cached token's
+	// expiry when deciding whether to refresh it. Defaults to zero (no skew).
+	// The operator CRD stores this as CacheSkew *metav1.Duration and converts it
+	// to an integer-seconds value for the vMCP runtime contract.
+	CacheSkewSeconds *int32 `json:"cacheSkewSeconds,omitempty" yaml:"cacheSkewSeconds,omitempty"`
 }
 
 // AwsStsConfig configures AWS STS authentication with SigV4 request signing.

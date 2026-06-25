@@ -933,6 +933,31 @@ type OptimizerConfig struct {
 	// +optional
 	EmbeddingServiceTimeout Duration `json:"embeddingServiceTimeout,omitempty" yaml:"embeddingServiceTimeout,omitempty"`
 
+	// EmbeddingProvider selects the wire protocol used to talk to the embedding
+	// service. "tei" speaks the HuggingFace Text Embeddings Inference API;
+	// "openai" speaks the OpenAI-compatible /embeddings API, which lets the
+	// optimizer use OpenAI, Azure OpenAI, or a gateway such as Bifrost or
+	// LiteLLM. Defaults to "tei" when empty.
+	//
+	// The "openai" provider reads EmbeddingService directly and is not used with
+	// EmbeddingServerRef, which provisions a managed TEI server.
+	// +kubebuilder:validation:Enum=tei;openai
+	// +kubebuilder:default="tei"
+	// +optional
+	EmbeddingProvider string `json:"embeddingProvider,omitempty" yaml:"embeddingProvider,omitempty"`
+
+	// EmbeddingModel is the model name requested from the embedding service
+	// (e.g. "text-embedding-3-small"). Required when EmbeddingProvider is
+	// "openai". Ignored for the "tei" provider, where the model is fixed by the
+	// running TEI container.
+	//
+	// The API key for an OpenAI-compatible service is not configured here: it is
+	// read from the OPENAI_API_KEY environment variable so the secret never
+	// lands in a CRD spec or ConfigMap. An empty key omits the Authorization
+	// header, which supports keyless in-cluster gateways.
+	// +optional
+	EmbeddingModel string `json:"embeddingModel,omitempty" yaml:"embeddingModel,omitempty"`
+
 	// MaxToolsToReturn is the maximum number of tool results returned by a search query.
 	// Defaults to 8 if not specified or zero.
 	// +kubebuilder:validation:Minimum=1

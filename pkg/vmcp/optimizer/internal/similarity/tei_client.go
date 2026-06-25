@@ -12,8 +12,6 @@ import (
 	"log/slog"
 	"net/http"
 	"time"
-
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
 
 const (
@@ -36,16 +34,6 @@ type teiClient struct {
 	baseURL      string
 	httpClient   *http.Client
 	maxBatchSize int
-}
-
-// NewEmbeddingClient creates an EmbeddingClient from the given optimizer
-// configuration. It returns (nil, nil) if cfg is nil or no embedding service
-// URL is configured, meaning semantic search will be disabled.
-func NewEmbeddingClient(cfg *types.OptimizerConfig) (types.EmbeddingClient, error) {
-	if cfg == nil || cfg.EmbeddingService == "" {
-		return nil, nil
-	}
-	return newTEIClient(cfg.EmbeddingService, cfg.EmbeddingServiceTimeout)
 }
 
 // newTEIClient creates a new TEI embedding client that calls the specified endpoint.

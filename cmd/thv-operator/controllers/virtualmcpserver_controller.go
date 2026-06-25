@@ -3389,8 +3389,8 @@ func (r *VirtualMCPServerReconciler) handleConfigRefs(
 // (spec.incomingAuth.authzConfigRef), tracks its hash on the VirtualMCPServer
 // status, and sets the AuthzConfigRefValidated condition. When the ref is
 // cleared it removes both the hash and the condition so a stale "valid" signal
-// does not linger. ReferencingWorkloads on the MCPAuthzConfig is owned by the
-// MCPAuthzConfig controller (#5511); this controller never writes it.
+// does not linger. The MCPAuthzConfig's status is owned by the MCPAuthzConfig
+// controller (#5511); this controller never writes it.
 //
 // Revocation semantics (fail-stale, not fail-open): if a previously-valid ref
 // later becomes invalid or missing, this returns an error and Reconcile stops
@@ -3575,13 +3575,11 @@ func (r *VirtualMCPServerReconciler) handleOIDCConfig(
 		return fmt.Errorf("%s", msg)
 	}
 
-	// ReferencingWorkloads on the MCPOIDCConfig is maintained solely by the
-	// MCPOIDCConfig controller, which watches MCPServer/VirtualMCPServer/
-	// MCPRemoteProxy and recomputes the full list (additions and removals). The
-	// VirtualMCPServer controller must not write the config's status: a full
-	// r.Status().Update here would clobber conditions the config controller
-	// owns, and the previous append-only write never removed stale entries.
-	// See #5511.
+	// The VirtualMCPServer controller must not write the MCPOIDCConfig's status:
+	// that status is owned by the MCPOIDCConfig controller, and a full
+	// r.Status().Update here would clobber conditions it owns. The config
+	// controller no longer tracks referencing workloads in its status; deletion
+	// protection recomputes referrers on demand in its finalizer. See #5511.
 
 	// Set valid condition
 	statusManager.SetCondition(

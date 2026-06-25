@@ -14,16 +14,11 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -41,7 +36,8 @@ const (
 //
 // This controller manages the lifecycle of MCPAuthzConfig resources: validation
 // via the authorizer factory registry, config hash computation, finalizer management,
-// reference tracking, and deletion protection when workloads reference this config.
+// and deletion protection when workloads reference this config. The set of referencing
+// workloads is recomputed on demand during deletion rather than tracked in status.
 type MCPAuthzConfigReconciler struct {
 	client.Client
 	Scheme   *runtime.Scheme
@@ -128,18 +124,6 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	wasInvalid := conditionStatusIs(authzConfig.Status.Conditions,
 		mcpv1beta1.ConditionTypeAuthzConfigValid, metav1.ConditionFalse)
 
-	// Refresh the referencing workloads list. If the lookup fails we must
-	// requeue with backoff rather than continuing with a stale slice — a
-	// silent swallow would let ReferencingWorkloads / ReferenceCount drift
-	// permanently out of sync with the cluster on a transient apiserver
-	// hiccup.
-	referencingWorkloads, err := r.findReferencingWorkloads(ctx, authzConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing workloads")
-		return ctrl.Result{}, err
-	}
-	newRefCount := workloadReferenceCount(referencingWorkloads)
-
 	// Calculate the hash of the current configuration.
 	// The spec is canonicalized first so that two semantically-equal configs
 	// that differ only in whitespace or JSON key order produce the same hash —
@@ -156,18 +140,15 @@ func (r *MCPAuthzConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Single status patch covering the steady-state success path: Valid=True,
-	// fresh hash + observedGeneration, fresh references, and DeletionBlocked
-	// cleared (we only reach this path when DeletionTimestamp is zero).
-	// MutateAndPatchStatus short-circuits on an empty diff, so a no-op
-	// reconcile still produces no wire call (SteadyStateNoOp behaviour
-	// preserved).
+	// fresh hash + observedGeneration, and DeletionBlocked cleared (we only
+	// reach this path when DeletionTimestamp is zero). MutateAndPatchStatus
+	// short-circuits on an empty diff, so a no-op reconcile still produces no
+	// wire call (SteadyStateNoOp behaviour preserved).
 	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, authzConfig, func(c *mcpv1beta1.MCPAuthzConfig) {
 		setValidTrueCondition(c)
 		meta.RemoveStatusCondition(&c.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked)
 		c.Status.ConfigHash = configHash
 		c.Status.ObservedGeneration = c.Generation
-		c.Status.ReferencingWorkloads = referencingWorkloads
-		c.Status.ReferenceCount = newRefCount
 	}); err != nil {
 		logger.Error(err, "Failed to update MCPAuthzConfig status")
 		return ctrl.Result{}, err
@@ -279,8 +260,6 @@ func (r *MCPAuthzConfigReconciler) handleDeletion(
 					Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
 					ObservedGeneration: c.Generation,
 				})
-				c.Status.ReferencingWorkloads = referencingWorkloads
-				c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
 			})
 			if updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
@@ -394,8 +373,6 @@ func (r *MCPAuthzConfigReconciler) findReferencingWorkloads(
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// Watches MCPServer, VirtualMCPServer, and MCPRemoteProxy changes to maintain
-// accurate ReferencingWorkloads status.
 func (r *MCPAuthzConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Field indexes backing findReferencingWorkloads: each lets the controller
 	// query only the workloads referencing a given config rather than listing
@@ -416,75 +393,7 @@ func (r *MCPAuthzConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		return fmt.Errorf("failed to set up VirtualMCPServer authzConfigRef index: %w", err)
 	}
 
-	// GenerationChangedPredicate also suppresses the workload-watch resync; the self-heal
-	// backstop for a stale ReferencingWorkloads entry (e.g. a workload deleted while the
-	// operator was down) is this config's own For() resync, which re-runs Reconcile and
-	// rebuilds ReferencingWorkloads from the index.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPAuthzConfig{}).
-		Watches(&mcpv1beta1.MCPServer{},
-			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToAuthzConfig),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Watches(&mcpv1beta1.VirtualMCPServer{},
-			handler.EnqueueRequestsFromMapFunc(r.mapVirtualMCPServerToAuthzConfig),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
-		Watches(&mcpv1beta1.MCPRemoteProxy{},
-			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToAuthzConfig),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Complete(r)
-}
-
-// mapMCPServerToAuthzConfig maps an MCPServer to the MCPAuthzConfig it currently references.
-// EnqueueRequestsFromMapFunc invokes this on both the old and new object on update (and on the
-// object for create/delete), so a ref change or deletion automatically enqueues both the
-// previously- and newly-referenced config; the previously-referenced config then prunes the
-// stale entry on reconcile. No manual stale-reference scan needed.
-func (*MCPAuthzConfigReconciler) mapMCPServerToAuthzConfig(
-	_ context.Context, obj client.Object,
-) []reconcile.Request {
-	server, ok := obj.(*mcpv1beta1.MCPServer)
-	if !ok || server.Spec.AuthzConfigRef == nil || server.Spec.AuthzConfigRef.Name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{
-		Name:      server.Spec.AuthzConfigRef.Name,
-		Namespace: server.Namespace,
-	}}}
-}
-
-// mapVirtualMCPServerToAuthzConfig maps a VirtualMCPServer to the MCPAuthzConfig it currently
-// references via spec.incomingAuth. EnqueueRequestsFromMapFunc invokes this on both the old and
-// new object on update (and on the object for create/delete), so a ref change or deletion
-// automatically enqueues both the previously- and newly-referenced config; the previously-
-// referenced config then prunes the stale entry on reconcile. No manual stale-reference scan needed.
-func (*MCPAuthzConfigReconciler) mapVirtualMCPServerToAuthzConfig(
-	_ context.Context, obj client.Object,
-) []reconcile.Request {
-	vmcp, ok := obj.(*mcpv1beta1.VirtualMCPServer)
-	if !ok || vmcp.Spec.IncomingAuth == nil ||
-		vmcp.Spec.IncomingAuth.AuthzConfigRef == nil || vmcp.Spec.IncomingAuth.AuthzConfigRef.Name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{
-		Name:      vmcp.Spec.IncomingAuth.AuthzConfigRef.Name,
-		Namespace: vmcp.Namespace,
-	}}}
-}
-
-// mapMCPRemoteProxyToAuthzConfig maps an MCPRemoteProxy to the MCPAuthzConfig it currently
-// references. EnqueueRequestsFromMapFunc invokes this on both the old and new object on update
-// (and on the object for create/delete), so a ref change or deletion automatically enqueues both
-// the previously- and newly-referenced config; the previously-referenced config then prunes the
-// stale entry on reconcile. No manual stale-reference scan needed.
-func (*MCPAuthzConfigReconciler) mapMCPRemoteProxyToAuthzConfig(
-	_ context.Context, obj client.Object,
-) []reconcile.Request {
-	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
-	if !ok || proxy.Spec.AuthzConfigRef == nil || proxy.Spec.AuthzConfigRef.Name == "" {
-		return nil
-	}
-	return []reconcile.Request{{NamespacedName: types.NamespacedName{
-		Name:      proxy.Spec.AuthzConfigRef.Name,
-		Namespace: proxy.Namespace,
-	}}}
 }

@@ -237,7 +237,7 @@ func TestMCPExternalAuthConfigReconciler_EmitsDeletionBlockedEvent(t *testing.T)
 }
 
 // TestMCPExternalAuthConfigReconciler_EmitsRecoveryOnSteadyStatePath covers the
-// recovery transition that flows through updateReferencingWorkloads rather than
+// recovery transition that flows through updateSteadyStateStatus rather than
 // handleConfigHashChange: a config whose stored hash already matches the current
 // spec (no hash change) but whose Valid condition is still False from an earlier
 // failure. Reconcile must emit a single Normal ConfigValid event.

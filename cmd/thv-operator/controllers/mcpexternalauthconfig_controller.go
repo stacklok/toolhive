@@ -17,13 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
-	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
@@ -156,9 +152,8 @@ func (r *MCPExternalAuthConfigReconciler) Reconcile(ctx context.Context, req ctr
 	}
 
 	// Steady-state success path: ensure Valid=True and the IdentitySynthesized
-	// advisory are set, and refresh the referencing-workloads list, in a single
-	// status patch.
-	return r.updateReferencingWorkloads(ctx, externalAuthConfig)
+	// advisory are set in a single status patch.
+	return r.updateSteadyStateStatus(ctx, externalAuthConfig)
 }
 
 // setValidTrueAndSynthesized stamps ConditionTypeValid=True and refreshes the
@@ -330,19 +325,13 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 		"oldHash", externalAuthConfig.Status.ConfigHash,
 		"newHash", configHash)
 
-	// Find all MCPServers that reference this MCPExternalAuthConfig
+	// Find all MCPServers that reference this MCPExternalAuthConfig so we can
+	// trigger their reconciliation once the new hash is recorded.
 	referencingServers, err := r.findReferencingMCPServers(ctx, externalAuthConfig)
 	if err != nil {
 		logger.Error(err, "Failed to find referencing MCPServers")
 		return ctrl.Result{}, fmt.Errorf("failed to find referencing MCPServers: %w", err)
 	}
-
-	// Build the list of referencing workloads
-	refs := make([]mcpv1beta1.WorkloadReference, 0, len(referencingServers))
-	for _, server := range referencingServers {
-		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: server.Name})
-	}
-	ctrlutil.SortWorkloadRefs(refs)
 
 	// Capture the recovery transition before the patch mutates conditions in
 	// place, so a single Normal event fires on the False->True transition.
@@ -350,16 +339,14 @@ func (r *MCPExternalAuthConfigReconciler) handleConfigHashChange(
 		mcpv1beta1.ConditionTypeValid, metav1.ConditionFalse)
 
 	// Single status patch covering the hash-change success path: the new hash
-	// and generation, the refreshed reference list, and the Valid=True /
-	// IdentitySynthesized conditions. All mutations happen inside the closure so
-	// the pre-mutate snapshot stays clean (a MutateAndPatchStatus prerequisite).
+	// and generation, and the Valid=True / IdentitySynthesized conditions. All
+	// mutations happen inside the closure so the pre-mutate snapshot stays clean
+	// (a MutateAndPatchStatus prerequisite).
 	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
 		func(c *mcpv1beta1.MCPExternalAuthConfig) {
 			r.setValidTrueAndSynthesized(c)
 			c.Status.ConfigHash = configHash
 			c.Status.ObservedGeneration = c.Generation
-			c.Status.ReferencingWorkloads = refs
-			c.Status.ReferenceCount = workloadReferenceCount(refs)
 		}); err != nil {
 		logger.Error(err, "Failed to update MCPExternalAuthConfig status")
 		return ctrl.Result{}, err
@@ -419,8 +406,6 @@ func (r *MCPExternalAuthConfigReconciler) handleDeletion(
 						Message:            fmt.Sprintf("Cannot delete: referenced by workloads: %v", referencingWorkloads),
 						ObservedGeneration: c.Generation,
 					})
-					c.Status.ReferencingWorkloads = referencingWorkloads
-					c.Status.ReferenceCount = workloadReferenceCount(referencingWorkloads)
 				})
 			if updateErr != nil {
 				logger.Error(updateErr, "Failed to update status during deletion block")
@@ -588,7 +573,6 @@ func (r *MCPExternalAuthConfigReconciler) findReferencingWorkloads(
 }
 
 // SetupWithManager sets up the controller with the Manager.
-// Watches MCPServer and MCPRemoteProxy changes to maintain accurate ReferencingWorkloads status.
 func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Field indexes backing findReferencingMCPServers / findReferencingMCPRemoteProxies.
 	// Each is a combined index covering both spec.externalAuthConfigRef and
@@ -607,134 +591,20 @@ func (r *MCPExternalAuthConfigReconciler) SetupWithManager(mgr ctrl.Manager) err
 		return fmt.Errorf("failed to set up MCPRemoteProxy externalAuthConfigRef index: %w", err)
 	}
 
-	// GenerationChangedPredicate also suppresses the workload-watch resync; the self-heal
-	// backstop for a stale ReferencingWorkloads entry (e.g. a workload deleted while the
-	// operator was down) is this config's own For() resync, which re-runs Reconcile and
-	// rebuilds ReferencingWorkloads from the index.
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPExternalAuthConfig{}).
-		Watches(
-			&mcpv1beta1.MCPServer{},
-			handler.EnqueueRequestsFromMapFunc(r.mapMCPServerToExternalAuthConfig),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		).
-		Watches(
-			&mcpv1beta1.MCPRemoteProxy{},
-			handler.EnqueueRequestsFromMapFunc(r.mapMCPRemoteProxyToExternalAuthConfig),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{}),
-		).
 		Complete(r)
 }
 
-// mapMCPServerToExternalAuthConfig maps an MCPServer to the MCPExternalAuthConfig(s)
-// it currently references via spec.externalAuthConfigRef and/or spec.authServerRef.
-// EnqueueRequestsFromMapFunc invokes this on both the old and new object on update
-// (and on the object for create/delete), so a ref change or deletion automatically
-// enqueues both the previously- and newly-referenced config; the previously-referenced
-// config then prunes the stale entry on reconcile. No manual stale-reference scan needed.
-//
-// A server may name the same config via both fields, so the two referenced names are
-// deduplicated against a seen set before being turned into requests.
-func (*MCPExternalAuthConfigReconciler) mapMCPServerToExternalAuthConfig(
-	_ context.Context, obj client.Object,
-) []reconcile.Request {
-	server, ok := obj.(*mcpv1beta1.MCPServer)
-	if !ok {
-		return nil
-	}
-
-	seen := make(map[types.NamespacedName]struct{})
-	var requests []reconcile.Request
-
-	// Enqueue the currently-referenced MCPExternalAuthConfig via externalAuthConfigRef (if any)
-	if server.Spec.ExternalAuthConfigRef != nil && server.Spec.ExternalAuthConfigRef.Name != "" {
-		nn := types.NamespacedName{
-			Name:      server.Spec.ExternalAuthConfigRef.Name,
-			Namespace: server.Namespace,
-		}
-		seen[nn] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: nn})
-	}
-
-	// Enqueue the MCPExternalAuthConfig referenced via authServerRef (if any), deduped
-	if server.Spec.AuthServerRef != nil &&
-		server.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig &&
-		server.Spec.AuthServerRef.Name != "" {
-		nn := types.NamespacedName{
-			Name:      server.Spec.AuthServerRef.Name,
-			Namespace: server.Namespace,
-		}
-		if _, already := seen[nn]; !already {
-			seen[nn] = struct{}{}
-			requests = append(requests, reconcile.Request{NamespacedName: nn})
-		}
-	}
-
-	return requests
-}
-
-// mapMCPRemoteProxyToExternalAuthConfig maps an MCPRemoteProxy to the MCPExternalAuthConfig(s)
-// it currently references via spec.externalAuthConfigRef and/or spec.authServerRef.
-// EnqueueRequestsFromMapFunc invokes this on both the old and new object on update
-// (and on the object for create/delete), so a ref change or deletion automatically
-// enqueues both the previously- and newly-referenced config; the previously-referenced
-// config then prunes the stale entry on reconcile. No manual stale-reference scan needed.
-//
-// A proxy may name the same config via both fields, so the two referenced names are
-// deduplicated against a seen set before being turned into requests.
-func (*MCPExternalAuthConfigReconciler) mapMCPRemoteProxyToExternalAuthConfig(
-	_ context.Context, obj client.Object,
-) []reconcile.Request {
-	proxy, ok := obj.(*mcpv1beta1.MCPRemoteProxy)
-	if !ok {
-		return nil
-	}
-
-	seen := make(map[types.NamespacedName]struct{})
-	var requests []reconcile.Request
-
-	// Enqueue the currently-referenced MCPExternalAuthConfig via externalAuthConfigRef (if any)
-	if proxy.Spec.ExternalAuthConfigRef != nil && proxy.Spec.ExternalAuthConfigRef.Name != "" {
-		nn := types.NamespacedName{
-			Name:      proxy.Spec.ExternalAuthConfigRef.Name,
-			Namespace: proxy.Namespace,
-		}
-		seen[nn] = struct{}{}
-		requests = append(requests, reconcile.Request{NamespacedName: nn})
-	}
-
-	// Enqueue the MCPExternalAuthConfig referenced via authServerRef (if any), deduped
-	if proxy.Spec.AuthServerRef != nil &&
-		proxy.Spec.AuthServerRef.Kind == authServerRefKindMCPExternalAuthConfig &&
-		proxy.Spec.AuthServerRef.Name != "" {
-		nn := types.NamespacedName{
-			Name:      proxy.Spec.AuthServerRef.Name,
-			Namespace: proxy.Namespace,
-		}
-		if _, already := seen[nn]; !already {
-			seen[nn] = struct{}{}
-			requests = append(requests, reconcile.Request{NamespacedName: nn})
-		}
-	}
-
-	return requests
-}
-
-// updateReferencingWorkloads writes the steady-state success status in a single
-// patch: it ensures Valid=True and the IdentitySynthesized advisory are set and
-// refreshes the referencing-workloads list. MutateAndPatchStatus short-circuits
-// on an empty diff, so a no-op reconcile skips the wire call.
-func (r *MCPExternalAuthConfigReconciler) updateReferencingWorkloads(
+// updateSteadyStateStatus writes the steady-state success status in a single
+// patch: it ensures Valid=True and the IdentitySynthesized advisory are set.
+// MutateAndPatchStatus short-circuits on an empty diff, so a no-op reconcile
+// skips the wire call.
+func (r *MCPExternalAuthConfigReconciler) updateSteadyStateStatus(
 	ctx context.Context,
 	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (ctrl.Result, error) {
 	logger := log.FromContext(ctx)
-
-	refs, err := r.findReferencingWorkloads(ctx, externalAuthConfig)
-	if err != nil {
-		logger.Error(err, "Failed to find referencing workloads")
-		return ctrl.Result{}, fmt.Errorf("failed to find referencing workloads: %w", err)
-	}
 
 	// Capture the recovery transition before the patch mutates conditions in
 	// place, so a single Normal event fires on the False->True transition.
@@ -744,11 +614,6 @@ func (r *MCPExternalAuthConfigReconciler) updateReferencingWorkloads(
 	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, externalAuthConfig,
 		func(c *mcpv1beta1.MCPExternalAuthConfig) {
 			r.setValidTrueAndSynthesized(c)
-			if !ctrlutil.WorkloadRefsEqual(c.Status.ReferencingWorkloads, refs) ||
-				c.Status.ReferenceCount != workloadReferenceCount(refs) {
-				c.Status.ReferencingWorkloads = refs
-				c.Status.ReferenceCount = workloadReferenceCount(refs)
-			}
 		}); err != nil {
 		logger.Error(err, "Failed to update MCPExternalAuthConfig status")
 		return ctrl.Result{}, err

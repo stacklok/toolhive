@@ -294,15 +294,13 @@ func TestMCPOIDCConfigReconciler_handleDeletion_BlocksWhenReferenced(t *testing.
 	assert.Contains(t, cfg.Finalizers, OIDCConfigFinalizerName, "finalizer must remain")
 
 	// The DeletionBlocked condition is written through MutateAndPatchStatus;
-	// re-fetch to confirm it (and the referencing-workload bookkeeping) was
-	// persisted rather than only mutated in memory.
+	// re-fetch to confirm it was persisted rather than only mutated in memory.
 	var after mcpv1beta1.MCPOIDCConfig
 	require.NoError(t, fc.Get(ctx, client.ObjectKeyFromObject(cfg), &after))
 	blocked := meta.FindStatusCondition(after.Status.Conditions, mcpv1beta1.ConditionTypeDeletionBlocked)
 	require.NotNil(t, blocked, "DeletionBlocked condition must be set while referenced")
 	assert.Equal(t, metav1.ConditionTrue, blocked.Status)
 	assert.Equal(t, "ReferencedByWorkloads", blocked.Reason)
-	assert.EqualValues(t, 1, after.Status.ReferenceCount, "referencing workload must be recorded")
 }
 
 func TestMCPOIDCConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *testing.T) {
@@ -374,20 +372,20 @@ func conditionStatusPtr(s metav1.ConditionStatus) *metav1.ConditionStatus {
 // TestMCPServerReconciler_handleOIDCConfig_DoesNotWriteConfigStatus guards the
 // trust boundary consolidated in #5511: the MCPServer controller may read the
 // referenced MCPOIDCConfig but must never write its status. The MCPOIDCConfig
-// controller is the sole owner of that status (conditions and
-// ReferencingWorkloads). This unit test is the actual enforcement of that
-// boundary — RBAC does not enforce it, because the operator runs as a single
-// ServiceAccount whose aggregated role still grants mcpoidcconfigs/status write
-// for the MCPOIDCConfig controller's own use. A future reintroduction of a
-// cross-controller status write would flip the ResourceVersion and fail here.
+// controller is the sole owner of that status. This unit test is the actual
+// enforcement of that boundary — RBAC does not enforce it, because the operator
+// runs as a single ServiceAccount whose aggregated role still grants
+// mcpoidcconfigs/status write for the MCPOIDCConfig controller's own use. A
+// future reintroduction of a cross-controller status write would flip the
+// ResourceVersion and fail here.
 func TestMCPServerReconciler_handleOIDCConfig_DoesNotWriteConfigStatus(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
 
 	scheme := testutil.NewScheme(t)
 
-	// Seed a config whose status carries a condition and a ReferencingWorkloads
-	// entry owned by the MCPOIDCConfig controller — neither must be touched.
+	// Seed a config whose status carries conditions owned by the MCPOIDCConfig
+	// controller — none must be touched.
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "cfg", Namespace: "default"},
 		Spec: mcpv1beta1.MCPOIDCConfigSpec{
@@ -406,8 +404,6 @@ func TestMCPServerReconciler_handleOIDCConfig_DoesNotWriteConfigStatus(t *testin
 					Reason: "ExternallySet", LastTransitionTime: metav1.Now(),
 				},
 			},
-			ReferencingWorkloads: []mcpv1beta1.WorkloadReference{{Kind: "MCPServer", Name: "someone-else"}},
-			ReferenceCount:       1,
 		},
 	}
 	mcpServer := &mcpv1beta1.MCPServer{
@@ -435,8 +431,6 @@ func TestMCPServerReconciler_handleOIDCConfig_DoesNotWriteConfigStatus(t *testin
 
 	assert.Equal(t, before.ResourceVersion, after.ResourceVersion,
 		"MCPServer reconcile must not write the MCPOIDCConfig — its status is owned by the MCPOIDCConfig controller")
-	assert.Equal(t, before.Status.ReferencingWorkloads, after.Status.ReferencingWorkloads,
-		"MCPServer reconcile must not touch the config's ReferencingWorkloads")
 	assert.NotNil(t, meta.FindStatusCondition(after.Status.Conditions, "ForeignControllerSays"),
 		"config-owned conditions must remain untouched")
 }

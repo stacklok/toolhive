@@ -37,7 +37,7 @@ func TestNewLimiterRequiresRedisSessionStorage(t *testing.T) {
 	limiter, cleanup, err := NewLimiter(t.Context(), Config{
 		Namespace:    "default",
 		ServerName:   "vmcp",
-		RateLimiting: sharedRateLimitConfig(1),
+		RateLimiting: sharedRateLimitConfig(),
 	})
 
 	require.Error(t, err)
@@ -52,7 +52,7 @@ func TestNewLimiterRequiresRedisAddress(t *testing.T) {
 	limiter, cleanup, err := NewLimiter(t.Context(), Config{
 		Namespace:    "default",
 		ServerName:   "vmcp",
-		RateLimiting: sharedRateLimitConfig(1),
+		RateLimiting: sharedRateLimitConfig(),
 		SessionStorage: &vmcpconfig.SessionStorageConfig{
 			Provider: "redis",
 		},
@@ -72,7 +72,7 @@ func TestNewLimiterRedisPingFailure(t *testing.T) {
 	limiter, cleanup, err := NewLimiter(ctx, Config{
 		Namespace:    "default",
 		ServerName:   "vmcp",
-		RateLimiting: sharedRateLimitConfig(1),
+		RateLimiting: sharedRateLimitConfig(),
 		SessionStorage: &vmcpconfig.SessionStorageConfig{
 			Provider: "redis",
 			Address:  "127.0.0.1:1",
@@ -117,7 +117,7 @@ func TestNewLimiterReturnsUsableLimiter(t *testing.T) {
 	limiter, cleanup, err := NewLimiter(t.Context(), Config{
 		Namespace:    "default",
 		ServerName:   "vmcp",
-		RateLimiting: sharedRateLimitConfig(1),
+		RateLimiting: sharedRateLimitConfig(),
 		SessionStorage: &vmcpconfig.SessionStorageConfig{
 			Provider: "redis",
 			Address:  mr.Addr(),
@@ -213,10 +213,10 @@ func TestNewLimiterUsesPostAggregationToolNames(t *testing.T) {
 	assert.False(t, secondMatchingTool.Allowed)
 }
 
-func sharedRateLimitConfig(maxTokens int32) *ratelimittypes.RateLimitConfig {
+func sharedRateLimitConfig() *ratelimittypes.RateLimitConfig {
 	return &ratelimittypes.RateLimitConfig{
 		Shared: &ratelimittypes.RateLimitBucket{
-			MaxTokens:    maxTokens,
+			MaxTokens:    1,
 			RefillPeriod: metav1.Duration{Duration: time.Minute},
 		},
 	}

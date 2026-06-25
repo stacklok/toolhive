@@ -340,7 +340,7 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 
 	// Wait until the session is fully registered in the manager.
 	require.Eventually(t, func() bool {
-		_, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID)
+		_, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID)
 		return ok
 	}, 2*time.Second, 10*time.Millisecond, "session should be registered")
 
@@ -561,15 +561,15 @@ func TestServeEnforcesSessionBinding(t *testing.T) {
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
 	require.NotEmpty(t, sessionID)
 
-	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return ok },
+	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return ok },
 		2*time.Second, 10*time.Millisecond, "session should be registered")
 
 	// Anonymous caller (no token) matches the anonymous binding — allowed.
-	require.NoError(t, srv.enforceSessionBinding(sessionID, nil),
+	require.NoError(t, srv.enforceSessionBinding(context.Background(), sessionID, nil),
 		"anonymous caller must be permitted on an anonymous session")
 
 	// A caller presenting a token on an anonymous session is a session-upgrade attack.
-	err = srv.enforceSessionBinding(sessionID, &auth.Identity{Token: "attacker-token"})
+	err = srv.enforceSessionBinding(context.Background(), sessionID, &auth.Identity{Token: "attacker-token"})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller,
 		"a token presented to an anonymous session must be rejected by the session-layer binding check")
@@ -624,7 +624,7 @@ func registerServeSessionWithRegistry(
 	require.Equal(t, http.StatusOK, initResp.StatusCode)
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
 	require.NotEmpty(t, sessionID)
-	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return ok },
+	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return ok },
 		2*time.Second, 10*time.Millisecond, "session should be registered")
 	return srv, sessionID, ts.URL
 }
@@ -705,7 +705,7 @@ func TestServeToolCallTerminatesOnBindingFailure(t *testing.T) {
 	assert.Contains(t, string(body), "Unauthorized")
 	assert.Equal(t, int32(0), fc.callToolCalls.Load(), "core.CallTool must not be reached on a binding failure")
 
-	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return !ok },
+	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return !ok },
 		2*time.Second, 10*time.Millisecond, "a binding failure must terminate the session (fail-closed)")
 }
 

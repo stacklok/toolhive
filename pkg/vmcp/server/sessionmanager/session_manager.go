@@ -625,16 +625,11 @@ func (sm *Manager) updateMetadata(sessionID string, metadata map[string]string) 
 // factory.RestoreSession, enabling cross-pod session recovery when Redis is
 // used as the storage backend.
 //
-// Known limitation: GetMultiSession's signature is fixed by the
-// MultiSessionGetter interface and carries no context. Both the liveness
-// check and the restore path use context.Background() with per-operation
-// timeouts (restoreStorageTimeout / restoreSessionTimeout), so they are
-// bounded independently of any caller deadline. The caller's HTTP request
-// cancellation cannot propagate here.
-// TODO: add context propagation through MultiSessionGetter so the caller's
-// deadline can further bound these operations.
-func (sm *Manager) GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool) {
-	return sm.sessions.Get(sessionID)
+// The context is propagated to storage and restore operations using
+// context.WithoutCancel so caller identity (e.g. *auth.Identity in ctx) reaches
+// the backend Initialize handshake during cross-pod session restore.
+func (sm *Manager) GetMultiSession(ctx context.Context, sessionID string) (vmcpsession.MultiSession, bool) {
+	return sm.sessions.Get(ctx, sessionID)
 }
 
 // checkSession is the liveness check supplied to sessions. It confirms the
@@ -649,8 +644,8 @@ func (sm *Manager) GetMultiSession(sessionID string) (vmcpsession.MultiSession, 
 // replacing the old session and its backend connections. This ensures that a
 // backend-expiry update written by pod A propagates to pod B on the next
 // cache access rather than waiting for natural TTL expiry.
-func (sm *Manager) checkSession(sessionID string, sess vmcpsession.MultiSession) error {
-	checkCtx, cancel := context.WithTimeout(context.Background(), restoreStorageTimeout)
+func (sm *Manager) checkSession(ctx context.Context, sessionID string, sess vmcpsession.MultiSession) error {
+	checkCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), restoreStorageTimeout)
 	defer cancel()
 	metadata, err := sm.storage.Load(checkCtx, sessionID)
 	if errors.Is(err, transportsession.ErrSessionNotFound) {
@@ -686,8 +681,8 @@ func (sm *Manager) checkSession(sessionID string, sess vmcpsession.MultiSession)
 // loadSession is the restore function supplied to sessions. It loads session
 // metadata from storage and calls factory.RestoreSession to reconnect to
 // backends, returning the fully-formed MultiSession on success.
-func (sm *Manager) loadSession(sessionID string) (vmcpsession.MultiSession, error) {
-	loadCtx, loadCancel := context.WithTimeout(context.Background(), restoreStorageTimeout)
+func (sm *Manager) loadSession(ctx context.Context, sessionID string) (vmcpsession.MultiSession, error) {
+	loadCtx, loadCancel := context.WithTimeout(context.WithoutCancel(ctx), restoreStorageTimeout)
 	defer loadCancel()
 	metadata, loadErr := sm.storage.Load(loadCtx, sessionID)
 	if loadErr != nil {
@@ -718,7 +713,7 @@ func (sm *Manager) loadSession(sessionID string) (vmcpsession.MultiSession, erro
 		return nil, transportsession.ErrSessionNotFound
 	}
 
-	restoreCtx, restoreCancel := context.WithTimeout(context.Background(), restoreSessionTimeout)
+	restoreCtx, restoreCancel := context.WithTimeout(context.WithoutCancel(ctx), restoreSessionTimeout)
 	defer restoreCancel()
 	restored, restoreErr := sm.factory.RestoreSession(restoreCtx, sessionID, metadata, sm.listAllBackends(restoreCtx))
 	if restoreErr != nil {
@@ -737,7 +732,7 @@ func (sm *Manager) loadSession(sessionID string) (vmcpsession.MultiSession, erro
 	// that was concurrently deleted (Terminate / TTL expiry). A (false, nil)
 	// result means the key is already gone — treat it as not found so the
 	// cache never serves a session that no longer exists in storage.
-	updateCtx, updateCancel := context.WithTimeout(context.Background(), restoreMetadataWriteTimeout)
+	updateCtx, updateCancel := context.WithTimeout(context.WithoutCancel(ctx), restoreMetadataWriteTimeout)
 	defer updateCancel()
 	updated, updateErr := sm.storage.Update(updateCtx, sessionID, restored.GetMetadata())
 	if updateErr != nil {
@@ -770,7 +765,7 @@ func (sm *Manager) loadSession(sessionID string) (vmcpsession.MultiSession, erro
 // session was deleted; the cache entry will be evicted on the next Get when
 // checkSession detects ErrSessionNotFound.
 func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiSession) sessiontypes.MultiSession) error {
-	sess, ok := sm.GetMultiSession(sessionID)
+	sess, ok := sm.GetMultiSession(context.Background(), sessionID)
 	if !ok {
 		return fmt.Errorf("DecorateSession: session %q not found or not a multi-session", sessionID)
 	}

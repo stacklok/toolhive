@@ -654,7 +654,7 @@ func TestSessionManager_Terminate(t *testing.T) {
 
 		// The next GetMultiSession triggers checkSession: storage returns
 		// ErrSessionNotFound → ErrExpired → onEvict → Close().
-		_, ok := sm.GetMultiSession(sessionID)
+		_, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "terminated session must not be returned")
 		// gomock verifies Close() was called exactly once via Times(1)
 	})
@@ -816,7 +816,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		registry := newFakeRegistry()
 		sm, _ := newTestSessionManager(t, factory, registry)
 
-		multiSess, ok := sm.GetMultiSession("ghost")
+		multiSess, ok := sm.GetMultiSession(t.Context(), "ghost")
 		assert.False(t, ok)
 		assert.Nil(t, multiSess)
 	})
@@ -834,7 +834,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		require.NotEmpty(t, sessionID)
 
 		// Placeholder has not been upgraded yet.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "placeholder should not satisfy MultiSession type assertion")
 		assert.Nil(t, multiSess)
 	})
@@ -861,7 +861,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		_, err := sm.CreateSession(context.Background(), sessionID)
 		require.NoError(t, err)
 
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok)
 		require.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
@@ -889,7 +889,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// loadSession detects absent MetadataKeyIdentityBinding → ErrSessionNotFound.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "placeholder should not be restorable")
 		assert.Nil(t, multiSess)
 	})
@@ -925,7 +925,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// loadSession should call RestoreSession, not treat it as a placeholder.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok, "initialized zero-backend session should be restorable")
 		require.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
@@ -962,7 +962,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		_, err := sm.storage.Create(context.Background(), sessionID, legacyMeta)
 		require.NoError(t, err)
 
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok, "legacy record without MetadataKeyBackendIDs must still be restorable")
 		require.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
@@ -1007,7 +1007,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		_, err := sm.storage.Create(context.Background(), sessionID, staleMeta)
 		require.NoError(t, err)
 
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok, "session must be restored")
 		require.NotNil(t, multiSess)
 
@@ -1060,7 +1060,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 
 		// GetMultiSession triggers loadSession; the racing delete causes
 		// Update to return (false, nil) → ErrSessionNotFound → (nil, false).
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "session deleted before metadata write-back must not be cached")
 		assert.Nil(t, multiSess)
 	})
@@ -1096,7 +1096,7 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// Write failure must be non-fatal: session is still returned and cached.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.True(t, ok, "transient Update error must not prevent session from being served")
 		assert.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())
@@ -1153,7 +1153,7 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 		require.NoError(t, err)
 
 		// After decoration, GetMultiSession returns the decorated session with both tools.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok)
 		require.Len(t, multiSess.Tools(), 2)
 		assert.Equal(t, "hello", multiSess.Tools()[0].Name)
@@ -1222,7 +1222,7 @@ func TestSessionManager_DecorateSession(t *testing.T) {
 		assert.Contains(t, err.Error(), "was deleted during decoration")
 
 		// The session must not be resurrected.
-		_, ok := sm.GetMultiSession(sessionID)
+		_, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "terminated session must not be resurrected by DecorateSession")
 	})
 }
@@ -1262,7 +1262,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		_, err := storage.Create(context.Background(), sessionID, map[string]string{})
 		require.NoError(t, err)
 
-		err = sm.checkSession(sessionID, makeEmptySess(t))
+		err = sm.checkSession(t.Context(), sessionID, makeEmptySess(t))
 		assert.NoError(t, err, "alive session must return nil")
 	})
 
@@ -1270,7 +1270,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		t.Parallel()
 		sm, _ := newTestSessionManager(t, makeFactory(t), newFakeRegistry())
 
-		err := sm.checkSession("nonexistent-session", makeEmptySess(t))
+		err := sm.checkSession(t.Context(), "nonexistent-session", makeEmptySess(t))
 		assert.ErrorIs(t, err, cache.ErrExpired, "deleted session must return ErrExpired")
 	})
 
@@ -1286,7 +1286,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		err = sm.checkSession(sessionID, makeEmptySess(t))
+		err = sm.checkSession(t.Context(), sessionID, makeEmptySess(t))
 		assert.ErrorIs(t, err, cache.ErrExpired, "terminated session must return ErrExpired")
 	})
 
@@ -1314,7 +1314,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err = sm.checkSession(sessionID, cached)
+		err = sm.checkSession(t.Context(), sessionID, cached)
 		assert.ErrorIs(t, err, cache.ErrExpired,
 			"stale backend list must return ErrExpired to trigger cross-pod eviction")
 	})
@@ -1336,7 +1336,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err = sm.checkSession(sessionID, cached)
+		err = sm.checkSession(t.Context(), sessionID, cached)
 		assert.NoError(t, err, "matching backend list must return nil")
 	})
 
@@ -1355,7 +1355,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		cached.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err = sm.checkSession(sessionID, cached)
+		err = sm.checkSession(t.Context(), sessionID, cached)
 		assert.NoError(t, err, "matching empty metadata must not cause eviction")
 	})
 
@@ -1388,7 +1388,7 @@ func TestSessionManager_CheckSession(t *testing.T) {
 		}).AnyTimes()
 		sm.sessions.Set(sessionID, cached)
 
-		err = sm.checkSession(sessionID, cached)
+		err = sm.checkSession(t.Context(), sessionID, cached)
 		assert.NoError(t, err,
 			"differing per-backend session IDs must not evict to avoid cross-pod eviction storms")
 	})
@@ -1713,7 +1713,7 @@ func TestLoadSession_Phase2Marker_UsesIdentityBindingKey(t *testing.T) {
 
 		// loadSession must treat absent MetadataKeyIdentityBinding as a legacy session
 		// and return (nil, false) — not attempting RestoreSession.
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		assert.False(t, ok, "legacy session with only MetadataKeyTokenHash must not be restored")
 		assert.Nil(t, multiSess)
 	})
@@ -1742,7 +1742,7 @@ func TestLoadSession_Phase2Marker_UsesIdentityBindingKey(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		multiSess, ok := sm.GetMultiSession(sessionID)
+		multiSess, ok := sm.GetMultiSession(t.Context(), sessionID)
 		require.True(t, ok, "session with MetadataKeyIdentityBinding must be restorable")
 		require.NotNil(t, multiSess)
 		assert.Equal(t, sessionID, multiSess.ID())

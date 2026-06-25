@@ -127,7 +127,7 @@ func (s *Server) optimizerToolHandler(
 func (s *Server) optimizerFindToolHandler(sessionID string, opt optimizer.Optimizer) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		caller, _ := auth.IdentityFromContext(ctx)
-		if err := s.enforceSessionBinding(sessionID, caller); err != nil {
+		if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
 			s.terminateOnBindingFailure(sessionID, optimizerdec.FindToolName, err)
 			return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", err)), nil
 		}
@@ -179,7 +179,7 @@ func (s *Server) optimizerFindToolHandler(sessionID string, opt optimizer.Optimi
 func (s *Server) optimizerCallToolHandler(sessionID string, opt optimizer.Optimizer) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
 		caller, _ := auth.IdentityFromContext(ctx)
-		if err := s.enforceSessionBinding(sessionID, caller); err != nil {
+		if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
 			s.terminateOnBindingFailure(sessionID, optimizerdec.CallToolName, err)
 			return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", err)), nil
 		}

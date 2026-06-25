@@ -11,6 +11,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -43,6 +44,7 @@ func newOpenAIClient(baseURL, model, apiKey string, timeout time.Duration) (*ope
 	if model == "" {
 		return nil, fmt.Errorf("OpenAI embedding model is required")
 	}
+	baseURL = strings.TrimSuffix(baseURL, "/")
 
 	if timeout == 0 {
 		timeout = defaultTimeout

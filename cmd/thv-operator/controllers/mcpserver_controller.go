@@ -1851,6 +1851,11 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			}
 		}
 
+		// Mount Redis password secret when session storage provider is Redis.
+		// Must mirror deploymentForMCPServer exactly (same call, same position)
+		// so a correctly-configured resource does not look perpetually drifted.
+		expectedProxyEnv = append(expectedProxyEnv, r.buildRedisPasswordEnvVar(mcpServer)...)
+
 		// Project the MCPServer generation pod-template annotation into the
 		// proxyrunner container via the downward API. Position must come
 		// before the embedded-auth env vars below so the slice order matches

@@ -157,6 +157,9 @@ func (l *YAMLLoader) processBackendAuthStrategy(name string, strategy *authtypes
 			return fmt.Errorf("backend %s: obo configuration is required", name)
 		}
 		obo := strategy.OBO
+		if obo.ClientSecret != "" && obo.ClientSecretEnv != "" {
+			return fmt.Errorf("backend %s: only one of clientSecret or clientSecretEnv must be set", name)
+		}
 		if obo.ClientSecretEnv != "" {
 			resolvedSecret := l.envReader.Getenv(obo.ClientSecretEnv)
 			if resolvedSecret == "" {

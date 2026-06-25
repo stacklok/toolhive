@@ -1994,6 +1994,7 @@ spec:
                                   items:
                                     type: string
                                   type: array
+                                  x-kubernetes-list-type: atomic
                                 subjectProviderName:
                                   description: |-
                                     SubjectProviderName selects which upstream provider's token to use as the
@@ -2219,6 +2220,7 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                                x-kubernetes-list-type: atomic
                               subjectProviderName:
                                 description: |-
                                   SubjectProviderName selects which upstream provider's token to use as the
@@ -5153,6 +5155,7 @@ spec:
                                   items:
                                     type: string
                                   type: array
+                                  x-kubernetes-list-type: atomic
                                 subjectProviderName:
                                   description: |-
                                     SubjectProviderName selects which upstream provider's token to use as the
@@ -5378,6 +5381,7 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                                x-kubernetes-list-type: atomic
                               subjectProviderName:
                                 description: |-
                                   SubjectProviderName selects which upstream provider's token to use as the

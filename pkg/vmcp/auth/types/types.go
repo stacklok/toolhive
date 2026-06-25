@@ -124,6 +124,7 @@ type TokenExchangeConfig struct {
 	Audience string `json:"audience,omitempty" yaml:"audience,omitempty"`
 
 	// Scopes are the requested scopes for the exchanged token.
+	// +listType=atomic
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
 	// SubjectTokenType is the token type of the incoming subject token.

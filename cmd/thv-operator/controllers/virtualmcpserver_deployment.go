@@ -50,6 +50,14 @@ const (
 	// detect every input that influences the deployed PodSpec.ImagePullSecrets.
 	imagePullRefsHashAnnotation = "toolhive.stacklok.io/imagepullsecrets-hash"
 
+	// podVolumesHashAnnotation tracks the SHA256 hash of the desired pod
+	// volumes and volumeMounts list. Mirrors the imagePullRefsHashAnnotation
+	// pattern to detect drift on volume-only inputs (auth-server signing keys,
+	// CA-bundle refs, telemetry CA bundles) without comparing live
+	// PodSpec.Volumes directly, which trips on K8s-defaulted fields like
+	// defaultMode.
+	podVolumesHashAnnotation = "toolhive.stacklok.io/podvolumes-hash"
+
 	// Log level configuration
 	logLevelDebug = "debug" // Debug log level value
 
@@ -147,7 +155,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgsForVmcp(vmcp)
-	volumeMounts, volumes, err := r.buildVolumesForVmcp(ctx, vmcp)
+	volumeMounts, volumes, err := r.buildPodVolumesForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "Failed to build volumes for VirtualMCPServer")
 		return nil
@@ -158,31 +166,9 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		return nil
 	}
 
-	// Add CA bundle volumes for MCPServerEntry backends with caBundleRef
-	caVolumes, caMounts, err := r.buildCABundleVolumesForEntries(ctx, vmcp.Namespace, typedWorkloads)
-	if err != nil {
-		log.FromContext(ctx).Error(err, "Failed to build CA bundle volumes for MCPServerEntries")
-		return nil
-	}
-	volumes = append(volumes, caVolumes...)
-	volumeMounts = append(volumeMounts, caMounts...)
-
-	// Add telemetry CA bundle volumes from the pre-fetched MCPTelemetryConfig
-	if telemetryCfg != nil {
-		telVolumes, telMounts := ctrlutil.AddTelemetryCABundleVolumes(telemetryCfg)
-		volumes = append(volumes, telVolumes...)
-		volumeMounts = append(volumeMounts, telMounts...)
-	}
-
-	// Add embedded auth server volumes if configured (inline config). The matching
-	// env vars are injected by buildEnvVarsForVmcp above so the drift check stays
-	// symmetric with what is built here (see #5616).
-	if vmcp.Spec.AuthServerConfig != nil {
-		authServerVolumes, authServerMounts := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
-		volumes = append(volumes, authServerVolumes...)
-		volumeMounts = append(volumeMounts, authServerMounts...)
-	}
-	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
+	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(
+		ctx, ls, vmcp, telemetryCfg, typedWorkloads,
+	)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
 	podSecurityContext, containerSecurityContext := r.buildSecurityContextsForVmcp(ctx, vmcp)
 	serviceAccountName := r.serviceAccountNameForVmcp(vmcp)
@@ -325,6 +311,44 @@ func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 	}
 
 	// TODO: Add volumes for composite tool definitions from VirtualMCPCompositeToolDefinition refs
+
+	return volumeMounts, volumes, nil
+}
+
+// buildPodVolumesForVmcp assembles the full desired pod volumes and volumeMounts
+// for a VirtualMCPServer Deployment. Shared by deploymentForVirtualMCPServer and
+// the podVolumesNeedsUpdate drift check so both paths hash the same inputs.
+func (r *VirtualMCPServerReconciler) buildPodVolumesForVmcp(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]corev1.VolumeMount, []corev1.Volume, error) {
+	volumeMounts, volumes, err := r.buildVolumesForVmcp(ctx, vmcp)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	caVolumes, caMounts, err := r.buildCABundleVolumesForEntries(ctx, vmcp.Namespace, typedWorkloads)
+	if err != nil {
+		return nil, nil, err
+	}
+	volumes = append(volumes, caVolumes...)
+	volumeMounts = append(volumeMounts, caMounts...)
+
+	if telemetryCfg != nil {
+		telVolumes, telMounts := ctrlutil.AddTelemetryCABundleVolumes(telemetryCfg)
+		volumes = append(volumes, telVolumes...)
+		volumeMounts = append(volumeMounts, telMounts...)
+	}
+
+	// The matching env vars are injected by buildEnvVarsForVmcp so the drift
+	// check stays symmetric with what is built here (see #5616).
+	if vmcp.Spec.AuthServerConfig != nil {
+		authServerVolumes, authServerMounts := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
+		volumes = append(volumes, authServerVolumes...)
+		volumeMounts = append(volumeMounts, authServerMounts...)
+	}
 
 	return volumeMounts, volumes, nil
 }
@@ -891,8 +915,11 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
 func (r *VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
+	ctx context.Context,
 	baseLabels map[string]string,
 	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
 ) (map[string]string, map[string]string) {
 	deploymentLabels := baseLabels
 	deploymentAnnotations := make(map[string]string)
@@ -918,6 +945,16 @@ func (r *VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 		deploymentAnnotations[imagePullRefsHashAnnotation] = hash
 	}
 
+	// Store hash of the desired pod volumes and volumeMounts so
+	// deploymentNeedsUpdate can detect volume-only drift (auth-server secret
+	// refs, CA-bundle refs, telemetry CA bundles) without comparing live
+	// PodSpec.Volumes, which trips on K8s-defaulted fields (see #5619).
+	if volumeMounts, volumes, err := r.buildPodVolumesForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads); err == nil {
+		if hash, err := podVolumesHash(volumeMounts, volumes); err == nil && hash != "" {
+			deploymentAnnotations[podVolumesHashAnnotation] = hash
+		}
+	}
+
 	// TODO: Add support for ResourceOverrides if needed in the future
 
 	return deploymentLabels, deploymentAnnotations
@@ -939,6 +976,104 @@ func imagePullSecretsHash(secrets []corev1.LocalObjectReference) (string, error)
 	canonical, err := json.Marshal(normalized)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal imagePullSecrets for hashing: %w", err)
+	}
+	h := sha256.Sum256(canonical)
+	return hex.EncodeToString(h[:]), nil
+}
+
+// podVolumeHashEntry captures drift-relevant volume fields without K8s-defaulted noise.
+type podVolumeHashEntry struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+// podVolumeMountHashEntry captures drift-relevant volumeMount fields.
+type podVolumeMountHashEntry struct {
+	Name      string `json:"name"`
+	MountPath string `json:"mountPath"`
+	SubPath   string `json:"subPath,omitempty"`
+	ReadOnly  bool   `json:"readOnly,omitempty"`
+}
+
+// podVolumesHashPayload is the canonical form hashed by podVolumesHash.
+type podVolumesHashPayload struct {
+	Volumes      []podVolumeHashEntry      `json:"volumes"`
+	VolumeMounts []podVolumeMountHashEntry `json:"volumeMounts"`
+}
+
+// volumeSourceFingerprint returns a stable identifier for the backing resource
+// referenced by a volume, ignoring K8s-defaulted fields like defaultMode.
+func volumeSourceFingerprint(vol corev1.Volume) string {
+	switch {
+	case vol.ConfigMap != nil:
+		src := "configmap:" + vol.ConfigMap.Name
+		if len(vol.ConfigMap.Items) > 0 {
+			items := make([]string, len(vol.ConfigMap.Items))
+			for i, item := range vol.ConfigMap.Items {
+				items[i] = item.Key + "=" + item.Path
+			}
+			sort.Strings(items)
+			src += ":" + strings.Join(items, ",")
+		}
+		return src
+	case vol.Secret != nil:
+		src := "secret:" + vol.Secret.SecretName
+		if len(vol.Secret.Items) > 0 {
+			items := make([]string, len(vol.Secret.Items))
+			for i, item := range vol.Secret.Items {
+				items[i] = item.Key + "=" + item.Path
+			}
+			sort.Strings(items)
+			src += ":" + strings.Join(items, ",")
+		}
+		return src
+	case vol.EmptyDir != nil:
+		return "emptydir"
+	default:
+		return "unknown:" + vol.Name
+	}
+}
+
+// podVolumesHash returns a deterministic SHA256 hash of the given volumes and
+// volumeMounts. Returns an empty string with no error when both lists are empty.
+func podVolumesHash(mounts []corev1.VolumeMount, volumes []corev1.Volume) (string, error) {
+	if len(mounts) == 0 && len(volumes) == 0 {
+		return "", nil
+	}
+
+	payload := podVolumesHashPayload{
+		Volumes:      make([]podVolumeHashEntry, len(volumes)),
+		VolumeMounts: make([]podVolumeMountHashEntry, len(mounts)),
+	}
+
+	for i, vol := range volumes {
+		payload.Volumes[i] = podVolumeHashEntry{
+			Name:   vol.Name,
+			Source: volumeSourceFingerprint(vol),
+		}
+	}
+	sort.Slice(payload.Volumes, func(i, j int) bool {
+		return payload.Volumes[i].Name < payload.Volumes[j].Name
+	})
+
+	for i, mount := range mounts {
+		payload.VolumeMounts[i] = podVolumeMountHashEntry{
+			Name:      mount.Name,
+			MountPath: mount.MountPath,
+			SubPath:   mount.SubPath,
+			ReadOnly:  mount.ReadOnly,
+		}
+	}
+	sort.Slice(payload.VolumeMounts, func(i, j int) bool {
+		if payload.VolumeMounts[i].Name != payload.VolumeMounts[j].Name {
+			return payload.VolumeMounts[i].Name < payload.VolumeMounts[j].Name
+		}
+		return payload.VolumeMounts[i].MountPath < payload.VolumeMounts[j].MountPath
+	})
+
+	canonical, err := json.Marshal(payload)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal pod volumes for hashing: %w", err)
 	}
 	h := sha256.Sum256(canonical)
 	return hex.EncodeToString(h[:]), nil

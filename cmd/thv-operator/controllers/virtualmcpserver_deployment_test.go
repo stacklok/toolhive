@@ -333,10 +333,14 @@ func TestBuildDeploymentMetadataForVmcp(t *testing.T) {
 	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 	r := &VirtualMCPServerReconciler{}
-	labels, annotations := r.buildDeploymentMetadataForVmcp(baseLabels, vmcp)
+	labels, annotations := r.buildDeploymentMetadataForVmcp(
+		t.Context(), baseLabels, vmcp, nil, []workloads.TypedWorkload{},
+	)
 
 	assert.Equal(t, baseLabels, labels)
 	assert.NotNil(t, annotations)
+	assert.NotEmpty(t, annotations[podVolumesHashAnnotation],
+		"podVolumesHashAnnotation must be set for the default vmcp-config volume")
 }
 
 // TestBuildPodTemplateMetadata tests pod template metadata generation
@@ -1132,6 +1136,129 @@ func TestImagePullSecretsHash(t *testing.T) {
 		require.NoError(t, err)
 		assert.NotEqual(t, a, b)
 	})
+}
+
+// TestPodVolumesHash verifies the hash helper normalizes order, treats empty
+// lists as the sentinel "" hash, and distinguishes different backing refs.
+func TestPodVolumesHash(t *testing.T) {
+	t.Parallel()
+
+	t.Run("empty lists return empty hash", func(t *testing.T) {
+		t.Parallel()
+		hash, err := podVolumesHash(nil, nil)
+		require.NoError(t, err)
+		assert.Empty(t, hash)
+	})
+
+	t.Run("volume mount order-insensitive", func(t *testing.T) {
+		t.Parallel()
+		volumes := []corev1.Volume{{
+			Name: "vmcp-config",
+			VolumeSource: corev1.VolumeSource{
+				ConfigMap: &corev1.ConfigMapVolumeSource{
+					LocalObjectReference: corev1.LocalObjectReference{Name: "cfg"},
+				},
+			},
+		}}
+		mountsA := []corev1.VolumeMount{
+			{Name: "a", MountPath: "/a"},
+			{Name: "b", MountPath: "/b"},
+		}
+		mountsB := []corev1.VolumeMount{
+			{Name: "b", MountPath: "/b"},
+			{Name: "a", MountPath: "/a"},
+		}
+		a, err := podVolumesHash(mountsA, volumes)
+		require.NoError(t, err)
+		b, err := podVolumesHash(mountsB, volumes)
+		require.NoError(t, err)
+		assert.Equal(t, a, b, "reordering must not change the hash")
+	})
+
+	t.Run("different secret refs produce different hashes", func(t *testing.T) {
+		t.Parallel()
+		baseMounts := []corev1.VolumeMount{{Name: "auth-key-0", MountPath: "/keys/key-0.pem", SubPath: "key-0.pem", ReadOnly: true}}
+		volA := []corev1.Volume{{
+			Name: "auth-key-0",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: "keys-v1",
+					Items:      []corev1.KeyToPath{{Key: "pem", Path: "key-0.pem"}},
+				},
+			},
+		}}
+		volB := []corev1.Volume{{
+			Name: "auth-key-0",
+			VolumeSource: corev1.VolumeSource{
+				Secret: &corev1.SecretVolumeSource{
+					SecretName: "keys-v2",
+					Items:      []corev1.KeyToPath{{Key: "pem", Path: "key-0.pem"}},
+				},
+			},
+		}}
+		a, err := podVolumesHash(baseMounts, volA)
+		require.NoError(t, err)
+		b, err := podVolumesHash(baseMounts, volB)
+		require.NoError(t, err)
+		assert.NotEqual(t, a, b)
+	})
+}
+
+// TestDeploymentForVirtualMCPServer_PodVolumes_UpdatePath verifies that edits
+// to volume-only inputs (auth-server signing key secret refs) are detected by
+// deploymentNeedsUpdate and propagate to the live Deployment. Regression test
+// for #5619 where volume-only changes were silently missed.
+func TestDeploymentForVirtualMCPServer_PodVolumes_UpdatePath(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+
+	r := &VirtualMCPServerReconciler{
+		Scheme:           scheme,
+		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+	}
+
+	authConfig := func(secretName string) *mcpv1beta1.EmbeddedAuthServerConfig {
+		return &mcpv1beta1.EmbeddedAuthServerConfig{
+			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+				{Name: secretName, Key: "pem"},
+			},
+		}
+	}
+
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPAuthServerConfig(authConfig("keys-v1")),
+	)
+
+	initialDep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+	require.NotNil(t, initialDep)
+	require.NotEmpty(t, initialDep.Annotations[podVolumesHashAnnotation])
+
+	vmcp.Spec.AuthServerConfig = authConfig("keys-v2")
+
+	needsUpdate := r.podVolumesNeedsUpdate(t.Context(), initialDep, vmcp, nil, []workloads.TypedWorkload{})
+	assert.True(t, needsUpdate, "signing key secret ref change must be detected as drift")
+
+	parentNeedsUpdate := r.deploymentNeedsUpdate(
+		t.Context(), initialDep, vmcp, "test-checksum", nil, []workloads.TypedWorkload{},
+	)
+	assert.True(t, parentNeedsUpdate, "deploymentNeedsUpdate must propagate pod volume drift")
+
+	updatedDep := r.deploymentForVirtualMCPServer(t.Context(), vmcp, "test-checksum", nil, []workloads.TypedWorkload{})
+	require.NotNil(t, updatedDep)
+
+	var secretName string
+	for _, vol := range updatedDep.Spec.Template.Spec.Volumes {
+		if vol.Secret != nil && strings.HasPrefix(vol.Name, "authserver-signing-key-") {
+			secretName = vol.Secret.SecretName
+			break
+		}
+	}
+	assert.Equal(t, "keys-v2", secretName, "rebuilt Deployment must mount the new secret")
+
+	settled := r.podVolumesNeedsUpdate(t.Context(), updatedDep, vmcp, nil, []workloads.TypedWorkload{})
+	assert.False(t, settled, "drift check must settle once Deployment is rebuilt")
 }
 
 // TestBuildHeaderForwardEnvVarsForEntries verifies the operator emits one env

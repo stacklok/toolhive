@@ -162,10 +162,11 @@ func TestRestoreSession_ErrorCases(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_PopulatesBothSubjectFieldAndClaims verifies that after
-// RestoreSession the reconstructed identity's binding is stored and the
-// decorator accepts a matching caller.
-func TestRestoreSession_PopulatesBothSubjectFieldAndClaims(t *testing.T) {
+// TestRestoreSession_PreservesIdentityBindingAndAcceptsMatchingCaller verifies
+// that after RestoreSession the stored identity binding is preserved in session
+// metadata and the security decorator accepts a caller whose identity matches
+// the binding.
+func TestRestoreSession_PreservesIdentityBindingAndAcceptsMatchingCaller(t *testing.T) {
 	t.Parallel()
 
 	factory := newSessionFactoryWithConnector(nilBackendConnector())

@@ -6,6 +6,9 @@ suite: namespace-scoped install
 set:
   operator.rbac.scope: namespace
   operator.rbac.allowedNamespaces: [team-a, team-b]
+  # storageVersionMigrator requires cluster scope; the chart rejects it under
+  # namespace scope (see feature_flags_test.yaml), so disable it here.
+  operator.features.storageVersionMigrator: false
 templates:
   - deployment.yaml
   - clusterrole/rolebinding.yaml

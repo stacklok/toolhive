@@ -83,6 +83,19 @@ operator:
 
 Once enabled, the controller is dormant on CRDs whose `storedVersions` already equals `[<currentStorageVersion>]` — most of the time, most CRDs. It only does meaningful work when a CRD's stored-versions list is dirty (typically right after a graduation release).
 
+### Requires cluster-scoped RBAC
+
+The migrator only works when the operator runs cluster-scoped (`operator.rbac.scope=cluster`, the default). It watches cluster-scoped `CustomResourceDefinition` objects and re-stores custom resources across **all** namespaces — neither is possible for a namespace-scoped operator, which gets only per-namespace `RoleBindings` and a namespace-restricted manager cache. To prevent a silently wedged operator, the chart **fails the render** if `storageVersionMigrator: true` is combined with `operator.rbac.scope=namespace`:
+
+```
+operator.features.storageVersionMigrator requires operator.rbac.scope=cluster: the
+StorageVersionMigrator controller watches cluster-scoped CustomResourceDefinitions and
+re-stores resources across all namespaces, which a namespace-scoped operator cannot do.
+Set operator.features.storageVersionMigrator=false for namespace-scoped installs.
+```
+
+Namespace-scoped installs must set `storageVersionMigrator: false` and handle storage-version cleanup by other means — e.g. running the standalone [`kube-storage-version-migrator`](https://github.com/kubernetes-sigs/kube-storage-version-migrator), which is a cluster-scoped component with its own identity, before any version-removal release.
+
 ## Per-CRD emergency escape hatch
 
 Removing the label on a live cluster excludes that single CRD from migration immediately:

@@ -14,6 +14,9 @@ operator:
     # orphaning etcd objects in the cluster. Enabled by default; set to
     # false to opt out and handle storage-version cleanup yourself. Sets
     # TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR in the operator deployment.
+    # Requires `operator.rbac.scope=cluster` — the controller watches
+    # cluster-scoped CRDs and re-stores resources across all namespaces, so
+    # the chart rejects this being true when scope is namespace.
     storageVersionMigrator: true
   # -- Number of replicas for the operator deployment
   replicaCount: 1

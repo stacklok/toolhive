@@ -1234,13 +1234,17 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 				return
 			}
 			identity.UpstreamTokens = tokens
-			identity.FailedUpstreamProviders = failed
+			// Conservative policy: any provider refresh failure rejects the entire
+			// request. In vMCP multi-provider sessions this may block requests that
+			// could partially succeed if only some backends need the failing provider.
+			// A per-backend provider check would require routing context not available
+			// at this layer; this is the correct tradeoff for now.
 			if len(failed) > 0 {
 				slog.WarnContext(loadCtx, "upstream token refresh failed; returning 401",
 					"providers", failed, "subject", identity.Subject)
 				w.Header().Set("WWW-Authenticate",
-					`Bearer error="invalid_token", error_description="upstream token is no longer valid; re-authentication required"`)
-				http.Error(w, "upstream authentication required", http.StatusUnauthorized)
+					v.buildWWWAuthenticate(OAuthErrInvalidToken, "upstream token is no longer valid; re-authentication required"))
+				writeOAuthError(w, OAuthErrInvalidToken, "upstream authentication required", http.StatusUnauthorized)
 				return
 			}
 		}

@@ -6,10 +6,11 @@
 # deterministic merge gate lives in .github/CODEOWNERS.
 #
 # Brain / hands split:
-#   - The "brain" (Claude) reads only local files -- the trusted routing doc and
-#     a precomputed changed-file list -- and writes a decision file. Its tools are
-#     restricted to Read/Glob/Grep/Write; it has NO Bash and NO GitHub write tool,
-#     so it cannot request reviewers, push, or otherwise act on the PR itself.
+#   - The "brain" (Claude) reads only local files -- the routing doc and a
+#     precomputed changed-file list -- and writes a decision file. Its tools are
+#     restricted to Read/Glob/Grep/Write (no Bash, no GitHub tools), so even with
+#     a token in its environment it cannot request reviewers, push, or otherwise
+#     act on the PR itself.
 #   - The "hands" (the final step) is plain bash holding the GITHUB_TOKEN. It
 #     validates the brain's picks against the @handles in REVIEWERS.md, drops
 #     the PR author, requests reviewers via `gh api`, and upserts one summary
@@ -95,11 +96,16 @@ jobs:
         uses: anthropics/claude-code-action@80b31826338489861333dc17217865dfe8085cdc # v1.0.155
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          # The brain reads local files and writes ONE decision file. No Bash and
-          # no GitHub write tool: it cannot request reviewers or act on the PR --
-          # the deterministic step below does that from the decision file.
-          allowed_tools: "Read,Glob,Grep,Write"
-          claude_args: --model claude-sonnet-4-6
+          # A github_token is required: without it the action falls back to OIDC
+          # and fails ("Could not fetch an OIDC token"). The brain is kept
+          # handless at the TOOL level instead -- claude_args restricts it to
+          # local file tools (no Bash, no GitHub tools), so it cannot act on the
+          # PR even though a token is present. The deterministic step below does
+          # the reviewer request from the decision file. NOTE: tool restriction
+          # must go through claude_args; the `allowed_tools` input does not exist
+          # on this action version.
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          claude_args: --allowedTools "Read,Glob,Grep,Write" --model claude-sonnet-4-6
           prompt: |
             You are a reviewer-routing assistant for the ${{ github.repository }}
             repository. Decide which reviewers to request for pull request

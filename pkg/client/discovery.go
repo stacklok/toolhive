@@ -12,8 +12,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/tidwall/gjson"
 	"github.com/tailscale/hujson"
+	"github.com/tidwall/gjson"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -114,7 +114,7 @@ func (cm *ClientManager) IsClientInstalled(clientType ClientApp) bool {
 }
 
 func settingsFileHasKey(path, key string) bool {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is constructed from trusted home-dir client config locations
 	if err != nil {
 		return false
 	}

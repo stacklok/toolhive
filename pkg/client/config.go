@@ -212,16 +212,16 @@ type clientAppConfig struct {
 	Deprecated bool
 	// DeprecationMessage is the full warning text shown to users (on stderr)
 	// when they touch a deprecated client. Only set when Deprecated is true.
-	DeprecationMessage            string
-	RelPath                       []string
-	SettingsFile                  string
-	PlatformPrefix                map[Platform][]string
-	MCPServersPathPrefix          string
+	DeprecationMessage   string
+	RelPath              []string
+	SettingsFile         string
+	PlatformPrefix       map[Platform][]string
+	MCPServersPathPrefix string
 	// InstallSettingsKey, when set, requires this JSON key in the client's
 	// settings file for IsClientInstalled to return true. Used for extension
 	// clients that share a host editor's config directory (e.g. Amp in VS Code).
-	InstallSettingsKey string
-	Extension          Extension
+	InstallSettingsKey            string
+	Extension                     Extension
 	SupportedTransportTypesMap    map[types.TransportType]string // stdio mapped to streamable-http (SSE deprecated)
 	IsTransportTypeFieldSupported bool
 	// MCPServersUrlLabelMap maps transport type to URL field name (e.g., "url", "serverUrl", "httpUrl")

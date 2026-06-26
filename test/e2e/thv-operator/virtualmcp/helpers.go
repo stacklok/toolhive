@@ -723,7 +723,10 @@ func TestToolListing(vmcpNodePort int32, clientName string) []mcp.Tool {
 	return toolsResult.Tools
 }
 
-// InstrumentedBackendScript is an instrumented backend script that tracks Bearer tokens
+// InstrumentedBackendScript is a minimal Flask server that tracks Bearer tokens.
+//
+// Deprecated: This server is not MCP-protocol-aware and cannot serve Initialize
+// or ListTools requests correctly. Use InstrumentedMCPBackendScript for new tests.
 const InstrumentedBackendScript = `
 pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
 from flask import Flask, request, jsonify
@@ -1621,10 +1624,19 @@ func deployDex(
 	}
 	gomega.Expect(c.Create(ctx, dexSvc)).To(gomega.Succeed())
 
-	// Read back the auto-assigned NodePort
-	gomega.Expect(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dexSvc)).To(gomega.Succeed())
-	nodePort := dexSvc.Spec.Ports[0].NodePort
-	gomega.Expect(nodePort).NotTo(gomega.BeZero(), "Kubernetes should auto-assign a NodePort for Dex")
+	// Wait for the NodePort to be assigned (assigned asynchronously by the endpoint controller).
+	var nodePort int32
+	gomega.Eventually(func() (int32, error) {
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dexSvc); err != nil {
+			return 0, err
+		}
+		if len(dexSvc.Spec.Ports) == 0 || dexSvc.Spec.Ports[0].NodePort == 0 {
+			return 0, fmt.Errorf("NodePort not yet assigned for Dex service %s", name)
+		}
+		nodePort = dexSvc.Spec.Ports[0].NodePort
+		return nodePort, nil
+	}, timeout, pollingInterval).Should(gomega.BeNumerically(">", 0),
+		"Kubernetes should auto-assign a NodePort for Dex")
 
 	ginkgo.By("Waiting for Dex to be ready")
 	gomega.Eventually(func() bool {
@@ -1858,14 +1870,17 @@ func rewriteURLBase(urlStr, expectedHost, newBase string) (string, error) {
 		return "", fmt.Errorf("parsing URL %q: %w", urlStr, err)
 	}
 	if u.Host != expectedHost {
-		// The host might have a different port or prefix — do a best-effort replacement
-		// by just checking the host contains the expected host (without port)
+		// Strip ports and compare hostnames exactly to avoid ambiguous substring matches.
+		actualHostNoPort := u.Host
+		if h, _, splitErr := net.SplitHostPort(u.Host); splitErr == nil {
+			actualHostNoPort = h
+		}
 		expectedHostNoPort := expectedHost
 		if h, _, splitErr := net.SplitHostPort(expectedHost); splitErr == nil {
 			expectedHostNoPort = h
 		}
-		if !strings.Contains(u.Host, expectedHostNoPort) {
-			return "", fmt.Errorf("URL host %q does not contain expected host %q (URL: %s)", u.Host, expectedHostNoPort, urlStr)
+		if actualHostNoPort != expectedHostNoPort {
+			return "", fmt.Errorf("URL host %q does not match expected host %q (URL: %s)", u.Host, expectedHost, urlStr)
 		}
 	}
 	base, err := url.Parse(newBase)

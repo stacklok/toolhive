@@ -1241,10 +1241,12 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 			// at this layer; this is the correct tradeoff for now.
 			if len(failed) > 0 {
 				slog.WarnContext(loadCtx, "upstream token refresh failed; returning 401",
-					"providers", failed, "subject", identity.Subject)
+					"providers", failed)
 				w.Header().Set("WWW-Authenticate",
 					v.buildWWWAuthenticate(OAuthErrInvalidToken, "upstream token is no longer valid; re-authentication required"))
-				writeOAuthError(w, OAuthErrInvalidToken, "upstream authentication required", http.StatusUnauthorized)
+				writeOAuthError(w, OAuthErrInvalidToken,
+					"upstream token is no longer valid; re-authentication required",
+					http.StatusUnauthorized)
 				return
 			}
 		}

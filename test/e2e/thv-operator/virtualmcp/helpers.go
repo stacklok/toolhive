@@ -12,6 +12,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -1725,6 +1726,7 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 	if err != nil {
 		return "", fmt.Errorf("authorize request failed: %w", err)
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusFound {
 		return "", fmt.Errorf("expected 302 from /oauth/authorize, got %d", resp.StatusCode)
@@ -1745,6 +1747,7 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 	if err != nil {
 		return "", fmt.Errorf("calling Dex auth endpoint: %w", err)
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusFound {
 		return "", fmt.Errorf("expected 302 from Dex auth, got %d", resp.StatusCode)
@@ -1765,6 +1768,7 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 	if err != nil {
 		return "", fmt.Errorf("AS callback request failed: %w", err)
 	}
+	_, _ = io.Copy(io.Discard, resp.Body)
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusSeeOther {
 		return "", fmt.Errorf("expected 302/303 from AS callback, got %d", resp.StatusCode)
@@ -1824,11 +1828,11 @@ func registerOAuthClient(httpClient *http.Client, vmcpBaseURL string) (clientID,
 		"grant_types":   []string{"authorization_code"},
 	})
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("marshaling DCR request body: %w", err)
 	}
 	req, err := http.NewRequest(http.MethodPost, vmcpBaseURL+"/oauth/register", bytes.NewReader(body))
 	if err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("building DCR HTTP request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := httpClient.Do(req)
@@ -1841,7 +1845,7 @@ func registerOAuthClient(httpClient *http.Client, vmcpBaseURL string) (clientID,
 	}
 	var result map[string]interface{}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return "", "", err
+		return "", "", fmt.Errorf("decoding DCR response: %w", err)
 	}
 	id, _ := result["client_id"].(string)
 	if id == "" {
@@ -1854,7 +1858,7 @@ func registerOAuthClient(httpClient *http.Client, vmcpBaseURL string) (clientID,
 // generatePKCEPair returns a PKCE (code_verifier, code_challenge) pair using S256.
 func generatePKCEPair() (verifier, challenge string) {
 	b := make([]byte, 32)
-	_, _ = rand.Read(b)
+	_, _ = rand.Read(b) // crypto/rand.Read never returns an error since Go 1.20 (panics on OS failure instead)
 	verifier = base64.RawURLEncoding.EncodeToString(b)
 	h := sha256.Sum256([]byte(verifier))
 	challenge = base64.RawURLEncoding.EncodeToString(h[:])
@@ -1870,16 +1874,17 @@ func rewriteURLBase(urlStr, expectedHost, newBase string) (string, error) {
 		return "", fmt.Errorf("parsing URL %q: %w", urlStr, err)
 	}
 	if u.Host != expectedHost {
-		// Strip ports and compare hostnames exactly to avoid ambiguous substring matches.
-		actualHostNoPort := u.Host
-		if h, _, splitErr := net.SplitHostPort(u.Host); splitErr == nil {
-			actualHostNoPort = h
+		// Strip ports, compare hostname and port independently so a same-hostname
+		// different-port URL does not bypass the guard.
+		actualHost, actualPort, splitErrA := net.SplitHostPort(u.Host)
+		expectedHostName, expectedPort, splitErrE := net.SplitHostPort(expectedHost)
+		if splitErrA != nil {
+			actualHost = u.Host
 		}
-		expectedHostNoPort := expectedHost
-		if h, _, splitErr := net.SplitHostPort(expectedHost); splitErr == nil {
-			expectedHostNoPort = h
+		if splitErrE != nil {
+			expectedHostName = expectedHost
 		}
-		if actualHostNoPort != expectedHostNoPort {
+		if actualHost != expectedHostName || (expectedPort != "" && actualPort != expectedPort) {
 			return "", fmt.Errorf("URL host %q does not match expected host %q (URL: %s)", u.Host, expectedHost, urlStr)
 		}
 	}

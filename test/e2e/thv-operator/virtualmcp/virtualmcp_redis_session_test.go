@@ -1077,18 +1077,20 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			gomega.Expect(toolsA.Tools).NotTo(gomega.BeEmpty(),
 				"pod A must return tools after Initialize")
 
-			ginkgo.By("Verifying backend received Bearer token on pod A's Initialize (upstreamInject fired)")
+			ginkgo.By("Verifying backend received a Bearer token on pod A's Initialize (upstreamInject fired)")
 			// The embedded AS stored the Dex access token in Redis (keyed by tsid).
 			// The OIDC middleware on pod A reads it and places it in Identity.UpstreamTokens["dex"].
 			// upstreamInject injects this token into the backend Initialize request.
+			// InitializeCalls is only incremented on the "initialize" JSON-RPC method,
+			// making this assertion precise: it is not inflated by ListTools or CallTool traffic.
 			gomega.Eventually(func() (int, error) {
 				stats, statsErr := GetInstrumentedMCPBackendStats(ctx, k8sClient, defaultNamespace, backendServiceName)
 				if statsErr != nil {
 					return 0, statsErr
 				}
-				return stats.BearerTokenRequests, nil
+				return stats.InitializeCalls, nil
 			}, 30*time.Second, 2*time.Second).Should(gomega.BeNumerically(">=", 1),
-				"backend must have received at least one Bearer token request from pod A's Initialize")
+				"backend must have received at least one Initialize call from pod A")
 
 			ginkgo.By(fmt.Sprintf("Connecting to pod B (%s) with the same session ID (triggers RestoreSession)", podB.Name))
 			serverURLPodB := fmt.Sprintf("http://localhost:%d/mcp", localPortB)
@@ -1113,20 +1115,23 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			gomega.Expect(toolsB.Tools).NotTo(gomega.BeEmpty(),
 				"pod B must return tools via the Redis-reconstructed session")
 
-			ginkgo.By("Verifying backend received a second Bearer token from pod B's RestoreSession Initialize")
+			ginkgo.By("Verifying backend received a second Initialize call from pod B's RestoreSession")
 			// This assertion fails if context.WithoutCancel in loadSession is reverted
 			// to context.Background(): without the fix, RestoreSession would call
 			// Initialize with no identity, upstreamInject would fail to find
-			// UpstreamTokens["dex"], and the backend would not receive a Bearer token.
+			// UpstreamTokens["dex"], and the backend Initialize would fail — keeping
+			// initialize_calls at 1.  InitializeCalls is only incremented on the
+			// "initialize" JSON-RPC method so ListTools and CallTool traffic cannot
+			// spuriously satisfy this threshold.
 			gomega.Eventually(func() (int, error) {
 				stats, statsErr := GetInstrumentedMCPBackendStats(ctx, k8sClient, defaultNamespace, backendServiceName)
 				if statsErr != nil {
 					return 0, statsErr
 				}
-				return stats.BearerTokenRequests, nil
+				return stats.InitializeCalls, nil
 			}, 30*time.Second, 2*time.Second).Should(gomega.BeNumerically(">=", 2),
-				"backend must have received Bearer tokens from both pod A and pod B Initialize calls; "+
-					"the second call confirms upstreamInject fired correctly after cross-pod restore")
+				"backend must have received two Initialize calls (pod A + pod B RestoreSession); "+
+					"this assertion fails if context.WithoutCancel in loadSession is reverted to context.Background()")
 		})
 	})
 })

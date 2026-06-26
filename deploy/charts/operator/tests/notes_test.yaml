@@ -1,0 +1,34 @@
+suite: post-install notes
+# NOTES.txt is the only user-facing output after `helm install`. Pin the
+# actionable commands and key guidance so template refactors don't silently
+# drop the post-install walkthrough.
+release:
+  name: toolhive-operator
+  namespace: toolhive-system
+templates:
+  - NOTES.txt
+tests:
+  - it: renders release and namespace context
+    asserts:
+      - matchRegexRaw:
+          pattern: 'Release: toolhive-operator'
+      - matchRegexRaw:
+          pattern: 'Namespace: toolhive-system'
+
+  - it: includes verification and troubleshooting commands
+    asserts:
+      - matchRegexRaw:
+          pattern: 'kubectl get pods -n toolhive-system'
+      - matchRegexRaw:
+          pattern: 'kubectl rollout status deployment/toolhive-operator'
+      - matchRegexRaw:
+          pattern: 'kubectl logs -n toolhive-system'
+
+  - it: includes a minimal MCPServer example and documentation links
+    asserts:
+      - matchRegexRaw:
+          pattern: 'kind: MCPServer'
+      - matchRegexRaw:
+          pattern: 'deploying-mcp-server-with-operator\.md'
+      - matchRegexRaw:
+          pattern: 'docs\.stacklok\.com/toolhive/'

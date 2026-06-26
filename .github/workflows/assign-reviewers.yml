@@ -192,9 +192,12 @@ jobs:
                 else empty end
               | .handle |= (if type == "string" then . else "" end)
               | .reason |= (tostring | gsub("@"; ""))
-              | select(.handle != ""
-                       and (.handle | ascii_downcase) != $author
-                       and (($allow | index(.handle | ascii_downcase)) != null))
+              # Bind the lowercased handle first: inside `$allow | index(f)`, f is
+              # evaluated against $allow (the array), not the reviewer object, so
+              # `.handle` there would index the array and abort. A bound variable
+              # avoids that.
+              | (.handle | ascii_downcase) as $h
+              | select(.handle != "" and $h != $author and ($allow | index($h)) != null)
             ]' "$DECISION")
 
           if [ "$(jq 'length' <<<"$survivors")" -eq 0 ]; then

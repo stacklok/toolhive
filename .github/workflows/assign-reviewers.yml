@@ -97,10 +97,13 @@ jobs:
             reviewers whose @handle literally appears in .github/REVIEWERS.md.
 
             HOW TO SEE WHAT CHANGED: run
-              git diff --name-status ${{ github.event.pull_request.base.sha }} HEAD
-            to list the changed files (status + path). If a rule depends on the
-            actual change (e.g. "comment-only"), inspect a file with
-              git diff ${{ github.event.pull_request.base.sha }} HEAD -- <path>
+              git diff --name-status ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}
+            to list the files THIS PR changed (status + path). The three-dot form
+            diffs from the merge-base, so changes already on the base branch are
+            excluded -- use exactly this form, not a two-dot diff against HEAD,
+            which would include unrelated base-branch drift. If a rule depends on
+            the actual change (e.g. "comment-only"), inspect a file with
+              git diff ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }} -- <path>
             Read .github/REVIEWERS.md for the ownership rules and valid @handles.
             (If .github/REVIEWERS.md does not exist, output {"reviewers": []}.)
 

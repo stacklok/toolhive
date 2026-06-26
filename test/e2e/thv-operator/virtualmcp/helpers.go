@@ -5,12 +5,17 @@
 package virtualmcp
 
 import (
+	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -1370,4 +1375,504 @@ func GetVMCPStatus(nodePort int32) (*VMCPStatusResponse, error) {
 func GetVMCPBackendsHealth(nodePort int32) (*VMCPBackendsHealthResponse, error) {
 	return getAndDecodeJSON[VMCPBackendsHealthResponse](
 		fmt.Sprintf("http://localhost:%d/api/backends/health", nodePort), "/api/backends/health")
+}
+
+// InstrumentedMCPBackendStats holds the parsed JSON response from the instrumented MCP backend's /stats endpoint.
+type InstrumentedMCPBackendStats struct {
+	TotalRequests       int    `json:"total_requests"`
+	BearerTokenRequests int    `json:"bearer_token_requests"`
+	LastBearerToken     string `json:"last_bearer_token"`
+	InitializeCalls     int    `json:"initialize_calls"`
+}
+
+// InstrumentedMCPBackendScript is a Python Flask server that implements the MCP streamable-http
+// protocol and logs every inbound Authorization: Bearer token to a /stats endpoint. This backend
+// is suitable for verifying that outgoing auth strategies (upstreamInject, headerInjection) inject
+// tokens into backend requests, including during cross-pod session restore.
+const InstrumentedMCPBackendScript = `
+pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
+from flask import Flask, request, jsonify
+import json
+import sys
+
+app = Flask(__name__)
+
+stats = {
+    "total_requests": 0,
+    "bearer_token_requests": 0,
+    "last_bearer_token": None,
+    "initialize_calls": 0,
+}
+
+@app.route('/stats')
+def get_stats():
+    print(f"Stats request: {stats}", flush=True)
+    sys.stdout.flush()
+    return jsonify(stats)
+
+@app.route('/health')
+def health():
+    return jsonify({"status": "ok"})
+
+@app.route('/mcp', methods=['GET', 'POST', 'DELETE'])
+def mcp():
+    stats["total_requests"] += 1
+
+    auth = request.headers.get("Authorization", "")
+    if auth.startswith("Bearer ") and len(auth) > 7:
+        stats["bearer_token_requests"] += 1
+        stats["last_bearer_token"] = auth[7:]
+        print(f"*** BEARER TOKEN DETECTED (count={stats['bearer_token_requests']}): {auth[:50]}", flush=True)
+        sys.stdout.flush()
+
+    if request.method == "DELETE":
+        return "", 204
+
+    body = request.get_json(silent=True) or {}
+    method = body.get("method", "")
+    req_id = body.get("id")
+
+    print(f"MCP request: method={method}, id={req_id}, bearer={bool(stats['last_bearer_token'])}", flush=True)
+    sys.stdout.flush()
+
+    if method == "initialize":
+        stats["initialize_calls"] += 1
+        return jsonify({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "instrumented-mcp-backend", "version": "1.0.0"}
+            }
+        })
+    elif method == "notifications/initialized":
+        return "", 204
+    elif method == "tools/list":
+        return jsonify({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "tools": [
+                    {
+                        "name": "instrumented_ping",
+                        "description": "Ping tool for testing token injection",
+                        "inputSchema": {"type": "object", "properties": {}}
+                    }
+                ]
+            }
+        })
+    elif method == "tools/call":
+        return jsonify({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "result": {
+                "content": [{"type": "text", "text": "pong"}]
+            }
+        })
+    else:
+        return jsonify({
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "error": {"code": -32601, "message": "Method not found"}
+        })
+
+if __name__ == "__main__":
+    print("Instrumented MCP backend starting on port 8080", flush=True)
+    sys.stdout.flush()
+    app.run(host="0.0.0.0", port=8080)
+PYTHON_SCRIPT
+`
+
+// GetInstrumentedMCPBackendStats queries the /stats endpoint of an instrumented MCP backend
+// and returns the parsed statistics.
+func GetInstrumentedMCPBackendStats(
+	ctx context.Context, c client.Client, namespace, serviceName string,
+) (*InstrumentedMCPBackendStats, error) {
+	logs, err := GetServiceStats(ctx, c, namespace, serviceName, 8080)
+	if err != nil {
+		return nil, err
+	}
+	var stats InstrumentedMCPBackendStats
+	if err := json.Unmarshal([]byte(logs), &stats); err != nil {
+		return nil, fmt.Errorf("failed to parse instrumented backend stats JSON %q: %w", logs, err)
+	}
+	return &stats, nil
+}
+
+// dexConfig generates the Dex YAML configuration for in-cluster testing.
+// The vmcpCallbackURL is the URL that Dex will redirect to after authentication
+// (the embedded auth server's callback endpoint).
+func dexConfig(issuerURL, vmcpCallbackURL string) string {
+	return fmt.Sprintf(`issuer: %s
+storage:
+  type: memory
+web:
+  http: 0.0.0.0:5556
+connectors:
+  - type: mockCallback
+    id: mock
+    name: Mock
+staticClients:
+  - id: vmcp-authserver
+    secret: authserver-secret
+    redirectURIs:
+      - %s
+    name: VMCP Auth Server
+`, issuerURL, vmcpCallbackURL)
+}
+
+// DexInfo holds information about a deployed Dex instance.
+type DexInfo struct {
+	// InClusterIssuerURL is the Dex issuer URL accessible from inside the cluster.
+	InClusterIssuerURL string
+	// InClusterBaseURL is the base URL for Dex from inside the cluster (for endpoint construction).
+	InClusterBaseURL string
+	// NodePort is the Kubernetes NodePort for accessing Dex from outside the cluster.
+	NodePort int32
+	// LocalURL is the Dex URL accessible from the test process (via NodePort).
+	LocalURL string
+}
+
+// deployDex deploys an in-cluster Dex OIDC provider for testing.
+// It uses the mockCallback connector which auto-approves all authentication requests,
+// making it suitable for automated E2E tests without browser interaction.
+//
+// The vmcpCallbackURL must be the embedded auth server's OAuth callback URL
+// (typically http://vmcp-<name>.<namespace>.svc.cluster.local:4483/oauth/callback).
+// This URL is registered in Dex's static client to allow the embedded AS redirect flow.
+//
+// Returns a DexInfo struct and a cleanup function. The cleanup function removes all created resources.
+func deployDex(
+	ctx context.Context,
+	c client.Client,
+	name, namespace string,
+	vmcpCallbackURL string,
+	timeout, pollingInterval time.Duration,
+) (*DexInfo, func()) {
+	inClusterBaseURL := fmt.Sprintf("http://%s.%s.svc.cluster.local:5556", name, namespace)
+	configMapName := name + "-config"
+
+	ginkgo.By("Creating Dex ConfigMap with mockCallback connector")
+	configData := dexConfig(inClusterBaseURL, vmcpCallbackURL)
+	gomega.Expect(c.Create(ctx, &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace},
+		Data:       map[string]string{"config.yaml": configData},
+	})).To(gomega.Succeed())
+
+	labels := map[string]string{"app": name}
+
+	ginkgo.By("Creating Dex Deployment")
+	gomega.Expect(c.Create(ctx, &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace, Labels: labels},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:    "dex",
+						Image:   images.DexImage,
+						Command: []string{"/usr/local/bin/dex", "serve", "/etc/dex/config.yaml"},
+						Ports:   []corev1.ContainerPort{{ContainerPort: 5556, Name: "http"}},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								HTTPGet: &corev1.HTTPGetAction{
+									Path: "/.well-known/openid-configuration",
+									Port: intstr.FromInt(5556),
+								},
+							},
+							InitialDelaySeconds: 3,
+							PeriodSeconds:       3,
+							FailureThreshold:    20,
+						},
+						VolumeMounts: []corev1.VolumeMount{{
+							Name:      "config",
+							MountPath: "/etc/dex",
+						}},
+					}},
+					Volumes: []corev1.Volume{{
+						Name: "config",
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{Name: configMapName},
+							},
+						},
+					}},
+				},
+			},
+		},
+	})).To(gomega.Succeed())
+
+	ginkgo.By("Creating Dex NodePort Service")
+	dexSvc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeNodePort,
+			Selector: labels,
+			Ports: []corev1.ServicePort{{
+				Port:       5556,
+				TargetPort: intstr.FromInt(5556),
+				Protocol:   corev1.ProtocolTCP,
+				Name:       "http",
+			}},
+		},
+	}
+	gomega.Expect(c.Create(ctx, dexSvc)).To(gomega.Succeed())
+
+	// Read back the auto-assigned NodePort
+	gomega.Expect(c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dexSvc)).To(gomega.Succeed())
+	nodePort := dexSvc.Spec.Ports[0].NodePort
+	gomega.Expect(nodePort).NotTo(gomega.BeZero(), "Kubernetes should auto-assign a NodePort for Dex")
+
+	ginkgo.By("Waiting for Dex to be ready")
+	gomega.Eventually(func() bool {
+		dep := &appsv1.Deployment{}
+		if err := c.Get(ctx, types.NamespacedName{Name: name, Namespace: namespace}, dep); err != nil {
+			return false
+		}
+		return dep.Status.ReadyReplicas > 0
+	}, timeout, pollingInterval).Should(gomega.BeTrue(), "Dex should be ready")
+
+	info := &DexInfo{
+		InClusterIssuerURL: inClusterBaseURL,
+		InClusterBaseURL:   inClusterBaseURL,
+		NodePort:           nodePort,
+		LocalURL:           fmt.Sprintf("http://localhost:%d", nodePort),
+	}
+
+	cleanup := func() {
+		_ = c.Delete(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
+		_ = c.Delete(ctx, &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}})
+		_ = c.Delete(ctx, &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: configMapName, Namespace: namespace}})
+	}
+
+	return info, cleanup
+}
+
+// embeddedASTokenResult holds the result of an embedded AS token request.
+type embeddedASTokenResult struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+}
+
+// getEmbeddedASToken performs the OAuth2 PKCE authorization code flow against the embedded
+// auth server (running inside a vMCP pod) using Dex as the upstream OIDC provider.
+//
+// It works from outside the cluster by:
+//  1. Calling the embedded AS /oauth/authorize via port-forward
+//  2. Rewriting the Dex redirect URL from in-cluster to the Dex NodePort
+//  3. Following Dex's mockCallback auto-approval redirect
+//  4. Rewriting the callback URL from in-cluster to the port-forward address
+//  5. Exchanging the resulting auth code for an access token
+//
+// Parameters:
+//   - vmcpLocalURL: base URL for the embedded AS via port-forward (e.g., "http://localhost:9090")
+//   - dexLocalURL: Dex base URL via NodePort (e.g., "http://localhost:32000")
+//   - dexInClusterHost: Dex host as seen from inside the cluster (e.g., "dex.default.svc.cluster.local:5556")
+//   - vmcpInClusterHost: vMCP host as seen from inside the cluster (e.g., "vmcp-foo.default.svc.cluster.local:4483")
+//   - audience: the resource/audience to include in the OAuth2 request (RFC 8707)
+//
+// Returns the embedded AS access token (a JWT with a "tsid" claim).
+//
+//nolint:gocyclo // The complexity arises from sequential error handling in the 9-step OAuth2 PKCE flow, not branching logic.
+func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClusterHost, audience string) (string, error) {
+	noRedirectClient := &http.Client{
+		Timeout: 30 * time.Second,
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+
+	// Step 1: Register an OAuth2 client via DCR
+	clientID, clientSecret, err := registerOAuthClient(noRedirectClient, vmcpLocalURL)
+	if err != nil {
+		return "", fmt.Errorf("DCR failed: %w", err)
+	}
+
+	// Step 2: Generate PKCE verifier + challenge
+	verifier, challenge := generatePKCEPair()
+	clientState := "e2e-test-state"
+	clientRedirectURI := "http://localhost:19999/callback"
+
+	// Step 3: Start authorization at embedded AS
+	authParams := url.Values{
+		"response_type":         {"code"},
+		"client_id":             {clientID},
+		"redirect_uri":          {clientRedirectURI},
+		"state":                 {clientState},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"scope":                 {"openid offline_access"},
+		"resource":              {audience},
+	}
+	authURL := vmcpLocalURL + "/oauth/authorize?" + authParams.Encode()
+
+	resp, err := noRedirectClient.Get(authURL)
+	if err != nil {
+		return "", fmt.Errorf("authorize request failed: %w", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		return "", fmt.Errorf("expected 302 from /oauth/authorize, got %d", resp.StatusCode)
+	}
+	dexRedirectURL := resp.Header.Get("Location")
+	if dexRedirectURL == "" {
+		return "", fmt.Errorf("no Location header from /oauth/authorize")
+	}
+
+	// Step 4: Rewrite the Dex in-cluster URL to the local NodePort URL
+	localDexURL, err := rewriteURLBase(dexRedirectURL, dexInClusterHost, dexLocalURL)
+	if err != nil {
+		return "", fmt.Errorf("rewriting Dex URL: %w", err)
+	}
+
+	// Step 5: Call Dex auth endpoint (mockCallback auto-approves and redirects)
+	resp, err = noRedirectClient.Get(localDexURL)
+	if err != nil {
+		return "", fmt.Errorf("calling Dex auth endpoint: %w", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		return "", fmt.Errorf("expected 302 from Dex auth, got %d", resp.StatusCode)
+	}
+	vmcpCallbackURL := resp.Header.Get("Location")
+	if vmcpCallbackURL == "" {
+		return "", fmt.Errorf("no Location header from Dex auth")
+	}
+
+	// Step 6: Rewrite the embedded AS callback in-cluster URL to local URL
+	localCallbackURL, err := rewriteURLBase(vmcpCallbackURL, vmcpInClusterHost, vmcpLocalURL)
+	if err != nil {
+		return "", fmt.Errorf("rewriting callback URL: %w", err)
+	}
+
+	// Step 7: Call the embedded AS callback to complete the Dex code exchange
+	resp, err = noRedirectClient.Get(localCallbackURL)
+	if err != nil {
+		return "", fmt.Errorf("AS callback request failed: %w", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusSeeOther {
+		return "", fmt.Errorf("expected 302/303 from AS callback, got %d", resp.StatusCode)
+	}
+	clientCallbackURL := resp.Header.Get("Location")
+	if clientCallbackURL == "" {
+		return "", fmt.Errorf("no Location header from AS callback")
+	}
+
+	// Step 8: Parse the AS auth code from the redirect to client callback URL
+	parsedClientURL, err := url.Parse(clientCallbackURL)
+	if err != nil {
+		return "", fmt.Errorf("parsing client callback URL: %w", err)
+	}
+	asCode := parsedClientURL.Query().Get("code")
+	if asCode == "" {
+		return "", fmt.Errorf("no code in client callback URL: %s", clientCallbackURL)
+	}
+
+	// Step 9: Exchange the AS auth code for an access token
+	tokenParams := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {asCode},
+		"redirect_uri":  {clientRedirectURI},
+		"client_id":     {clientID},
+		"code_verifier": {verifier},
+	}
+	if clientSecret != "" {
+		tokenParams.Set("client_secret", clientSecret)
+	}
+	tokenURL := vmcpLocalURL + "/oauth/token"
+	tokenResp, err := noRedirectClient.PostForm(tokenURL, tokenParams)
+	if err != nil {
+		return "", fmt.Errorf("token request failed: %w", err)
+	}
+	defer func() { _ = tokenResp.Body.Close() }()
+
+	if tokenResp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("token request returned %d", tokenResp.StatusCode)
+	}
+	var result embeddedASTokenResult
+	if err := json.NewDecoder(tokenResp.Body).Decode(&result); err != nil {
+		return "", fmt.Errorf("decoding token response: %w", err)
+	}
+	if result.AccessToken == "" {
+		return "", fmt.Errorf("empty access_token in token response")
+	}
+	return result.AccessToken, nil
+}
+
+// registerOAuthClient performs Dynamic Client Registration against the embedded AS.
+// Returns the client_id and client_secret (empty string for public clients).
+func registerOAuthClient(httpClient *http.Client, vmcpBaseURL string) (clientID, clientSecret string, err error) {
+	body, err := json.Marshal(map[string]interface{}{
+		"client_name":   "e2e-upstreamInject-test",
+		"redirect_uris": []string{"http://localhost:19999/callback"},
+		"grant_types":   []string{"authorization_code"},
+	})
+	if err != nil {
+		return "", "", err
+	}
+	req, err := http.NewRequest(http.MethodPost, vmcpBaseURL+"/oauth/register", bytes.NewReader(body))
+	if err != nil {
+		return "", "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", "", err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
+		return "", "", fmt.Errorf("DCR returned status %d", resp.StatusCode)
+	}
+	var result map[string]interface{}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return "", "", err
+	}
+	id, _ := result["client_id"].(string)
+	if id == "" {
+		return "", "", fmt.Errorf("no client_id in DCR response")
+	}
+	secret, _ := result["client_secret"].(string)
+	return id, secret, nil
+}
+
+// generatePKCEPair returns a PKCE (code_verifier, code_challenge) pair using S256.
+func generatePKCEPair() (verifier, challenge string) {
+	b := make([]byte, 32)
+	_, _ = rand.Read(b)
+	verifier = base64.RawURLEncoding.EncodeToString(b)
+	h := sha256.Sum256([]byte(verifier))
+	challenge = base64.RawURLEncoding.EncodeToString(h[:])
+	return verifier, challenge
+}
+
+// rewriteURLBase replaces the scheme+host of urlStr's with the base URL of newBase,
+// keeping the original path and query. Returns an error if the original host doesn't
+// match expectedHost.
+func rewriteURLBase(urlStr, expectedHost, newBase string) (string, error) {
+	u, err := url.Parse(urlStr)
+	if err != nil {
+		return "", fmt.Errorf("parsing URL %q: %w", urlStr, err)
+	}
+	if u.Host != expectedHost {
+		// The host might have a different port or prefix — do a best-effort replacement
+		// by just checking the host contains the expected host (without port)
+		expectedHostNoPort := expectedHost
+		if h, _, splitErr := net.SplitHostPort(expectedHost); splitErr == nil {
+			expectedHostNoPort = h
+		}
+		if !strings.Contains(u.Host, expectedHostNoPort) {
+			return "", fmt.Errorf("URL host %q does not contain expected host %q (URL: %s)", u.Host, expectedHostNoPort, urlStr)
+		}
+	}
+	base, err := url.Parse(newBase)
+	if err != nil {
+		return "", fmt.Errorf("parsing new base %q: %w", newBase, err)
+	}
+	u.Scheme = base.Scheme
+	u.Host = base.Host
+	return u.String(), nil
 }

@@ -1522,7 +1522,7 @@ func TestMiddleware_AllowsJSONRPCClientResponse(t *testing.T) {
 
 	denyAll := &stubAuthorizer{allowed: false}
 	handlerCalled := false
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		handlerCalled = true
 		w.WriteHeader(http.StatusAccepted)
 	})
@@ -1544,7 +1544,7 @@ func TestMiddleware_RejectsMalformedJSONRPCBody(t *testing.T) {
 	t.Parallel()
 
 	denyAll := &stubAuthorizer{allowed: false}
-	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	next := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		t.Fatal("next handler should not be called for malformed JSON-RPC")
 	})
 

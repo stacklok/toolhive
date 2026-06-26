@@ -236,10 +236,12 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 		})
 
 		// TODO(#5336): extend this test with a tool call against a backend using
-		// upstreamInject outgoing auth after cross-pod restore. That scenario
-		// requires a live OIDC provider in the test environment and depends on
-		// #5323 + its sibling fix for the identityRoundTripper in
-		// pkg/vmcp/session/internal/backend/mcp_session.go being in place.
+		// upstreamInject outgoing auth after cross-pod restore. The code-side fix
+		// is complete (nil identity from RestoreSession, context propagation through
+		// loadSession, fallback-only identityRoundTripper in both client.go and
+		// mcp_session.go). The only remaining blocker is infrastructure: the E2E
+		// environment needs an OIDC provider that issues tokens with upstreamInject
+		// configured so the Initialize handshake can be authenticated.
 		ginkgo.It("Should allow a session established on pod A to be reconstructed on pod B", func() {
 			ginkgo.By("Getting the two ready pods")
 			var pods []corev1.Pod

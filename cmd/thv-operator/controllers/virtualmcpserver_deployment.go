@@ -1220,15 +1220,13 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 		return nil
 	}
 
-	// Validate the PodTemplateSpec and check if there are meaningful customizations
-	builder, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
-	if err != nil {
+	// Validate the user-provided PodTemplateSpec is well-formed.
+	// We don't check builder.Build() == nil for "empty" customizations: that helper
+	// only enumerates a subset of PodSpec fields and would skip the patch for
+	// fields like runtimeClassName or topologySpreadConstraints. Strategic merge
+	// patch is a no-op for `{}` anyway, so always running it is safe.
+	if _, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp"); err != nil {
 		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
-	}
-
-	if builder.Build() == nil {
-		// No meaningful customizations to apply
-		return nil
 	}
 
 	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(deployment.Spec.Template, vmcp.Spec.PodTemplateSpec.Raw)

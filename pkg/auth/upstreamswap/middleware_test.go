@@ -259,7 +259,78 @@ func TestMiddleware_SuccessfulSwap_CustomHeader(t *testing.T) {
 	handler.ServeHTTP(rr, req)
 
 	assert.Equal(t, "Bearer upstream-access-token", capturedCustomHeader)
-	assert.Equal(t, "Bearer original-token", capturedAuthHeader)
+	// The client's Authorization header must be stripped, not forwarded (#5504).
+	assert.Empty(t, capturedAuthHeader)
+}
+
+// TestMiddleware_CustomStrategy_StripsClientAuthHeader is a regression test for
+// stacklok/toolhive#5504: with header_strategy "custom", the upstream token is
+// injected into a custom header but the client's original Authorization header
+// (the ToolHive-issued JWT) must NOT be forwarded to the backend.
+func TestMiddleware_CustomStrategy_StripsClientAuthHeader(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		HeaderStrategy:   HeaderStrategyCustom,
+		CustomHeaderName: "X-Upstream-Token",
+		ProviderName:     "github",
+	}
+	middleware := createMiddlewareFunc(cfg)
+
+	var capturedCustomHeader string
+	var capturedAuthHeader string
+	nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		capturedCustomHeader = r.Header.Get("X-Upstream-Token")
+		capturedAuthHeader = r.Header.Get("Authorization")
+	})
+
+	handler := middleware(nextHandler)
+	req := requestWithIdentity("upstream-access-token")
+	req.Header.Set("Authorization", "Bearer toolhive-jwt")
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	assert.Equal(t, "Bearer upstream-access-token", capturedCustomHeader,
+		"upstream token should be injected into the custom header")
+	assert.Empty(t, capturedAuthHeader,
+		"client's ToolHive JWT must be stripped from Authorization, not leaked to the backend")
+}
+
+// TestMiddleware_CustomStrategy_AuthorizationHeaderName covers the edge case
+// where the custom header name is itself "Authorization": the Set already
+// overwrites the client JWT with the upstream token, so the token must survive
+// rather than be stripped. Header names are case-insensitive.
+func TestMiddleware_CustomStrategy_AuthorizationHeaderName(t *testing.T) {
+	t.Parallel()
+
+	for _, headerName := range []string{"Authorization", "authorization"} {
+		t.Run(headerName, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := &Config{
+				HeaderStrategy:   HeaderStrategyCustom,
+				CustomHeaderName: headerName,
+				ProviderName:     "github",
+			}
+			middleware := createMiddlewareFunc(cfg)
+
+			var capturedAuthHeader string
+			nextHandler := http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+				capturedAuthHeader = r.Header.Get("Authorization")
+			})
+
+			handler := middleware(nextHandler)
+			req := requestWithIdentity("upstream-access-token")
+			req.Header.Set("Authorization", "Bearer toolhive-jwt")
+
+			rr := httptest.NewRecorder()
+			handler.ServeHTTP(rr, req)
+
+			assert.Equal(t, "Bearer upstream-access-token", capturedAuthHeader,
+				"upstream token must survive when the custom header is Authorization")
+		})
+	}
 }
 
 func TestMiddleware_Close(t *testing.T) {
@@ -298,7 +369,8 @@ func TestCreateInjectors(t *testing.T) {
 		req.Header.Set("Authorization", "Bearer original")
 		injector(req, "test-token")
 		assert.Equal(t, "Bearer test-token", req.Header.Get("X-Custom-Header"))
-		assert.Equal(t, "Bearer original", req.Header.Get("Authorization"))
+		// The client's Authorization header must be stripped, not forwarded (#5504).
+		assert.Empty(t, req.Header.Get("Authorization"))
 	})
 }
 

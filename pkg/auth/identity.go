@@ -90,7 +90,6 @@ type Identity struct {
 	// a load-scoped ctx, provided the loader does not share that ctx with
 	// concurrent code. See TokenValidator.Middleware for the canonical pattern.
 	UpstreamTokens map[string]string
-
 }
 
 // String returns a string representation of the Identity with sensitive fields redacted.

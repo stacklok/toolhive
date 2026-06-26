@@ -648,9 +648,9 @@ func checkPortAccessible(nodePort int32, timeout time.Duration) error {
 // This is more reliable than just TCP check as it ensures the application is serving requests.
 func checkHTTPHealthReady(nodePort int32) error {
 	httpClient := &http.Client{Timeout: 2 * time.Second}
-	url := fmt.Sprintf("http://localhost:%d/health", nodePort)
+	healthURL := fmt.Sprintf("http://localhost:%d/health", nodePort)
 
-	resp, err := httpClient.Get(url)
+	resp, err := httpClient.Get(healthURL)
 	if err != nil {
 		return fmt.Errorf("health check failed for port %d: %w", nodePort, err)
 	}
@@ -1350,8 +1350,8 @@ type VMCPBackendHealthState struct {
 
 // getAndDecodeJSON issues a GET to url, checks for HTTP 200, and decodes the
 // JSON body into a value of type T. Returns a pointer to the decoded value.
-func getAndDecodeJSON[T any](url, label string) (*T, error) {
-	resp, err := http.Get(url) //nolint:gosec // test helper, URL is constructed from controlled input
+func getAndDecodeJSON[T any](rawURL, label string) (*T, error) {
+	resp, err := http.Get(rawURL) //nolint:gosec // test helper, URL is constructed from controlled input
 	if err != nil {
 		return nil, fmt.Errorf("GET %s: %w", label, err)
 	}

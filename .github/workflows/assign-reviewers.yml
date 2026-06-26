@@ -11,10 +11,11 @@
 #     restricted to Read/Glob/Grep/Write; it has NO Bash and NO GitHub write tool,
 #     so it cannot request reviewers, push, or otherwise act on the PR itself.
 #   - The "hands" (the final step) is plain bash holding the GITHUB_TOKEN. It
-#     validates the brain's picks against the @handles in the trusted
-#     REVIEWERS.md, drops the PR author, and requests reviewers via `gh api`.
-#     A prompt-injected diff can at most make the brain name a wrong handle,
-#     which the allowlist discards; and routing is advisory regardless.
+#     validates the brain's picks against the @handles in REVIEWERS.md, drops
+#     the PR author, requests reviewers via `gh api`, and upserts one summary
+#     comment explaining the picks. A prompt-injected diff can at most make the
+#     brain name a wrong handle, which the allowlist discards; and routing is
+#     advisory regardless.
 #
 # Security notes:
 #   - Trust gate: only same-repo (write-access) authors reach the Claude step.
@@ -127,22 +128,29 @@ jobs:
             3. If the PR does NOT touch Kubernetes paths, choose no reviewers.
 
             OUTPUT: Use the Write tool to create EXACTLY ONE file at
-            .reviewer/decision.json containing this exact JSON shape (handles
-            WITHOUT the leading @):
-              { "reviewers": ["handle", ...] }
-            Use an empty array if no reviewers should be requested. Write nothing
-            else.
+            .reviewer/decision.json with this exact JSON shape (handles WITHOUT
+            the leading @):
+              {
+                "reviewers": [
+                  { "handle": "ExampleUser", "reason": "one short factual sentence" }
+                ]
+              }
+            Give each chosen reviewer a one-sentence reason citing the area/rule
+            that matched (e.g. "controller reconcile-logic change in
+            cmd/thv-operator/"). Use an empty array if no reviewers should be
+            requested. Write nothing else.
 
       # Hands: the only step that talks to the GitHub API. Validates the brain's
-      # decision against the allowlist of @handles in the trusted REVIEWERS.md,
-      # drops the PR author, and requests the survivors.
-      - name: Request reviewers
+      # decision against the allowlist of @handles in REVIEWERS.md, drops the PR
+      # author, requests the survivors, and upserts one summary comment.
+      - name: Request reviewers and post summary
         if: steps.claude.outcome == 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          MARKER: "<!-- reviewer-router -->"
         run: |
           set -euo pipefail
 
@@ -152,35 +160,55 @@ jobs:
             exit 0
           fi
 
-          # Allowlist = @handles present in the trusted REVIEWERS.md (the working
-          # copy was overwritten with the base version in the prep step).
-          mapfile -t ALLOW < <(grep -oE '@[A-Za-z0-9][A-Za-z0-9-]*' .github/REVIEWERS.md \
-            | sed 's/^@//' | tr '[:upper:]' '[:lower:]' | sort -u)
+          # Allowlist = @handles present in REVIEWERS.md.
+          allow_json=$(grep -oE '@[A-Za-z0-9][A-Za-z0-9-]*' .github/REVIEWERS.md \
+            | sed 's/^@//' | tr '[:upper:]' '[:lower:]' | sort -u | jq -R . | jq -s .)
+          author_lc=$(printf '%s' "$PR_AUTHOR" | tr '[:upper:]' '[:lower:]')
 
-          mapfile -t WANT < <(jq -r '.reviewers[]?' "$DECISION" | sort -u)
+          # Keep only allowlisted, non-author reviewers. Accept either bare
+          # strings or {handle, reason} objects; strip '@' from reasons so a
+          # crafted reason cannot inject mentions into the comment.
+          survivors=$(jq --argjson allow "$allow_json" --arg author "$author_lc" '
+            [ .reviewers[]?
+              | (if type == "string" then {handle: ., reason: ""}
+                 else {handle: (.handle // ""), reason: (.reason // "")} end)
+              | .reason |= gsub("@"; "")
+              | select(.handle != ""
+                       and (.handle | ascii_downcase) != $author
+                       and (($allow | index(.handle | ascii_downcase)) != null))
+            ]' "$DECISION")
 
-          reviewers=()
-          for u in "${WANT[@]}"; do
-            [ -z "$u" ] && continue
-            # Drop the PR author (GitHub rejects requesting the author).
-            if [ "$(printf '%s' "$u" | tr '[:upper:]' '[:lower:]')" = "$(printf '%s' "$PR_AUTHOR" | tr '[:upper:]' '[:lower:]')" ]; then
-              continue
-            fi
-            # Keep only handles on the allowlist (defends against prompt injection).
-            ulc=$(printf '%s' "$u" | tr '[:upper:]' '[:lower:]')
-            for a in "${ALLOW[@]}"; do
-              if [ "$ulc" = "$a" ]; then reviewers+=("$u"); break; fi
-            done
-          done
-
-          if [ ${#reviewers[@]} -eq 0 ]; then
+          if [ "$(jq 'length' <<<"$survivors")" -eq 0 ]; then
             echo "No valid reviewers to request after validation."
             exit 0
           fi
 
-          echo "Requesting reviewers: ${reviewers[*]}"
-          payload=$(printf '%s\n' "${reviewers[@]}" | jq -R . | jq -s '{reviewers: .}')
-          if ! printf '%s' "$payload" | gh api -X POST \
+          echo "Requesting: $(jq -r '[.[].handle] | join(", ")' <<<"$survivors")"
+
+          # Request the reviewers (idempotent; tolerate already-requested).
+          if ! jq '{reviewers: [.[].handle]}' <<<"$survivors" | gh api -X POST \
             "repos/$REPO/pulls/$PR_NUMBER/requested_reviewers" --input - >/dev/null; then
-            echo "::warning::requested_reviewers call failed (already requested, or login not a collaborator)."
+            echo "::warning::requested_reviewers call failed (already requested, or a login is not a collaborator)."
+          fi
+
+          # Build the summary comment. The leading marker lets us find and UPDATE
+          # this comment on later pushes instead of posting a new one each time.
+          body=$(jq -r --arg marker "$MARKER" '
+            $marker + "\n" +
+            "🤖 **Reviewer router** requested the following based on `.github/REVIEWERS.md`:\n\n" +
+            ([ .[] | "- **@\(.handle)**" + (if .reason != "" then " — \(.reason)" else "" end) ] | join("\n")) +
+            "\n\n_Advisory only — merge gating is governed by CODEOWNERS._"
+          ' <<<"$survivors")
+
+          existing_id=$(gh api --paginate "repos/$REPO/issues/$PR_NUMBER/comments" \
+            --jq ".[] | select(.body | contains(\"$MARKER\")) | .id" | head -n1) || true
+
+          if [ -n "${existing_id:-}" ]; then
+            jq -n --arg b "$body" '{body: $b}' \
+              | gh api -X PATCH "repos/$REPO/issues/comments/$existing_id" --input - >/dev/null
+            echo "Updated summary comment $existing_id."
+          else
+            jq -n --arg b "$body" '{body: $b}' \
+              | gh api -X POST "repos/$REPO/issues/$PR_NUMBER/comments" --input - >/dev/null
+            echo "Posted summary comment."
           fi

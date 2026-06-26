@@ -46,6 +46,10 @@ const (
 	// does not affect responses, so SSE response streams are unaffected. Matches
 	// the vMCP server default.
 	defaultReadTimeout = 30 * time.Second
+
+	// sseMessageEvent is the SSE event name used for JSON-RPC responses, matching
+	// the reference MCP server transports and ToolHive's own SSE transport.
+	sseMessageEvent = "message"
 )
 
 // HTTPProxy implements a proxy for streamable HTTP transport.
@@ -530,7 +534,7 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 			},
 		}
 		if data, mErr := json.Marshal(errObj); mErr == nil {
-			if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil {
+			if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", sseMessageEvent, data); err != nil {
 				slog.Debug("failed to write error message", "error", err)
 				return
 			}
@@ -546,7 +550,7 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 		return
 	}
 	// Write SSE event with the JSON-RPC response and flush
-	if _, err := fmt.Fprintf(w, "data: %s\n\n", data); err != nil { //nolint:gosec // G705: SSE data from MCP protocol
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", sseMessageEvent, data); err != nil { //nolint:gosec // G705: SSE data from MCP protocol
 		slog.Debug("failed to write response", "error", err)
 		return
 	}

@@ -53,6 +53,39 @@ func startProxyWithBackend(t *testing.T, port int) (*HTTPProxy, context.Context,
 	return proxy, ctx, cancel
 }
 
+// TestSSEResponseIncludesEventName ensures SSE responses include an explicit
+// event: message line, matching reference MCP server transports. Clients such
+// as @ai-sdk/mcp only dispatch frames with event === "message".
+func TestSSEResponseIncludesEventName(t *testing.T) {
+	t.Parallel()
+
+	const port = 8110
+	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	defer cancel()
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	url := "http://127.0.0.1:8110" + StreamableHTTPEndpoint
+
+	initJSON := `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"spec-test","version":"0.0.0"},"capabilities":{}}}`
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(initJSON)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	sseContent := string(body)
+	assert.Contains(t, sseContent, "event: message\n", "SSE frame should include explicit event name")
+	assert.Contains(t, sseContent, "data: ", "SSE frame should include JSON-RPC data line")
+}
+
 // TestGETReturns405 validates that GET on MCP endpoint returns 405 (server does not offer SSE here).
 func TestGETReturns405(t *testing.T) {
 	t.Parallel()

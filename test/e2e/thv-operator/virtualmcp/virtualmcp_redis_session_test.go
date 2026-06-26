@@ -754,11 +754,15 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			redisPasswordSecretName = fmt.Sprintf("e2e-redis-pw-%d", ts)
 			dexClientSecretName = fmt.Sprintf("e2e-dex-secret-%d", ts)
 
-			// Embedded AS issuer = vMCP service URL (in-cluster). The embedded AS
-			// serves OAuth endpoints at this URL; pods validate JWTs against it.
+			// The embedded AS issuer is the vMCP service URL (http://vmcp-<name>.ns.svc:4483).
+			// The operator derives AllowedAudiences from oidcRef.ResourceURL when set;
+			// we set it explicitly so the audience in issued JWTs matches the OIDC config.
+			// Validation: rc.Issuer == oidc.Issuer AND oidc.Audience ∈ rc.AllowedAudiences.
 			vmcpServiceHost := fmt.Sprintf("vmcp-%s.%s.svc.cluster.local:4483", vmcpName, defaultNamespace)
 			embeddedASIssuerURL := fmt.Sprintf("http://%s", vmcpServiceHost)
 			vmcpCallbackURL := fmt.Sprintf("http://%s/oauth/callback", vmcpServiceHost)
+			// resourceURL = audience in JWTs = AllowedAudiences entry = vMCP service URL
+			vmcpResourceURL := embeddedASIssuerURL
 
 			ginkgo.By("Deploying Redis (shared: session storage + embedded AS token store)")
 			deployRedis(redisName)
@@ -830,15 +834,15 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			cleanupDexFn = dexCleanup
 
 			ginkgo.By("Creating instrumented MCP backend MCPServer")
-			// Override the mcp container command so the Python Flask backend runs
-			// instead of the image's default entrypoint. The proxy runner applies this
-			// patch to the inner container it spawns.
+			// The proxy runner creates the inner container using:
+			//   command = patch.Containers[mcp].Command  (preserved)
+			//   args    = MCPServer.Spec.Args            (configureContainer calls WithArgs(Spec.Args))
+			// So the patch sets the entrypoint override (sh -c) and Spec.Args carries the script.
 			mcpPodPatch := corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
 						Name:    "mcp",
 						Command: []string{"sh", "-c"},
-						Args:    []string{InstrumentedMCPBackendScript},
 					}},
 				},
 			}
@@ -853,6 +857,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 				v1beta1test.WithMCPGroupRef(mcpGroupName),
 				v1beta1test.WithExternalAuthConfigRef(externalAuthConfigName),
 				v1beta1test.WithPodTemplateSpec(&runtime.RawExtension{Raw: mcpPodPatchRaw}),
+				v1beta1test.WithArgs(InstrumentedMCPBackendScript),
 			))).To(gomega.Succeed())
 
 			ginkgo.By("Waiting for backend MCPServer to be ready")
@@ -878,8 +883,9 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
 					Type: "oidc",
 					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
-						Name:     oidcConfigName,
-						Audience: embeddedASIssuerURL,
+						Name:        oidcConfigName,
+						Audience:    vmcpResourceURL,
+						ResourceURL: vmcpResourceURL,
 					},
 				}),
 				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
@@ -976,7 +982,9 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 		ginkgo.It("Should inject upstream tokens into backend requests after cross-pod restore", func() {
 			vmcpServiceHost := fmt.Sprintf("vmcp-%s.%s.svc.cluster.local:4483", vmcpName, defaultNamespace)
 			dexInClusterHost := fmt.Sprintf("%s.%s.svc.cluster.local:5556", dexName, defaultNamespace)
+			// These must match what BeforeAll configured: issuer = service URL, audience = resource URL.
 			embeddedASIssuerURL := fmt.Sprintf("http://%s", vmcpServiceHost)
+			vmcpResourceURL := embeddedASIssuerURL
 			backendServiceName := fmt.Sprintf("mcp-%s-proxy", backendName)
 
 			ginkgo.By("Getting the two ready pods")
@@ -1025,7 +1033,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 				dexInfo.LocalURL,
 				dexInClusterHost,
 				vmcpServiceHost,
-				embeddedASIssuerURL,
+				vmcpResourceURL,
 			)
 			gomega.Expect(err).NotTo(gomega.HaveOccurred(), "OAuth2 PKCE flow should succeed")
 			gomega.Expect(asToken).NotTo(gomega.BeEmpty())

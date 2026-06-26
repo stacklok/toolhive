@@ -286,7 +286,7 @@ func TestVirtualMCPServerPodTemplateSpecPreservesUndetectedFields(t *testing.T) 
 			},
 		},
 		{
-			name: "topologySpreadConstraints are preserved",
+			name:     "topologySpreadConstraints are preserved",
 			userJSON: `{"spec":{"topologySpreadConstraints":[{"maxSkew":1,"topologyKey":"topology.kubernetes.io/zone","whenUnsatisfiable":"DoNotSchedule","labelSelector":{"matchLabels":{"app":"vmcp"}}}]}}`,
 			assert: func(t *testing.T, podSpec corev1.PodSpec) {
 				t.Helper()

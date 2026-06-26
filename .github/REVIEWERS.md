@@ -43,7 +43,7 @@ matches none of them, request no one.
 
 - **Controller or reconcile-logic change** — any change to controller logic under
   `cmd/thv-operator/` or `pkg/operator/` (reconcilers, watches, predicates,
-  finalizers): request **@ChrisJBurns**.
+  finalizers): request **@ChrisJBurns** and **@JAORMX**.
 - **CRD API change** — changes to CRD types (`*_types.go`), `api/`, or generated
   CRD manifests/deepcopy that alter the API surface: request **@ChrisJBurns**.
 

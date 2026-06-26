@@ -1152,7 +1152,7 @@ type RFC6750Error struct {
 }
 
 // writeOAuthError writes an RFC 6750 compliant JSON error response.
-func writeOAuthError(w http.ResponseWriter, errorCode, description string, status int) {
+func writeOAuthError(w http.ResponseWriter, errorCode, description string) {
 	body, err := json.Marshal(RFC6750Error{
 		Error:            errorCode,
 		ErrorDescription: description,
@@ -1162,7 +1162,7 @@ func writeOAuthError(w http.ResponseWriter, errorCode, description string, statu
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write(body)
 }
 
@@ -1193,7 +1193,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		tokenString, err := ExtractBearerToken(r)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidRequest, err.Error()))
-			writeOAuthError(w, OAuthErrInvalidRequest, err.Error(), http.StatusUnauthorized)
+			writeOAuthError(w, OAuthErrInvalidRequest, err.Error())
 			return
 		}
 
@@ -1201,7 +1201,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		claims, err := v.ValidateToken(r.Context(), tokenString)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, err.Error()))
-			writeOAuthError(w, OAuthErrInvalidToken, fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
+			writeOAuthError(w, OAuthErrInvalidToken, fmt.Sprintf("Invalid token: %v", err))
 			return
 		}
 
@@ -1210,7 +1210,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		if err != nil {
 			slog.Error("failed to convert claims to identity", "error", err)
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, err.Error()))
-			writeOAuthError(w, OAuthErrInvalidToken, "Invalid authentication claims", http.StatusUnauthorized)
+			writeOAuthError(w, OAuthErrInvalidToken, "Invalid authentication claims")
 			return
 		}
 
@@ -1245,8 +1245,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 				w.Header().Set("WWW-Authenticate",
 					v.buildWWWAuthenticate(OAuthErrInvalidToken, "upstream token is no longer valid; re-authentication required"))
 				writeOAuthError(w, OAuthErrInvalidToken,
-					"upstream token is no longer valid; re-authentication required",
-					http.StatusUnauthorized)
+					"upstream token is no longer valid; re-authentication required")
 				return
 			}
 		}

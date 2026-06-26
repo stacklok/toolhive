@@ -8,53 +8,7 @@ Operator version: {{ .Chart.AppVersion }}
 The ToolHive Operator is being deployed. It watches ToolHive custom resources
 and reconciles MCP server workloads in your cluster.
 
-1. Verify the operator pod is running
-
-  kubectl get pods -n {{ .Release.Namespace }} \
-    -l app.kubernetes.io/name={{ include "toolhive-operator.name" . }},app.kubernetes.io/instance={{ .Release.Name }}
-
-  Wait for the manager container to become Ready:
-
-  kubectl rollout status deployment/{{ include "toolhive-operator.fullname" . }} -n {{ .Release.Namespace }}
-
-2. Check operator logs
-
-  kubectl logs -n {{ .Release.Namespace }} \
-    -l app.kubernetes.io/name={{ include "toolhive-operator.name" . }},app.kubernetes.io/instance={{ .Release.Name }} \
-    -c manager --tail=50
-
-3. Create your first MCPServer
-
-  Save the manifest below, then apply it:
-
-  kubectl apply -f mcpserver-fetch.yaml
-
-  --- mcpserver-fetch.yaml ---
-  apiVersion: toolhive.stacklok.dev/v1beta1
-  kind: MCPServer
-  metadata:
-    name: fetch
-    namespace: {{ .Release.Namespace }}
-  spec:
-    image: ghcr.io/stackloklabs/gofetch/server
-    transport: streamable-http
-    proxyPort: 8080
-    mcpPort: 8080
-    resources:
-      requests:
-        cpu: "50m"
-        memory: "64Mi"
-      limits:
-        cpu: "100m"
-        memory: "128Mi"
-  --- end ---
-
-  Confirm the workload was reconciled:
-
-  kubectl get mcpserver fetch -n {{ .Release.Namespace }}
-  kubectl get pods -n {{ .Release.Namespace }} -l app.kubernetes.io/name=mcpserver,app.kubernetes.io/instance=fetch
-
-4. Learn more
+Learn more
 
   Operator guide:
     https://github.com/stacklok/toolhive/blob/main/docs/kind/deploying-mcp-server-with-operator.md

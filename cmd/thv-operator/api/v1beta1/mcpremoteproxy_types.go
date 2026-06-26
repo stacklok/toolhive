@@ -292,6 +292,9 @@ const (
 	// ConditionTypeMCPRemoteProxyAuthServerRefValidated indicates whether the AuthServerRef is valid
 	ConditionTypeMCPRemoteProxyAuthServerRefValidated = "AuthServerRefValidated"
 
+	// ConditionTypeMCPRemoteProxyCABundleRefValidated indicates whether the OIDC CA bundle reference is valid
+	ConditionTypeMCPRemoteProxyCABundleRefValidated = "CABundleRefValidated"
+
 	// ConditionTypeConfigurationValid indicates whether the proxy spec has passed all pre-deployment validation checks
 	ConditionTypeConfigurationValid = "ConfigurationValid"
 )
@@ -379,6 +382,15 @@ const (
 
 	// ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream indicates multi-upstream is not supported
 	ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream = "MultiUpstreamNotSupported"
+
+	// ConditionReasonMCPRemoteProxyCABundleRefValid indicates the CA bundle ref is valid and the ConfigMap exists
+	ConditionReasonMCPRemoteProxyCABundleRefValid = "CABundleRefValid"
+
+	// ConditionReasonMCPRemoteProxyCABundleRefNotFound indicates the referenced CA bundle ConfigMap was not found
+	ConditionReasonMCPRemoteProxyCABundleRefNotFound = "CABundleRefNotFound"
+
+	// ConditionReasonMCPRemoteProxyCABundleRefInvalid indicates the CA bundle ref configuration is invalid
+	ConditionReasonMCPRemoteProxyCABundleRefInvalid = "CABundleRefInvalid"
 
 	// ConditionReasonConfigurationValid indicates all configuration validations passed
 	ConditionReasonConfigurationValid = "ConfigurationValid"

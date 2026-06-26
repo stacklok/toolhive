@@ -338,11 +338,11 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
 	require.NotEmpty(t, sessionID)
 
-	// Wait until the session is fully registered with adapted tools in the manager.
+	// Wait until the session is fully registered in the manager.
 	require.Eventually(t, func() bool {
-		tools, gErr := srv.vmcpSessionMgr.GetAdaptedTools(sessionID)
-		return gErr == nil && len(tools) > 0
-	}, 2*time.Second, 10*time.Millisecond, "session should be registered with adapted tools")
+		_, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID)
+		return ok
+	}, 2*time.Second, 10*time.Millisecond, "session should be registered")
 
 	// Empty-store (cross-pod) branch: a fresh SDK session with no tools gets them injected.
 	rehydrated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{}}
@@ -350,7 +350,7 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 	assert.Contains(t, rehydrated.tools, testTool.Name,
 		"an empty per-session store should be re-injected from the vMCP session manager")
 
-	// No-op branch: a populated store is left untouched (early return before GetAdaptedTools).
+	// No-op branch: a populated store is left untouched (early return before re-derivation).
 	populated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{
 		"preexisting": {Tool: mcp.Tool{Name: "preexisting"}},
 	}}

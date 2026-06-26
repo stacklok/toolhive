@@ -242,6 +242,26 @@ func TestRunConfig_WithPorts(t *testing.T) {
 	}
 }
 
+// TestRunConfig_WithPorts_TargetPortIgnoresHostAvailability ensures container target
+// ports are not validated against host availability.
+//
+//nolint:tparallel,paralleltest // Subtests share a listener occupying the target port on the host
+func TestRunConfig_WithPorts_TargetPortIgnoresHostAvailability(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err, "Should be able to occupy a port on host")
+	defer listener.Close()
+
+	targetPort := listener.Addr().(*net.TCPAddr).Port
+	config := &RunConfig{Transport: types.TransportTypeSSE}
+	result, err := config.WithPorts(0, targetPort)
+
+	require.NoError(t, err)
+	assert.Equal(t, config, result)
+	assert.Equal(t, targetPort, config.TargetPort, "TargetPort should remain the requested container port")
+}
+
 func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
 	t.Parallel()
 	testCases := []struct {

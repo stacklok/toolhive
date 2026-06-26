@@ -1851,6 +1851,11 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			}
 		}
 
+		// Mount Redis password secret when session storage provider is Redis.
+		// Must mirror deploymentForMCPServer exactly (same call, same position)
+		// so a correctly-configured resource does not look perpetually drifted.
+		expectedProxyEnv = append(expectedProxyEnv, r.buildRedisPasswordEnvVar(mcpServer)...)
+
 		// Project the MCPServer generation pod-template annotation into the
 		// proxyrunner container via the downward API. Position must come
 		// before the embedded-auth env vars below so the slice order matches
@@ -2826,6 +2831,37 @@ func (r *MCPServerReconciler) mapWebhookConfigToServers(
 	return requests
 }
 
+// mapToolConfigToServers maps MCPToolConfig changes to MCPServer reconciliation requests.
+func (r *MCPServerReconciler) mapToolConfigToServers(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	toolConfig, ok := obj.(*mcpv1beta1.MCPToolConfig)
+	if !ok {
+		return nil
+	}
+
+	mcpServerList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, mcpServerList, client.InNamespace(toolConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPServers for MCPToolConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, server := range mcpServerList.Items {
+		if server.Spec.ToolConfigRef != nil &&
+			server.Spec.ToolConfigRef.Name == toolConfig.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      server.Name,
+					Namespace: server.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
@@ -2899,6 +2935,7 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	telemetryConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToServers)
 	webhookConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapWebhookConfigToServers)
+	toolConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapToolConfigToServers)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPServer{}).
@@ -2909,5 +2946,6 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1beta1.MCPAuthzConfig{}, authzConfigHandler).
 		Watches(&mcpv1beta1.MCPTelemetryConfig{}, telemetryConfigHandler).
 		Watches(&mcpv1alpha1.MCPWebhookConfig{}, webhookConfigHandler).
+		Watches(&mcpv1beta1.MCPToolConfig{}, toolConfigHandler).
 		Complete(r)
 }

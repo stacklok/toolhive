@@ -833,6 +833,32 @@ func TestMemoryStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
 			require.Equal(t, fixture, *got)
 		})
 	})
+
+	t.Run("DeleteUpstreamTokensForProvider leaves sibling intact", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", &UpstreamTokens{AccessToken: "a"}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-b", &UpstreamTokens{AccessToken: "b"}))
+
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			requireNotFoundError(t, err)
+
+			got, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			require.NoError(t, err)
+			assert.Equal(t, "b", got.AccessToken)
+
+			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
+			require.NoError(t, err)
+			assert.Len(t, all, 1)
+		})
+	})
+
+	t.Run("DeleteUpstreamTokensForProvider absent row is non-fatal", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "no-such-session", "provider-a"))
+		})
+	})
 }
 
 // --- Pending Authorization Tests ---
@@ -844,7 +870,8 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			ClientID: "test-client", RedirectURI: "https://example.com/callback",
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
 			Scopes: []string{"openid", "profile"}, InternalState: state,
-			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce", CreatedAt: time.Now(),
+			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
+			SingleLeg: true, CreatedAt: time.Now(),
 		}
 	}
 
@@ -858,6 +885,7 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.ClientID, retrieved.ClientID)
 			assert.Equal(t, pending.PKCEChallenge, retrieved.PKCEChallenge)
 			assert.Equal(t, pending.Scopes, retrieved.Scopes)
+			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
 		})
 	})
 

@@ -163,7 +163,7 @@ func NewVMCPServer(
 	}
 
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, nil, nil)
-	rtr := router.NewDefaultRouter()
+	rtr := router.NewSessionRouter(&vmcptypes.RoutingTable{})
 	backendRegistry := vmcptypes.NewImmutableRegistry(backends)
 
 	// Build the core VMCP — the single authoritative aggregation on the Serve path.

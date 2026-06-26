@@ -1213,3 +1213,30 @@ func TestMCPServerDeploymentRedisPasswordOverridesUserEnvOnCollision(t *testing.
 	assert.Equal(t, passwordRef.Name, last.ValueFrom.SecretKeyRef.Name)
 	assert.Equal(t, passwordRef.Key, last.ValueFrom.SecretKeyRef.Key)
 }
+
+// TestDeploymentNeedsUpdate_RedisPasswordEnvVar is a regression test for #5365:
+// deploymentNeedsUpdate must mirror buildRedisPasswordEnvVar at the same position
+// as deploymentForMCPServer, otherwise Redis session storage causes perpetual drift.
+func TestDeploymentNeedsUpdate_RedisPasswordEnvVar(t *testing.T) {
+	t.Parallel()
+
+	passwordRef := &mcpv1beta1.SecretKeyRef{Name: "redis-secret", Key: "password"}
+
+	mcpServer := v1beta1test.NewMCPServer("test-mcp-redis-drift", "default",
+		v1beta1test.WithTransport("streamable-http"),
+		v1beta1test.WithSessionStorage(&mcpv1beta1.SessionStorageConfig{
+			Provider:    mcpv1beta1.SessionStorageProviderRedis,
+			Address:     "redis:6379",
+			PasswordRef: passwordRef,
+		}))
+
+	testScheme := testutil.NewScheme(t)
+	r := newTestMCPServerReconciler(nil, testScheme, kubernetes.PlatformKubernetes)
+
+	deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err)
+	require.NotNil(t, deployment)
+
+	assert.False(t, r.deploymentNeedsUpdate(t.Context(), deployment, mcpServer, "test-checksum"),
+		"freshly built Deployment with Redis passwordRef must not be flagged for update by drift detection")
+}

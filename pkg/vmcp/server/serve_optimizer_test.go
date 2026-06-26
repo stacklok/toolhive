@@ -20,6 +20,8 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	thvmcp "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
@@ -327,6 +329,31 @@ func TestServeOptimizerCallToolInnerAdmissionDenied(t *testing.T) {
 	assert.Contains(t, string(body), "call denied by authorization policy")
 	assert.NotContains(t, string(body), "cedar said no", "the underlying authorizer detail must not leak")
 	assert.Equal(t, int32(1), fc.callToolCalls.Load(), "the inner target must reach the core admission seam")
+}
+
+func TestServeOptimizerCallToolRequestErrorReturnsHandlerError(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{
+		tools:   []vmcp.Tool{{Name: "tool-a"}},
+		callErr: &ratelimit.RateLimitedError{RetryAfter: time.Second},
+	}
+	srv, sessionID, _, _ := registerServeOptimizerSession(t, fc)
+
+	handler := optimizerMetaHandlers(t, srv, sessionID)[optimizerdec.CallToolName]
+	require.NotNil(t, handler)
+
+	req := mcp.CallToolRequest{Params: mcp.CallToolParams{
+		Name:      optimizerdec.CallToolName,
+		Arguments: map[string]any{"tool_name": "tool-a", "parameters": map[string]any{}},
+	}}
+	res, err := handler(context.Background(), req)
+
+	require.Error(t, err)
+	assert.Nil(t, res)
+	var requestErr thvmcp.RequestError
+	require.ErrorAs(t, err, &requestErr)
+	assert.Equal(t, int32(1), fc.callToolCalls.Load(), "rate limiting must happen after call_tool resolves the inner target")
 }
 
 // TestServeOptimizerEnforcesSessionBinding proves both meta-tools enforce the session's

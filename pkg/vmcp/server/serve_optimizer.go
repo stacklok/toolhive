@@ -6,6 +6,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	thvmcp "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/schema"
@@ -197,6 +199,10 @@ func (s *Server) optimizerCallToolHandler(sessionID string, opt optimizer.Optimi
 
 		result, err := opt.CallTool(ctx, input)
 		if err != nil {
+			var requestErr thvmcp.RequestError
+			if errors.As(err, &requestErr) {
+				return nil, err
+			}
 			return mcp.NewToolResultError(fmt.Sprintf("call_tool failed: %v", err)), nil
 		}
 		// Defensive parity with the legacy optimizerdec handler: the production

@@ -3,7 +3,11 @@
 
 package ratelimit
 
-import "time"
+import (
+	"time"
+
+	thvmcp "github.com/stacklok/toolhive/pkg/mcp"
+)
 
 const (
 	// CodeRateLimited is the JSON-RPC error code for rate-limited requests.
@@ -19,6 +23,12 @@ type RateLimitedError struct {
 	RetryAfter time.Duration
 }
 
+var _ thvmcp.RequestError = (*RateLimitedError)(nil)
+
 func (*RateLimitedError) Error() string {
 	return MessageRateLimited
 }
+
+// MCPRequestError marks rate-limit denials as request-level failures rather
+// than tool execution errors.
+func (*RateLimitedError) MCPRequestError() {}

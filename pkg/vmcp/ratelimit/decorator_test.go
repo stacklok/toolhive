@@ -129,7 +129,7 @@ func TestCallToolRateLimitedDoesNotDelegate(t *testing.T) {
 	assert.Equal(t, 5*time.Second, limited.RetryAfter)
 }
 
-func TestCallToolLimiterErrorDoesNotDelegate(t *testing.T) {
+func TestCallToolLimiterErrorFailsOpen(t *testing.T) {
 	t.Parallel()
 
 	expected := errors.New("redis unavailable")
@@ -139,9 +139,9 @@ func TestCallToolLimiterErrorDoesNotDelegate(t *testing.T) {
 
 	result, err := decorated.CallTool(t.Context(), nil, "backend_a_echo", nil, nil)
 
-	require.ErrorIs(t, err, expected)
-	assert.Nil(t, result)
-	assert.False(t, inner.called)
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	assert.True(t, inner.called)
 }
 
 func TestCallToolNilIdentityUsesEmptyUserID(t *testing.T) {

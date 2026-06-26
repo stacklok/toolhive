@@ -6,6 +6,8 @@ package ratelimit
 
 import (
 	"context"
+	"errors"
+	"log/slog"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	baseratelimit "github.com/stacklok/toolhive/pkg/ratelimit"
@@ -49,7 +51,11 @@ func (d *decorator) CallTool(
 	args map[string]any, meta map[string]any,
 ) (*vmcp.ToolCallResult, error) {
 	if err := baseratelimit.Allow(ctx, d.limiter, identity, name); err != nil {
-		return nil, err
+		var limited *baseratelimit.RateLimitedError
+		if errors.As(err, &limited) {
+			return nil, err
+		}
+		slog.WarnContext(ctx, "rate limit check failed, allowing tool call", "tool", name, "error", err)
 	}
 	return d.VMCP.CallTool(ctx, identity, name, args, meta)
 }

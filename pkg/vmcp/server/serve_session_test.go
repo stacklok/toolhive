@@ -24,6 +24,8 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	thvmcp "github.com/stacklok/toolhive/pkg/mcp"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -683,6 +685,25 @@ func TestServeCoreToolHandler(t *testing.T) {
 			assert.Equal(t, want, fc.callToolCalls.Load())
 		})
 	}
+}
+
+func TestServeCoreToolHandlerRequestErrorReturnsHandlerError(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{
+		tools:   []vmcp.Tool{{Name: "t"}},
+		callErr: &ratelimit.RateLimitedError{RetryAfter: time.Second},
+	}
+	srv, sessionID, _ := registerServeSession(t, fc)
+
+	req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+	res, err := srv.coreToolHandler(sessionID, "t", "")(context.Background(), req)
+
+	require.Error(t, err)
+	assert.Nil(t, res)
+	var requestErr thvmcp.RequestError
+	require.ErrorAs(t, err, &requestErr)
+	assert.Equal(t, int32(1), fc.callToolCalls.Load())
 }
 
 // TestServeToolCallTerminatesOnBindingFailure proves the documented fail-closed side

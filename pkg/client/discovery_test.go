@@ -260,6 +260,49 @@ func TestIsClientInstalled(t *testing.T) {
 	}
 }
 
+func TestIsClientInstalled_AmpExtensionRequiresSettingsKey(t *testing.T) {
+	t.Parallel()
+
+	ampCursorCfg := clientAppConfig{
+		ClientType:           AmpCursor,
+		SettingsFile:         "settings.json",
+		RelPath:              []string{"Cursor", "User"},
+		PlatformPrefix:       map[Platform][]string{PlatformLinux: {".config"}},
+		InstallSettingsKey:   "amp.mcpServers",
+		MCPServersPathPrefix: "/amp.mcpServers",
+		Extension:            JSON,
+	}
+
+	t.Run("host editor present without amp key", func(t *testing.T) {
+		t.Parallel()
+		tempHome := t.TempDir()
+		cursorUserDir := filepath.Join(tempHome, ".config", "Cursor", "User")
+		require.NoError(t, os.MkdirAll(cursorUserDir, 0700))
+		settingsPath := filepath.Join(cursorUserDir, "settings.json")
+		require.NoError(t, os.WriteFile(settingsPath, []byte(`{"editor.fontSize": 14}`), 0600))
+		manager := NewTestClientManager(tempHome, nil, []clientAppConfig{ampCursorCfg}, nil)
+		assert.False(t, manager.IsClientInstalled(AmpCursor))
+	})
+
+	t.Run("host editor present with amp key", func(t *testing.T) {
+		t.Parallel()
+		tempHome := t.TempDir()
+		cursorUserDir := filepath.Join(tempHome, ".config", "Cursor", "User")
+		require.NoError(t, os.MkdirAll(cursorUserDir, 0700))
+		settingsPath := filepath.Join(cursorUserDir, "settings.json")
+		require.NoError(t, os.WriteFile(settingsPath, []byte(`{"amp.mcpServers": {}}`), 0600))
+		manager := NewTestClientManager(tempHome, nil, []clientAppConfig{ampCursorCfg}, nil)
+		assert.True(t, manager.IsClientInstalled(AmpCursor))
+	})
+
+	t.Run("host editor directory absent", func(t *testing.T) {
+		t.Parallel()
+		emptyHome := t.TempDir()
+		manager := NewTestClientManager(emptyHome, nil, []clientAppConfig{ampCursorCfg}, nil)
+		assert.False(t, manager.IsClientInstalled(AmpCursor))
+	})
+}
+
 func TestGetClientStatus_WithGroups(t *testing.T) {
 	t.Parallel()
 

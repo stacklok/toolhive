@@ -217,7 +217,11 @@ type clientAppConfig struct {
 	SettingsFile                  string
 	PlatformPrefix                map[Platform][]string
 	MCPServersPathPrefix          string
-	Extension                     Extension
+	// InstallSettingsKey, when set, requires this JSON key in the client's
+	// settings file for IsClientInstalled to return true. Used for extension
+	// clients that share a host editor's config directory (e.g. Amp in VS Code).
+	InstallSettingsKey string
+	Extension          Extension
 	SupportedTransportTypesMap    map[types.TransportType]string // stdio mapped to streamable-http (SSE deprecated)
 	IsTransportTypeFieldSupported bool
 	// MCPServersUrlLabelMap maps transport type to URL field name (e.g., "url", "serverUrl", "httpUrl")
@@ -599,6 +603,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		Description:          "VS Code Sourcegraph Amp extension",
 		SettingsFile:         "settings.json",
 		MCPServersPathPrefix: "/amp.mcpServers",
+		InstallSettingsKey:   "amp.mcpServers",
 		RelPath:              []string{"Code", "User"},
 		PlatformPrefix: map[Platform][]string{
 			PlatformLinux:   {".config"},
@@ -623,6 +628,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		Description:          "VS Code Insiders Sourcegraph Amp extension",
 		SettingsFile:         "settings.json",
 		MCPServersPathPrefix: "/amp.mcpServers",
+		InstallSettingsKey:   "amp.mcpServers",
 		RelPath:              []string{"Code - Insiders", "User"},
 		PlatformPrefix: map[Platform][]string{
 			PlatformLinux:   {".config"},
@@ -647,6 +653,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		Description:          "Cursor Sourcegraph Amp extension",
 		SettingsFile:         "settings.json",
 		MCPServersPathPrefix: "/amp.mcpServers",
+		InstallSettingsKey:   "amp.mcpServers",
 		RelPath:              []string{"Cursor", "User"},
 		PlatformPrefix: map[Platform][]string{
 			PlatformLinux:   {".config"},
@@ -671,6 +678,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		Description:          "Windsurf Sourcegraph Amp extension",
 		SettingsFile:         "settings.json",
 		MCPServersPathPrefix: "/amp.mcpServers",
+		InstallSettingsKey:   "amp.mcpServers",
 		RelPath:              []string{"Windsurf", "User"},
 		PlatformPrefix: map[Platform][]string{
 			PlatformLinux:   {".config"},

@@ -10,6 +10,10 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
+
+	"github.com/tidwall/gjson"
+	"github.com/tailscale/hujson"
 
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -84,10 +88,20 @@ type ClientAppStatus struct {
 // IsClientInstalled reports whether the given client appears to be installed on
 // the current system. Detection is based on the presence of the client's
 // configuration directory (or settings file when no relative path is defined).
+// When InstallSettingsKey is set, the settings file must also contain that key.
 func (cm *ClientManager) IsClientInstalled(clientType ClientApp) bool {
 	cfg := cm.lookupClientAppConfig(clientType)
 	if cfg == nil || cfg.LLMGatewayOnly {
 		return false
+	}
+	if cfg.InstallSettingsKey != "" {
+		settingsPath := buildConfigFilePath(
+			cfg.SettingsFile,
+			cfg.RelPath,
+			cfg.PlatformPrefix,
+			[]string{cm.homeDir},
+		)
+		return settingsFileHasKey(settingsPath, cfg.InstallSettingsKey)
 	}
 	var pathToCheck string
 	if len(cfg.RelPath) == 0 {
@@ -97,6 +111,23 @@ func (cm *ClientManager) IsClientInstalled(clientType ClientApp) bool {
 	}
 	_, err := os.Stat(pathToCheck)
 	return err == nil
+}
+
+func settingsFileHasKey(path, key string) bool {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false
+	}
+	parsed, err := hujson.Parse(data)
+	if err != nil {
+		return false
+	}
+	parsed.Standardize()
+	return gjson.GetBytes(parsed.Pack(), gjsonEscapePath(key)).Exists()
+}
+
+func gjsonEscapePath(path string) string {
+	return strings.ReplaceAll(path, ".", `\.`)
 }
 
 // GetClientStatus returns the status of all supported MCP clients using this manager's dependencies

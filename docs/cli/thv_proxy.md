@@ -97,6 +97,16 @@ thv proxy [flags] SERVER_NAME
 ### Options
 
 ```
+      --allow-origins stringArray                   Allowed CORS origins for the MCP proxy endpoint (repeatable).
+                                                    CORS is disabled by default; if you handle CORS at a gateway or reverse proxy,
+                                                    leaving this unset is the correct, secure choice. Each origin must include a
+                                                    scheme (e.g. http://) and no trailing slash, otherwise it can never match a
+                                                    browser request.
+                                                    Supported forms:
+                                                      exact:          http://localhost:6274
+                                                      scheme+host:    http://localhost   (matches any port on localhost)
+                                                      wildcard:       *                  (allow all — use with caution)
+                                                    Example: --allow-origins http://localhost:6274
   -h, --help                                        help for proxy
       --host string                                 Host for the HTTP proxy to listen on (IP or hostname) (default "127.0.0.1")
       --oidc-audience string                        Expected audience for the token

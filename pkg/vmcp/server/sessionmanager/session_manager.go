@@ -765,6 +765,9 @@ func (sm *Manager) loadSession(ctx context.Context, sessionID string) (vmcpsessi
 // session was deleted; the cache entry will be evicted on the next Get when
 // checkSession detects ErrSessionNotFound.
 func (sm *Manager) DecorateSession(sessionID string, fn func(sessiontypes.MultiSession) sessiontypes.MultiSession) error {
+	// context.Background() is intentional: DecorateSession is called from
+	// OnRegisterSession during session setup, not from a live authenticated
+	// HTTP request, so there is no caller identity to propagate.
 	sess, ok := sm.GetMultiSession(context.Background(), sessionID)
 	if !ok {
 		return fmt.Errorf("DecorateSession: session %q not found or not a multi-session", sessionID)

@@ -114,6 +114,10 @@ func (c *ValidatingCache[K, V]) getHit(ctx context.Context, key K, val V) (V, bo
 // group so at most one operation executes concurrently per key. Concurrent
 // callers for the same key share the result.
 //
+// ctx is forwarded to the load and check callbacks. When concurrent calls for
+// the same key are coalesced by singleflight, only the first caller's context
+// is forwarded; later callers' contexts are not used.
+//
 // On a cache hit the entry's liveness is validated via the check function
 // provided to New: ErrExpired evicts the entry and falls through to load;
 // transient errors return the cached value unchanged. On a cache miss, load

@@ -18,6 +18,7 @@ import (
 
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/tokencounter"
+	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types/mocks"
 )
 
@@ -51,6 +52,54 @@ func TestGetAndValidateConfig(t *testing.T) {
 			expected: &Config{
 				EmbeddingService: "http://embeddings:8080",
 			},
+		},
+		{
+			name: "explicit tei provider",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://embeddings:8080",
+				EmbeddingProvider: types.EmbeddingProviderTEI,
+			},
+			expected: &Config{
+				EmbeddingService:  "http://embeddings:8080",
+				EmbeddingProvider: types.EmbeddingProviderTEI,
+			},
+		},
+		{
+			name: "openai provider with service and model",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+			},
+			expected: &Config{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+			},
+		},
+		{
+			name: "error: openai provider without service",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+			},
+			errContains: "optimizer.embeddingService is required",
+		},
+		{
+			name: "error: openai provider without model",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+			},
+			errContains: "optimizer.embeddingModel is required",
+		},
+		{
+			name: "error: unknown provider",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://embeddings:8080",
+				EmbeddingProvider: "cohere",
+			},
+			errContains: "optimizer.embeddingProvider must be",
 		},
 		{
 			name: "all valid values are parsed",
@@ -208,6 +257,13 @@ func TestGetAndValidateConfig(t *testing.T) {
 			require.NotNil(t, result)
 			assert.Equal(t, tt.expected.EmbeddingService, result.EmbeddingService)
 
+			wantProvider := tt.expected.EmbeddingProvider
+			if wantProvider == "" {
+				wantProvider = types.EmbeddingProviderTEI
+			}
+			assert.Equal(t, wantProvider, result.EmbeddingProvider)
+			assert.Equal(t, tt.expected.EmbeddingModel, result.EmbeddingModel)
+
 			if tt.expected.MaxToolsToReturn != nil {
 				require.NotNil(t, result.MaxToolsToReturn)
 				assert.Equal(t, *tt.expected.MaxToolsToReturn, *result.MaxToolsToReturn)
@@ -230,6 +286,39 @@ func TestGetAndValidateConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestGetAndValidateConfig_OpenAIAPIKeyFromEnv(t *testing.T) {
+	openAICfg := func() *vmcpconfig.OptimizerConfig {
+		return &vmcpconfig.OptimizerConfig{
+			EmbeddingService:  "http://gateway:8080/v1",
+			EmbeddingProvider: types.EmbeddingProviderOpenAI,
+			EmbeddingModel:    "text-embedding-3-small",
+		}
+	}
+
+	t.Run("key is read from the environment", func(t *testing.T) {
+		t.Setenv(embeddingAPIKeyEnvVar, "sk-test")
+		result, err := GetAndValidateConfig(openAICfg())
+		require.NoError(t, err)
+		assert.Equal(t, "sk-test", result.EmbeddingAPIKey)
+	})
+
+	t.Run("unset key yields a keyless client", func(t *testing.T) {
+		t.Setenv(embeddingAPIKeyEnvVar, "")
+		result, err := GetAndValidateConfig(openAICfg())
+		require.NoError(t, err)
+		assert.Empty(t, result.EmbeddingAPIKey)
+	})
+
+	t.Run("tei provider never reads the key", func(t *testing.T) {
+		t.Setenv(embeddingAPIKeyEnvVar, "sk-test")
+		result, err := GetAndValidateConfig(&vmcpconfig.OptimizerConfig{
+			EmbeddingService: "http://embeddings:8080",
+		})
+		require.NoError(t, err)
+		assert.Empty(t, result.EmbeddingAPIKey)
+	})
 }
 
 // newMockStoreWithSubstringSearch returns a gomock MockToolStore configured with

@@ -134,17 +134,21 @@ jobs:
             3. If the PR does NOT touch Kubernetes paths, choose no reviewers.
 
             OUTPUT: Use the Write tool to create EXACTLY ONE file at
-            .reviewer/decision.json with this exact JSON shape (handles WITHOUT
-            the leading @):
+            .reviewer/decision.json. The file MUST be a single JSON object whose
+            only key is "reviewers", a FLAT array of objects. Each element MUST be
+            an object with exactly two string fields: "handle" (a GitHub login
+            WITHOUT the leading @) and "reason" (one short factual sentence). Do
+            NOT nest arrays, do not use bare strings, do not add other keys.
+            Example:
               {
                 "reviewers": [
                   { "handle": "ExampleUser", "reason": "one short factual sentence" }
                 ]
               }
-            Give each chosen reviewer a one-sentence reason citing the area/rule
-            that matched (e.g. "controller reconcile-logic change in
-            cmd/thv-operator/"). Use an empty array if no reviewers should be
-            requested. Write nothing else.
+            Each reason should cite the area/rule that matched (e.g. "controller
+            reconcile-logic change in cmd/thv-operator/"). Use an empty array
+            ({"reviewers": []}) if no reviewers should be requested. Write nothing
+            else.
 
       # Hands: the only step that talks to the GitHub API. Validates the brain's
       # decision against the allowlist of @handles in REVIEWERS.md, drops the PR
@@ -171,14 +175,23 @@ jobs:
             | sed 's/^@//' | tr '[:upper:]' '[:lower:]' | sort -u | jq -R . | jq -s .)
           author_lc=$(printf '%s' "$PR_AUTHOR" | tr '[:upper:]' '[:lower:]')
 
-          # Keep only allowlisted, non-author reviewers. Accept either bare
-          # strings or {handle, reason} objects; strip '@' from reasons so a
-          # crafted reason cannot inject mentions into the comment.
+          echo "Decision file contents:"; cat "$DECISION"; echo
+
+          # Normalize and validate the brain's picks. Defensive on purpose: the
+          # LLM output shape is not guaranteed, so we unwrap one level of array
+          # nesting, accept either bare strings or {handle|login, reason}
+          # objects, coerce reason to a string, and silently skip anything else
+          # rather than crash. Then drop the PR author and keep only handles on
+          # the REVIEWERS.md allowlist; '@' is stripped from reasons so a crafted
+          # reason cannot inject mentions into the comment.
           survivors=$(jq --argjson allow "$allow_json" --arg author "$author_lc" '
-            [ .reviewers[]?
-              | (if type == "string" then {handle: ., reason: ""}
-                 else {handle: (.handle // ""), reason: (.reason // "")} end)
-              | .reason |= gsub("@"; "")
+            [ (.reviewers // [])[]?
+              | if type == "array" then .[] else . end
+              | if type == "string" then {handle: ., reason: ""}
+                elif type == "object" then {handle: (.handle // .login // ""), reason: (.reason // "")}
+                else empty end
+              | .handle |= (if type == "string" then . else "" end)
+              | .reason |= (tostring | gsub("@"; ""))
               | select(.handle != ""
                        and (.handle | ascii_downcase) != $author
                        and (($allow | index(.handle | ascii_downcase)) != null))

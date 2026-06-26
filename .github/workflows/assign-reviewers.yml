@@ -21,9 +21,12 @@
 #     Fork/dependabot PRs receive no ANTHROPIC_API_KEY under `pull_request`
 #     (we deliberately avoid `pull_request_target`), so the step skips and those
 #     PRs fall back to the deterministic CODEOWNERS gate.
-#   - Routing rules are read from the BASE commit, never the PR head: the head
-#     could rewrite REVIEWERS.md (and the allowlist) in the same change. This
-#     mirrors how GitHub evaluates CODEOWNERS -- from the base branch.
+#   - Routing rules are read from the PR head, which is safe BECAUSE routing is
+#     advisory: rewriting REVIEWERS.md only changes who gets *requested*, and an
+#     author cannot approve their own PR or pull in an out-of-org approval -- so
+#     the incentive runs toward getting the correct reviewer. CODEOWNERS remains
+#     the merge gate. (If CODEOWNERS is ever slimmed so the router carries gate
+#     weight, switch to reading REVIEWERS.md from the base commit.)
 
 name: Assign Reviewers
 
@@ -58,28 +61,22 @@ jobs:
         with:
           fetch-depth: 1
 
-      # Deterministic prep:
-      #   1. SECURITY: overwrite the working copy of REVIEWERS.md with the BASE
-      #      version so the brain reads trusted, already-merged rules -- not the
-      #      author's PR copy.
-      #   2. Precompute the changed-file list (via the API) so the brain needs no
-      #      GitHub access of its own.
-      - name: Prepare trusted context
+      # Deterministic prep: precompute the changed-file list (via the API) so the
+      # brain needs no GitHub access of its own. Skip routing if there is no
+      # REVIEWERS.md to route against.
+      - name: Prepare context
         id: prep
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           REPO: ${{ github.repository }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
         run: |
           set -euo pipefail
-          git fetch --no-tags --depth 1 origin "$BASE_SHA"
-          if ! git show "$BASE_SHA:.github/REVIEWERS.md" > /tmp/REVIEWERS.base.md 2>/dev/null; then
-            echo "::notice::.github/REVIEWERS.md absent at base commit; skipping reviewer routing."
+          if [ ! -f .github/REVIEWERS.md ]; then
+            echo "::notice::.github/REVIEWERS.md not present; skipping reviewer routing."
             echo "have_rules=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          cp /tmp/REVIEWERS.base.md .github/REVIEWERS.md
 
           mkdir -p .reviewer
           gh api --paginate "repos/$REPO/pulls/$PR_NUMBER/files" \
@@ -116,7 +113,6 @@ jobs:
 
             INPUTS (read-only files on disk):
             - .github/REVIEWERS.md      -> the ownership rules and valid @handles.
-                                           (Already set to the trusted base version.)
             - .reviewer/changed-files.txt -> tab-separated "status<TAB>filename"
                                            for every file changed in this PR.
 

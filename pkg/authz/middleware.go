@@ -175,6 +175,14 @@ func Middleware(a authorizers.Authorizer, next http.Handler, passThroughTools ma
 			return
 		}
 
+		// JSON-RPC responses (client replies to server-initiated requests) are not
+		// subject to MCP method authorization. Downstream transport handlers
+		// accept them with 202 per the streamable HTTP spec.
+		if !parsedRequest.IsRequest {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Check if we should skip authorization after parsing the message
 		if shouldSkipSubsequentAuthorization(parsedRequest.Method) {
 			next.ServeHTTP(w, r)

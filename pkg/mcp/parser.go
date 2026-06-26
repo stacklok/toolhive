@@ -152,7 +152,20 @@ func parseMCPRequest(bodyBytes []byte) *ParsedMCPRequest {
 	// Handle only request messages (both calls with ID and notifications without ID)
 	req, ok := msg.(*jsonrpc2.Request)
 	if !ok {
-		// Response or error messages are not parsed here
+		// JSON-RPC responses (client replies to server-initiated requests) are
+		// not MCP requests and must bypass authorization, but we still record
+		// them in context so downstream middleware can distinguish them from
+		// malformed bodies.
+		if resp, ok := msg.(*jsonrpc2.Response); ok {
+			var id interface{}
+			if resp.ID.IsValid() {
+				id = resp.ID.Raw()
+			}
+			return &ParsedMCPRequest{
+				ID:        id,
+				IsRequest: false,
+			}
+		}
 		return nil
 	}
 

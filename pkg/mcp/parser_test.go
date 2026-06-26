@@ -1239,14 +1239,6 @@ func TestParseMCPRequestWithInvalidJSON(t *testing.T) {
 			name: "invalid JSON",
 			body: "not json",
 		},
-		{
-			name: "JSON-RPC response instead of request",
-			body: `{"jsonrpc":"2.0","id":1,"result":{"success":true}}`,
-		},
-		{
-			name: "JSON-RPC error instead of request",
-			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"error"}}`,
-		},
 	}
 
 	for _, tt := range tests {
@@ -1254,6 +1246,37 @@ func TestParseMCPRequestWithInvalidJSON(t *testing.T) {
 			t.Parallel()
 			result := parseMCPRequest([]byte(tt.body))
 			assert.Nil(t, result)
+		})
+	}
+}
+
+func TestParseMCPRequestClientResponse(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		body string
+		id   interface{}
+	}{
+		{
+			name: "JSON-RPC success response",
+			body: `{"jsonrpc":"2.0","id":1,"result":{"success":true}}`,
+			id:   int64(1),
+		},
+		{
+			name: "JSON-RPC error response",
+			body: `{"jsonrpc":"2.0","id":1,"error":{"code":-1,"message":"error"}}`,
+			id:   int64(1),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := parseMCPRequest([]byte(tt.body))
+			require.NotNil(t, result)
+			assert.False(t, result.IsRequest)
+			assert.Equal(t, tt.id, result.ID)
+			assert.Empty(t, result.Method)
 		})
 	}
 }

@@ -1516,3 +1516,46 @@ func TestHandleToolsCall(t *testing.T) {
 		})
 	}
 }
+
+func TestMiddleware_AllowsJSONRPCClientResponse(t *testing.T) {
+	t.Parallel()
+
+	denyAll := &stubAuthorizer{allowed: false}
+	handlerCalled := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		handlerCalled = true
+		w.WriteHeader(http.StatusAccepted)
+	})
+
+	chain := mcpparser.ParsingMiddleware(Middleware(denyAll, next, nil))
+
+	body := `{"jsonrpc":"2.0","id":1,"result":{}}`
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	chain.ServeHTTP(rr, req)
+
+	assert.True(t, handlerCalled, "client JSON-RPC response should bypass authorization")
+	assert.Equal(t, http.StatusAccepted, rr.Code)
+}
+
+func TestMiddleware_RejectsMalformedJSONRPCBody(t *testing.T) {
+	t.Parallel()
+
+	denyAll := &stubAuthorizer{allowed: false}
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Fatal("next handler should not be called for malformed JSON-RPC")
+	})
+
+	chain := mcpparser.ParsingMiddleware(Middleware(denyAll, next, nil))
+
+	req := httptest.NewRequest(http.MethodPost, "/mcp", bytes.NewBufferString(`{"invalid json`))
+	req.Header.Set("Content-Type", "application/json")
+	rr := httptest.NewRecorder()
+
+	chain.ServeHTTP(rr, req)
+
+	assert.Equal(t, http.StatusBadRequest, rr.Code)
+	assert.Contains(t, rr.Body.String(), "Invalid or malformed MCP request")
+}

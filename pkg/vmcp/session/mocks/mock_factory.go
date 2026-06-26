@@ -44,18 +44,18 @@ func (m *MockMultiSessionFactory) EXPECT() *MockMultiSessionFactoryMockRecorder 
 }
 
 // MakeSessionWithID mocks base method.
-func (m *MockMultiSessionFactory) MakeSessionWithID(ctx context.Context, id string, identity *auth.Identity, allowAnonymous bool, backends []*vmcp.Backend) (session.MultiSession, error) {
+func (m *MockMultiSessionFactory) MakeSessionWithID(ctx context.Context, id string, identity *auth.Identity, backends []*vmcp.Backend) (session.MultiSession, error) {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "MakeSessionWithID", ctx, id, identity, allowAnonymous, backends)
+	ret := m.ctrl.Call(m, "MakeSessionWithID", ctx, id, identity, backends)
 	ret0, _ := ret[0].(session.MultiSession)
 	ret1, _ := ret[1].(error)
 	return ret0, ret1
 }
 
 // MakeSessionWithID indicates an expected call of MakeSessionWithID.
-func (mr *MockMultiSessionFactoryMockRecorder) MakeSessionWithID(ctx, id, identity, allowAnonymous, backends any) *gomock.Call {
+func (mr *MockMultiSessionFactoryMockRecorder) MakeSessionWithID(ctx, id, identity, backends any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MakeSessionWithID", reflect.TypeOf((*MockMultiSessionFactory)(nil).MakeSessionWithID), ctx, id, identity, allowAnonymous, backends)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "MakeSessionWithID", reflect.TypeOf((*MockMultiSessionFactory)(nil).MakeSessionWithID), ctx, id, identity, backends)
 }
 
 // RestoreSession mocks base method.

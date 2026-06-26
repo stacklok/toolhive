@@ -7,6 +7,8 @@ metadata:
     helm.sh/resource-policy: keep
     {{- end }}
     controller-gen.kubebuilder.io/version: v0.17.3
+  labels:
+    toolhive.stacklok.dev/auto-migrate-storage-version: "true"
   name: mcpservers.toolhive.stacklok.dev
 spec:
   group: toolhive.stacklok.dev
@@ -105,8 +107,9 @@ spec:
                 - name
                 type: object
               authzConfig:
-                description: AuthzConfig defines authorization policy configuration
-                  for the MCP server
+                description: |-
+                  AuthzConfig defines authorization policy configuration for the MCP server.
+                  AuthzConfig and AuthzConfigRef are mutually exclusive.
                 properties:
                   configMap:
                     description: |-
@@ -214,6 +217,20 @@ spec:
                 - message: inline must be set when type is 'inline', and must not
                     be set otherwise
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+              authzConfigRef:
+                description: |-
+                  AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                  The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.
+                  Mutually exclusive with authzConfig.
+                properties:
+                  name:
+                    description: Name is the name of the MCPAuthzConfig resource in
+                      the same namespace.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               backendReplicas:
                 description: |-
                   BackendReplicas is the desired number of MCP server backend pod replicas.
@@ -289,6 +306,11 @@ spec:
                   The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.
                   Per-server overrides (audience, scopes) are specified here; shared provider config
                   lives in the MCPOIDCConfig resource.
+
+                  SECURITY: if this field is omitted and no other authentication source is configured,
+                  the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and
+                  forwards it to the MCP server under a synthetic local-user identity, with no token or
+                  credential check. Set this field to enforce identity-based access control per request.
                 properties:
                   audience:
                     description: |-
@@ -811,6 +833,9 @@ spec:
             - image
             type: object
             x-kubernetes-validations:
+            - message: authzConfig and authzConfigRef are mutually exclusive; use
+                authzConfigRef to reference a shared MCPAuthzConfig
+              rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
             - message: rateLimiting requires sessionStorage with provider 'redis'
               rule: '!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider
                 == ''redis'')'
@@ -829,6 +854,10 @@ spec:
                 description: |-
                   AuthServerConfigHash is the hash of the referenced authServerRef spec,
                   used to detect configuration changes and trigger reconciliation.
+                type: string
+              authzConfigHash:
+                description: AuthzConfigHash is the hash of the referenced MCPAuthzConfig
+                  spec for change detection
                 type: string
               conditions:
                 description: Conditions represent the latest available observations
@@ -1022,8 +1051,9 @@ spec:
                 - name
                 type: object
               authzConfig:
-                description: AuthzConfig defines authorization policy configuration
-                  for the MCP server
+                description: |-
+                  AuthzConfig defines authorization policy configuration for the MCP server.
+                  AuthzConfig and AuthzConfigRef are mutually exclusive.
                 properties:
                   configMap:
                     description: |-
@@ -1131,6 +1161,20 @@ spec:
                 - message: inline must be set when type is 'inline', and must not
                     be set otherwise
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+              authzConfigRef:
+                description: |-
+                  AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                  The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.
+                  Mutually exclusive with authzConfig.
+                properties:
+                  name:
+                    description: Name is the name of the MCPAuthzConfig resource in
+                      the same namespace.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               backendReplicas:
                 description: |-
                   BackendReplicas is the desired number of MCP server backend pod replicas.
@@ -1206,6 +1250,11 @@ spec:
                   The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.
                   Per-server overrides (audience, scopes) are specified here; shared provider config
                   lives in the MCPOIDCConfig resource.
+
+                  SECURITY: if this field is omitted and no other authentication source is configured,
+                  the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and
+                  forwards it to the MCP server under a synthetic local-user identity, with no token or
+                  credential check. Set this field to enforce identity-based access control per request.
                 properties:
                   audience:
                     description: |-
@@ -1728,6 +1777,9 @@ spec:
             - image
             type: object
             x-kubernetes-validations:
+            - message: authzConfig and authzConfigRef are mutually exclusive; use
+                authzConfigRef to reference a shared MCPAuthzConfig
+              rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
             - message: rateLimiting requires sessionStorage with provider 'redis'
               rule: '!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider
                 == ''redis'')'
@@ -1746,6 +1798,10 @@ spec:
                 description: |-
                   AuthServerConfigHash is the hash of the referenced authServerRef spec,
                   used to detect configuration changes and trigger reconciliation.
+                type: string
+              authzConfigHash:
+                description: AuthzConfigHash is the hash of the referenced MCPAuthzConfig
+                  spec for change detection
                 type: string
               conditions:
                 description: Conditions represent the latest available observations

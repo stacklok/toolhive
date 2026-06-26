@@ -37,6 +37,15 @@ type VirtualMCPServerSpec struct {
 	// +optional
 	OutgoingAuth *OutgoingAuthConfig `json:"outgoingAuth,omitempty"`
 
+	// PassthroughHeaders is an allowlist of incoming client request header names
+	// forwarded verbatim to all backends (e.g. an API key the backend resolves to
+	// a user). Takes precedence over config.PassthroughHeaders. Names must not be
+	// restricted headers (Host, hop-by-hop, X-Forwarded-*). Forwarded headers are
+	// attacker-influenceable unless a trusted upstream sets them.
+	// +optional
+	// +listType=atomic
+	PassthroughHeaders []string `json:"passthroughHeaders,omitempty"`
+
 	// ServiceType specifies the Kubernetes service type for the Virtual MCP server
 	// +kubebuilder:validation:Enum=ClusterIP;NodePort;LoadBalancer
 	// +kubebuilder:default=ClusterIP
@@ -160,6 +169,7 @@ type EmbeddingServerRef struct {
 // IncomingAuthConfig configures authentication for clients connecting to the Virtual MCP server
 //
 // +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? has(self.oidcConfigRef) : true",message="spec.incomingAuth.oidcConfigRef is required when type is oidc"
+// +kubebuilder:validation:XValidation:rule="!(has(self.authzConfig) && has(self.authzConfigRef))",message="authzConfig and authzConfigRef are mutually exclusive; use authzConfigRef to reference a shared MCPAuthzConfig"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type IncomingAuthConfig struct {
@@ -176,10 +186,21 @@ type IncomingAuthConfig struct {
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
-	// AuthzConfig defines authorization policy configuration
-	// Reuses MCPServer authz patterns
+	// AuthzConfig defines authorization policy configuration.
+	// Reuses MCPServer authz patterns.
+	// AuthzConfig and AuthzConfigRef are mutually exclusive.
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
+
+	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+	// The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+	// Mutually exclusive with authzConfig.
+	//
+	// Only cedarv1 MCPAuthzConfig resources are supported for VirtualMCPServer
+	// today; referencing a non-Cedar config fails reconciliation with a clear
+	// error because the vMCP runtime authz middleware is Cedar-only.
+	// +optional
+	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 }
 
 // OutgoingAuthConfig configures authentication from Virtual MCP to backend MCPServers
@@ -268,6 +289,11 @@ type VirtualMCPServerStatus struct {
 	// +optional
 	BackendCount int32 `json:"backendCount,omitempty"`
 
+	// AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection.
+	// Only populated when IncomingAuth.AuthzConfigRef is set.
+	// +optional
+	AuthzConfigHash string `json:"authzConfigHash,omitempty"`
+
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection.
 	// Only populated when IncomingAuth.OIDCConfigRef is set.
 	// +optional
@@ -338,12 +364,8 @@ const (
 	// ConditionReasonIncomingAuthInvalid indicates incoming auth is invalid
 	ConditionReasonIncomingAuthInvalid = "IncomingAuthInvalid"
 
-	// Note: ConditionReasonAuthzConfigMapNotFound is shared with MCPRemoteProxy and is
-	// declared in mcpremoteproxy_types.go.
-
-	// ConditionReasonAuthzConfigMapInvalid indicates the referenced authz ConfigMap was
-	// found but its payload is missing/empty/malformed or fails Cedar validation.
-	ConditionReasonAuthzConfigMapInvalid = "AuthzConfigMapInvalid"
+	// Note: ConditionReasonAuthzConfigMapNotFound and ConditionReasonAuthzConfigMapInvalid
+	// are shared with MCPRemoteProxy and are declared in mcpremoteproxy_types.go.
 
 	// ConditionReasonGroupRefValid indicates the GroupRef is valid
 	ConditionReasonVirtualMCPServerGroupRefValid = "GroupRefValid"
@@ -471,6 +493,7 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
+//+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 //+kubebuilder:resource:shortName=vmcp;virtualmcp,categories=toolhive
 //+kubebuilder:printcolumn:name="Phase",type="string",JSONPath=".status.phase",description="The phase of the VirtualMCPServer"
 //+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url",description="Virtual MCP server URL"

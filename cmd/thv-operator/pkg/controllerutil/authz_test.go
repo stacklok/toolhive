@@ -12,10 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -159,9 +160,7 @@ func TestGenerateAuthzVolumeConfigInlineConfigMapName(t *testing.T) {
 func TestEnsureAuthzConfigMap(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	t.Run("Nil authz config returns nil", func(t *testing.T) {
 		t.Parallel()
@@ -230,13 +229,11 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		t.Parallel()
 
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
-		owner := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-server",
-				Namespace: "default",
-				UID:       "test-uid",
-			},
-		}
+		owner := v1beta1test.NewMCPServer("test-server", "default",
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+				m.UID = "test-uid"
+			}),
+		)
 		authzConfig := &mcpv1beta1.AuthzConfigRef{
 			Type: mcpv1beta1.AuthzConfigTypeInline,
 			Inline: &mcpv1beta1.InlineAuthzConfig{
@@ -279,13 +276,11 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		t.Parallel()
 
 		client := fake.NewClientBuilder().WithScheme(scheme).Build()
-		owner := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-server",
-				Namespace: "default",
-				UID:       "test-uid-2",
-			},
-		}
+		owner := v1beta1test.NewMCPServer("test-server", "default",
+			v1beta1test.Mutate(func(m *mcpv1beta1.MCPServer) {
+				m.UID = "test-uid-2"
+			}),
+		)
 		authzConfig := &mcpv1beta1.AuthzConfigRef{
 			Type: mcpv1beta1.AuthzConfigTypeInline,
 			Inline: &mcpv1beta1.InlineAuthzConfig{
@@ -324,9 +319,7 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 func TestAddAuthzConfigOptions(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	t.Run("Nil authz ref returns nil", func(t *testing.T) {
 		t.Parallel()
@@ -782,7 +775,7 @@ func TestApplyClaimMappingOverrides(t *testing.T) {
 	baseCfg := func(t *testing.T, opts cedar.ConfigOptions) *authz.Config {
 		t.Helper()
 		cfg, err := authz.NewConfig(cedar.Config{
-			Version: "v1",
+			Version: AuthzConfigVersion,
 			Type:    cedar.ConfigType,
 			Options: &opts,
 		})
@@ -913,7 +906,7 @@ func TestExtractCedarAuthzOptions(t *testing.T) {
 	t.Run("happy path returns the embedded cedar options", func(t *testing.T) {
 		t.Parallel()
 		cfg, err := authz.NewConfig(cedar.Config{
-			Version: "v1",
+			Version: AuthzConfigVersion,
 			Type:    cedar.ConfigType,
 			Options: &cedar.ConfigOptions{
 				Policies:     []string{`permit(principal, action, resource);`},

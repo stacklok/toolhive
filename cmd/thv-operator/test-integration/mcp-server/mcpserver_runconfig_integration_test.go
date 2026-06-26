@@ -17,7 +17,9 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	"github.com/stacklok/toolhive/pkg/runner"
@@ -541,6 +543,103 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 			Expect(runConfig.TelemetryConfig.EnablePrometheusMetricsPath).To(BeTrue())
 		})
 
+		It("Should handle MCPServer with oidcConfigRef", func() {
+			namespace := "oidc-ref-runconfig-ns"
+			mcpServerName := "oidc-ref-runconfig-server"
+			configMapName := mcpServerName + "-runconfig"
+
+			ns := &corev1.Namespace{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: namespace,
+				},
+			}
+			_ = k8sClient.Create(ctx, ns)
+
+			oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "shared-oidc-config",
+					Namespace: namespace,
+				},
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:  "https://issuer.example.com",
+						JWKSURL: "https://issuer.example.com/.well-known/jwks.json",
+					},
+				},
+			}
+			Expect(k8sClient.Create(ctx, oidcConfig)).To(Succeed())
+			defer k8sClient.Delete(ctx, oidcConfig) //nolint:errcheck
+
+			Eventually(func() bool {
+				fetched := &mcpv1beta1.MCPOIDCConfig{}
+				err := k8sClient.Get(ctx, types.NamespacedName{
+					Name:      oidcConfig.Name,
+					Namespace: oidcConfig.Namespace,
+				}, fetched)
+				return err == nil && fetched.Status.ConfigHash != ""
+			}, timeout, interval).Should(BeTrue())
+
+			resourceURL := "https://mcp.example.com/oauth/resource"
+			mcpServer := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      mcpServerName,
+					Namespace: namespace,
+				},
+				Spec: mcpv1beta1.MCPServerSpec{
+					Image:     "oidc/mcp-server:latest",
+					Transport: "stdio",
+					ProxyPort: 8080,
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+						Name:        oidcConfig.Name,
+						Audience:    "test-audience",
+						Scopes:      []string{"openid", "profile"},
+						ResourceURL: resourceURL,
+					},
+				},
+			}
+
+			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
+			defer k8sClient.Delete(ctx, mcpServer) //nolint:errcheck
+
+			configMap := &corev1.ConfigMap{}
+			Eventually(func() error {
+				return k8sClient.Get(ctx, types.NamespacedName{
+					Name:      configMapName,
+					Namespace: namespace,
+				}, configMap)
+			}, timeout, interval).Should(Succeed())
+
+			Expect(configMap.Data).To(HaveKey("runconfig.json"))
+
+			var runConfig runner.RunConfig
+			err := json.Unmarshal([]byte(configMap.Data["runconfig.json"]), &runConfig)
+			Expect(err).NotTo(HaveOccurred())
+
+			Expect(runConfig.OIDCConfig).NotTo(BeNil())
+			Expect(runConfig.OIDCConfig.Issuer).To(Equal("https://issuer.example.com"))
+			Expect(runConfig.OIDCConfig.Audience).To(Equal("test-audience"))
+			Expect(runConfig.OIDCConfig.JWKSURL).To(Equal("https://issuer.example.com/.well-known/jwks.json"))
+			Expect(runConfig.OIDCConfig.ResourceURL).To(Equal(resourceURL))
+			Expect(runConfig.OIDCConfig.Scopes).To(Equal([]string{"openid", "profile"}))
+
+			var authConfig *transporttypes.MiddlewareConfig
+			for i := range runConfig.MiddlewareConfigs {
+				if runConfig.MiddlewareConfigs[i].Type == auth.MiddlewareType {
+					authConfig = &runConfig.MiddlewareConfigs[i]
+					break
+				}
+			}
+			Expect(authConfig).NotTo(BeNil())
+
+			var authParams auth.MiddlewareParams
+			Expect(json.Unmarshal(authConfig.Parameters, &authParams)).To(Succeed())
+			Expect(authParams.OIDCConfig).NotTo(BeNil())
+			Expect(authParams.OIDCConfig.Issuer).To(Equal(runConfig.OIDCConfig.Issuer))
+			Expect(authParams.OIDCConfig.Audience).To(Equal(runConfig.OIDCConfig.Audience))
+			Expect(authParams.OIDCConfig.JWKSURL).To(Equal(runConfig.OIDCConfig.JWKSURL))
+		})
+
 		It("Should use server name as default service name when telemetryConfigRef has no override", func() {
 			namespace := "telemetry-default-svc-ns"
 			mcpServerName := "telemetry-default-svc-server"
@@ -666,7 +765,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 
 			// Verify authorization configuration
 			Expect(runConfig.AuthzConfig).NotTo(BeNil())
-			Expect(runConfig.AuthzConfig.Version).To(Equal("v1"))
+			Expect(runConfig.AuthzConfig.Version).To(Equal(ctrlutil.AuthzConfigVersion))
 			Expect(runConfig.AuthzConfig.Type).To(Equal(authz.ConfigType(cedar.ConfigType)))
 
 			cedarCfg, err := cedar.ExtractConfig(runConfig.AuthzConfig)
@@ -807,7 +906,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 				},
 				Data: map[string]string{
 					"authz.json": `{
-						"version": "v1",
+						"version": "1.0",
 						"type": "cedarv1",
 						"cedar": {
 							"policies": [
@@ -870,7 +969,7 @@ var _ = Describe("RunConfig ConfigMap Integration Tests", func() {
 
 			// Verify authorization configuration was embedded from external ConfigMap
 			Expect(runConfig.AuthzConfig).NotTo(BeNil())
-			Expect(runConfig.AuthzConfig.Version).To(Equal("v1"))
+			Expect(runConfig.AuthzConfig.Version).To(Equal(ctrlutil.AuthzConfigVersion))
 			Expect(runConfig.AuthzConfig.Type).To(Equal(authz.ConfigType(cedar.ConfigType)))
 
 			// Verify Cedar configuration

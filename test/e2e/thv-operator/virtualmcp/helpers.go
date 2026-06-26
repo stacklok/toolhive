@@ -7,13 +7,14 @@ package virtualmcp
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/go-logr/logr"
 	mcpclient "github.com/mark3labs/mcp-go/client"
 	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/mark3labs/mcp-go/mcp"
@@ -767,17 +768,7 @@ PYTHON_SCRIPT
 // WithHttpLoggerOption returns a transport.StreamableHTTPCOption that logs to GinkgoLogr.
 // This is useful for debugging HTTP requests and responses.
 func WithHttpLoggerOption() transport.StreamableHTTPCOption {
-	return transport.WithHTTPLogger(gingkoHttpLogger{})
-}
-
-type gingkoHttpLogger struct{}
-
-func (gingkoHttpLogger) Infof(format string, v ...any) {
-	ginkgo.GinkgoLogr.Info("INFO: "+format, v...)
-}
-
-func (gingkoHttpLogger) Errorf(format string, v ...any) {
-	ginkgo.GinkgoLogr.Error(errors.New("http error"), "ERROR: "+format, v...)
+	return transport.WithHTTPLogger(slog.New(logr.ToSlogHandler(ginkgo.GinkgoLogr)))
 }
 
 // InitializeMCPClientWithRetries creates and initializes an MCP client with proper retry handling.

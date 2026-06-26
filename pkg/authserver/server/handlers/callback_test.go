@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
@@ -514,6 +515,57 @@ func TestCallbackHandler_TwoUpstreams_SecondLeg_IssuesCode(t *testing.T) {
 	assert.False(t, ok, "second leg pending should be consumed")
 }
 
+func TestCallbackHandler_SingleLeg_IssuesCodeWithoutChaining(t *testing.T) {
+	t.Parallel()
+	handler, storState, provider1, _ := multiUpstreamTestSetup(t)
+
+	// A SingleLeg pending targets provider-1 only. provider-2 is configured but has
+	// no tokens for this session, so the default chain logic would redirect into it.
+	// SingleLeg must suppress that and issue the authorization code immediately.
+	sessionID := "single-leg-session"
+	legState := "single-leg-state-abc"
+	legVerifier := "single-leg-pkce-verifier-12345678901234567890"
+
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        legState,
+		UpstreamPKCEVerifier: legVerifier,
+		UpstreamNonce:        "single-leg-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		SingleLeg:            true,
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[legState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider1-code&state="+legState, nil)
+	rec := httptest.NewRecorder()
+
+	handler.CallbackHandler(rec, req)
+
+	// Should issue the authorization code (HTTP 303), not redirect to provider-2 (HTTP 302).
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "single-leg flow should issue auth code, not chain to provider-2")
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, testAuthRedirectURI, "redirect should be to client's redirect_uri")
+	assert.Contains(t, location, "code=", "redirect should include authorization code")
+	assert.NotContains(t, location, "idp2.example.com", "must not redirect into the second upstream")
+
+	// provider-1's code should have been exchanged and its tokens stored.
+	assert.Equal(t, "provider1-code", provider1.capturedCode, "provider-1 should have exchanged the code")
+	assert.Contains(t, storState.upstreamTokens, sessionID+":provider-1", "provider-1 tokens should be stored")
+
+	// No second-leg pending authorization should have been created for provider-2.
+	for state, p := range storState.pendingAuths {
+		assert.NotEqualf(t, "provider-2", p.UpstreamProviderName,
+			"no chain leg should be created for provider-2 (state=%s)", state)
+	}
+}
+
 func TestCallbackHandler_TwoUpstreams_IdentityFromFirstLeg(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, _ := multiUpstreamTestSetup(t)
@@ -845,6 +897,7 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 		priorRow         *priorRow // nil = no prior row
 		idpRefreshToken  string    // RT returned by upstream exchange
 		idpSubject       string    // subject claim returned by upstream
+		synthetic        bool      // upstream identity is synthetic (rotating subject)
 		lookupErr        error     // if non-nil, storage lookup returns this error
 		expectedStoredRT string    // expected RefreshToken on the new row
 	}{
@@ -854,6 +907,29 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 			idpRefreshToken:  "",
 			idpSubject:       "user-123",
 			expectedStoredRT: "rt-prior",
+		},
+		{
+			// Synthetic providers mint a fresh rotating subject every flow, so the
+			// UpstreamSubject equality guard can never hold even though the stable
+			// user identity (carried from the first leg) does match. The RT must
+			// still be carried forward — otherwise refresh silently breaks for every
+			// userinfo-less OAuth2 backend.
+			name:             "synthetic carries prior RT despite rotating subject",
+			priorRow:         &priorRow{sessionID: "old-session", upstreamSubject: "tk-oldrotatingsubject", refreshToken: "rt-prior"},
+			idpRefreshToken:  "",
+			idpSubject:       "tk-newrotatingsubject",
+			synthetic:        true,
+			expectedStoredRT: "rt-prior",
+		},
+		{
+			// Guards the error state where the synthetic branch must not carry forward
+			// (or panic) when there is no prior row to read from.
+			name:             "synthetic with no prior row accepts empty RT",
+			priorRow:         nil,
+			idpRefreshToken:  "",
+			idpSubject:       "tk-newrotatingsubject",
+			synthetic:        true,
+			expectedStoredRT: "",
 		},
 		{
 			name:             "no carry across different upstream subjects",
@@ -917,7 +993,8 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 					IDToken:      "new-id-token",
 					ExpiresAt:    time.Now().Add(time.Hour),
 				},
-				Subject: tc.idpSubject,
+				Subject:   tc.idpSubject,
+				Synthetic: tc.synthetic,
 			}
 
 			// Pre-populate user + identity so ResolveUser is deterministic.
@@ -947,7 +1024,7 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 			}
 
 			internalState := testInternalState
-			storState.pendingAuths[internalState] = &storage.PendingAuthorization{
+			pendingAuth := &storage.PendingAuthorization{
 				ClientID:             testAuthClientID,
 				RedirectURI:          testAuthRedirectURI,
 				State:                "client-state",
@@ -960,6 +1037,15 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 				UpstreamProviderName: providerName,
 				CreatedAt:            time.Now(),
 			}
+			if tc.synthetic {
+				// Synthetic carry-forward only applies on a subsequent leg, where the
+				// stable user identity is carried from the first leg (so the prior row
+				// is found by UserID) while the provider's own subject rotates per flow.
+				pendingAuth.ResolvedUserID = existingUserID
+				pendingAuth.ResolvedUserName = "First Leg User"
+				pendingAuth.ResolvedUserEmail = "firstleg@example.com"
+			}
+			storState.pendingAuths[internalState] = pendingAuth
 
 			req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=test-code&state="+internalState, nil)
 			rec := httptest.NewRecorder()
@@ -1011,4 +1097,139 @@ func TestRoutesIncludeAuthorizeAndCallback(t *testing.T) {
 				"route %s %s should be registered", tc.method, tc.path)
 		})
 	}
+}
+
+// TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead verifies that during a
+// subsequent-leg OAuth callback, the chain-consistency read (GetAllUpstreamTokens)
+// runs with the resolved canonical user already in the request context.
+//
+// Why GetAllUpstreamTokens specifically, and not StoreUpstreamTokens: the callback
+// makes several storage calls. StoreUpstreamTokens carries the user in its tokens
+// argument (tokens.UserID), so a user-keyed storage decorator reads the user from
+// there and does not need the context. GetAllUpstreamTokens and DeleteUpstreamTokens
+// take only (ctx, sessionID) — no tokens argument — so the decorator can resolve the
+// user only from ctx. This test pins the contract that the callback places the
+// canonical user (via WithPlatformUser, not a stub Identity) into the context before
+// those context-dependent reads run.
+//
+// The resolved user is carried forward from the first leg (leg1User) and is
+// deliberately different from what provider-2's exchange returns, so the assertion
+// catches the callback using the wrong user rather than merely a self-consistent one.
+func TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead(t *testing.T) {
+	t.Parallel()
+	handler, storState, _, _ := multiUpstreamTestSetup(t)
+
+	sessionID := "chain-session-ctx"
+	const leg1User = "resolved-user-id-from-leg1"
+
+	// First leg already completed: provider-1's tokens exist, keyed to leg1User.
+	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+		ProviderID:   "provider-1",
+		AccessToken:  "p1-at",
+		RefreshToken: "p1-rt",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		ClientID:     testAuthClientID,
+		UserID:       leg1User,
+	}
+
+	// Second-leg pending carries the resolved identity forward from leg 1.
+	secondLegState := "chain-ctx-second-leg-state"
+	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        secondLegState,
+		UpstreamPKCEVerifier: "second-leg-pkce-verifier-98765432109876543210",
+		UpstreamNonce:        "second-leg-nonce",
+		UpstreamProviderName: "provider-2",
+		SessionID:            sessionID,
+		ResolvedUserID:       leg1User,
+		ResolvedUserName:     "First Leg User",
+		ResolvedUserEmail:    "firstleg@example.com",
+		CreatedAt:            time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider2-code&state="+secondLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	require.Equal(t, http.StatusSeeOther, rec.Code)
+
+	// The callback's chain-consistency check reads GetAllUpstreamTokens; the harness
+	// captured the ctx it ran with. Assert the callback had already placed the
+	// resolved canonical user into that ctx, and that it is the user carried from leg 1.
+	uid, ok := auth.PlatformUserFromContext(storState.getAllUpstreamCtx)
+	require.True(t, ok, "callback must place platform user in ctx before the chain-consistency GetAllUpstreamTokens")
+	require.Equal(t, leg1User, uid)
+
+	// The callback must NOT place a stub Identity: a value under the identity key
+	// would read as an authenticated principal to downstream consumers.
+	_, hasIdentity := auth.IdentityFromContext(storState.getAllUpstreamCtx)
+	require.False(t, hasIdentity, "callback must not place an Identity (only a platform user) in ctx")
+}
+
+// TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup verifies that
+// when a subsequent-leg callback returns an upstream error, the earlier-leg cleanup
+// (DeleteUpstreamTokens in handleUpstreamError) runs with the resolved canonical user
+// already in the request context.
+//
+// This is the error-path sibling of the chain-read test above. handleUpstreamError
+// runs from an early return at the top of CallbackHandler, before the happy-path
+// user injection, so it must place the user itself. DeleteUpstreamTokens takes only
+// (ctx, sessionID) — no tokens argument — so a context-keyed storage decorator can
+// resolve the canonical user only from ctx. The resolved user is carried forward from
+// leg 1 via pending.ResolvedUserID.
+func TestCallbackHandler_PlacesPlatformUserInContext_OnUpstreamErrorCleanup(t *testing.T) {
+	t.Parallel()
+	handler, storState, _, _ := multiUpstreamTestSetup(t)
+
+	sessionID := "error-cleanup-session"
+	const leg1User = "resolved-user-id-from-leg1"
+
+	// First leg already completed: provider-1's tokens exist, keyed to leg1User.
+	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+		ProviderID:   "provider-1",
+		AccessToken:  "p1-at",
+		RefreshToken: "p1-rt",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		ClientID:     testAuthClientID,
+		UserID:       leg1User,
+	}
+
+	// Second-leg pending carries the resolved identity forward from leg 1.
+	secondLegState := "error-cleanup-second-leg-state"
+	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        secondLegState,
+		UpstreamProviderName: "provider-2",
+		SessionID:            sessionID,
+		ResolvedUserID:       leg1User,
+		ResolvedUserName:     "First Leg User",
+		ResolvedUserEmail:    "firstleg@example.com",
+		CreatedAt:            time.Now(),
+	}
+
+	// Upstream returns an error on the second leg, driving the handleUpstreamError path.
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?error=access_denied&state="+secondLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	// handleUpstreamError cleans up earlier-leg tokens via DeleteUpstreamTokens; the
+	// harness captured the ctx it ran with. Assert the callback placed the resolved
+	// canonical user into that ctx so a context-keyed decorator can delete the row.
+	uid, ok := auth.PlatformUserFromContext(storState.deleteUpstreamCtx)
+	require.True(t, ok, "handleUpstreamError must place platform user in ctx before the cleanup DeleteUpstreamTokens")
+	require.Equal(t, leg1User, uid)
+
+	// The error path must NOT place a stub Identity under the identity key.
+	_, hasIdentity := auth.IdentityFromContext(storState.deleteUpstreamCtx)
+	require.False(t, hasIdentity, "handleUpstreamError must not place an Identity (only a platform user) in ctx")
 }

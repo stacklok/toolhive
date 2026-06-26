@@ -17,7 +17,10 @@ Print a fresh LLM gateway access token to stdout
 
 Print a fresh OIDC access token to stdout (all other output on stderr).
 Intended for use as apiKeyHelper or auth.command in OIDC-capable AI tools.
-Runs non-interactively — will not launch a browser flow.
+
+A cached or refreshable token is printed without prompting. If none exists
+(for example after "thv llm setup --lazy"), the OIDC browser login flow is
+launched automatically and the resulting token is printed once login completes.
 
 ```
 thv llm token [flags]
@@ -26,7 +29,8 @@ thv llm token [flags]
 ### Options
 
 ```
-  -h, --help   help for token
+  -h, --help           help for token
+      --skip-browser   Print the OIDC authorization URL instead of opening a browser, then wait for the callback. Use in headless/SSH/CI environments where no system browser is available.
 ```
 
 ### Options inherited from parent commands

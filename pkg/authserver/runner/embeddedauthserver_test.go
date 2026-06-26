@@ -595,6 +595,27 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 		require.NotNil(t, cfg)
 		assert.Empty(t, cfg.ClientID)
 	})
+
+	t.Run("propagates AllowPrivateIPs", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: "https://example.com/authorize",
+				TokenEndpoint:         "https://example.com/token",
+				ClientID:              "my-client-id",
+				RedirectURI:           "https://my-app.com/callback",
+				AllowPrivateIPs:       true,
+			},
+		}
+
+		cfg, err := buildPureOAuth2Config(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.True(t, cfg.AllowPrivateIPs)
+	})
 }
 
 // TestBuildPureOAuth2ConfigWithEnvVar tests buildPureOAuth2Config with environment variables.
@@ -1106,6 +1127,46 @@ func TestBuildOIDCConfig(t *testing.T) {
 
 		assert.Equal(t, map[string]string{"access_type": "offline"},
 			cfg.AdditionalAuthorizationParams)
+	})
+
+	t.Run("propagates SubjectClaim", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL:    "https://example.com",
+				ClientID:     "test-client-id",
+				RedirectURI:  "http://localhost:8080/callback",
+				SubjectClaim: "oid",
+			},
+		}
+
+		cfg, err := buildOIDCConfig(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.Equal(t, "oid", cfg.SubjectClaim)
+	})
+
+	t.Run("propagates AllowPrivateIPs", func(t *testing.T) {
+		t.Parallel()
+
+		rc := &authserver.UpstreamRunConfig{
+			Type: authserver.UpstreamProviderTypeOIDC,
+			OIDCConfig: &authserver.OIDCUpstreamRunConfig{
+				IssuerURL:       "https://idp.example.com",
+				ClientID:        "my-client-id",
+				RedirectURI:     "http://localhost:8080/callback",
+				AllowPrivateIPs: true,
+			},
+		}
+
+		cfg, err := buildOIDCConfig(rc)
+		require.NoError(t, err)
+		require.NotNil(t, cfg)
+
+		assert.True(t, cfg.AllowPrivateIPs)
 	})
 }
 
@@ -1770,7 +1831,7 @@ func (s *closeTrackingStorage) Close() error {
 // crash-looping pod would leak one connection pool / goroutine per
 // restart.
 //
-// The test calls newEmbeddedAuthServerWithStorage (the test seam that
+// The test calls NewEmbeddedAuthServerWithStorage (the test seam that
 // production NewEmbeddedAuthServer dispatches into) so the storage
 // instance is observable: a closeTrackingStorage wrapper records every
 // Close call. The assertion is then a direct count rather than a
@@ -1810,7 +1871,7 @@ func TestNewEmbeddedAuthServer_ClosesStorageOnError(t *testing.T) {
 		AllowedAudiences: []string{"https://mcp.example.com"},
 	}
 
-	embed, err := newEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
+	embed, err := NewEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
 	require.Error(t, err,
 		"discovery returns 500, so DCR resolution must fail and the constructor must return an error")
 	assert.Nil(t, embed,
@@ -1940,7 +2001,7 @@ func (s *urlErrorOnCloseStorage) Close() error {
 
 // TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog pins the post-#5196
 // invariant that the deferred-cleanup slog.Warn at the top of
-// newEmbeddedAuthServerWithStorage routes both closeErr and retErr through
+// NewEmbeddedAuthServerWithStorage routes both closeErr and retErr through
 // dcr.SanitizeErrorForLog, so a future regression that drops the call (or that
 // changes the error chain to inline an upstream response body containing a
 // userinfo/query/fragment) cannot silently leak secrets to operator logs.
@@ -2015,7 +2076,7 @@ func TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	embed, err := newEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
+	embed, err := NewEmbeddedAuthServerWithStorage(context.Background(), cfg, tracker)
 	require.Error(t, err)
 	assert.Nil(t, embed)
 
@@ -2034,4 +2095,29 @@ func TestNewEmbeddedAuthServer_DeferredCleanupSanitizesLog(t *testing.T) {
 	// context to correlate the failure with upstream logs.
 	assert.Contains(t, logged, "redis.example.com",
 		"closeErr host must remain in the Warn record after sanitisation")
+}
+
+func TestResolveCIMDConfig(t *testing.T) {
+	t.Parallel()
+
+	t.Run("nil input returns zero values", func(t *testing.T) {
+		t.Parallel()
+		enabled, size, ttl := resolveCIMDConfig(nil)
+		assert.False(t, enabled)
+		assert.Zero(t, size)
+		assert.Zero(t, ttl)
+	})
+
+	t.Run("non-nil input passes values through", func(t *testing.T) {
+		t.Parallel()
+		cfg := &authserver.CIMDRunConfig{
+			Enabled:          true,
+			CacheMaxSize:     128,
+			CacheFallbackTTL: "10m",
+		}
+		enabled, size, ttl := resolveCIMDConfig(cfg)
+		assert.True(t, enabled)
+		assert.Equal(t, 128, size)
+		assert.Equal(t, 10*time.Minute, ttl)
+	})
 }

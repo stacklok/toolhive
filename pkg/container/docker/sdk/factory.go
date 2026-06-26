@@ -12,7 +12,7 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/docker/docker/client"
+	mobyclient "github.com/moby/moby/client"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
@@ -66,7 +66,7 @@ var supportedSocketPaths = []runtime.Type{runtime.TypePodman, runtime.TypeDocker
 // per-runtime fallback the first stat-OK socket short-circuits discovery and
 // we'd surface "no container runtime available" even though a usable Docker
 // daemon is reachable through a different socket.
-func NewDockerClient(ctx context.Context) (*client.Client, string, runtime.Type, error) {
+func NewDockerClient(ctx context.Context) (*mobyclient.Client, string, runtime.Type, error) {
 	var lastErr error
 
 	for _, sp := range supportedSocketPaths {
@@ -120,18 +120,18 @@ func dockerPermissionHint(err error) string {
 }
 
 // NewClientWithSocketPath creates a new container client with a specific socket path
-func newClientWithSocketPath(ctx context.Context, socketPath string) (*client.Client, error) {
+func newClientWithSocketPath(ctx context.Context, socketPath string) (*mobyclient.Client, error) {
 	// Create platform-specific client
 	_, opts := newPlatformClient(socketPath)
 
 	// Create Docker client with the custom HTTP client
-	dockerClient, err := client.NewClientWithOpts(opts...)
+	dockerClient, err := mobyclient.New(opts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create client: %w", err)
 	}
 
 	// Make sure we can ping the server.
-	_, err = dockerClient.Ping(ctx)
+	_, err = dockerClient.Ping(ctx, mobyclient.PingOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to ping Docker server at %s: %w", socketPath, err)
 	}

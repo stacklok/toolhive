@@ -81,6 +81,99 @@ func TestNextMissingUpstream(t *testing.T) {
 	}
 }
 
+func TestNextMissingUpstream_RefreshExpired(t *testing.T) {
+	t.Parallel()
+
+	// provider-1 has an expired token (with a refresh token); provider-2 is live.
+	// Presence alone would mark provider-1 satisfied; the refresh-then-classify
+	// path must decide based on whether the expired leg can be refreshed.
+	expiredProvider1 := func(st *testStorageState) {
+		st.upstreamTokens["test-session:provider-1"] = &storage.UpstreamTokens{
+			ProviderID:   "provider-1",
+			AccessToken:  "tok-1",
+			RefreshToken: "rt-1",
+			ExpiresAt:    time.Now().Add(-time.Minute),
+		}
+		st.upstreamTokens["test-session:provider-2"] = &storage.UpstreamTokens{
+			ProviderID:  "provider-2",
+			AccessToken: "tok-2",
+			ExpiresAt:   time.Now().Add(time.Hour),
+		}
+	}
+
+	tests := []struct {
+		name string
+		// setupRefresher configures the mock refresher's expectations. Nil means no
+		// refresher is wired into the handler at all.
+		setupRefresher func(*mocks.MockUpstreamTokenRefresher)
+		setupTokens    func(*testStorageState)
+		want           string
+	}{
+		{
+			name: "expired leg refreshed successfully is satisfied",
+			setupRefresher: func(r *mocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "test-session", gomock.Any()).
+					Return(&storage.UpstreamTokens{ProviderID: "provider-1", AccessToken: "tok-1-new"}, nil).
+					Times(1)
+			},
+			setupTokens: expiredProvider1,
+			want:        "",
+		},
+		{
+			name: "expired leg whose refresh fails is reported missing",
+			setupRefresher: func(r *mocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "test-session", gomock.Any()).
+					Return(nil, errors.New("refresh token expired")).
+					Times(1)
+			},
+			setupTokens: expiredProvider1,
+			want:        "provider-1",
+		},
+		{
+			name: "expired leg with no refresh token is reported missing without calling refresher",
+			setupRefresher: func(_ *mocks.MockUpstreamTokenRefresher) {
+				// RefreshAndStore must not be called when there is no refresh token.
+			},
+			setupTokens: func(st *testStorageState) {
+				st.upstreamTokens["test-session:provider-1"] = &storage.UpstreamTokens{
+					ProviderID:  "provider-1",
+					AccessToken: "tok-1",
+					ExpiresAt:   time.Now().Add(-time.Minute),
+				}
+			},
+			want: "provider-1",
+		},
+		{
+			name:           "expired leg with no refresher configured is reported missing",
+			setupRefresher: nil,
+			setupTokens:    expiredProvider1,
+			want:           "provider-1",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var opts []Option
+			if tt.setupRefresher != nil {
+				ctrl := gomock.NewController(t)
+				t.Cleanup(ctrl.Finish)
+				refresher := mocks.NewMockUpstreamTokenRefresher(ctrl)
+				tt.setupRefresher(refresher)
+				opts = append(opts, WithUpstreamRefresher(refresher))
+			}
+
+			handler, storState, _, _ := multiUpstreamTestSetup(t, opts...)
+			tt.setupTokens(storState)
+
+			got, err := handler.nextMissingUpstream(context.Background(), "test-session")
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
 func TestNextMissingUpstream_StorageError(t *testing.T) {
 	t.Parallel()
 

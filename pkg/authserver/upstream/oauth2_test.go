@@ -2525,3 +2525,122 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity_IdentityFromToken(t *testing
 			"error message must not contain token body content")
 	})
 }
+
+func TestNewHTTPClientForHost(t *testing.T) {
+	t.Parallel()
+
+	// privateIP is an RFC-1918 address unlikely to have a listener; used to
+	// trigger the private-IP dial-block without needing a real server.
+	const privateIP = "10.255.255.1"
+
+	tests := []struct {
+		name            string
+		host            string
+		allowPrivateIPs bool
+		// wantPrivateIPBlocked: when true, dialing privateIP must produce the
+		// "private IP address" error; when false, it must not (any other error,
+		// e.g. connection refused or TLS, is fine).
+		wantPrivateIPBlocked bool
+	}{
+		{
+			name:                 "external host with private IPs disallowed blocks private IP dial",
+			host:                 "external.example.com",
+			allowPrivateIPs:      false,
+			wantPrivateIPBlocked: true,
+		},
+		{
+			name:                 "external host with private IPs allowed passes dial guard",
+			host:                 "external.example.com",
+			allowPrivateIPs:      true,
+			wantPrivateIPBlocked: false,
+		},
+		{
+			name:            "localhost always allows private IPs regardless of flag",
+			host:            "localhost",
+			allowPrivateIPs: false,
+			// localhost sets allowInsecure=true which already sets WithPrivateIPs(true)
+			wantPrivateIPBlocked: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := newHTTPClientForHost(tt.host, tt.allowPrivateIPs)
+			require.NoError(t, err)
+			require.NotNil(t, client)
+
+			// Use a short deadline so "allowed" cases don't wait for a real TCP
+			// timeout when dialing the unreachable private IP.
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			t.Cleanup(cancel)
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+privateIP+":9999", nil)
+			require.NoError(t, err)
+
+			// The private-IP guard fires synchronously inside the dialer's control
+			// function, before any TCP packets are sent, so the "private IP address"
+			// error is immediate and deterministic when the guard is active.
+			// When the guard is absent the dial proceeds over the network; the
+			// 500 ms context deadline bounds the test. Any non-guard error
+			// (context deadline exceeded, connection refused, TLS) does not contain
+			// "private IP address", so the NotContains assertion is not vacuous:
+			// an incorrectly-active guard would fail the check immediately.
+			_, dialErr := client.Do(req)
+			require.Error(t, dialErr)
+
+			if tt.wantPrivateIPBlocked {
+				assert.Contains(t, dialErr.Error(), "private IP address",
+					"expected private IP to be blocked")
+			} else {
+				assert.NotContains(t, dialErr.Error(), "private IP address",
+					"expected private IP dial to pass the IP guard")
+			}
+		})
+	}
+}
+
+func TestOAuth2Config_AllowPrivateIPs(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockOAuth2Server()
+	t.Cleanup(mock.Close)
+
+	t.Run("AllowPrivateIPs field is propagated to provider", func(t *testing.T) {
+		t.Parallel()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+			AllowPrivateIPs:       true,
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+		require.NotNil(t, provider)
+		assert.True(t, provider.config.AllowPrivateIPs)
+	})
+
+	t.Run("AllowPrivateIPs defaults to false", func(t *testing.T) {
+		t.Parallel()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+		require.NotNil(t, provider)
+		assert.False(t, provider.config.AllowPrivateIPs)
+	})
+}

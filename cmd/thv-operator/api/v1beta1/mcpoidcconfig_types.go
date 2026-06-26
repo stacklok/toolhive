@@ -190,8 +190,12 @@ type MCPOIDCConfigStatus struct {
 	ReferenceCount int32 `json:"referenceCount,omitempty"`
 
 	// ReferencingWorkloads is a list of workload resources that reference this MCPOIDCConfig.
-	// Each entry identifies the workload by kind and name.
+	// Each entry identifies the workload by kind and name. The map key is the
+	// (kind, name) pair so two workloads of different kinds that share a name
+	// (e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct
+	// entries rather than colliding under merge-patch semantics.
 	// +listType=map
+	// +listMapKey=kind
 	// +listMapKey=name
 	// +optional
 	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
@@ -200,6 +204,7 @@ type MCPOIDCConfigStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 // +kubebuilder:resource:shortName=mcpoidc,categories=toolhive
 // +kubebuilder:printcolumn:name="Source",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`

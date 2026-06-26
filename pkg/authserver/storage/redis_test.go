@@ -8,9 +8,12 @@
 package storage
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"log/slog"
 	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -258,6 +261,57 @@ func TestRedisStorage_RegisterClient(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, client.GetID(), retrieved.GetID())
 		assert.Equal(t, client.GetScopes(), retrieved.GetScopes())
+	})
+}
+
+// TestRedisStorage_RenewClientTTL verifies that RenewClientTTL extends the
+// registration TTL for public (DCR) clients — keeping actively-used clients from
+// being evicted mid-lifecycle — while leaving confidential clients (which have no
+// TTL) untouched, and that renewing an unknown/evicted client is a safe no-op.
+func TestRedisStorage_RenewClientTTL(t *testing.T) {
+	t.Parallel()
+
+	t.Run("public client TTL is renewed", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "public-client")
+			client := &mockClient{id: "public-client", public: true}
+			require.NoError(t, s.RegisterClient(ctx, client))
+
+			// Age the registration so only a small slice of the TTL remains.
+			mr.FastForward(DefaultPublicClientTTL - time.Hour)
+			ttlBefore := mr.TTL(key)
+			require.Positive(t, ttlBefore)
+			require.Less(t, ttlBefore, 2*time.Hour, "precondition: TTL should be near expiry")
+
+			require.NoError(t, s.RenewClientTTL(ctx, client))
+
+			ttlAfter := mr.TTL(key)
+			assert.Greater(t, ttlAfter, ttlBefore, "RenewClientTTL should extend the public client TTL")
+			assert.InDelta(t, DefaultPublicClientTTL.Seconds(), ttlAfter.Seconds(), 60,
+				"renewed TTL should be ~DefaultPublicClientTTL")
+		})
+	})
+
+	t.Run("confidential client is left without a TTL", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "conf-client")
+			client := &mockClient{id: "conf-client", public: false}
+			require.NoError(t, s.RegisterClient(ctx, client))
+			require.Equal(t, time.Duration(0), mr.TTL(key), "confidential clients must not have a TTL")
+
+			require.NoError(t, s.RenewClientTTL(ctx, client))
+
+			assert.Equal(t, time.Duration(0), mr.TTL(key),
+				"RenewClientTTL must not introduce a TTL on a confidential client")
+		})
+	})
+
+	t.Run("unknown client is a safe no-op", func(t *testing.T) {
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			key := redisKey(s.keyPrefix, KeyTypeClient, "ghost")
+			require.NoError(t, s.RenewClientTTL(ctx, &mockClient{id: "ghost", public: true}))
+			assert.False(t, mr.Exists(key), "renewing an unknown client must not create a key")
+		})
 	})
 }
 
@@ -1308,7 +1362,8 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			ClientID: "test-client", RedirectURI: "https://example.com/callback",
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
 			Scopes: []string{"openid", "profile"}, InternalState: state,
-			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce", CreatedAt: time.Now(),
+			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
+			SingleLeg: true, CreatedAt: time.Now(),
 		}
 	}
 
@@ -1322,6 +1377,7 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.ClientID, retrieved.ClientID)
 			assert.Equal(t, pending.PKCEChallenge, retrieved.PKCEChallenge)
 			assert.Equal(t, pending.Scopes, retrieved.Scopes)
+			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
 		})
 	})
 
@@ -2671,4 +2727,145 @@ func runDCRConcurrentAccess(
 
 	assert.Zero(t, atomic.LoadInt32(&storeErrCount), "no concurrent Store should have errored")
 	assert.Zero(t, atomic.LoadInt32(&getErrCount), "no concurrent Get should have errored")
+}
+
+// captureWarnLogs swaps in a buffered slog handler at warn level for the
+// duration of the test and returns the captured output. Process-global, not
+// safe for t.Parallel().
+func captureWarnLogs(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	orig := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	return &buf
+}
+
+// assertForeignDropWarn checks that the warn log emitted for a filtered
+// CROSSSLOT-defending op names the operation, the dropped member, and the
+// expected key prefix.
+func assertForeignDropWarn(t *testing.T, out, operation, member, prefix string) {
+	t.Helper()
+	assert.Contains(t, out, "dropping foreign index member to prevent CROSSSLOT",
+		"expected warn log emitted by %s; got: %s", operation, out)
+	assert.Contains(t, out, member, "warn log should name the dropped member")
+	assert.Contains(t, out, operation, "warn log should name the operation")
+	assert.Contains(t, out, strings.TrimSuffix(prefix, ":"),
+		"warn log should reference the expected prefix")
+}
+
+// TestForeignMembersFilteredFromIndexOps verifies that the three multi-key
+// SMEMBERS-fed operations (GetAllUpstreamTokens, DeleteUpstreamTokens,
+// GetLatestUpstreamTokensForUser) drop foreign members before MGet/Del so a
+// stray un-prefixed entry in an index set cannot escalate into a CROSSSLOT
+// failure on Redis Cluster, and emit a warn log naming the dropped member.
+//
+// This test uses slog.SetDefault (process-global) and therefore does not run
+// in parallel.
+func TestForeignMembersFilteredFromIndexOps(t *testing.T) { //nolint:paralleltest // captures slog default
+	storage, mr := newTestRedisStorage(t)
+	t.Cleanup(func() {
+		_ = storage.Close()
+		mr.Close()
+	})
+	ctx := context.Background()
+
+	tokens := &UpstreamTokens{
+		ProviderID:   "github",
+		AccessToken:  "real-access",
+		RefreshToken: "real-refresh",
+		UserID:       "user-A",
+		ExpiresAt:    time.Now().Add(time.Hour),
+	}
+	require.NoError(t, storage.StoreUpstreamTokens(ctx, "session-X", "github", tokens))
+
+	sessionIdxKey := redisSetKey(storage.keyPrefix, KeyTypeUpstreamIdx, "session-X")
+	userIdxKey := redisSetKey(storage.keyPrefix, KeyTypeUserUpstream, "user-A")
+	const foreignMember = "other-tenant:auth:{ns:other}:upstream:s:p"
+	mr.SAdd(sessionIdxKey, foreignMember)
+	mr.SAdd(userIdxKey, foreignMember)
+
+	t.Run("GetAllUpstreamTokens", func(t *testing.T) {
+		buf := captureWarnLogs(t)
+		got, err := storage.GetAllUpstreamTokens(ctx, "session-X")
+		require.NoError(t, err)
+		require.Len(t, got, 1)
+		require.Contains(t, got, "github")
+		assert.Equal(t, "real-access", got["github"].AccessToken)
+		assertForeignDropWarn(t, buf.String(), "GetAllUpstreamTokens", foreignMember, storage.keyPrefix)
+	})
+
+	t.Run("GetLatestUpstreamTokensForUser", func(t *testing.T) {
+		buf := captureWarnLogs(t)
+		got, err := storage.GetLatestUpstreamTokensForUser(ctx, "user-A", "github")
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.Equal(t, "real-refresh", got.RefreshToken)
+		assertForeignDropWarn(t, buf.String(), "GetLatestUpstreamTokensForUser", foreignMember, storage.keyPrefix)
+	})
+
+	// DeleteUpstreamTokens runs last because it removes the index set.
+	t.Run("DeleteUpstreamTokens", func(t *testing.T) {
+		buf := captureWarnLogs(t)
+		require.NoError(t, storage.DeleteUpstreamTokens(ctx, "session-X"))
+		assertForeignDropWarn(t, buf.String(), "DeleteUpstreamTokens", foreignMember, storage.keyPrefix)
+	})
+}
+
+func TestFilterIndexMembersByPrefix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		prefix      string
+		members     []string
+		wantKept    []string
+		wantDropped []string
+	}{
+		{
+			name:        "all members share prefix",
+			prefix:      "thv:auth:{ns:name}:",
+			members:     []string{"thv:auth:{ns:name}:upstream:s1:p1", "thv:auth:{ns:name}:upstream:s1:p2"},
+			wantKept:    []string{"thv:auth:{ns:name}:upstream:s1:p1", "thv:auth:{ns:name}:upstream:s1:p2"},
+			wantDropped: nil,
+		},
+		{
+			name:        "stray un-prefixed member is dropped",
+			prefix:      "thv:auth:{ns:name}:",
+			members:     []string{"thv:auth:{ns:name}:upstream:s1:p1", "legacy-key", "thv:auth:{ns:name}:upstream:s1:p2"},
+			wantKept:    []string{"thv:auth:{ns:name}:upstream:s1:p1", "thv:auth:{ns:name}:upstream:s1:p2"},
+			wantDropped: []string{"legacy-key"},
+		},
+		{
+			name:        "different-tenant member is dropped",
+			prefix:      "thv:auth:{ns-a:srv}:",
+			members:     []string{"thv:auth:{ns-a:srv}:upstream:s1:p1", "thv:auth:{ns-b:srv}:upstream:s1:p1"},
+			wantKept:    []string{"thv:auth:{ns-a:srv}:upstream:s1:p1"},
+			wantDropped: []string{"thv:auth:{ns-b:srv}:upstream:s1:p1"},
+		},
+		{
+			name:        "empty input",
+			prefix:      "thv:auth:{ns:name}:",
+			members:     nil,
+			wantKept:    nil,
+			wantDropped: nil,
+		},
+		{
+			name:        "all members dropped",
+			prefix:      "thv:auth:{ns:name}:",
+			members:     []string{"foo", "bar"},
+			wantKept:    nil,
+			wantDropped: []string{"foo", "bar"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			kept, dropped := filterIndexMembersByPrefix(tc.prefix, tc.members)
+			assert.Equal(t, tc.wantKept, kept, "kept slice mismatch")
+			assert.Equal(t, tc.wantDropped, dropped, "dropped slice mismatch")
+		})
+	}
 }

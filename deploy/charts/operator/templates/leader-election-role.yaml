@@ -22,5 +22,5 @@ roleRef:
   name: {{ .Values.operator.leaderElectionRole.name }}
 subjects:
 - kind: ServiceAccount
-  name: {{ .Values.operator.serviceAccount.name }}
+  name: {{ include "toolhive-operator.serviceAccountName" . }}
   namespace: {{ .Release.Namespace }}

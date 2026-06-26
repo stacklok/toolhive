@@ -6,6 +6,7 @@ package streamable
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"testing"
 	"time"
 
@@ -34,7 +35,7 @@ func TestNewHTTPProxy(t *testing.T) {
 //nolint:paralleltest // Test modifies shared proxy state
 func TestProxyChannelCommunication(t *testing.T) {
 	proxy := NewHTTPProxy("localhost", 8080, nil, nil)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Test that we can send a message to the destination
 	request, err := jsonrpc2.NewCall(jsonrpc2.StringID("test"), "test.method", nil)
@@ -114,7 +115,7 @@ func TestSendMessageToDestination_ChannelFull(t *testing.T) {
 //nolint:paralleltest // Test starts/stops HTTP server
 func TestStartStop(t *testing.T) {
 	proxy := NewHTTPProxy("localhost", 0, nil, nil) // Use port 0 for auto-assignment
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Start the proxy
 	err := proxy.Start(ctx)
@@ -213,4 +214,186 @@ func TestNewHTTPProxyWithSessionStorage(t *testing.T) {
 	proxy := NewHTTPProxy("localhost", 0, nil, nil, WithSessionStorage(storage))
 	require.NotNil(t, proxy)
 	require.NotNil(t, proxy.sessionManager)
+}
+
+// TestNewHTTPProxy_AuthInfoHandlerMounted verifies that a sentinel authInfoHandler
+// registered via WithAuthInfoHandler is reachable at /.well-known/oauth-protected-resource
+// after Start is called.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPProxy_AuthInfoHandlerMounted(t *testing.T) {
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil, WithAuthInfoHandler(sentinel))
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	// Poll until server is ready (max 500 ms).
+	url := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestNewHTTPProxy_AuthInfoHandlerNil verifies that when no authInfoHandler is set,
+// requests to /.well-known/oauth-protected-resource return a JSON 404 (not a Go default 404).
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPProxy_AuthInfoHandlerNil(t *testing.T) {
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil) // no WithAuthInfoHandler
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	url := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	// WellKnownHandler returns a JSON 404, not 200.
+	assert.Equal(t, http.StatusNotFound, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
+}
+
+// TestNewHTTPProxy_PrefixHandlerMounted verifies that a handler registered via
+// WithPrefixHandlers is reachable at its declared path prefix.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPProxy_PrefixHandlerMounted(t *testing.T) {
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil,
+		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
+	)
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	url := fmt.Sprintf("http://localhost:%d/oauth/token", port)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+}
+
+// TestNewHTTPProxy_PrefixHandlerDoesNotShadowMCP verifies that registering prefix
+// handlers does not prevent the /mcp endpoint from being reachable.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPProxy_PrefixHandlerDoesNotShadowMCP(t *testing.T) {
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil,
+		WithPrefixHandlers(map[string]http.Handler{"/oauth/token": sentinel}),
+	)
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	// /mcp returns 405 for GET (only POST is accepted), which proves the
+	// endpoint is registered — a missing route would be 404.
+	url := fmt.Sprintf("http://localhost:%d%s", port, StreamableHTTPEndpoint)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusMethodNotAllowed, resp.StatusCode)
+}
+
+// TestNewHTTPProxy_ExactWellKnownBeatsSubtree verifies that Go's http.ServeMux
+// specificity rule causes an exact /.well-known/openid-configuration prefix handler
+// to win over the /.well-known/ subtree authInfoHandler (PRM endpoint), ensuring
+// the two registrations coexist without collision.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestNewHTTPProxy_ExactWellKnownBeatsSubtree(t *testing.T) {
+	oidcHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusTeapot) // sentinel: exact match wins
+	})
+	prmHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil,
+		WithPrefixHandlers(map[string]http.Handler{"/.well-known/openid-configuration": oidcHandler}),
+		WithAuthInfoHandler(prmHandler),
+	)
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	// Poll until server is ready.
+	oidcURL := fmt.Sprintf("http://localhost:%d/.well-known/openid-configuration", port)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(oidcURL) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusTeapot, resp.StatusCode, "exact /.well-known/openid-configuration must win")
+
+	prmURL := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	resp2, err := http.Get(prmURL) //nolint:gosec // test-only URL construction
+	require.NoError(t, err)
+	defer resp2.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp2.StatusCode, "/.well-known/ subtree must still reach authInfoHandler")
 }

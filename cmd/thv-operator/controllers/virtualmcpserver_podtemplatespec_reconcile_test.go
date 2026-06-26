@@ -18,6 +18,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -32,10 +34,7 @@ const (
 // twice with the same PodTemplateSpec produces identical results (no spurious updates)
 func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 	t.Parallel()
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	namespace := testPodTemplateNamespace
 	vmcpName := testPodTemplateVmcpName
@@ -57,16 +56,10 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 		},
 	}
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      vmcpName,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef:        &mcpv1beta1.MCPGroupRef{Name: groupName},
-			PodTemplateSpec: podTemplateSpecToRawExtension(t, podTemplate),
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+		v1beta1test.WithVMCPGroupRef(groupName),
+		v1beta1test.WithVMCPPodTemplateSpec(podTemplateSpecToRawExtension(t, podTemplate)),
+	)
 
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -110,10 +103,7 @@ func TestVirtualMCPServerPodTemplateSpecDeterministic(t *testing.T) {
 // This is a regression test for the nil-slice-becomes-empty-array bug.
 func TestVirtualMCPServerPodTemplateSpecPreservesContainer(t *testing.T) {
 	t.Parallel()
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	namespace := testPodTemplateNamespace
 	vmcpName := testPodTemplateVmcpName
@@ -131,18 +121,12 @@ func TestVirtualMCPServerPodTemplateSpecPreservesContainer(t *testing.T) {
 
 	// Use raw JSON directly (simulating real user input) - only nodeSelector, no containers
 	// This is the exact scenario that triggered the original bug
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      vmcpName,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-			PodTemplateSpec: &runtime.RawExtension{
-				Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
-			},
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+		v1beta1test.WithVMCPGroupRef(groupName),
+		v1beta1test.WithVMCPPodTemplateSpec(&runtime.RawExtension{
+			Raw: []byte(`{"spec":{"nodeSelector":{"disktype":"ssd"}}}`),
+		}),
+	)
 
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
@@ -266,16 +250,10 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 				},
 			}
 
-			vmcp := &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      testPodTemplateVmcpName,
-					Namespace: testPodTemplateNamespace,
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef:        &mcpv1beta1.MCPGroupRef{Name: testPodTemplateGroupName},
-					PodTemplateSpec: tt.newPodTemplateSpec,
-				},
-			}
+			vmcp := v1beta1test.NewVirtualMCPServer(testPodTemplateVmcpName, testPodTemplateNamespace,
+				v1beta1test.WithVMCPGroupRef(testPodTemplateGroupName),
+				v1beta1test.WithVMCPPodTemplateSpec(tt.newPodTemplateSpec),
+			)
 
 			reconciler := &VirtualMCPServerReconciler{}
 			needsUpdate := reconciler.podTemplateSpecNeedsUpdate(
@@ -289,10 +267,7 @@ func TestVirtualMCPServerPodTemplateSpecNeedsUpdate(t *testing.T) {
 // the default resource requirements via PodTemplateSpec using strategic merge patch.
 func TestVirtualMCPServerPodTemplateSpecResourceOverride(t *testing.T) {
 	t.Parallel()
-	scheme := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
-	_ = appsv1.AddToScheme(scheme)
+	scheme := testutil.NewScheme(t)
 
 	namespace := testPodTemplateNamespace
 	vmcpName := testPodTemplateVmcpName
@@ -309,18 +284,12 @@ func TestVirtualMCPServerPodTemplateSpecResourceOverride(t *testing.T) {
 	}
 
 	// Provide custom resources for the vmcp container via PodTemplateSpec
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      vmcpName,
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: groupName},
-			PodTemplateSpec: &runtime.RawExtension{
-				Raw: []byte(`{"spec":{"containers":[{"name":"vmcp","resources":{"requests":{"cpu":"200m","memory":"256Mi"},"limits":{"cpu":"1","memory":"1Gi"}}}]}}`),
-			},
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+		v1beta1test.WithVMCPGroupRef(groupName),
+		v1beta1test.WithVMCPPodTemplateSpec(&runtime.RawExtension{
+			Raw: []byte(`{"spec":{"containers":[{"name":"vmcp","resources":{"requests":{"cpu":"200m","memory":"256Mi"},"limits":{"cpu":"1","memory":"1Gi"}}}]}}`),
+		}),
+	)
 
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{

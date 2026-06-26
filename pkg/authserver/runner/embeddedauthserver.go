@@ -19,9 +19,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 )
 
 // Redis ACL credential environment variable names.
@@ -34,6 +36,10 @@ const (
 	// RedisPasswordEnvVar is the environment variable for the Redis ACL password.
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	RedisPasswordEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD"
+
+	// maxAuthServerBodySize caps auth-server request bodies; shared with the DCR
+	// endpoint via handlers.MaxDCRBodySize so the two bounds cannot drift.
+	maxAuthServerBodySize = handlers.MaxDCRBodySize
 )
 
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.
@@ -70,7 +76,9 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	// Fail loudly on operator-supplied misconfiguration (e.g. a baseline
 	// scope absent from scopes_supported) BEFORE touching storage or any
 	// other side-effecting work, so a bad config never reaches the network
-	// or filesystem.
+	// or filesystem. NewEmbeddedAuthServerWithStorage re-validates for callers
+	// that invoke it directly; this earlier check keeps the failure ahead of
+	// createStorage on this path.
 	if err := cfg.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid run config: %w", err)
 	}
@@ -87,11 +95,29 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
-	return newEmbeddedAuthServerWithStorage(ctx, cfg, stor)
+	return NewEmbeddedAuthServerWithStorage(ctx, cfg, stor)
 }
 
-// newEmbeddedAuthServerWithStorage is the unexported core constructor that
-// builds an EmbeddedAuthServer around a caller-supplied storage backend.
+// NewEmbeddedAuthServerWithStorage is the exported core constructor that
+// builds an EmbeddedAuthServer around a caller-supplied storage backend. It
+// lets external composition (e.g. an enterprise build) inject a decorated
+// storage.Storage aggregate.
+//
+// What the injection does NOT solve: the supplied storage is the sole
+// persistence boundary for this server instance. Injecting a shared backend
+// (e.g. Redis) lets replicas share persisted state — DCR registrations,
+// pending authorizations, upstream tokens — but it does not provide
+// cross-replica message delivery or fan-out, and it does not establish session
+// affinity. A request must still reach a replica that can resolve its session
+// from the shared store; pinning a session to a replica (or ensuring all
+// session state is in the shared store) remains the caller's responsibility,
+// typically at the load balancer.
+//
+// The supplied storage MUST also implement storage.DCRCredentialStore (both
+// OSS MemoryStorage and RedisStorage do); the constructor returns an error if
+// it does not. It also validates cfg, so direct callers get the same
+// fail-loud config check NewEmbeddedAuthServer performs before dispatch.
+//
 // NewEmbeddedAuthServer dispatches into this helper after running
 // createStorage; tests dispatch into it directly so they can supply a
 // closeTrackingStorage wrapper to verify the deferred-cleanup contract.
@@ -102,7 +128,7 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 // crash-looping caller (typical when DCR's network I/O fails) does not
 // leak the Redis client connection pool / MemoryStorage cleanup goroutine
 // on every restart. The named return retErr is the gate.
-func newEmbeddedAuthServerWithStorage(
+func NewEmbeddedAuthServerWithStorage(
 	ctx context.Context,
 	cfg *authserver.RunConfig,
 	stor storage.Storage,
@@ -130,6 +156,15 @@ func newEmbeddedAuthServerWithStorage(
 			}
 		}
 	}()
+
+	// Validate cfg here too. NewEmbeddedAuthServer validates before
+	// createStorage, but direct callers of this exported constructor would
+	// otherwise skip the check. Placed inside the deferred-cleanup gate above so
+	// a validation failure still closes the caller-supplied storage per the
+	// resource-ownership contract.
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid run config: %w", err)
+	}
 
 	// 1. Create key provider from RunConfig.SigningKeyConfig
 	keyProvider, err := createKeyProvider(cfg.SigningKeyConfig)
@@ -176,6 +211,8 @@ func newEmbeddedAuthServerWithStorage(
 	// here once at the boundary lets all downstream stages share by reference
 	// safely. Cost is negligible — each slice is bounded by validation (≤10
 	// for BaselineClientScopes, low cardinality in practice for the others).
+	cimdEnabled, cimdCacheMaxSize, cimdCacheFallbackTTL := resolveCIMDConfig(cfg.CIMD)
+
 	resolvedCfg := authserver.Config{
 		Issuer:                       cfg.Issuer,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
@@ -188,6 +225,9 @@ func newEmbeddedAuthServerWithStorage(
 		ScopesSupported:              slices.Clone(cfg.ScopesSupported),
 		BaselineClientScopes:         slices.Clone(cfg.BaselineClientScopes),
 		AllowedAudiences:             slices.Clone(cfg.AllowedAudiences),
+		CIMDEnabled:                  cimdEnabled,
+		CIMDCacheMaxSize:             cimdCacheMaxSize,
+		CIMDCacheFallbackTTL:         cimdCacheFallbackTTL,
 	}
 
 	// 7. Create the auth server. authserver.New also asserts the DCR
@@ -208,8 +248,16 @@ func newEmbeddedAuthServerWithStorage(
 // The handler uses internal chi routing and serves all endpoints:
 //   - /oauth/authorize, /oauth/callback, /oauth/token, /oauth/register
 //   - /.well-known/jwks.json, /.well-known/oauth-authorization-server, /.well-known/openid-configuration
+//
+// All auth-server endpoints are body-size-limited to handlers.MaxDCRBodySize
+// (64KB) and reject oversized requests with HTTP 413 Request Entity Too Large.
 func (e *EmbeddedAuthServer) Handler() http.Handler {
-	return e.server.Handler()
+	// Cap request bodies on all auth-server endpoints (e.g. POST /oauth/token,
+	// /oauth/register) so they cannot be used for memory-exhaustion DoS. These
+	// routes are mounted outside the MCP middleware chain (the proxies and vMCP
+	// mount them via Routes()/RegisterHandlers, which derive from this handler),
+	// so the cap is applied here to cover every consumer.
+	return bodylimit.Middleware(maxAuthServerBodySize)(e.server.Handler())
 }
 
 // Close releases resources held by the EmbeddedAuthServer.
@@ -528,7 +576,9 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 			Scopes:                        scopes,
 			AdditionalAuthorizationParams: oidc.AdditionalAuthorizationParams,
 		},
-		Issuer: oidc.IssuerURL,
+		Issuer:          oidc.IssuerURL,
+		SubjectClaim:    oidc.SubjectClaim,
+		AllowPrivateIPs: oidc.AllowPrivateIPs,
 	}, nil
 }
 
@@ -563,6 +613,7 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
 		TokenEndpoint:         oauth2.TokenEndpoint,
 		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
+		AllowPrivateIPs:       oauth2.AllowPrivateIPs,
 	}
 
 	if oauth2.TokenResponseMapping != nil {
@@ -780,6 +831,27 @@ func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*tcredis.TLSConfig
 		cfg.CACert = data
 	}
 	return cfg, nil
+}
+
+// resolveCIMDConfig extracts CIMD settings from a CIMDRunConfig.
+// Returns zero values when cfg is nil (CIMD disabled).
+// The CacheFallbackTTL string is parsed to time.Duration; callers must ensure
+// CIMDRunConfig.Validate() has already been called so the string is well-formed.
+func resolveCIMDConfig(cfg *authserver.CIMDRunConfig) (enabled bool, cacheMaxSize int, cacheFallbackTTL time.Duration) {
+	if cfg == nil {
+		return false, 0, 0
+	}
+	var ttl time.Duration
+	if cfg.CacheFallbackTTL != "" {
+		var err error
+		ttl, err = time.ParseDuration(cfg.CacheFallbackTTL)
+		if err != nil {
+			// Should not happen when called after CIMDRunConfig.Validate().
+			slog.Warn("invalid cimd cache_fallback_ttl, zero will be replaced by default",
+				"value", cfg.CacheFallbackTTL, "err", err)
+		}
+	}
+	return cfg.Enabled, cfg.CacheMaxSize, ttl
 }
 
 // resolveEnvVar reads a value from the named environment variable.

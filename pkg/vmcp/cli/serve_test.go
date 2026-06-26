@@ -159,53 +159,6 @@ backends:
 	assert.Len(t, backends, 1)
 }
 
-func newSessionFactoryMocks(t *testing.T) (*clientmocks.MockOutgoingAuthRegistry, *aggregatormocks.MockAggregator) {
-	t.Helper()
-	ctrl := gomock.NewController(t)
-	return clientmocks.NewMockOutgoingAuthRegistry(ctrl), aggregatormocks.NewMockAggregator(ctrl)
-}
-
-func TestCreateSessionFactory_WithHMACSecret(t *testing.T) {
-	t.Parallel()
-	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("a-sufficiently-long-hmac-secret-value-32b", false, registry, agg)
-	require.NoError(t, err)
-	require.NotNil(t, factory)
-}
-
-func TestCreateSessionFactory_HMACSecretExactly32Bytes(t *testing.T) {
-	t.Parallel()
-	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("12345678901234567890123456789012", false, registry, agg)
-	require.NoError(t, err)
-	require.NotNil(t, factory)
-}
-
-func TestCreateSessionFactory_ShortHMACSecret(t *testing.T) {
-	t.Parallel()
-	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("short", false, registry, agg)
-	require.NoError(t, err)
-	require.NotNil(t, factory)
-}
-
-func TestCreateSessionFactory_NoSecretNonKubernetes(t *testing.T) {
-	t.Parallel()
-	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("", false, registry, agg)
-	require.NoError(t, err)
-	require.NotNil(t, factory)
-}
-
-func TestCreateSessionFactory_NoSecretKubernetes(t *testing.T) {
-	t.Parallel()
-	registry, agg := newSessionFactoryMocks(t)
-	factory, err := createSessionFactory("", true, registry, agg)
-	require.Error(t, err)
-	require.ErrorContains(t, err, "an HMAC secret is required when running in Kubernetes")
-	require.Nil(t, factory)
-}
-
 // TestRunDiscovery_KubernetesGroupNotFound exercises the Kubernetes-specific branch
 // in runDiscovery where ErrGroupNotFound is treated as a non-fatal condition.
 // vMCP should start with zero backends and return nil error so it can begin
@@ -335,6 +288,20 @@ func TestValidateQuickModeHost(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestVMCPNamespace(t *testing.T) {
+	t.Run("defaults to local", func(t *testing.T) {
+		t.Setenv("VMCP_NAMESPACE", "")
+
+		assert.Equal(t, "local", vmcpNamespace())
+	})
+
+	t.Run("uses environment value", func(t *testing.T) {
+		t.Setenv("VMCP_NAMESPACE", "toolhive-system")
+
+		assert.Equal(t, "toolhive-system", vmcpNamespace())
+	})
 }
 
 // TestRunDiscovery_ZeroBackends exercises the branch in runDiscovery where the

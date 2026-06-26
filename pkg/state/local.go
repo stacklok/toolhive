@@ -52,20 +52,28 @@ func NewLocalStore(appName string, storeName string) (*LocalStore, error) {
 	}, nil
 }
 
-// getFilePath returns the full file path for a configuration
-func (s *LocalStore) getFilePath(name string) string {
-	// Ensure the name has the correct extension
+// getFilePath returns the full file path for a configuration, validating that
+// the resolved path stays within the store's base directory.
+func (s *LocalStore) getFilePath(name string) (string, error) {
 	if !strings.HasSuffix(name, FileExtension) {
 		name = name + FileExtension
 	}
-	return filepath.Join(s.basePath, name)
+	filePath := filepath.Join(s.basePath, name)
+	// filepath.Join calls filepath.Clean, which resolves ".." components.
+	// Verify the result is still within basePath to prevent path traversal.
+	if !strings.HasPrefix(filePath, s.basePath+string(filepath.Separator)) {
+		return "", fmt.Errorf("path traversal detected: name escapes state directory")
+	}
+	return filePath, nil
 }
 
 // GetReader returns a reader for the state data
 func (s *LocalStore) GetReader(_ context.Context, name string) (io.ReadCloser, error) {
-	// Open the file
-	filePath := s.getFilePath(name)
-	// #nosec G304 - filePath is controlled by getFilePath which ensures it's within our designated directory
+	filePath, err := s.getFilePath(name)
+	if err != nil {
+		return nil, err
+	}
+	// #nosec G304 - path traversal is prevented by the containment check in getFilePath
 	file, err := os.Open(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -79,9 +87,11 @@ func (s *LocalStore) GetReader(_ context.Context, name string) (io.ReadCloser, e
 
 // GetWriter returns a writer for the state data
 func (s *LocalStore) GetWriter(_ context.Context, name string) (io.WriteCloser, error) {
-	// Create the file
-	filePath := s.getFilePath(name)
-	// #nosec G304 - filePath is controlled by getFilePath which ensures it's within our designated directory
+	filePath, err := s.getFilePath(name)
+	if err != nil {
+		return nil, err
+	}
+	// #nosec G304 - path traversal is prevented by the containment check in getFilePath
 	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create file: %w", err)
@@ -93,9 +103,12 @@ func (s *LocalStore) GetWriter(_ context.Context, name string) (io.WriteCloser, 
 // CreateExclusive creates a new state entry exclusively, failing if it already exists.
 // This provides atomic check-and-create semantics using O_EXCL to prevent race conditions.
 func (s *LocalStore) CreateExclusive(_ context.Context, name string) (io.WriteCloser, error) {
-	filePath := s.getFilePath(name)
-	// O_EXCL with O_CREATE provides atomic check-and-create behavior
-	// #nosec G304 - filePath is controlled by getFilePath which ensures it's within our designated directory
+	filePath, err := s.getFilePath(name)
+	if err != nil {
+		return nil, err
+	}
+	// O_EXCL with O_CREATE provides atomic check-and-create behavior.
+	// #nosec G304 - path traversal is prevented by the containment check in getFilePath
 	file, err := os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 	if err != nil {
 		if os.IsExist(err) {
@@ -112,8 +125,10 @@ func (s *LocalStore) CreateExclusive(_ context.Context, name string) (io.WriteCl
 
 // Delete removes the data for the given name
 func (s *LocalStore) Delete(_ context.Context, name string) error {
-	filePath := s.getFilePath(name)
-	// #nosec G304 - filePath is controlled by getFilePath which ensures it's within our designated directory
+	filePath, err := s.getFilePath(name)
+	if err != nil {
+		return err
+	}
 	if err := os.Remove(filePath); err != nil {
 		if os.IsNotExist(err) {
 			return fmt.Errorf("state '%s' not found", name)
@@ -154,8 +169,11 @@ func (s *LocalStore) List(_ context.Context) ([]string, error) {
 
 // Exists checks if data exists for the given name
 func (s *LocalStore) Exists(_ context.Context, name string) (bool, error) {
-	filePath := s.getFilePath(name)
-	_, err := os.Stat(filePath)
+	filePath, err := s.getFilePath(name)
+	if err != nil {
+		return false, err
+	}
+	_, err = os.Stat(filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return false, nil

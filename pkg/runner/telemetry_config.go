@@ -11,15 +11,23 @@ import (
 	"github.com/stacklok/toolhive/pkg/telemetry"
 )
 
+// otelHeadersEnvVar is the standard OpenTelemetry environment variable carrying
+// OTLP export headers as a comma-separated list (e.g. "key1=val1,key2=val2").
+// A config source may deliver headers through this variable in the app config's
+// EnvVars instead of as header flags.
+const otelHeadersEnvVar = "OTEL_EXPORTER_OTLP_HEADERS"
+
 // BuildTelemetryConfigFromAppConfig builds a *telemetry.Config from an
 // application OpenTelemetry config (read from ~/.config/toolhive/config.yaml
-// or pushed by an enterprise config server).
+// or supplied by a config source).
 //
 // Both the "thv run" CLI and the "POST /api/v1/workloads" API path call this
 // so workloads created via either surface inherit the same telemetry
-// settings. Headers and customAttributes have no equivalent in the
-// application config and are passed through from the caller when available
-// (the CLI surfaces them as flags; the API does not yet).
+// settings. Export headers come from two sources: the caller's header flags
+// (the CLI surfaces "--otel-headers"; the API passes none) and an
+// OTEL_EXPORTER_OTLP_HEADERS entry in the config's EnvVars. Flags take
+// precedence. customAttributes has no equivalent in the application config
+// and is passed through by the caller.
 //
 // Returns nil when no telemetry should be enabled: either no endpoint and no
 // Prometheus metrics path, or both tracing and metrics disabled with no
@@ -55,13 +63,7 @@ func BuildTelemetryConfigFromAppConfig(
 		return nil
 	}
 
-	parsedHeaders := make(map[string]string)
-	for _, h := range headers {
-		parts := strings.SplitN(h, "=", 2)
-		if len(parts) == 2 {
-			parsedHeaders[parts[0]] = parts[1]
-		}
-	}
+	parsedHeaders := mergeTelemetryHeaders(headers, otel.EnvVars)
 
 	var processedEnvVars []string
 	for _, entry := range otel.EnvVars {
@@ -94,4 +96,33 @@ func BuildTelemetryConfigFromAppConfig(
 	}
 	cfg.SetSamplingRateFromFloat(otel.SamplingRate)
 	return cfg
+}
+
+// mergeTelemetryHeaders builds the OTLP export header map from two sources:
+// an OTEL_EXPORTER_OTLP_HEADERS entry in the config's EnvVars (used when the
+// caller passes no header flags, such as the API path) and caller-supplied
+// header flags ("key=value", from the CLI's --otel-headers). Env headers are
+// applied first so flags override them on conflict. Values are split on the
+// first '=' only, so a value containing '=' (e.g. base64 padding) or spaces
+// (e.g. "Basic <token>") is preserved intact.
+func mergeTelemetryHeaders(flagHeaders, envVars []string) map[string]string {
+	headers := make(map[string]string)
+	for _, entry := range envVars {
+		name, value, ok := strings.Cut(entry, "=")
+		if !ok || name != otelHeadersEnvVar {
+			continue
+		}
+		for pair := range strings.SplitSeq(value, ",") {
+			if key, val, ok := strings.Cut(strings.TrimSpace(pair), "="); ok && key != "" {
+				headers[key] = val
+			}
+		}
+	}
+
+	for _, h := range flagHeaders {
+		if key, val, ok := strings.Cut(h, "="); ok {
+			headers[key] = val
+		}
+	}
+	return headers
 }

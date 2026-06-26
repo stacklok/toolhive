@@ -130,7 +130,7 @@ func TestFetchResourceMetadata(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			metadata, err := FetchResourceMetadata(ctx, testURL)
+			metadata, err := FetchResourceMetadata(ctx, testURL, false)
 
 			if tt.expectedError {
 				assert.Error(t, err)
@@ -170,7 +170,7 @@ func TestFetchResourceMetadata_InvalidURL(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			_, err := FetchResourceMetadata(ctx, tt.metadataURL)
+			_, err := FetchResourceMetadata(ctx, tt.metadataURL, false)
 			assert.Error(t, err, "Expected error for URL %s", tt.metadataURL)
 		})
 	}
@@ -266,7 +266,7 @@ func TestValidateAndDiscoverAuthServer(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			authInfo, err := ValidateAndDiscoverAuthServer(ctx, testURL)
+			authInfo, err := ValidateAndDiscoverAuthServer(ctx, testURL, false)
 
 			if tt.expectedError {
 				assert.Error(t, err)
@@ -382,4 +382,31 @@ func TestExtractParameter_EdgeCases(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+func TestFetchResourceMetadata_BlockPrivateIPs(t *testing.T) {
+	t.Parallel()
+
+	// httptest binds to loopback, standing in for an internal address a
+	// malicious server might name directly in resource_metadata.
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(auth.RFC9728AuthInfo{
+			Resource:             "https://resource.example.com",
+			AuthorizationServers: []string{"https://auth.example.com"},
+		})
+	}))
+	t.Cleanup(server.Close)
+
+	ctx := context.Background()
+
+	// With the guard engaged, the loopback dial is refused.
+	_, err := FetchResourceMetadata(ctx, server.URL, true)
+	require.Error(t, err)
+
+	// With the guard disengaged (operator targeted an internal server), it works.
+	meta, err := FetchResourceMetadata(ctx, server.URL, false)
+	require.NoError(t, err)
+	require.NotNil(t, meta)
+	assert.Equal(t, "https://resource.example.com", meta.Resource)
 }

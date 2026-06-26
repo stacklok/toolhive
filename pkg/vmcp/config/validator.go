@@ -5,12 +5,15 @@ package config
 
 import (
 	"fmt"
+	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
+	httpval "github.com/stacklok/toolhive-core/validation/http"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -81,6 +84,11 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 
 	// Validate composite tool references
 	if err := v.validateCompositeToolRefs(cfg.CompositeToolRefs); err != nil {
+		errors = append(errors, err.Error())
+	}
+
+	// Validate passthrough headers allowlist
+	if err := v.validatePassthroughHeaders(cfg); err != nil {
 		errors = append(errors, err.Error())
 	}
 
@@ -218,6 +226,7 @@ func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error 
 	return nil
 }
 
+//nolint:gocyclo // Strategy-specific validation requires checking multiple fields per type
 func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtypes.BackendAuthStrategy) error {
 	if strategy == nil {
 		return fmt.Errorf("strategy is nil")
@@ -229,6 +238,7 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		authtypes.StrategyTypeTokenExchange,
 		authtypes.StrategyTypeUpstreamInject,
 		authtypes.StrategyTypeAwsSts,
+		authtypes.StrategyTypeOBO,
 	}
 	if !slices.Contains(validTypes, strategy.Type) {
 		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))
@@ -270,6 +280,17 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		}
 		if strategy.AwsSts.Region == "" {
 			return fmt.Errorf("aws_sts requires region field")
+		}
+
+	case authtypes.StrategyTypeOBO:
+		if strategy.OBO == nil {
+			return fmt.Errorf("obo requires OBO configuration")
+		}
+		if strategy.OBO.TokenURL == "" {
+			return fmt.Errorf("obo requires tokenUrl field")
+		}
+		if strategy.OBO.ClientSecret != "" && strategy.OBO.ClientSecretEnv != "" {
+			return fmt.Errorf("obo: clientSecret and clientSecretEnv are mutually exclusive")
 		}
 	}
 
@@ -484,6 +505,25 @@ func (*DefaultValidator) validateCompositeToolRefs(refs []CompositeToolRef) erro
 		refNames[ref.Name] = true
 	}
 
+	return nil
+}
+
+func (*DefaultValidator) validatePassthroughHeaders(cfg *Config) error {
+	for i, name := range cfg.PassthroughHeaders {
+		if name == "" {
+			return fmt.Errorf("passthroughHeaders[%d]: header name must not be empty", i)
+		}
+
+		canonical := http.CanonicalHeaderKey(name)
+
+		if middleware.RestrictedHeaders[canonical] {
+			return fmt.Errorf("passthroughHeaders[%d]: %q is a restricted header and cannot be forwarded", i, canonical)
+		}
+
+		if err := httpval.ValidateHeaderName(name); err != nil {
+			return fmt.Errorf("passthroughHeaders[%d]: invalid header name %q: %w", i, name, err)
+		}
+	}
 	return nil
 }
 

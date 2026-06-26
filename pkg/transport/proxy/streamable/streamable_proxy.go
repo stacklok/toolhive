@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
@@ -21,6 +22,8 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -37,6 +40,12 @@ const (
 	// proxyRequestTimeoutEnv is the environment variable that overrides the
 	// default proxy request timeout.
 	proxyRequestTimeoutEnv = "TOOLHIVE_PROXY_REQUEST_TIMEOUT"
+
+	// defaultReadTimeout bounds reading the entire request (headers + body) on
+	// the proxy http.Server, mitigating slow-upload connection exhaustion. It
+	// does not affect responses, so SSE response streams are unaffected. Matches
+	// the vMCP server default.
+	defaultReadTimeout = 30 * time.Second
 )
 
 // HTTPProxy implements a proxy for streamable HTTP transport.
@@ -44,6 +53,7 @@ type HTTPProxy struct {
 	host              string
 	port              int
 	requestTimeout    time.Duration
+	readTimeout       time.Duration
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
 	middlewares       []types.NamedMiddleware
@@ -63,6 +73,14 @@ type HTTPProxy struct {
 	// sessionStorage is the optional custom storage backend for the session manager.
 	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
 	sessionStorage session.Storage
+
+	// authInfoHandler is the optional RFC 9728 OAuth protected resource discovery handler.
+	// When nil, /.well-known/ returns a clean JSON 404. Set via WithAuthInfoHandler.
+	authInfoHandler http.Handler
+
+	// prefixHandlers contains additional HTTP handlers mounted outside the middleware chain.
+	// Keys are URL path prefixes. Set via WithPrefixHandlers.
+	prefixHandlers map[string]http.Handler
 
 	// Waiters keyed by compositeKey(sessID, idKey) -> one-shot channel for response delivery.
 	// The composite key MUST be unique per concurrent request; sharing it across requests
@@ -105,6 +123,35 @@ func WithSessionTTL(ttl time.Duration) Option {
 	}
 }
 
+// WithReadTimeout overrides http.Server.ReadTimeout for this proxy, which bounds
+// reading the entire request (headers + body). Zero or negative values are
+// ignored so the constructor's default (defaultReadTimeout) is preserved.
+func WithReadTimeout(d time.Duration) Option {
+	return func(p *HTTPProxy) {
+		if d <= 0 {
+			return
+		}
+		p.readTimeout = d
+	}
+}
+
+// WithAuthInfoHandler sets the handler for RFC 9728 OAuth protected resource discovery.
+// When set, the handler is mounted at /.well-known/ outside the middleware chain.
+// When nil, /.well-known/ returns a clean JSON 404 so OAuth clients parse it cleanly.
+func WithAuthInfoHandler(h http.Handler) Option {
+	return func(p *HTTPProxy) {
+		p.authInfoHandler = h
+	}
+}
+
+// WithPrefixHandlers registers additional HTTP handlers mounted before the MCP endpoint.
+// These are mounted outside the middleware chain (RFC 9728, embedded auth server routes).
+func WithPrefixHandlers(handlers map[string]http.Handler) Option {
+	return func(p *HTTPProxy) {
+		p.prefixHandlers = maps.Clone(handlers)
+	}
+}
+
 // NewHTTPProxy creates a new HTTPProxy for streamable HTTP transport.
 func NewHTTPProxy(
 	host string,
@@ -120,6 +167,7 @@ func NewHTTPProxy(
 		host:              host,
 		port:              port,
 		requestTimeout:    resolveRequestTimeout(),
+		readTimeout:       defaultReadTimeout,
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
 		middlewares:       middlewares,
@@ -160,10 +208,26 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 		mux.Handle("/metrics", p.prometheusHandler)
 	}
 
+	// Mount prefix handlers (e.g. embedded auth server routes) outside the middleware chain.
+	// RFC 9728 requires discovery endpoints to be reachable without authentication.
+	for prefix, h := range p.prefixHandlers {
+		mux.Handle(prefix, h)
+		slog.Debug("mounted prefix handler", "prefix", prefix)
+	}
+
+	// Mount RFC 9728 OAuth protected resource discovery endpoint (no middlewares).
+	// Always register so OAuth discovery gets a clean JSON 404 when auth is off.
+	wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler)
+	mux.Handle("/.well-known/", wellKnownHandler)
+	if p.authInfoHandler != nil {
+		slog.Debug("rfc 9728 OAuth discovery endpoint enabled at /.well-known/oauth-protected-resource")
+	}
+
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       p.readTimeout,
 	}
 
 	// Route container responses to matching waiter channels
@@ -302,6 +366,13 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		// A body that exceeds the configured limit without a Content-Length
+		// (e.g. chunked) trips http.MaxBytesReader here rather than at the
+		// early Content-Length check. Surface it as 413, not 500.
+		if bodylimit.IsRequestTooLarge(err) {
+			writeHTTPError(w, http.StatusRequestEntityTooLarge, "Request Entity Too Large")
+			return
+		}
 		writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Error reading request body: %v", err))
 		return
 	}

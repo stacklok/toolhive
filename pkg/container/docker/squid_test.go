@@ -10,9 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/mount"
-	"github.com/docker/docker/api/types/network"
+	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/mount"
+	"github.com/moby/moby/api/types/network"
+	mobyclient "github.com/moby/moby/client"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,7 +38,7 @@ func TestCreateSquidContainer_Basics(t *testing.T) {
 			gotHost = host
 			return container.CreateResponse{ID: "cid-new"}, nil
 		},
-		startFunc: func(_ context.Context, id string, _ container.StartOptions) error {
+		startFunc: func(_ context.Context, id string, _ mobyclient.ContainerStartOptions) error {
 			startCalled = true
 			assert.Equal(t, "cid-new", id)
 			return nil
@@ -354,6 +355,45 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 			expectContains: []string{
 				"acl allowed_ports port 443",
 				"acl allowed_dsts dstdomain example.com",
+				"http_access allow allowed_ports allowed_dsts",
+			},
+		},
+		{
+			// Listing host.docker.internal in allow_host is NOT sufficient on its
+			// own: without the opt-in the gateway deny is still written, and
+			// because Squid is first-match-wins the deny (asserted to precede the
+			// allow below) blocks the request before the allowed_dsts allow is
+			// reached. Reaching the gateway requires BOTH the flag and the host.
+			name: "host.docker.internal in allow_host without opt-in is still blocked",
+			permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"host.docker.internal"},
+					AllowPort: []int{8080},
+				},
+			},
+			allowDockerGateway: false,
+			expectDenyRule:     true,
+			expectAllowAll:     false,
+			expectContains: []string{
+				"acl allowed_dsts dstdomain host.docker.internal",
+				"http_access allow allowed_ports allowed_dsts",
+			},
+		},
+		{
+			// With the opt-in the deny is dropped and the ACL allow for
+			// host.docker.internal takes effect.
+			name: "host.docker.internal in allow_host with opt-in is allowed via ACL",
+			permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"host.docker.internal"},
+					AllowPort: []int{8080},
+				},
+			},
+			allowDockerGateway: true,
+			expectDenyRule:     false,
+			expectAllowAll:     false,
+			expectContains: []string{
+				"acl allowed_dsts dstdomain host.docker.internal",
 				"http_access allow allowed_ports allowed_dsts",
 			},
 		},

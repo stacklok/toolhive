@@ -566,8 +566,10 @@ func (a *Auditor) addMetadata(event *AuditEvent, r *http.Request, duration time.
 		event.Metadata.Extra[MetadataExtraKeyResponseSize] = rw.body.Len()
 	}
 
-	// Add backend routing information from context if available
-	// Backend info is populated by the backend enrichment middleware
+	// Add backend routing information from context if available.
+	// BackendInfo is populated upstream: by the backend-enrichment middleware on the
+	// vMCP legacy path, or by the vMCP Serve-path session handlers (which label the
+	// request directly). Either way the value is written before this runs.
 	if backendInfo, ok := BackendInfoFromContext(r.Context()); ok && backendInfo != nil && backendInfo.BackendName != "" {
 		event.Metadata.Extra["backend_name"] = backendInfo.BackendName
 	}

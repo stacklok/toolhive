@@ -10,32 +10,37 @@ import (
 	"log/slog"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
+
+// refreshTimeout bounds how long a singleflight-deduplicated token refresh
+// may take before being cancelled. It is deliberately detached from the
+// triggering request's context so that waiting callers are not abandoned.
+const refreshTimeout = 30 * time.Second
 
 // upstreamTokenRefresher implements storage.UpstreamTokenRefresher by wrapping
 // a set of upstream OAuth2Providers (keyed by provider name) and
 // UpstreamTokenStorage (for persisting the refreshed tokens). On each refresh
 // call it dispatches to the correct provider based on the expired token's
-// ProviderID.
-//
-// refreshTokenLifespan is used as the defensive re-anchor value for
-// SessionExpiresAt when the persisted row pre-dates the unconditional callback
-// write (legacy data) and the upstream provider drops expires_in on the
-// refresh response. Without this, both bounds would be zero and the row would
-// be persisted with no TTL — see RefreshAndStore.
+// ProviderID, deduplicating concurrent refreshes for the same
+// (session, provider) pair via sfGroup.
 type upstreamTokenRefresher struct {
 	providers            map[string]upstream.OAuth2Provider
 	storage              storage.UpstreamTokenStorage
 	refreshTokenLifespan time.Duration
+	sfGroup              singleflight.Group
 }
 
 // Compile-time check that upstreamTokenRefresher implements storage.UpstreamTokenRefresher.
 var _ storage.UpstreamTokenRefresher = (*upstreamTokenRefresher)(nil)
 
-// RefreshAndStore refreshes expired upstream tokens using the stored refresh token,
-// persists the new tokens, and returns them.
+// RefreshAndStore deduplicates concurrent refreshes for the same (session,
+// provider) pair, then delegates to refreshAndStore. The detached-context
+// timeout ensures waiting callers are not abandoned if the initiating request
+// cancels before the upstream round-trip completes.
 func (r *upstreamTokenRefresher) RefreshAndStore(
 	ctx context.Context,
 	sessionID string,
@@ -44,6 +49,31 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 	if expired == nil {
 		return nil, errors.New("expired tokens are required")
 	}
+
+	// providerName == ProviderID throughout the authserver; both originate from
+	// UpstreamConfig.Name and are stored verbatim in UpstreamTokens.ProviderID.
+	key := sessionID + ":" + expired.ProviderID
+	result, err, _ := r.sfGroup.Do(key, func() (any, error) {
+		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+		defer cancel()
+		return r.refreshAndStore(refreshCtx, sessionID, expired)
+	})
+	if err != nil {
+		return nil, err
+	}
+	refreshed, ok := result.(*storage.UpstreamTokens)
+	if !ok || refreshed == nil {
+		return nil, errors.New("unexpected nil result from upstream token refresh")
+	}
+	return refreshed, nil
+}
+
+// refreshAndStore performs the actual token refresh and storage write.
+func (r *upstreamTokenRefresher) refreshAndStore(
+	ctx context.Context,
+	sessionID string,
+	expired *storage.UpstreamTokens,
+) (*storage.UpstreamTokens, error) {
 	if expired.RefreshToken == "" {
 		return nil, errors.New("no refresh token available for upstream token refresh")
 	}

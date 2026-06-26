@@ -86,9 +86,11 @@ type UpstreamTokens struct {
 	// In multi-IDP scenarios, the same UserID may have tokens from multiple providers.
 	UserID string
 
-	// UpstreamSubject is the "sub" claim from the upstream IDP's ID token.
-	// This enables validation that tokens match the expected upstream identity
-	// and supports audit logging of which upstream identity was used.
+	// UpstreamSubject is the resolved subject of the upstream IDP's ID token:
+	// the "sub" claim by default, or the provider's configured SubjectClaim
+	// (e.g. Entra's "oid"). This enables validation that tokens match the
+	// expected upstream identity and supports audit logging of which upstream
+	// identity was used.
 	UpstreamSubject string
 
 	// ClientID is the OAuth client that initiated the authorization.
@@ -448,6 +450,14 @@ type PendingAuthorization struct {
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserEmail string
 
+	// SingleLeg scopes this authorization to exactly one upstream. When true, the
+	// callback issues the authorization code as soon as this leg completes instead
+	// of consulting nextMissingUpstream to continue the chain. This lets a caller
+	// connect a single specific provider without other configured-but-tokenless
+	// upstreams hijacking the flow into a full chain walk. Defaults to false, which
+	// preserves the multi-upstream chaining behavior.
+	SingleLeg bool
+
 	// CreatedAt is when the pending authorization was created.
 	CreatedAt time.Time
 }
@@ -481,6 +491,15 @@ type ClientRegistry interface {
 	// This supports both static configuration and dynamic client registration (RFC 7591).
 	// Returns ErrAlreadyExists if a client with the same ID already exists.
 	RegisterClient(ctx context.Context, client fosite.Client) error
+
+	// RenewClientTTL extends the registration TTL of a public (DCR) client so an
+	// actively-used client is not evicted mid-lifecycle and forced to re-register.
+	// Call it on a proven-use signal (e.g. a successful token exchange), NOT on an
+	// unauthenticated client read such as the /oauth/authorize lookup. Implementations
+	// renew only public clients; confidential clients have no TTL. Backends without a
+	// native TTL (the in-memory backend) treat this as a no-op. A renewal failure is
+	// non-fatal to the caller's primary operation.
+	RenewClientTTL(ctx context.Context, client fosite.Client) error
 }
 
 // UpstreamTokenStorage provides storage for tokens obtained from upstream identity providers.

@@ -1,0 +1,44 @@
+suite: namespace-scoped install
+# Exercises the rbac.scope=namespace coupling: the Deployment must learn the
+# watched namespaces via WATCH_NAMESPACE, and the binding template must emit one
+# RoleBinding per allowedNamespaces entry (and no ClusterRoleBinding). An empty
+# allowlist must produce zero bindings rather than silently binding nothing.
+set:
+  operator.rbac.scope: namespace
+  operator.rbac.allowedNamespaces: [team-a, team-b]
+templates:
+  - deployment.yaml
+  - clusterrole/rolebinding.yaml
+tests:
+  - it: sets WATCH_NAMESPACE to the comma-joined allowlist
+    template: deployment.yaml
+    asserts:
+      - contains:
+          path: 'spec.template.spec.containers[0].env'
+          content: { name: WATCH_NAMESPACE, value: "team-a,team-b" }
+
+  - it: emits one RoleBinding per namespace and no ClusterRoleBinding
+    template: clusterrole/rolebinding.yaml
+    asserts:
+      - hasDocuments: { count: 2 }
+      - isKind: { of: RoleBinding }
+
+  - it: scopes and targets the team-a RoleBinding correctly
+    template: clusterrole/rolebinding.yaml
+    documentSelector: { path: metadata.namespace, value: team-a }
+    asserts:
+      - isKind: { of: RoleBinding }
+      - equal: { path: roleRef.name, value: toolhive-operator-manager-role }
+
+  - it: scopes the team-b RoleBinding correctly
+    template: clusterrole/rolebinding.yaml
+    documentSelector: { path: metadata.namespace, value: team-b }
+    asserts:
+      - isKind: { of: RoleBinding }
+
+  - it: emits zero bindings when the allowlist is empty
+    template: clusterrole/rolebinding.yaml
+    set:
+      operator.rbac.allowedNamespaces: []
+    asserts:
+      - hasDocuments: { count: 0 }

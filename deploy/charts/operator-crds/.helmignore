@@ -23,6 +23,8 @@
 .vscode/
 # Source CRD files (only wrapped templates are needed)
 files/
+# helm-unittest test suites (not part of the packaged chart)
+tests/
 # Documentation
 CLAUDE.md
 CONTRIBUTING.md

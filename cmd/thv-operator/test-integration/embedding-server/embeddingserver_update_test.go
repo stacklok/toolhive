@@ -16,6 +16,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 // UpdateTestCase defines a test case for EmbeddingServer update scenarios.
@@ -46,17 +47,9 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 	updateTestCases := []UpdateTestCase{
 		{
 			Name: "When updating EmbeddingServer image",
-			InitialState: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-update-image",
-					Namespace: defaultNamespace,
-				},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Model: "sentence-transformers/all-MiniLM-L6-v2",
-					Image: "ghcr.io/huggingface/text-embeddings-inference:v1.0",
-					Port:  8080,
-				},
-			},
+			InitialState: v1beta1test.NewEmbeddingServer("test-update-image", defaultNamespace,
+				v1beta1test.WithEmbeddingImage("ghcr.io/huggingface/text-embeddings-inference:v1.0"),
+			),
 			Updates: []UpdateStep{
 				{
 					Name: "Should update StatefulSet when image changes to v2.0",
@@ -96,18 +89,9 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 		},
 		{
 			Name: "When updating EmbeddingServer replicas",
-			InitialState: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-update-replicas",
-					Namespace: defaultNamespace,
-				},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Model:    "sentence-transformers/all-MiniLM-L6-v2",
-					Image:    "ghcr.io/huggingface/text-embeddings-inference:latest",
-					Port:     8080,
-					Replicas: ptr.To(int32(1)),
-				},
-			},
+			InitialState: v1beta1test.NewEmbeddingServer("test-update-replicas", defaultNamespace,
+				v1beta1test.WithEmbeddingReplicas(1),
+			),
 			Updates: []UpdateStep{
 				{
 					Name: "Should scale up to 3 replicas",
@@ -134,18 +118,8 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 			},
 		},
 		{
-			Name: "When updating EmbeddingServer model",
-			InitialState: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-update-model",
-					Namespace: defaultNamespace,
-				},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Model: "sentence-transformers/all-MiniLM-L6-v2",
-					Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-					Port:  8080,
-				},
-			},
+			Name:         "When updating EmbeddingServer model",
+			InitialState: v1beta1test.NewEmbeddingServer("test-update-model", defaultNamespace),
 			Updates: []UpdateStep{
 				{
 					Name: "Should update StatefulSet args when model changes",
@@ -168,20 +142,11 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 		},
 		{
 			Name: "When updating EmbeddingServer environment variables",
-			InitialState: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-update-env",
-					Namespace: defaultNamespace,
-				},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Model: "sentence-transformers/all-MiniLM-L6-v2",
-					Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-					Port:  8080,
-					Env: []mcpv1beta1.EnvVar{
-						{Name: "LOG_LEVEL", Value: "info"},
-					},
-				},
-			},
+			InitialState: v1beta1test.NewEmbeddingServer("test-update-env", defaultNamespace,
+				v1beta1test.WithEmbeddingEnv(
+					mcpv1beta1.EnvVar{Name: "LOG_LEVEL", Value: "info"},
+				),
+			),
 			Updates: []UpdateStep{
 				{
 					Name: "Should update StatefulSet when env var value changes",
@@ -228,18 +193,8 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 			},
 		},
 		{
-			Name: "When updating EmbeddingServer port",
-			InitialState: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-update-port",
-					Namespace: defaultNamespace,
-				},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Model: "sentence-transformers/all-MiniLM-L6-v2",
-					Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-					Port:  8080,
-				},
-			},
+			Name:         "When updating EmbeddingServer port",
+			InitialState: v1beta1test.NewEmbeddingServer("test-update-port", defaultNamespace),
 			Updates: []UpdateStep{
 				{
 					Name: "Should update StatefulSet and Service when port changes",
@@ -267,20 +222,14 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 		},
 		{
 			Name: "When updating EmbeddingServer resources",
-			InitialState: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-update-resources",
-					Namespace: defaultNamespace,
-				},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Model: "sentence-transformers/all-MiniLM-L6-v2",
-					Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-					Resources: mcpv1beta1.ResourceRequirements{
+			InitialState: v1beta1test.NewEmbeddingServer("test-update-resources", defaultNamespace,
+				v1beta1test.MutateEmbedding(func(e *mcpv1beta1.EmbeddingServer) {
+					e.Spec.Resources = mcpv1beta1.ResourceRequirements{
 						Limits:   mcpv1beta1.ResourceList{CPU: "1", Memory: "2Gi"},
 						Requests: mcpv1beta1.ResourceList{CPU: "500m", Memory: "1Gi"},
-					},
-				},
-			},
+					}
+				}),
+			),
 			Updates: []UpdateStep{
 				{
 					Name: "Should update StatefulSet when resource limits change",
@@ -315,17 +264,9 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 		},
 		{
 			Name: "When updating EmbeddingServer args",
-			InitialState: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-update-args",
-					Namespace: defaultNamespace,
-				},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Model: "sentence-transformers/all-MiniLM-L6-v2",
-					Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-					Args:  []string{"--max-concurrent-requests", "256"},
-				},
-			},
+			InitialState: v1beta1test.NewEmbeddingServer("test-update-args", defaultNamespace,
+				v1beta1test.WithEmbeddingArgs("--max-concurrent-requests", "256"),
+			),
 			Updates: []UpdateStep{
 				{
 					Name: "Should update StatefulSet when args change",
@@ -365,17 +306,9 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 		},
 		{
 			Name: "When updating EmbeddingServer ImagePullPolicy",
-			InitialState: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-update-imagepullpolicy",
-					Namespace: defaultNamespace,
-				},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Model:           "sentence-transformers/all-MiniLM-L6-v2",
-					Image:           "ghcr.io/huggingface/text-embeddings-inference:latest",
-					ImagePullPolicy: corev1.PullIfNotPresent,
-				},
-			},
+			InitialState: v1beta1test.NewEmbeddingServer("test-update-imagepullpolicy", defaultNamespace,
+				v1beta1test.WithEmbeddingImagePullPolicy(corev1.PullIfNotPresent),
+			),
 			Updates: []UpdateStep{
 				{
 					Name: "Should update StatefulSet when ImagePullPolicy changes",
@@ -397,17 +330,8 @@ var _ = Describe("EmbeddingServer Controller Update Tests", func() {
 			},
 		},
 		{
-			Name: "When updating EmbeddingServer ResourceOverrides",
-			InitialState: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-update-resourceoverrides",
-					Namespace: defaultNamespace,
-				},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Model: "sentence-transformers/all-MiniLM-L6-v2",
-					Image: "ghcr.io/huggingface/text-embeddings-inference:latest",
-				},
-			},
+			Name:         "When updating EmbeddingServer ResourceOverrides",
+			InitialState: v1beta1test.NewEmbeddingServer("test-update-resourceoverrides", defaultNamespace),
 			Updates: []UpdateStep{
 				{
 					Name: "Should update StatefulSet when adding annotations",

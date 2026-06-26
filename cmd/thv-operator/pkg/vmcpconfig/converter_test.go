@@ -16,12 +16,13 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
@@ -42,9 +43,7 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 // newTestK8sClient creates a fake Kubernetes client for testing.
 func newTestK8sClient(t *testing.T, objects ...client.Object) client.Client {
 	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	return fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	return fake.NewClientBuilder().WithScheme(testutil.NewScheme(t)).WithObjects(objects...).Build()
 }
 
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
@@ -58,13 +57,10 @@ func newTestConverter(t *testing.T, resolver oidc.Resolver) *Converter {
 
 // newTestVMCPServer creates a VirtualMCPServer with an MCPOIDCConfigReference for testing.
 func newTestVMCPServer(oidcConfigRef *mcpv1beta1.MCPOIDCConfigReference) *mcpv1beta1.VirtualMCPServer {
-	return &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef:     &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "oidc", OIDCConfigRef: oidcConfigRef},
-		},
-	}
+	return v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "oidc", OIDCConfigRef: oidcConfigRef}),
+	)
 }
 
 // newTestMCPOIDCConfig creates an MCPOIDCConfig resource for testing with the given spec type.
@@ -226,37 +222,31 @@ func TestConverter_OIDCResolution(t *testing.T) {
 func TestConverter_CompositeToolsPassThrough(t *testing.T) {
 	t.Parallel()
 
-	vmcpServer := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				CompositeTools: []vmcpconfig.CompositeToolConfig{
-					{
-						Name:        "test-composite-tool",
-						Description: "A test composite tool",
-						Timeout:     vmcpconfig.Duration(30 * time.Second),
-						Steps: []vmcpconfig.WorkflowStepConfig{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.some-tool",
-							},
-							{
-								ID:        "step2",
-								Type:      "tool",
-								Tool:      "backend.other-tool",
-								DependsOn: []string{"step1"},
-							},
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			CompositeTools: []vmcpconfig.CompositeToolConfig{
+				{
+					Name:        "test-composite-tool",
+					Description: "A test composite tool",
+					Timeout:     vmcpconfig.Duration(30 * time.Second),
+					Steps: []vmcpconfig.WorkflowStepConfig{
+						{
+							ID:   "step1",
+							Type: "tool",
+							Tool: "backend.some-tool",
+						},
+						{
+							ID:        "step2",
+							Type:      "tool",
+							Tool:      "backend.other-tool",
+							DependsOn: []string{"step1"},
 						},
 					},
 				},
 			},
-		},
-	}
+		}),
+	)
 
 	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
@@ -393,16 +383,10 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcpServer := &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef:     &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					IncomingAuth: tt.incomingAuth,
-				},
-			}
+			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPIncomingAuth(tt.incomingAuth),
+			)
 
 			// Set up mock resolver based on test expectations
 			ctrl := gomock.NewController(t)
@@ -454,13 +438,6 @@ func TestConverter_IncomingAuthRequired(t *testing.T) {
 	}
 }
 
-// createTestScheme creates a test scheme with required types
-func createTestScheme() *runtime.Scheme {
-	s := runtime.NewScheme()
-	_ = mcpv1beta1.AddToScheme(s)
-	return s
-}
-
 func TestConverter_CompositeToolRefs(t *testing.T) {
 	t.Parallel()
 
@@ -475,20 +452,14 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 	}{
 		{
 			name: "successfully fetch and merge referenced composite tool",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-							{Name: "referenced-tool"},
-						},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						{Name: "referenced-tool"},
 					},
-				},
-			},
+				}),
+			),
 			compositeDefs: []*mcpv1beta1.VirtualMCPCompositeToolDefinition{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -523,33 +494,27 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 		},
 		{
 			name: "merge inline and referenced composite tools",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeTools: []vmcpconfig.CompositeToolConfig{
-							{
-								Name:        "inline-tool",
-								Description: "An inline composite tool",
-								Steps: []vmcpconfig.WorkflowStepConfig{
-									{
-										ID:   "step1",
-										Type: "tool",
-										Tool: "backend.inline-tool",
-									},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					CompositeTools: []vmcpconfig.CompositeToolConfig{
+						{
+							Name:        "inline-tool",
+							Description: "An inline composite tool",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.inline-tool",
 								},
 							},
 						},
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-							{Name: "referenced-tool"},
-						},
 					},
-				},
-			},
+					CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						{Name: "referenced-tool"},
+					},
+				}),
+			),
 			compositeDefs: []*mcpv1beta1.VirtualMCPCompositeToolDefinition{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -586,53 +551,41 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 		},
 		{
 			name: "error when referenced composite tool not found",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-							{Name: "non-existent-tool"},
-						},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						{Name: "non-existent-tool"},
 					},
-				},
-			},
+				}),
+			),
 			compositeDefs: []*mcpv1beta1.VirtualMCPCompositeToolDefinition{},
 			expectError:   true,
 			errorContains: "not found",
 		},
 		{
 			name: "error when duplicate tool names exist",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeTools: []vmcpconfig.CompositeToolConfig{
-							{
-								Name:        "duplicate-tool",
-								Description: "An inline tool",
-								Steps: []vmcpconfig.WorkflowStepConfig{
-									{
-										ID:   "step1",
-										Type: "tool",
-										Tool: "backend.tool1",
-									},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					CompositeTools: []vmcpconfig.CompositeToolConfig{
+						{
+							Name:        "duplicate-tool",
+							Description: "An inline tool",
+							Steps: []vmcpconfig.WorkflowStepConfig{
+								{
+									ID:   "step1",
+									Type: "tool",
+									Tool: "backend.tool1",
 								},
 							},
 						},
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-							{Name: "referenced-tool"},
-						},
 					},
-				},
-			},
+					CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						{Name: "referenced-tool"},
+					},
+				}),
+			),
 			compositeDefs: []*mcpv1beta1.VirtualMCPCompositeToolDefinition{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -659,15 +612,9 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 		},
 		{
 			name: "error when k8sClient is nil",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+			),
 			compositeDefs: []*mcpv1beta1.VirtualMCPCompositeToolDefinition{},
 			k8sClient:     nil, // No client provided
 			expectError:   true,
@@ -675,21 +622,15 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 		},
 		{
 			name: "handle multiple referenced tools",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-							{Name: "tool1"},
-							{Name: "tool2"},
-						},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						{Name: "tool1"},
+						{Name: "tool2"},
 					},
-				},
-			},
+				}),
+			),
 			compositeDefs: []*mcpv1beta1.VirtualMCPCompositeToolDefinition{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -744,20 +685,14 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 		},
 		{
 			name: "convert referenced tool with parameters and timeout",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-							{Name: "referenced-tool"},
-						},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+						{Name: "referenced-tool"},
 					},
-				},
-			},
+				}),
+			),
 			compositeDefs: []*mcpv1beta1.VirtualMCPCompositeToolDefinition{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -812,7 +747,7 @@ func TestConverter_CompositeToolRefs(t *testing.T) {
 				fakeClient = tt.k8sClient
 			} else {
 				// Create fake client with objects (or nil if we want to test nil client behavior)
-				testScheme := createTestScheme()
+				testScheme := testutil.NewScheme(t)
 				objects := []client.Object{tt.vmcp}
 				for _, def := range tt.compositeDefs {
 					objects = append(objects, def)
@@ -920,23 +855,17 @@ func TestConverter_CompositeToolDefinitionFieldsPreserved(t *testing.T) {
 		},
 	}
 
-	vmcpServer := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-					{Name: "comprehensive-tool"},
-				},
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+				{Name: "comprehensive-tool"},
 			},
-		},
-	}
+		}),
+	)
 
 	// Setup fake Kubernetes client
-	testScheme := createTestScheme()
+	testScheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
 		WithObjects(vmcpServer, compositeDef).
@@ -1277,9 +1206,7 @@ func TestResolveToolConfigRefs(t *testing.T) {
 			converter.k8sClient = k8sClient
 
 			srcAgg := &vmcpconfig.AggregationConfig{Tools: tt.tools}
-			vmcp := &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-			}
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 			agg := &vmcpconfig.AggregationConfig{}
 			err := converter.resolveToolConfigRefs(ctx, vmcp, srcAgg, agg)
@@ -1352,9 +1279,7 @@ func TestResolveToolConfigRefs_FailClosed(t *testing.T) {
 			converter.k8sClient = k8sClient
 
 			srcAgg := &vmcpconfig.AggregationConfig{Tools: tt.tools}
-			vmcp := &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-			}
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default")
 
 			agg := &vmcpconfig.AggregationConfig{}
 			err := converter.resolveToolConfigRefs(ctx, vmcp, srcAgg, agg)
@@ -1383,51 +1308,42 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 	}{
 		{
 			name: "Convert fails when MCPToolConfig not found",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						Aggregation: &vmcpconfig.AggregationConfig{
-							Tools: []*vmcpconfig.WorkloadToolConfig{{
-								Workload:      "backend1",
-								ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "missing-config"},
-							}},
-						},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					Aggregation: &vmcpconfig.AggregationConfig{
+						Tools: []*vmcpconfig.WorkloadToolConfig{{
+							Workload:      "backend1",
+							ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "missing-config"},
+						}},
 					},
-				},
-			},
+				}),
+			),
 			existingConfig: nil,
 			expectError:    true,
 			expectedErrMsg: "failed to convert aggregation config",
 		},
 		{
 			name: "Convert succeeds when MCPToolConfig exists",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						Aggregation: &vmcpconfig.AggregationConfig{
-							Tools: []*vmcpconfig.WorkloadToolConfig{{
-								Workload:      "backend1",
-								ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "valid-config"},
-							}},
-						},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					Aggregation: &vmcpconfig.AggregationConfig{
+						Tools: []*vmcpconfig.WorkloadToolConfig{{
+							Workload:      "backend1",
+							ToolConfigRef: &vmcpconfig.ToolConfigRef{Name: "valid-config"},
+						}},
 					},
-				},
-			},
+				}),
+			),
 			existingConfig: newMCPToolConfig("valid-config", "default", []string{"fetch"}, nil),
 			expectError:    false,
 		},
 		{
 			name: "Convert succeeds when no Aggregation specified",
-			vmcp: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+			),
 			existingConfig: nil,
 			expectError:    false,
 		},
@@ -1467,24 +1383,18 @@ func TestConvert_MCPToolConfigFailClosed(t *testing.T) {
 func TestConverter_InlineTelemetryIgnored(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type: "anonymous",
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			Telemetry: &telemetry.Config{
+				Endpoint:    "otlp-collector:4317",
+				ServiceName: "should-be-ignored",
 			},
-			Config: vmcpconfig.Config{
-				Telemetry: &telemetry.Config{
-					Endpoint:    "otlp-collector:4317",
-					ServiceName: "should-be-ignored",
-				},
-			},
-		},
-	}
+		}),
+	)
 
 	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
@@ -1499,21 +1409,15 @@ func TestConverter_InlineTelemetryIgnored(t *testing.T) {
 func TestConverter_TelemetryNil(t *testing.T) {
 	t.Parallel()
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type: "anonymous",
-			},
-			Config: vmcpconfig.Config{
-				Telemetry: nil, // No telemetry config
-			},
-		},
-	}
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			Telemetry: nil, // No telemetry config
+		}),
+	)
 
 	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
@@ -1575,19 +1479,13 @@ func TestConverter_SessionStorage(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcpServer := &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						SessionStorage: tt.inlineConfig,
-					},
-					SessionStorage: tt.sessionStorage,
-				},
-			}
+			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					SessionStorage: tt.inlineConfig,
+				}),
+				v1beta1test.WithVMCPSessionStorage(tt.sessionStorage),
+			)
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			ctx := log.IntoContext(context.Background(), logr.Discard())
@@ -1604,32 +1502,26 @@ func TestConverter_SessionStorage(t *testing.T) {
 func TestConverter_RateLimitingPassThrough(t *testing.T) {
 	t.Parallel()
 
-	vmcpServer := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				RateLimiting: &mcpv1beta1.RateLimitConfig{
-					PerUser: &mcpv1beta1.RateLimitBucket{
-						MaxTokens:    2,
-						RefillPeriod: metav1.Duration{Duration: time.Minute},
-					},
-					Tools: []mcpv1beta1.ToolRateLimitConfig{
-						{
-							Name: "backend_a_echo",
-							Shared: &mcpv1beta1.RateLimitBucket{
-								MaxTokens:    5,
-								RefillPeriod: metav1.Duration{Duration: 30 * time.Second},
-							},
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			RateLimiting: &mcpv1beta1.RateLimitConfig{
+				PerUser: &mcpv1beta1.RateLimitBucket{
+					MaxTokens:    2,
+					RefillPeriod: metav1.Duration{Duration: time.Minute},
+				},
+				Tools: []mcpv1beta1.ToolRateLimitConfig{
+					{
+						Name: "backend_a_echo",
+						Shared: &mcpv1beta1.RateLimitBucket{
+							MaxTokens:    5,
+							RefillPeriod: metav1.Duration{Duration: 30 * time.Second},
 						},
 					},
 				},
 			},
-		},
-	}
+		}),
+	)
 
 	converter := newTestConverter(t, newNoOpMockResolver(t))
 	ctx := log.IntoContext(context.Background(), logr.Discard())
@@ -1833,36 +1725,33 @@ func TestConvert_AuthServerConfigIntegration(t *testing.T) {
 	converter, err := NewConverter(mockResolver, k8sClient)
 	require.NoError(t, err)
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type:          "oidc",
-				OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "https://my-vmcp.example.com"},
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type:          "oidc",
+			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "test-oidc", Audience: "https://my-vmcp.example.com"},
+		}),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://authserver.example.com",
+			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+				{Name: "signing-key", Key: "private.pem"},
 			},
-			AuthServerConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
-				Issuer: "https://authserver.example.com",
-				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
-					{Name: "signing-key", Key: "private.pem"},
-				},
-				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
-					{
-						Name: "corp-idp",
-						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
-						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
-							IssuerURL: "https://corp.example.com",
-							ClientID:  "corp-client-id",
-							ClientSecretRef: &mcpv1beta1.SecretKeyRef{
-								Name: "corp-secret",
-								Key:  "client-secret",
-							},
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{
+					Name: "corp-idp",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL: "https://corp.example.com",
+						ClientID:  "corp-client-id",
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
+							Name: "corp-secret",
+							Key:  "client-secret",
 						},
 					},
 				},
 			},
-		},
-	}
+		}),
+	)
 
 	ctx := log.IntoContext(context.Background(), logr.Discard())
 	config, runConfig, err := converter.Convert(ctx, vmcp, nil)
@@ -1913,17 +1802,16 @@ func TestConverter_TelemetryConfigRef(t *testing.T) {
 	converter, err := NewConverter(newNoOpMockResolver(t), k8sClient)
 	require.NoError(t, err)
 
-	vmcp := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			GroupRef:     &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
-			TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
+	vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Spec.TelemetryConfigRef = &mcpv1beta1.MCPTelemetryConfigReference{
 				Name:        "shared-telemetry",
 				ServiceName: "custom-svc",
-			},
-		},
-	}
+			}
+		}),
+	)
 
 	ctx := log.IntoContext(context.Background(), logr.Discard())
 	config, _, err := converter.Convert(ctx, vmcp, telemetryCfg)
@@ -2165,17 +2053,14 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 
-			vmcp := &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type:        "anonymous",
-						AuthzConfig: tt.authzConfig,
-					},
-					AuthServerConfig: tt.authServerConfig,
-				},
-			}
+			vmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type:        "anonymous",
+					AuthzConfig: tt.authzConfig,
+				}),
+				v1beta1test.WithVMCPAuthServerConfig(tt.authServerConfig),
+			)
 
 			ctx := log.IntoContext(t.Context(), logr.Discard())
 			incoming, err := converter.convertIncomingAuth(ctx, vmcp)
@@ -2193,6 +2078,79 @@ func TestConvertIncomingAuth_PrimaryUpstreamProvider(t *testing.T) {
 
 			require.NotNil(t, incoming.Authz)
 			assert.Equal(t, tt.expectedProvider, incoming.Authz.PrimaryUpstreamProvider)
+		})
+	}
+}
+
+// TestConverter_PassthroughHeaders verifies that spec.passthroughHeaders is promoted
+// correctly, takes precedence over spec.config.passthroughHeaders, and that the
+// auto-passthrough path (only spec.config.passthroughHeaders set) is preserved.
+func TestConvertSessionStorage_GlobalDefault(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			// sessionStorage is nil
+		},
+	}
+	got := convertSessionStorage(vmcp)
+	require.NotNil(t, got)
+	assert.Equal(t, mcpv1beta1.SessionStorageProviderRedis, got.Provider)
+	assert.Equal(t, "global-redis:6379", got.Address)
+}
+
+func TestConvertSessionStorage_SpecTakesPrecedence(t *testing.T) {
+	t.Setenv("TOOLHIVE_DEFAULT_REDIS_ADDR", "global-redis:6379")
+
+	vmcp := &mcpv1beta1.VirtualMCPServer{
+		Spec: mcpv1beta1.VirtualMCPServerSpec{
+			SessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider: mcpv1beta1.SessionStorageProviderRedis,
+				Address:  "local-redis:6379",
+			},
+		},
+	}
+	got := convertSessionStorage(vmcp)
+	require.NotNil(t, got)
+	assert.Equal(t, "local-redis:6379", got.Address)
+}
+
+func TestConverter_PassthroughHeaders(t *testing.T) {
+	t.Parallel()
+
+	// newVMCP builds a minimal VirtualMCPServer with the given passthrough header slices.
+	newVMCP := func(topLevel, configLevel []string) *mcpv1beta1.VirtualMCPServer {
+		return v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+			v1beta1test.WithVMCPGroupRef("test-group"),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{PassthroughHeaders: configLevel}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.PassthroughHeaders = topLevel
+			}),
+		)
+	}
+
+	tests := []struct {
+		name     string
+		topLevel []string // spec.passthroughHeaders
+		config   []string // spec.config.passthroughHeaders
+		want     []string
+	}{
+		{name: "top-level only sets headers", topLevel: []string{"x-env"}, want: []string{"x-env"}},
+		{name: "top-level wins over config when both set", topLevel: []string{"x-api-key"}, config: []string{"x-tenant"}, want: []string{"x-api-key"}},
+		{name: "auto-passthrough: only config-level preserves value", config: []string{"x-tenant"}, want: []string{"x-tenant"}},
+		{name: "neither set produces nil"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			converter := newTestConverter(t, newNoOpMockResolver(t))
+			ctx := log.IntoContext(context.Background(), logr.Discard())
+			config, _, err := converter.Convert(ctx, newVMCP(tt.topLevel, tt.config), nil)
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.Equal(t, tt.want, config.PassthroughHeaders)
 		})
 	}
 }

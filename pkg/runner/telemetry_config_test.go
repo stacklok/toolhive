@@ -108,6 +108,53 @@ func TestBuildTelemetryConfigFromAppConfig_AppliesAllFields(t *testing.T) {
 	assert.NotEmpty(t, cfg.SamplingRate)
 }
 
+// TestBuildTelemetryConfigFromAppConfig_OTLPHeadersFromEnvVars verifies that an
+// OTEL_EXPORTER_OTLP_HEADERS entry in the app config's EnvVars is parsed into
+// cfg.Headers, which is what the OTLP exporter actually sends (via WithHeaders).
+// This is the path taken when headers are configured rather than passed as
+// flags (e.g. the API call site passes no header flags). Without this, the
+// headers are silently dropped and an auth-gated collector rejects every
+// export (401).
+func TestBuildTelemetryConfigFromAppConfig_OTLPHeadersFromEnvVars(t *testing.T) {
+	t.Parallel()
+
+	t.Run("single header with scheme and base64 padding is preserved", func(t *testing.T) {
+		t.Parallel()
+		otel := appconfig.OpenTelemetryConfig{
+			Endpoint: "https://otel.example.com",
+			EnvVars:  []string{"OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic dG9rZW46cHc="},
+		}
+		cfg := BuildTelemetryConfigFromAppConfig(otel, "thv-osv", nil, "")
+		require.NotNil(t, cfg)
+		// The value contains a space and '=' padding; both must survive parsing.
+		assert.Equal(t, "Basic dG9rZW46cHc=", cfg.Headers["Authorization"])
+	})
+
+	t.Run("multiple comma-separated headers are all parsed", func(t *testing.T) {
+		t.Parallel()
+		otel := appconfig.OpenTelemetryConfig{
+			Endpoint: "https://otel.example.com",
+			EnvVars:  []string{"OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic abc,x-tenant-id=acme"},
+		}
+		cfg := BuildTelemetryConfigFromAppConfig(otel, "thv-osv", nil, "")
+		require.NotNil(t, cfg)
+		assert.Equal(t, "Basic abc", cfg.Headers["Authorization"])
+		assert.Equal(t, "acme", cfg.Headers["x-tenant-id"])
+	})
+
+	t.Run("explicit header flag wins, other env headers still applied", func(t *testing.T) {
+		t.Parallel()
+		otel := appconfig.OpenTelemetryConfig{
+			Endpoint: "https://otel.example.com",
+			EnvVars:  []string{"OTEL_EXPORTER_OTLP_HEADERS=Authorization=fromenv,x-env=prod"},
+		}
+		cfg := BuildTelemetryConfigFromAppConfig(otel, "thv-osv", []string{"Authorization=fromflag"}, "")
+		require.NotNil(t, cfg)
+		assert.Equal(t, "fromflag", cfg.Headers["Authorization"], "explicit --otel-headers flag must take precedence")
+		assert.Equal(t, "prod", cfg.Headers["x-env"], "env-provided headers other than the overridden one must still apply")
+	})
+}
+
 // TestBuildTelemetryConfigFromAppConfig_DefaultsForNilBools verifies the CLI-style
 // defaults: when bool fields are not set in the config, tracing/metrics/legacy
 // attributes default to true. This is what makes "just configure an endpoint"

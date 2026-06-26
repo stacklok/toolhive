@@ -11,20 +11,20 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	k8smeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/events"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	registryapimocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/mocks"
 )
@@ -40,17 +40,6 @@ func toRawJSONSlice[T any](t *testing.T, items []T) []apiextensionsv1.JSON {
 		result[i] = apiextensionsv1.JSON{Raw: data}
 	}
 	return result
-}
-
-// newMCPRegistryTestScheme creates a runtime scheme with all required API groups registered.
-func newMCPRegistryTestScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	s := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(s))
-	require.NoError(t, corev1.AddToScheme(s))
-	require.NoError(t, appsv1.AddToScheme(s))
-	require.NoError(t, rbacv1.AddToScheme(s))
-	return s
 }
 
 // newMCPRegistryWithFinalizer creates an MCPRegistry with the controller finalizer
@@ -410,7 +399,7 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 
 			// arrange
 			ctx := log.IntoContext(t.Context(), log.Log)
-			s := newMCPRegistryTestScheme(t)
+			s := testutil.NewScheme(t)
 
 			builder, mcpRegistry := tt.setup(t, s)
 			fakeClient := builder.Build()
@@ -440,6 +429,80 @@ func TestMCPRegistryReconciler_Reconcile(t *testing.T) {
 			assert.Equal(t, tt.expErr, err)
 			if tt.assertRegistry != nil {
 				tt.assertRegistry(t, fakeClient)
+			}
+		})
+	}
+}
+
+func TestMCPRegistryReconciler_emitDeprecationWarning(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		generation  int64
+		observedGen int64
+		nilRecorder bool
+		wantEvent   bool
+	}{
+		{
+			name:        "emits warning on first reconcile (generation not yet observed)",
+			generation:  1,
+			observedGen: 0,
+			wantEvent:   true,
+		},
+		{
+			name:        "suppresses warning once generation is observed",
+			generation:  1,
+			observedGen: 1,
+			wantEvent:   false,
+		},
+		{
+			name:        "emits warning again after a spec change",
+			generation:  2,
+			observedGen: 1,
+			wantEvent:   true,
+		},
+		{
+			name:        "no-op (no panic) when recorder is nil",
+			generation:  1,
+			observedGen: 0,
+			nilRecorder: true,
+			wantEvent:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := log.IntoContext(t.Context(), log.Log)
+			reg := &mcpv1beta1.MCPRegistry{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "test-registry",
+					Namespace:  "default",
+					Generation: tt.generation,
+				},
+				Status: mcpv1beta1.MCPRegistryStatus{
+					ObservedGeneration: tt.observedGen,
+				},
+			}
+
+			recorder := events.NewFakeRecorder(10)
+			r := &MCPRegistryReconciler{}
+			if !tt.nilRecorder {
+				r.Recorder = recorder
+			}
+
+			r.emitDeprecationWarning(ctx, reg)
+
+			select {
+			case msg := <-recorder.Events:
+				assert.True(t, tt.wantEvent, "did not expect an event but got: %s", msg)
+				assert.Contains(t, msg, corev1.EventTypeWarning)
+				assert.Contains(t, msg, EventReasonMCPRegistryDeprecated)
+				assert.Contains(t, msg, "toolhive-registry-server")
+			default:
+				assert.False(t, tt.wantEvent, "expected a deprecation event but none was emitted")
 			}
 		})
 	}

@@ -838,11 +838,24 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			//   command = patch.Containers[mcp].Command  (preserved)
 			//   args    = MCPServer.Spec.Args            (configureContainer calls WithArgs(Spec.Args))
 			// So the patch sets the entrypoint override (sh -c) and Spec.Args carries the script.
+			// The proxy runner applies ReadOnlyRootFilesystem to the inner mcp container
+			// via the platform-aware security context. pip install needs a writable /tmp,
+			// so mount a writable emptyDir there.
 			mcpPodPatch := corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
 						Name:    "mcp",
 						Command: []string{"sh", "-c"},
+						VolumeMounts: []corev1.VolumeMount{{
+							Name:      "tmp",
+							MountPath: "/tmp",
+						}},
+					}},
+					Volumes: []corev1.Volume{{
+						Name: "tmp",
+						VolumeSource: corev1.VolumeSource{
+							EmptyDir: &corev1.EmptyDirVolumeSource{},
+						},
 					}},
 				},
 			}

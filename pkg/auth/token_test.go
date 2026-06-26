@@ -2511,6 +2511,30 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		require.Contains(t, wwwAuth, `error="invalid_token"`)
 	})
 
+	t.Run("returns 401 when one of multiple providers fails refresh", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		// atlassian succeeded, github failed — the middleware must still reject the request
+		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-xyz").
+			Return(map[string]string{"atlassian": "atl-tok"}, []string{"github"}, nil)
+		v := makeValidator(t, WithUpstreamTokenReader(reader))
+
+		nextCalled := false
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			nextCalled = true
+		}))
+
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+signToken(claimsWithTsid))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+		require.False(t, nextCalled, "next must not be called when any provider fails")
+		require.Contains(t, rr.Header().Get("WWW-Authenticate"), `error="invalid_token"`)
+	})
+
 	t.Run("no enrichment without tsid", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

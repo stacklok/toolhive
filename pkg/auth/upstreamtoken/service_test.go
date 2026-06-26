@@ -253,6 +253,12 @@ func TestInProcessService_GetAllValidTokens(t *testing.T) {
 		RefreshToken: "github-refresh-token",
 		ExpiresAt:    time.Now().Add(-1 * time.Hour),
 	}
+	expiredTokensAtlassian := &storage.UpstreamTokens{
+		ProviderID:   "atlassian",
+		AccessToken:  "expired-atlassian-token",
+		RefreshToken: "atlassian-refresh-token",
+		ExpiresAt:    time.Now().Add(-1 * time.Hour),
+	}
 	refreshedTokens := &storage.UpstreamTokens{
 		ProviderID:  "github",
 		AccessToken: "new-github-token",
@@ -318,6 +324,25 @@ func TestInProcessService_GetAllValidTokens(t *testing.T) {
 			},
 			wantResult: map[string]string{},
 			wantFailed: []string{"github"},
+		},
+		{
+			name:      "multiple providers both fail refresh — all reported in failed slice",
+			sessionID: "session-3b",
+			setupStorage: func(s *storagemocks.MockUpstreamTokenStorage) {
+				s.EXPECT().GetAllUpstreamTokens(gomock.Any(), "session-3b").
+					Return(map[string]*storage.UpstreamTokens{
+						"github":    expiredTokens,
+						"atlassian": expiredTokensAtlassian,
+					}, nil)
+			},
+			setupRefresher: func(r *storagemocks.MockUpstreamTokenRefresher) {
+				r.EXPECT().RefreshAndStore(gomock.Any(), "session-3b", expiredTokens).
+					Return(nil, errors.New("github IDP unavailable"))
+				r.EXPECT().RefreshAndStore(gomock.Any(), "session-3b", expiredTokensAtlassian).
+					Return(nil, errors.New("atlassian IDP unavailable"))
+			},
+			wantResult: map[string]string{},
+			wantFailed: []string{"github", "atlassian"},
 		},
 		{
 			name:      "empty session returns empty map",
@@ -416,7 +441,7 @@ func TestInProcessService_GetAllValidTokens(t *testing.T) {
 
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantResult, result)
-			assert.Equal(t, tt.wantFailed, failed)
+			assert.ElementsMatch(t, tt.wantFailed, failed)
 		})
 	}
 }

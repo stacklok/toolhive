@@ -1104,6 +1104,69 @@ func TestSessionManager_GetMultiSession(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Tests: identity propagation through loadSession (issue #5336 Layer B)
+// ---------------------------------------------------------------------------
+
+// TestGetMultiSession_PropagatesIdentityToRestoreSession verifies that the
+// *auth.Identity present on the context passed to GetMultiSession reaches the
+// RestoreSession call inside loadSession. This pins the context.WithoutCancel
+// propagation contract: reversing that call to context.Background() would
+// cause zero test failures without this test.
+func TestGetMultiSession_PropagatesIdentityToRestoreSession(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+
+	// An identity with a non-empty UpstreamTokens map — the concrete value
+	// any outgoing-auth strategy would need at restore time.
+	wantIdentity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "alice",
+			Claims:  map[string]any{"iss": "https://idp.example", "sub": "alice"},
+		},
+		UpstreamTokens: map[string]string{"provider": "live-upstream-token"},
+	}
+
+	sessionID := "restore-identity-propagation-session"
+	restored := newMockSession(t, ctrl, sessionID, nil)
+
+	// Capture the context RestoreSession receives.
+	var capturedCtx context.Context
+	factory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
+	factory.EXPECT().
+		RestoreSession(gomock.Any(), sessionID, gomock.Any(), gomock.Any()).
+		DoAndReturn(func(ctx context.Context, _ string, _ map[string]string, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+			capturedCtx = ctx
+			return restored, nil
+		}).Times(1)
+
+	sm, _ := newTestSessionManager(t, factory, newFakeRegistry())
+
+	// Write fully-initialized metadata directly to storage (bypassing cache)
+	// so GetMultiSession triggers the cache-miss → loadSession → RestoreSession path.
+	_, err := sm.storage.Create(context.Background(), sessionID, map[string]string{
+		sessiontypes.MetadataKeyIdentityBinding: "https://idp.example\x00alice",
+		vmcpsession.MetadataKeyBackendIDs:       "",
+	})
+	require.NoError(t, err)
+
+	// Call GetMultiSession with an identity-bearing context.
+	ctxWithIdentity := auth.WithIdentity(t.Context(), wantIdentity)
+	multiSess, ok := sm.GetMultiSession(ctxWithIdentity, sessionID)
+	require.True(t, ok)
+	require.NotNil(t, multiSess)
+
+	// The identity must have propagated to RestoreSession via context.WithoutCancel.
+	require.NotNil(t, capturedCtx, "RestoreSession must have been called")
+	gotIdentity, hasIdentity := auth.IdentityFromContext(capturedCtx)
+	require.True(t, hasIdentity, "identity must be present on the context RestoreSession received")
+	assert.Equal(t, wantIdentity.Subject, gotIdentity.Subject,
+		"Subject must propagate through loadSession's context.WithoutCancel")
+	assert.Equal(t, "live-upstream-token", gotIdentity.UpstreamTokens["provider"],
+		"UpstreamTokens must propagate — these are the credentials backend Initialize needs")
+}
+
+// ---------------------------------------------------------------------------
 // Tests: DecorateSession
 // ---------------------------------------------------------------------------
 

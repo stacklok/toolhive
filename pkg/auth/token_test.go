@@ -2236,14 +2236,15 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-abc").
-			Return(map[string]string{"github": "gh-token", "atlassian": "atl-token"}, nil)
+			Return(map[string]string{"github": "gh-token", "atlassian": "atl-token"}, []string(nil), nil)
 
 		v := &TokenValidator{upstreamTokenReader: reader}
-		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
+		result, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
 			"sub":                                "user123",
 			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
 		})
 		require.NoError(t, err)
+		require.Nil(t, failed)
 		require.Equal(t, map[string]string{"github": "gh-token", "atlassian": "atl-token"}, result)
 	})
 
@@ -2254,9 +2255,10 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		// No EXPECT — reader should not be called
 
 		v := &TokenValidator{upstreamTokenReader: reader}
-		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{"sub": "user123"})
+		result, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{"sub": "user123"})
 		require.NoError(t, err)
 		require.Nil(t, result)
+		require.Nil(t, failed)
 	})
 
 	t.Run("returns nil when tsid is empty string", func(t *testing.T) {
@@ -2265,12 +2267,13 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 
 		v := &TokenValidator{upstreamTokenReader: reader}
-		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
+		result, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
 			"sub":                                "user123",
 			upstreamtoken.TokenSessionIDClaimKey: "",
 		})
 		require.NoError(t, err)
 		require.Nil(t, result)
+		require.Nil(t, failed)
 	})
 
 	t.Run("returns nil when tsid is non-string type", func(t *testing.T) {
@@ -2279,12 +2282,13 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 
 		v := &TokenValidator{upstreamTokenReader: reader}
-		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
+		result, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
 			"sub":                                "user123",
 			upstreamtoken.TokenSessionIDClaimKey: 12345,
 		})
 		require.NoError(t, err)
 		require.Nil(t, result)
+		require.Nil(t, failed)
 	})
 
 	t.Run("returns error when reader fails", func(t *testing.T) {
@@ -2292,15 +2296,33 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-abc").
-			Return(nil, errors.New("storage unavailable"))
+			Return(nil, nil, errors.New("storage unavailable"))
 
 		v := &TokenValidator{upstreamTokenReader: reader}
-		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
+		result, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
 			"sub":                                "user123",
 			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
 		})
 		require.Error(t, err)
 		require.Nil(t, result)
+		require.Nil(t, failed)
+	})
+
+	t.Run("returns failed providers from reader", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-abc").
+			Return(map[string]string{}, []string{"github"}, nil)
+
+		v := &TokenValidator{upstreamTokenReader: reader}
+		result, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
+			"sub":                                "user123",
+			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
+		})
+		require.NoError(t, err)
+		require.Equal(t, map[string]string{}, result)
+		require.Equal(t, []string{"github"}, failed)
 	})
 
 	t.Run("returns empty map from reader", func(t *testing.T) {
@@ -2308,15 +2330,16 @@ func TestLoadUpstreamTokens(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-abc").
-			Return(map[string]string{}, nil)
+			Return(map[string]string{}, []string(nil), nil)
 
 		v := &TokenValidator{upstreamTokenReader: reader}
-		result, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
+		result, failed, err := v.loadUpstreamTokens(context.Background(), jwt.MapClaims{
 			"sub":                                "user123",
 			upstreamtoken.TokenSessionIDClaimKey: "session-abc",
 		})
 		require.NoError(t, err)
 		require.Equal(t, map[string]string{}, result)
+		require.Nil(t, failed)
 	})
 }
 
@@ -2386,7 +2409,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-xyz").
-			Return(map[string]string{"github": "gh-tok"}, nil)
+			Return(map[string]string{"github": "gh-tok"}, []string(nil), nil)
 		v := makeValidator(t, WithUpstreamTokenReader(reader))
 
 		var captured *Identity
@@ -2417,10 +2440,10 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		var loadCtxCanonicalUser string
 		var loadCtxHadCanonicalUser bool
 		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-xyz").
-			DoAndReturn(func(ctx context.Context, _ string) (map[string]string, error) {
+			DoAndReturn(func(ctx context.Context, _ string) (map[string]string, []string, error) {
 				loadCtxIdentity, loadCtxHadIdentity = IdentityFromContext(ctx)
 				loadCtxCanonicalUser, loadCtxHadCanonicalUser = CanonicalUserFromContext(ctx)
-				return map[string]string{"github": "gh-tok"}, nil
+				return map[string]string{"github": "gh-tok"}, nil, nil
 			})
 		v := makeValidator(t, WithUpstreamTokenReader(reader))
 		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {}))
@@ -2447,7 +2470,7 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-xyz").
-			Return(nil, errors.New("redis down"))
+			Return(nil, nil, errors.New("redis down"))
 		v := makeValidator(t, WithUpstreamTokenReader(reader))
 
 		nextCalled := false
@@ -2462,6 +2485,54 @@ func TestMiddleware_UpstreamTokenEnrichment(t *testing.T) {
 
 		require.Equal(t, http.StatusServiceUnavailable, rr.Code)
 		require.False(t, nextCalled)
+	})
+
+	t.Run("returns 401 with WWW-Authenticate when provider refresh failed", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-xyz").
+			Return(map[string]string{}, []string{"github"}, nil)
+		v := makeValidator(t, WithUpstreamTokenReader(reader))
+
+		nextCalled := false
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			nextCalled = true
+		}))
+
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+signToken(claimsWithTsid))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+		require.False(t, nextCalled)
+		wwwAuth := rr.Header().Get("WWW-Authenticate")
+		require.Contains(t, wwwAuth, `error="invalid_token"`)
+	})
+
+	t.Run("returns 401 when one of multiple providers fails refresh", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
+		// atlassian succeeded, github failed — the middleware must still reject the request
+		reader.EXPECT().GetAllValidTokens(gomock.Any(), "session-xyz").
+			Return(map[string]string{"atlassian": "atl-tok"}, []string{"github"}, nil)
+		v := makeValidator(t, WithUpstreamTokenReader(reader))
+
+		nextCalled := false
+		handler := v.Middleware(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			nextCalled = true
+		}))
+
+		req := httptest.NewRequest("GET", "/", nil)
+		req.Header.Set("Authorization", "Bearer "+signToken(claimsWithTsid))
+		rr := httptest.NewRecorder()
+		handler.ServeHTTP(rr, req)
+
+		require.Equal(t, http.StatusUnauthorized, rr.Code)
+		require.False(t, nextCalled, "next must not be called when any provider fails")
+		require.Contains(t, rr.Header().Get("WWW-Authenticate"), `error="invalid_token"`)
 	})
 
 	t.Run("no enrichment without tsid", func(t *testing.T) {

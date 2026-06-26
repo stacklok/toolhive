@@ -2296,7 +2296,7 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings(t *testing.T) {
 			// would have returned an empty or incomplete map for one
 			// ordering.
 			svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
-			all, err := svc.GetAllValidTokens(ctx, tsid)
+			all, _, err := svc.GetAllValidTokens(ctx, tsid)
 			require.NoError(t, err)
 			require.Len(t, all, 2, "GetAllValidTokens must return both providers regardless of expiry ordering")
 			assert.NotEmpty(t, all["provider-1"], "provider-1 access token must be present")
@@ -2499,7 +2499,7 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings_Redis(t *testing.T)
 			// (commit 1b3bc81e2), the integration flow always produces ttlMs > 0 and
 			// the buggy Lua branch is unreachable from a real auth chain. The Lua
 			// invariant is exercised at unit level by pkg/authserver/storage/redis_test.go.
-			tokensMap, err := svc.GetAllValidTokens(ctx, tsid)
+			tokensMap, _, err := svc.GetAllValidTokens(ctx, tsid)
 			require.NoError(t, err)
 			require.Len(t, tokensMap, 2, "GetAllValidTokens must return both providers after chain")
 			assert.NotEmpty(t, tokensMap["provider-1"], "provider-1 access token must be present")

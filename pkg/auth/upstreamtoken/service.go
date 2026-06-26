@@ -75,19 +75,20 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 }
 
 // GetAllValidTokens returns access tokens for all upstream providers in a session.
-// Expired tokens are refreshed transparently; if refresh fails, the provider is
-// omitted from the result so downstream middleware can return a clean 401.
-func (s *InProcessService) GetAllValidTokens(ctx context.Context, sessionID string) (map[string]string, error) {
+// Expired tokens are refreshed transparently; if refresh fails, the provider name
+// is included in the returned failed slice so the caller can return HTTP 401.
+func (s *InProcessService) GetAllValidTokens(ctx context.Context, sessionID string) (map[string]string, []string, error) {
 	allTokens, err := s.storage.GetAllUpstreamTokens(ctx, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("bulk read upstream tokens: %w", err)
+		return nil, nil, fmt.Errorf("bulk read upstream tokens: %w", err)
 	}
 
 	if len(allTokens) == 0 {
-		return map[string]string{}, nil
+		return map[string]string{}, nil, nil
 	}
 
 	result := make(map[string]string, len(allTokens))
+	var failed []string
 	// TODO(auth): Refresh providers in parallel using errgroup to avoid
 	// worst-case latency of N refreshes when multiple providers need refresh.
 	for providerName, tokens := range allTokens {
@@ -104,18 +105,18 @@ func (s *InProcessService) GetAllValidTokens(ctx context.Context, sessionID stri
 		// Token is expired — attempt refresh.
 		refreshed, refreshErr := s.refreshOrFail(ctx, sessionID, providerName, tokens)
 		if refreshErr != nil {
-			// Refresh failed — omit provider so downstream middleware returns 401.
-			slog.WarnContext(ctx, "omitting provider with unrefreshable expired token",
+			slog.WarnContext(ctx, "upstream token refresh failed; provider will require re-authentication",
 				"session_id", sessionID,
 				"provider", providerName,
 				"error", refreshErr,
 			)
+			failed = append(failed, providerName)
 			continue
 		}
 		result[providerName] = refreshed.AccessToken
 	}
 
-	return result, nil
+	return result, failed, nil
 }
 
 // refreshOrFail attempts a refresh via the shared refresher and maps errors to

@@ -41,12 +41,13 @@ func (m *MockTokenReader) EXPECT() *MockTokenReaderMockRecorder {
 }
 
 // GetAllValidTokens mocks base method.
-func (m *MockTokenReader) GetAllValidTokens(ctx context.Context, sessionID string) (map[string]string, error) {
+func (m *MockTokenReader) GetAllValidTokens(ctx context.Context, sessionID string) (map[string]string, []string, error) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetAllValidTokens", ctx, sessionID)
 	ret0, _ := ret[0].(map[string]string)
-	ret1, _ := ret[1].(error)
-	return ret0, ret1
+	ret1, _ := ret[1].([]string)
+	ret2, _ := ret[2].(error)
+	return ret0, ret1, ret2
 }
 
 // GetAllValidTokens indicates an expected call of GetAllValidTokens.

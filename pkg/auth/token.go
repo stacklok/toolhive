@@ -1152,7 +1152,7 @@ type RFC6750Error struct {
 }
 
 // writeOAuthError writes an RFC 6750 compliant JSON error response.
-func writeOAuthError(w http.ResponseWriter, errorCode, description string, status int) {
+func writeOAuthError(w http.ResponseWriter, errorCode, description string) {
 	body, err := json.Marshal(RFC6750Error{
 		Error:            errorCode,
 		ErrorDescription: description,
@@ -1162,26 +1162,28 @@ func writeOAuthError(w http.ResponseWriter, errorCode, description string, statu
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write(body)
 }
 
 // loadUpstreamTokens extracts the token session ID from claims and loads
-// all upstream provider tokens for that session. Returns (nil, nil) if no
+// all upstream provider tokens for that session. Returns (nil, nil, nil) if no
 // tsid claim exists. Returns a non-nil error when a tsid claim is present
-// but token loading fails (infrastructure error).
-func (v *TokenValidator) loadUpstreamTokens(ctx context.Context, claims jwt.MapClaims) (map[string]string, error) {
+// but token loading fails due to an infrastructure error (storage unavailable).
+// A non-nil failed slice means one or more providers' tokens could not be
+// refreshed; the caller should return HTTP 401 to trigger re-authentication.
+func (v *TokenValidator) loadUpstreamTokens(ctx context.Context, claims jwt.MapClaims) (map[string]string, []string, error) {
 	tsid, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
 	if !ok || tsid == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	tokens, err := v.upstreamTokenReader.GetAllValidTokens(ctx, tsid)
+	tokens, failed, err := v.upstreamTokenReader.GetAllValidTokens(ctx, tsid)
 	if err != nil {
-		return nil, fmt.Errorf("load upstream tokens for session %s: %w", tsid, err)
+		return nil, nil, fmt.Errorf("load upstream tokens for session %s: %w", tsid, err)
 	}
 
-	return tokens, nil
+	return tokens, failed, nil
 }
 
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
@@ -1191,7 +1193,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		tokenString, err := ExtractBearerToken(r)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidRequest, err.Error()))
-			writeOAuthError(w, OAuthErrInvalidRequest, err.Error(), http.StatusUnauthorized)
+			writeOAuthError(w, OAuthErrInvalidRequest, err.Error())
 			return
 		}
 
@@ -1199,7 +1201,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		claims, err := v.ValidateToken(r.Context(), tokenString)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, err.Error()))
-			writeOAuthError(w, OAuthErrInvalidToken, fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
+			writeOAuthError(w, OAuthErrInvalidToken, fmt.Sprintf("Invalid token: %v", err))
 			return
 		}
 
@@ -1208,7 +1210,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		if err != nil {
 			slog.Error("failed to convert claims to identity", "error", err)
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, err.Error()))
-			writeOAuthError(w, OAuthErrInvalidToken, "Invalid authentication claims", http.StatusUnauthorized)
+			writeOAuthError(w, OAuthErrInvalidToken, "Invalid authentication claims")
 			return
 		}
 
@@ -1223,7 +1225,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		// never mutated afterwards (see the UpstreamTokens doc comment in identity.go).
 		if v.upstreamTokenReader != nil {
 			loadCtx := WithIdentity(r.Context(), identity)
-			tokens, loadErr := v.loadUpstreamTokens(loadCtx, claims)
+			tokens, failed, loadErr := v.loadUpstreamTokens(loadCtx, claims)
 			if loadErr != nil {
 				slog.WarnContext(loadCtx, "upstream token storage unavailable",
 					"error", loadErr,
@@ -1232,6 +1234,20 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 				return
 			}
 			identity.UpstreamTokens = tokens
+			// Conservative policy: any provider refresh failure rejects the entire
+			// request. In vMCP multi-provider sessions this may block requests that
+			// could partially succeed if only some backends need the failing provider.
+			// A per-backend provider check would require routing context not available
+			// at this layer; this is the correct tradeoff for now.
+			if len(failed) > 0 {
+				slog.WarnContext(loadCtx, "upstream token refresh failed; returning 401",
+					"providers", failed)
+				w.Header().Set("WWW-Authenticate",
+					v.buildWWWAuthenticate(OAuthErrInvalidToken, "upstream token is no longer valid; re-authentication required"))
+				writeOAuthError(w, OAuthErrInvalidToken,
+					"upstream token is no longer valid; re-authentication required")
+				return
+			}
 		}
 
 		// Add the fully-populated Identity to the request context and serve.

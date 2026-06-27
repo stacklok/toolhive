@@ -856,12 +856,15 @@ func resolveCIMDConfig(cfg *authserver.CIMDRunConfig) (enabled bool, cacheMaxSiz
 }
 
 // resolveEnvVar reads a value from the named environment variable.
+// An empty value is returned without error — empty credentials are valid for
+// unauthenticated backends (e.g. a no-auth Redis where the operator injects a
+// blank password from a Kubernetes Secret).
 func resolveEnvVar(envVar string) (string, error) {
 	if envVar == "" {
 		return "", fmt.Errorf("environment variable name is empty")
 	}
-	value := os.Getenv(envVar)
-	if value == "" {
+	value, ok := os.LookupEnv(envVar)
+	if !ok {
 		return "", fmt.Errorf("environment variable %q is not set", envVar)
 	}
 	return value, nil

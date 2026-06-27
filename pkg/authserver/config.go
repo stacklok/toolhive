@@ -104,6 +104,12 @@ type RunConfig struct {
 	// embedded authorization server accepts HTTPS URLs as client_id values
 	// and resolves them via the CIMD protocol instead of requiring DCR.
 	CIMD *CIMDRunConfig `json:"cimd,omitempty" yaml:"cimd,omitempty"`
+
+	// InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+	// Only set this for in-cluster Kubernetes deployments on a trusted network.
+	// Production deployments reachable outside the cluster MUST use https://.
+	//nolint:lll // field tags require full JSON+YAML names
+	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 }
 
 // Validate checks that the on-disk RunConfig is internally consistent. Called
@@ -625,18 +631,23 @@ type Config struct {
 	// (Cache-Control header parsing is not yet implemented). Zero is replaced by
 	// a default (5 minutes) in applyDefaults when CIMDEnabled is true.
 	CIMDCacheFallbackTTL time.Duration
+
+	// InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+	// Only set this for in-cluster Kubernetes deployments on a trusted network.
+	// Production deployments reachable outside the cluster MUST use https://.
+	InsecureAllowHTTP bool
 }
 
 // Validate checks that the Config is valid.
 func (c *Config) Validate() error {
 	slog.Debug("validating authserver config", "issuer", c.Issuer)
 
-	if err := validateIssuerURL(c.Issuer); err != nil {
+	if err := validateIssuerURL(c.Issuer, c.InsecureAllowHTTP); err != nil {
 		return fmt.Errorf("issuer: %w", err)
 	}
 
 	if c.AuthorizationEndpointBaseURL != "" {
-		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL); err != nil {
+		if err := validateIssuerURL(c.AuthorizationEndpointBaseURL, c.InsecureAllowHTTP); err != nil {
 			return fmt.Errorf("authorization_endpoint_base_url: %w", err)
 		}
 	}
@@ -928,7 +939,9 @@ func (c *Config) applyDefaults() error {
 // validateIssuerURL validates that the issuer is a valid URL.
 // Per OIDC Core Section 3.1.2.1 and RFC 8414 Section 2, the issuer
 // MUST use the "https" scheme, except for localhost during development.
-func validateIssuerURL(issuer string) error {
+// When insecureAllowHTTP is true, http:// is also permitted for non-localhost
+// hosts (for in-cluster Kubernetes deployments on trusted networks).
+func validateIssuerURL(issuer string, insecureAllowHTTP bool) error {
 	if issuer == "" {
 		return fmt.Errorf("issuer is required")
 	}
@@ -954,12 +967,13 @@ func validateIssuerURL(issuer string) error {
 		return fmt.Errorf("must not contain fragment component")
 	}
 
-	// HTTPS is required unless it's a loopback address (for development)
+	// HTTPS is required unless it's a loopback address (for development) or
+	// insecureAllowHTTP is explicitly set for trusted in-cluster deployments.
 	if parsed.Scheme != "https" {
 		if parsed.Scheme != "http" {
 			return fmt.Errorf("scheme must be https (or http for localhost)")
 		}
-		if !networking.IsLocalhost(parsed.Host) {
+		if !networking.IsLocalhost(parsed.Host) && !insecureAllowHTTP {
 			return fmt.Errorf("http scheme is only allowed for localhost, use https for %s", parsed.Hostname())
 		}
 	}

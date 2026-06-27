@@ -3848,3 +3848,103 @@ func TestVirtualMCPServerReconciler_IdentitySynthesizedTransitionsOnValidationFa
 	assert.NotContains(t, cond.Message, "atlassian",
 		"stale message naming the now-removed upstream must not survive the broken edit")
 }
+
+// TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP exercises the
+// admission-time check that rejects http:// issuers for non-localhost hosts
+// unless insecureAllowHTTP is explicitly set.
+func TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP(t *testing.T) {
+	t.Parallel()
+
+	validUpstreams := []mcpv1beta1.UpstreamProviderConfig{
+		{
+			Name: "dex",
+			Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+			OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+				IssuerURL: "https://dex.example.com",
+				ClientID:  "test-client",
+			},
+		},
+	}
+
+	tests := []struct {
+		name              string
+		issuer            string
+		insecureAllowHTTP bool
+		wantErr           bool
+		wantCondition     metav1.ConditionStatus
+	}{
+		{
+			name:          "https issuer: always valid",
+			issuer:        "https://authserver.example.com",
+			wantCondition: metav1.ConditionTrue,
+		},
+		{
+			name:          "http localhost issuer: valid without flag",
+			issuer:        "http://localhost:4483",
+			wantCondition: metav1.ConditionTrue,
+		},
+		{
+			name:          "http in-cluster issuer without flag: rejected",
+			issuer:        "http://vmcp-test.default.svc.cluster.local:4483",
+			wantErr:       true,
+			wantCondition: metav1.ConditionFalse,
+		},
+		{
+			name:              "http in-cluster issuer with flag: accepted",
+			issuer:            "http://vmcp-test.default.svc.cluster.local:4483",
+			insecureAllowHTTP: true,
+			wantCondition:     metav1.ConditionTrue,
+		},
+		{
+			name:          "http non-localhost issuer without flag: rejected",
+			issuer:        "http://authserver.example.com",
+			wantErr:       true,
+			wantCondition: metav1.ConditionFalse,
+		},
+		{
+			name:              "http non-localhost issuer with flag: accepted",
+			issuer:            "http://authserver.example.com",
+			insecureAllowHTTP: true,
+			wantCondition:     metav1.ConditionTrue,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer:            tt.issuer,
+					InsecureAllowHTTP: tt.insecureAllowHTTP,
+					UpstreamProviders: validUpstreams,
+				}),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 1
+				}),
+			)
+
+			r := &VirtualMCPServerReconciler{}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			err := r.validateAuthServerConfig(vmcp, statusManager)
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+			require.NotNil(t, cond, "AuthServerConfigValidated condition must be set")
+			assert.Equal(t, tt.wantCondition, cond.Status)
+
+			if tt.wantErr {
+				assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigInvalid, cond.Reason)
+				assert.Contains(t, cond.Message, "insecureAllowHTTP",
+					"rejection message must guide the user to the fix")
+			}
+		})
+	}
+}

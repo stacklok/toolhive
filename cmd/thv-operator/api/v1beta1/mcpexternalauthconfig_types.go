@@ -341,7 +341,8 @@ type BearerTokenConfig struct {
 type EmbeddedAuthServerConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
 	// This will be included in the "iss" claim of issued tokens.
-	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
+	// Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts when
+	// insecureAllowHTTP is true) without query, fragment, or trailing slash (per RFC 8414).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
 	Issuer string `json:"issuer"`
@@ -429,6 +430,16 @@ type EmbeddedAuthServerConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	DisableUpstreamTokenInjection bool `json:"disableUpstreamTokenInjection,omitempty"`
+
+	// InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+	// Only set this for in-cluster Kubernetes deployments where traffic between
+	// pods traverses a trusted network (e.g. the in-cluster service mesh).
+	// Production deployments reachable outside the cluster MUST use https://.
+	// When false (the default), http:// issuers are rejected at admission for any
+	// non-localhost host, and the pod will crash at startup with a validation error.
+	// +kubebuilder:default=false
+	// +optional
+	InsecureAllowHTTP bool `json:"insecureAllowHTTP,omitempty"`
 
 	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
 	// included in every client registration. The embedded auth server unions these

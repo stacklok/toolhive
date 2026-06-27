@@ -157,22 +157,13 @@ func resolveBackendRegistryForCore(ctx context.Context, cfg *vmcpconfig.Config, 
 func buildStaticBackendRegistry(ctx context.Context, cfg *vmcpconfig.Config) (vmcp.BackendRegistry, error) {
 	slog.Info("static mode: using pre-configured backends", "count", len(cfg.Backends))
 
-	outgoingRegistry, err := authfactory.NewOutgoingAuthRegistry(ctx, &env.OSReader{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create outgoing auth registry: %w", err)
-	}
-	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create backend client: %w", err)
-	}
-
 	discoverer := aggregator.NewUnifiedBackendDiscovererWithStaticBackends(
 		cfg.Backends,
 		cfg.OutgoingAuth,
 		cfg.Group,
 		readHeaderForwardFromEnv(os.Environ()),
 	)
-	backends, err := runDiscovery(ctx, cfg.Group, discoverer, backendClient)
+	backends, err := runDiscovery(ctx, cfg.Group, discoverer)
 	if err != nil {
 		return nil, err
 	}
@@ -217,15 +208,6 @@ func buildDynamicBackendRegistry(ctx context.Context, cfg *vmcpconfig.Config) (v
 		return nil, fmt.Errorf("failed to ensure default group exists: %w", err)
 	}
 
-	outgoingRegistry, err := authfactory.NewOutgoingAuthRegistry(ctx, &env.OSReader{})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create outgoing auth registry: %w", err)
-	}
-	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create backend client: %w", err)
-	}
-
 	groupsManager, err := groups.NewManager()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create groups manager: %w", err)
@@ -236,7 +218,7 @@ func buildDynamicBackendRegistry(ctx context.Context, cfg *vmcpconfig.Config) (v
 		return nil, fmt.Errorf("failed to create backend discoverer: %w", err)
 	}
 
-	backends, err := runDiscovery(ctx, cfg.Group, discoverer, backendClient)
+	backends, err := runDiscovery(ctx, cfg.Group, discoverer)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +231,6 @@ func runDiscovery(
 	ctx context.Context,
 	groupRef string,
 	discoverer aggregator.BackendDiscoverer,
-	_ vmcp.BackendClient,
 ) ([]vmcp.Backend, error) {
 	slog.Info("discovering backends", "group", groupRef)
 	backends, err := discoverer.Discover(ctx, groupRef)

@@ -16,7 +16,8 @@
 //	    app.WithElicitation(elicitation),             // LateBoundElicitationRequester
 //	}
 //
-//	// For Kubernetes dynamic mode, also pass the pre-built registry:
+//	// For Kubernetes discovered mode (outgoingAuth.source: discovered), also pass the
+//	// pre-built registry to share the single informer cache between both Build calls:
 //	//   opts = append(opts, app.WithBackendRegistry(reg, watcher))
 //
 //	core, coreCleanup, err := app.BuildCore(ctx, vmcpCfg, opts...)
@@ -31,14 +32,16 @@
 //
 // # Shared stateful collaborators
 //
-// The telemetry provider and (in Kubernetes mode) the backend registry + watcher
-// are stateful and must be built once and shared between both Build calls. Use
-// WithTelemetryProvider and WithBackendRegistry for this. Callers that omit these
-// options accept the following behavior:
+// The telemetry provider and (in Kubernetes discovered mode) the backend registry +
+// watcher are stateful and must be built once and shared between both Build calls.
+// Use WithTelemetryProvider and WithBackendRegistry for this. Callers that omit
+// these options accept the following behavior:
 //
-//   - Telemetry: if vmcpCfg.Telemetry is set and WithTelemetryProvider is not
-//     provided, both BuildCore and BuildServerConfig build their own provider,
-//     resulting in duplicate OTEL pipelines.
+//   - Telemetry: neither BuildCore nor BuildServerConfig initializes or wires a
+//     telemetry provider on their own. Callers who want telemetry MUST build the
+//     provider externally and inject it via WithTelemetryProvider. Omitting this
+//     option means no telemetry is wired in either function, regardless of what
+//     vmcpCfg.Telemetry contains.
 //   - Backend registry: for the "discovered" (Kubernetes) outgoingAuth source,
 //     WithBackendRegistry is REQUIRED; BuildServerConfig returns an error if it is
 //     absent. For static (Backends non-empty) and dynamic (groups manager) modes,

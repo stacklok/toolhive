@@ -26,7 +26,7 @@ import (
 // additional behaviour (policy enforcement, observability, scoping), and passes the
 // decorated value to server.Serve — without reimplementing vMCP's internal assembly.
 //
-// For Kubernetes dynamic mode (vmcpCfg.OutgoingAuth.Source == "discovered"):
+// For Kubernetes discovered mode (vmcpCfg.OutgoingAuth.Source == "discovered"):
 // call backendregistry.NewKubernetesBackendRegistry once and pass the result via
 // app.WithBackendRegistry to share a single K8s informer between BuildCore and
 // BuildServerConfig.

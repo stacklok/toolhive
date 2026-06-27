@@ -640,6 +640,12 @@ components:
             type: string
           type: array
           uniqueItems: false
+        insecure_allow_http:
+          description: |-
+            InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+            Only set this for in-cluster Kubernetes deployments on a trusted network.
+            Production deployments reachable outside the cluster MUST use https://.
+          type: boolean
         issuer:
           description: |-
             Issuer is the issuer identifier for this authorization server.

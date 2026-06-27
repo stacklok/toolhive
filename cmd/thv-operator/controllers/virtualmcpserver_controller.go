@@ -497,6 +497,10 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 	// insecureAllowHTTP to be set explicitly. Without it the proxyrunner pod
 	// will crash at startup with a validateIssuerURL failure.
 	if strings.HasPrefix(cfg.Issuer, "http://") {
+		// url.Parse is expected to succeed here because the CRD regex
+		// (^https?://[^\s?#]+[^/\s?#]$) already rejects structurally invalid
+		// URLs at admission time; if parsing does fail, skip this check and
+		// let the runtime validator catch it at startup.
 		parsed, err := url.Parse(cfg.Issuer)
 		if err == nil && !networking.IsLocalhost(parsed.Host) && !cfg.InsecureAllowHTTP {
 			message := fmt.Sprintf(

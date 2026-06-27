@@ -1610,6 +1610,40 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 					"DisableUpstreamTokenInjection should default to false")
 			},
 		},
+		{
+			name: "insecureAllowHTTP true is propagated to RunConfig",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:            "http://vmcp-test.default.svc.cluster.local:4483",
+				InsecureAllowHTTP: true,
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.True(t, config.InsecureAllowHTTP,
+					"InsecureAllowHTTP must propagate from CRD field to RunConfig")
+			},
+		},
+		{
+			name: "insecureAllowHTTP false is propagated to RunConfig",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:            "https://authserver.example.com",
+				InsecureAllowHTTP: false,
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.False(t, config.InsecureAllowHTTP,
+					"InsecureAllowHTTP false must propagate from CRD field to RunConfig")
+			},
+		},
 	}
 
 	for _, tt := range tests {

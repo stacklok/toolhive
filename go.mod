@@ -32,7 +32,7 @@ require (
 	github.com/google/uuid v1.6.0
 	github.com/lestrrat-go/httprc/v3 v3.0.6
 	github.com/lestrrat-go/jwx/v3 v3.0.13
-	github.com/mark3labs/mcp-go v0.55.0
+	github.com/mark3labs/mcp-go v0.55.1
 	github.com/moby/moby/client v0.4.1
 	github.com/modelcontextprotocol/registry v1.7.9
 	github.com/oauth2-proxy/mockoidc v0.0.0-20240214162133-caebfff84d25

@@ -537,8 +537,13 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
 	// Code wraps: auth → rate-limit → audit → MCP-parsing → telemetry
-	// Execution order: recovery → body-limit → header-val → auth → rate-limit →
-	//   audit → MCP-parsing → telemetry → handler
+	// Execution order: recovery → body-limit → header-val → auth →
+	//   rate-limit → audit → MCP-parsing → telemetry → handler
+	//
+	// Upstream token refresh failures are detected inside AuthMiddleware itself:
+	// when GetAllValidTokens cannot refresh an expired token it populates
+	// Identity.FailedUpstreamProviders and the middleware short-circuits with
+	// HTTP 401 + WWW-Authenticate before the request reaches any inner layer.
 	//
 	// The legacy HTTP authz, annotation-enrichment, and discovery layers have all been
 	// removed: every caller now routes through Serve, so authorization is enforced by the

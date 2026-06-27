@@ -557,6 +557,13 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	return c, nil
 }
 
+// isAuthorizationRequired reports whether err is one of the mcp-go authorization-required
+// sentinels. Extracted to keep wrapBackendError within the cyclomatic complexity limit.
+func isAuthorizationRequired(err error) bool {
+	return errors.Is(err, transport.ErrAuthorizationRequired) ||
+		errors.Is(err, transport.ErrOAuthAuthorizationRequired)
+}
+
 // wrapBackendError wraps an error with the appropriate sentinel error based on error type.
 // This enables type-safe error checking with errors.Is() instead of string matching.
 //
@@ -614,8 +621,7 @@ func wrapBackendError(err error, backendID string, operation string) error {
 	// companion sentinel from the OAuth-handler path. Both must map to
 	// ErrAuthenticationFailed so health monitoring engages the auth-aware
 	// branch (#4935) instead of treating the probe as unhealthy (#5223).
-	if errors.Is(err, transport.ErrAuthorizationRequired) ||
-		errors.Is(err, transport.ErrOAuthAuthorizationRequired) {
+	if isAuthorizationRequired(err) {
 		return fmt.Errorf("%w: failed to %s for backend %s: %v",
 			vmcp.ErrAuthenticationFailed, operation, backendID, err)
 	}
@@ -629,7 +635,17 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
 	}
 
-	// 5. String-based detection: Fall back to pattern matching for cases where
+	// 5. ErrUpstreamTokenNotFound: upstream provider token missing from identity.
+	// Explicit sentinel check takes priority over the string-based "authentication failed"
+	// fallback below, which would also match (via the authRoundTripper error message)
+	// but is fragile. This maps to ErrAuthenticationFailed so the pre-check middleware
+	// and health monitors classify the error correctly.
+	if errors.Is(err, authtypes.ErrUpstreamTokenNotFound) {
+		return fmt.Errorf("%w: failed to %s for backend %s (upstream token missing): %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+
+	// 6. String-based detection: Fall back to pattern matching for cases where
 	// we don't have structured error types (MCP SDK, HTTP libraries with embedded status codes)
 	// Authentication errors (401, 403, auth failures)
 	if vmcp.IsAuthenticationError(err) {

@@ -1795,6 +1795,34 @@ spec:
                       instead of all backend tools directly. This reduces token usage by allowing
                       LLMs to discover relevant tools on demand rather than receiving all tool definitions.
                     properties:
+                      embeddingModel:
+                        description: |-
+                          EmbeddingModel is the model name requested from the embedding service
+                          (e.g. "text-embedding-3-small"). Required when EmbeddingProvider is
+                          "openai". Ignored for the "tei" provider, where the model is fixed by the
+                          running TEI container.
+
+                          The API key for an OpenAI-compatible service is not configured here: it is
+                          read from the OPENAI_API_KEY environment variable so the secret never
+                          lands in a CRD spec or ConfigMap. An empty key omits the Authorization
+                          header, which supports keyless in-cluster gateways.
+                        type: string
+                      embeddingProvider:
+                        default: tei
+                        description: |-
+                          EmbeddingProvider selects the wire protocol used to talk to the embedding
+                          service. "tei" speaks the HuggingFace Text Embeddings Inference API;
+                          "openai" speaks the OpenAI-compatible /embeddings API, which lets the
+                          optimizer use OpenAI, Azure OpenAI, or another OpenAI-compatible gateway.
+                          Defaults to "tei" when empty.
+
+                          The "openai" provider reads EmbeddingService directly and cannot be combined
+                          with EmbeddingServerRef, which provisions a managed TEI server; the operator
+                          rejects that combination at admission.
+                        enum:
+                        - tei
+                        - openai
+                        type: string
                       embeddingService:
                         description: |-
                           EmbeddingService is the full base URL of the embedding service endpoint
@@ -3049,6 +3077,12 @@ spec:
               rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
                 || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
                 && self.incomingAuth.type == ''oidc'')'
+            - message: embeddingServerRef provisions a managed TEI server and cannot
+                be combined with optimizer.embeddingProvider 'openai'; openai mode
+                uses embeddingService directly
+              rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
+                && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
+                == ''openai'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
@@ -4993,6 +5027,34 @@ spec:
                       instead of all backend tools directly. This reduces token usage by allowing
                       LLMs to discover relevant tools on demand rather than receiving all tool definitions.
                     properties:
+                      embeddingModel:
+                        description: |-
+                          EmbeddingModel is the model name requested from the embedding service
+                          (e.g. "text-embedding-3-small"). Required when EmbeddingProvider is
+                          "openai". Ignored for the "tei" provider, where the model is fixed by the
+                          running TEI container.
+
+                          The API key for an OpenAI-compatible service is not configured here: it is
+                          read from the OPENAI_API_KEY environment variable so the secret never
+                          lands in a CRD spec or ConfigMap. An empty key omits the Authorization
+                          header, which supports keyless in-cluster gateways.
+                        type: string
+                      embeddingProvider:
+                        default: tei
+                        description: |-
+                          EmbeddingProvider selects the wire protocol used to talk to the embedding
+                          service. "tei" speaks the HuggingFace Text Embeddings Inference API;
+                          "openai" speaks the OpenAI-compatible /embeddings API, which lets the
+                          optimizer use OpenAI, Azure OpenAI, or another OpenAI-compatible gateway.
+                          Defaults to "tei" when empty.
+
+                          The "openai" provider reads EmbeddingService directly and cannot be combined
+                          with EmbeddingServerRef, which provisions a managed TEI server; the operator
+                          rejects that combination at admission.
+                        enum:
+                        - tei
+                        - openai
+                        type: string
                       embeddingService:
                         description: |-
                           EmbeddingService is the full base URL of the embedding service endpoint
@@ -6247,6 +6309,12 @@ spec:
               rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
                 || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
                 && self.incomingAuth.type == ''oidc'')'
+            - message: embeddingServerRef provisions a managed TEI server and cannot
+                be combined with optimizer.embeddingProvider 'openai'; openai mode
+                uses embeddingService directly
+              rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
+                && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
+                == ''openai'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:

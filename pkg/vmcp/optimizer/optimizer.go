@@ -16,6 +16,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"os"
 	"strconv"
 	"time"
 
@@ -28,6 +29,12 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/toolstore"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )
+
+// embeddingAPIKeyEnvVar holds the bearer token for an OpenAI-compatible
+// embedding service. It is an env var, not a config field, so the secret never
+// lands in a CRD spec or ConfigMap.
+// #nosec G101 -- This is an environment variable name, not a hardcoded credential
+const embeddingAPIKeyEnvVar = "OPENAI_API_KEY"
 
 // Config defines configuration options for the Optimizer.
 // It is defined in the internal/types package and aliased here so that
@@ -45,6 +52,12 @@ func GetAndValidateConfig(cfg *vmcpconfig.OptimizerConfig) (*Config, error) {
 	optCfg := &Config{
 		EmbeddingService:        cfg.EmbeddingService,
 		EmbeddingServiceTimeout: time.Duration(cfg.EmbeddingServiceTimeout),
+		EmbeddingProvider:       cfg.EmbeddingProvider,
+		EmbeddingModel:          cfg.EmbeddingModel,
+	}
+
+	if err := resolveEmbeddingProvider(optCfg); err != nil {
+		return nil, err
 	}
 
 	if cfg.MaxToolsToReturn != 0 {
@@ -83,6 +96,32 @@ func GetAndValidateConfig(cfg *vmcpconfig.OptimizerConfig) (*Config, error) {
 	}
 
 	return optCfg, nil
+}
+
+// resolveEmbeddingProvider normalizes and validates the embedding provider on
+// optCfg in place. An empty provider defaults to TEI so existing configs keep
+// working; the OpenAI provider requires a service and model and reads its API
+// key from the environment.
+func resolveEmbeddingProvider(optCfg *Config) error {
+	switch optCfg.EmbeddingProvider {
+	case "":
+		optCfg.EmbeddingProvider = types.EmbeddingProviderTEI
+	case types.EmbeddingProviderTEI:
+	case types.EmbeddingProviderOpenAI:
+		if optCfg.EmbeddingService == "" {
+			return fmt.Errorf("optimizer.embeddingService is required when optimizer.embeddingProvider is %q",
+				types.EmbeddingProviderOpenAI)
+		}
+		if optCfg.EmbeddingModel == "" {
+			return fmt.Errorf("optimizer.embeddingModel is required when optimizer.embeddingProvider is %q",
+				types.EmbeddingProviderOpenAI)
+		}
+		optCfg.EmbeddingAPIKey = os.Getenv(embeddingAPIKeyEnvVar)
+	default:
+		return fmt.Errorf("optimizer.embeddingProvider must be %q or %q, got %q",
+			types.EmbeddingProviderTEI, types.EmbeddingProviderOpenAI, optCfg.EmbeddingProvider)
+	}
+	return nil
 }
 
 // Optimizer defines the interface for intelligent tool discovery and invocation.

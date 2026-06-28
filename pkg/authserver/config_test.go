@@ -21,12 +21,13 @@ func TestValidateIssuerURL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		issuer  string
-		wantErr bool
-		errMsg  string
+		name              string
+		issuer            string
+		insecureAllowHTTP bool
+		wantErr           bool
+		errMsg            string
 	}{
-		// Valid
+		// Valid — strict mode (insecureAllowHTTP=false)
 		{name: "https", issuer: "https://example.com"},
 		{name: "https with port", issuer: "https://example.com:8443"},
 		{name: "https with path", issuer: "https://example.com/auth"},
@@ -35,7 +36,7 @@ func TestValidateIssuerURL(t *testing.T) {
 		{name: "http 127.0.0.1", issuer: "http://127.0.0.1:8080"},
 		{name: "http IPv6 loopback", issuer: "http://[::1]:8080"},
 
-		// Invalid
+		// Invalid — strict mode
 		{name: "empty", issuer: "", wantErr: true, errMsg: "issuer is required"},
 		{name: "missing scheme", issuer: "example.com", wantErr: true, errMsg: "scheme is required"},
 		{name: "missing host", issuer: "https://", wantErr: true, errMsg: "host is required"},
@@ -44,12 +45,23 @@ func TestValidateIssuerURL(t *testing.T) {
 		{name: "http non-localhost", issuer: "http://example.com", wantErr: true, errMsg: "http scheme is only allowed for localhost"},
 		{name: "ftp scheme", issuer: "ftp://example.com", wantErr: true, errMsg: "scheme must be https"},
 		{name: "trailing slash", issuer: "https://example.com/", wantErr: true, errMsg: "must not have trailing slash"},
+
+		// Valid — insecureAllowHTTP=true permits http for non-localhost
+		{name: "http in-cluster insecure allowed", issuer: "http://vmcp-test.default.svc.cluster.local:4483", insecureAllowHTTP: true},
+		{name: "http non-localhost insecure allowed", issuer: "http://example.com", insecureAllowHTTP: true},
+		{name: "https still valid with insecure flag", issuer: "https://example.com", insecureAllowHTTP: true},
+		{name: "http localhost still valid with insecure flag", issuer: "http://localhost:8080", insecureAllowHTTP: true},
+
+		// Invalid — insecureAllowHTTP=true still enforces other rules
+		{name: "trailing slash insecure", issuer: "http://example.com/", insecureAllowHTTP: true, wantErr: true, errMsg: "must not have trailing slash"},
+		{name: "ftp scheme insecure", issuer: "ftp://example.com", insecureAllowHTTP: true, wantErr: true, errMsg: "scheme must be https"},
+		{name: "empty insecure", issuer: "", insecureAllowHTTP: true, wantErr: true, errMsg: "issuer is required"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateIssuerURL(tt.issuer)
+			err := validateIssuerURL(tt.issuer, tt.insecureAllowHTTP)
 			assertError(t, err, tt.wantErr, tt.errMsg)
 		})
 	}

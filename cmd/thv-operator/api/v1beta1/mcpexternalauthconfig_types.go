@@ -341,7 +341,8 @@ type BearerTokenConfig struct {
 type EmbeddedAuthServerConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
 	// This will be included in the "iss" claim of issued tokens.
-	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
+	// Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts when
+	// insecureAllowHTTP is true) without query, fragment, or trailing slash (per RFC 8414).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
 	Issuer string `json:"issuer"`
@@ -352,7 +353,8 @@ type EmbeddedAuthServerConfig struct {
 	// All other endpoints (token, registration, JWKS) remain derived from the issuer.
 	// This is useful when the browser-facing authorization endpoint needs to be on a
 	// different host than the issuer used for backend-to-backend calls.
-	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+	// Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts
+	// when insecureAllowHTTP is true) without query, fragment, or trailing slash.
 	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
 	// +optional
 	AuthorizationEndpointBaseURL string `json:"authorizationEndpointBaseUrl,omitempty"`
@@ -429,6 +431,22 @@ type EmbeddedAuthServerConfig struct {
 	// +kubebuilder:default=false
 	// +optional
 	DisableUpstreamTokenInjection bool `json:"disableUpstreamTokenInjection,omitempty"`
+
+	// InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+	// Only set this for in-cluster Kubernetes deployments where traffic between
+	// pods traverses a trusted network (e.g. the in-cluster service mesh).
+	// Production deployments reachable outside the cluster MUST use https://.
+	//
+	// On VirtualMCPServer: when false (the default), http:// issuers for non-localhost
+	// hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.
+	//
+	// On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is
+	// structurally present but enforcement is deferred to pod startup via Config.Validate();
+	// a misconfigured issuer will cause the pod to crash at startup rather than surface
+	// as an operator condition.
+	// +kubebuilder:default=false
+	// +optional
+	InsecureAllowHTTP bool `json:"insecureAllowHTTP,omitempty"`
 
 	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
 	// included in every client registration. The embedded auth server unions these

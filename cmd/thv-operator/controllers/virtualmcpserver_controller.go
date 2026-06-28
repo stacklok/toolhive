@@ -12,6 +12,7 @@ import (
 	stderrors "errors"
 	"fmt"
 	"maps"
+	"net/url"
 	"reflect"
 	"slices"
 	"strings"
@@ -42,6 +43,7 @@ import (
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	operatorvmcpconfig "github.com/stacklok/toolhive/cmd/thv-operator/pkg/vmcpconfig"
 	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/networking"
 	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
@@ -488,7 +490,33 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 			metav1.ConditionFalse,
 		)
 		statusManager.SetObservedGeneration(vmcp.Generation)
-		return fmt.Errorf("%s", message)
+		return stderrors.New(message)
+	}
+
+	// Admission-time check: http:// issuers for non-localhost hosts require
+	// insecureAllowHTTP to be set explicitly. Without it the proxyrunner pod
+	// will crash at startup with a validateIssuerURL failure.
+	if strings.HasPrefix(cfg.Issuer, "http://") {
+		// url.Parse succeeds for any URL that passes the CRD regex; the
+		// parsed.Host != "" guard defends against the degenerate empty-host case.
+		parsed, err := url.Parse(cfg.Issuer)
+		if err == nil && parsed.Host != "" && !networking.IsLocalhost(parsed.Host) && !cfg.InsecureAllowHTTP {
+			message := fmt.Sprintf(
+				"spec.authServerConfig.issuer %q uses http:// with a non-localhost host; "+
+					"set spec.authServerConfig.insecureAllowHTTP: true to allow this for trusted "+
+					"in-cluster deployments, or use https:// for production deployments",
+				cfg.Issuer,
+			)
+			statusManager.SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed)
+			statusManager.SetMessage(message)
+			statusManager.SetAuthServerConfigValidatedCondition(
+				mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
+				message,
+				metav1.ConditionFalse,
+			)
+			statusManager.SetObservedGeneration(vmcp.Generation)
+			return stderrors.New(message)
+		}
 	}
 
 	if len(cfg.UpstreamProviders) == 0 {
@@ -501,7 +529,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 			metav1.ConditionFalse,
 		)
 		statusManager.SetObservedGeneration(vmcp.Generation)
-		return fmt.Errorf("%s", message)
+		return stderrors.New(message)
 	}
 
 	// Validate additionalAuthorizationParams on each upstream provider
@@ -518,7 +546,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 				metav1.ConditionFalse,
 			)
 			statusManager.SetObservedGeneration(vmcp.Generation)
-			return fmt.Errorf("%s", message)
+			return stderrors.New(message)
 		}
 	}
 
@@ -1579,8 +1607,8 @@ func (*VirtualMCPServerReconciler) ensureServiceURL(
 	statusManager virtualmcpserverstatus.StatusManager,
 ) {
 	if vmcp.Status.URL == "" {
-		url := createVmcpServiceURL(vmcp.Name, vmcp.Namespace, vmcpDefaultPort)
-		statusManager.SetURL(url)
+		serviceURL := createVmcpServiceURL(vmcp.Name, vmcp.Namespace, vmcpDefaultPort)
+		statusManager.SetURL(serviceURL)
 	}
 }
 

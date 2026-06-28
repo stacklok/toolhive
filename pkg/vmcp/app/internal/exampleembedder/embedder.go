@@ -48,18 +48,28 @@ func BuildServer(
 		app.WithElicitation(elicitation),
 	}, extraOpts...)
 
+	// A single disarm flag covers every resource acquired below: server.Serve only
+	// succeeds when BuildCore AND BuildServerConfig both succeeded, so once Serve
+	// returns without error the returned *Server owns all their lifecycles. Until
+	// then, the deferred cleanup releases whatever was acquired. Register each
+	// resource's cleanup as it is acquired so a new resource added between here and
+	// Serve is covered without adding another flag.
+	var cleanups []func()
+	disarmed := false
+	defer func() {
+		if !disarmed {
+			for i := len(cleanups) - 1; i >= 0; i-- {
+				cleanups[i]()
+			}
+		}
+	}()
+
 	// Build the domain core (config in → VMCP out).
 	coreVMCP, coreCleanup, err := app.BuildCore(ctx, vmcpCfg, opts...)
 	if err != nil {
 		return nil, err
 	}
-	// Guard: if anything below fails, release the core.
-	cleanupCoreOnErr := true
-	defer func() {
-		if cleanupCoreOnErr {
-			coreCleanup()
-		}
-	}()
+	cleanups = append(cleanups, coreCleanup)
 
 	// Apply the embedder-supplied decoration (the RFC THV-0076 extension mechanism).
 	// Decorators may only SUBTRACT reachability; they have no path to backends except
@@ -74,12 +84,7 @@ func BuildServer(
 	if err != nil {
 		return nil, err
 	}
-	cleanupSrvOnErr := true
-	defer func() {
-		if cleanupSrvOnErr {
-			srvCleanup()
-		}
-	}()
+	cleanups = append(cleanups, srvCleanup)
 
 	srv, err := vmcpserver.Serve(ctx, decoratedCore, serverCfg)
 	if err != nil {
@@ -90,8 +95,7 @@ func BuildServer(
 	// elicitation steps reach the right mcp-go session.
 	elicitation.Bind(vmcpserver.NewSDKElicitationAdapter(srv.MCPServer()))
 
-	// Success: server.Serve owns the core and server config lifecycles; disarm guards.
-	cleanupCoreOnErr = false
-	cleanupSrvOnErr = false
+	// Success: the returned *Server owns the core and server-config lifecycles.
+	disarmed = true
 	return srv, nil
 }

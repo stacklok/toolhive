@@ -14,6 +14,10 @@ import (
 // LateBoundElicitationRequester is a vmcp.ElicitationRequester whose backing
 // requester is set once, after the mcp-go server is built by Serve.
 //
+// Experimental: this type and its Bind method are newly exported for embedders that
+// assemble vMCP via pkg/vmcp/app. Although pkg/vmcp/server is marked Stable in
+// docs/arch/vmcp-library.md, this surface may change as embedder patterns stabilize.
+//
 // server.New evaluates core.New(deriveCoreConfig(...)) before Serve, but the
 // SDK-backed elicitation adapter (NewSDKElicitationAdapter) wraps the *server.MCPServer
 // that Serve creates — a construction-order inversion. The core needs a non-nil

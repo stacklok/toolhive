@@ -189,16 +189,22 @@ type TokenResponseMapping struct {
 
 // Validate checks that OAuth2Config has all required fields.
 func (c *OAuth2Config) Validate() error {
+	return c.ValidateWithInsecure(false)
+}
+
+// ValidateWithInsecure is like Validate but allows http:// endpoints when
+// insecureAllowHTTP is true (for trusted in-cluster deployments).
+func (c *OAuth2Config) ValidateWithInsecure(insecureAllowHTTP bool) error {
 	if c.AuthorizationEndpoint == "" {
 		return errors.New("authorization_endpoint is required for OAuth2 providers")
 	}
-	if err := networking.ValidateEndpointURL(c.AuthorizationEndpoint); err != nil {
+	if err := networking.ValidateEndpointURLWithInsecure(c.AuthorizationEndpoint, insecureAllowHTTP); err != nil {
 		return fmt.Errorf("invalid authorization_endpoint: %w", err)
 	}
 	if c.TokenEndpoint == "" {
 		return errors.New("token_endpoint is required for OAuth2 providers")
 	}
-	if err := networking.ValidateEndpointURL(c.TokenEndpoint); err != nil {
+	if err := networking.ValidateEndpointURLWithInsecure(c.TokenEndpoint, insecureAllowHTTP); err != nil {
 		return fmt.Errorf("invalid token_endpoint: %w", err)
 	}
 	if c.UserInfo != nil {

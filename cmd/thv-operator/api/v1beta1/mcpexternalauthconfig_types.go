@@ -353,7 +353,8 @@ type EmbeddedAuthServerConfig struct {
 	// All other endpoints (token, registration, JWKS) remain derived from the issuer.
 	// This is useful when the browser-facing authorization endpoint needs to be on a
 	// different host than the issuer used for backend-to-backend calls.
-	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+	// Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts
+	// when insecureAllowHTTP is true) without query, fragment, or trailing slash.
 	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
 	// +optional
 	AuthorizationEndpointBaseURL string `json:"authorizationEndpointBaseUrl,omitempty"`
@@ -435,8 +436,14 @@ type EmbeddedAuthServerConfig struct {
 	// Only set this for in-cluster Kubernetes deployments where traffic between
 	// pods traverses a trusted network (e.g. the in-cluster service mesh).
 	// Production deployments reachable outside the cluster MUST use https://.
-	// When false (the default), http:// issuers are rejected at admission for any
-	// non-localhost host, and the pod will crash at startup with a validation error.
+	//
+	// On VirtualMCPServer: when false (the default), http:// issuers for non-localhost
+	// hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.
+	//
+	// On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is
+	// structurally present but enforcement is deferred to pod startup via Config.Validate();
+	// a misconfigured issuer will cause the pod to crash at startup rather than surface
+	// as an operator condition.
 	// +kubebuilder:default=false
 	// +optional
 	InsecureAllowHTTP bool `json:"insecureAllowHTTP,omitempty"`

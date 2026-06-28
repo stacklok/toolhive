@@ -490,19 +490,17 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 			metav1.ConditionFalse,
 		)
 		statusManager.SetObservedGeneration(vmcp.Generation)
-		return fmt.Errorf("%s", message)
+		return stderrors.New(message)
 	}
 
 	// Admission-time check: http:// issuers for non-localhost hosts require
 	// insecureAllowHTTP to be set explicitly. Without it the proxyrunner pod
 	// will crash at startup with a validateIssuerURL failure.
 	if strings.HasPrefix(cfg.Issuer, "http://") {
-		// url.Parse is expected to succeed here because the CRD regex
-		// (^https?://[^\s?#]+[^/\s?#]$) already rejects structurally invalid
-		// URLs at admission time; if parsing does fail, skip this check and
-		// let the runtime validator catch it at startup.
+		// url.Parse succeeds for any URL that passes the CRD regex; the
+		// parsed.Host != "" guard defends against the degenerate empty-host case.
 		parsed, err := url.Parse(cfg.Issuer)
-		if err == nil && !networking.IsLocalhost(parsed.Host) && !cfg.InsecureAllowHTTP {
+		if err == nil && parsed.Host != "" && !networking.IsLocalhost(parsed.Host) && !cfg.InsecureAllowHTTP {
 			message := fmt.Sprintf(
 				"spec.authServerConfig.issuer %q uses http:// with a non-localhost host; "+
 					"set spec.authServerConfig.insecureAllowHTTP: true to allow this for trusted "+
@@ -517,7 +515,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 				metav1.ConditionFalse,
 			)
 			statusManager.SetObservedGeneration(vmcp.Generation)
-			return fmt.Errorf("%s", message)
+			return stderrors.New(message)
 		}
 	}
 
@@ -531,7 +529,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 			metav1.ConditionFalse,
 		)
 		statusManager.SetObservedGeneration(vmcp.Generation)
-		return fmt.Errorf("%s", message)
+		return stderrors.New(message)
 	}
 
 	// Validate additionalAuthorizationParams on each upstream provider
@@ -548,7 +546,7 @@ func (*VirtualMCPServerReconciler) validateAuthServerConfig(
 				metav1.ConditionFalse,
 			)
 			statusManager.SetObservedGeneration(vmcp.Generation)
-			return fmt.Errorf("%s", message)
+			return stderrors.New(message)
 		}
 	}
 

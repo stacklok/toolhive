@@ -104,43 +104,29 @@ func requireRedisNotFoundError(t *testing.T, err error) {
 func TestNewRedisStorage_Validation(t *testing.T) {
 	t.Parallel()
 
-	validACL := func() tcredis.Config {
-		return tcredis.Config{
-			Addr:     "localhost:6379",
-			Username: "user",
-			Password: "pass",
-		}
-	}
-
-	tests := []struct {
-		name      string
-		cfg       tcredis.Config
-		keyPrefix string
-		wantErr   string
-	}{
-		{
-			name:      "missing ACL password",
-			cfg:       tcredis.Config{Addr: "localhost:6379", Username: "user"},
-			keyPrefix: "test:",
-			wantErr:   "ACL password is required",
-		},
-		{
-			name:      "missing key prefix",
-			cfg:       validACL(),
-			keyPrefix: "",
-			wantErr:   "key prefix is required",
-		},
-	}
-
 	ctx := context.Background()
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			_, err := NewRedisStorage(ctx, tt.cfg, tt.keyPrefix)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.wantErr)
-		})
-	}
+
+	t.Run("missing key prefix", func(t *testing.T) {
+		t.Parallel()
+		cfg := tcredis.Config{Addr: "localhost:6379", Username: "user", Password: "pass"}
+		_, err := NewRedisStorage(ctx, cfg, "")
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "key prefix is required")
+	})
+
+	// An empty password is valid: it means no-auth Redis (go-redis omits AUTH).
+	// NewRedisStorage must not reject it — the connection attempt itself will
+	// fail (no server), but the validation must pass.
+	t.Run("empty password is accepted", func(t *testing.T) {
+		t.Parallel()
+		cfg := tcredis.Config{Addr: "localhost:6379"}
+		_, err := NewRedisStorage(ctx, cfg, "test:")
+		// The call should fail at connection time, not at validation.
+		if err != nil {
+			assert.NotContains(t, err.Error(), "ACL password is required",
+				"empty password must not be rejected at validation")
+		}
+	})
 }
 
 func TestNewRedisStorage_ConnectionFailure(t *testing.T) {

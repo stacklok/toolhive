@@ -41,9 +41,11 @@ import (
 //
 // ServerConfig.BackendRegistry is required by server.Serve. When WithBackendRegistry
 // is provided via opts, the same registry is used. When absent, BuildServerConfig
-// resolves the registry from vmcpCfg using the same rules as BuildCore, with one
-// exception: for the "discovered" (Kubernetes) outgoingAuth source, an error is
-// returned — two K8s watchers must not be started; provide WithBackendRegistry instead.
+// resolves the registry from vmcpCfg using the same rules as BuildCore: for the
+// "discovered" (Kubernetes) outgoingAuth source, callers MUST provide
+// WithBackendRegistry — an error is returned otherwise, since two K8s watchers must
+// not be started. BuildCore enforces the same requirement, so both entry points
+// behave identically.
 //
 //nolint:gocyclo // Complexity from server transport initialization sequence is acceptable here.
 func BuildServerConfig(ctx context.Context, cfg *vmcpconfig.Config, opts ...Option) (*vmcpserver.ServerConfig, func(), error) {
@@ -52,14 +54,19 @@ func BuildServerConfig(ctx context.Context, cfg *vmcpconfig.Config, opts ...Opti
 	}
 	o := applyOptions(opts)
 
-	// Work on a shallow copy to avoid mutating the caller's config.
-	// InjectSubjectProviderNames mutates IncomingAuth strategies in place, so we
-	// must own our copy of the struct before modifying it.
+	// Work on a copy to avoid mutating the caller's config: InjectSubjectProviderNames
+	// (below) mutates OutgoingAuth strategies in place. The shallow struct copy alone
+	// would still share the caller's OutgoingAuth/IncomingAuth pointers, so deep-copy
+	// OutgoingAuth (the one InjectSubjectProviderNames writes to) via its generated
+	// DeepCopy, and shallow-copy IncomingAuth defensively.
 	cfgCopy := *cfg
 	cfg = &cfgCopy
 	if cfg.IncomingAuth != nil {
 		incomingCopy := *cfg.IncomingAuth
 		cfg.IncomingAuth = &incomingCopy
+	}
+	if cfg.OutgoingAuth != nil {
+		cfg.OutgoingAuth = cfg.OutgoingAuth.DeepCopy()
 	}
 
 	var cleanupFuncs []func()
@@ -145,6 +152,11 @@ func BuildServerConfig(ctx context.Context, cfg *vmcpconfig.Config, opts ...Opti
 	}
 	if rateLimitCleanup != nil {
 		cleanupFuncs = append(cleanupFuncs, func() {
+			// The returned cleanup func takes no context, so it cannot carry a caller
+			// shutdown deadline; rateLimitCleanup is invoked with context.Background().
+			// This bounds graceful shutdown only by ratelimitfactory's own internal
+			// timeouts. If deadline-bounded cleanup becomes necessary, the cleanup
+			// signature must grow a context parameter.
 			if closeErr := rateLimitCleanup(context.Background()); closeErr != nil {
 				slog.Error("failed to close rate limit middleware", "error", closeErr)
 			}
@@ -226,12 +238,8 @@ func resolveBackendRegistryForServerConfig(
 		return o.backendRegistry, o.watcher, nil
 	}
 
-	if cfg.OutgoingAuth != nil && cfg.OutgoingAuth.Source == "discovered" {
-		return nil, nil, fmt.Errorf(
-			"WithBackendRegistry is required for the 'discovered' outgoingAuth source: " +
-				"provide the backendregistry.NewKubernetesBackendRegistry result to both " +
-				"BuildCore and BuildServerConfig via WithBackendRegistry to avoid two K8s watchers",
-		)
+	if cfg.OutgoingAuth != nil && cfg.OutgoingAuth.Source == vmcpconfig.OutgoingAuthSourceDiscovered {
+		return nil, nil, errDiscoveredModeRequiresRegistry
 	}
 
 	if len(cfg.Backends) > 0 {

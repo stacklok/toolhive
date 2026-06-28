@@ -6,6 +6,7 @@ package app_test
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,9 +39,11 @@ func minimalInlineConfig() *vmcpconfig.Config {
 	}
 }
 
-// TestBuildCore_InlineDiscovery covers the inline (no static backends, no K8s)
-// discovery path. BuildCore must succeed and return a non-nil VMCP and cleanup.
-func TestBuildCore_InlineDiscovery(t *testing.T) {
+// TestBuildCore_WithInjectedRegistry_SkipsDiscovery verifies that when
+// WithBackendRegistry is provided, BuildCore uses it directly and skips
+// resolveBackendRegistryForCore entirely. Using a mock registry (which would never be
+// produced by discovery) proves the injected one is what the core consumes.
+func TestBuildCore_WithInjectedRegistry_SkipsDiscovery(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
@@ -57,10 +60,7 @@ func TestBuildCore_InlineDiscovery(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, coreVMCP)
 	require.NotNil(t, cleanup)
-
-	// Cleanup must be idempotent (Close is called at most once).
-	cleanup()
-	cleanup()
+	defer cleanup()
 }
 
 // TestBuildCore_StaticBackends covers the static mode where vmcpCfg.Backends is
@@ -81,11 +81,13 @@ func TestBuildCore_StaticBackends(t *testing.T) {
 	cleanup()
 }
 
-// TestBuildCore_DiscoveredMode_RequiresVMCPNamespace verifies that BuildCore
-// returns an error for the Kubernetes discovered mode when the VMCP_NAMESPACE
-// environment variable is absent and no pre-built registry is provided.
-// Cannot run in parallel: t.Setenv modifies the process environment.
-func TestBuildCore_DiscoveredMode_RequiresVMCPNamespace(t *testing.T) {
+// TestBuildCore_DiscoveredMode_RequiresBackendRegistry verifies that BuildCore
+// returns an error for the Kubernetes discovered outgoingAuth source when no
+// pre-built registry is injected. This mirrors BuildServerConfig and prevents two
+// independent informer caches with no shared readiness handle.
+func TestBuildCore_DiscoveredMode_RequiresBackendRegistry(t *testing.T) {
+	t.Parallel()
+
 	cfg := &vmcpconfig.Config{
 		Name:  "test-vmcp",
 		Group: "test-group",
@@ -93,7 +95,7 @@ func TestBuildCore_DiscoveredMode_RequiresVMCPNamespace(t *testing.T) {
 			Type: vmcpconfig.IncomingAuthTypeAnonymous,
 		},
 		OutgoingAuth: &vmcpconfig.OutgoingAuthConfig{
-			Source: "discovered",
+			Source: vmcpconfig.OutgoingAuthSourceDiscovered,
 		},
 		Aggregation: &vmcpconfig.AggregationConfig{
 			ConflictResolution: vmcp.ConflictStrategyPrefix,
@@ -103,30 +105,11 @@ func TestBuildCore_DiscoveredMode_RequiresVMCPNamespace(t *testing.T) {
 		},
 	}
 
-	// VMCP_NAMESPACE is not set; VMCP_NAMESPACE is read from env by the discovered path.
-	t.Setenv("VMCP_NAMESPACE", "")
-
 	_, cleanup, err := app.BuildCore(t.Context(), cfg)
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "VMCP_NAMESPACE")
+	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "WithBackendRegistry")
 	assert.NotNil(t, cleanup) // cleanup must always be returned (even on error; it's noop)
-}
-
-// TestBuildCore_WithInjectedRegistry verifies that when WithBackendRegistry is
-// provided, BuildCore uses it directly and skips any internal discovery.
-func TestBuildCore_WithInjectedRegistry(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	reg := vmcpmocks.NewMockBackendRegistry(ctrl)
-	reg.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
-
-	cfg := minimalInlineConfig()
-
-	coreVMCP, cleanup, err := app.BuildCore(t.Context(), cfg, app.WithBackendRegistry(reg, nil))
-	require.NoError(t, err)
-	require.NotNil(t, coreVMCP)
-	defer cleanup()
 }
 
 // TestBuildCore_SharedCollaboratorBuiltOnce verifies that passing the same registry
@@ -156,9 +139,11 @@ func TestBuildCore_SharedCollaboratorBuiltOnce(t *testing.T) {
 	require.NotNil(t, coreVMCP2)
 }
 
-// TestBuildCore_CleanupReleasesOnlyOwnedResources verifies that cleanup() closes
-// the returned core and does not panic even when called on a zero-option config.
-func TestBuildCore_CleanupReleasesOnlyOwnedResources(t *testing.T) {
+// TestBuildCore_CleanupDoesNotPanic verifies that the returned cleanup func can be
+// invoked repeatedly without panicking. The core's Close is sync.Once-guarded, so a
+// second call is a no-op. (It does not assert resource release — no real resources are
+// acquired for this minimal config; the assertion is strictly no-panic idempotency.)
+func TestBuildCore_CleanupDoesNotPanic(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
@@ -170,9 +155,33 @@ func TestBuildCore_CleanupReleasesOnlyOwnedResources(t *testing.T) {
 	_, cleanup, err := app.BuildCore(context.Background(), cfg, app.WithBackendRegistry(reg, nil))
 	require.NoError(t, err)
 
-	// Must not panic; calling twice is idempotent (core.Close uses sync.Once).
 	assert.NotPanics(t, cleanup)
 	assert.NotPanics(t, cleanup)
+}
+
+// TestBuildCore_HealthMonitorConfig_InvalidThreshold verifies that BuildCore surfaces
+// the deriveHealthMonitorConfig validation error when HealthCheckInterval is set but
+// UnhealthyThreshold is below 1. An injected registry isolates this to the health-config
+// path (no real discovery).
+func TestBuildCore_HealthMonitorConfig_InvalidThreshold(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	reg := vmcpmocks.NewMockBackendRegistry(ctrl)
+	reg.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+
+	cfg := minimalInlineConfig()
+	cfg.Operational = &vmcpconfig.OperationalConfig{
+		FailureHandling: &vmcpconfig.FailureHandlingConfig{
+			HealthCheckInterval: vmcpconfig.Duration(time.Second),
+			UnhealthyThreshold:  0, // invalid: must be >= 1 when the interval is set
+		},
+	}
+
+	_, cleanup, err := app.BuildCore(t.Context(), cfg, app.WithBackendRegistry(reg, nil))
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "unhealthy threshold")
+	assert.NotNil(t, cleanup)
 }
 
 // TestBuildCore_NilConfig verifies that BuildCore returns an error for a nil config.

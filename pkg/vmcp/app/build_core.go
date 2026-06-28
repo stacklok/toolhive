@@ -21,7 +21,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	authfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
-	"github.com/stacklok/toolhive/pkg/vmcp/backendregistry"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
@@ -33,6 +32,19 @@ import (
 // capabilityCacheTTL is the per-identity capability cache TTL for the caching
 // aggregator. Matches server.New so both paths use the same caching window.
 const capabilityCacheTTL = 30 * time.Second
+
+// errDiscoveredModeRequiresRegistry is returned by both BuildCore and
+// BuildServerConfig when the "discovered" (Kubernetes) outgoingAuth source is used
+// without WithBackendRegistry. Sharing one error keeps the two entry points symmetric:
+// the caller must build the Kubernetes registry once (via
+// backendregistry.NewKubernetesBackendRegistry) and pass it to both, so a single
+// informer cache and readiness handle are shared rather than two started independently.
+var errDiscoveredModeRequiresRegistry = fmt.Errorf(
+	"%w: WithBackendRegistry is required for the %q outgoingAuth source; build the registry once "+
+		"with backendregistry.NewKubernetesBackendRegistry and pass it to both BuildCore and "+
+		"BuildServerConfig to avoid starting two Kubernetes watchers",
+	vmcp.ErrInvalidConfig, vmcpconfig.OutgoingAuthSourceDiscovered,
+)
 
 // BuildCore derives core.Config from vmcpCfg (plus opts) and calls core.New,
 // returning the assembled VMCP for decoration.
@@ -47,13 +59,12 @@ const capabilityCacheTTL = 30 * time.Second
 // When WithBackendRegistry is provided, it is used directly and no backend discovery
 // is performed. When absent, BuildCore resolves the registry from vmcpCfg:
 //   - Static mode (vmcpCfg.Backends non-empty): builds an immutable DynamicRegistry.
-//   - Discovered mode (vmcpCfg.OutgoingAuth.Source == "discovered"): calls
-//     backendregistry.NewKubernetesBackendRegistry. WithRESTConfig overrides the
-//     default in-cluster config.
+//   - Discovered mode (vmcpCfg.OutgoingAuth.Source == "discovered"): callers MUST
+//     provide WithBackendRegistry — BuildCore returns an error otherwise. This mirrors
+//     BuildServerConfig and prevents two independent Kubernetes informer caches (one
+//     per Build call) with no shared readiness handle. Build the registry once with
+//     backendregistry.NewKubernetesBackendRegistry and pass it to both Build calls.
 //   - Dynamic mode (all others): discovers via the local groups manager.
-//
-// For the Kubernetes discovered mode, callers SHOULD provide WithBackendRegistry so
-// the same informer cache is shared with BuildServerConfig.
 func BuildCore(ctx context.Context, cfg *vmcpconfig.Config, opts ...Option) (core.VMCP, func(), error) {
 	if cfg == nil {
 		return nil, noop, fmt.Errorf("%w: nil vmcp config", vmcp.ErrInvalidConfig)
@@ -134,7 +145,15 @@ func BuildCore(ctx context.Context, cfg *vmcpconfig.Config, opts ...Option) (cor
 		return nil, noop, fmt.Errorf("failed to create core VMCP: %w", err)
 	}
 
-	return coreVMCP, func() { _ = coreVMCP.Close() }, nil
+	cleanup := func() {
+		// Close is idempotent (sync.Once) and currently always returns nil, but log any
+		// error so a future Close that releases real resources is not silently dropped —
+		// mirroring the cleanup funcs in BuildServerConfig.
+		if err := coreVMCP.Close(); err != nil {
+			slog.Warn("failed to close core VMCP", "error", err)
+		}
+	}
+	return coreVMCP, cleanup, nil
 }
 
 // resolveBackendRegistryForCore returns the backend registry BuildCore should use.
@@ -146,8 +165,11 @@ func resolveBackendRegistryForCore(ctx context.Context, cfg *vmcpconfig.Config, 
 	if len(cfg.Backends) > 0 {
 		return buildStaticBackendRegistry(ctx, cfg)
 	}
-	if cfg.OutgoingAuth != nil && cfg.OutgoingAuth.Source == "discovered" {
-		return buildKubernetesBackendRegistry(ctx, cfg, o)
+	if cfg.OutgoingAuth != nil && cfg.OutgoingAuth.Source == vmcpconfig.OutgoingAuthSourceDiscovered {
+		// Symmetric with BuildServerConfig: require an injected registry for the
+		// Kubernetes discovered source so a single informer cache (and its readiness
+		// handle) is shared between both Build calls rather than each starting its own.
+		return nil, errDiscoveredModeRequiresRegistry
 	}
 	return buildDynamicBackendRegistry(ctx, cfg)
 }
@@ -168,34 +190,6 @@ func buildStaticBackendRegistry(ctx context.Context, cfg *vmcpconfig.Config) (vm
 		return nil, err
 	}
 	return vmcp.NewDynamicRegistry(backends), nil
-}
-
-// buildKubernetesBackendRegistry builds a live Kubernetes-backed registry using
-// backendregistry.NewKubernetesBackendRegistry. The registry starts empty and is
-// populated by the watcher goroutine, which is bound to ctx.
-func buildKubernetesBackendRegistry(ctx context.Context, cfg *vmcpconfig.Config, o *options) (vmcp.BackendRegistry, error) {
-	slog.Info("Kubernetes discovered mode: building backend registry")
-
-	namespace := os.Getenv("VMCP_NAMESPACE")
-	if namespace == "" {
-		return nil, fmt.Errorf("VMCP_NAMESPACE environment variable not set")
-	}
-
-	var regOpts []backendregistry.Option
-	if o.restConfig != nil {
-		regOpts = append(regOpts, backendregistry.WithRESTConfig(o.restConfig))
-	}
-
-	// The watcher return value is intentionally discarded: for this code path the
-	// caller did not provide WithBackendRegistry, so there is no server.Watcher to
-	// wire into BuildServerConfig. If readiness gating on cache sync is required
-	// the caller should use WithBackendRegistry instead.
-	reg, _, err := backendregistry.NewKubernetesBackendRegistry(ctx, namespace, cfg.Group, regOpts...)
-	if err != nil {
-		return nil, fmt.Errorf("failed to build Kubernetes backend registry: %w", err)
-	}
-	slog.Info("Kubernetes backend registry started", "namespace", namespace, "group", cfg.Group)
-	return reg, nil
 }
 
 // buildDynamicBackendRegistry discovers backends at runtime via the local groups manager.

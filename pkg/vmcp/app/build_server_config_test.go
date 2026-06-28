@@ -148,9 +148,11 @@ func TestBuildServerConfig_SessionManagerConfigWired(t *testing.T) {
 	assert.NotNil(t, srvCfg.SessionManagerConfig.Base, "session factory must be wired")
 }
 
-// TestBuildServerConfig_CleanupIdempotent verifies that cleanup() does not panic
-// and can be called multiple times.
-func TestBuildServerConfig_CleanupIdempotent(t *testing.T) {
+// TestBuildServerConfig_CleanupDoesNotPanic verifies that the returned cleanup func
+// can be invoked repeatedly without panicking. For this minimal config no embedded
+// auth server or rate-limit middleware is acquired, so cleanupFuncs is empty — the
+// assertion is strictly no-panic, not single-invocation of a real Close.
+func TestBuildServerConfig_CleanupDoesNotPanic(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
@@ -164,6 +166,25 @@ func TestBuildServerConfig_CleanupIdempotent(t *testing.T) {
 
 	assert.NotPanics(t, cleanup)
 	assert.NotPanics(t, cleanup)
+}
+
+// TestBuildServerConfig_StaticBackends verifies that a non-empty cfg.Backends causes
+// BuildServerConfig to build its own registry (no WithBackendRegistry) and populate
+// ServerConfig.BackendRegistry. Mirrors TestBuildCore_StaticBackends.
+func TestBuildServerConfig_StaticBackends(t *testing.T) {
+	t.Parallel()
+
+	cfg := minimalInlineConfig()
+	cfg.Backends = []vmcpconfig.StaticBackendConfig{
+		{Name: "backend-one", URL: "http://127.0.0.1:9001/mcp", Transport: "streamable-http"},
+	}
+
+	srvCfg, cleanup, err := app.BuildServerConfig(t.Context(), cfg, app.WithVersion("test-0.0.1"))
+	require.NoError(t, err)
+	defer cleanup()
+
+	require.NotNil(t, srvCfg)
+	assert.NotNil(t, srvCfg.BackendRegistry, "static mode must populate BackendRegistry")
 }
 
 // TestBuildServerConfig_NilConfig verifies that BuildServerConfig returns an error

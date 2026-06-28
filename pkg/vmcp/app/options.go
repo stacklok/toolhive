@@ -43,15 +43,17 @@
 //     option means no telemetry is wired in either function, regardless of what
 //     vmcpCfg.Telemetry contains.
 //   - Backend registry: for the "discovered" (Kubernetes) outgoingAuth source,
-//     WithBackendRegistry is REQUIRED; BuildServerConfig returns an error if it is
-//     absent. For static (Backends non-empty) and dynamic (groups manager) modes,
-//     each function builds its own registry — same content, separate instances.
+//     WithBackendRegistry is REQUIRED; both BuildCore and BuildServerConfig return an
+//     error if it is absent. For static (Backends non-empty) and dynamic (groups
+//     manager) modes, each function builds its OWN registry by running discovery
+//     independently — so the two registries can snapshot local groups/backend state at
+//     different moments and need not be identical. If consistency between the BuildCore
+//     and BuildServerConfig registries matters, build one registry yourself and pass it
+//     to both via WithBackendRegistry.
 package app
 
 import (
 	"time"
-
-	"k8s.io/client-go/rest"
 
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -82,10 +84,6 @@ type options struct {
 	// and skip backend discovery. Required for the "discovered" outgoingAuth source.
 	backendRegistry vmcp.BackendRegistry
 	watcher         vmcpserver.Watcher
-
-	// restConfig overrides the default in-cluster Kubernetes REST config used when
-	// BuildCore builds the backend registry internally for the "discovered" source.
-	restConfig *rest.Config
 
 	// authServerRunConfig is the parsed embedded auth server run config. When non-nil,
 	// BuildServerConfig creates the EmbeddedAuthServer from it.
@@ -141,18 +139,18 @@ func WithTelemetryProvider(p *telemetry.Provider) Option {
 //
 // For Kubernetes mode, construct the registry with
 // backendregistry.NewKubernetesBackendRegistry and pass both return values here.
+//
+// It panics if reg is nil: a nil registry is a programmer error (the option would
+// silently fall through to discovery, defeating its purpose and producing a confusing
+// "WithBackendRegistry is required" error downstream). w may be nil (no readiness gating).
 func WithBackendRegistry(reg vmcp.BackendRegistry, w vmcpserver.Watcher) Option {
+	if reg == nil {
+		panic("app.WithBackendRegistry: reg must not be nil")
+	}
 	return func(o *options) {
 		o.backendRegistry = reg
 		o.watcher = w
 	}
-}
-
-// WithRESTConfig overrides the in-cluster Kubernetes REST config used when BuildCore
-// builds the backend registry internally for the "discovered" outgoingAuth source.
-// Not needed when WithBackendRegistry provides the registry directly.
-func WithRESTConfig(cfg *rest.Config) Option {
-	return func(o *options) { o.restConfig = cfg }
 }
 
 // WithAuthServerRunConfig provides the parsed embedded auth server run config.
@@ -181,10 +179,14 @@ func WithElicitation(e vmcp.ElicitationRequester) Option {
 }
 
 // applyOptions initialises an options struct from the provided Option slice.
+// A nil Option is skipped so conditional `append`-based option lists (which may
+// leave a nil entry) do not panic.
 func applyOptions(opts []Option) *options {
 	o := &options{}
 	for _, opt := range opts {
-		opt(o)
+		if opt != nil {
+			opt(o)
+		}
 	}
 	return o
 }

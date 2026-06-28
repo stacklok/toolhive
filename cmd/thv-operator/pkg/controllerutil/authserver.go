@@ -531,7 +531,6 @@ func BuildAuthServerRunConfig(
 		AllowedAudiences:             allowedAudiences,
 		ScopesSupported:              scopesSupported,
 		BaselineClientScopes:         authConfig.BaselineClientScopes,
-		InsecureAllowHTTP:            strings.HasPrefix(authConfig.Issuer, "http://"),
 	}
 
 	// Build signing key configuration

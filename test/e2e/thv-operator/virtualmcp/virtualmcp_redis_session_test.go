@@ -911,7 +911,8 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 					KeyPrefix: "thv:vmcp:e2e:auth:",
 				}),
 				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
-					Issuer: embeddedASIssuerURL,
+					Issuer:            embeddedASIssuerURL,
+					InsecureAllowHTTP: true,
 					SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{{
 						Name: signingKeySecretName,
 						Key:  "private-key",

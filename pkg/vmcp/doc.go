@@ -15,6 +15,12 @@
 //	pkg/vmcp/
 //	├── types.go              // Shared domain types (BackendTarget, Tool, etc.)
 //	├── errors.go             // Domain errors
+//	├── core/                 // Identity-explicit vMCP domain object
+//	│   ├── core.go           // VMCP interface + Config
+//	│   └── core_vmcp.go      // core.New composition
+//	├── server/               // HTTP + MCP protocol transport
+//	│   ├── serve.go          // server.Serve transport entry point
+//	│   └── server.go         // Stable server.New wrapper + Handler/Start/Stop
 //	├── router/               // Request routing
 //	│   └── router.go         // Router interface + routing strategies
 //	├── aggregator/           // Capability aggregation
@@ -29,6 +35,10 @@
 //	    └── cache.go          // Cache interface + implementations
 //
 // # Core Concepts
+//
+// **Core/Transport Split**: pkg/vmcp/core owns the identity-explicit VMCP
+// domain object. pkg/vmcp/server owns the MCP/HTTP transport that serves that
+// domain object to clients.
 //
 // **Routing**: Forward MCP protocol requests (tools, resources, prompts) to
 // appropriate backend workloads. Supports session affinity and load balancing.
@@ -51,6 +61,22 @@
 // (memory, Redis).
 //
 // # Key Interfaces
+//
+// VMCP (pkg/vmcp/core):
+//
+//	type VMCP interface {
+//		ListTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error)
+//		CallTool(ctx context.Context, identity *auth.Identity, name string, args, meta map[string]any) (*vmcp.ToolCallResult, error)
+//		ListResources(ctx context.Context, identity *auth.Identity) ([]vmcp.Resource, error)
+//		ReadResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.ResourceReadResult, error)
+//		ListPrompts(ctx context.Context, identity *auth.Identity) ([]vmcp.Prompt, error)
+//		GetPrompt(ctx context.Context, identity *auth.Identity, name string, args map[string]any) (*vmcp.PromptGetResult, error)
+//		// Lookup* helpers, BackendHealth, and Close omitted.
+//	}
+//
+// The VMCP contract is the domain boundary: identity is always an explicit
+// parameter and is never read from context, and the interface uses root
+// pkg/vmcp domain types rather than mcp-go protocol types.
 //
 // Router (pkg/vmcp/router):
 //
@@ -92,61 +118,58 @@
 //		RegisterStrategy(name string, strategy Strategy) error
 //	}
 //
+// # Extension Model
+//
+// Domain-layer extension is done with decorators around an inner core.VMCP. A
+// decorator filters List* output and refuses matching CallTool, ReadResource, or
+// GetPrompt operations before delegating to inner. Because it only holds the
+// inner VMCP, it can subtract reachability but cannot widen access to backends.
+//
+// Transport-layer extension is done by calling (*server.Server).Handler(ctx),
+// mounting the fully composed handler in an embedder-owned mux, and applying
+// outer middleware there. This preserves ToolHive's internal middleware order.
+//
 // # Design Principles
 //
 //  1. Platform Independence: Core domain logic works for both CLI and Kubernetes
 //  2. Interface Segregation: Small, focused interfaces for better testability
 //  3. Dependency Inversion: Depend on abstractions, not concrete implementations
 //  4. Modularity: Each bounded context can be developed and tested independently
-//  5. Extensibility: Plugin architecture for auth strategies, routing strategies, etc.
+//  5. Extensibility: Decorators for domain behavior; outer handler wrapping for transport behavior.
 //  6. Type Safety: Shared types at package root avoid circular dependencies
 //
 // # Usage Example
 //
 //	import (
-//		"github.com/stacklok/toolhive/pkg/vmcp"
-//		"github.com/stacklok/toolhive/pkg/vmcp/router"
-//		"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-//		"github.com/stacklok/toolhive/pkg/vmcp/auth"
+//		vmcpcore "github.com/stacklok/toolhive/pkg/vmcp/core"
+//		"github.com/stacklok/toolhive/pkg/vmcp/server"
 //	)
 //
-//	// Load configuration
-//	cfg, err := loadConfig("vmcp-config.yaml")
+//	// Build the domain object from already-created collaborators.
+//	coreVMCP, err := vmcpcore.New(coreCfg)
 //	if err != nil {
 //		return err
 //	}
 //
-//	// Create components
-//	agg := createAggregator(cfg)
-//	rtr := createRouter(cfg)
-//	inAuth := createIncomingAuth(cfg)
-//	outAuth := createOutgoingAuth(cfg)
+//	// Wrap the domain object in the transport.
+//	srv, err := server.Serve(ctx, coreVMCP, serverCfg)
+//	if err != nil {
+//		return err
+//	}
 //
-//	// Discover and aggregate backends
-//	backends, err := agg.DiscoverBackends(ctx)
-//	capabilities, err := agg.AggregateCapabilities(ctx, backends)
+//	// Let ToolHive own the listener.
+//	if err := srv.Start(ctx); err != nil {
+//		return err
+//	}
+//	defer srv.Stop(ctx)
 //
-//	// With lazy discovery, capabilities are stored in request context
-//	// by the discovery middleware, not in the router
-//
-//	// Handle incoming requests
-//	http.Handle("/tools/call", inAuth.Middleware()(
-//		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-//			// Authenticate request
-//			identity, err := inAuth.Authenticate(ctx, r)
-//
-//			// Route to backend (router gets capabilities from context)
-//			target, err := rtr.RouteTool(ctx, toolName)
-//
-//			// Authenticate to backend (resolve strategy and call it)
-//			backendReq := createBackendRequest(...)
-//			strategy, err := outAuth.GetStrategy(target.AuthConfig.Type)
-//			err = strategy.Authenticate(ctx, backendReq, target.AuthConfig)
-//
-//			// Forward request and return response
-//			// ...
-//		}),
-//	))
+//	// Or, instead of Start, mount the fully composed handler in an
+//	// embedder-owned mux and serve sibling routes around it.
+//	handler, err := srv.Handler(ctx)
+//	if err != nil {
+//		return err
+//	}
+//	rootMux.Handle("/", handler)
 //
 // # Related Documentation
 //

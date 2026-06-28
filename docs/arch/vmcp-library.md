@@ -14,6 +14,7 @@ Downstream consumers like `brood-box` need predictability across ToolHive releas
 
 ```go
 import (
+    vmcpcore "github.com/stacklok/toolhive/pkg/vmcp/core"
     vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
     "github.com/stacklok/toolhive/pkg/vmcp/server"
     "github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -21,18 +22,39 @@ import (
 )
 ```
 
-The `pkg/vmcp/` root package (`github.com/stacklok/toolhive/pkg/vmcp`) contains only shared domain types (`types.go`, `errors.go`) and is always safe to import.
+The `pkg/vmcp/` root package (`github.com/stacklok/toolhive/pkg/vmcp`) contains only shared domain types (`types.go`, `errors.go`) and is always safe to import. Embedders that need the split public API import `pkg/vmcp/core` for the domain object and `pkg/vmcp/server` for the HTTP/MCP transport.
 
 ### Reference Implementation: brood-box
 
 [`github.com/stacklok/brood-box`](https://github.com/stacklok/brood-box) embeds `pkg/vmcp/` under `internal/infra/mcp/`. It demonstrates the recommended pattern:
 
 1. Load a `vmcpconfig.Config` from YAML or programmatically.
-2. Instantiate a `discovery.Manager`, `vmcp.BackendRegistry`, router, and backend client.
-3. Build a `server.Server` via `server.New(ctx, cfg, router, backendClient, discoveryMgr, backendRegistry, workflowDefs)`.
+2. Instantiate an aggregator, router, backend client, backend registry, session factory, and any workflow definitions.
+3. Use `server.New(ctx, cfg, rt, backendClient, backendRegistry, workflowDefs)` when you want the stable composition root to assemble `core.New(...)` and `server.Serve(...)` for you.
 4. Call `server.Start(ctx)` and `server.Stop(ctx)` for lifecycle management.
 
 This is the same path used by `pkg/vmcp/cli/serve.go` in the `thv vmcp serve` command; the library has no CLI-specific coupling.
+
+### New/Serve Split
+
+The public API now separates the vMCP domain object from the transport:
+
+```go
+coreVMCP, err := vmcpcore.New(coreCfg)
+srv, err := server.Serve(ctx, coreVMCP, serverCfg)
+```
+
+`core.New` builds the identity-parameterized `core.VMCP` domain object. It owns capability aggregation, routing, composite workflows, admission checks, and backend health. Its methods use `pkg/vmcp` domain types and an explicit `*auth.Identity`; no `mcp-go` types cross this boundary.
+
+`server.Serve` wraps an already-constructed `core.VMCP` with the MCP/HTTP transport. It owns the mcp-go server, session hooks, session storage, handler construction, lifecycle wiring, status reporting, metrics routes, and optional embedded auth-server routes.
+
+`server.New` remains the stable convenience path for existing embedders. It derives the core and transport configs, calls `core.New(...)`, optionally wraps the core with configured decorators, then calls `server.Serve(...)`. It is retained, not deprecated.
+
+### Decorator Extension Model
+
+Extension at the domain layer is done by wrapping an inner `core.VMCP`. A decorator should hold only `inner core.VMCP`, filter `List*` results, and refuse matching `CallTool`, `ReadResource`, or `GetPrompt` operations before delegating. This makes decorators subtract-only: they can hide or deny capabilities, but they cannot widen backend reachability because they have no backend access except through `inner`.
+
+When extending the transport instead, use `(*server.Server).Handler(ctx)` as the supported outermost-wrapping seam. An embedder can mount the fully composed vMCP handler in its own mux, apply its own middleware outside ToolHive's internal chain, and serve sibling routes without reordering vMCP authentication, parsing, telemetry, or session handling.
 
 ## `pkg/vmcp/` Stability Table
 
@@ -40,11 +62,12 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 
 | Package | Stability | Notes |
 |---------|-----------|-------|
-| `pkg/vmcp` (root) | Stable | Shared domain types (`BackendTarget`, `Tool`, etc.) and errors; public API |
+| `pkg/vmcp` (root) | Stable | Shared domain types (`BackendTarget`, `Tool`, etc.) and errors; safe for public import |
 | `pkg/vmcp/config` | Stable | Config structs and YAML loader; `Config`, `BackendConfig`, `OptimizerConfig` |
+| `pkg/vmcp/core` | Stable | Identity-explicit domain API; `VMCP`, `Config`, `New` |
 | `pkg/vmcp/aggregator` | Stable | Backend discovery and capability merge; `Aggregator` interface |
 | `pkg/vmcp/router` | Stable | Request routing and tool name translation; `Router` interface |
-| `pkg/vmcp/server` | Stable | Server constructor and lifecycle; `New`, `Start`, `Stop` |
+| `pkg/vmcp/server` | Stable | Transport constructor and lifecycle; `Serve`, stable wrapper `New`, `Handler`, `Start`, `Stop` |
 | `pkg/vmcp/session` | Stable | Session factory and per-session routing table |
 | `pkg/vmcp/auth` | Stable | Incoming/outgoing auth interfaces; `IncomingAuthenticator`, `OutgoingAuthRegistry` |
 | `pkg/vmcp/client` | Stable | Backend HTTP client; used for all backend MCP calls |

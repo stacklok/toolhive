@@ -16,13 +16,17 @@ vMCP solves the problem of **MCP server sprawl**. As organizations deploy more s
 
 ## Architecture
 
-The vmcp package follows Domain-Driven Design principles with clear separation into bounded contexts:
+The vmcp package follows Domain-Driven Design principles with clear separation into bounded contexts. The current public API also separates the vMCP domain object from the HTTP/MCP transport:
+
+- `pkg/vmcp/core.New` builds the identity-parameterized `core.VMCP` domain object. The core aggregates backend capabilities, routes calls, applies admission checks, executes composite workflows, and owns backend health.
+- `pkg/vmcp/server.Serve` wraps an existing `core.VMCP` in the transport layer. The server owns the mcp-go server, session hooks, middleware, status routes, metrics routes, and lifecycle.
+- `pkg/vmcp/server.New` remains the stable composition root used by existing callers. It derives the core and transport configs, calls `core.New`, then calls `Serve`.
 
 ```mermaid
 graph TB
     subgraph "Virtual MCP Server"
         Server[Server<br/>HTTP + MCP Protocol]
-        Discovery[Discovery Manager]
+        Core[core.VMCP<br/>Domain API]
         Router[Router]
         BackendClient[Backend Client]
         Health[Health Monitor]
@@ -47,10 +51,10 @@ graph TB
 
     Client[MCP Client] --> Server
     Server --> InAuth
-    InAuth --> Discovery
-    Discovery --> Aggregator
+    InAuth --> Core
+    Core --> Aggregator
     Aggregator --> Conflict
-    Discovery --> Router
+    Core --> Router
     Router --> OutAuth
     OutAuth --> BackendClient
     BackendClient --> B1
@@ -63,6 +67,7 @@ graph TB
     Health --> B4
 
     style Server fill:#90caf9
+    style Core fill:#90caf9
     style Aggregator fill:#81c784
     style Router fill:#fff59d
 ```

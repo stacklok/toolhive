@@ -323,6 +323,39 @@ func TestSingleRequestWithStaleSessionIncludesRequestID(t *testing.T) {
 	assert.Contains(t, string(body), `"id":"test-42"`)
 }
 
+// TestSSEResponseIncludesEventMessage verifies that SSE responses emitted by
+// the streamable proxy include an explicit "event: message" line, matching
+// reference MCP server transports and clients such as @ai-sdk/mcp that require it.
+func TestSSEResponseIncludesEventMessage(t *testing.T) {
+	t.Parallel()
+
+	const port = 8110
+	proxy, ctx, cancel := startProxyWithBackend(t, port)
+	defer cancel()
+	defer func() { _ = proxy.Stop(ctx) }()
+
+	url := fmt.Sprintf("http://127.0.0.1:%d%s", port, StreamableHTTPEndpoint)
+
+	initJSON := `{"jsonrpc":"2.0","id":"1","method":"initialize","params":{"protocolVersion":"2025-03-26","clientInfo":{"name":"spec-test","version":"0.0.0"},"capabilities":{}}}`
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader([]byte(initJSON)))
+	require.NoError(t, err)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+
+	resp, err := http.DefaultClient.Do(req)
+	require.NoError(t, err)
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
+
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	sseBody := string(body)
+	assert.Contains(t, sseBody, "event: message")
+	assert.Contains(t, sseBody, "data: ")
+}
+
 // pickFreePort returns a TCP port the OS reports as available. There is a small
 // race window before the proxy binds it, but that is the same pattern other
 // streamable tests follow and is acceptable here.

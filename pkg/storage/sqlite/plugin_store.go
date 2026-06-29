@@ -43,7 +43,7 @@ var _ storage.PluginStore = (*PluginStore)(nil)
 // signature columns. json() is used for the JSONB columns so SQLite returns
 // text we can unmarshal; the columns are stored via jsonb().
 const pluginColumns = `ip_.id, e.name, ip_.scope, ip_.project_root, ip_.reference, ip_.tag,
-			ip_.digest, ip_.version, ip_.description, ip_.author, json(ip_.keywords),
+			ip_.digest, ip_.version, ip_.description, ip_.author, ip_.license, json(ip_.keywords),
 			json(ip_.client_apps), json(ip_.components), ip_.signature, ip_.status, ip_.installed_at`
 
 // Create stores a new installed plugin.
@@ -96,9 +96,9 @@ func (s *PluginStore) Create(ctx context.Context, plugin plugins.InstalledPlugin
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO installed_plugins (
 			entry_id, scope, project_root, reference, tag, digest,
-			version, description, author, keywords, client_apps, components,
+			version, description, author, license, keywords, client_apps, components,
 			signature, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), jsonb(?), ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), jsonb(?), ?, ?)`,
 		entryID,
 		string(plugin.Scope),
 		plugin.ProjectRoot,
@@ -108,6 +108,7 @@ func (s *PluginStore) Create(ctx context.Context, plugin plugins.InstalledPlugin
 		plugin.Metadata.Version,
 		plugin.Metadata.Description,
 		plugin.Metadata.Author,
+		plugin.Metadata.License,
 		keywordsJSON,
 		clientsJSON,
 		componentsJSON,
@@ -289,7 +290,7 @@ func (s *PluginStore) Update(ctx context.Context, plugin plugins.InstalledPlugin
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE installed_plugins SET
 			reference = ?, tag = ?, digest = ?, version = ?, description = ?,
-			author = ?, keywords = jsonb(?), client_apps = jsonb(?),
+			author = ?, license = ?, keywords = jsonb(?), client_apps = jsonb(?),
 			components = jsonb(?), signature = ?, status = ?
 		WHERE id = ?`,
 		plugin.Reference,
@@ -298,6 +299,7 @@ func (s *PluginStore) Update(ctx context.Context, plugin plugins.InstalledPlugin
 		plugin.Metadata.Version,
 		plugin.Metadata.Description,
 		plugin.Metadata.Author,
+		plugin.Metadata.License,
 		keywordsJSON,
 		clientsJSON,
 		componentsJSON,
@@ -377,8 +379,8 @@ func (s *PluginStore) Delete(ctx context.Context, name string, scope plugins.Sco
 }
 
 // scanPluginFields scans a plugin row into an InstalledPlugin and its DB id.
-// The column list must match pluginColumns (16 fields: id, name, scope,
-// project_root, reference, tag, digest, version, description, author,
+// The column list must match pluginColumns (17 fields: id, name, scope,
+// project_root, reference, tag, digest, version, description, author, license,
 // keywords, client_apps, components, signature, status, installed_at).
 func scanPluginFields(sc scanner) (plugins.InstalledPlugin, int64, error) {
 	var (
@@ -392,6 +394,7 @@ func scanPluginFields(sc scanner) (plugins.InstalledPlugin, int64, error) {
 		version           string
 		description       string
 		author            string
+		license           string
 		keywordsBlob      []byte
 		clientsBlob       []byte
 		componentsBlob    []byte
@@ -402,7 +405,7 @@ func scanPluginFields(sc scanner) (plugins.InstalledPlugin, int64, error) {
 
 	err := sc.Scan(
 		&installedPluginID, &name, &scope, &projectRoot, &reference, &tag,
-		&digest, &version, &description, &author, &keywordsBlob,
+		&digest, &version, &description, &author, &license, &keywordsBlob,
 		&clientsBlob, &componentsBlob, &signature, &status, &installedAtStr,
 	)
 	if err != nil {
@@ -434,6 +437,7 @@ func scanPluginFields(sc scanner) (plugins.InstalledPlugin, int64, error) {
 			Version:     version,
 			Description: description,
 			Author:      author,
+			License:     license,
 			Keywords:    keywords,
 		},
 		Scope:       plugins.Scope(scope),

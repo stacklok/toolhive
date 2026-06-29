@@ -19,6 +19,12 @@ import (
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 )
 
+// maxConfigSize bounds the OCI image config blob read into memory during
+// content extraction. The config is just JSON metadata; ~1MB is plenty. The
+// manifest-declared Config.Size is advisory (an attacker can declare a tiny
+// config and store a large one), so we check before GetBlob.
+const maxConfigSize int64 = 1024 * 1024 // 1 MB
+
 // qualifiedOCIRef returns the full OCI reference string including the tag or
 // digest. When the user omits a tag (e.g. "ghcr.io/org/plugin"),
 // go-containerregistry's ParseReference defaults to "latest" internally but
@@ -135,7 +141,17 @@ func (s *service) extractPluginOCIContent(ctx context.Context, d digest.Digest) 
 		)
 	}
 
-	// Extract plugin config from the OCI image config.
+	// Extract plugin config from the OCI image config. Guard against an
+	// oversized config blob before loading it: manifest.Config.Size is
+	// advisory, so a malicious artifact could declare a tiny config and
+	// store a large one.
+	if manifest.Config.Size > maxConfigSize {
+		return nil, nil, httperr.WithCode(
+			fmt.Errorf("config blob size %d bytes exceeds maximum %d bytes",
+				manifest.Config.Size, maxConfigSize),
+			http.StatusUnprocessableEntity,
+		)
+	}
 	configBytes, err := s.ociStore.GetBlob(ctx, manifest.Config.Digest)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading OCI config blob: %w", err)

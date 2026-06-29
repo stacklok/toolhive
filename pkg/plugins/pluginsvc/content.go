@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive-core/httperr"
-	ociskills "github.com/stacklok/toolhive-core/oci/skills"
+	ociartifact "github.com/stacklok/toolhive-core/oci/artifact"
 	"github.com/stacklok/toolhive/pkg/plugins"
 )
 
@@ -49,9 +49,9 @@ func (s *service) GetContent(ctx context.Context, opts plugins.ContentOptions) (
 // getContentFromOCI resolves a reference from the local OCI store or pulls it
 // from a remote registry, then extracts the plugin.json content. Mirrors
 // skillsvc.getContentFromOCI but WITHOUT git/registry fallback paths. The
-// decompression reuses ociskills.DecompressTar and ociskills.FileEntry — these
-// are generic tar.gz utilities (the toolhive-core oci/plugins package does not
-// re-export a Decompress helper).
+// decompression reuses oci/artifact.DecompressTar and oci/artifact.FileEntry —
+// these are generic tar.gz utilities (the toolhive-core oci/plugins package
+// does not re-export a Decompress helper).
 func (s *service) getContentFromOCI(ctx context.Context, ref string) (*plugins.PluginContent, error) {
 	if s.ociStore == nil {
 		return nil, httperr.WithCode(
@@ -110,7 +110,7 @@ func (s *service) getContentFromOCI(ctx context.Context, ref string) (*plugins.P
 		return nil, err
 	}
 
-	entries, err := ociskills.DecompressTar(layerData)
+	entries, err := ociartifact.DecompressTar(layerData)
 	if err != nil {
 		return nil, fmt.Errorf("decompressing plugin layer: %w", err)
 	}

@@ -12,6 +12,7 @@ CREATE TABLE installed_plugins (
     version      TEXT NOT NULL DEFAULT '',
     description  TEXT NOT NULL DEFAULT '',
     author       TEXT NOT NULL DEFAULT '',
+    license      TEXT NOT NULL DEFAULT '',
     keywords     BLOB DEFAULT NULL,          -- JSONB-encoded []string
     client_apps  BLOB DEFAULT NULL,          -- JSONB-encoded []string
     components   BLOB DEFAULT NULL,          -- JSONB-encoded map[string]int

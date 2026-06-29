@@ -13,7 +13,6 @@ package pluginsvc
 import (
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	"github.com/stacklok/toolhive/pkg/plugins"
-	"github.com/stacklok/toolhive/pkg/storage"
 )
 
 // Option configures the plugin service.
@@ -40,19 +39,10 @@ func WithRegistryClient(rc ociplugins.RegistryClient) Option {
 	}
 }
 
-// WithStore sets the persistent plugin store. Phase 2 does not read the store
-// (its methods use only ociStore/packager/registry), so this is optional and
-// nil by default; Phase 3 (#5527) install/uninstall/list/info flows will use
-// it. Passing it now is a no-op but keeps the field populated for Phase 3.
-func WithStore(store storage.PluginStore) Option {
-	return func(s *service) {
-		s.store = store
-	}
-}
-
-// Phase 2 does NOT include WithPathResolver/WithInstaller/WithGroupManager/
-// WithSkillLookup/WithGitResolver — those are Phase 3 (install/uninstall/info
-// flows). Adding them later is a non-breaking change (new options only).
+// Phase 2 does NOT include WithStore/WithPathResolver/WithInstaller/
+// WithGroupManager/WithSkillLookup/WithGitResolver — those are Phase 3
+// (install/uninstall/info flows). Adding them later is a non-breaking change
+// (new options only).
 //
 // The per-(scope,name,projectRoot) lock (mirroring skillsvc.skillLock) is also
 // Phase 3: Phase 2 has no install/uninstall path that needs mutual exclusion.
@@ -60,12 +50,9 @@ func WithStore(store storage.PluginStore) Option {
 // service is the default implementation of the Phase-2 plugin surface.
 // It implements Validate/Build/Push/ListBuilds/DeleteBuild/GetContent, which
 // together satisfy the narrowed plugins.PluginService interface. Phase 3 will
-// add the install/uninstall/list/info methods and widen the interface.
-//
-// The store field is retained for Phase 3 (install/uninstall/list/info) but is
-// unused by Phase-2 logic, hence nil by default.
+// add the install/uninstall/list/info methods, a store field, and widen the
+// interface.
 type service struct {
-	store    storage.PluginStore //nolint:unused // retained for Phase 3 install/uninstall flows
 	ociStore *ociplugins.Store
 	packager ociplugins.PluginPackager
 	registry ociplugins.RegistryClient
@@ -75,7 +62,8 @@ type service struct {
 // (the narrowed Phase-2 interface exposing only
 // Validate/Build/Push/ListBuilds/DeleteBuild/GetContent). Phase 3 (#5527)
 // widens the interface and concrete type together to add install/uninstall/
-// list/info; callers that need persistence then pass WithStore.
+// list/info; callers that need persistence then pass a WithStore option (added
+// in that PR).
 func New(opts ...Option) plugins.PluginService {
 	s := &service{}
 	for _, o := range opts {

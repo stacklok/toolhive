@@ -93,14 +93,15 @@ func TestParsePluginManifest_KeywordsNull(t *testing.T) {
 func TestParsePluginManifest_ComponentPathTraversal(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name     string
-		manifest string
+		name      string
+		manifest  string
+		errSubstr string
 	}{
-		{"parent traversal", `{"name":"x","skills":["../escape"]}`},
-		{"absolute path", `{"name":"x","skills":["/abs/path"]}`},
-		{"no ./ prefix", `{"name":"x","skills":["nope"]}`},
-		{"commands traversal", `{"name":"x","commands":["./ok","../bad"]}`},
-		{"hooks traversal", `{"name":"x","hooks":["./h","/etc/passwd"]}`},
+		{"parent traversal", `{"name":"x","skills":["../escape"]}`, "must be relative and start with ./"},
+		{"absolute path", `{"name":"x","skills":["/abs/path"]}`, "must be relative (got absolute path)"},
+		{"no ./ prefix", `{"name":"x","skills":["nope"]}`, "must be relative and start with ./"},
+		{"commands traversal", `{"name":"x","commands":["./ok","../bad"]}`, "must be relative and start with ./"},
+		{"hooks traversal", `{"name":"x","hooks":["./h","/etc/passwd"]}`, "must be relative (got absolute path)"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -109,8 +110,7 @@ func TestParsePluginManifest_ComponentPathTraversal(t *testing.T) {
 			_, err := ParsePluginManifest(dir)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrInvalidManifest)
-			// Traversal/absolute/missing-prefix errors all mention relative + ./.
-			assert.Contains(t, err.Error(), "must be relative and start with ./")
+			assert.Contains(t, err.Error(), tt.errSubstr)
 		})
 	}
 }

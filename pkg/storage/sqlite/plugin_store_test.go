@@ -63,6 +63,7 @@ func TestPluginStore_Create(t *testing.T) {
 	assert.Equal(t, pl.Metadata.Version, got.Metadata.Version)
 	assert.Equal(t, pl.Metadata.Description, got.Metadata.Description)
 	assert.Equal(t, pl.Metadata.Author, got.Metadata.Author)
+	assert.Equal(t, pl.Metadata.License, got.Metadata.License)
 	assert.Equal(t, pl.Metadata.Keywords, got.Metadata.Keywords)
 	assert.Equal(t, pl.Scope, got.Scope)
 	assert.Equal(t, pl.ProjectRoot, got.ProjectRoot)

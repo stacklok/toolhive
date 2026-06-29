@@ -22,6 +22,13 @@ const ManifestPath = ".claude-plugin/plugin.json"
 // (e.g. billion laughs). Mirrors the packager's maxManifestSize.
 const MaxManifestSize = 64 * 1024
 
+// MaxComponentsPerGroup caps the number of entries allowed in a single
+// component array (commands, agents, skills, hooks). Mirrors the skills
+// parser's MaxDependencies bound and bounds the cost of ValidatePluginDir,
+// which walks each bundled skill path. A 64KB manifest can otherwise pack
+// thousands of "./x" entries cheaply.
+const MaxComponentsPerGroup = 100
+
 // ErrInvalidManifest indicates that the plugin manifest is malformed, missing,
 // or fails toolhive-side strictness checks.
 var ErrInvalidManifest = errors.New("invalid plugin manifest")
@@ -75,7 +82,7 @@ func (s *strictStringSlice) UnmarshalJSON(data []byte) error {
 	}
 	var arr []string
 	if err := json.Unmarshal(data, &arr); err != nil {
-		return fmt.Errorf("%w: keywords must be an array: %v", ErrInvalidManifest, err)
+		return fmt.Errorf("%w: keywords must be an array: %w", ErrInvalidManifest, err)
 	}
 	*s = arr
 	return nil
@@ -134,15 +141,20 @@ func parseManifestBytes(content []byte) (*PluginManifest, error) {
 	// unknown fields in .Raw, so we use standard unmarshal which ignores them.
 	var m PluginManifest
 	if err := json.Unmarshal(content, &m); err != nil {
-		return nil, fmt.Errorf("%w: parsing manifest JSON: %v", ErrInvalidManifest, err)
+		return nil, fmt.Errorf("%w: parsing manifest JSON: %w", ErrInvalidManifest, err)
 	}
 
 	// Preserve the full document for round-tripping.
 	m.Raw = make([]byte, len(content))
 	copy(m.Raw, content)
 
-	// Validate component paths after unmarshaling.
+	// Validate component paths after unmarshaling. Cap each group at
+	// MaxComponentsPerGroup to bound the cost of downstream validation
+	// (ValidatePluginDir walks each bundled skill path).
 	for _, group := range [][]string{m.Commands, m.Agents, m.Skills, m.Hooks} {
+		if len(group) > MaxComponentsPerGroup {
+			return nil, fmt.Errorf("%w: component group exceeds maximum of %d entries", ErrInvalidManifest, MaxComponentsPerGroup)
+		}
 		for _, p := range group {
 			if err := validateComponentPath(p); err != nil {
 				return nil, err
@@ -162,7 +174,7 @@ func validateComponentPath(p string) error {
 		return fmt.Errorf("%w: component path is empty", ErrInvalidManifest)
 	}
 	if filepath.IsAbs(p) {
-		return fmt.Errorf("%w: component path %q must be relative and start with ./", ErrInvalidManifest, p)
+		return fmt.Errorf("%w: component path %q must be relative (got absolute path)", ErrInvalidManifest, p)
 	}
 	if !strings.HasPrefix(p, "./") {
 		return fmt.Errorf("%w: component path %q must be relative and start with ./", ErrInvalidManifest, p)

@@ -1394,7 +1394,7 @@ type InstrumentedMCPBackendStats struct {
 // is suitable for verifying that outgoing auth strategies (upstreamInject, headerInjection) inject
 // tokens into backend requests, including during cross-pod session restore.
 const InstrumentedMCPBackendScript = `
-pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
+pip install --quiet --target=/tmp/packages flask && PYTHONPATH=/tmp/packages python3 - <<'PYTHON_SCRIPT'
 from flask import Flask, request, jsonify
 import json
 import sys
@@ -1742,19 +1742,93 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 		return "", fmt.Errorf("rewriting Dex URL: %w", err)
 	}
 
-	// Step 5: Call Dex auth endpoint (mockCallback auto-approves and redirects)
-	resp, err = noRedirectClient.Get(localDexURL)
+	// Step 5: Call Dex auth endpoint. Dex's mockCallback connector may issue
+	// one or more intermediate relative redirects (e.g. /auth/mock) before
+	// finally redirecting to the VMCP callback URL. Follow any relative
+	// redirects on the Dex server until we land on an absolute URL that
+	// matches the VMCP in-cluster host.
+	dexBaseURL, err := url.Parse(localDexURL)
 	if err != nil {
-		return "", fmt.Errorf("calling Dex auth endpoint: %w", err)
+		return "", fmt.Errorf("parsing local Dex URL: %w", err)
 	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
-	if resp.StatusCode != http.StatusFound {
-		return "", fmt.Errorf("expected 302 from Dex auth, got %d", resp.StatusCode)
+	currentURL := localDexURL
+	var vmcpCallbackURL string
+	for range 10 {
+		resp, err = noRedirectClient.Get(currentURL)
+		if err != nil {
+			return "", fmt.Errorf("calling Dex endpoint %s: %w", currentURL, err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		location := resp.Header.Get("Location")
+
+		// Dex v2.42+ shows a consent/approval page (HTTP 200) even for the
+		// mockCallback connector. Detect it by path and auto-POST to approve.
+		if resp.StatusCode == http.StatusOK {
+			parsedCurrent, _ := url.Parse(currentURL)
+			if strings.HasSuffix(parsedCurrent.Path, "/approval") {
+				req := parsedCurrent.Query().Get("req")
+				hmac := parsedCurrent.Query().Get("hmac")
+				if req == "" || hmac == "" {
+					// Try to extract from form body
+					bodyStr := string(body)
+					if idx := strings.Index(bodyStr, `name="req" value="`); idx >= 0 {
+						rest := bodyStr[idx+len(`name="req" value="`):]
+						req = rest[:strings.Index(rest, `"`)]
+					}
+					if idx := strings.Index(bodyStr, `name="hmac" value="`); idx >= 0 {
+						rest := bodyStr[idx+len(`name="hmac" value="`):]
+						hmac = rest[:strings.Index(rest, `"`)]
+					}
+				}
+				_ = req
+				_ = hmac
+				// POST to the same URL (keeping req/hmac as query params) with
+				// approval=approve in the form body, as Dex's approval handler expects.
+				formData := url.Values{"approval": {"approve"}}
+				postResp, postErr := noRedirectClient.PostForm(currentURL, formData)
+				if postErr != nil {
+					return "", fmt.Errorf("posting approval form: %w", postErr)
+				}
+				_, _ = io.Copy(io.Discard, postResp.Body)
+				_ = postResp.Body.Close()
+				location = postResp.Header.Get("Location")
+				resp = postResp
+			}
+		}
+
+		if resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusSeeOther {
+			return "", fmt.Errorf("expected 302/303 from Dex at %s, got %d", currentURL, resp.StatusCode)
+		}
+		if location == "" {
+			return "", fmt.Errorf("no Location header from Dex at %s", currentURL)
+		}
+		// Resolve relative redirects against the current Dex base URL.
+		resolved, err := dexBaseURL.Parse(location)
+		if err != nil {
+			return "", fmt.Errorf("resolving redirect URL %q: %w", location, err)
+		}
+		if resolved.Host == dexBaseURL.Host {
+			// Relative redirect still on the NodePort host — follow.
+			currentURL = resolved.String()
+			continue
+		}
+		// Dex may redirect from its /auth/mock handler to its OWN in-cluster
+		// callback URL (e.g. http://e2e-dex-<ts>.svc.cluster.local:5556/callback).
+		// The test process cannot reach that in-cluster URL directly — rewrite
+		// it to the NodePort URL and continue following.
+		if resolved.Host == dexInClusterHost {
+			resolved.Scheme = dexBaseURL.Scheme
+			resolved.Host = dexBaseURL.Host
+			currentURL = resolved.String()
+			continue
+		}
+		// Absolute URL on a different host — this is the VMCP callback.
+		vmcpCallbackURL = resolved.String()
+		break
 	}
-	vmcpCallbackURL := resp.Header.Get("Location")
 	if vmcpCallbackURL == "" {
-		return "", fmt.Errorf("no Location header from Dex auth")
+		return "", fmt.Errorf("Dex did not redirect to the VMCP callback after 10 hops")
 	}
 
 	// Step 6: Rewrite the embedded AS callback in-cluster URL to local URL

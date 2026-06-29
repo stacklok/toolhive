@@ -2567,7 +2567,7 @@ func TestNewHTTPClientForHost(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client, err := newHTTPClientForHost(tt.host, tt.allowPrivateIPs)
+			client, err := newHTTPClientForHost(tt.host, tt.allowPrivateIPs, false)
 			require.NoError(t, err)
 			require.NotNil(t, client)
 

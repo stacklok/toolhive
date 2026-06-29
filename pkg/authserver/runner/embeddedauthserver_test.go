@@ -472,7 +472,7 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 			OAuth2Config: nil,
 		}
 
-		_, err := buildPureOAuth2Config(rc)
+		_, err := buildPureOAuth2Config(rc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "oauth2_config required")
 	})
@@ -499,7 +499,7 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildPureOAuth2Config(rc)
+		cfg, err := buildPureOAuth2Config(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -529,7 +529,7 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildPureOAuth2Config(rc)
+		cfg, err := buildPureOAuth2Config(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -549,7 +549,7 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 			},
 		}
 
-		_, err := buildPureOAuth2Config(rc)
+		_, err := buildPureOAuth2Config(rc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "client_id or dcr_config is required")
 	})
@@ -570,7 +570,7 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 			},
 		}
 
-		_, err := buildPureOAuth2Config(rc)
+		_, err := buildPureOAuth2Config(rc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "mutually exclusive")
 	})
@@ -590,7 +590,7 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildPureOAuth2Config(rc)
+		cfg, err := buildPureOAuth2Config(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 		assert.Empty(t, cfg.ClientID)
@@ -610,7 +610,7 @@ func TestBuildPureOAuth2Config(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildPureOAuth2Config(rc)
+		cfg, err := buildPureOAuth2Config(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -636,7 +636,7 @@ func TestBuildPureOAuth2ConfigWithEnvVar(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildPureOAuth2Config(rc)
+		cfg, err := buildPureOAuth2Config(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -665,7 +665,7 @@ func TestBuildPureOAuth2ConfigIdentityFromToken(t *testing.T) {
 		rc := baseRC()
 		// IdentityFromToken is not set
 
-		cfg, err := buildPureOAuth2Config(rc)
+		cfg, err := buildPureOAuth2Config(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -682,7 +682,7 @@ func TestBuildPureOAuth2ConfigIdentityFromToken(t *testing.T) {
 			EmailPath:   "email",
 		}
 
-		cfg, err := buildPureOAuth2Config(rc)
+		cfg, err := buildPureOAuth2Config(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -700,7 +700,7 @@ func TestBuildPureOAuth2ConfigIdentityFromToken(t *testing.T) {
 			SubjectPath: "authed_user.id",
 		}
 
-		cfg, err := buildPureOAuth2Config(rc)
+		cfg, err := buildPureOAuth2Config(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -890,7 +890,7 @@ func TestBuildUpstreamConfig(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildUpstreamConfig(rc)
+		cfg, err := buildUpstreamConfig(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -917,7 +917,7 @@ func TestBuildUpstreamConfig(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildUpstreamConfig(rc)
+		cfg, err := buildUpstreamConfig(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -937,7 +937,7 @@ func TestBuildUpstreamConfig(t *testing.T) {
 			Type: authserver.UpstreamProviderType("saml"),
 		}
 
-		_, err := buildUpstreamConfig(rc)
+		_, err := buildUpstreamConfig(rc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported upstream type")
 		assert.Contains(t, err.Error(), "saml")
@@ -952,7 +952,7 @@ func TestBuildUpstreamConfig(t *testing.T) {
 			OIDCConfig: nil,
 		}
 
-		_, err := buildUpstreamConfig(rc)
+		_, err := buildUpstreamConfig(rc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "oidc_config required")
 	})
@@ -966,7 +966,7 @@ func TestBuildUpstreamConfig(t *testing.T) {
 			OAuth2Config: nil,
 		}
 
-		_, err := buildUpstreamConfig(rc)
+		_, err := buildUpstreamConfig(rc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "oauth2_config required")
 	})
@@ -1627,7 +1627,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		}
 
 		store := newMemoryDCRStore(t)
-		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
+		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 
@@ -1691,7 +1691,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		store := newMemoryDCRStore(t)
 
 		// First call: populates the store.
-		_, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
+		_, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		firstCallRequests := atomic.LoadInt32(requestCount)
 		require.Greater(t, firstCallRequests, int32(0),
@@ -1699,7 +1699,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 
 		// Second call: must short-circuit on the cache and issue zero
 		// additional HTTP requests against the mock AS.
-		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store)
+		got, err := buildUpstreamConfigs(context.Background(), cfg.Upstreams, cfg.Issuer, store, false)
 		require.NoError(t, err)
 		require.Len(t, got, 1)
 		assert.Equal(t, "dcr-client-id", got[0].OAuth2Config.ClientID)

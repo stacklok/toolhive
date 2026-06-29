@@ -122,6 +122,12 @@ type CommonOAuthConfig struct {
 
 // Validate checks that CommonOAuthConfig has all required fields.
 func (c *CommonOAuthConfig) Validate() error {
+	return c.ValidateWithInsecure(false)
+}
+
+// ValidateWithInsecure is like Validate but allows http:// redirect URIs for
+// non-loopback hosts when insecureAllowHTTP is true.
+func (c *CommonOAuthConfig) ValidateWithInsecure(insecureAllowHTTP bool) error {
 	if c.ClientID == "" {
 		return errors.New("client_id is required")
 	}
@@ -130,6 +136,9 @@ func (c *CommonOAuthConfig) Validate() error {
 	}
 	if err := oauthparams.Validate(c.AdditionalAuthorizationParams); err != nil {
 		return err
+	}
+	if insecureAllowHTTP {
+		return oauthproto.ValidateRedirectURI(c.RedirectURI, oauthproto.RedirectURIPolicyAllowHTTP)
 	}
 	return validateRedirectURI(c.RedirectURI)
 }
@@ -162,6 +171,10 @@ type OAuth2Config struct {
 	// (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) for the
 	// authoritative trust-model and uniqueness documentation.
 	IdentityFromToken *IdentityFromTokenConfig `json:"identity_from_token,omitempty" yaml:"identity_from_token,omitempty"`
+
+	// InsecureAllowHTTP permits http:// authorization_endpoint and token_endpoint
+	// URLs for non-localhost hosts. Set only for trusted in-cluster deployments.
+	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 
 	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
 	// private IP ranges (RFC-1918, link-local). Use only when the upstream is
@@ -222,7 +235,7 @@ func (c *OAuth2Config) ValidateWithInsecure(insecureAllowHTTP bool) error {
 			return errors.New("identity_from_token.subject_path is required when identity_from_token is set")
 		}
 	}
-	return c.CommonOAuthConfig.Validate()
+	return c.CommonOAuthConfig.ValidateWithInsecure(insecureAllowHTTP)
 }
 
 // validateRedirectURI validates an OAuth redirect URI per RFC 6749 and RFC 8252.
@@ -289,11 +302,11 @@ func WithOAuth2HTTPClient(client *http.Client) OAuth2ProviderOption {
 //
 // IMPORTANT: Callers must ensure config is non-nil before calling this function.
 func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAuth2Provider, error) {
-	if err := config.Validate(); err != nil {
+	if err := config.ValidateWithInsecure(config.InsecureAllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	httpClient, err := newHTTPClientForHost(hostForClient, config.AllowPrivateIPs)
+	httpClient, err := newHTTPClientForHost(hostForClient, config.AllowPrivateIPs, config.InsecureAllowHTTP)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
@@ -820,8 +833,9 @@ func formatOAuth2Error(err error, prefix string) error {
 // allowPrivateIPs widens only the private-IP gate: it permits connections to
 // RFC-1918/link-local addresses (e.g. in-cluster providers) without enabling
 // the HTTP scheme for non-localhost hosts.
-func newHTTPClientForHost(host string, allowPrivateIPs bool) (*http.Client, error) {
+func newHTTPClientForHost(host string, allowPrivateIPs, insecureAllowHTTP bool) (*http.Client, error) {
 	allowInsecure := networking.IsLocalhost(host) ||
+		insecureAllowHTTP ||
 		strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
 	return networking.NewHttpClientBuilder().
 		WithInsecureAllowHTTP(allowInsecure).

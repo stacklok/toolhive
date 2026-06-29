@@ -101,6 +101,62 @@ func deployRedis(name string) {
 	}, e2eTimeout, e2ePollInterval).Should(gomega.BeTrue(), "Redis should be ready")
 }
 
+// deployRedisWithPassword deploys Redis configured with requirepass authentication.
+// Use this instead of deployRedis when the embedded auth server or session storage
+// needs a non-empty ACL password (Kubernetes does not inject secretKeyRef env vars
+// when the Secret key value is empty).
+func deployRedisWithPassword(name, password string) {
+	labels := map[string]string{"app": name}
+
+	deployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace, Labels: labels},
+		Spec: appsv1.DeploymentSpec{
+			Replicas: int32Ptr(1),
+			Selector: &metav1.LabelSelector{MatchLabels: labels},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{Labels: labels},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Name:  "redis",
+						Image: images.RedisImage,
+						Args:  []string{"--requirepass", password},
+						Ports: []corev1.ContainerPort{{ContainerPort: 6379, Name: "redis"}},
+						ReadinessProbe: &corev1.Probe{
+							ProbeHandler: corev1.ProbeHandler{
+								TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(6379)},
+							},
+							InitialDelaySeconds: 2,
+							PeriodSeconds:       3,
+						},
+					}},
+				},
+			},
+		},
+	}
+	gomega.Expect(k8sClient.Create(ctx, deployment)).To(gomega.Succeed())
+
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace},
+		Spec: corev1.ServiceSpec{
+			Selector: labels,
+			Ports: []corev1.ServicePort{{
+				Port: 6379, TargetPort: intstr.FromInt32(6379),
+				Protocol: corev1.ProtocolTCP, Name: "redis",
+			}},
+		},
+	}
+	gomega.Expect(k8sClient.Create(ctx, service)).To(gomega.Succeed())
+
+	ginkgo.By("Waiting for Redis to become ready")
+	gomega.Eventually(func() bool {
+		dep := &appsv1.Deployment{}
+		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: defaultNamespace}, dep); err != nil {
+			return false
+		}
+		return dep.Status.ReadyReplicas > 0
+	}, e2eTimeout, e2ePollInterval).Should(gomega.BeTrue(), "Redis should be ready")
+}
+
 // cleanupRedis removes the Redis Deployment and Service.
 func cleanupRedis(name string) {
 	_ = k8sClient.Delete(ctx, &appsv1.Deployment{

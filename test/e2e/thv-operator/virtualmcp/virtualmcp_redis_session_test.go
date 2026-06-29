@@ -764,8 +764,13 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			// resourceURL = audience in JWTs = AllowedAudiences entry = vMCP service URL
 			vmcpResourceURL := embeddedASIssuerURL
 
+			// Use a real Redis password so the secretKeyRef env var is non-empty
+			// (Kubernetes does not inject secretKeyRef env vars whose Secret key
+			// value is empty, which would prevent the embedded AS from starting).
+			const redisPassword = "e2e-test-redis-password"
+
 			ginkgo.By("Deploying Redis (shared: session storage + embedded AS token store)")
-			deployRedis(redisName)
+			deployRedisWithPassword(redisName, redisPassword)
 			redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
 
 			ginkgo.By("Creating embedded AS RSA signing key Secret")
@@ -789,10 +794,10 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 				Data:       map[string][]byte{"hmac": hmacBytes},
 			})).To(gomega.Succeed())
 
-			ginkgo.By("Creating Redis password Secret for embedded AS token storage (no-auth Redis)")
+			ginkgo.By("Creating Redis password Secret for embedded AS token storage")
 			gomega.Expect(k8sClient.Create(ctx, &corev1.Secret{
 				ObjectMeta: metav1.ObjectMeta{Name: redisPasswordSecretName, Namespace: defaultNamespace},
-				StringData: map[string]string{"password": ""},
+				StringData: map[string]string{"password": redisPassword},
 			})).To(gomega.Succeed())
 
 			ginkgo.By("Creating Dex client secret for embedded AS")
@@ -909,6 +914,10 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 					Provider:  mcpv1beta1.SessionStorageProviderRedis,
 					Address:   redisAddr,
 					KeyPrefix: "thv:vmcp:e2e:auth:",
+					PasswordRef: &mcpv1beta1.SecretKeyRef{
+						Name: redisPasswordSecretName,
+						Key:  "password",
+					},
 				}),
 				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
 					Issuer:            embeddedASIssuerURL,
@@ -928,6 +937,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 							AuthorizationEndpoint: dexInClusterBaseURL + "/auth",
 							TokenEndpoint:         dexInClusterBaseURL + "/token",
 							ClientID:              "vmcp-authserver",
+							Scopes:                []string{"openid", "profile", "email", "offline_access"},
 							ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 								Name: dexClientSecretName,
 								Key:  "client-secret",

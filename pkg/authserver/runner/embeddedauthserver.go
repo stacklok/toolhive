@@ -197,7 +197,7 @@ func NewEmbeddedAuthServerWithStorage(
 	// 5. Build upstream configurations. The DCR resolver caches RFC 7591
 	// resolutions in dcrStore so re-entrant boot/reload paths reuse
 	// previously-registered upstream clients instead of re-registering.
-	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams, cfg.Issuer, dcr.NewStorageBackedStore(dcrStore))
+	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams, cfg.Issuer, dcr.NewStorageBackedStore(dcrStore), cfg.InsecureAllowHTTP)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
 	}
@@ -443,6 +443,7 @@ func buildUpstreamConfigs(
 	runConfigs []authserver.UpstreamRunConfig,
 	issuer string,
 	dcrStore dcr.CredentialStore,
+	insecureAllowHTTP bool,
 ) ([]authserver.UpstreamConfig, error) {
 	configs := make([]authserver.UpstreamConfig, 0, len(runConfigs))
 
@@ -480,7 +481,7 @@ func buildUpstreamConfigs(
 			dcrResolution = resolution
 		}
 
-		cfg, err := buildUpstreamConfig(&rcCopy)
+		cfg, err := buildUpstreamConfig(&rcCopy, insecureAllowHTTP)
 		if err != nil {
 			return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 		}
@@ -503,7 +504,7 @@ func buildUpstreamConfigs(
 
 // buildUpstreamConfig builds an authserver.UpstreamConfig from UpstreamRunConfig.
 // It preserves the provider type and builds the appropriate config.
-func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.UpstreamConfig, error) {
+func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (*authserver.UpstreamConfig, error) {
 	switch rc.Type {
 	case authserver.UpstreamProviderTypeOIDC:
 		oidcCfg, err := buildOIDCConfig(rc)
@@ -517,7 +518,7 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.Upstream
 		}, nil
 
 	case authserver.UpstreamProviderTypeOAuth2:
-		oauth2Cfg, err := buildPureOAuth2Config(rc)
+		oauth2Cfg, err := buildPureOAuth2Config(rc, insecureAllowHTTP)
 		if err != nil {
 			return nil, err
 		}
@@ -589,7 +590,7 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 // enforced here via OAuth2UpstreamRunConfig.Validate before secrets are
 // resolved, since the downstream upstream.OAuth2Config validator only sees the
 // flattened runtime shape and cannot observe DCR fields.
-func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Config, error) {
+func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (*upstream.OAuth2Config, error) {
 	if rc.OAuth2Config == nil {
 		return nil, fmt.Errorf("oauth2_config required for OAuth2 provider")
 	}
@@ -615,6 +616,7 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		TokenEndpoint:         oauth2.TokenEndpoint,
 		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
 		AllowPrivateIPs:       oauth2.AllowPrivateIPs,
+		InsecureAllowHTTP:     insecureAllowHTTP,
 	}
 
 	if oauth2.TokenResponseMapping != nil {

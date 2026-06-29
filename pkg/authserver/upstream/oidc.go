@@ -167,7 +167,7 @@ func NewOIDCProvider(
 
 	// Create HTTP client for the issuer host
 	issuerURL, _ := url.Parse(config.Issuer) // Error already checked in config.Validate()
-	httpClient, err := newHTTPClientForHost(issuerURL.Host, config.AllowPrivateIPs)
+	httpClient, err := newHTTPClientForHost(issuerURL.Host, config.AllowPrivateIPs, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}

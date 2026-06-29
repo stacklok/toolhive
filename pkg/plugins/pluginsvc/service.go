@@ -40,6 +40,16 @@ func WithRegistryClient(rc ociplugins.RegistryClient) Option {
 	}
 }
 
+// WithStore sets the persistent plugin store. Phase 2 does not read the store
+// (its methods use only ociStore/packager/registry), so this is optional and
+// nil by default; Phase 3 (#5527) install/uninstall/list/info flows will use
+// it. Passing it now is a no-op but keeps the field populated for Phase 3.
+func WithStore(store storage.PluginStore) Option {
+	return func(s *service) {
+		s.store = store
+	}
+}
+
 // Phase 2 does NOT include WithPathResolver/WithInstaller/WithGroupManager/
 // WithSkillLookup/WithGitResolver — those are Phase 3 (install/uninstall/info
 // flows). Adding them later is a non-breaking change (new options only).
@@ -51,22 +61,23 @@ func WithRegistryClient(rc ociplugins.RegistryClient) Option {
 // It implements Validate/Build/Push/ListBuilds/DeleteBuild/GetContent, which
 // together satisfy the narrowed plugins.PluginService interface. Phase 3 will
 // add the install/uninstall/list/info methods and widen the interface.
+//
+// The store field is retained for Phase 3 (install/uninstall/list/info) but is
+// unused by Phase-2 logic, hence nil by default.
 type service struct {
-	store    storage.PluginStore
+	store    storage.PluginStore //nolint:unused // retained for Phase 3 install/uninstall flows
 	ociStore *ociplugins.Store
 	packager ociplugins.PluginPackager
 	registry ociplugins.RegistryClient
 }
 
-// New creates a new plugin service backed by the given store and returns it as
-// a plugins.PluginService (the narrowed Phase-2 interface exposing only
+// New creates a new plugin service and returns it as a plugins.PluginService
+// (the narrowed Phase-2 interface exposing only
 // Validate/Build/Push/ListBuilds/DeleteBuild/GetContent). Phase 3 (#5527)
 // widens the interface and concrete type together to add install/uninstall/
-// list/info.
-func New(store storage.PluginStore, opts ...Option) plugins.PluginService {
-	s := &service{
-		store: store,
-	}
+// list/info; callers that need persistence then pass WithStore.
+func New(opts ...Option) plugins.PluginService {
+	s := &service{}
 	for _, o := range opts {
 		o(s)
 	}

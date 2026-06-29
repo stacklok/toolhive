@@ -20,7 +20,6 @@ import (
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	ocimocks "github.com/stacklok/toolhive-core/oci/plugins/mocks"
 	"github.com/stacklok/toolhive/pkg/plugins"
-	"github.com/stacklok/toolhive/pkg/storage"
 )
 
 func TestGetContent(t *testing.T) {
@@ -28,7 +27,7 @@ func TestGetContent(t *testing.T) {
 
 	t.Run("nil oci store returns 500", func(t *testing.T) {
 		t.Parallel()
-		svc := New(&storage.NoopPluginStore{})
+		svc := New()
 		_, err := svc.GetContent(t.Context(), plugins.ContentOptions{Reference: "my-plugin"})
 		require.Error(t, err)
 		assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
@@ -38,7 +37,7 @@ func TestGetContent(t *testing.T) {
 		t.Parallel()
 		ociStore, err := ociplugins.NewStore(t.TempDir())
 		require.NoError(t, err)
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		_, err = svc.GetContent(t.Context(), plugins.ContentOptions{Reference: ""})
 		require.Error(t, err)
 		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
@@ -52,7 +51,7 @@ func TestGetContent(t *testing.T) {
 		d := buildTestPlugin(t, ociStore, "my-plugin", "1.0.0")
 		require.NoError(t, ociStore.Tag(t.Context(), d, "my-plugin"))
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		content, err := svc.GetContent(t.Context(), plugins.ContentOptions{Reference: "my-plugin"})
 		require.NoError(t, err)
 
@@ -85,7 +84,7 @@ func TestGetContent(t *testing.T) {
 		reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-plugin:v2").
 			Return(indexDigest, nil)
 
-		svc := New(&storage.NoopPluginStore{},
+		svc := New(
 			WithOCIStore(ociStore),
 			WithRegistryClient(reg),
 		)
@@ -104,7 +103,7 @@ func TestGetContent(t *testing.T) {
 		ociStore, err := ociplugins.NewStore(t.TempDir())
 		require.NoError(t, err)
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		_, err = svc.GetContent(t.Context(), plugins.ContentOptions{Reference: "nonexistent"})
 		require.Error(t, err)
 		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
@@ -116,7 +115,7 @@ func TestGetContent(t *testing.T) {
 		require.NoError(t, err)
 
 		// "ghcr.io/org/plugin:v1" is a valid OCI ref but registry is nil.
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		_, err = svc.GetContent(t.Context(), plugins.ContentOptions{Reference: "ghcr.io/org/plugin:v1"})
 		require.Error(t, err)
 		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
@@ -133,7 +132,7 @@ func TestGetContent(t *testing.T) {
 		reg.EXPECT().Pull(gomock.Any(), ociStore, "ghcr.io/org/my-plugin:v1").
 			Return(godigest.Digest(""), fmt.Errorf("registry unreachable"))
 
-		svc := New(&storage.NoopPluginStore{},
+		svc := New(
 			WithOCIStore(ociStore),
 			WithRegistryClient(reg),
 		)
@@ -163,7 +162,7 @@ func TestGetContent(t *testing.T) {
 				return d, nil
 			})
 
-		svc := New(&storage.NoopPluginStore{},
+		svc := New(
 			WithOCIStore(ociStore),
 			WithRegistryClient(reg),
 		)

@@ -136,6 +136,14 @@ func TestPluginStore_List(t *testing.T) {
 	require.NoError(t, err)
 	assert.Len(t, list, 3)
 
+	// Verify ORDER BY e.name: a regression dropping the clause would pass
+	// without this assertion.
+	names := make([]string, len(list))
+	for i, p := range list {
+		names[i] = p.Metadata.Name
+	}
+	assert.Equal(t, []string{"alpha", "bravo", "charlie"}, names)
+
 	// Verify the two-phase pattern populates dependencies correctly.
 	for _, p := range list {
 		assert.Len(t, p.Dependencies, 1, "plugin %q should have its dependency", p.Metadata.Name)
@@ -257,6 +265,31 @@ func TestPluginStore_UpdateNotFound(t *testing.T) {
 	pl := testPlugin("ghost")
 	err := store.Update(t.Context(), pl)
 	require.ErrorIs(t, err, storage.ErrNotFound)
+}
+
+func TestPluginStore_UpdateShrinksToZeroDependencies(t *testing.T) {
+	t.Parallel()
+	store := newPluginTestStore(t)
+
+	pl := testPlugin("shrink-test")
+	pl.Dependencies = []plugins.Dependency{
+		{Name: "dep1", Reference: "ghcr.io/test/dep1:v1", Digest: "sha256:dep1"},
+		{Name: "dep2", Reference: "ghcr.io/test/dep2:v2", Digest: "sha256:dep2"},
+	}
+	require.NoError(t, store.Create(t.Context(), pl))
+
+	got, err := store.Get(t.Context(), pl.Metadata.Name, pl.Scope, pl.ProjectRoot)
+	require.NoError(t, err)
+	assert.Len(t, got.Dependencies, 2)
+
+	// Update with an empty dependency slice: the DELETE-then-insert path
+	// must remove all rows, not leave stale ones.
+	pl.Dependencies = nil
+	require.NoError(t, store.Update(t.Context(), pl))
+
+	got, err = store.Get(t.Context(), pl.Metadata.Name, pl.Scope, pl.ProjectRoot)
+	require.NoError(t, err)
+	assert.Empty(t, got.Dependencies, "dependencies should be cleared on update to zero")
 }
 
 func TestPluginStore_Delete(t *testing.T) {

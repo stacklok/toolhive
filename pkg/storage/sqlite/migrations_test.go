@@ -132,8 +132,8 @@ func newGooseProvider(t *testing.T, db *sql.DB) *goose.Provider {
 
 // TestMigrations_DownDropsPluginTables verifies that goose's Down for migration
 // 002 drops the plugin tables (installed_plugins, plugin_dependencies) while
-// leaving migration 001's tables (entries, installed_skills, oci_tags) intact.
-// This satisfies the #5526 "migration up/down" exit gate.
+// leaving migration 001's tables (entries, installed_skills, skill_dependencies,
+// oci_tags) intact. This satisfies the #5526 "migration up/down" exit gate.
 func TestMigrations_DownDropsPluginTables(t *testing.T) {
 	t.Parallel()
 	ctx := t.Context()
@@ -158,7 +158,7 @@ func TestMigrations_DownDropsPluginTables(t *testing.T) {
 	assert.False(t, tableExists(t, db.DB(), "plugin_dependencies"), "plugin_dependencies should be dropped by 002 Down")
 
 	// 001's tables remain, proving 002's Down does not drop 001's tables.
-	for _, table := range []string{"entries", "installed_skills", "oci_tags"} {
+	for _, table := range []string{"entries", "installed_skills", "skill_dependencies", "oci_tags"} {
 		assert.True(t, tableExists(t, db.DB(), table), "table %q should remain after 002 Down", table)
 	}
 

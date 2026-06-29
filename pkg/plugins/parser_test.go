@@ -187,3 +187,35 @@ func TestParsePluginManifest_NameKebabCase(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "Bad_Name", m.Name)
 }
+
+func TestParsePluginManifest_SymlinkRejected(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o750))
+	target := filepath.Join(dir, "real-manifest.json")
+	require.NoError(t, os.WriteFile(target, []byte(`{"name":"x"}`), 0o600))
+	linkPath := filepath.Join(dir, ManifestPath)
+	require.NoError(t, os.Symlink(target, linkPath))
+
+	_, err := ParsePluginManifest(dir)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidManifest)
+	assert.Contains(t, err.Error(), "regular file")
+}
+
+func TestParsePluginManifest_OversizedRejected(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o750))
+	// A manifest one byte larger than the limit.
+	oversized := make([]byte, MaxManifestSize+1)
+	for i := range oversized {
+		oversized[i] = ' '
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ManifestPath), oversized, 0o600))
+
+	_, err := ParsePluginManifest(dir)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrInvalidManifest)
+	assert.Contains(t, err.Error(), "exceeds maximum")
+}

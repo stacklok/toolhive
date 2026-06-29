@@ -23,7 +23,6 @@ import (
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
 	ocimocks "github.com/stacklok/toolhive-core/oci/plugins/mocks"
 	"github.com/stacklok/toolhive/pkg/plugins"
-	"github.com/stacklok/toolhive/pkg/storage"
 )
 
 func TestValidate(t *testing.T) {
@@ -40,7 +39,7 @@ func TestValidate(t *testing.T) {
 			0o600,
 		))
 
-		svc := New(&storage.NoopPluginStore{})
+		svc := New()
 		result, err := svc.Validate(t.Context(), pluginDir)
 		require.NoError(t, err)
 		assert.True(t, result.Valid, "errors: %v", result.Errors)
@@ -48,7 +47,7 @@ func TestValidate(t *testing.T) {
 
 	t.Run("missing plugin.json", func(t *testing.T) {
 		t.Parallel()
-		svc := New(&storage.NoopPluginStore{})
+		svc := New()
 		result, err := svc.Validate(t.Context(), t.TempDir())
 		require.NoError(t, err)
 		assert.False(t, result.Valid)
@@ -57,7 +56,7 @@ func TestValidate(t *testing.T) {
 
 	t.Run("empty path returns 400", func(t *testing.T) {
 		t.Parallel()
-		svc := New(&storage.NoopPluginStore{})
+		svc := New()
 		_, err := svc.Validate(t.Context(), "")
 		require.Error(t, err)
 		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
@@ -65,7 +64,7 @@ func TestValidate(t *testing.T) {
 
 	t.Run("relative path returns 400", func(t *testing.T) {
 		t.Parallel()
-		svc := New(&storage.NoopPluginStore{})
+		svc := New()
 		_, err := svc.Validate(t.Context(), "relative/path")
 		require.Error(t, err)
 		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
@@ -73,10 +72,19 @@ func TestValidate(t *testing.T) {
 
 	t.Run("path traversal returns 400", func(t *testing.T) {
 		t.Parallel()
-		svc := New(&storage.NoopPluginStore{})
+		svc := New()
 		_, err := svc.Validate(t.Context(), "/foo/../../../etc")
 		require.Error(t, err)
 		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+	})
+
+	t.Run("path with null byte returns 400", func(t *testing.T) {
+		t.Parallel()
+		svc := New()
+		_, err := svc.Validate(t.Context(), "/safe\x00/evil")
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+		assert.Contains(t, err.Error(), "null bytes")
 	})
 }
 
@@ -320,7 +328,7 @@ func TestBuild(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			packager, ociStore := tt.setup(ctrl)
 
-			svc := New(&storage.NoopPluginStore{},
+			svc := New(
 				WithPackager(packager),
 				WithOCIStore(ociStore),
 			)
@@ -457,7 +465,7 @@ func TestPush(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			registry, ociStore := tt.setup(ctrl)
 
-			svc := New(&storage.NoopPluginStore{},
+			svc := New(
 				WithRegistryClient(registry),
 				WithOCIStore(ociStore),
 			)
@@ -536,7 +544,7 @@ func TestListBuilds(t *testing.T) {
 
 	t.Run("nil oci store returns 500", func(t *testing.T) {
 		t.Parallel()
-		svc := New(&storage.NoopPluginStore{})
+		svc := New()
 		_, err := svc.ListBuilds(t.Context())
 		require.Error(t, err)
 		assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
@@ -547,7 +555,7 @@ func TestListBuilds(t *testing.T) {
 		ociStore, err := ociplugins.NewStore(t.TempDir())
 		require.NoError(t, err)
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		artifacts, err := svc.ListBuilds(t.Context())
 		require.NoError(t, err)
 		assert.Empty(t, artifacts)
@@ -561,7 +569,7 @@ func TestListBuilds(t *testing.T) {
 		d := buildTestPlugin(t, ociStore, "my-plugin", "1.2.3")
 		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "my-plugin"))
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		artifacts, err := svc.ListBuilds(t.Context())
 		require.NoError(t, err)
 		require.Len(t, artifacts, 1)
@@ -582,7 +590,7 @@ func TestListBuilds(t *testing.T) {
 		d2 := buildTestPlugin(t, ociStore, "plugin-b", "2.0.0")
 		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d2, "plugin-b"))
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		artifacts, err := svc.ListBuilds(t.Context())
 		require.NoError(t, err)
 		assert.Len(t, artifacts, 2)
@@ -608,7 +616,7 @@ func TestListBuilds(t *testing.T) {
 		require.NoError(t, putErr)
 		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "bare-plugin-tag"))
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		artifacts, err := svc.ListBuilds(t.Context())
 		require.NoError(t, err)
 		require.Len(t, artifacts, 1)
@@ -635,7 +643,7 @@ func TestListBuilds(t *testing.T) {
 		require.NoError(t, putErr)
 		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, otherDigest, "non-plugin-tag"))
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		artifacts, err := svc.ListBuilds(t.Context())
 		require.NoError(t, err)
 		require.Len(t, artifacts, 1)
@@ -647,7 +655,7 @@ func TestListBuilds(t *testing.T) {
 		ociStore, err := ociplugins.NewStore(t.TempDir())
 		require.NoError(t, err)
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 
 		// Simulate a pull: tag via the plain ociStore.Tag path, which mirrors
 		// what Registry.Pull does (resolve by digest → plain descriptor → no
@@ -665,7 +673,7 @@ func TestListBuilds(t *testing.T) {
 		ociStore, err := ociplugins.NewStore(t.TempDir())
 		require.NoError(t, err)
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 
 		pulled := buildTestPlugin(t, ociStore, "pulled-plugin", "9.9.9")
 		require.NoError(t, ociStore.Tag(t.Context(), pulled, "ghcr.io/org/pulled-plugin:v9.9.9"))
@@ -685,7 +693,7 @@ func TestDeleteBuild(t *testing.T) {
 
 	t.Run("nil oci store returns 500", func(t *testing.T) {
 		t.Parallel()
-		svc := New(&storage.NoopPluginStore{})
+		svc := New()
 		err := svc.DeleteBuild(t.Context(), "my-plugin")
 		require.Error(t, err)
 		assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
@@ -699,7 +707,7 @@ func TestDeleteBuild(t *testing.T) {
 		d := buildTestPlugin(t, ociStore, "my-plugin", "1.0.0")
 		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "my-plugin"))
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		require.NoError(t, svc.DeleteBuild(t.Context(), "my-plugin"))
 
 		builds, listErr := svc.ListBuilds(t.Context())
@@ -712,7 +720,7 @@ func TestDeleteBuild(t *testing.T) {
 		ociStore, err := ociplugins.NewStore(t.TempDir())
 		require.NoError(t, err)
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		err = svc.DeleteBuild(t.Context(), "nonexistent")
 		require.Error(t, err)
 		assert.Equal(t, http.StatusNotFound, httperr.Code(err))
@@ -727,7 +735,7 @@ func TestDeleteBuild(t *testing.T) {
 		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "tag-a"))
 		require.NoError(t, tagAsLocalBuild(t.Context(), ociStore, d, "tag-b"))
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		require.NoError(t, svc.DeleteBuild(t.Context(), "tag-a"))
 
 		builds, listErr := svc.ListBuilds(t.Context())
@@ -747,7 +755,7 @@ func TestDeleteBuild(t *testing.T) {
 
 		require.True(t, pluginIndexContainsTaggedMarker(t, storeRoot, "my-plugin"))
 
-		svc := New(&storage.NoopPluginStore{}, WithOCIStore(ociStore))
+		svc := New(WithOCIStore(ociStore))
 		require.NoError(t, svc.DeleteBuild(t.Context(), "my-plugin"))
 
 		assert.False(t, pluginIndexContainsTaggedMarker(t, storeRoot, "my-plugin"),
@@ -772,7 +780,7 @@ func TestBuild_StampsLocalBuildAnnotation(t *testing.T) {
 			Config:      &ociplugins.PluginConfig{Name: "my-plugin"},
 		}, nil)
 
-	svc := New(&storage.NoopPluginStore{},
+	svc := New(
 		WithPackager(p),
 		WithOCIStore(ociStore),
 	)
@@ -835,14 +843,14 @@ func TestBuildPushRoundTrip(t *testing.T) {
 		})
 
 	// Push from source.
-	srcSvc := New(&storage.NoopPluginStore{},
+	srcSvc := New(
 		WithRegistryClient(reg),
 		WithOCIStore(srcStore),
 	)
 	require.NoError(t, srcSvc.Push(t.Context(), plugins.PushOptions{Reference: "roundtrip-plugin"}))
 
 	// Pull into destination via GetContent and verify the config matches.
-	dstSvc := New(&storage.NoopPluginStore{},
+	dstSvc := New(
 		WithRegistryClient(reg),
 		WithOCIStore(dstStore),
 	)

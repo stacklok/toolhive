@@ -55,6 +55,11 @@ type PluginInfo struct {
 	Metadata PluginMetadata `json:"metadata"`
 	// InstalledPlugin contains the full installation record.
 	InstalledPlugin *InstalledPlugin `json:"installed_plugin,omitempty"`
+	// UnmaterializedComponents lists, per client type, the component types the
+	// plugin declares that the installed client adapter does NOT load. Populated
+	// by Info by diffing InstalledPlugin.Components against each installed
+	// client adapter's SupportedComponents.
+	UnmaterializedComponents map[string][]ComponentType `json:"unmaterialized_components,omitempty"`
 }
 
 // ContentOptions configures the behavior of the GetContent operation. Alias

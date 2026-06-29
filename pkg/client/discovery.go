@@ -79,6 +79,8 @@ type ClientAppStatus struct {
 
 	// SupportsSkills indicates whether ToolHive can install skills for this client
 	SupportsSkills bool `json:"supports_skills"`
+	// SupportsPlugins indicates whether ToolHive can install plugins for this client
+	SupportsPlugins bool `json:"supports_plugins"`
 }
 
 // IsClientInstalled reports whether the given client appears to be installed on
@@ -130,10 +132,11 @@ func (cm *ClientManager) GetClientStatus(ctx context.Context) ([]ClientAppStatus
 			continue
 		}
 		status := ClientAppStatus{
-			ClientType:     cfg.ClientType,
-			Installed:      cm.IsClientInstalled(cfg.ClientType),
-			Registered:     registeredClients[string(cfg.ClientType)],
-			SupportsSkills: cfg.SupportsSkills,
+			ClientType:      cfg.ClientType,
+			Installed:       cm.IsClientInstalled(cfg.ClientType),
+			Registered:      registeredClients[string(cfg.ClientType)],
+			SupportsSkills:  cfg.SupportsSkills,
+			SupportsPlugins: cfg.SupportsPlugins,
 		}
 		statuses = append(statuses, status)
 	}

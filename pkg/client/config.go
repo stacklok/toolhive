@@ -237,6 +237,14 @@ type clientAppConfig struct {
 	// (e.g., XDG ~/.config/ on Linux/macOS).
 	// If nil or missing an entry for the current OS, no prefix is added.
 	SkillsPlatformPrefix map[Platform][]string
+	// Plugin-specific configuration
+	SupportsPlugins    bool     // Whether this client supports plugins
+	PluginsGlobalPath  []string // Path segments for global plugins dir (from home dir)
+	PluginsProjectPath []string // Path segments for project-local plugins dir (from project root)
+	// PluginsPlatformPrefix maps Platform values to path segments inserted between
+	// home dir and PluginsGlobalPath. Same semantics as SkillsPlatformPrefix.
+	// If nil or missing an entry for the current OS, no prefix is added.
+	PluginsPlatformPrefix map[Platform][]string
 	// LLM gateway configuration ─────────────────────────────────────────────
 	// LLMGatewayMode is "direct" (token-helper) or "proxy" (static key via
 	// localhost reverse proxy), or "" when the tool has no LLM gateway support.
@@ -506,9 +514,12 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeSSE:            defaultURLFieldName,
 			types.TransportTypeStreamableHTTP: defaultURLFieldName,
 		},
-		SupportsSkills:    true,
-		SkillsGlobalPath:  []string{".claude", skillsDirName},
-		SkillsProjectPath: []string{".claude", skillsDirName},
+		SupportsSkills:     true,
+		SkillsGlobalPath:   []string{".claude", skillsDirName},
+		SkillsProjectPath:  []string{".claude", skillsDirName},
+		SupportsPlugins:    true,
+		PluginsGlobalPath:  []string{".claude", "plugins"},
+		PluginsProjectPath: []string{".claude", "plugins"},
 		// LLM gateway: patches ~/.claude/settings.json (different from the MCP .claude.json)
 		LLMGatewayMode:     "direct",
 		LLMBinaryName:      "claude",
@@ -977,10 +988,13 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeStreamableHTTP: defaultURLFieldName,
 		},
 		// TOML configuration: uses nested tables format [mcp_servers.servername]
-		TOMLStorageType:   TOMLStorageTypeMap,
-		SupportsSkills:    true,
-		SkillsGlobalPath:  []string{".agents", skillsDirName},
-		SkillsProjectPath: []string{".agents", skillsDirName},
+		TOMLStorageType:    TOMLStorageTypeMap,
+		SupportsSkills:     true,
+		SkillsGlobalPath:   []string{".agents", skillsDirName},
+		SkillsProjectPath:  []string{".agents", skillsDirName},
+		SupportsPlugins:    true,
+		PluginsGlobalPath:  []string{".codex", "plugins", "cache"},
+		PluginsProjectPath: []string{".codex", "plugins", "cache"},
 	},
 	{
 		ClientType:           KimiCli,

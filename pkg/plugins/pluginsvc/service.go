@@ -11,8 +11,15 @@
 package pluginsvc
 
 import (
+	"context"
+	"sync"
+
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
+	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
+	"github.com/stacklok/toolhive/pkg/storage"
 )
 
 // Option configures the plugin service.
@@ -39,23 +46,128 @@ func WithRegistryClient(rc ociplugins.RegistryClient) Option {
 	}
 }
 
-// Phase 2 does NOT include WithStore/WithPathResolver/WithInstaller/
-// WithGroupManager/WithSkillLookup/WithGitResolver — those are Phase 3
-// (install/uninstall/info flows). Adding them later is a non-breaking change
-// (new options only).
+// WithStore sets the persistence store for installed plugins.
+func WithStore(store storage.PluginStore) Option {
+	return func(s *service) {
+		s.store = store
+	}
+}
+
+// WithGroupManager sets the group manager for plugin group membership.
+func WithGroupManager(mgr groups.Manager) Option {
+	return func(s *service) {
+		s.groupManager = mgr
+	}
+}
+
+// WithMaterializers sets the per-client-type materialization adapters used to
+// install a plugin tree into a target client's directory layout.
+func WithMaterializers(m map[string]plugins.MaterializationAdapter) Option {
+	return func(s *service) {
+		s.materializers = m
+	}
+}
+
+// WithInstaller sets the installer for filesystem operations. Plugins reuse
+// the skills Installer (the Extract/Remove helpers) because the extraction
+// and safe-removal logic is identical for both artifact types.
+func WithInstaller(inst skills.Installer) Option {
+	return func(s *service) {
+		s.installer = inst
+	}
+}
+
+// WithGitResolver sets the git resolver for git:// plugin installations. Reuses
+// the skills git resolver because the clone/extract shape is identical.
+func WithGitResolver(gr gitresolver.Resolver) Option {
+	return func(s *service) {
+		s.gitResolver = gr
+	}
+}
+
+// PluginSearchHit is a single result from a registry-name plugin search. It is
+// the plugin analogue of a registry skill hit, used by the registry-name
+// install flow that lands in a later Phase-3 wave.
+type PluginSearchHit struct {
+	// Name is the plugin name (kebab-case).
+	Name string `json:"name"`
+	// Description is a human-readable description of the plugin.
+	Description string `json:"description,omitempty"`
+	// Packages lists the OCI packages that publish this plugin.
+	Packages []PluginPackage `json:"packages,omitempty"`
+}
+
+// PluginPackage describes a single OCI package backing a plugin search hit.
+type PluginPackage struct {
+	// Reference is the full OCI reference (e.g. ghcr.io/org/plugin:v1).
+	Reference string `json:"reference"`
+	// Type is the package type (e.g. "oci").
+	Type string `json:"type,omitempty"`
+}
+
+// PluginLookup resolves a plain plugin name against a registry/index. This seam
+// stays unwired in Wave 0; the registry-name install flow lands in a later
+// Phase-3 wave. It mirrors skillsvc.SkillLookup.
+type PluginLookup interface {
+	SearchPlugins(ctx context.Context, query string) ([]PluginSearchHit, error)
+}
+
+// WithPluginLookup sets the registry-based plugin lookup for name resolution.
+func WithPluginLookup(pl PluginLookup) Option {
+	return func(s *service) {
+		s.pluginLookup = pl
+	}
+}
+
+// pluginLock provides per-plugin mutual exclusion keyed by scope/name/projectRoot.
+// Entries are never evicted. This is acceptable because the number of distinct
+// plugins on a single machine is expected to remain small (< 1000). The key
+// shape (scope/name/projectRoot) is identical to skillsvc.skillLock.
 //
-// The per-(scope,name,projectRoot) lock (mirroring skillsvc.skillLock) is also
-// Phase 3: Phase 2 has no install/uninstall path that needs mutual exclusion.
+// The lock/unlock methods are currently unused: Wave 0 declares the seam, and
+// Wave 2's install/uninstall flows will acquire per-key mutexes through it
+// (mirroring skillsvc.service.install/uninstall). The nolint:unused directives
+// are intentional and should be removed once Wave 2 lands.
+type pluginLock struct {
+	mu sync.Mutex //nolint:unused // Wave 2 seam
+	// locks holds per-key mutexes. INVARIANT: entries must never be deleted
+	// from this map. The two-phase lock() method depends on pointers remaining
+	// valid after the global mutex is released. See lock() for details.
+	locks map[string]*sync.Mutex //nolint:unused // Wave 2 seam
+}
+
+// lock acquires a per-plugin mutex and returns a function that releases it.
+//
+//nolint:unused // Wave 2 seam: install/uninstall flows will call this.
+func (pl *pluginLock) lock(name string, scope plugins.Scope, projectRoot string) func() {
+	pl.mu.Lock()
+	key := string(scope) + "/" + name + "/" + projectRoot
+	m, ok := pl.locks[key]
+	if !ok {
+		m = &sync.Mutex{}
+		pl.locks[key] = m
+	}
+	pl.mu.Unlock()
+
+	m.Lock()
+	return m.Unlock
+}
 
 // service is the default implementation of the Phase-2 plugin surface.
 // It implements Validate/Build/Push/ListBuilds/DeleteBuild/GetContent, which
 // together satisfy the narrowed plugins.PluginService interface. Phase 3 will
-// add the install/uninstall/list/info methods, a store field, and widen the
-// interface.
+// add the install/uninstall/list/info methods and widen the interface.
 type service struct {
-	ociStore *ociplugins.Store
-	packager ociplugins.PluginPackager
-	registry ociplugins.RegistryClient
+	locks         pluginLock
+	store         storage.PluginStore
+	groupManager  groups.Manager
+	materializers map[string]plugins.MaterializationAdapter
+	installer     skills.Installer
+	ociStore      *ociplugins.Store
+	packager      ociplugins.PluginPackager
+	registry      ociplugins.RegistryClient
+	pluginLookup  PluginLookup
+	gitResolver   gitresolver.Resolver
 }
 
 // New creates a new plugin service and returns it as a plugins.PluginService
@@ -65,9 +177,17 @@ type service struct {
 // list/info; callers that need persistence then pass a WithStore option (added
 // in that PR).
 func New(opts ...Option) plugins.PluginService {
-	s := &service{}
+	s := &service{
+		locks: pluginLock{locks: make(map[string]*sync.Mutex)},
+	}
 	for _, o := range opts {
 		o(s)
+	}
+	if s.installer == nil {
+		s.installer = skills.NewInstaller()
+	}
+	if s.gitResolver == nil {
+		s.gitResolver = gitresolver.NewResolver()
 	}
 	return s
 }

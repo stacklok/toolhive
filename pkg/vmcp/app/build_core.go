@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	authfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
+	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
@@ -143,6 +144,16 @@ func BuildCore(ctx context.Context, cfg *vmcpconfig.Config, opts ...Option) (cor
 	})
 	if err != nil {
 		return nil, noop, fmt.Errorf("failed to create core VMCP: %w", err)
+	}
+
+	// Wrap the core with the code mode decorator when enabled (parity with the legacy
+	// server.New path). It sits BELOW any Serve-layer optimizer: ListTools advertises
+	// execute_tool_script alongside the backend tools, so an enabled optimizer indexes it
+	// like any other tool, and a script's inner calls route back through core.CallTool for
+	// admission. The decorator delegates Close to the inner core, so the cleanup below
+	// (which closes coreVMCP) still releases the underlying core.
+	if codeModeCfg := codemode.FromConfig(cfg.CodeMode); codeModeCfg != nil {
+		coreVMCP = codemode.NewDecorator(coreVMCP, codeModeCfg)
 	}
 
 	cleanup := func() {

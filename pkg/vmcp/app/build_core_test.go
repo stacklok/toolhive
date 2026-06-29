@@ -81,6 +81,28 @@ func TestBuildCore_StaticBackends(t *testing.T) {
 	cleanup()
 }
 
+// TestBuildCore_CodeModeEnabledConstructs verifies that BuildCore succeeds when code
+// mode is enabled, exercising the codemode.FromConfig + NewDecorator wiring added to
+// match the legacy server.New path. The decorator's advertised execute_tool_script tool
+// cannot be asserted here (ListTools requires at least one capability-returning backend,
+// and BuildCore builds its own real HTTP backend client); the end-to-end codemode
+// behavior is covered by test/e2e/thv-operator/virtualmcp/virtualmcp_codemode_test.go.
+func TestBuildCore_CodeModeEnabledConstructs(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	reg := vmcpmocks.NewMockBackendRegistry(ctrl)
+	reg.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+
+	cfg := minimalInlineConfig()
+	cfg.CodeMode = &vmcpconfig.CodeModeConfig{Enabled: true}
+
+	coreVMCP, cleanup, err := app.BuildCore(t.Context(), cfg, app.WithBackendRegistry(reg, nil))
+	require.NoError(t, err)
+	require.NotNil(t, coreVMCP)
+	cleanup()
+}
+
 // TestBuildCore_DiscoveredMode_RequiresBackendRegistry verifies that BuildCore
 // returns an error for the Kubernetes discovered outgoingAuth source when no
 // pre-built registry is injected. This mirrors BuildServerConfig and prevents two

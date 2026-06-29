@@ -546,7 +546,8 @@ func (p *HTTPProxy) handleSingleRequestSSE(
 		return
 	}
 	// Write SSE event with the JSON-RPC response and flush
-	if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", data); err != nil { //nolint:gosec // G705: SSE data from MCP protocol
+	//nolint:gosec // G705: SSE data from MCP protocol
+	if _, err := fmt.Fprintf(w, "event: message\ndata: %s\n\n", data); err != nil {
 		slog.Debug("failed to write response", "error", err)
 		return
 	}

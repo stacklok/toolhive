@@ -509,7 +509,7 @@ func buildUpstreamConfigs(
 func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (*authserver.UpstreamConfig, error) {
 	switch rc.Type {
 	case authserver.UpstreamProviderTypeOIDC:
-		oidcCfg, err := buildOIDCConfig(rc)
+		oidcCfg, err := buildOIDCConfig(rc, insecureAllowHTTP)
 		if err != nil {
 			return nil, err
 		}
@@ -543,7 +543,7 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP boo
 // by OIDCProviderImpl.ExchangeCodeForIdentity), not from the UserInfo endpoint.
 // The UserInfo endpoint may still be discovered via OIDC discovery for other
 // purposes, but it is not used for identity resolution.
-func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, error) {
+func buildOIDCConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (*upstream.OIDCConfig, error) {
 	if rc.OIDCConfig == nil {
 		return nil, fmt.Errorf("oidc_config required for OIDC provider")
 	}
@@ -580,9 +580,10 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 			Scopes:                        scopes,
 			AdditionalAuthorizationParams: oidc.AdditionalAuthorizationParams,
 		},
-		Issuer:          oidc.IssuerURL,
-		SubjectClaim:    oidc.SubjectClaim,
-		AllowPrivateIPs: oidc.AllowPrivateIPs,
+		Issuer:            oidc.IssuerURL,
+		SubjectClaim:      oidc.SubjectClaim,
+		AllowPrivateIPs:   oidc.AllowPrivateIPs,
+		InsecureAllowHTTP: insecureAllowHTTP,
 	}, nil
 }
 

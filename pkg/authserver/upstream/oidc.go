@@ -51,9 +51,13 @@ type OIDCConfig struct {
 	// AllowPrivateIPs permits the OIDC discovery and token HTTP clients to
 	// connect to private IP ranges (RFC-1918, link-local). Use only when the
 	// upstream is hosted inside the same cluster and has no public endpoint.
-	// HTTP-scheme restrictions are unchanged — HTTPS is still required for
-	// non-localhost hosts. Defaults to false.
+	// Defaults to false.
 	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
+
+	// InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+	// Only set this for trusted in-cluster Kubernetes deployments.
+	// Production deployments reachable outside the cluster MUST use https://.
+	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 }
 
 // subjectClaimPattern is the allowed shape for SubjectClaim: a claim-name token
@@ -64,11 +68,20 @@ type OIDCConfig struct {
 var subjectClaimPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
 // Validate checks that OIDCConfig has all required fields and valid values.
+// It always enforces HTTPS on the issuer URL regardless of any InsecureAllowHTTP
+// flag; callers that hold a config with InsecureAllowHTTP set should use
+// ValidateWithInsecure(c.InsecureAllowHTTP) instead.
 func (c *OIDCConfig) Validate() error {
+	return c.ValidateWithInsecure(false)
+}
+
+// ValidateWithInsecure is like Validate but allows http:// issuer URLs for
+// non-localhost hosts when insecureAllowHTTP is true (trusted in-cluster deployments).
+func (c *OIDCConfig) ValidateWithInsecure(insecureAllowHTTP bool) error {
 	if c.Issuer == "" {
 		return errors.New("issuer is required for OIDC providers")
 	}
-	if err := networking.ValidateEndpointURL(c.Issuer); err != nil {
+	if err := networking.ValidateEndpointURLWithInsecure(c.Issuer, insecureAllowHTTP); err != nil {
 		return fmt.Errorf("invalid issuer URL: %w", err)
 	}
 	// SubjectClaim is optional (empty defaults to "sub"). When set, require a
@@ -156,7 +169,7 @@ func NewOIDCProvider(
 	}
 
 	// Validate OIDC config
-	if err := config.Validate(); err != nil {
+	if err := config.ValidateWithInsecure(config.InsecureAllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
@@ -166,8 +179,8 @@ func NewOIDCProvider(
 	)
 
 	// Create HTTP client for the issuer host
-	issuerURL, _ := url.Parse(config.Issuer) // Error already checked in config.Validate()
-	httpClient, err := newHTTPClientForHost(issuerURL.Host, config.AllowPrivateIPs, false)
+	issuerURL, _ := url.Parse(config.Issuer) // Error already checked in ValidateWithInsecure()
+	httpClient, err := newHTTPClientForHost(issuerURL.Host, config.AllowPrivateIPs, config.InsecureAllowHTTP)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}

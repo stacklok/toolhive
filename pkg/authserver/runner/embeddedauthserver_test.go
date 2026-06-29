@@ -983,7 +983,7 @@ func TestBuildOIDCConfig(t *testing.T) {
 			OIDCConfig: nil,
 		}
 
-		_, err := buildOIDCConfig(rc)
+		_, err := buildOIDCConfig(rc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "oidc_config required")
 	})
@@ -1001,7 +1001,7 @@ func TestBuildOIDCConfig(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildOIDCConfig(rc)
+		cfg, err := buildOIDCConfig(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -1027,7 +1027,7 @@ func TestBuildOIDCConfig(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildOIDCConfig(rc)
+		cfg, err := buildOIDCConfig(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -1053,7 +1053,7 @@ func TestBuildOIDCConfig(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildOIDCConfig(rc)
+		cfg, err := buildOIDCConfig(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -1073,7 +1073,7 @@ func TestBuildOIDCConfig(t *testing.T) {
 			},
 		}
 
-		_, err := buildOIDCConfig(rc)
+		_, err := buildOIDCConfig(rc, false)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "failed to resolve OIDC client secret")
 	})
@@ -1097,7 +1097,7 @@ func TestBuildOIDCConfig(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildOIDCConfig(rc)
+		cfg, err := buildOIDCConfig(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -1121,7 +1121,7 @@ func TestBuildOIDCConfig(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildOIDCConfig(rc)
+		cfg, err := buildOIDCConfig(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -1142,7 +1142,7 @@ func TestBuildOIDCConfig(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildOIDCConfig(rc)
+		cfg, err := buildOIDCConfig(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 
@@ -1162,7 +1162,7 @@ func TestBuildOIDCConfig(t *testing.T) {
 			},
 		}
 
-		cfg, err := buildOIDCConfig(rc)
+		cfg, err := buildOIDCConfig(rc, false)
 		require.NoError(t, err)
 		require.NotNil(t, cfg)
 

@@ -1828,7 +1828,7 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 		break
 	}
 	if vmcpCallbackURL == "" {
-		return "", fmt.Errorf("Dex did not redirect to the VMCP callback after 10 hops")
+		return "", fmt.Errorf("dex did not redirect to the VMCP callback after 10 hops")
 	}
 
 	// Step 6: Rewrite the embedded AS callback in-cluster URL to local URL

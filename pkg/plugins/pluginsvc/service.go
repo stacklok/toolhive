@@ -3,11 +3,11 @@
 
 // Package pluginsvc provides the default implementation of plugins.PluginService.
 //
-// Phase 2 (this package) implements only the build/validate/push/list-builds/
-// delete-build/get-content surface. Install/uninstall/list/info land in Phase 3
-// (#5527); the New constructor returns the narrowed plugins.PluginService
-// interface (which exposes only the Phase-2 methods), so Phase 3 widens both
-// the interface and the concrete type together.
+// Phase 3 widens the Phase-2 build/validate/push/content surface with
+// Install/Uninstall/List/Info and the per-client MaterializationAdapter seam.
+// The New constructor returns plugins.PluginService, which now exposes the full
+// lifecycle; callers pass WithStore/WithMaterializers/WithGroupManager (and the
+// other Phase-3 options) to wire persistence and materialization.
 package pluginsvc
 
 import (
@@ -15,10 +15,10 @@ import (
 	"sync"
 
 	ociplugins "github.com/stacklok/toolhive-core/oci/plugins"
+	"github.com/stacklok/toolhive/pkg/client"
+	"github.com/stacklok/toolhive/pkg/git"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/plugins"
-	"github.com/stacklok/toolhive/pkg/skills"
-	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -68,20 +68,21 @@ func WithMaterializers(m map[string]plugins.MaterializationAdapter) Option {
 	}
 }
 
-// WithInstaller sets the installer for filesystem operations. Plugins reuse
-// the skills Installer (the Extract/Remove helpers) because the extraction
-// and safe-removal logic is identical for both artifact types.
-func WithInstaller(inst skills.Installer) Option {
+// WithGitClient sets a fixed git client used by the git install flow, bypassing
+// per-clone auth resolution. Primarily used for testing with mock clients;
+// mirrors gitresolver.WithGitClient.
+func WithGitClient(c git.Client) Option {
 	return func(s *service) {
-		s.installer = inst
+		s.gitClient = c
 	}
 }
 
-// WithGitResolver sets the git resolver for git:// plugin installations. Reuses
-// the skills git resolver because the clone/extract shape is identical.
-func WithGitResolver(gr gitresolver.Resolver) Option {
+// WithClientManager sets the client manager used to validate that requested
+// clients support plugins. Optional: when nil, the materializers map is the
+// sole source of truth for plugin-supporting clients.
+func WithClientManager(cm *client.ClientManager) Option {
 	return func(s *service) {
-		s.gitResolver = gr
+		s.clientManager = cm
 	}
 }
 
@@ -153,41 +154,34 @@ func (pl *pluginLock) lock(name string, scope plugins.Scope, projectRoot string)
 	return m.Unlock
 }
 
-// service is the default implementation of the Phase-2 plugin surface.
-// It implements Validate/Build/Push/ListBuilds/DeleteBuild/GetContent, which
-// together satisfy the narrowed plugins.PluginService interface. Phase 3 will
-// add the install/uninstall/list/info methods and widen the interface.
+// service is the default implementation of plugins.PluginService. It implements
+// the build/validate/push/content surface (Phase 2) and the install/uninstall/
+// list/info surface (Phase 3), the latter driving per-client materialization
+// through the configured MaterializationAdapters.
 type service struct {
 	locks         pluginLock
 	store         storage.PluginStore
 	groupManager  groups.Manager
 	materializers map[string]plugins.MaterializationAdapter
-	installer     skills.Installer
 	ociStore      *ociplugins.Store
 	packager      ociplugins.PluginPackager
 	registry      ociplugins.RegistryClient
 	pluginLookup  PluginLookup
-	gitResolver   gitresolver.Resolver
+	gitClient     git.Client
+	clientManager *client.ClientManager
 }
 
-// New creates a new plugin service and returns it as a plugins.PluginService
-// (the narrowed Phase-2 interface exposing only
-// Validate/Build/Push/ListBuilds/DeleteBuild/GetContent). Phase 3 (#5527)
-// widens the interface and concrete type together to add install/uninstall/
-// list/info; callers that need persistence then pass a WithStore option (added
-// in that PR).
+// New creates a new plugin service and returns it as a plugins.PluginService.
+// Callers wire persistence (WithStore), per-client materialization
+// (WithMaterializers), group membership (WithGroupManager), git installs
+// (WithGitClient), and registry-name lookup (WithPluginLookup) via options;
+// the OCI store/packager/registry options carry over from Phase 2.
 func New(opts ...Option) plugins.PluginService {
 	s := &service{
 		locks: pluginLock{locks: make(map[string]*sync.Mutex)},
 	}
 	for _, o := range opts {
 		o(s)
-	}
-	if s.installer == nil {
-		s.installer = skills.NewInstaller()
-	}
-	if s.gitResolver == nil {
-		s.gitResolver = gitresolver.NewResolver()
 	}
 	return s
 }

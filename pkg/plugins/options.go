@@ -33,6 +33,17 @@ type InstallOptions struct {
 	Reference string `json:"-"`
 	// Digest is the OCI digest for upgrade detection.
 	Digest string `json:"-"`
+	// Components is the plugin's component inventory, hydrated from the OCI
+	// artifact config by install-from-OCI/git flows. Internal use only.
+	Components ComponentInventory `json:"-"`
+	// Dependencies is the plugin's external dependency list, hydrated from the
+	// OCI artifact config. Internal use only.
+	Dependencies []Dependency `json:"-"`
+	// Tag is the OCI tag, hydrated from the resolved reference. Internal use only.
+	Tag string `json:"-"`
+	// Description is the plugin description, hydrated from the OCI artifact
+	// config or git manifest. Internal use only.
+	Description string `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.
@@ -60,6 +71,14 @@ type PluginInfo struct {
 	// by Info by diffing InstalledPlugin.Components against each installed
 	// client adapter's SupportedComponents.
 	UnmaterializedComponents map[string][]ComponentType `json:"unmaterialized_components,omitempty"`
+	// ProjectScopeDegradedClients lists the client types for which a
+	// project-scoped install degraded (the adapter could only materialize at
+	// user scope — e.g. Codex always writes to the user-scoped config.toml).
+	// Populated by Info; empty for user-scoped installs. Recomputed at read
+	// time from the stored scope + each adapter's capability, mirroring the
+	// UnmaterializedComponents pattern (no persistence needed — the degradation
+	// is deterministic from scope + client type).
+	ProjectScopeDegradedClients []string `json:"project_scope_degraded_clients,omitempty"`
 }
 
 // ContentOptions configures the behavior of the GetContent operation. Alias

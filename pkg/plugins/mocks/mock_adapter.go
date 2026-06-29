@@ -41,6 +41,20 @@ func (m *MockMaterializationAdapter) EXPECT() *MockMaterializationAdapterMockRec
 	return m.recorder
 }
 
+// DegradesOnProjectScope mocks base method.
+func (m *MockMaterializationAdapter) DegradesOnProjectScope() bool {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DegradesOnProjectScope")
+	ret0, _ := ret[0].(bool)
+	return ret0
+}
+
+// DegradesOnProjectScope indicates an expected call of DegradesOnProjectScope.
+func (mr *MockMaterializationAdapterMockRecorder) DegradesOnProjectScope() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DegradesOnProjectScope", reflect.TypeOf((*MockMaterializationAdapter)(nil).DegradesOnProjectScope))
+}
+
 // Dematerialize mocks base method.
 func (m *MockMaterializationAdapter) Dematerialize(ctx context.Context, name string, scope plugins.Scope, projectRoot string) error {
 	m.ctrl.T.Helper()

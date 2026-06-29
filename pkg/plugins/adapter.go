@@ -76,4 +76,9 @@ type MaterializationAdapter interface {
 	Dematerialize(ctx context.Context, name string, scope Scope, projectRoot string) error
 	// SupportedComponents returns the component types this adapter loads.
 	SupportedComponents() []ComponentType
+	// DegradesOnProjectScope reports whether a project-scoped install degrades
+	// for this client — i.e. the adapter can only materialize at user scope
+	// (typically because it mutates a user-scoped config file). Used by Info to
+	// surface ProjectScopeDegradedClients without re-running Materialize.
+	DegradesOnProjectScope() bool
 }

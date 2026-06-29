@@ -102,3 +102,15 @@ func buildPluginsProjectPath(cfg *clientAppConfig, pluginName string, projectRoo
 	parts = append(parts, pluginName)
 	return filepath.Join(parts...), nil
 }
+
+// GetConfigPath returns the absolute path to clientType's settings file under
+// the manager's home directory. Returns ErrUnsupportedClientType for unknown
+// clients. Exported so plugin adapters can locate the Codex config.toml without
+// reaching into ClientManager internals.
+func (cm *ClientManager) GetConfigPath(clientType ClientApp) (string, error) {
+	cfg := cm.lookupClientAppConfig(clientType)
+	if cfg == nil {
+		return "", fmt.Errorf("%w: %s", ErrUnsupportedClientType, clientType)
+	}
+	return buildConfigFilePath(cfg.SettingsFile, cfg.RelPath, cfg.PlatformPrefix, []string{cm.homeDir}), nil
+}

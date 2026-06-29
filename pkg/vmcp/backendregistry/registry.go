@@ -55,12 +55,14 @@ func WithRESTConfig(cfg *rest.Config) Option {
 // registry for an embedder, hiding the pkg/vmcp/k8s watch substrate.
 //
 // It bundles the registry+watcher wiring that pkg/vmcp/cli/serve.go performs by
-// hand: it creates an empty DynamicRegistry, builds a k8s.BackendWatcher against
-// it (in-cluster rest.Config by default; override with WithRESTConfig), and
-// starts the watcher in a background goroutine bound to ctx. The watcher's
-// initial informer sync populates the registry — so the registry starts empty,
-// and the constructor needs only pkg/vmcp/k8s, not the static-discovery path's
-// pkg/groups / pkg/container/runtime dependencies.
+// hand: it creates a DynamicRegistry, builds a k8s.BackendWatcher against it
+// (in-cluster rest.Config by default; override with WithRESTConfig), seeds the
+// registry synchronously with the backends currently in the group, and starts the
+// watcher in a background goroutine bound to ctx to keep it current. The synchronous
+// seed means the returned registry already reflects existing backends (so a caller
+// that gates readiness on cache sync does not serve with an empty registry); the
+// constructor needs only pkg/vmcp/k8s, not the static-discovery path's pkg/groups /
+// pkg/container/runtime dependencies.
 //
 // Parameters:
 //   - ctx: bounds the watcher goroutine's lifetime; cancel it to stop the watcher.
@@ -117,19 +119,28 @@ func NewKubernetesBackendRegistry(
 		}
 	}
 
-	// The registry+watcher+goroutine wiring below is a near-verbatim copy of
-	// cli/serve.go's dynamic-discovery branch (the "discovered" outgoingAuth
-	// source). Deduplicating cli.Serve onto this constructor is deferred (it
-	// would discard cli.Serve's seeded backends for this start-empty path), so
-	// the two copies must stay in sync until that follow-up lands — keep any
-	// lifecycle change here mirrored there.
-	//
-	// Start empty; the watcher's initial informer sync populates the registry.
+	// Start with an empty registry, then seed it synchronously below so the caller
+	// receives a registry that already reflects the current backends — matching the
+	// behavior cli.Serve relied on before it routed through this constructor.
 	dynamicRegistry := vmcp.NewDynamicRegistry(nil)
 
 	watcher, err := k8s.NewBackendWatcher(restConfig, namespace, group, dynamicRegistry)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create backend watcher: %w", err)
+	}
+
+	// Seed the registry synchronously via a direct (uncached) discovery BEFORE starting
+	// the watcher. The watcher populates the registry through an asynchronous reconcile
+	// that lags the informer cache sync; without this seed the vMCP server can pass its
+	// /readyz cache-sync gate and begin serving (and reporting status) while the registry
+	// is still empty, leaving a window where it advertises zero backends. Seeding closes
+	// that window. A seeding failure (e.g. the MCPGroup CRD not existing yet) is logged
+	// and tolerated — the watcher populates the registry once backends appear.
+	if seeded, seedErr := watcher.SyncRegistry(ctx); seedErr != nil {
+		slog.Warn("initial backend registry sync failed; watcher will populate the registry once backends are available",
+			"namespace", namespace, "group", group, "error", seedErr)
+	} else {
+		slog.Info("backend registry seeded", "namespace", namespace, "group", group, "count", seeded)
 	}
 
 	go func() {

@@ -762,7 +762,8 @@ def catch_all(path):
             bearer_found = True
             stats["bearer_token_requests"] += 1
             stats["last_bearer_token"] = value
-            print(f"*** BEARER TOKEN DETECTED (count: {stats['bearer_token_requests']}): {value} ***", flush=True)
+            fingerprint = __import__('hashlib').sha256(value.encode()).hexdigest()[:16]
+            print(f"*** BEARER TOKEN FINGERPRINT (count: {stats['bearer_token_requests']}): {fingerprint} ***", flush=True)
 
     sys.stdout.flush()
     return jsonify({"status": "ok", "path": path, "bearer_token_received": bearer_found})
@@ -1426,7 +1427,8 @@ def mcp():
     if auth.startswith("Bearer ") and len(auth) > 7:
         stats["bearer_token_requests"] += 1
         stats["last_bearer_token"] = auth[7:]
-        print(f"*** BEARER TOKEN DETECTED (count={stats['bearer_token_requests']}): {auth[:50]}", flush=True)
+        fingerprint = __import__('hashlib').sha256(auth.encode()).hexdigest()[:16]
+        print(f"*** BEARER TOKEN FINGERPRINT (count={stats['bearer_token_requests']}): {fingerprint}", flush=True)
         sys.stdout.flush()
 
     if request.method == "DELETE":
@@ -1484,7 +1486,7 @@ def mcp():
 if __name__ == "__main__":
     print("Instrumented MCP backend starting on port 8080", flush=True)
     sys.stdout.flush()
-    app.run(host="0.0.0.0", port=8080)
+    app.run(host="0.0.0.0", port=8080, threaded=False)
 PYTHON_SCRIPT
 `
 
@@ -1758,33 +1760,17 @@ func getEmbeddedASToken(vmcpLocalURL, dexLocalURL, dexInClusterHost, vmcpInClust
 		if err != nil {
 			return "", fmt.Errorf("calling Dex endpoint %s: %w", currentURL, err)
 		}
-		body, _ := io.ReadAll(resp.Body)
+		_, _ = io.Copy(io.Discard, resp.Body)
 		_ = resp.Body.Close()
 		location := resp.Header.Get("Location")
 
 		// Dex v2.42+ shows a consent/approval page (HTTP 200) even for the
 		// mockCallback connector. Detect it by path and auto-POST to approve.
+		// req and hmac are already in currentURL query params (set by Dex's
+		// /callback handler); no form-body inclusion is needed.
 		if resp.StatusCode == http.StatusOK {
 			parsedCurrent, _ := url.Parse(currentURL)
 			if strings.HasSuffix(parsedCurrent.Path, "/approval") {
-				req := parsedCurrent.Query().Get("req")
-				hmac := parsedCurrent.Query().Get("hmac")
-				if req == "" || hmac == "" {
-					// Try to extract from form body
-					bodyStr := string(body)
-					if idx := strings.Index(bodyStr, `name="req" value="`); idx >= 0 {
-						rest := bodyStr[idx+len(`name="req" value="`):]
-						req = rest[:strings.Index(rest, `"`)]
-					}
-					if idx := strings.Index(bodyStr, `name="hmac" value="`); idx >= 0 {
-						rest := bodyStr[idx+len(`name="hmac" value="`):]
-						hmac = rest[:strings.Index(rest, `"`)]
-					}
-				}
-				_ = req
-				_ = hmac
-				// POST to the same URL (keeping req/hmac as query params) with
-				// approval=approve in the form body, as Dex's approval handler expects.
 				formData := url.Values{"approval": {"approve"}}
 				postResp, postErr := noRedirectClient.PostForm(currentURL, formData)
 				if postErr != nil {

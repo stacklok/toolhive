@@ -1156,6 +1156,21 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			}, 30*time.Second, 2*time.Second).Should(gomega.BeNumerically(">=", 2),
 				"backend must have received two Initialize calls (pod A + pod B RestoreSession); "+
 					"this assertion fails if context.WithoutCancel in loadSession is reverted to context.Background()")
+
+			ginkgo.By("Verifying upstreamInject injected a Bearer token into both Initialize calls")
+			// InitializeCalls >= 2 proves RestoreSession ran; BearerTokenRequests >= 2
+			// proves upstreamInject actually fired on both calls. The two assertions
+			// together fully satisfy the acceptance criteria: the restored session on
+			// pod B must authenticate the backend Initialize, not just reach it.
+			gomega.Eventually(func() (int, error) {
+				stats, statsErr := GetInstrumentedMCPBackendStats(ctx, k8sClient, defaultNamespace, backendServiceName)
+				if statsErr != nil {
+					return 0, statsErr
+				}
+				return stats.BearerTokenRequests, nil
+			}, 30*time.Second, 2*time.Second).Should(gomega.BeNumerically(">=", 2),
+				"upstreamInject must have injected a Bearer token into both Initialize calls "+
+					"(pod A + pod B RestoreSession)")
 		})
 	})
 })

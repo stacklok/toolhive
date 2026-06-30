@@ -724,57 +724,6 @@ func TestToolListing(vmcpNodePort int32, clientName string) []mcp.Tool {
 	return toolsResult.Tools
 }
 
-// InstrumentedBackendScript is a minimal Flask server that tracks Bearer tokens.
-//
-// Deprecated: This server is not MCP-protocol-aware and cannot serve Initialize
-// or ListTools requests correctly. Use InstrumentedMCPBackendScript for new tests.
-const InstrumentedBackendScript = `
-pip install --quiet flask && python3 - <<'PYTHON_SCRIPT'
-from flask import Flask, request, jsonify
-import sys
-
-app = Flask(__name__)
-
-# Request tracking
-stats = {
-    "total_requests": 0,
-    "bearer_token_requests": 0,
-    "last_bearer_token": None,
-}
-
-@app.route('/stats')
-def get_stats():
-    print(f"Stats request received: {stats}", flush=True)
-    sys.stdout.flush()
-    return jsonify(stats)
-
-@app.route('/<path:path>', methods=['GET', 'POST'])
-def catch_all(path):
-    stats["total_requests"] += 1
-    print(f"=== Request {stats['total_requests']} received ===", flush=True)
-    print(f"Path: {path}", flush=True)
-    print("Headers:", flush=True)
-
-    bearer_found = False
-    for header, value in request.headers.items():
-        print(f"  {header}: {value}", flush=True)
-        if header.lower() == "authorization" and "Bearer" in value:
-            bearer_found = True
-            stats["bearer_token_requests"] += 1
-            stats["last_bearer_token"] = value
-            fingerprint = __import__('hashlib').sha256(value.encode()).hexdigest()[:16]
-            print(f"*** BEARER TOKEN FINGERPRINT (count: {stats['bearer_token_requests']}): {fingerprint} ***", flush=True)
-
-    sys.stdout.flush()
-    return jsonify({"status": "ok", "path": path, "bearer_token_received": bearer_found})
-
-if __name__ == '__main__':
-    print("Instrumented backend starting on port 8080", flush=True)
-    sys.stdout.flush()
-    app.run(host='0.0.0.0', port=8080)
-PYTHON_SCRIPT
-`
-
 // WithHttpLoggerOption returns a transport.StreamableHTTPCOption that logs to GinkgoLogr.
 // This is useful for debugging HTTP requests and responses.
 func WithHttpLoggerOption() transport.StreamableHTTPCOption {
@@ -1492,6 +1441,10 @@ PYTHON_SCRIPT
 
 // GetInstrumentedMCPBackendStats queries the /stats endpoint of an instrumented MCP backend
 // and returns the parsed statistics.
+//
+// Deprecated: prefer GetInstrumentedMCPBackendStatsFromURL with a pre-established
+// port-forward; this variant spawns a fresh curl Pod on every call which is expensive
+// inside an Eventually polling loop.
 func GetInstrumentedMCPBackendStats(
 	ctx context.Context, c client.Client, namespace, serviceName string,
 ) (*InstrumentedMCPBackendStats, error) {
@@ -1502,6 +1455,27 @@ func GetInstrumentedMCPBackendStats(
 	var stats InstrumentedMCPBackendStats
 	if err := json.Unmarshal([]byte(logs), &stats); err != nil {
 		return nil, fmt.Errorf("failed to parse instrumented backend stats JSON %q: %w", logs, err)
+	}
+	return &stats, nil
+}
+
+// GetInstrumentedMCPBackendStatsFromURL fetches the /stats endpoint at statsURL
+// via a plain HTTP GET and returns the parsed statistics. It is suitable for use
+// inside Eventually polling loops because it is a cheap single HTTP request with
+// no pod lifecycle overhead.
+func GetInstrumentedMCPBackendStatsFromURL(statsURL string) (*InstrumentedMCPBackendStats, error) {
+	//nolint:gosec // statsURL is test-controlled (localhost port-forward)
+	resp, err := http.Get(statsURL)
+	if err != nil {
+		return nil, fmt.Errorf("GET %s: %w", statsURL, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("GET %s: unexpected status %d", statsURL, resp.StatusCode)
+	}
+	var stats InstrumentedMCPBackendStats
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		return nil, fmt.Errorf("decoding stats from %s: %w", statsURL, err)
 	}
 	return &stats, nil
 }

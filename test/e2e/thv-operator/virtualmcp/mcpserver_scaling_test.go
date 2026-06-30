@@ -38,75 +38,18 @@ const (
 )
 
 // deployRedis creates a single-replica Redis Deployment and ClusterIP Service.
-// Returns after the deployment has at least one ready replica.
-func deployRedis(name string) {
+// Returns after the deployment has at least one ready replica. Pass a non-empty
+// password to configure requirepass authentication; pass "" for no authentication.
+// A non-empty password is required when referencing the Redis address via a
+// Kubernetes secretKeyRef env var — Kubernetes silently skips injection when the
+// secret key value is empty.
+func deployRedis(name string, password ...string) {
 	labels := map[string]string{"app": name}
 
-	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: defaultNamespace,
-			Labels:    labels,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Replicas: int32Ptr(1),
-			Selector: &metav1.LabelSelector{MatchLabels: labels},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: labels},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{
-						Name:  "redis",
-						Image: images.RedisImage,
-						Ports: []corev1.ContainerPort{{ContainerPort: 6379, Name: "redis"}},
-						ReadinessProbe: &corev1.Probe{
-							ProbeHandler: corev1.ProbeHandler{
-								TCPSocket: &corev1.TCPSocketAction{
-									Port: intstr.FromInt32(6379),
-								},
-							},
-							InitialDelaySeconds: 2,
-							PeriodSeconds:       3,
-						},
-					}},
-				},
-			},
-		},
+	var args []string
+	if len(password) > 0 && password[0] != "" {
+		args = []string{"--requirepass", password[0]}
 	}
-	gomega.Expect(k8sClient.Create(ctx, deployment)).To(gomega.Succeed())
-
-	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: defaultNamespace,
-		},
-		Spec: corev1.ServiceSpec{
-			Selector: labels,
-			Ports: []corev1.ServicePort{{
-				Port:       6379,
-				TargetPort: intstr.FromInt32(6379),
-				Protocol:   corev1.ProtocolTCP,
-				Name:       "redis",
-			}},
-		},
-	}
-	gomega.Expect(k8sClient.Create(ctx, service)).To(gomega.Succeed())
-
-	ginkgo.By("Waiting for Redis to become ready")
-	gomega.Eventually(func() bool {
-		dep := &appsv1.Deployment{}
-		if err := k8sClient.Get(ctx, types.NamespacedName{Name: name, Namespace: defaultNamespace}, dep); err != nil {
-			return false
-		}
-		return dep.Status.ReadyReplicas > 0
-	}, e2eTimeout, e2ePollInterval).Should(gomega.BeTrue(), "Redis should be ready")
-}
-
-// deployRedisWithPassword deploys Redis configured with requirepass authentication.
-// Use this instead of deployRedis when the embedded auth server or session storage
-// needs a non-empty ACL password (Kubernetes does not inject secretKeyRef env vars
-// when the Secret key value is empty).
-func deployRedisWithPassword(name, password string) {
-	labels := map[string]string{"app": name}
 
 	deployment := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace, Labels: labels},
@@ -119,7 +62,7 @@ func deployRedisWithPassword(name, password string) {
 					Containers: []corev1.Container{{
 						Name:  "redis",
 						Image: images.RedisImage,
-						Args:  []string{"--requirepass", password},
+						Args:  args,
 						Ports: []corev1.ContainerPort{{ContainerPort: 6379, Name: "redis"}},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
@@ -155,6 +98,12 @@ func deployRedisWithPassword(name, password string) {
 		}
 		return dep.Status.ReadyReplicas > 0
 	}, e2eTimeout, e2ePollInterval).Should(gomega.BeTrue(), "Redis should be ready")
+}
+
+// deployRedisWithPassword deploys Redis with requirepass authentication.
+// Delegates to deployRedis(name, password).
+func deployRedisWithPassword(name, password string) {
+	deployRedis(name, password)
 }
 
 // cleanupRedis removes the Redis Deployment and Service.
@@ -237,6 +186,47 @@ func portForwardToPod(podName string, containerPort int32) (int, func(), error) 
 
 	cleanup()
 	return 0, nil, fmt.Errorf("port-forward to %s never became ready on localhost:%d", podName, localPort)
+}
+
+// portForwardToService starts a kubectl port-forward to a Kubernetes Service and
+// returns the local port and a cleanup function. Mirrors portForwardToPod but
+// targets svc/<name> instead of pod/<name>.
+func portForwardToService(serviceName string, servicePort int32) (int, func(), error) {
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to find free port: %w", err)
+	}
+	localPort := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+
+	kubeconfigArg := fmt.Sprintf("--kubeconfig=%s", kubeconfig)
+	//nolint:gosec // kubeconfig, serviceName, and ports are test-controlled values
+	cmd := exec.Command("kubectl", kubeconfigArg,
+		"-n", defaultNamespace, "port-forward",
+		fmt.Sprintf("svc/%s", serviceName),
+		fmt.Sprintf("%d:%d", localPort, servicePort))
+	if err := cmd.Start(); err != nil {
+		return 0, nil, fmt.Errorf("failed to start port-forward to svc/%s: %w", serviceName, err)
+	}
+
+	cleanup := func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}
+
+	for range 30 {
+		conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", localPort), 500*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			return localPort, cleanup, nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	cleanup()
+	return 0, nil, fmt.Errorf("port-forward to svc/%s never became ready on localhost:%d", serviceName, localPort)
 }
 
 // readRedisSessionBackendIDs port-forwards to the Redis pod with label app=redisName,

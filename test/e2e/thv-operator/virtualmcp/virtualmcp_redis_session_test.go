@@ -1011,6 +1011,12 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			vmcpResourceURL := embeddedASIssuerURL
 			backendServiceName := fmt.Sprintf("mcp-%s-proxy", backendName)
 
+			ginkgo.By("Port-forwarding to backend /stats endpoint")
+			backendStatsPort, cleanupBackendFwd, err := portForwardToService(backendServiceName, 8080)
+			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			defer cleanupBackendFwd()
+			backendStatsURL := fmt.Sprintf("http://localhost:%d/stats", backendStatsPort)
+
 			ginkgo.By("Getting the two ready pods")
 			var pods []corev1.Pod
 			gomega.Eventually(func() (int, error) {
@@ -1108,7 +1114,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			// InitializeCalls is only incremented on the "initialize" JSON-RPC method,
 			// making this assertion precise: it is not inflated by ListTools or CallTool traffic.
 			gomega.Eventually(func() (int, error) {
-				stats, statsErr := GetInstrumentedMCPBackendStats(ctx, k8sClient, defaultNamespace, backendServiceName)
+				stats, statsErr := GetInstrumentedMCPBackendStatsFromURL(backendStatsURL)
 				if statsErr != nil {
 					return 0, statsErr
 				}
@@ -1148,7 +1154,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			// "initialize" JSON-RPC method so ListTools and CallTool traffic cannot
 			// spuriously satisfy this threshold.
 			gomega.Eventually(func() (int, error) {
-				stats, statsErr := GetInstrumentedMCPBackendStats(ctx, k8sClient, defaultNamespace, backendServiceName)
+				stats, statsErr := GetInstrumentedMCPBackendStatsFromURL(backendStatsURL)
 				if statsErr != nil {
 					return 0, statsErr
 				}
@@ -1163,7 +1169,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			// together fully satisfy the acceptance criteria: the restored session on
 			// pod B must authenticate the backend Initialize, not just reach it.
 			gomega.Eventually(func() (int, error) {
-				stats, statsErr := GetInstrumentedMCPBackendStats(ctx, k8sClient, defaultNamespace, backendServiceName)
+				stats, statsErr := GetInstrumentedMCPBackendStatsFromURL(backendStatsURL)
 				if statsErr != nil {
 					return 0, statsErr
 				}

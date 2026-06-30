@@ -541,8 +541,8 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	//   rate-limit → audit → MCP-parsing → telemetry → handler
 	//
 	// Upstream token refresh failures are detected inside AuthMiddleware itself:
-	// when GetAllValidTokens cannot refresh an expired token it populates
-	// Identity.FailedUpstreamProviders and the middleware short-circuits with
+	// GetAllUpstreamCredentials returns a non-empty failed-provider slice when
+	// any upstream refresh fails, and the middleware short-circuits with
 	// HTTP 401 + WWW-Authenticate before the request reaches any inner layer.
 	//
 	// The legacy HTTP authz, annotation-enrichment, and discovery layers have all been

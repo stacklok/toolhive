@@ -147,7 +147,7 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 // A leg is satisfied when it has a stored token that is live (or asserts no
 // expiry). A present-but-expired token is NOT treated as satisfied by presence
 // alone: the leg is refreshed transparently (mirroring upstreamtoken
-// InProcessService.GetAllValidTokens) and only counts as satisfied if the refresh
+// InProcessService.GetAllUpstreamCredentials) and only counts as satisfied if the refresh
 // succeeds. If refresh is impossible or fails, the leg is reported as missing so
 // the user is re-prompted up front, rather than the stale token surfacing as a
 // runtime auth error later at MCP-request token-swap time.
@@ -179,7 +179,7 @@ func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string) (st
 // succeeded) and false when the user must be re-prompted: no refresher configured,
 // no refresh token on the row, or the refresh itself failed (expired/revoked
 // refresh token, provider error). Mirrors the refresh-then-classify behavior in
-// upstreamtoken.InProcessService.GetAllValidTokens.
+// upstreamtoken.InProcessService.GetAllUpstreamCredentials.
 func (h *Handler) refreshExpiredLeg(
 	ctx context.Context,
 	sessionID, providerName string,

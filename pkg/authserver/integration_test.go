@@ -2206,7 +2206,7 @@ func runChainFlow(
 // TestIntegration_MultiUpstreamChain_MixedExpiryOrderings exercises the two-leg
 // authorization chain with one upstream returning expires_in and the other
 // omitting it. Both orderings must succeed and both providers' tokens must be
-// retrievable via GetAllValidTokens.
+// retrievable via GetAllUpstreamCredentials.
 //
 // This pins the chain handler's per-leg storage write and the
 // convertOAuth2Token zero-Expiry path through the full HTTP flow, in both
@@ -2290,17 +2290,17 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings(t *testing.T) {
 					"provider-2 (expiring) must carry a non-zero ExpiresAt")
 			}
 
-			// GetAllValidTokens must return both providers' access tokens.
+			// GetAllUpstreamCredentials must return both providers' credentials.
 			// Before the Lua TTL fix, the non-expiring provider's index could
 			// be evicted prematurely depending on chain ordering, so this
 			// would have returned an empty or incomplete map for one
 			// ordering.
 			svc := upstreamtoken.NewInProcessService(stor, ts.authServer.UpstreamTokenRefresher())
-			all, _, err := svc.GetAllValidTokens(ctx, tsid)
+			all, _, err := svc.GetAllUpstreamCredentials(ctx, tsid)
 			require.NoError(t, err)
-			require.Len(t, all, 2, "GetAllValidTokens must return both providers regardless of expiry ordering")
-			assert.NotEmpty(t, all["provider-1"], "provider-1 access token must be present")
-			assert.NotEmpty(t, all["provider-2"], "provider-2 access token must be present")
+			require.Len(t, all, 2, "GetAllUpstreamCredentials must return both providers regardless of expiry ordering")
+			assert.NotEmpty(t, all["provider-1"].AccessToken, "provider-1 access token must be present")
+			assert.NotEmpty(t, all["provider-2"].AccessToken, "provider-2 access token must be present")
 		})
 	}
 }
@@ -2499,11 +2499,11 @@ func TestIntegration_MultiUpstreamChain_MixedExpiryOrderings_Redis(t *testing.T)
 			// (commit 1b3bc81e2), the integration flow always produces ttlMs > 0 and
 			// the buggy Lua branch is unreachable from a real auth chain. The Lua
 			// invariant is exercised at unit level by pkg/authserver/storage/redis_test.go.
-			tokensMap, _, err := svc.GetAllValidTokens(ctx, tsid)
+			tokensMap, _, err := svc.GetAllUpstreamCredentials(ctx, tsid)
 			require.NoError(t, err)
-			require.Len(t, tokensMap, 2, "GetAllValidTokens must return both providers after chain")
-			assert.NotEmpty(t, tokensMap["provider-1"], "provider-1 access token must be present")
-			assert.NotEmpty(t, tokensMap["provider-2"], "provider-2 access token must be present")
+			require.Len(t, tokensMap, 2, "GetAllUpstreamCredentials must return both providers after chain")
+			assert.NotEmpty(t, tokensMap["provider-1"].AccessToken, "provider-1 access token must be present")
+			assert.NotEmpty(t, tokensMap["provider-2"].AccessToken, "provider-2 access token must be present")
 		})
 	}
 }

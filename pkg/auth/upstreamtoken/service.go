@@ -71,23 +71,33 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 		return s.refreshOrFail(ctx, sessionID, providerName, tokens)
 	}
 
-	return &UpstreamCredential{AccessToken: tokens.AccessToken}, nil
+	return &UpstreamCredential{AccessToken: tokens.AccessToken, IDToken: tokens.IDToken}, nil
 }
 
-// GetAllValidTokens returns access tokens for all upstream providers in a session.
-// Expired tokens are refreshed transparently; if refresh fails, the provider name
-// is included in the returned failed slice so the caller can return HTTP 401.
-func (s *InProcessService) GetAllValidTokens(ctx context.Context, sessionID string) (map[string]string, []string, error) {
+// GetAllUpstreamCredentials returns access tokens and ID tokens for all upstream
+// providers in a session in a single storage round-trip. Expired access tokens
+// are refreshed transparently; providers whose access token cannot be refreshed
+// are included in the returned failed slice so downstream middleware can return
+// a clean 401 for the access-token use case. The IDToken on a returned entry is
+// the rotated ID token when a refresh produced one (OIDC Core 1.0 §12.2),
+// otherwise the original JWT captured at the initial OIDC login; it is not
+// independently validated for freshness and may be empty if the upstream login
+// never yielded one. Callers MUST check its exp claim before use.
+//
+// Returns an empty map and nil failed slice (not error) for unknown sessions.
+func (s *InProcessService) GetAllUpstreamCredentials(
+	ctx context.Context, sessionID string,
+) (map[string]UpstreamCredential, []string, error) {
 	allTokens, err := s.storage.GetAllUpstreamTokens(ctx, sessionID)
 	if err != nil {
 		return nil, nil, fmt.Errorf("bulk read upstream tokens: %w", err)
 	}
 
 	if len(allTokens) == 0 {
-		return map[string]string{}, nil, nil
+		return map[string]UpstreamCredential{}, nil, nil
 	}
 
-	result := make(map[string]string, len(allTokens))
+	result := make(map[string]UpstreamCredential, len(allTokens))
 	var failed []string
 	// TODO(auth): Refresh providers in parallel using errgroup to avoid
 	// worst-case latency of N refreshes when multiple providers need refresh.
@@ -98,7 +108,10 @@ func (s *InProcessService) GetAllValidTokens(ctx context.Context, sessionID stri
 
 		// If token is not expired, use it directly.
 		if tokens.ExpiresAt.IsZero() || !tokens.IsExpired(time.Now()) {
-			result[providerName] = tokens.AccessToken
+			result[providerName] = UpstreamCredential{
+				AccessToken: tokens.AccessToken,
+				IDToken:     tokens.IDToken,
+			}
 			continue
 		}
 
@@ -113,9 +126,14 @@ func (s *InProcessService) GetAllValidTokens(ctx context.Context, sessionID stri
 			failed = append(failed, providerName)
 			continue
 		}
-		result[providerName] = refreshed.AccessToken
+		// refreshOrFail carries through the rotated ID token when the provider
+		// issued one, otherwise the original login ID token (see its doc).
+		result[providerName] = *refreshed
 	}
 
+	// TODO(auth): the "check exp" contract on UpstreamCredential.IDToken is
+	// documented but not enforced here. Enforcement belongs at the RFC 8693
+	// token-exchange consumer when it receives the credential.
 	return result, failed, nil
 }
 
@@ -154,5 +172,15 @@ func (s *InProcessService) refreshOrFail(
 		return nil, ErrRefreshFailed
 	}
 
-	return &UpstreamCredential{AccessToken: refreshed.AccessToken}, nil
+	// Prefer the ID token from the refresh response when the provider rotated
+	// it (OIDC Core 1.0 §12.2 permits — but does not require — a new id_token on
+	// refresh). Fall back to the original login ID token when the refresh response
+	// omitted one. The primary carry-forward into storage is in
+	// upstreamTokenRefresher.refreshAndStore; this fallback is defense-in-depth
+	// so the caller never sees an empty subject token.
+	idToken := refreshed.IDToken
+	if idToken == "" {
+		idToken = expired.IDToken
+	}
+	return &UpstreamCredential{AccessToken: refreshed.AccessToken, IDToken: idToken}, nil
 }

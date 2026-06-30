@@ -162,10 +162,11 @@ func TestRestoreSession_ErrorCases(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_PopulatesBothSubjectFieldAndClaims verifies that after
-// RestoreSession the reconstructed identity's binding is stored and the
-// decorator accepts a matching caller.
-func TestRestoreSession_PopulatesBothSubjectFieldAndClaims(t *testing.T) {
+// TestRestoreSession_PreservesIdentityBindingAndAcceptsMatchingCaller verifies
+// that after RestoreSession the stored identity binding is preserved in session
+// metadata and the security decorator accepts a caller whose identity matches
+// the binding.
+func TestRestoreSession_PreservesIdentityBindingAndAcceptsMatchingCaller(t *testing.T) {
 	t.Parallel()
 
 	factory := newSessionFactoryWithConnector(nilBackendConnector())
@@ -197,12 +198,18 @@ func TestRestoreSession_PopulatesBothSubjectFieldAndClaims(t *testing.T) {
 	}
 }
 
-// TestRestoreSession_ReconstructsIdentityWithEmptyTokenButPopulatedClaims pins
-// the contract that RestoreSession passes a reconstructed identity to the
-// backendConnector whose Token field is intentionally empty (the bearer token is
-// not persisted), but whose Claims["iss"] and Claims["sub"] are populated from
-// the stored identity binding.
-func TestRestoreSession_ReconstructsIdentityWithEmptyTokenButPopulatedClaims(t *testing.T) {
+// TestRestoreSession_PassesNilIdentityToConnector pins the contract that
+// RestoreSession does NOT fabricate a partial *auth.Identity to pass to backend
+// connectors. The original bearer token is not persisted; constructing an
+// identity with empty Token and UpstreamTokens would violate the field-
+// completeness contract on *auth.Identity (see pkg/auth/identity.go) and be a
+// landmine for any future consumer that assumes a non-nil identity is fully
+// populated. See issue #5336.
+//
+// Live tool calls already carry a fully-populated identity on req.Context() from
+// TokenValidator.Middleware; the connector's nil fallback identity means it never
+// injects an incomplete substitute.
+func TestRestoreSession_PassesNilIdentityToConnector(t *testing.T) {
 	t.Parallel()
 
 	const (
@@ -210,13 +217,17 @@ func TestRestoreSession_ReconstructsIdentityWithEmptyTokenButPopulatedClaims(t *
 		origSub = "carol"
 	)
 
-	var capturedIdentity *auth.Identity
+	var (
+		connectorCalled  bool
+		capturedIdentity *auth.Identity
+	)
 	capturingConnector := func(
 		_ context.Context,
 		_ *vmcp.BackendTarget,
 		id *auth.Identity,
 		_ string,
 	) (internalbk.Session, *vmcp.CapabilityList, error) {
+		connectorCalled = true
 		capturedIdentity = id
 		return nil, nil, nil
 	}
@@ -237,6 +248,7 @@ func TestRestoreSession_ReconstructsIdentityWithEmptyTokenButPopulatedClaims(t *
 	require.NotEmpty(t, meta[sessiontypes.MetadataKeyIdentityBinding],
 		"factory must write MetadataKeyIdentityBinding to metadata")
 
+	connectorCalled = false
 	capturedIdentity = nil
 
 	// Step 3: restore the session on "Pod B" with a backend present so the
@@ -255,16 +267,12 @@ func TestRestoreSession_ReconstructsIdentityWithEmptyTokenButPopulatedClaims(t *
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = restored.Close() })
 
-	// Step 4: the connector must receive an identity with an empty Token but
-	// populated Claims. Any outgoing-auth strategy that reads identity.Token
-	// will silently produce unauthenticated backend requests after a pod restart.
-	require.NotNil(t, capturedIdentity, "connector must be called with a non-nil identity for an authenticated session")
-	assert.Empty(t, capturedIdentity.Token,
-		"restored identity.Token must be empty — bearer token is not persisted across pod restarts")
-	assert.Equal(t, origIss, capturedIdentity.Claims["iss"],
-		"restored identity.Claims[iss] must match original issuer")
-	assert.Equal(t, origSub, capturedIdentity.Claims["sub"],
-		"restored identity.Claims[sub] must match original subject")
-	assert.Equal(t, origSub, capturedIdentity.Subject,
-		"restored identity.Subject must match original subject")
+	// Step 4: the connector must be called with nil identity. RestoreSession
+	// must not fabricate a partial *auth.Identity when the bearer token is
+	// unavailable — passing nil avoids silently supplying empty credentials to
+	// outgoing-auth strategies (upstreamInject, tokenExchange, aws_sts) that
+	// need UpstreamTokens.
+	require.True(t, connectorCalled, "connector must be invoked when a backend is present")
+	assert.Nil(t, capturedIdentity,
+		"RestoreSession must pass nil identity to the connector — no partial *auth.Identity should be fabricated")
 }

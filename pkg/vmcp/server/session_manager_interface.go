@@ -29,8 +29,12 @@ type SessionManager interface {
 
 	// GetMultiSession retrieves the fully-formed MultiSession for the given session ID.
 	// Returns (nil, false) if the session does not exist or is still a placeholder.
-	// Used to access session-scoped backend tool metadata (e.g. for conflict validation).
-	GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool)
+	//
+	// ctx may carry request-scoped values (e.g. *auth.Identity) that implementations
+	// should forward to storage and backend-restore operations. Implementations must
+	// not let caller cancellation abort an in-progress restore that concurrent
+	// waiters depend on.
+	GetMultiSession(ctx context.Context, sessionID string) (vmcpsession.MultiSession, bool)
 
 	// DecorateSession retrieves the MultiSession for sessionID, applies fn to it,
 	// and stores the result back. Used to stack session decorators (composite tools,

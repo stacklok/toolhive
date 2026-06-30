@@ -126,7 +126,7 @@ func registerServeOptimizerSession(t *testing.T, fc *fakeCore) (*Server, string,
 	require.Equal(t, http.StatusOK, initResp.StatusCode)
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
 	require.NotEmpty(t, sessionID)
-	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return ok },
+	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return ok },
 		2*time.Second, 10*time.Millisecond, "session should be registered")
 	return srv, sessionID, ts.URL, optFactory
 }
@@ -361,7 +361,7 @@ func TestServeOptimizerEnforcesSessionBinding(t *testing.T) {
 
 			assert.Equal(t, int32(0), fc.callToolCalls.Load(),
 				"a binding failure must reject before any inner core call")
-			require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return !ok },
+			require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return !ok },
 				2*time.Second, 10*time.Millisecond, "a binding failure must terminate the session (fail-closed)")
 		})
 	}

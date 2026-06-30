@@ -105,11 +105,7 @@ func TestNewRedisStorage_Validation(t *testing.T) {
 	t.Parallel()
 
 	validACL := func() tcredis.Config {
-		return tcredis.Config{
-			Addr:     "localhost:6379",
-			Username: "user",
-			Password: "pass",
-		}
+		return tcredis.Config{Addr: "localhost:6379", Username: "user", Password: "pass"}
 	}
 
 	tests := []struct {

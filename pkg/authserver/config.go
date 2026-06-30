@@ -824,7 +824,7 @@ func (c *Config) validateUpstreams() error {
 		}
 		seenNames[up.Name] = true
 
-		if err := validateUpstreamType(up); err != nil {
+		if err := validateUpstreamType(up, c.InsecureAllowHTTP); err != nil {
 			return err
 		}
 	}
@@ -863,7 +863,7 @@ func (c *Config) validateUpstreamName(i int, up *UpstreamConfig) error {
 }
 
 // validateUpstreamType validates the provider type and its type-specific config.
-func validateUpstreamType(up *UpstreamConfig) error {
+func validateUpstreamType(up *UpstreamConfig, insecureAllowHTTP bool) error {
 	switch up.Type {
 	case UpstreamProviderTypeOIDC:
 		if up.OIDCConfig == nil {
@@ -872,7 +872,7 @@ func validateUpstreamType(up *UpstreamConfig) error {
 		if up.OAuth2Config != nil {
 			return fmt.Errorf("upstream %q: oauth2_config must not be set when type is %q", up.Name, up.Type)
 		}
-		if err := up.OIDCConfig.Validate(); err != nil {
+		if err := up.OIDCConfig.ValidateWithInsecure(insecureAllowHTTP); err != nil {
 			return fmt.Errorf("upstream %q: %w", up.Name, err)
 		}
 	case UpstreamProviderTypeOAuth2:
@@ -882,7 +882,7 @@ func validateUpstreamType(up *UpstreamConfig) error {
 		if up.OIDCConfig != nil {
 			return fmt.Errorf("upstream %q: oidc_config must not be set when type is %q", up.Name, up.Type)
 		}
-		if err := up.OAuth2Config.Validate(); err != nil {
+		if err := up.OAuth2Config.ValidateWithInsecure(insecureAllowHTTP); err != nil {
 			return fmt.Errorf("upstream %q: %w", up.Name, err)
 		}
 	default:

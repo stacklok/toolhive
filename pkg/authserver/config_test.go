@@ -36,6 +36,11 @@ func TestValidateIssuerURL(t *testing.T) {
 		{name: "http 127.0.0.1", issuer: "http://127.0.0.1:8080"},
 		{name: "http IPv6 loopback", issuer: "http://[::1]:8080"},
 
+		// Valid — insecureAllowHTTP=true permits http for non-localhost
+		{name: "http cluster-local insecure", issuer: "http://vmcp-foo.default.svc.cluster.local:4483", insecureAllowHTTP: true},
+		{name: "http private IP insecure", issuer: "http://10.0.0.1:4483", insecureAllowHTTP: true},
+		{name: "http non-localhost insecure", issuer: "http://example.com", insecureAllowHTTP: true},
+
 		// Invalid — strict mode
 		{name: "empty", issuer: "", wantErr: true, errMsg: "issuer is required"},
 		{name: "missing scheme", issuer: "example.com", wantErr: true, errMsg: "scheme is required"},

@@ -101,6 +101,7 @@ jobs:
         docker pull python:3.9-slim &
         docker pull curlimages/curl:8.17.0 &
         docker pull ghcr.io/huggingface/text-embeddings-inference:cpu-latest &
+        docker pull ghcr.io/dexidp/dex:v2.42.0 &
         wait
 
         # Load all images into kind
@@ -110,6 +111,7 @@ jobs:
         kind load docker-image --name toolhive python:3.9-slim
         kind load docker-image --name toolhive curlimages/curl:8.17.0
         kind load docker-image --name toolhive ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+        kind load docker-image --name toolhive ghcr.io/dexidp/dex:v2.42.0
 
     - name: Deploy operator with VMCP_IMAGE
       run: |

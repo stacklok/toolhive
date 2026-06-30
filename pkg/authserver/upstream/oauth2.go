@@ -200,9 +200,10 @@ type TokenResponseMapping struct {
 	ExpiresInPath string
 }
 
-// Validate checks that OAuth2Config has all required fields.
+// Validate checks that OAuth2Config has all required fields, respecting
+// c.InsecureAllowHTTP when set.
 func (c *OAuth2Config) Validate() error {
-	return c.ValidateWithInsecure(false)
+	return c.ValidateWithInsecure(c.InsecureAllowHTTP)
 }
 
 // ValidateWithInsecure is like Validate but allows http:// endpoints when

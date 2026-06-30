@@ -67,12 +67,10 @@ type OIDCConfig struct {
 // CRD layers reject the same values.
 var subjectClaimPattern = regexp.MustCompile(`^[a-zA-Z_][a-zA-Z0-9_]*$`)
 
-// Validate checks that OIDCConfig has all required fields and valid values.
-// It always enforces HTTPS on the issuer URL regardless of any InsecureAllowHTTP
-// flag; callers that hold a config with InsecureAllowHTTP set should use
-// ValidateWithInsecure(c.InsecureAllowHTTP) instead.
+// Validate checks that OIDCConfig has all required fields and valid values,
+// respecting c.InsecureAllowHTTP when set.
 func (c *OIDCConfig) Validate() error {
-	return c.ValidateWithInsecure(false)
+	return c.ValidateWithInsecure(c.InsecureAllowHTTP)
 }
 
 // ValidateWithInsecure is like Validate but allows http:// issuer URLs for
@@ -94,7 +92,7 @@ func (c *OIDCConfig) ValidateWithInsecure(insecureAllowHTTP bool) error {
 				"underscore and use only letters, digits, and underscores",
 			c.SubjectClaim)
 	}
-	return c.CommonOAuthConfig.Validate()
+	return c.CommonOAuthConfig.ValidateWithInsecure(insecureAllowHTTP)
 }
 
 // ErrNonceMismatch is returned when the nonce claim in the ID token does not match

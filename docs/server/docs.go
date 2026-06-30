@@ -949,6 +949,10 @@ const docTemplate = `{
                         "description": "Registered indicates whether the client is registered in the ToolHive configuration",
                         "type": "boolean"
                     },
+                    "supports_plugins": {
+                        "description": "SupportsPlugins indicates whether ToolHive can install plugins for this client",
+                        "type": "boolean"
+                    },
                     "supports_skills": {
                         "description": "SupportsSkills indicates whether ToolHive can install skills for this client",
                         "type": "boolean"
@@ -1111,6 +1115,13 @@ const docTemplate = `{
                 "properties": {
                     "name": {
                         "type": "string"
+                    },
+                    "plugins": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     },
                     "registered_clients": {
                         "items": {

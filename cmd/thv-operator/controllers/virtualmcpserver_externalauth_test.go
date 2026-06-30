@@ -164,6 +164,96 @@ func TestConvertExternalAuthConfigToStrategy(t *testing.T) {
 			},
 		},
 		{
+			name: "xaa with both secret refs sets env var names",
+			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "xaa-auth",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeXAA,
+					XAA: &mcpv1beta1.XAASpec{
+						IDPTokenURL: "https://idp.example.com/token",
+						IDPClientID: "idp-client",
+						IDPClientSecretRef: &mcpv1beta1.SecretKeyRef{
+							Name: "idp-secret",
+							Key:  "client-secret",
+						},
+						TargetTokenURL: "https://target.example.com/token",
+						TargetClientID: "target-client",
+						TargetClientSecretRef: &mcpv1beta1.SecretKeyRef{
+							Name: "target-secret",
+							Key:  "client-secret",
+						},
+						TargetAudience: "https://target.example.com",
+						TargetResource: "https://mcp.example.com",
+					},
+				},
+			},
+			validate: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
+				t.Helper()
+				assert.Equal(t, authtypes.StrategyTypeXAA, strategy.Type)
+				require.NotNil(t, strategy.XAA)
+				assert.Equal(t, "TOOLHIVE_XAA_IDP_CLIENT_SECRET_XAA_AUTH", strategy.XAA.IDPClientSecretEnv)
+				assert.Equal(t, "TOOLHIVE_XAA_TARGET_CLIENT_SECRET_XAA_AUTH", strategy.XAA.TargetClientSecretEnv)
+				assert.Empty(t, strategy.XAA.IDPClientSecret, "IDPClientSecret should not be set (secrets via env vars)")
+				assert.Empty(t, strategy.XAA.TargetClientSecret, "TargetClientSecret should not be set (secrets via env vars)")
+			},
+		},
+		{
+			name: "xaa with only idp secret ref",
+			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "xaa-idp-only",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeXAA,
+					XAA: &mcpv1beta1.XAASpec{
+						IDPTokenURL: "https://idp.example.com/token",
+						IDPClientID: "idp-client",
+						IDPClientSecretRef: &mcpv1beta1.SecretKeyRef{
+							Name: "idp-secret",
+							Key:  "client-secret",
+						},
+						TargetTokenURL: "https://target.example.com/token",
+						TargetAudience: "https://target.example.com",
+						TargetResource: "https://mcp.example.com",
+					},
+				},
+			},
+			validate: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
+				t.Helper()
+				require.NotNil(t, strategy.XAA)
+				assert.Equal(t, "TOOLHIVE_XAA_IDP_CLIENT_SECRET_XAA_IDP_ONLY", strategy.XAA.IDPClientSecretEnv)
+				assert.Empty(t, strategy.XAA.TargetClientSecretEnv)
+			},
+		},
+		{
+			name: "xaa with no secret refs leaves env vars empty",
+			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "xaa-no-secrets",
+					Namespace: "default",
+				},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeXAA,
+					XAA: &mcpv1beta1.XAASpec{
+						IDPTokenURL:    "https://idp.example.com/token",
+						TargetTokenURL: "https://target.example.com/token",
+						TargetAudience: "https://target.example.com",
+						TargetResource: "https://mcp.example.com",
+					},
+				},
+			},
+			validate: func(t *testing.T, strategy *authtypes.BackendAuthStrategy) {
+				t.Helper()
+				require.NotNil(t, strategy.XAA)
+				assert.Empty(t, strategy.XAA.IDPClientSecretEnv)
+				assert.Empty(t, strategy.XAA.TargetClientSecretEnv)
+			},
+		},
+		{
 			name: "unsupported auth type",
 			externalAuthConfig: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1056,6 +1146,20 @@ func tokenExchangeStrategy(subjectProviderName string) *authtypes.BackendAuthStr
 	}
 }
 
+// xaaStrategy returns a minimal xaa BackendAuthStrategy for tests.
+func xaaStrategy(subjectProviderName string) *authtypes.BackendAuthStrategy {
+	return &authtypes.BackendAuthStrategy{
+		Type: authtypes.StrategyTypeXAA,
+		XAA: &authtypes.XAAConfig{
+			IDPTokenURL:         "https://idp.example.com/token",
+			TargetTokenURL:      "https://target.example.com/token",
+			TargetAudience:      "https://target.example.com",
+			TargetResource:      "https://mcp.example.com",
+			SubjectProviderName: subjectProviderName,
+		},
+	}
+}
+
 // embeddedAuthServerCfg builds a minimal EmbeddedAuthServerConfig with the given upstream names.
 func embeddedAuthServerCfg(upstreamNames ...string) *mcpv1beta1.EmbeddedAuthServerConfig {
 	cfg := &mcpv1beta1.EmbeddedAuthServerConfig{}
@@ -1155,6 +1259,26 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 			embeddedCfg:     embeddedAuthServerCfg("github"),
 			wantSamePointer: true,
 		},
+		// xaa strategy cases
+		{
+			name:                    "xaa_populates_subject_provider_name",
+			strategy:                xaaStrategy(""),
+			embeddedCfg:             embeddedAuthServerCfg("github"),
+			wantSubjectProviderName: "github",
+		},
+		{
+			name:                    "xaa_already_set_provider_not_overridden",
+			strategy:                xaaStrategy("explicit-provider"),
+			embeddedCfg:             embeddedAuthServerCfg("github"),
+			wantSamePointer:         true,
+			wantSubjectProviderName: "explicit-provider",
+		},
+		{
+			name:            "xaa_nil_XAA_config_returned_unchanged",
+			strategy:        &authtypes.BackendAuthStrategy{Type: authtypes.StrategyTypeXAA, XAA: nil},
+			embeddedCfg:     embeddedAuthServerCfg("github"),
+			wantSamePointer: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1172,6 +1296,8 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 						assert.Equal(t, tt.wantSubjectProviderName, result.TokenExchange.SubjectProviderName)
 					case result.AwsSts != nil:
 						assert.Equal(t, tt.wantSubjectProviderName, result.AwsSts.SubjectProviderName)
+					case result.XAA != nil:
+						assert.Equal(t, tt.wantSubjectProviderName, result.XAA.SubjectProviderName)
 					}
 				}
 				return
@@ -1193,6 +1319,14 @@ func TestInjectSubjectProviderIfNeeded(t *testing.T) {
 				// Verify the original strategy was not mutated.
 				if tt.strategy != nil && tt.strategy.AwsSts != nil {
 					assert.Empty(t, tt.strategy.AwsSts.SubjectProviderName,
+						"original strategy must not be mutated")
+				}
+			case authtypes.StrategyTypeXAA:
+				require.NotNil(t, result.XAA)
+				assert.Equal(t, tt.wantSubjectProviderName, result.XAA.SubjectProviderName)
+				// Verify the original strategy was not mutated.
+				if tt.strategy != nil && tt.strategy.XAA != nil {
+					assert.Empty(t, tt.strategy.XAA.SubjectProviderName,
 						"original strategy must not be mutated")
 				}
 			}
@@ -1666,6 +1800,128 @@ func TestBuildOutgoingAuthConfig_InlineBackendSubjectProviderInjection(t *testin
 	require.NotNil(t, config.Backends["inline-backend"].TokenExchange)
 	assert.Equal(t, "corporate-idp", config.Backends["inline-backend"].TokenExchange.SubjectProviderName,
 		"inline backend SubjectProviderName should be injected from first upstream")
+}
+
+// TestGetExternalAuthConfigSecretEnvVars_XAA verifies the XAA arm of
+// getExternalAuthConfigSecretEnvVars: it must return one env var per configured
+// SecretKeyRef (IdP and/or target), sourced from the referenced Secret, with
+// names generated by GenerateUniqueXAAIDPSecretEnvVarName and
+// GenerateUniqueXAATargetSecretEnvVarName respectively.
+func TestGetExternalAuthConfigSecretEnvVars_XAA(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name           string
+		authCfg        *mcpv1beta1.MCPExternalAuthConfig
+		wantEnvNames   []string
+		wantSecretRefs map[string]struct{ name, key string } // env var name → secret ref
+	}{
+		{
+			name: "both idp and target secret refs",
+			authCfg: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "xaa-cfg", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeXAA,
+					XAA: &mcpv1beta1.XAASpec{
+						IDPTokenURL:    "https://idp.example.com/token",
+						TargetTokenURL: "https://target.example.com/token",
+						TargetAudience: "https://target.example.com",
+						IDPClientSecretRef: &mcpv1beta1.SecretKeyRef{
+							Name: "idp-secret",
+							Key:  "client-secret",
+						},
+						TargetClientSecretRef: &mcpv1beta1.SecretKeyRef{
+							Name: "target-secret",
+							Key:  "client-secret",
+						},
+					},
+				},
+			},
+			wantEnvNames: []string{
+				"TOOLHIVE_XAA_IDP_CLIENT_SECRET_XAA_CFG",
+				"TOOLHIVE_XAA_TARGET_CLIENT_SECRET_XAA_CFG",
+			},
+			wantSecretRefs: map[string]struct{ name, key string }{
+				"TOOLHIVE_XAA_IDP_CLIENT_SECRET_XAA_CFG":    {name: "idp-secret", key: "client-secret"},
+				"TOOLHIVE_XAA_TARGET_CLIENT_SECRET_XAA_CFG": {name: "target-secret", key: "client-secret"},
+			},
+		},
+		{
+			name: "only idp secret ref",
+			authCfg: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "xaa-idp", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeXAA,
+					XAA: &mcpv1beta1.XAASpec{
+						IDPTokenURL:    "https://idp.example.com/token",
+						TargetTokenURL: "https://target.example.com/token",
+						TargetAudience: "https://target.example.com",
+						IDPClientSecretRef: &mcpv1beta1.SecretKeyRef{
+							Name: "idp-secret",
+							Key:  "idp-key",
+						},
+					},
+				},
+			},
+			wantEnvNames: []string{"TOOLHIVE_XAA_IDP_CLIENT_SECRET_XAA_IDP"},
+			wantSecretRefs: map[string]struct{ name, key string }{
+				"TOOLHIVE_XAA_IDP_CLIENT_SECRET_XAA_IDP": {name: "idp-secret", key: "idp-key"},
+			},
+		},
+		{
+			name: "no secret refs returns nil",
+			authCfg: &mcpv1beta1.MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{Name: "xaa-none", Namespace: "default"},
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeXAA,
+					XAA: &mcpv1beta1.XAASpec{
+						IDPTokenURL:    "https://idp.example.com/token",
+						TargetTokenURL: "https://target.example.com/token",
+						TargetAudience: "https://target.example.com",
+					},
+				},
+			},
+			wantEnvNames: nil,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			scheme := testutil.NewScheme(t)
+			fakeClient := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.authCfg).
+				Build()
+
+			r := &VirtualMCPServerReconciler{
+				Client:           fakeClient,
+				Scheme:           scheme,
+				PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
+			}
+
+			envVars, err := r.getExternalAuthConfigSecretEnvVars(t.Context(), "default", tt.authCfg.Name)
+			require.NoError(t, err)
+
+			if len(tt.wantEnvNames) == 0 {
+				assert.Empty(t, envVars)
+				return
+			}
+
+			require.Len(t, envVars, len(tt.wantEnvNames))
+			for _, ev := range envVars {
+				assert.Contains(t, tt.wantEnvNames, ev.Name,
+					"unexpected env var name %q", ev.Name)
+				if ref, ok := tt.wantSecretRefs[ev.Name]; ok {
+					require.NotNil(t, ev.ValueFrom)
+					require.NotNil(t, ev.ValueFrom.SecretKeyRef)
+					assert.Equal(t, ref.name, ev.ValueFrom.SecretKeyRef.Name)
+					assert.Equal(t, ref.key, ev.ValueFrom.SecretKeyRef.Key)
+				}
+			}
+		})
+	}
 }
 
 // TestGetExternalAuthConfigSecretEnvVars_OBO proves the obo arm of the

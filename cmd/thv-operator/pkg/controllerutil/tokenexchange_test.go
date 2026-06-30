@@ -329,7 +329,8 @@ func TestAddOBOSecretEnvVars(t *testing.T) {
 		case mcpv1beta1.ExternalAuthTypeUnauthenticated,
 			mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
 			mcpv1beta1.ExternalAuthTypeAWSSts,
-			mcpv1beta1.ExternalAuthTypeUpstreamInject:
+			mcpv1beta1.ExternalAuthTypeUpstreamInject,
+			mcpv1beta1.ExternalAuthTypeXAA:
 			// No secret-bearing sub-spec to populate for these types.
 		}
 		return cfg

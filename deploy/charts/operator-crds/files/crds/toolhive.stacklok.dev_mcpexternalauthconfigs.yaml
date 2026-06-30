@@ -798,13 +798,13 @@ spec:
                               type: object
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: Scopes are the OAuth scopes to request
-                                from the upstream IDP.
+                                from the upstream IdP.
                               items:
                                 type: string
                               type: array
@@ -948,7 +948,7 @@ spec:
                               type: object
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
-                                registered with the upstream IDP.
+                                registered with the upstream IdP.
                               type: string
                             clientSecretRef:
                               description: |-
@@ -973,13 +973,13 @@ spec:
                               type: string
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: |-
-                                Scopes are the OAuth scopes to request from the upstream IDP.
+                                Scopes are the OAuth scopes to request from the upstream IdP.
                                 If not specified, defaults to ["openid", "offline_access"].
                                 When using additionalAuthorizationParams with provider-specific refresh token
                                 mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
@@ -1354,6 +1354,7 @@ spec:
                 - awsSts
                 - upstreamInject
                 - obo
+                - xaa
                 type: string
               upstreamInject:
                 description: |-
@@ -1362,12 +1363,113 @@ spec:
                 properties:
                   providerName:
                     description: |-
-                      ProviderName is the name of the upstream IDP provider whose access token
+                      ProviderName is the name of the upstream IdP provider whose access token
                       should be injected as the Authorization: Bearer header.
                     minLength: 1
                     type: string
                 required:
                 - providerName
+                type: object
+              xaa:
+                description: |-
+                  XAA configures XAA (Cross-Application Access) auth for backend requests.
+                  Only used when Type is "xaa".
+                properties:
+                  idpClientId:
+                    description: IDPClientID is the OAuth client ID at the IdP for
+                      Step A.
+                    type: string
+                  idpClientSecretRef:
+                    description: IDPClientSecretRef references a Kubernetes Secret
+                      containing the IdP client secret.
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  idpTokenUrl:
+                    description: |-
+                      IDPTokenURL is the IdP token endpoint for Step A (RFC 8693 exchange).
+                      Must be a valid HTTPS URL.
+                    pattern: ^https://.*$
+                    type: string
+                  insecureTargetTokenUrl:
+                    description: |-
+                      InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+                      WARNING: this is insecure and must only be set for in-cluster or
+                      development/testing endpoints — never in production.
+                    type: boolean
+                  scopes:
+                    description: Scopes are the requested scopes for the XAA exchange
+                      (Steps A and B).
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  subjectProviderName:
+                    description: |-
+                      SubjectProviderName selects which upstream provider's ID token to use.
+                      When left empty and an embedded authorization server is configured,
+                      the controller automatically populates this field with the first configured
+                      upstream provider name.
+                    type: string
+                  subjectTokenType:
+                    description: |-
+                      SubjectTokenType is the token-type URN of the upstream subject token
+                      used in Step A. Defaults to "urn:ietf:params:oauth:token-type:id_token"
+                      when empty.
+                    enum:
+                    - urn:ietf:params:oauth:token-type:id_token
+                    type: string
+                  targetAudience:
+                    description: TargetAudience is the resource AS URL for the ID-JAG
+                      audience claim.
+                    type: string
+                  targetClientId:
+                    description: |-
+                      TargetClientID is the OAuth client ID at the target AS for Step B.
+                      ID-JAG draft §9.1 RECOMMENDS confidential clients for Step B; most
+                      conformant target authorization servers will reject an unauthenticated
+                      JWT-bearer grant per the §4.4.1 client_id continuity requirement.
+                    type: string
+                  targetClientSecretRef:
+                    description: TargetClientSecretRef references a Kubernetes Secret
+                      for the target AS client secret.
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  targetResource:
+                    description: |-
+                      TargetResource is the RFC 8707 resource indicator sent as the `resource`
+                      parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                      identifies the target resource server — not the access-token audience, which
+                      is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+                      Some authorization servers (e.g. Okta's early ID-JAG implementation) require
+                      this parameter in practice despite the draft marking it optional — set it
+                      when your IdP needs it.
+                    type: string
+                  targetTokenUrl:
+                    description: TargetTokenURL is the target AS token endpoint for
+                      Step B (JWT Bearer grant).
+                    type: string
+                required:
+                - idpTokenUrl
+                - targetAudience
+                - targetTokenUrl
                 type: object
             required:
             - type
@@ -1395,11 +1497,13 @@ spec:
                 !has(self.upstreamInject)'
             - message: obo configuration must be set if and only if type is 'obo'
               rule: 'self.type == ''obo'' ? has(self.obo) : !has(self.obo)'
+            - message: xaa configuration must be set if and only if type is 'xaa'
+              rule: 'self.type == ''xaa'' ? has(self.xaa) : !has(self.xaa)'
             - message: no configuration must be set when type is 'unauthenticated'
               rule: 'self.type == ''unauthenticated'' ? (!has(self.tokenExchange)
                 && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)
-                && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo))
-                : true'
+                && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo)
+                && !has(self.xaa)) : true'
           status:
             description: MCPExternalAuthConfigStatus defines the observed state of
               MCPExternalAuthConfig
@@ -2296,13 +2400,13 @@ spec:
                               type: object
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: Scopes are the OAuth scopes to request
-                                from the upstream IDP.
+                                from the upstream IdP.
                               items:
                                 type: string
                               type: array
@@ -2446,7 +2550,7 @@ spec:
                               type: object
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
-                                registered with the upstream IDP.
+                                registered with the upstream IdP.
                               type: string
                             clientSecretRef:
                               description: |-
@@ -2471,13 +2575,13 @@ spec:
                               type: string
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: |-
-                                Scopes are the OAuth scopes to request from the upstream IDP.
+                                Scopes are the OAuth scopes to request from the upstream IdP.
                                 If not specified, defaults to ["openid", "offline_access"].
                                 When using additionalAuthorizationParams with provider-specific refresh token
                                 mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
@@ -2852,6 +2956,7 @@ spec:
                 - awsSts
                 - upstreamInject
                 - obo
+                - xaa
                 type: string
               upstreamInject:
                 description: |-
@@ -2860,12 +2965,113 @@ spec:
                 properties:
                   providerName:
                     description: |-
-                      ProviderName is the name of the upstream IDP provider whose access token
+                      ProviderName is the name of the upstream IdP provider whose access token
                       should be injected as the Authorization: Bearer header.
                     minLength: 1
                     type: string
                 required:
                 - providerName
+                type: object
+              xaa:
+                description: |-
+                  XAA configures XAA (Cross-Application Access) auth for backend requests.
+                  Only used when Type is "xaa".
+                properties:
+                  idpClientId:
+                    description: IDPClientID is the OAuth client ID at the IdP for
+                      Step A.
+                    type: string
+                  idpClientSecretRef:
+                    description: IDPClientSecretRef references a Kubernetes Secret
+                      containing the IdP client secret.
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  idpTokenUrl:
+                    description: |-
+                      IDPTokenURL is the IdP token endpoint for Step A (RFC 8693 exchange).
+                      Must be a valid HTTPS URL.
+                    pattern: ^https://.*$
+                    type: string
+                  insecureTargetTokenUrl:
+                    description: |-
+                      InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+                      WARNING: this is insecure and must only be set for in-cluster or
+                      development/testing endpoints — never in production.
+                    type: boolean
+                  scopes:
+                    description: Scopes are the requested scopes for the XAA exchange
+                      (Steps A and B).
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
+                  subjectProviderName:
+                    description: |-
+                      SubjectProviderName selects which upstream provider's ID token to use.
+                      When left empty and an embedded authorization server is configured,
+                      the controller automatically populates this field with the first configured
+                      upstream provider name.
+                    type: string
+                  subjectTokenType:
+                    description: |-
+                      SubjectTokenType is the token-type URN of the upstream subject token
+                      used in Step A. Defaults to "urn:ietf:params:oauth:token-type:id_token"
+                      when empty.
+                    enum:
+                    - urn:ietf:params:oauth:token-type:id_token
+                    type: string
+                  targetAudience:
+                    description: TargetAudience is the resource AS URL for the ID-JAG
+                      audience claim.
+                    type: string
+                  targetClientId:
+                    description: |-
+                      TargetClientID is the OAuth client ID at the target AS for Step B.
+                      ID-JAG draft §9.1 RECOMMENDS confidential clients for Step B; most
+                      conformant target authorization servers will reject an unauthenticated
+                      JWT-bearer grant per the §4.4.1 client_id continuity requirement.
+                    type: string
+                  targetClientSecretRef:
+                    description: TargetClientSecretRef references a Kubernetes Secret
+                      for the target AS client secret.
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  targetResource:
+                    description: |-
+                      TargetResource is the RFC 8707 resource indicator sent as the `resource`
+                      parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                      identifies the target resource server — not the access-token audience, which
+                      is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+                      Some authorization servers (e.g. Okta's early ID-JAG implementation) require
+                      this parameter in practice despite the draft marking it optional — set it
+                      when your IdP needs it.
+                    type: string
+                  targetTokenUrl:
+                    description: TargetTokenURL is the target AS token endpoint for
+                      Step B (JWT Bearer grant).
+                    type: string
+                required:
+                - idpTokenUrl
+                - targetAudience
+                - targetTokenUrl
                 type: object
             required:
             - type
@@ -2893,11 +3099,13 @@ spec:
                 !has(self.upstreamInject)'
             - message: obo configuration must be set if and only if type is 'obo'
               rule: 'self.type == ''obo'' ? has(self.obo) : !has(self.obo)'
+            - message: xaa configuration must be set if and only if type is 'xaa'
+              rule: 'self.type == ''xaa'' ? has(self.xaa) : !has(self.xaa)'
             - message: no configuration must be set when type is 'unauthenticated'
               rule: 'self.type == ''unauthenticated'' ? (!has(self.tokenExchange)
                 && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer)
-                && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo))
-                : true'
+                && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo)
+                && !has(self.xaa)) : true'
           status:
             description: MCPExternalAuthConfigStatus defines the observed state of
               MCPExternalAuthConfig

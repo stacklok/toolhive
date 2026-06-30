@@ -437,13 +437,14 @@ func addUpstreamSwapMiddleware(
 
 	// Derive ProviderName from the upstream config if not explicitly set
 	if upstreamSwapConfig.ProviderName == "" {
-		upstreamSwapConfig.ProviderName = func() string {
-			if cfg := config.EmbeddedAuthServerConfig; cfg != nil &&
-				len(cfg.Upstreams) > 0 {
-				return authserver.ResolveUpstreamName(cfg.Upstreams[0].Name)
+		var names []string
+		if embeddedCfg := config.EmbeddedAuthServerConfig; embeddedCfg != nil {
+			names = make([]string, len(embeddedCfg.Upstreams))
+			for i, u := range embeddedCfg.Upstreams {
+				names[i] = u.Name
 			}
-			return authserver.DefaultUpstreamName
-		}()
+		}
+		upstreamSwapConfig.ProviderName = authserver.ResolveFirstUpstreamName(names)
 	}
 
 	upstreamSwapParams := upstreamswap.MiddlewareParams{
@@ -472,14 +473,11 @@ func injectUpstreamProviderIfNeeded(
 		return authzCfg, nil
 	}
 
-	// Derive the provider name the same way addUpstreamSwapMiddleware does,
-	// delegating normalisation (empty-string → "default") to ResolveUpstreamName.
-	providerName := func() string {
-		if len(embeddedCfg.Upstreams) > 0 {
-			return authserver.ResolveUpstreamName(embeddedCfg.Upstreams[0].Name)
-		}
-		return authserver.DefaultUpstreamName
-	}()
+	names := make([]string, len(embeddedCfg.Upstreams))
+	for i, u := range embeddedCfg.Upstreams {
+		names[i] = u.Name
+	}
+	providerName := authserver.ResolveFirstUpstreamName(names)
 
 	return cedar.InjectUpstreamProvider(authzCfg, providerName)
 }

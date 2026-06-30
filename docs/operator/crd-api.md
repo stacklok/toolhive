@@ -245,6 +245,7 @@ _Appears in:_
 | `targetResource` _string_ | TargetResource is the RFC 8707 resource indicator sent as the `resource`<br />parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It<br />identifies the target resource server — not the access-token audience, which<br />is governed by TargetAudience. For MCP backends, set to the MCP server URL. |  |  |
 | `scopes` _string array_ | Scopes are the requested scopes for Steps A and B. |  |  |
 | `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's ID token to use.<br />Auto-populated when embedded AS is active. |  |  |
+| `subjectTokenType` _string_ | SubjectTokenType is the token-type URN of the upstream subject token<br />used in Step A. Defaults to TokenTypeIDToken when empty. Currently only<br />urn:ietf:params:oauth:token-type:id_token is accepted; the field exists<br />to allow future expansion to SAML upstreams without an API break. |  |  |
 
 
 
@@ -1552,8 +1553,9 @@ _Appears in:_
 | `unauthenticated` | ExternalAuthTypeUnauthenticated is the type for no authentication<br />This should only be used for backends on trusted networks (e.g., localhost, VPC)<br />or when authentication is handled by network-level security<br /> |
 | `embeddedAuthServer` | ExternalAuthTypeEmbeddedAuthServer is the type for embedded OAuth2/OIDC authorization server<br />This enables running an embedded auth server that delegates to upstream IDPs<br /> |
 | `awsSts` | ExternalAuthTypeAWSSts is the type for AWS STS authentication<br /> |
-| `upstreamInject` | ExternalAuthTypeUpstreamInject is the type for upstream token injection<br />This injects an upstream IDP access token as the Authorization: Bearer header<br /> |
+| `upstreamInject` | ExternalAuthTypeUpstreamInject is the type for upstream token injection<br />This injects an upstream IdP access token as the Authorization: Bearer header<br /> |
 | `obo` | ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.<br />This type requires a build with an OBO handler registered via<br />controllerutil.RegisterOBOHandler; an upstream-only build surfaces<br />status.conditions[Valid] = False with Reason: EnterpriseRequired<br />when an obo-typed MCPExternalAuthConfig is applied.<br /> |
+| `xaa` | ExternalAuthTypeXAA is the type for XAA (Cross-Application Access) auth.<br />XAA performs a two-step token exchange to obtain access tokens for target services:<br />  - Step A (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT<br />  - Step B (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token<br /> |
 
 
 #### api.v1beta1.HeaderForwardConfig
@@ -1895,7 +1897,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `type` _[api.v1beta1.ExternalAuthType](#apiv1beta1externalauthtype)_ | Type is the type of external authentication to configure.<br />When set to "obo", the cluster must run a build that has registered an<br />OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds<br />surface status.conditions[Valid] = False with Reason: EnterpriseRequired<br />for obo-typed configs. |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject obo] <br />Required: \{\} <br /> |
+| `type` _[api.v1beta1.ExternalAuthType](#apiv1beta1externalauthtype)_ | Type is the type of external authentication to configure.<br />When set to "obo", the cluster must run a build that has registered an<br />OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds<br />surface status.conditions[Valid] = False with Reason: EnterpriseRequired<br />for obo-typed configs. |  | Enum: [tokenExchange headerInjection bearerToken unauthenticated embeddedAuthServer awsSts upstreamInject obo xaa] <br />Required: \{\} <br /> |
 | `tokenExchange` _[api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)_ | TokenExchange configures RFC-8693 OAuth 2.0 Token Exchange<br />Only used when Type is "tokenExchange" |  | Optional: \{\} <br /> |
 | `headerInjection` _[api.v1beta1.HeaderInjectionConfig](#apiv1beta1headerinjectionconfig)_ | HeaderInjection configures custom HTTP header injection<br />Only used when Type is "headerInjection" |  | Optional: \{\} <br /> |
 | `bearerToken` _[api.v1beta1.BearerTokenConfig](#apiv1beta1bearertokenconfig)_ | BearerToken configures bearer token authentication<br />Only used when Type is "bearerToken" |  | Optional: \{\} <br /> |
@@ -1903,6 +1905,7 @@ _Appears in:_
 | `awsSts` _[api.v1beta1.AWSStsConfig](#apiv1beta1awsstsconfig)_ | AWSSts configures AWS STS authentication with SigV4 request signing<br />Only used when Type is "awsSts" |  | Optional: \{\} <br /> |
 | `upstreamInject` _[api.v1beta1.UpstreamInjectSpec](#apiv1beta1upstreaminjectspec)_ | UpstreamInject configures upstream token injection for backend requests.<br />Only used when Type is "upstreamInject". |  | Optional: \{\} <br /> |
 | `obo` _[api.v1beta1.OBOConfig](#apiv1beta1oboconfig)_ | OBO configures On-Behalf-Of (OBO) authentication.<br />Only used when Type is "obo". Setting this field on an upstream-only build<br />causes the MCPExternalAuthConfig to transition to<br />status.conditions[Valid] = False with Reason: EnterpriseRequired, because<br />no OBO handler is registered. See OBOConfig for the field-to-runtime<br />contract mapping. |  | Optional: \{\} <br /> |
+| `xaa` _[api.v1beta1.XAASpec](#apiv1beta1xaaspec)_ | XAA configures XAA (Cross-Application Access) auth for backend requests.<br />Only used when Type is "xaa". |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.MCPExternalAuthConfigStatus
@@ -2974,8 +2977,8 @@ _Appears in:_
 | `userInfo` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfo contains configuration for fetching user information from the upstream provider.<br />When omitted and IdentityFromToken is also unset, the embedded auth server runs in<br />synthesis mode for this upstream: a non-PII subject derived from the access token, no<br />Name/Email. Use this shape for upstreams with no userinfo surface and no identity in<br />the token response (e.g., MCP authorization servers per the MCP spec). When<br />IdentityFromToken is set instead, identity is resolved from the token response body<br />(e.g., Snowflake's "username" field, Slack's "authed_user.id"); the userinfo HTTP call<br />is skipped entirely. |  | Optional: \{\} <br /> |
 | `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.<br />Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained<br />at runtime via RFC 7591 Dynamic Client Registration and must be left empty. |  | Optional: \{\} <br /> |
 | `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
-| `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
-| `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP. |  | Optional: \{\} <br /> |
+| `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IdP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
+| `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IdP. |  | Optional: \{\} <br /> |
 | `tokenResponseMapping` _[api.v1beta1.TokenResponseMapping](#apiv1beta1tokenresponsemapping)_ | TokenResponseMapping configures custom field extraction from non-standard token responses.<br />Some OAuth providers (e.g., GovSlack) nest token fields under non-standard paths<br />instead of returning them at the top level. When set, ToolHive performs the token<br />exchange HTTP call directly and extracts fields using the configured dot-notation paths.<br />If nil, standard OAuth 2.0 token response parsing is used.<br />For extracting user identity from the token response, see IdentityFromToken. |  | Optional: \{\} <br /> |
 | `identityFromToken` _[api.v1beta1.IdentityFromTokenConfig](#apiv1beta1identityfromtokenconfig)_ | IdentityFromToken extracts user identity (subject, name, email) directly<br />from the OAuth2 token-endpoint response body using gjson dot-notation paths.<br />When set, the embedded auth server skips the userinfo HTTP call entirely<br />and resolves identity from the token response. See IdentityFromTokenConfig<br />for trust-model and uniqueness considerations. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
@@ -3054,10 +3057,10 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `issuerUrl` _string_ | IssuerURL is the OIDC issuer URL for automatic endpoint discovery.<br />Must be a valid HTTPS URL. |  | Pattern: `^https://.*$` <br />Required: \{\} <br /> |
-| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IDP. |  | Required: \{\} <br /> |
+| `clientId` _string_ | ClientID is the OAuth 2.0 client identifier registered with the upstream IdP. |  | Required: \{\} <br /> |
 | `clientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.<br />Optional for public clients using PKCE instead of client secret. |  | Optional: \{\} <br /> |
-| `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IDP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
-| `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IDP.<br />If not specified, defaults to ["openid", "offline_access"].<br />When using additionalAuthorizationParams with provider-specific refresh token<br />mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid<br />sending both offline_access and the provider-specific parameter. |  | Optional: \{\} <br /> |
+| `redirectUri` _string_ | RedirectURI is the callback URL where the upstream IdP will redirect after authentication.<br />When not specified, defaults to `\{resourceUrl\}/oauth/callback` where `resourceUrl` is the<br />URL associated with the resource (e.g., MCPServer or vMCP) using this config. |  | Optional: \{\} <br /> |
+| `scopes` _string array_ | Scopes are the OAuth scopes to request from the upstream IdP.<br />If not specified, defaults to ["openid", "offline_access"].<br />When using additionalAuthorizationParams with provider-specific refresh token<br />mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid<br />sending both offline_access and the provider-specific parameter. |  | Optional: \{\} <br /> |
 | `userInfoOverride` _[api.v1beta1.UserInfoConfig](#apiv1beta1userinfoconfig)_ | UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.<br />By default, the UserInfo endpoint is discovered automatically via OIDC discovery.<br />Use this to override the endpoint URL, HTTP method, or field mappings for providers<br />that return non-standard claim names in their UserInfo response. |  | Optional: \{\} <br /> |
 | `additionalAuthorizationParams` _object (keys:string, values:string)_ | AdditionalAuthorizationParams are extra query parameters to include in<br />authorization requests sent to the upstream provider.<br />This is useful for providers that require custom parameters, such as<br />Google's access_type=offline for obtaining refresh tokens.<br />Note: when using access_type=offline, also set explicit scopes to avoid<br />the default offline_access scope being sent alongside it.<br />Framework-managed parameters (response_type, client_id, redirect_uri,<br />scope, state, code_challenge, code_challenge_method, nonce) are not allowed. |  | MaxProperties: 16 <br />Optional: \{\} <br /> |
 | `subjectClaim` _string_ | SubjectClaim names the validated ID-token claim to use as the upstream<br />subject. Defaults to "sub" when empty. Set it for IdPs where "sub" isn't<br />stable per user — e.g. Entra/Azure AD, whose "sub" rotates per application<br />and whose stable identifier is "oid".<br />The value is looked up verbatim as a top-level claim name, so it is<br />constrained to a claim-name shape: it must start with a letter or<br />underscore and contain only letters, digits, and underscores. This rejects<br />dotted, colon-namespaced, or whitespace-containing values at admission<br />rather than letting a typo silently miss the claim at login, and keeps the<br />field aligned with the directory service's per-issuer bindingClaim.<br />Changing this on a live deployment re-keys existing users (the value<br />resolves to the internal user ID), so treat it as immutable once users<br />exist.<br />Per-IdP notes:<br />  - Entra/Azure AD: use "oid"; it is only emitted when the upstream scopes<br />    include "profile". "oid" is unique within a single tenant — multi-tenant<br />    apps need oid+tid, which this single-claim field cannot express.<br />  - Okta: the org auth server already puts the stable id in "sub" (default<br />    works). A custom auth server's "sub" is the mutable login/email and the<br />    stable "uid" lives only in the access token, not the ID token — map a<br />    custom ID-token claim and point subjectClaim at it.<br />The pattern matches the claim-name shape and allows empty (defaults to<br />"sub"). Using Pattern rather than a CEL XValidation rule keeps this off the<br />CRD's CEL cost budget — a single-field format check via CEL is rejected by<br />the apiserver as too expensive once multiplied across the upstreams list. |  | MaxLength: 128 <br />Pattern: `^([a-zA-Z_][a-zA-Z0-9_]*)?$` <br />Optional: \{\} <br /> |
@@ -3395,6 +3398,7 @@ _Appears in:_
 - [api.v1beta1.TokenExchangeConfig](#apiv1beta1tokenexchangeconfig)
 - [api.v1beta1.WebhookSpec](#apiv1beta1webhookspec)
 - [api.v1beta1.WebhookTLSConfig](#apiv1beta1webhooktlsconfig)
+- [api.v1beta1.XAASpec](#apiv1beta1xaaspec)
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
@@ -3614,7 +3618,7 @@ _Appears in:_
 
 
 UpstreamInjectSpec holds configuration for upstream token injection.
-This strategy injects an upstream IDP access token obtained by the embedded
+This strategy injects an upstream IdP access token obtained by the embedded
 authorization server into backend requests as the Authorization: Bearer header.
 
 
@@ -3624,7 +3628,7 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `providerName` _string_ | ProviderName is the name of the upstream IDP provider whose access token<br />should be injected as the Authorization: Bearer header. |  | MinLength: 1 <br />Required: \{\} <br /> |
+| `providerName` _string_ | ProviderName is the name of the upstream IdP provider whose access token<br />should be injected as the Authorization: Bearer header. |  | MinLength: 1 <br />Required: \{\} <br /> |
 
 
 #### api.v1beta1.UpstreamProviderConfig
@@ -4059,5 +4063,36 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `kind` _string_ | Kind is the type of workload resource |  | Enum: [MCPServer VirtualMCPServer MCPRemoteProxy] <br />Required: \{\} <br /> |
 | `name` _string_ | Name is the name of the workload resource |  | MinLength: 1 <br />Required: \{\} <br /> |
+
+
+#### api.v1beta1.XAASpec
+
+
+
+XAASpec holds configuration for the XAA (Cross-Application Access) auth strategy.
+XAA implements draft-ietf-oauth-identity-assertion-authz-grant (ID-JAG) — a
+two-step token exchange to obtain access tokens for target services:
+  - Step A (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+  - Step B (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+
+
+
+_Appears in:_
+- [api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `idpTokenUrl` _string_ | IDPTokenURL is the IdP token endpoint for Step A (RFC 8693 exchange).<br />Must be a valid HTTPS URL. |  | Pattern: `^https://.*$` <br />Required: \{\} <br /> |
+| `idpClientId` _string_ | IDPClientID is the OAuth client ID at the IdP for Step A. |  | Optional: \{\} <br /> |
+| `idpClientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | IDPClientSecretRef references a Kubernetes Secret containing the IdP client secret. |  | Optional: \{\} <br /> |
+| `targetTokenUrl` _string_ | TargetTokenURL is the target AS token endpoint for Step B (JWT Bearer grant). |  | Required: \{\} <br /> |
+| `insecureTargetTokenUrl` _boolean_ | InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.<br />WARNING: this is insecure and must only be set for in-cluster or<br />development/testing endpoints — never in production. |  | Optional: \{\} <br /> |
+| `targetClientId` _string_ | TargetClientID is the OAuth client ID at the target AS for Step B.<br />ID-JAG draft §9.1 RECOMMENDS confidential clients for Step B; most<br />conformant target authorization servers will reject an unauthenticated<br />JWT-bearer grant per the §4.4.1 client_id continuity requirement. |  | Optional: \{\} <br /> |
+| `targetClientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | TargetClientSecretRef references a Kubernetes Secret for the target AS client secret. |  | Optional: \{\} <br /> |
+| `targetAudience` _string_ | TargetAudience is the resource AS URL for the ID-JAG audience claim. |  | Required: \{\} <br /> |
+| `targetResource` _string_ | TargetResource is the RFC 8707 resource indicator sent as the `resource`<br />parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It<br />identifies the target resource server — not the access-token audience, which<br />is governed by TargetAudience. For MCP backends, set to the MCP server URL.<br />Some authorization servers (e.g. Okta's early ID-JAG implementation) require<br />this parameter in practice despite the draft marking it optional — set it<br />when your IdP needs it. |  | Optional: \{\} <br /> |
+| `scopes` _string array_ | Scopes are the requested scopes for the XAA exchange (Steps A and B). |  | Optional: \{\} <br /> |
+| `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's ID token to use.<br />When left empty and an embedded authorization server is configured,<br />the controller automatically populates this field with the first configured<br />upstream provider name. |  | Optional: \{\} <br /> |
+| `subjectTokenType` _string_ | SubjectTokenType is the token-type URN of the upstream subject token<br />used in Step A. Defaults to "urn:ietf:params:oauth:token-type:id_token"<br />when empty. |  | Enum: [urn:ietf:params:oauth:token-type:id_token] <br />Optional: \{\} <br /> |
 
 

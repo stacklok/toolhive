@@ -107,6 +107,12 @@ func TestDefaultRegistry(t *testing.T) {
 		require.NotNil(t, oboConverter)
 		assert.Equal(t, "obo", oboConverter.StrategyType())
 		assert.IsType(t, &OBOConverter{}, oboConverter)
+
+		// Test XAA converter
+		xaaConverter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeXAA)
+		require.NoError(t, err)
+		require.NotNil(t, xaaConverter)
+		assert.Equal(t, "xaa", xaaConverter.StrategyType())
 	})
 }
 
@@ -144,6 +150,10 @@ func TestNewRegistry(t *testing.T) {
 		oboConverter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeOBO)
 		require.NoError(t, err)
 		assert.NotNil(t, oboConverter)
+
+		xaaConverter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeXAA)
+		require.NoError(t, err)
+		assert.NotNil(t, xaaConverter)
 	})
 
 	t.Run("creates independent instances", func(t *testing.T) {
@@ -172,6 +182,7 @@ func TestNewRegistry(t *testing.T) {
 			{mcpv1beta1.ExternalAuthTypeUpstreamInject, "upstream_inject"},
 			{mcpv1beta1.ExternalAuthTypeAWSSts, "aws_sts"},
 			{mcpv1beta1.ExternalAuthTypeOBO, "obo"},
+			{mcpv1beta1.ExternalAuthTypeXAA, "xaa"},
 		}
 
 		for _, tc := range testCases {

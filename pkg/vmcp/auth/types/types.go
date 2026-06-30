@@ -320,4 +320,10 @@ type XAAConfig struct {
 	// SubjectProviderName selects which upstream provider's ID token to use.
 	// Auto-populated when embedded AS is active.
 	SubjectProviderName string `json:"subjectProviderName,omitempty" yaml:"subjectProviderName,omitempty"`
+
+	// SubjectTokenType is the token-type URN of the upstream subject token
+	// used in Step A. Defaults to TokenTypeIDToken when empty. Currently only
+	// urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
+	// to allow future expansion to SAML upstreams without an API break.
+	SubjectTokenType string `json:"subjectTokenType,omitempty" yaml:"subjectTokenType,omitempty"`
 }

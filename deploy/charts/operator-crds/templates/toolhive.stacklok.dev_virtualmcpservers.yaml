@@ -674,13 +674,13 @@ spec:
                               type: object
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: Scopes are the OAuth scopes to request
-                                from the upstream IDP.
+                                from the upstream IdP.
                               items:
                                 type: string
                               type: array
@@ -824,7 +824,7 @@ spec:
                               type: object
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
-                                registered with the upstream IDP.
+                                registered with the upstream IdP.
                               type: string
                             clientSecretRef:
                               description: |-
@@ -849,13 +849,13 @@ spec:
                               type: string
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: |-
-                                Scopes are the OAuth scopes to request from the upstream IDP.
+                                Scopes are the OAuth scopes to request from the upstream IdP.
                                 If not specified, defaults to ["openid", "offline_access"].
                                 When using additionalAuthorizationParams with provider-specific refresh token
                                 mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
@@ -2160,6 +2160,13 @@ spec:
                                     SubjectProviderName selects which upstream provider's ID token to use.
                                     Auto-populated when embedded AS is active.
                                   type: string
+                                subjectTokenType:
+                                  description: |-
+                                    SubjectTokenType is the token-type URN of the upstream subject token
+                                    used in Step A. Defaults to TokenTypeIDToken when empty. Currently only
+                                    urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
+                                    to allow future expansion to SAML upstreams without an API break.
+                                  type: string
                                 targetAudience:
                                   description: TargetAudience is the resource AS URL
                                     for the ID-JAG audience claim (required).
@@ -2456,6 +2463,13 @@ spec:
                                 description: |-
                                   SubjectProviderName selects which upstream provider's ID token to use.
                                   Auto-populated when embedded AS is active.
+                                type: string
+                              subjectTokenType:
+                                description: |-
+                                  SubjectTokenType is the token-type URN of the upstream subject token
+                                  used in Step A. Defaults to TokenTypeIDToken when empty. Currently only
+                                  urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
+                                  to allow future expansion to SAML upstreams without an API break.
                                 type: string
                               targetAudience:
                                 description: TargetAudience is the resource AS URL
@@ -4066,13 +4080,13 @@ spec:
                               type: object
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: Scopes are the OAuth scopes to request
-                                from the upstream IDP.
+                                from the upstream IdP.
                               items:
                                 type: string
                               type: array
@@ -4216,7 +4230,7 @@ spec:
                               type: object
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
-                                registered with the upstream IDP.
+                                registered with the upstream IdP.
                               type: string
                             clientSecretRef:
                               description: |-
@@ -4241,13 +4255,13 @@ spec:
                               type: string
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: |-
-                                Scopes are the OAuth scopes to request from the upstream IDP.
+                                Scopes are the OAuth scopes to request from the upstream IdP.
                                 If not specified, defaults to ["openid", "offline_access"].
                                 When using additionalAuthorizationParams with provider-specific refresh token
                                 mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
@@ -5552,6 +5566,13 @@ spec:
                                     SubjectProviderName selects which upstream provider's ID token to use.
                                     Auto-populated when embedded AS is active.
                                   type: string
+                                subjectTokenType:
+                                  description: |-
+                                    SubjectTokenType is the token-type URN of the upstream subject token
+                                    used in Step A. Defaults to TokenTypeIDToken when empty. Currently only
+                                    urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
+                                    to allow future expansion to SAML upstreams without an API break.
+                                  type: string
                                 targetAudience:
                                   description: TargetAudience is the resource AS URL
                                     for the ID-JAG audience claim (required).
@@ -5848,6 +5869,13 @@ spec:
                                 description: |-
                                   SubjectProviderName selects which upstream provider's ID token to use.
                                   Auto-populated when embedded AS is active.
+                                type: string
+                              subjectTokenType:
+                                description: |-
+                                  SubjectTokenType is the token-type URN of the upstream subject token
+                                  used in Step A. Defaults to TokenTypeIDToken when empty. Currently only
+                                  urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
+                                  to allow future expansion to SAML upstreams without an API break.
                                 type: string
                               targetAudience:
                                 description: TargetAudience is the resource AS URL

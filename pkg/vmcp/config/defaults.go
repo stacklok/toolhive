@@ -97,20 +97,18 @@ func (c *Config) EnsureOperationalDefaults() {
 // strategy with no SubjectProviderName would silently fall back to
 // identity.Token (the ToolHive-issued JWT), which the exchange endpoint rejects.
 //
-// When cfg or rc is nil the call is a no-op. The provider name is resolved from
-// the first upstream in rc.Upstreams (normalised via authserver.ResolveUpstreamName);
-// if there are no upstreams it falls back to authserver.DefaultUpstreamName.
+// When cfg or rc is nil the call is a no-op. The provider name is derived via
+// authserver.ResolveFirstUpstreamName over rc.Upstreams.
 func InjectSubjectProviderNames(cfg *Config, rc *authserver.RunConfig) {
 	if cfg == nil || rc == nil || cfg.OutgoingAuth == nil {
 		return
 	}
 
-	providerName := func() string {
-		if len(rc.Upstreams) > 0 {
-			return authserver.ResolveUpstreamName(rc.Upstreams[0].Name)
-		}
-		return authserver.DefaultUpstreamName
-	}()
+	names := make([]string, len(rc.Upstreams))
+	for i, u := range rc.Upstreams {
+		names[i] = u.Name
+	}
+	providerName := authserver.ResolveFirstUpstreamName(names)
 
 	injectIntoStrategy(cfg.OutgoingAuth.Default, providerName)
 	for _, strategy := range cfg.OutgoingAuth.Backends {

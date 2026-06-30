@@ -195,12 +195,7 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 
 		result, err := s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))
 		if err != nil {
-			// Admission denial returns a generic message so the underlying authorizer
-			// error is never forwarded to the client.
-			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
-				return mcp.NewToolResultError("call denied by authorization policy"), nil
-			}
-			return mcp.NewToolResultError(err.Error()), nil
+			return conversion.ErrorToToolResult(err), nil
 		}
 
 		return &mcp.CallToolResult{

@@ -24,6 +24,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -683,6 +684,31 @@ func TestServeCoreToolHandler(t *testing.T) {
 			assert.Equal(t, want, fc.callToolCalls.Load())
 		})
 	}
+}
+
+func TestServeCoreToolHandlerCodedErrorReturnsStructuredToolResult(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{
+		tools:   []vmcp.Tool{{Name: "t"}},
+		callErr: &ratelimit.RateLimitedError{RetryAfter: time.Second},
+	}
+	srv, sessionID, _ := registerServeSession(t, fc)
+
+	req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+	res, err := srv.coreToolHandler(sessionID, "t", "")(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.True(t, res.IsError)
+	sc, ok := res.StructuredContent.(map[string]any)
+	require.True(t, ok, "coded errors should carry structured content")
+	assert.EqualValues(t, ratelimit.CodeRateLimited, sc["code"])
+	assert.Equal(t, ratelimit.MessageRateLimited, sc["message"])
+	data, ok := sc["data"].(map[string]any)
+	require.True(t, ok, "coded errors should carry structured data")
+	assert.EqualValues(t, 1, data["retryAfterSeconds"])
+	assert.Equal(t, int32(1), fc.callToolCalls.Load())
 }
 
 // TestServeToolCallTerminatesOnBindingFailure proves the documented fail-closed side

@@ -14,6 +14,7 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/schema"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
@@ -197,7 +198,7 @@ func (s *Server) optimizerCallToolHandler(sessionID string, opt optimizer.Optimi
 
 		result, err := opt.CallTool(ctx, input)
 		if err != nil {
-			return mcp.NewToolResultError(fmt.Sprintf("call_tool failed: %v", err)), nil
+			return conversion.ErrorToToolResult(fmt.Errorf("call_tool failed: %w", err)), nil
 		}
 		// Defensive parity with the legacy optimizerdec handler: the production
 		// optimizer never returns (nil, nil), but guard so a future implementation

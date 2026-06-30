@@ -1,20 +1,19 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-// Package factory builds vMCP-specific rate-limit middleware.
+// Package factory builds vMCP-specific rate-limit dependencies.
 package factory
 
 import (
 	"context"
 	"fmt"
-	"net/http"
 
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	ratelimittypes "github.com/stacklok/toolhive/pkg/ratelimit/types"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-// Config contains the vMCP rate-limit middleware inputs.
+// Config contains the vMCP rate-limit dependency inputs.
 type Config struct {
 	Namespace      string
 	ServerName     string
@@ -22,11 +21,11 @@ type Config struct {
 	SessionStorage *vmcpconfig.SessionStorageConfig
 }
 
-// NewMiddleware creates Redis-backed rate-limit middleware for vMCP.
-func NewMiddleware(
+// NewLimiter creates a Redis-backed limiter for vMCP.
+func NewLimiter(
 	_ context.Context,
 	cfg Config,
-) (func(http.Handler) http.Handler, func(context.Context) error, error) {
+) (ratelimit.Limiter, func(context.Context) error, error) {
 	if cfg.RateLimiting == nil {
 		return nil, nil, nil
 	}
@@ -37,7 +36,7 @@ func NewMiddleware(
 		return nil, nil, fmt.Errorf("rate limiting requires Redis session storage address")
 	}
 
-	middleware, err := ratelimit.NewMiddleware(ratelimit.MiddlewareParams{
+	limiter, closer, err := ratelimit.NewRedisLimiter(ratelimit.MiddlewareParams{
 		Namespace:  cfg.Namespace,
 		ServerName: cfg.ServerName,
 		Config:     cfg.RateLimiting,
@@ -49,7 +48,7 @@ func NewMiddleware(
 	}
 
 	cleanup := func(context.Context) error {
-		return middleware.Close()
+		return closer.Close()
 	}
-	return middleware.Handler(), cleanup, nil
+	return limiter, cleanup, nil
 }

@@ -322,6 +322,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		"OptimizerFactory":    {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
 		"OptimizerConfig":     {}, // optimizer wiring carried on ServerConfig.SessionManagerConfig (FactoryConfig)
 		"CodeModeConfig":      {}, // consumed by New to wrap the core (code mode decorator) before Serve; not a transport field
+		"RateLimiter":         {}, // consumed by New to wrap the core (rate-limit decorator) before Serve; not a transport field
 		"Aggregator":          {}, // core collaborator: fed to core.New via deriveCoreConfig, not the transport
 		"Authz":               {}, // core collaborator: fed to the core admission seam via deriveCoreConfig
 	}
@@ -339,7 +340,6 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		EndpointPath:            "/e",
 		SessionTTL:              time.Second,
 		AuthMiddleware:          func(h http.Handler) http.Handler { return h },
-		RateLimitMiddleware:     func(h http.Handler) http.Handler { return h },
 		AuthInfoHandler:         http.NewServeMux(),
 		PassthroughHeaders:      []string{"x-test"},
 		AuthServer:              &asrunner.EmbeddedAuthServer{},

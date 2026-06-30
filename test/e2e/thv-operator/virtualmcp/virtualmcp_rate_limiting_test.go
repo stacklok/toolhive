@@ -22,6 +22,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -185,13 +186,18 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 		_, err = mcpClient.CallTool(ctx, req)
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-		_, err = mcpClient.CallTool(ctx, req)
-		gomega.Expect(err).To(gomega.HaveOccurred())
-		gomega.Expect(err.Error()).To(gomega.Or(
-			gomega.ContainSubstring("429"),
-			gomega.ContainSubstring("-32029"),
-			gomega.ContainSubstring("Rate limit exceeded"),
-		))
+		result, err := mcpClient.CallTool(ctx, req)
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+		gomega.Expect(result.IsError).To(gomega.BeTrue())
+
+		structured, ok := result.StructuredContent.(map[string]any)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(structured["code"]).To(gomega.BeNumerically("==", ratelimit.CodeRateLimited))
+		gomega.Expect(structured["message"]).To(gomega.Equal(ratelimit.MessageRateLimited))
+
+		data, ok := structured["data"].(map[string]any)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(data["retryAfterSeconds"]).To(gomega.BeNumerically(">", 0))
 	})
 })
 

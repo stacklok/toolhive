@@ -2151,6 +2151,7 @@ spec:
                                   items:
                                     type: string
                                   type: array
+                                  x-kubernetes-list-type: atomic
                                 subjectProviderName:
                                   description: |-
                                     SubjectProviderName selects which upstream provider's ID token to use.
@@ -2447,6 +2448,7 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                                x-kubernetes-list-type: atomic
                               subjectProviderName:
                                 description: |-
                                   SubjectProviderName selects which upstream provider's ID token to use.
@@ -5541,6 +5543,7 @@ spec:
                                   items:
                                     type: string
                                   type: array
+                                  x-kubernetes-list-type: atomic
                                 subjectProviderName:
                                   description: |-
                                     SubjectProviderName selects which upstream provider's ID token to use.
@@ -5837,6 +5840,7 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                                x-kubernetes-list-type: atomic
                               subjectProviderName:
                                 description: |-
                                   SubjectProviderName selects which upstream provider's ID token to use.

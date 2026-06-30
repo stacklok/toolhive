@@ -314,6 +314,7 @@ type XAAConfig struct {
 	TargetResource string `json:"targetResource,omitempty" yaml:"targetResource,omitempty"`
 
 	// Scopes are the requested scopes for Steps A and B.
+	// +listType=atomic
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
 	// SubjectProviderName selects which upstream provider's ID token to use.

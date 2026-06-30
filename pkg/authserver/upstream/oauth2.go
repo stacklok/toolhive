@@ -120,12 +120,7 @@ type CommonOAuthConfig struct {
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 }
 
-// Validate checks that CommonOAuthConfig has all required fields.
-func (c *CommonOAuthConfig) Validate() error {
-	return c.ValidateWithInsecure(false)
-}
-
-// ValidateWithInsecure is like Validate but allows http:// redirect URIs for
+// ValidateWithInsecure validates CommonOAuthConfig, allowing http:// redirect URIs for
 // non-loopback hosts when insecureAllowHTTP is true.
 func (c *CommonOAuthConfig) ValidateWithInsecure(insecureAllowHTTP bool) error {
 	if c.ClientID == "" {

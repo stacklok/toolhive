@@ -2061,7 +2061,7 @@ func TestValidateAdditionalAuthorizationParams(t *testing.T) {
 				AdditionalAuthorizationParams: tt.params,
 			}
 
-			err := config.Validate()
+			err := config.ValidateWithInsecure(false)
 
 			if tt.wantErr {
 				require.Error(t, err)

@@ -49,6 +49,14 @@ const (
 	// every method; an out-of-tree build registers a real OBO strategy executor
 	// via auth.RegisterOBOStrategy.
 	StrategyTypeOBO = "obo"
+
+	// StrategyTypeXAA identifies the XAA (Cross-Application Access) strategy.
+	// This strategy implements cross-application access using the Identity
+	// Assertion JWT Authorization Grant (draft-ietf-oauth-identity-assertion-authz-grant,
+	// also known as ID-JAG). It performs a two-step token exchange:
+	// (A) exchange an ID token for an ID-JAG at the IdP, then
+	// (B) exchange the ID-JAG for an access token at the target AS.
+	StrategyTypeXAA = "xaa"
 )
 
 // BackendAuthStrategy defines how to authenticate to a specific backend.
@@ -58,7 +66,7 @@ const (
 // +kubebuilder:object:generate=true
 // +gendoc
 type BackendAuthStrategy struct {
-	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts", "obo"
+	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts", "obo", "xaa"
 	Type string `json:"type" yaml:"type"`
 
 	// HeaderInjection contains configuration for header injection auth strategy.
@@ -81,6 +89,10 @@ type BackendAuthStrategy struct {
 	// Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
 	// an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
 	OBO *OBOConfig `json:"obo,omitempty" yaml:"obo,omitempty"`
+
+	// XAA contains configuration for XAA (Cross-Application Access) auth strategy.
+	// Used when Type = "xaa".
+	XAA *XAAConfig `json:"xaa,omitempty" yaml:"xaa,omitempty"`
 }
 
 // HeaderInjectionConfig configures the header injection auth strategy.
@@ -249,5 +261,63 @@ type AwsStsConfig struct {
 	// web identity token for AssumeRoleWithWebIdentity. When set, the token is
 	// looked up from Identity.UpstreamTokens instead of the request's
 	// Authorization header.
+	SubjectProviderName string `json:"subjectProviderName,omitempty" yaml:"subjectProviderName,omitempty"`
+}
+
+// XAAConfig configures the XAA (Cross-Application Access) auth strategy.
+// XAA implements draft-ietf-oauth-identity-assertion-authz-grant (ID-JAG) as a
+// two-step flow:
+//   - Step A (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+//   - Step B (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+//
+// +kubebuilder:object:generate=true
+// +gendoc
+type XAAConfig struct {
+	// IDPTokenURL is the IdP token endpoint for Step A (RFC 8693 exchange).
+	IDPTokenURL string `json:"idpTokenUrl" yaml:"idpTokenUrl"`
+
+	// IDPClientID is the OAuth client ID at the IdP for Step A.
+	IDPClientID string `json:"idpClientId,omitempty" yaml:"idpClientId,omitempty"`
+
+	// IDPClientSecret is the client secret at the IdP for Step A.
+	//nolint:gosec // G101: field legitimately holds sensitive data
+	IDPClientSecret string `json:"idpClientSecret,omitempty" yaml:"idpClientSecret,omitempty"`
+
+	// IDPClientSecretEnv is the env var containing the IdP client secret.
+	IDPClientSecretEnv string `json:"idpClientSecretEnv,omitempty" yaml:"idpClientSecretEnv,omitempty"`
+
+	// TargetTokenURL is the target AS token endpoint for Step B (JWT Bearer grant).
+	TargetTokenURL string `json:"targetTokenUrl" yaml:"targetTokenUrl"`
+
+	// InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+	// WARNING: this is insecure and must only be set for in-cluster or
+	// development/testing endpoints — never in production.
+	InsecureTargetTokenURL bool `json:"insecureTargetTokenUrl,omitempty" yaml:"insecureTargetTokenUrl,omitempty"`
+
+	// TargetClientID is the OAuth client ID at the target AS for Step B.
+	TargetClientID string `json:"targetClientId,omitempty" yaml:"targetClientId,omitempty"`
+
+	// TargetClientSecret is the client secret at the target AS for Step B.
+	//nolint:gosec // G101: field legitimately holds sensitive data
+	TargetClientSecret string `json:"targetClientSecret,omitempty" yaml:"targetClientSecret,omitempty"`
+
+	// TargetClientSecretEnv is the env var containing the target AS client secret.
+	TargetClientSecretEnv string `json:"targetClientSecretEnv,omitempty" yaml:"targetClientSecretEnv,omitempty"`
+
+	// TargetAudience is the resource AS URL for the ID-JAG audience claim (required).
+	TargetAudience string `json:"targetAudience" yaml:"targetAudience"`
+
+	// TargetResource is the RFC 8707 resource indicator sent as the `resource`
+	// parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+	// identifies the target resource server — not the access-token audience, which
+	// is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+	TargetResource string `json:"targetResource,omitempty" yaml:"targetResource,omitempty"`
+
+	// Scopes are the requested scopes for Steps A and B.
+	// +listType=atomic
+	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+
+	// SubjectProviderName selects which upstream provider's ID token to use.
+	// Auto-populated when embedded AS is active.
 	SubjectProviderName string `json:"subjectProviderName,omitempty" yaml:"subjectProviderName,omitempty"`
 }

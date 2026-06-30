@@ -239,6 +239,7 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		authtypes.StrategyTypeUpstreamInject,
 		authtypes.StrategyTypeAwsSts,
 		authtypes.StrategyTypeOBO,
+		authtypes.StrategyTypeXAA,
 	}
 	if !slices.Contains(validTypes, strategy.Type) {
 		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))

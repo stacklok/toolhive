@@ -89,8 +89,8 @@ func (c *Config) EnsureOperationalDefaults() {
 }
 
 // InjectSubjectProviderNames auto-populates SubjectProviderName on every
-// token_exchange strategy in cfg.OutgoingAuth that has it unset, when an
-// embedded auth server RunConfig is active.
+// token_exchange or xaa strategy in cfg.OutgoingAuth that has it unset,
+// when an embedded auth server RunConfig is active.
 //
 // This is a defaulting operation: it ensures YAML-based vMCP deployments
 // behave the same as the Kubernetes operator path. Without it a token_exchange
@@ -118,15 +118,23 @@ func InjectSubjectProviderNames(cfg *Config, rc *authserver.RunConfig) {
 	}
 }
 
-// injectIntoStrategy sets SubjectProviderName on a token_exchange strategy when
-// the field is empty. It mutates the strategy in place because the OutgoingAuth
-// maps hold pointers that are already owned by cfg.
+// injectIntoStrategy sets SubjectProviderName on token_exchange and xaa
+// strategies when the field is empty. It mutates the strategy in place because
+// the OutgoingAuth maps hold pointers that are already owned by cfg.
 func injectIntoStrategy(strategy *authtypes.BackendAuthStrategy, providerName string) {
-	if strategy == nil ||
-		strategy.Type != authtypes.StrategyTypeTokenExchange ||
-		strategy.TokenExchange == nil ||
-		strategy.TokenExchange.SubjectProviderName != "" {
+	if strategy == nil {
 		return
 	}
-	strategy.TokenExchange.SubjectProviderName = providerName
+
+	if strategy.Type == authtypes.StrategyTypeTokenExchange &&
+		strategy.TokenExchange != nil &&
+		strategy.TokenExchange.SubjectProviderName == "" {
+		strategy.TokenExchange.SubjectProviderName = providerName
+	}
+
+	if strategy.Type == authtypes.StrategyTypeXAA &&
+		strategy.XAA != nil &&
+		strategy.XAA.SubjectProviderName == "" {
+		strategy.XAA.SubjectProviderName = providerName
+	}
 }

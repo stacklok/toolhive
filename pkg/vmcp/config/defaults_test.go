@@ -231,6 +231,17 @@ func TestInjectSubjectProviderNames(t *testing.T) {
 		}
 	}
 
+	makeXAAStrategy := func(subjectProviderName string) *authtypes.BackendAuthStrategy {
+		return &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeXAA,
+			XAA: &authtypes.XAAConfig{
+				IDPTokenURL:         "https://idp.example.com/token",
+				TargetTokenURL:      "https://target.example.com/token",
+				SubjectProviderName: subjectProviderName,
+			},
+		}
+	}
+
 	makeRunConfig := func(upstreamNames ...string) *authserver.RunConfig {
 		rc := &authserver.RunConfig{}
 		for _, name := range upstreamNames {
@@ -339,6 +350,26 @@ func TestInjectSubjectProviderNames(t *testing.T) {
 			rc:          makeRunConfig("github"),
 			wantDefault: "", // no TokenExchange on this strategy
 		},
+		{
+			name: "xaa_empty_subject_provider_gets_populated",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeXAAStrategy(""),
+				},
+			},
+			rc:          makeRunConfig("github"),
+			wantDefault: "github",
+		},
+		{
+			name: "xaa_explicit_subject_provider_not_overridden",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeXAAStrategy("explicit"),
+				},
+			},
+			rc:          makeRunConfig("github"),
+			wantDefault: "explicit",
+		},
 	}
 
 	for _, tt := range tests {
@@ -368,8 +399,12 @@ func TestInjectSubjectProviderNames(t *testing.T) {
 
 			// Verify the Default strategy.
 			if tt.cfg.OutgoingAuth.Default != nil {
-				if tt.cfg.OutgoingAuth.Default.TokenExchange != nil {
+				switch {
+				case tt.cfg.OutgoingAuth.Default.TokenExchange != nil:
 					assert.Equal(t, tt.wantDefault, tt.cfg.OutgoingAuth.Default.TokenExchange.SubjectProviderName,
+						"Default SubjectProviderName mismatch")
+				case tt.cfg.OutgoingAuth.Default.XAA != nil:
+					assert.Equal(t, tt.wantDefault, tt.cfg.OutgoingAuth.Default.XAA.SubjectProviderName,
 						"Default SubjectProviderName mismatch")
 				}
 				// The pointer must not have changed — mutation must be in place.

@@ -2106,7 +2106,7 @@ spec:
                             type:
                               description: 'Type is the auth strategy: "unauthenticated",
                                 "header_injection", "token_exchange", "upstream_inject",
-                                "aws_sts", "obo"'
+                                "aws_sts", "obo", "xaa"'
                               type: string
                             upstreamInject:
                               description: |-
@@ -2120,6 +2120,76 @@ spec:
                                   type: string
                               required:
                               - providerName
+                              type: object
+                            xaa:
+                              description: |-
+                                XAA contains configuration for XAA (Cross-Application Access) auth strategy.
+                                Used when Type = "xaa".
+                              properties:
+                                idpClientId:
+                                  description: IDPClientID is the OAuth client ID
+                                    at the IdP for Step A.
+                                  type: string
+                                idpClientSecret:
+                                  description: IDPClientSecret is the client secret
+                                    at the IdP for Step A.
+                                  type: string
+                                idpClientSecretEnv:
+                                  description: IDPClientSecretEnv is the env var containing
+                                    the IdP client secret.
+                                  type: string
+                                idpTokenUrl:
+                                  description: IDPTokenURL is the IdP token endpoint
+                                    for Step A (RFC 8693 exchange).
+                                  type: string
+                                insecureTargetTokenUrl:
+                                  description: |-
+                                    InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+                                    WARNING: this is insecure and must only be set for in-cluster or
+                                    development/testing endpoints — never in production.
+                                  type: boolean
+                                scopes:
+                                  description: Scopes are the requested scopes for
+                                    Steps A and B.
+                                  items:
+                                    type: string
+                                  type: array
+                                subjectProviderName:
+                                  description: |-
+                                    SubjectProviderName selects which upstream provider's ID token to use.
+                                    Auto-populated when embedded AS is active.
+                                  type: string
+                                targetAudience:
+                                  description: TargetAudience is the resource AS URL
+                                    for the ID-JAG audience claim (required).
+                                  type: string
+                                targetClientId:
+                                  description: TargetClientID is the OAuth client
+                                    ID at the target AS for Step B.
+                                  type: string
+                                targetClientSecret:
+                                  description: TargetClientSecret is the client secret
+                                    at the target AS for Step B.
+                                  type: string
+                                targetClientSecretEnv:
+                                  description: TargetClientSecretEnv is the env var
+                                    containing the target AS client secret.
+                                  type: string
+                                targetResource:
+                                  description: |-
+                                    TargetResource is the RFC 8707 resource indicator sent as the `resource`
+                                    parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                    identifies the target resource server — not the access-token audience, which
+                                    is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+                                  type: string
+                                targetTokenUrl:
+                                  description: TargetTokenURL is the target AS token
+                                    endpoint for Step B (JWT Bearer grant).
+                                  type: string
+                              required:
+                              - idpTokenUrl
+                              - targetAudience
+                              - targetTokenUrl
                               type: object
                           required:
                           - type
@@ -2332,7 +2402,7 @@ spec:
                           type:
                             description: 'Type is the auth strategy: "unauthenticated",
                               "header_injection", "token_exchange", "upstream_inject",
-                              "aws_sts", "obo"'
+                              "aws_sts", "obo", "xaa"'
                             type: string
                           upstreamInject:
                             description: |-
@@ -2346,6 +2416,76 @@ spec:
                                 type: string
                             required:
                             - providerName
+                            type: object
+                          xaa:
+                            description: |-
+                              XAA contains configuration for XAA (Cross-Application Access) auth strategy.
+                              Used when Type = "xaa".
+                            properties:
+                              idpClientId:
+                                description: IDPClientID is the OAuth client ID at
+                                  the IdP for Step A.
+                                type: string
+                              idpClientSecret:
+                                description: IDPClientSecret is the client secret
+                                  at the IdP for Step A.
+                                type: string
+                              idpClientSecretEnv:
+                                description: IDPClientSecretEnv is the env var containing
+                                  the IdP client secret.
+                                type: string
+                              idpTokenUrl:
+                                description: IDPTokenURL is the IdP token endpoint
+                                  for Step A (RFC 8693 exchange).
+                                type: string
+                              insecureTargetTokenUrl:
+                                description: |-
+                                  InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+                                  WARNING: this is insecure and must only be set for in-cluster or
+                                  development/testing endpoints — never in production.
+                                type: boolean
+                              scopes:
+                                description: Scopes are the requested scopes for Steps
+                                  A and B.
+                                items:
+                                  type: string
+                                type: array
+                              subjectProviderName:
+                                description: |-
+                                  SubjectProviderName selects which upstream provider's ID token to use.
+                                  Auto-populated when embedded AS is active.
+                                type: string
+                              targetAudience:
+                                description: TargetAudience is the resource AS URL
+                                  for the ID-JAG audience claim (required).
+                                type: string
+                              targetClientId:
+                                description: TargetClientID is the OAuth client ID
+                                  at the target AS for Step B.
+                                type: string
+                              targetClientSecret:
+                                description: TargetClientSecret is the client secret
+                                  at the target AS for Step B.
+                                type: string
+                              targetClientSecretEnv:
+                                description: TargetClientSecretEnv is the env var
+                                  containing the target AS client secret.
+                                type: string
+                              targetResource:
+                                description: |-
+                                  TargetResource is the RFC 8707 resource indicator sent as the `resource`
+                                  parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                  identifies the target resource server — not the access-token audience, which
+                                  is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+                                type: string
+                              targetTokenUrl:
+                                description: TargetTokenURL is the target AS token
+                                  endpoint for Step B (JWT Bearer grant).
+                                type: string
+                            required:
+                            - idpTokenUrl
+                            - targetAudience
+                            - targetTokenUrl
                             type: object
                         required:
                         - type
@@ -5356,7 +5496,7 @@ spec:
                             type:
                               description: 'Type is the auth strategy: "unauthenticated",
                                 "header_injection", "token_exchange", "upstream_inject",
-                                "aws_sts", "obo"'
+                                "aws_sts", "obo", "xaa"'
                               type: string
                             upstreamInject:
                               description: |-
@@ -5370,6 +5510,76 @@ spec:
                                   type: string
                               required:
                               - providerName
+                              type: object
+                            xaa:
+                              description: |-
+                                XAA contains configuration for XAA (Cross-Application Access) auth strategy.
+                                Used when Type = "xaa".
+                              properties:
+                                idpClientId:
+                                  description: IDPClientID is the OAuth client ID
+                                    at the IdP for Step A.
+                                  type: string
+                                idpClientSecret:
+                                  description: IDPClientSecret is the client secret
+                                    at the IdP for Step A.
+                                  type: string
+                                idpClientSecretEnv:
+                                  description: IDPClientSecretEnv is the env var containing
+                                    the IdP client secret.
+                                  type: string
+                                idpTokenUrl:
+                                  description: IDPTokenURL is the IdP token endpoint
+                                    for Step A (RFC 8693 exchange).
+                                  type: string
+                                insecureTargetTokenUrl:
+                                  description: |-
+                                    InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+                                    WARNING: this is insecure and must only be set for in-cluster or
+                                    development/testing endpoints — never in production.
+                                  type: boolean
+                                scopes:
+                                  description: Scopes are the requested scopes for
+                                    Steps A and B.
+                                  items:
+                                    type: string
+                                  type: array
+                                subjectProviderName:
+                                  description: |-
+                                    SubjectProviderName selects which upstream provider's ID token to use.
+                                    Auto-populated when embedded AS is active.
+                                  type: string
+                                targetAudience:
+                                  description: TargetAudience is the resource AS URL
+                                    for the ID-JAG audience claim (required).
+                                  type: string
+                                targetClientId:
+                                  description: TargetClientID is the OAuth client
+                                    ID at the target AS for Step B.
+                                  type: string
+                                targetClientSecret:
+                                  description: TargetClientSecret is the client secret
+                                    at the target AS for Step B.
+                                  type: string
+                                targetClientSecretEnv:
+                                  description: TargetClientSecretEnv is the env var
+                                    containing the target AS client secret.
+                                  type: string
+                                targetResource:
+                                  description: |-
+                                    TargetResource is the RFC 8707 resource indicator sent as the `resource`
+                                    parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                    identifies the target resource server — not the access-token audience, which
+                                    is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+                                  type: string
+                                targetTokenUrl:
+                                  description: TargetTokenURL is the target AS token
+                                    endpoint for Step B (JWT Bearer grant).
+                                  type: string
+                              required:
+                              - idpTokenUrl
+                              - targetAudience
+                              - targetTokenUrl
                               type: object
                           required:
                           - type
@@ -5582,7 +5792,7 @@ spec:
                           type:
                             description: 'Type is the auth strategy: "unauthenticated",
                               "header_injection", "token_exchange", "upstream_inject",
-                              "aws_sts", "obo"'
+                              "aws_sts", "obo", "xaa"'
                             type: string
                           upstreamInject:
                             description: |-
@@ -5596,6 +5806,76 @@ spec:
                                 type: string
                             required:
                             - providerName
+                            type: object
+                          xaa:
+                            description: |-
+                              XAA contains configuration for XAA (Cross-Application Access) auth strategy.
+                              Used when Type = "xaa".
+                            properties:
+                              idpClientId:
+                                description: IDPClientID is the OAuth client ID at
+                                  the IdP for Step A.
+                                type: string
+                              idpClientSecret:
+                                description: IDPClientSecret is the client secret
+                                  at the IdP for Step A.
+                                type: string
+                              idpClientSecretEnv:
+                                description: IDPClientSecretEnv is the env var containing
+                                  the IdP client secret.
+                                type: string
+                              idpTokenUrl:
+                                description: IDPTokenURL is the IdP token endpoint
+                                  for Step A (RFC 8693 exchange).
+                                type: string
+                              insecureTargetTokenUrl:
+                                description: |-
+                                  InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+                                  WARNING: this is insecure and must only be set for in-cluster or
+                                  development/testing endpoints — never in production.
+                                type: boolean
+                              scopes:
+                                description: Scopes are the requested scopes for Steps
+                                  A and B.
+                                items:
+                                  type: string
+                                type: array
+                              subjectProviderName:
+                                description: |-
+                                  SubjectProviderName selects which upstream provider's ID token to use.
+                                  Auto-populated when embedded AS is active.
+                                type: string
+                              targetAudience:
+                                description: TargetAudience is the resource AS URL
+                                  for the ID-JAG audience claim (required).
+                                type: string
+                              targetClientId:
+                                description: TargetClientID is the OAuth client ID
+                                  at the target AS for Step B.
+                                type: string
+                              targetClientSecret:
+                                description: TargetClientSecret is the client secret
+                                  at the target AS for Step B.
+                                type: string
+                              targetClientSecretEnv:
+                                description: TargetClientSecretEnv is the env var
+                                  containing the target AS client secret.
+                                type: string
+                              targetResource:
+                                description: |-
+                                  TargetResource is the RFC 8707 resource indicator sent as the `resource`
+                                  parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                  identifies the target resource server — not the access-token audience, which
+                                  is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+                                type: string
+                              targetTokenUrl:
+                                description: TargetTokenURL is the target AS token
+                                  endpoint for Step B (JWT Bearer grant).
+                                type: string
+                            required:
+                            - idpTokenUrl
+                            - targetAudience
+                            - targetTokenUrl
                             type: object
                         required:
                         - type

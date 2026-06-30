@@ -4,6 +4,7 @@
 package ratelimit
 
 import (
+	"math"
 	"time"
 
 	thvmcp "github.com/stacklok/toolhive/pkg/mcp"
@@ -23,12 +24,21 @@ type RateLimitedError struct {
 	RetryAfter time.Duration
 }
 
-var _ thvmcp.RequestError = (*RateLimitedError)(nil)
+var _ thvmcp.CodedError = (*RateLimitedError)(nil)
 
 func (*RateLimitedError) Error() string {
 	return MessageRateLimited
 }
 
-// MCPRequestError marks rate-limit denials as request-level failures rather
-// than tool execution errors.
-func (*RateLimitedError) MCPRequestError() {}
+// Code returns the ToolHive JSON-RPC-compatible code for rate-limited requests.
+func (*RateLimitedError) Code() int64 {
+	return CodeRateLimited
+}
+
+// Data returns structured retry metadata for transport adapters that cannot
+// emit a custom JSON-RPC error object from the tool-handler seam.
+func (e *RateLimitedError) Data() map[string]any {
+	return map[string]any{
+		"retryAfterSeconds": int(math.Ceil(e.RetryAfter.Seconds())),
+	}
+}

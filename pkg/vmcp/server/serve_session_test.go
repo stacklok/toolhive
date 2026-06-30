@@ -24,7 +24,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
-	thvmcp "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -687,7 +686,7 @@ func TestServeCoreToolHandler(t *testing.T) {
 	}
 }
 
-func TestServeCoreToolHandlerRequestErrorReturnsHandlerError(t *testing.T) {
+func TestServeCoreToolHandlerCodedErrorReturnsStructuredToolResult(t *testing.T) {
 	t.Parallel()
 
 	fc := &fakeCore{
@@ -699,10 +698,16 @@ func TestServeCoreToolHandlerRequestErrorReturnsHandlerError(t *testing.T) {
 	req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
 	res, err := srv.coreToolHandler(sessionID, "t", "")(context.Background(), req)
 
-	require.Error(t, err)
-	assert.Nil(t, res)
-	var requestErr thvmcp.RequestError
-	require.ErrorAs(t, err, &requestErr)
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.True(t, res.IsError)
+	sc, ok := res.StructuredContent.(map[string]any)
+	require.True(t, ok, "coded errors should carry structured content")
+	assert.EqualValues(t, ratelimit.CodeRateLimited, sc["code"])
+	assert.Equal(t, ratelimit.MessageRateLimited, sc["message"])
+	data, ok := sc["data"].(map[string]any)
+	require.True(t, ok, "coded errors should carry structured data")
+	assert.EqualValues(t, 1, data["retryAfterSeconds"])
 	assert.Equal(t, int32(1), fc.callToolCalls.Load())
 }
 

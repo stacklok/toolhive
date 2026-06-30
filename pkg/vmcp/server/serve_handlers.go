@@ -15,7 +15,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
-	thvmcp "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -196,16 +195,7 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 
 		result, err := s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))
 		if err != nil {
-			var requestErr thvmcp.RequestError
-			if errors.As(err, &requestErr) {
-				return nil, err
-			}
-			// Admission denial returns a generic message so the underlying authorizer
-			// error is never forwarded to the client.
-			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
-				return mcp.NewToolResultError("call denied by authorization policy"), nil
-			}
-			return mcp.NewToolResultError(err.Error()), nil
+			return conversion.ErrorToToolResult(err), nil
 		}
 
 		return &mcp.CallToolResult{

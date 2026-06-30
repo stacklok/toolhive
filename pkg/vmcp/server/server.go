@@ -154,9 +154,6 @@ type Config struct {
 	// capture (no middleware is installed).
 	PassthroughHeaders []string
 
-	// RateLimitMiddleware is the optional HTTP-layer rate-limit middleware.
-	RateLimitMiddleware func(http.Handler) http.Handler
-
 	// RateLimiter is the optional core-layer limiter applied at CallTool.
 	// It runs below the session optimizer, so tool names are already resolved
 	// to the backend tool name before bucket selection.
@@ -592,8 +589,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		slog.Info("audit middleware enabled for MCP endpoints")
 	}
 
-	mcpHandler = s.applyRateLimiting(mcpHandler)
-
 	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {
 		mcpHandler = s.config.AuthMiddleware(mcpHandler)
@@ -625,14 +620,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	mux.Handle("/", mcpHandler)
 
 	return mux, nil
-}
-
-func (s *Server) applyRateLimiting(next http.Handler) http.Handler {
-	if s.config.RateLimitMiddleware == nil {
-		return next
-	}
-	slog.Info("rate limit middleware enabled for MCP endpoints")
-	return s.config.RateLimitMiddleware(next)
 }
 
 // applyForwardedHeaderCapture wraps next with the forwarded-header capture

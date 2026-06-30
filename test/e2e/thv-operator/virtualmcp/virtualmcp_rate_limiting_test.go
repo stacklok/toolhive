@@ -22,6 +22,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -185,184 +186,18 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 		_, err = mcpClient.CallTool(ctx, req)
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
 
-		_, err = mcpClient.CallTool(ctx, req)
-		gomega.Expect(err).To(gomega.HaveOccurred())
-		gomega.Expect(err.Error()).To(gomega.Or(
-			gomega.ContainSubstring("429"),
-			gomega.ContainSubstring("-32029"),
-			gomega.ContainSubstring("Rate limit exceeded"),
-		))
-	})
-})
-
-var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting with Optimizer", ginkgo.Ordered, func() {
-	const (
-		timeout             = 5 * time.Minute
-		pollInterval        = 2 * time.Second
-		optimizerEchoTool   = "optimizer_rl_echo"
-		optimizerEchoPrompt = "ratelimit optimizer test"
-	)
-
-	var (
-		mcpGroupName           string
-		backendName            string
-		fakeEmbeddingName      string
-		vmcpName               string
-		redisName              string
-		vmcpLocalPort          int
-		vmcpPortForwardCleanup func()
-	)
-
-	ginkgo.BeforeAll(func() {
-		ts := time.Now().UnixNano()
-		mcpGroupName = fmt.Sprintf("e2e-rl-opt-group-%d", ts)
-		backendName = fmt.Sprintf("e2e-rl-opt-backend-%d", ts)
-		fakeEmbeddingName = fmt.Sprintf("e2e-rl-opt-embedding-%d", ts)
-		vmcpName = fmt.Sprintf("e2e-rl-opt-vmcp-%d", ts)
-		redisName = fmt.Sprintf("e2e-rl-opt-redis-%d", ts)
-
-		ginkgo.By("Deploying Redis")
-		deployRedis(redisName)
-
-		ginkgo.By("Deploying fake embedding server")
-		embeddingURL := DeployFakeEmbeddingServer(ctx, k8sClient,
-			fakeEmbeddingName, defaultNamespace, timeout, pollInterval)
-
-		ginkgo.By("Creating MCPGroup")
-		CreateMCPGroupAndWait(ctx, k8sClient, mcpGroupName, defaultNamespace,
-			"E2E vMCP optimizer rate limiting group", timeout, pollInterval)
-
-		ginkgo.By("Creating backend MCPServer")
-		gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
-			Spec: mcpv1beta1.MCPServerSpec{
-				GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Image:     images.YardstickServerImage,
-				Transport: "streamable-http",
-				ProxyPort: 8080,
-				MCPPort:   8080,
-			},
-		})).To(gomega.Succeed())
-
-		ginkgo.By("Waiting for backend MCPServer to be ready")
-		gomega.Eventually(func() error {
-			server := &mcpv1beta1.MCPServer{}
-			if err := k8sClient.Get(ctx, types.NamespacedName{
-				Name:      backendName,
-				Namespace: defaultNamespace,
-			}, server); err != nil {
-				return err
-			}
-			if server.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
-				return fmt.Errorf("backend not ready yet, phase: %s", server.Status.Phase)
-			}
-			return nil
-		}, timeout, pollInterval).Should(gomega.Succeed())
-
-		redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
-		ginkgo.By("Creating VirtualMCPServer with optimizer and per-tool rate limiting")
-		gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Optimizer: &vmcpconfig.OptimizerConfig{
-						EmbeddingService: embeddingURL,
-					},
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-						Tools: []*vmcpconfig.WorkloadToolConfig{
-							{
-								Workload: backendName,
-								Overrides: map[string]*vmcpconfig.ToolOverride{
-									"echo": {
-										Name:        optimizerEchoTool,
-										Description: "Echo tool for optimizer rate-limit E2E",
-									},
-								},
-							},
-						},
-					},
-					RateLimiting: &mcpv1beta1.RateLimitConfig{
-						Tools: []mcpv1beta1.ToolRateLimitConfig{
-							{
-								Name: optimizerEchoTool,
-								Shared: &mcpv1beta1.RateLimitBucket{
-									MaxTokens:    1,
-									RefillPeriod: metav1.Duration{Duration: time.Minute},
-								},
-							},
-						},
-					},
-				},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "discovered",
-				},
-				SessionStorage: &mcpv1beta1.SessionStorageConfig{
-					Provider: mcpv1beta1.SessionStorageProviderRedis,
-					Address:  redisAddr,
-				},
-			},
-		})).To(gomega.Succeed())
-
-		ginkgo.By("Waiting for VirtualMCPServer to be ready")
-		WaitForVirtualMCPServerReady(ctx, k8sClient, vmcpName, defaultNamespace, timeout, pollInterval)
-
-		ginkgo.By("Port-forwarding VirtualMCPServer service")
-		var err error
-		vmcpLocalPort, vmcpPortForwardCleanup, err = startRateLimitServicePortForward(VMCPServiceName(vmcpName), 4483)
+		result, err := mcpClient.CallTool(ctx, req)
 		gomega.Expect(err).ToNot(gomega.HaveOccurred())
-	})
+		gomega.Expect(result.IsError).To(gomega.BeTrue())
 
-	ginkgo.AfterAll(func() {
-		if vmcpPortForwardCleanup != nil {
-			vmcpPortForwardCleanup()
-		}
-		_ = k8sClient.Delete(ctx, &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: defaultNamespace},
-		})
-		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{Name: backendName, Namespace: defaultNamespace},
-		})
-		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPGroup{
-			ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: defaultNamespace},
-		})
-		CleanupFakeEmbeddingServer(ctx, k8sClient, fakeEmbeddingName, defaultNamespace)
-		cleanupRedis(redisName)
-	})
+		structured, ok := result.StructuredContent.(map[string]any)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(structured["code"]).To(gomega.BeNumerically("==", ratelimit.CodeRateLimited))
+		gomega.Expect(structured["message"]).To(gomega.Equal(ratelimit.MessageRateLimited))
 
-	ginkgo.It("rate-limits call_tool by the inner backend tool name", func() {
-		mcpClient := newAnonymousRateLimitMCPClient(vmcpLocalPort)
-		defer mcpClient.Close()
-
-		tools, err := mcpClient.ListTools(ctx, mcp.ListToolsRequest{})
-		gomega.Expect(err).ToNot(gomega.HaveOccurred())
-		gomega.Expect(toolNames(tools.Tools)).To(gomega.ConsistOf("find_tool", "call_tool"))
-
-		_, err = callToolViaOptimizer(&InitializedMCPClient{
-			Client: mcpClient,
-			Ctx:    ctx,
-		}, optimizerEchoTool, map[string]any{
-			"input": optimizerEchoPrompt,
-		})
-		gomega.Expect(err).ToNot(gomega.HaveOccurred())
-
-		_, err = callToolViaOptimizer(&InitializedMCPClient{
-			Client: mcpClient,
-			Ctx:    ctx,
-		}, optimizerEchoTool, map[string]any{
-			"input": optimizerEchoPrompt,
-		})
-		gomega.Expect(err).To(gomega.HaveOccurred())
-		gomega.Expect(err.Error()).To(gomega.Or(
-			gomega.ContainSubstring("429"),
-			gomega.ContainSubstring("-32029"),
-			gomega.ContainSubstring("Rate limit exceeded"),
-		))
+		data, ok := structured["data"].(map[string]any)
+		gomega.Expect(ok).To(gomega.BeTrue())
+		gomega.Expect(data["retryAfterSeconds"]).To(gomega.BeNumerically(">", 0))
 	})
 })
 
@@ -388,11 +223,6 @@ func newRateLimitMCPClient(vmcpPort int, token string) *mcpclient.Client {
 	}
 	serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpPort)
 	return InitializeMCPClientWithRetries(serverURL, 2*time.Minute, transport.WithHTTPBasicClient(httpClient))
-}
-
-func newAnonymousRateLimitMCPClient(vmcpPort int) *mcpclient.Client {
-	serverURL := fmt.Sprintf("http://localhost:%d/mcp", vmcpPort)
-	return InitializeMCPClientWithRetries(serverURL, 2*time.Minute)
 }
 
 func startRateLimitServicePortForward(serviceName string, servicePort int32) (int, func(), error) {

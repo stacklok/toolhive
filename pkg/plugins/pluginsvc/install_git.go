@@ -6,11 +6,8 @@ package pluginsvc
 import (
 	"context"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"path"
-	"regexp"
-	"time"
 
 	"github.com/go-git/go-git/v5/plumbing/object"
 
@@ -20,14 +17,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 )
-
-// cloneTimeout is the maximum time allowed for cloning a git repository.
-// Mirror of gitresolver.cloneTimeout.
-const cloneTimeout = 2 * time.Minute
-
-// semverLike matches refs that look like semantic version tags. Mirror of
-// gitresolver.semverLike.
-var semverLike = regexp.MustCompile(`^v\d+\.\d+(\.\d+)*(-[a-zA-Z0-9._-]+)?$`)
 
 // installFromGit clones a git repository, reads the plugin manifest, collects
 // the plugin file tree, builds an in-memory tar.gz layer, and delegates to
@@ -75,6 +64,14 @@ func (s *service) installFromGit(
 		)
 	}
 
+	// Name/repo consistency check (mirrors the OCI check in installFromOCI):
+	// the manifest name must match the name implied by the git reference —
+	// the subdir's last segment when #subdir is present, else the repo's
+	// last segment. 422 on mismatch.
+	if err := validateGitPluginName(manifest.Name, gitRef); err != nil {
+		return nil, err
+	}
+
 	// Build the in-memory tar.gz layer from the collected file tree. This
 	// matches the OCI artifact layer shape so the MaterializationAdapter can
 	// extract it identically to an OCI-pulled plugin.
@@ -107,22 +104,12 @@ func (s *service) installFromGit(
 func (s *service) cloneAndCollectPlugin(
 	ctx context.Context, gitRef *gitresolver.GitReference,
 ) ([]ociartifact.FileEntry, *plugins.PluginManifest, string, error) {
-	ctx, cancel := context.WithTimeout(ctx, cloneTimeout)
+	ctx, cancel := context.WithTimeout(ctx, gitresolver.CloneTimeout)
 	defer cancel()
 
-	cloneConfig := &git.CloneConfig{URL: gitRef.URL}
-	if gitRef.Ref != "" {
-		switch {
-		case len(gitRef.Ref) == 40 && isHex(gitRef.Ref):
-			cloneConfig.Commit = gitRef.Ref
-		case semverLike.MatchString(gitRef.Ref):
-			cloneConfig.Tag = gitRef.Ref
-		default:
-			cloneConfig.Branch = gitRef.Ref
-		}
-	}
+	cloneConfig := gitresolver.CloneConfigForRef(gitRef)
 
-	client := s.gitClientForURL(gitRef.URL)
+	client := gitresolver.ClientForURL(gitRef.URL, s.gitClient)
 	repoInfo, err := client.Clone(ctx, cloneConfig)
 	if err != nil {
 		return nil, nil, "", fmt.Errorf("cloning repository: %w", err)
@@ -151,22 +138,6 @@ func (s *service) cloneAndCollectPlugin(
 		return nil, nil, "", fmt.Errorf("parsing plugin manifest: %w", err)
 	}
 	return fileEntries, manifest, commitHash, nil
-}
-
-// gitClientForURL returns a git client for the given clone URL. When a fixed
-// client is configured (testing) it is returned as-is; otherwise a new client
-// is created with host-scoped auth from the environment. Mirror of
-// gitresolver.defaultResolver.clientForURL.
-func (s *service) gitClientForURL(cloneURL string) git.Client {
-	if s.gitClient != nil {
-		return s.gitClient
-	}
-	auth := gitresolver.ResolveAuth(cloneURL)
-	var opts []git.ClientOption
-	if auth != nil {
-		opts = append(opts, git.WithAuth(auth))
-	}
-	return git.NewDefaultGitClient(opts...)
 }
 
 // collectPluginFiles reads all files from the given path in the repository,
@@ -199,10 +170,16 @@ func collectPluginFiles(repoInfo *git.RepositoryInfo, basePath string) ([]ociart
 		if contentErr != nil {
 			return fmt.Errorf("reading content of %q: %w", f.Name, contentErr)
 		}
+		// Preserve the executable bit (and other mode bits) committed in the
+		// repo rather than forcing every file to 0644, so hook scripts keep +x.
+		osMode, modeErr := f.Mode.ToOSFileMode()
+		if modeErr != nil {
+			return fmt.Errorf("converting mode of %q: %w", f.Name, modeErr)
+		}
 		files = append(files, ociartifact.FileEntry{
 			Path:    f.Name,
 			Content: []byte(content),
-			Mode:    int64(fs.FileMode(0644)),
+			Mode:    int64(osMode),
 		})
 		return nil
 	})
@@ -256,21 +233,19 @@ func manifestComponentInventory(m *plugins.PluginManifest) plugins.ComponentInve
 	return inv
 }
 
-// isHex checks if a string is a valid non-empty hexadecimal string. Mirror of
-// gitresolver.isHex.
-func isHex(s string) bool {
-	if s == "" {
-		return false
+// validateGitPluginName enforces name/repo consistency for git installs,
+// mirroring the OCI check that the manifest name matches the repo's last
+// segment. The expected name is derived from the git reference: the subdir's
+// last segment when #subdir is present, else the repo's last segment.
+// Returns a 422 httperr on mismatch.
+func validateGitPluginName(manifestName string, gitRef *gitresolver.GitReference) error {
+	expectedName := gitRef.SkillName()
+	if manifestName != expectedName {
+		return httperr.WithCode(
+			fmt.Errorf("plugin name %q in manifest does not match git reference name %q",
+				manifestName, expectedName),
+			http.StatusUnprocessableEntity,
+		)
 	}
-	for _, c := range s {
-		switch {
-		case c >= '0' && c <= '9',
-			c >= 'a' && c <= 'f',
-			c >= 'A' && c <= 'F':
-			continue
-		default:
-			return false
-		}
-	}
-	return true
+	return nil
 }

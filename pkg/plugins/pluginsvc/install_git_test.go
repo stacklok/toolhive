@@ -16,6 +16,7 @@ import (
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive-core/httperr"
+	ociartifact "github.com/stacklok/toolhive-core/oci/artifact"
 	"github.com/stacklok/toolhive/pkg/git"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	plugmocks "github.com/stacklok/toolhive/pkg/plugins/mocks"
@@ -145,6 +146,27 @@ func TestCloneAndCollectPlugin(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "not found in plugin directory")
 	})
+
+	t.Run("executable file mode is preserved", func(t *testing.T) {
+		t.Parallel()
+		repoDir := createPluginTestRepoWithExecutable(t, "")
+
+		s := &service{gitClient: git.NewDefaultGitClient()}
+		files, manifest, _, err := s.cloneAndCollectPlugin(t.Context(), &gitresolver.GitReference{URL: repoDir})
+		require.NoError(t, err)
+		assert.Equal(t, "my-plugin", manifest.Name)
+
+		var hookEntry *ociartifact.FileEntry
+		for i := range files {
+			if files[i].Path == "hooks/preinstall.sh" {
+				hookEntry = &files[i]
+				break
+			}
+		}
+		require.NotNil(t, hookEntry, "executable hook file should be collected")
+		assert.NotZero(t, hookEntry.Mode&0o100,
+			"executable bit should be preserved on hook script, got mode %o", hookEntry.Mode)
+	})
 }
 
 // createPluginTestRepo initializes an on-disk git repo containing a minimal
@@ -175,4 +197,86 @@ func createPluginTestRepo(t *testing.T, subdir string) string {
 	_, err = wt.Commit("init", &gogit.CommitOptions{Author: &object.Signature{Name: "T", Email: "t@e"}})
 	require.NoError(t, err)
 	return dir
+}
+
+// createPluginTestRepoWithExecutable is like createPluginTestRepo but also
+// commits an executable hook script at hooks/preinstall.sh (mode 0755) so the
+// exec-bit-preservation path can be exercised.
+func createPluginTestRepoWithExecutable(t *testing.T, subdir string) string {
+	t.Helper()
+	dir := t.TempDir()
+	repo, err := gogit.PlainInit(dir, false)
+	require.NoError(t, err)
+
+	pluginRoot := dir
+	if subdir != "" {
+		pluginRoot = filepath.Join(dir, subdir)
+	}
+	require.NoError(t, os.MkdirAll(filepath.Join(pluginRoot, ".claude-plugin"), 0750))
+	manifest := `{"name":"my-plugin","version":"1.0.0"}`
+	require.NoError(t, os.WriteFile(filepath.Join(pluginRoot, ".claude-plugin", "plugin.json"), []byte(manifest), 0644))
+
+	// Executable hook script, committed with the executable bit set.
+	require.NoError(t, os.MkdirAll(filepath.Join(pluginRoot, "hooks"), 0750))
+	hookPath := filepath.Join(pluginRoot, "hooks", "preinstall.sh")
+	require.NoError(t, os.WriteFile(hookPath, []byte("#!/bin/sh\necho hi\n"), 0755))
+
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+	_, err = wt.Add(".")
+	require.NoError(t, err)
+	_, err = wt.Commit("init", &gogit.CommitOptions{Author: &object.Signature{Name: "T", Email: "t@e"}})
+	require.NoError(t, err)
+	return dir
+}
+
+// TestGitNameConsistencyCheck exercises validateGitPluginName, the name/repo
+// consistency check for git installs that mirrors the OCI path's check.
+func TestGitNameConsistencyCheck(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		manifestName string
+		gitRef       *gitresolver.GitReference
+		wantErr      bool
+		wantCode     int
+	}{
+		{
+			name:         "bare repo mismatch returns 422",
+			manifestName: "evil-name",
+			gitRef:       &gitresolver.GitReference{URL: "https://github.com/org/my-plugin"},
+			wantErr:      true,
+			wantCode:     http.StatusUnprocessableEntity,
+		},
+		{
+			name:         "bare repo match passes",
+			manifestName: "my-plugin",
+			gitRef:       &gitresolver.GitReference{URL: "https://github.com/org/my-plugin"},
+		},
+		{
+			name:         "subdir case matches",
+			manifestName: "bundled",
+			gitRef:       &gitresolver.GitReference{URL: "https://github.com/org/repo", Path: "bundled"},
+		},
+		{
+			name:         "subdir mismatch returns 422",
+			manifestName: "other",
+			gitRef:       &gitresolver.GitReference{URL: "https://github.com/org/repo", Path: "bundled"},
+			wantErr:      true,
+			wantCode:     http.StatusUnprocessableEntity,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := validateGitPluginName(tt.manifestName, tt.gitRef)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Equal(t, tt.wantCode, httperr.Code(err))
+				return
+			}
+			require.NoError(t, err)
+		})
+	}
 }

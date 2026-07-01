@@ -110,8 +110,8 @@ func TestInfo(t *testing.T) {
 		// SupportedComponents is called for the UnmaterializedComponents diff.
 		codex.EXPECT().SupportedComponents().Return([]plugins.ComponentType{plugins.ComponentSkills})
 		claude.EXPECT().SupportedComponents().Return([]plugins.ComponentType{plugins.ComponentSkills})
-		codex.EXPECT().DegradesOnProjectScope().Return(true)
-		claude.EXPECT().DegradesOnProjectScope().Return(false)
+		codex.EXPECT().ScopeSupport().Return(plugins.ScopeSupport{DegradesOnProjectScope: true})
+		claude.EXPECT().ScopeSupport().Return(plugins.ScopeSupport{})
 
 		svc := newTestService(WithStore(store),
 			WithMaterializers(map[string]plugins.MaterializationAdapter{

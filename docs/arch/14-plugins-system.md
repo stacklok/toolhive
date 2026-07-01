@@ -25,7 +25,7 @@ cache + `config.toml`), and different clients load different component subsets.
 └───────────────┬─────────────────────────────────────────────┘
                 │  MaterializationAdapter interface
                 │  (Materialize / Dematerialize / SupportedComponents /
-                │   DegradesOnProjectScope)
+                │   ScopeSupport)
        ┌────────┴────────┐
        ▼                 ▼
 ┌─────────────┐   ┌──────────────┐

@@ -109,7 +109,7 @@ func TestCodexAdapter_DematerializeRemovesPluginTableAndPreservesUnrelatedTables
 	})
 	require.NoError(t, err)
 
-	require.NoError(t, a.Dematerialize(context.Background(), "foo", plugins.ScopeUser, ""))
+	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "foo", Scope: plugins.ScopeUser}))
 
 	// [plugins.foo] must be gone; cache dir must be gone.
 	content := readCodexConfig(t, tempHome)
@@ -184,7 +184,7 @@ func TestCodexAdapter_ProjectScopeDegraded(t *testing.T) {
 	assert.True(t, res.ProjectScopeDegraded, "project scope must be degraded for codex")
 
 	// Clean up so the user-scope config.toml is left empty for the next assertion.
-	require.NoError(t, a.Dematerialize(context.Background(), "proj-plugin", plugins.ScopeProject, projectRoot))
+	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "proj-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot}))
 
 	// User scope is NOT degraded.
 	res2, err := a.Materialize(context.Background(), plugins.MaterializeRequest{
@@ -196,7 +196,7 @@ func TestCodexAdapter_ProjectScopeDegraded(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, res2.ProjectScopeDegraded, "user scope must not be degraded for codex")
 
-	require.NoError(t, a.Dematerialize(context.Background(), "user-plugin", plugins.ScopeUser, ""))
+	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "user-plugin", Scope: plugins.ScopeUser}))
 }
 
 func TestCodexAdapter_DematerializeIdempotent(t *testing.T) {
@@ -207,9 +207,17 @@ func TestCodexAdapter_DematerializeIdempotent(t *testing.T) {
 
 	// Dematerializing something never installed is not an error, and does not
 	// create a config file.
-	require.NoError(t, a.Dematerialize(context.Background(), "ghost", plugins.ScopeUser, ""))
-	require.NoError(t, a.Dematerialize(context.Background(), "ghost", plugins.ScopeUser, ""))
+	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "ghost", Scope: plugins.ScopeUser}))
+	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "ghost", Scope: plugins.ScopeUser}))
 
 	_, err := os.Stat(filepath.Join(tempHome, ".codex", "config.toml"))
 	assert.True(t, os.IsNotExist(err), "no config file should be created by dematerialize")
+}
+
+func TestCodexAdapter_ScopeSupport(t *testing.T) {
+	t.Parallel()
+	a := &CodexAdapter{}
+	ss := a.ScopeSupport()
+	assert.True(t, ss.DegradesOnProjectScope)
+	assert.NotEmpty(t, ss.Reason)
 }

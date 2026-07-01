@@ -142,7 +142,7 @@ func TestClaudeCodeAdapter_DematerializeRemovesDir(t *testing.T) {
 	_, err = os.Stat(dir)
 	require.NoError(t, err)
 
-	require.NoError(t, a.Dematerialize(context.Background(), "remove-me", plugins.ScopeUser, ""))
+	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "remove-me", Scope: plugins.ScopeUser}))
 
 	_, err = os.Stat(dir)
 	assert.True(t, os.IsNotExist(err), "dir should be gone after dematerialize")
@@ -155,9 +155,9 @@ func TestClaudeCodeAdapter_DematerializeIdempotent(t *testing.T) {
 	a := NewClaudeCodeAdapter(cm)
 
 	// Dematerializing something that was never installed is not an error.
-	require.NoError(t, a.Dematerialize(context.Background(), "never-there", plugins.ScopeUser, ""))
+	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "never-there", Scope: plugins.ScopeUser}))
 	// A second dematerialize is also fine.
-	require.NoError(t, a.Dematerialize(context.Background(), "never-there", plugins.ScopeUser, ""))
+	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "never-there", Scope: plugins.ScopeUser}))
 }
 
 func TestClaudeCodeAdapter_RematerializeOverwrites(t *testing.T) {
@@ -198,4 +198,12 @@ func TestClaudeCodeAdapter_RematerializeOverwrites(t *testing.T) {
 	// v1.md is removed because force overwrites the whole directory.
 	_, err = os.Stat(filepath.Join(dir, "commands", "v1.md"))
 	assert.True(t, os.IsNotExist(err), "old file should be gone after forced reinstall")
+}
+
+func TestClaudeCodeAdapter_ScopeSupport(t *testing.T) {
+	t.Parallel()
+	a := &ClaudeCodeAdapter{}
+	ss := a.ScopeSupport()
+	assert.False(t, ss.DegradesOnProjectScope)
+	assert.Empty(t, ss.Reason)
 }

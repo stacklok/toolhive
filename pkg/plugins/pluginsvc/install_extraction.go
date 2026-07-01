@@ -181,7 +181,11 @@ func (s *service) dematerializeAll(
 ) {
 	for _, ct := range clientTypes {
 		if adapter, ok := s.materializers[ct]; ok {
-			_ = adapter.Dematerialize(ctx, name, scope, projectRoot)
+			_ = adapter.Dematerialize(ctx, plugins.DematerializeRequest{
+				Name:        name,
+				Scope:       scope,
+				ProjectRoot: projectRoot,
+			})
 		}
 	}
 }

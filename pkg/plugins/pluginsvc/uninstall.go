@@ -50,7 +50,11 @@ func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) 
 		if !ok {
 			continue
 		}
-		if dmErr := adapter.Dematerialize(ctx, opts.Name, scope, opts.ProjectRoot); dmErr != nil {
+		if dmErr := adapter.Dematerialize(ctx, plugins.DematerializeRequest{
+			Name:        opts.Name,
+			Scope:       scope,
+			ProjectRoot: opts.ProjectRoot,
+		}); dmErr != nil {
 			cleanupErrs = append(cleanupErrs, fmt.Errorf("dematerializing plugin for client %q: %w", clientType, dmErr))
 		}
 	}

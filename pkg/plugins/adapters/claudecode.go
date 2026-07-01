@@ -60,8 +60,8 @@ func (a *ClaudeCodeAdapter) Materialize(_ context.Context, req plugins.Materiali
 }
 
 // Dematerialize removes the plugin directory and cleans up empty parents.
-func (a *ClaudeCodeAdapter) Dematerialize(_ context.Context, name string, scope plugins.Scope, projectRoot string) error {
-	dir, err := a.cm.GetPluginPath(client.ClaudeCode, name, scope, projectRoot)
+func (a *ClaudeCodeAdapter) Dematerialize(_ context.Context, req plugins.DematerializeRequest) error {
+	dir, err := a.cm.GetPluginPath(client.ClaudeCode, req.Name, req.Scope, req.ProjectRoot)
 	if err != nil {
 		return fmt.Errorf("resolving plugin path: %w", err)
 	}
@@ -72,8 +72,8 @@ func (a *ClaudeCodeAdapter) Dematerialize(_ context.Context, name string, scope 
 
 	// Best-effort empty-parent cleanup.
 	// Mirror the skillsvc uninstall pattern: walk up to the home/project root.
-	stopAt := projectRoot
-	if scope == plugins.ScopeUser {
+	stopAt := req.ProjectRoot
+	if req.Scope == plugins.ScopeUser {
 		if homeDir, homeErr := os.UserHomeDir(); homeErr == nil {
 			stopAt = homeDir
 		}
@@ -90,9 +90,9 @@ func (*ClaudeCodeAdapter) SupportedComponents() []plugins.ComponentType {
 	return claudeCodeSupported
 }
 
-// DegradesOnProjectScope returns false: Claude Code supports both user and
+// ScopeSupport returns false for Claude Code: it supports both user and
 // project plugin directories, so a project-scoped install lands in the project
 // directory without degradation.
-func (*ClaudeCodeAdapter) DegradesOnProjectScope() bool {
-	return false
+func (*ClaudeCodeAdapter) ScopeSupport() plugins.ScopeSupport {
+	return plugins.ScopeSupport{DegradesOnProjectScope: false}
 }

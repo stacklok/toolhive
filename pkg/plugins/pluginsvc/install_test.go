@@ -239,7 +239,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(plugins.InstalledPlugin{}, storage.ErrNotFound)
 		adapter.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(&plugins.MaterializeResult{}, nil)
 		store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(fmt.Errorf("db write error"))
-		adapter.EXPECT().Dematerialize(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(nil)
+		adapter.EXPECT().Dematerialize(gomock.Any(), plugins.DematerializeRequest{Name: "my-plugin", Scope: plugins.ScopeUser}).Return(nil)
 
 		svc := newTestService(WithStore(store), WithMaterializers(map[string]plugins.MaterializationAdapter{"claude-code": adapter}))
 		_, err := svc.Install(t.Context(), plugins.InstallOptions{
@@ -261,7 +261,7 @@ func TestInstallWithExtraction(t *testing.T) {
 		store.EXPECT().Get(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(plugins.InstalledPlugin{}, storage.ErrNotFound)
 		adapterA.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(&plugins.MaterializeResult{}, nil)
 		adapterB.EXPECT().Materialize(gomock.Any(), gomock.Any()).Return(nil, fmt.Errorf("disk full"))
-		adapterA.EXPECT().Dematerialize(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(nil)
+		adapterA.EXPECT().Dematerialize(gomock.Any(), plugins.DematerializeRequest{Name: "my-plugin", Scope: plugins.ScopeUser}).Return(nil)
 
 		svc := newTestService(WithStore(store), WithMaterializers(map[string]plugins.MaterializationAdapter{
 			"claude-code": adapterA,
@@ -448,7 +448,7 @@ func TestInstallRoundTrip(t *testing.T) {
 			Metadata: plugins.PluginMetadata{Name: "my-plugin"},
 			Clients:  []string{"claude-code"},
 		}, nil)
-		adapter.EXPECT().Dematerialize(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(nil)
+		adapter.EXPECT().Dematerialize(gomock.Any(), plugins.DematerializeRequest{Name: "my-plugin", Scope: plugins.ScopeUser}).Return(nil)
 		store.EXPECT().Delete(gomock.Any(), "my-plugin", plugins.ScopeUser, "").Return(nil)
 
 		err = svc.Uninstall(t.Context(), plugins.UninstallOptions{Name: "my-plugin"})

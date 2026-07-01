@@ -78,10 +78,10 @@ func (a *CodexAdapter) Materialize(_ context.Context, req plugins.MaterializeReq
 }
 
 // Dematerialize removes the plugin from the cache directory and its config entry.
-func (a *CodexAdapter) Dematerialize(_ context.Context, name string, scope plugins.Scope, projectRoot string) error {
+func (a *CodexAdapter) Dematerialize(_ context.Context, req plugins.DematerializeRequest) error {
 	var errs []error
 
-	cacheDir, err := a.cm.GetPluginPath(client.Codex, name, scope, projectRoot)
+	cacheDir, err := a.cm.GetPluginPath(client.Codex, req.Name, req.Scope, req.ProjectRoot)
 	if err != nil {
 		errs = append(errs, fmt.Errorf("resolving plugin cache path: %w", err))
 	} else {
@@ -89,8 +89,8 @@ func (a *CodexAdapter) Dematerialize(_ context.Context, name string, scope plugi
 			errs = append(errs, fmt.Errorf("removing plugin directory: %w", rmErr))
 		} else {
 			// Best-effort empty-parent cleanup.
-			stopAt := projectRoot
-			if scope == plugins.ScopeUser {
+			stopAt := req.ProjectRoot
+			if req.Scope == plugins.ScopeUser {
 				if homeDir, homeErr := os.UserHomeDir(); homeErr == nil {
 					stopAt = homeDir
 				}
@@ -105,7 +105,7 @@ func (a *CodexAdapter) Dematerialize(_ context.Context, name string, scope plugi
 	configPath, cfgErr := a.cm.GetConfigPath(client.Codex)
 	if cfgErr != nil {
 		errs = append(errs, fmt.Errorf("resolving codex config path: %w", cfgErr))
-	} else if err := removePluginTable(configPath, name); err != nil {
+	} else if err := removePluginTable(configPath, req.Name); err != nil {
 		errs = append(errs, fmt.Errorf("removing plugin from codex config: %w", err))
 	}
 
@@ -120,12 +120,15 @@ func (*CodexAdapter) SupportedComponents() []plugins.ComponentType {
 	return codexSupported
 }
 
-// DegradesOnProjectScope returns true: Codex's plugin registration is written
-// to the user-scoped ~/.codex/config.toml regardless of install scope, so a
+// ScopeSupport returns true for Codex: plugin registration is written to the
+// user-scoped ~/.codex/config.toml regardless of install scope, so a
 // project-scoped install degrades (the cache is project-local, but the config
 // entry is user-wide).
-func (*CodexAdapter) DegradesOnProjectScope() bool {
-	return true
+func (*CodexAdapter) ScopeSupport() plugins.ScopeSupport {
+	return plugins.ScopeSupport{
+		DegradesOnProjectScope: true,
+		Reason:                 "Codex plugin registration is user-scoped; project-scope cache installs write to the user-wide config",
+	}
 }
 
 // --- Config.toml mutation helpers ---

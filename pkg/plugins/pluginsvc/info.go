@@ -40,9 +40,9 @@ func (s *service) Info(ctx context.Context, opts plugins.InfoOptions) (*plugins.
 
 // computeProjectScopeDegraded returns the client types for which a
 // project-scoped install degraded. A client degrades iff the install is
-// project-scoped AND its adapter reports DegradesOnProjectScope. Empty for
-// user-scoped installs. Recomputed at read time (deterministic from scope +
-// adapter capability); no persistence needed.
+// project-scoped AND its adapter reports ScopeSupport.DegradesOnProjectScope.
+// Empty for user-scoped installs. Recomputed at read time (deterministic from
+// scope + adapter capability); no persistence needed.
 func (s *service) computeProjectScopeDegraded(p plugins.InstalledPlugin) []string {
 	if p.Scope != plugins.ScopeProject {
 		return nil
@@ -53,7 +53,7 @@ func (s *service) computeProjectScopeDegraded(p plugins.InstalledPlugin) []strin
 		if !ok {
 			continue
 		}
-		if adapter.DegradesOnProjectScope() {
+		if adapter.ScopeSupport().DegradesOnProjectScope {
 			degraded = append(degraded, ct)
 		}
 	}

@@ -41,32 +41,18 @@ func (m *MockMaterializationAdapter) EXPECT() *MockMaterializationAdapterMockRec
 	return m.recorder
 }
 
-// DegradesOnProjectScope mocks base method.
-func (m *MockMaterializationAdapter) DegradesOnProjectScope() bool {
-	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "DegradesOnProjectScope")
-	ret0, _ := ret[0].(bool)
-	return ret0
-}
-
-// DegradesOnProjectScope indicates an expected call of DegradesOnProjectScope.
-func (mr *MockMaterializationAdapterMockRecorder) DegradesOnProjectScope() *gomock.Call {
-	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DegradesOnProjectScope", reflect.TypeOf((*MockMaterializationAdapter)(nil).DegradesOnProjectScope))
-}
-
 // Dematerialize mocks base method.
-func (m *MockMaterializationAdapter) Dematerialize(ctx context.Context, name string, scope plugins.Scope, projectRoot string) error {
+func (m *MockMaterializationAdapter) Dematerialize(ctx context.Context, req plugins.DematerializeRequest) error {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "Dematerialize", ctx, name, scope, projectRoot)
+	ret := m.ctrl.Call(m, "Dematerialize", ctx, req)
 	ret0, _ := ret[0].(error)
 	return ret0
 }
 
 // Dematerialize indicates an expected call of Dematerialize.
-func (mr *MockMaterializationAdapterMockRecorder) Dematerialize(ctx, name, scope, projectRoot any) *gomock.Call {
+func (mr *MockMaterializationAdapterMockRecorder) Dematerialize(ctx, req any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
-	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Dematerialize", reflect.TypeOf((*MockMaterializationAdapter)(nil).Dematerialize), ctx, name, scope, projectRoot)
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Dematerialize", reflect.TypeOf((*MockMaterializationAdapter)(nil).Dematerialize), ctx, req)
 }
 
 // Materialize mocks base method.
@@ -82,6 +68,20 @@ func (m *MockMaterializationAdapter) Materialize(ctx context.Context, req plugin
 func (mr *MockMaterializationAdapterMockRecorder) Materialize(ctx, req any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Materialize", reflect.TypeOf((*MockMaterializationAdapter)(nil).Materialize), ctx, req)
+}
+
+// ScopeSupport mocks base method.
+func (m *MockMaterializationAdapter) ScopeSupport() plugins.ScopeSupport {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "ScopeSupport")
+	ret0, _ := ret[0].(plugins.ScopeSupport)
+	return ret0
+}
+
+// ScopeSupport indicates an expected call of ScopeSupport.
+func (mr *MockMaterializationAdapterMockRecorder) ScopeSupport() *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "ScopeSupport", reflect.TypeOf((*MockMaterializationAdapter)(nil).ScopeSupport))
 }
 
 // SupportedComponents mocks base method.

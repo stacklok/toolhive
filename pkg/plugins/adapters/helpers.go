@@ -3,7 +3,12 @@
 
 package adapters
 
-import "github.com/stacklok/toolhive/pkg/plugins"
+import (
+	"path/filepath"
+
+	"github.com/stacklok/toolhive/pkg/plugins"
+	"github.com/stacklok/toolhive/pkg/skills"
+)
 
 // droppedComponents returns the component types declared in the inventory that
 // are not present in the supported set.
@@ -23,4 +28,18 @@ func droppedComponents(inv plugins.ComponentInventory, supported []plugins.Compo
 		}
 	}
 	return out
+}
+
+// cleanupAfterRemove walks up from dir's parent removing empty directories,
+// stopping at the project root (project scope) or home dir (user scope).
+// homeDir is taken as a parameter (not os.UserHomeDir) so tests can inject a
+// temp home without touching the host filesystem.
+func cleanupAfterRemove(dir string, scope plugins.Scope, projectRoot, homeDir string) {
+	stopAt := projectRoot
+	if scope == plugins.ScopeUser {
+		stopAt = homeDir
+	}
+	if stopAt != "" {
+		skills.RemoveEmptyParents(filepath.Dir(dir), stopAt)
+	}
 }

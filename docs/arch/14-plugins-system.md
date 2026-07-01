@@ -31,10 +31,11 @@ cache + `config.toml`), and different clients load different component subsets.
 ┌─────────────┐   ┌──────────────┐
 │ ClaudeCode  │   │    Codex     │
 │ Adapter     │   │   Adapter    │
-│ pure FS     │   │ FS + TOML    │
+│ FS + JSON   │   │ FS + TOML    │
 │ ~/.claude/  │   │ ~/.codex/    │
 │ plugins/    │   │ plugins/cache│
-│             │   │ + config.toml│
+│ +settings   │   │ + config.toml│
+│ .json       │   │              │
 └─────────────┘   └──────────────┘
 ```
 
@@ -71,7 +72,7 @@ per client:
 
 | Client | Layout | Config mutation | Components loaded | Scope degradation |
 |---|---|---|---|---|
-| Claude Code | `~/.claude/plugins/<name>/` | none (pure FS) | commands, agents, skills, hooks | none |
+| Claude Code | `~/.claude/plugins/<name>/` | `~/.claude/settings.json`: `enabledPlugins["<name>@toolhive"]` + `extraKnownMarketplaces.toolhive` (local source pointing at the plugins parent dir); per-plugin `marketplace.json` with `source: "./"` | commands, agents, skills, hooks | none |
 | Codex | `~/.codex/plugins/cache/<name>/` | `~/.codex/config.toml` `[plugins.<name>]` | skills, mcpServers, hooks | project → user (config is user-scoped) |
 
 The `MaterializationAdapter` interface (`pkg/plugins/adapter.go`) owns this:
@@ -170,6 +171,22 @@ name cannot inject TOML keys. `Dematerialize` reverts only its own
 `[plugins.*]` additions; unrelated tables (`[mcp_servers.*]`, etc.) survive
 (exit-gate test asserts this).
 
+### settings.json Mutation (Claude Code)
+
+The Claude Code adapter mutates `~/.claude/settings.json` (or the project
+`<root>/.claude/settings.json`) under `fileutils.WithFileLock`. It adds
+`enabledPlugins["<name>@toolhive"]` and an `extraKnownMarketplaces.toolhive`
+entry whose `source.path` points at the **plugins parent directory** (the
+directory containing all installed plugins), not the per-plugin directory.
+Because the `toolhive` marketplace key is shared across every ToolHive-installed
+plugin, pointing it at a per-plugin directory would let a later install or a
+non-LIFO uninstall silently break an earlier plugin by overwriting or
+invalidating the path. Each plugin carries its own `marketplace.json` with
+`source: "./"` (relative to its own directory); the shared entry only tells
+Claude Code the `toolhive` marketplace exists. `Dematerialize` reverts its own
+`enabledPlugins` additions and drops `extraKnownMarketplaces.toolhive` only when
+no remaining `@toolhive` plugins are enabled.
+
 ### Name/Repo Consistency
 
 The OCI install path rejects artifacts whose declared name doesn't match the
@@ -203,7 +220,7 @@ The OCI plugin layer (`ociplugins.Store`, `PluginPackager`, `RegistryClient`,
 | `pkg/plugins/pluginsvc/install_git.go` | git clone + manifest read |
 | `pkg/plugins/pluginsvc/install_extraction.go` | shared materialize + persist core |
 | `pkg/plugins/pluginsvc/list.go` / `info.go` / `uninstall.go` | lifecycle methods |
-| `pkg/plugins/adapters/claudecode.go` | Claude Code adapter (pure FS) |
+| `pkg/plugins/adapters/claudecode.go` | Claude Code adapter (FS + settings.json mutation) |
 | `pkg/plugins/adapters/codex.go` | Codex adapter (FS + TOML) |
 | `pkg/storage/sqlite/plugin_store.go` | SQLite store |
 | `pkg/groups/plugins.go` | group membership |

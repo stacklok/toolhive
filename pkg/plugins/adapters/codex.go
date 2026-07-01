@@ -89,15 +89,7 @@ func (a *CodexAdapter) Dematerialize(_ context.Context, req plugins.Dematerializ
 			errs = append(errs, fmt.Errorf("removing plugin directory: %w", rmErr))
 		} else {
 			// Best-effort empty-parent cleanup.
-			stopAt := req.ProjectRoot
-			if req.Scope == plugins.ScopeUser {
-				if homeDir, homeErr := os.UserHomeDir(); homeErr == nil {
-					stopAt = homeDir
-				}
-			}
-			if stopAt != "" {
-				skills.RemoveEmptyParents(filepath.Dir(cacheDir), stopAt)
-			}
+			cleanupAfterRemove(cacheDir, req.Scope, req.ProjectRoot, a.cm.HomeDir())
 		}
 	}
 

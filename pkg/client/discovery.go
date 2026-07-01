@@ -26,6 +26,14 @@ type ClientManager struct {
 	lookPath           func(string) (string, error)
 }
 
+// HomeDir returns the home directory this ClientManager is rooted at. Exported
+// so plugin adapters can resolve user-scoped config-file paths (e.g. Claude
+// Code's ~/.claude/settings.json) under the manager's home — which, for tests,
+// is a temp dir injected via NewTestClientManagerWithHome.
+func (cm *ClientManager) HomeDir() string {
+	return cm.homeDir
+}
+
 // NewClientManager creates a new ClientManager with default dependencies
 func NewClientManager() (*ClientManager, error) {
 	home, err := os.UserHomeDir()

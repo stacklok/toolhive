@@ -17,6 +17,9 @@ import (
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	dto "github.com/prometheus/client_model/go"
+	"github.com/prometheus/common/expfmt"
+	"github.com/prometheus/common/model"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
@@ -40,6 +43,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 		vmcpName               string
 		redisName              string
 		oidcName               string
+		telemetryName          string
 		vmcpLocalPort          int
 		oidcLocalPort          int
 		vmcpPortForwardCleanup func()
@@ -54,6 +58,7 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 		vmcpName = fmt.Sprintf("e2e-rl-vmcp-%d", ts)
 		redisName = fmt.Sprintf("e2e-rl-redis-%d", ts)
 		oidcName = fmt.Sprintf("e2e-rl-oidc-%d", ts)
+		telemetryName = fmt.Sprintf("e2e-rl-telemetry-%d", ts)
 
 		ginkgo.By("Deploying Redis")
 		deployRedis(redisName)
@@ -112,10 +117,30 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 			return nil
 		}, timeout, pollInterval).Should(gomega.Succeed())
 
+		ginkgo.By("Creating Prometheus telemetry configuration")
+		gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPTelemetryConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      telemetryName,
+				Namespace: defaultNamespace,
+			},
+			Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+				Prometheus: &mcpv1beta1.PrometheusConfig{Enabled: true},
+			},
+		})).To(gomega.Succeed())
+		gomega.Eventually(func() bool {
+			telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryName,
+				Namespace: defaultNamespace,
+			}, telemetryConfig)
+			return err == nil && telemetryConfig.Status.ConfigHash != ""
+		}, timeout, pollInterval).Should(gomega.BeTrue())
+
 		redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
 		ginkgo.By("Creating VirtualMCPServer with per-user rate limiting")
 		gomega.Expect(k8sClient.Create(ctx, v1beta1test.NewVirtualMCPServer(vmcpName, defaultNamespace,
 			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPTelemetryConfigRef(telemetryName),
 			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
 				Group: mcpGroupName,
 				RateLimiting: &mcpv1beta1.RateLimitConfig{
@@ -166,6 +191,9 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPOIDCConfig{
 			ObjectMeta: metav1.ObjectMeta{Name: oidcName, Namespace: defaultNamespace},
 		})
+		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPTelemetryConfig{
+			ObjectMeta: metav1.ObjectMeta{Name: telemetryName, Namespace: defaultNamespace},
+		})
 		cleanupRedis(redisName)
 	})
 
@@ -198,8 +226,99 @@ var _ = ginkgo.Describe("VirtualMCPServer Rate Limiting", ginkgo.Ordered, func()
 		data, ok := structured["data"].(map[string]any)
 		gomega.Expect(ok).To(gomega.BeTrue())
 		gomega.Expect(data["retryAfterSeconds"]).To(gomega.BeNumerically(">", 0))
+
+		ginkgo.By("Scraping non-zero rate limit metrics")
+		gomega.Eventually(func() error {
+			metricFamilies, scrapeErr := scrapeRateLimitMetrics(vmcpLocalPort)
+			if scrapeErr != nil {
+				return scrapeErr
+			}
+			if !rateLimitCounterIsNonZero(metricFamilies, "toolhive_rate_limit_decisions", map[string]string{
+				"decision":       "allowed",
+				"scope":          "per_user",
+				"operation_type": "server",
+			}) {
+				return fmt.Errorf("allowed rate limit decision counter is zero")
+			}
+			if !rateLimitCounterIsNonZero(metricFamilies, "toolhive_rate_limit_decisions", map[string]string{
+				"decision":       "rejected",
+				"scope":          "per_user",
+				"operation_type": "server",
+			}) {
+				return fmt.Errorf("rejected rate limit decision counter is zero")
+			}
+			if !rateLimitHistogramIsNonZero(metricFamilies, "toolhive_rate_limit_check_latency") {
+				return fmt.Errorf("rate limit check latency histogram is empty")
+			}
+			return nil
+		}, 30*time.Second, time.Second).Should(gomega.Succeed())
 	})
 })
+
+func scrapeRateLimitMetrics(port int) (map[string]*dto.MetricFamily, error) {
+	url := fmt.Sprintf("http://localhost:%d/metrics", port)
+	resp, err := http.Get(url) //nolint:noctx
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("metrics endpoint returned HTTP %d", resp.StatusCode)
+	}
+
+	parser := expfmt.NewTextParser(model.UTF8Validation)
+	return parser.TextToMetricFamilies(resp.Body)
+}
+
+func rateLimitCounterIsNonZero(
+	families map[string]*dto.MetricFamily,
+	namePrefix string,
+	wantLabels map[string]string,
+) bool {
+	for name, family := range families {
+		if !strings.HasPrefix(name, namePrefix) {
+			continue
+		}
+		for _, metric := range family.Metric {
+			if prometheusLabelsMatch(metric, wantLabels) &&
+				metric.Counter != nil &&
+				metric.Counter.GetValue() > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func rateLimitHistogramIsNonZero(
+	families map[string]*dto.MetricFamily,
+	namePrefix string,
+) bool {
+	for name, family := range families {
+		if !strings.HasPrefix(name, namePrefix) {
+			continue
+		}
+		for _, metric := range family.Metric {
+			if metric.Histogram != nil && metric.Histogram.GetSampleCount() > 0 {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func prometheusLabelsMatch(metric *dto.Metric, want map[string]string) bool {
+	labels := make(map[string]string, len(metric.Label))
+	for _, pair := range metric.Label {
+		labels[pair.GetName()] = pair.GetValue()
+	}
+	for name, value := range want {
+		if labels[name] != value {
+			return false
+		}
+	}
+	return true
+}
 
 func fetchRateLimitOIDCToken(oidcPort int, subject string) string {
 	url := fmt.Sprintf("http://localhost:%d/token?subject=%s", oidcPort, subject)

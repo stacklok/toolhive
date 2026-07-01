@@ -908,8 +908,13 @@ type OutputProperty struct {
 // OptimizerConfig configures the MCP optimizer.
 // When enabled, vMCP exposes only find_tool and call_tool operations to clients
 // instead of all backend tools directly.
+//
 // +kubebuilder:object:generate=true
+// +kubebuilder:validation:XValidation:rule="!has(self.embeddingHeaders) || (has(self.embeddingProvider) && self.embeddingProvider == 'openai')",message="embeddingHeaders is only supported when embeddingProvider is 'openai'"
+// +kubebuilder:validation:XValidation:rule=`!has(self.embeddingHeaders) || self.embeddingHeaders.all(k, k.matches('^[!#$%&\\x27*+.^_\\x60|~0-9A-Za-z-]+$') && !(k.lowerAscii() in ['authorization', 'content-type']))`,message="embeddingHeaders names must be valid HTTP header names and must not include Authorization or Content-Type"
 // +gendoc
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type OptimizerConfig struct {
 	// EmbeddingService is the full base URL of the embedding service endpoint
 	// (e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic
@@ -959,6 +964,14 @@ type OptimizerConfig struct {
 	// +optional
 	EmbeddingModel string `json:"embeddingModel,omitempty" yaml:"embeddingModel,omitempty"`
 
+	// EmbeddingHeaders holds additional HTTP headers sent with every embedding
+	// request. Only supported when EmbeddingProvider is "openai". Values are
+	// stored in plain text and must not contain secrets; Authorization
+	// (derived from OPENAI_API_KEY) and Content-Type cannot be set.
+	// +kubebuilder:validation:MaxProperties=32
+	// +optional
+	EmbeddingHeaders map[string]EmbeddingHeaderValue `json:"embeddingHeaders,omitempty" yaml:"embeddingHeaders,omitempty"`
+
 	// MaxToolsToReturn is the maximum number of tool results returned by a search query.
 	// Defaults to 8 if not specified or zero.
 	// +kubebuilder:validation:Minimum=1
@@ -984,6 +997,13 @@ type OptimizerConfig struct {
 	// +optional
 	SemanticDistanceThreshold string `json:"semanticDistanceThreshold,omitempty" yaml:"semanticDistanceThreshold,omitempty"`
 }
+
+// EmbeddingHeaderValue is a custom embedding request header value: 1 to 8192
+// characters with no control characters other than tab.
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=8192
+// +kubebuilder:validation:Pattern=`^[^\x00-\x08\x0A-\x1F\x7F]*$`
+type EmbeddingHeaderValue string
 
 // CodeModeConfig configures vMCP code mode (the execute_tool_script virtual tool).
 // When enabled, agents can submit a Starlark script that calls multiple backend tools

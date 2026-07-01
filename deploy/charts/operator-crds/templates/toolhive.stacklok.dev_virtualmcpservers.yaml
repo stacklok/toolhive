@@ -1813,6 +1813,22 @@ spec:
                       instead of all backend tools directly. This reduces token usage by allowing
                       LLMs to discover relevant tools on demand rather than receiving all tool definitions.
                     properties:
+                      embeddingHeaders:
+                        additionalProperties:
+                          description: |-
+                            EmbeddingHeaderValue is a custom embedding request header value: 1 to 8192
+                            characters with no control characters other than tab.
+                          maxLength: 8192
+                          minLength: 1
+                          pattern: ^[^\x00-\x08\x0A-\x1F\x7F]*$
+                          type: string
+                        description: |-
+                          EmbeddingHeaders holds additional HTTP headers sent with every embedding
+                          request. Only supported when EmbeddingProvider is "openai". Values are
+                          stored in plain text and must not contain secrets; Authorization
+                          (derived from OPENAI_API_KEY) and Content-Type cannot be set.
+                        maxProperties: 32
+                        type: object
                       embeddingModel:
                         description: |-
                           EmbeddingModel is the model name requested from the embedding service
@@ -1890,6 +1906,16 @@ spec:
                         pattern: ^([0-9]*[.])?[0-9]+$
                         type: string
                     type: object
+                    x-kubernetes-validations:
+                    - message: embeddingHeaders is only supported when embeddingProvider
+                        is 'openai'
+                      rule: '!has(self.embeddingHeaders) || (has(self.embeddingProvider)
+                        && self.embeddingProvider == ''openai'')'
+                    - message: embeddingHeaders names must be valid HTTP header names
+                        and must not include Authorization or Content-Type
+                      rule: '!has(self.embeddingHeaders) || self.embeddingHeaders.all(k,
+                        k.matches(''^[!#$%&\\x27*+.^_\\x60|~0-9A-Za-z-]+$'') && !(k.lowerAscii()
+                        in [''authorization'', ''content-type'']))'
                   outgoingAuth:
                     description: |-
                       OutgoingAuth configures how the virtual MCP server authenticates to backends.
@@ -5219,6 +5245,22 @@ spec:
                       instead of all backend tools directly. This reduces token usage by allowing
                       LLMs to discover relevant tools on demand rather than receiving all tool definitions.
                     properties:
+                      embeddingHeaders:
+                        additionalProperties:
+                          description: |-
+                            EmbeddingHeaderValue is a custom embedding request header value: 1 to 8192
+                            characters with no control characters other than tab.
+                          maxLength: 8192
+                          minLength: 1
+                          pattern: ^[^\x00-\x08\x0A-\x1F\x7F]*$
+                          type: string
+                        description: |-
+                          EmbeddingHeaders holds additional HTTP headers sent with every embedding
+                          request. Only supported when EmbeddingProvider is "openai". Values are
+                          stored in plain text and must not contain secrets; Authorization
+                          (derived from OPENAI_API_KEY) and Content-Type cannot be set.
+                        maxProperties: 32
+                        type: object
                       embeddingModel:
                         description: |-
                           EmbeddingModel is the model name requested from the embedding service
@@ -5296,6 +5338,16 @@ spec:
                         pattern: ^([0-9]*[.])?[0-9]+$
                         type: string
                     type: object
+                    x-kubernetes-validations:
+                    - message: embeddingHeaders is only supported when embeddingProvider
+                        is 'openai'
+                      rule: '!has(self.embeddingHeaders) || (has(self.embeddingProvider)
+                        && self.embeddingProvider == ''openai'')'
+                    - message: embeddingHeaders names must be valid HTTP header names
+                        and must not include Authorization or Content-Type
+                      rule: '!has(self.embeddingHeaders) || self.embeddingHeaders.all(k,
+                        k.matches(''^[!#$%&\\x27*+.^_\\x60|~0-9A-Za-z-]+$'') && !(k.lowerAscii()
+                        in [''authorization'', ''content-type'']))'
                   outgoingAuth:
                     description: |-
                       OutgoingAuth configures how the virtual MCP server authenticates to backends.

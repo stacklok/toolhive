@@ -5,6 +5,9 @@
 package controllers
 
 import (
+	"fmt"
+	"strings"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
@@ -49,6 +52,85 @@ var _ = Describe("CEL Validation for embedding provider on VirtualMCPServer",
 					EmbeddingProvider: "openai",
 					EmbeddingService:  "http://gateway.example:8080",
 					EmbeddingModel:    "text-embedding-3-small",
+				})
+			err := k8sClient.Create(ctx, vmcp)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should reject embeddingHeaders with the tei provider", func() {
+			vmcp := newVirtualMCPServerWithOptimizer("vmcp-headers-tei",
+				&vmcpconfig.OptimizerConfig{
+					EmbeddingProvider: "tei",
+					EmbeddingService:  "http://embeddings.example:8080",
+					EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "toolhive-optimizer"},
+				})
+			err := k8sClient.Create(ctx, vmcp)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(
+				"embeddingHeaders is only supported when embeddingProvider is 'openai'"))
+		})
+
+		It("should reject embeddingHeaders when the provider is defaulted to tei", func() {
+			vmcp := newVirtualMCPServerWithOptimizer("vmcp-headers-default",
+				&vmcpconfig.OptimizerConfig{
+					EmbeddingService: "http://embeddings.example:8080",
+					EmbeddingHeaders: map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "toolhive-optimizer"},
+				})
+			err := k8sClient.Create(ctx, vmcp)
+			Expect(err).To(HaveOccurred())
+			Expect(err.Error()).To(ContainSubstring(
+				"embeddingHeaders is only supported when embeddingProvider is 'openai'"))
+		})
+
+		It("should accept embeddingHeaders with the openai provider", func() {
+			vmcp := newVirtualMCPServerWithOptimizer("vmcp-headers-openai",
+				&vmcpconfig.OptimizerConfig{
+					EmbeddingProvider: "openai",
+					EmbeddingService:  "http://gateway.example:8080",
+					EmbeddingModel:    "text-embedding-3-small",
+					EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "toolhive-optimizer"},
+				})
+			err := k8sClient.Create(ctx, vmcp)
+			Expect(err).NotTo(HaveOccurred())
+		})
+
+		It("should reject reserved names, invalid names, and unsafe values in embeddingHeaders", func() {
+			for i, tc := range []struct {
+				headers map[string]vmcpconfig.EmbeddingHeaderValue
+				want    string
+			}{
+				{map[string]vmcpconfig.EmbeddingHeaderValue{"Authorization": "Bearer x"}, "must not include Authorization or Content-Type"},
+				{map[string]vmcpconfig.EmbeddingHeaderValue{"authorization": "Bearer x"}, "must not include Authorization or Content-Type"},
+				{map[string]vmcpconfig.EmbeddingHeaderValue{"Content-Type": "application/json"}, "must not include Authorization or Content-Type"},
+				{map[string]vmcpconfig.EmbeddingHeaderValue{"content-type": "application/json"}, "must not include Authorization or Content-Type"},
+				{map[string]vmcpconfig.EmbeddingHeaderValue{"": "value"}, "names must be valid HTTP header names"},
+				{map[string]vmcpconfig.EmbeddingHeaderValue{"x bad": "value"}, "names must be valid HTTP header names"},
+				{map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": ""}, "should be at least 1 chars long"},
+				{map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "a\r\nb"}, "should match"},
+				{map[string]vmcpconfig.EmbeddingHeaderValue{
+					"x-cache-key": vmcpconfig.EmbeddingHeaderValue(strings.Repeat("a", 8193)),
+				}, "8192"},
+			} {
+				vmcp := newVirtualMCPServerWithOptimizer(fmt.Sprintf("vmcp-headers-reject-%d", i),
+					&vmcpconfig.OptimizerConfig{
+						EmbeddingProvider: "openai",
+						EmbeddingService:  "http://gateway.example:8080",
+						EmbeddingModel:    "text-embedding-3-small",
+						EmbeddingHeaders:  tc.headers,
+					})
+				err := k8sClient.Create(ctx, vmcp)
+				Expect(err).To(HaveOccurred(), "headers %v should be rejected", tc.headers)
+				Expect(err.Error()).To(ContainSubstring(tc.want))
+			}
+		})
+
+		It("should accept uncommon but valid RFC token characters in header names", func() {
+			vmcp := newVirtualMCPServerWithOptimizer("vmcp-headers-token-chars",
+				&vmcpconfig.OptimizerConfig{
+					EmbeddingProvider: "openai",
+					EmbeddingService:  "http://gateway.example:8080",
+					EmbeddingModel:    "text-embedding-3-small",
+					EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x-key'name`x": "value"},
 				})
 			err := k8sClient.Create(ctx, vmcp)
 			Expect(err).NotTo(HaveOccurred())

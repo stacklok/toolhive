@@ -27,7 +27,7 @@ func TestOpenAIClient_Live(t *testing.T) {
 	baseURL := cmp.Or(os.Getenv("OPENAI_EMBEDDING_BASE_URL"), "https://api.openai.com/v1")
 	model := cmp.Or(os.Getenv("OPENAI_EMBEDDING_MODEL"), "text-embedding-3-small")
 
-	client, err := newOpenAIClient(baseURL, model, apiKey, 0)
+	client, err := newOpenAIClient(baseURL, model, apiKey, nil, 0)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = client.Close() })
 

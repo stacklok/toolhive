@@ -20,21 +20,21 @@ func Test_newOpenAIClient(t *testing.T) {
 
 	t.Run("empty URL returns error", func(t *testing.T) {
 		t.Parallel()
-		client, err := newOpenAIClient("", "text-embedding-3-small", "key", 0)
+		client, err := newOpenAIClient("", "text-embedding-3-small", "key", nil, 0)
 		require.ErrorContains(t, err, "OpenAI embedding base URL is required")
 		require.Nil(t, client)
 	})
 
 	t.Run("empty model returns error", func(t *testing.T) {
 		t.Parallel()
-		client, err := newOpenAIClient("http://embeddings:8080/v1", "", "key", 0)
+		client, err := newOpenAIClient("http://embeddings:8080/v1", "", "key", nil, 0)
 		require.ErrorContains(t, err, "OpenAI embedding model is required")
 		require.Nil(t, client)
 	})
 
 	t.Run("valid args create client with default batch size", func(t *testing.T) {
 		t.Parallel()
-		client, err := newOpenAIClient("http://embeddings:8080/v1", "text-embedding-3-small", "key", 0)
+		client, err := newOpenAIClient("http://embeddings:8080/v1", "text-embedding-3-small", "key", nil, 0)
 		require.NoError(t, err)
 		require.NotNil(t, client)
 		require.Equal(t, openAIMaxBatchSize, client.maxBatchSize)
@@ -43,10 +43,19 @@ func Test_newOpenAIClient(t *testing.T) {
 
 	t.Run("custom timeout", func(t *testing.T) {
 		t.Parallel()
-		client, err := newOpenAIClient("http://embeddings:8080/v1", "text-embedding-3-small", "key", 5*time.Second)
+		client, err := newOpenAIClient("http://embeddings:8080/v1", "text-embedding-3-small", "key", nil, 5*time.Second)
 		require.NoError(t, err)
 		require.NotNil(t, client)
 		require.Equal(t, 5*time.Second, client.httpClient.Timeout)
+	})
+
+	t.Run("headers are cloned at construction", func(t *testing.T) {
+		t.Parallel()
+		headers := map[string]string{"x-cache-key": "toolhive"}
+		client, err := newOpenAIClient("http://embeddings:8080/v1", "text-embedding-3-small", "key", headers, 0)
+		require.NoError(t, err)
+		headers["x-cache-key"] = "mutated"
+		require.Equal(t, "toolhive", client.headers["x-cache-key"])
 	})
 }
 
@@ -275,6 +284,48 @@ func TestOpenAIClient_OmitsAuthHeaderWhenKeyless(t *testing.T) {
 	client := newTestOpenAIClient(t, srv.URL, "")
 
 	_, err := client.Embed(context.Background(), "hello")
+	require.NoError(t, err)
+}
+
+func TestOpenAIClient_SendsCustomHeaders(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "toolhive-optimizer", r.Header.Get("x-cache-key"))
+		require.Equal(t, "eu-west", r.Header.Get("X-Gateway-Region"))
+		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+		writeOpenAIEmbeddings(t, w, [][]float32{{0.1}})
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := newOpenAIClient(srv.URL, "text-embedding-3-small", "test-key", map[string]string{
+		"x-cache-key":      "toolhive-optimizer",
+		"X-Gateway-Region": "eu-west",
+	}, 0)
+	require.NoError(t, err)
+
+	_, err = client.Embed(context.Background(), "hello")
+	require.NoError(t, err)
+}
+
+func TestOpenAIClient_ProtocolHeadersWinOverCustomHeaders(t *testing.T) {
+	t.Parallel()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "application/json", r.Header.Get("Content-Type"))
+		require.Equal(t, "Bearer test-key", r.Header.Get("Authorization"))
+		writeOpenAIEmbeddings(t, w, [][]float32{{0.1}})
+	}))
+	t.Cleanup(srv.Close)
+
+	client, err := newOpenAIClient(srv.URL, "text-embedding-3-small", "test-key", map[string]string{
+		"authorization": "Bearer spoofed",
+		"content-type":  "text/plain",
+	}, 0)
+	require.NoError(t, err)
+
+	_, err = client.Embed(context.Background(), "hello")
 	require.NoError(t, err)
 }
 

@@ -22,7 +22,8 @@ func NewEmbeddingClient(cfg *types.OptimizerConfig) (types.EmbeddingClient, erro
 	case "", types.EmbeddingProviderTEI:
 		return newTEIClient(cfg.EmbeddingService, cfg.EmbeddingServiceTimeout)
 	case types.EmbeddingProviderOpenAI:
-		return newOpenAIClient(cfg.EmbeddingService, cfg.EmbeddingModel, cfg.EmbeddingAPIKey, cfg.EmbeddingServiceTimeout)
+		return newOpenAIClient(cfg.EmbeddingService, cfg.EmbeddingModel, cfg.EmbeddingAPIKey,
+			cfg.EmbeddingHeaders, cfg.EmbeddingServiceTimeout)
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider %q (supported: %q, %q)",
 			cfg.EmbeddingProvider, types.EmbeddingProviderTEI, types.EmbeddingProviderOpenAI)

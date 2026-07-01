@@ -2,12 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package exampleembedder demonstrates an embedder that obtains a running vMCP
-// server from the public app.BuildCore + app.BuildServerConfig assembly API,
-// extending the decorator example from issue #5447.
+// server from the public app.Builder — the single assembly entry point — extending
+// the decorator example from issue #5447.
 //
-// This package backs the acceptance tests for issue #5581: verifying that the
-// public API types plug directly into server.Serve, and demonstrating the
-// complete BuildCore → decorate → BuildServerConfig → server.Serve flow.
+// This package backs the acceptance tests for issue #5581: verifying that the public
+// API plugs directly into a working server, and demonstrating the complete
+// NewBuilder → Decorate → Finish flow. The builder owns "construct once / wire once":
+// the embedder does not build telemetry, the backend registry, or the elicitation
+// requester, and does not choreograph the late-bind — it hands over config, decorates
+// the core, and receives the server plus a single cleanup func.
 package exampleembedder
 
 import (
@@ -20,82 +23,33 @@ import (
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 )
 
-// BuildServer builds a vMCP server from a serialised vmcpconfig.Config, applying
-// the provided decorator before serving. The decoration step is the RFC THV-0076
-// extension mechanism: the embedder receives the assembled core.VMCP, wraps it with
-// additional behaviour (policy enforcement, observability, scoping), and passes the
-// decorated value to server.Serve — without reimplementing vMCP's internal assembly.
-//
-// For Kubernetes discovered mode (vmcpCfg.OutgoingAuth.Source == "discovered"):
-// call backendregistry.NewKubernetesBackendRegistry once and pass the result via
-// app.WithBackendRegistry to share a single K8s informer between BuildCore and
-// BuildServerConfig.
-//
-// server.Serve only assembles the server; the caller must call
+// BuildServer assembles a vMCP server from a serialised vmcpconfig.Config via the
+// app.Builder, applying the provided decorator (the RFC THV-0076 extension seam)
+// before serving. It returns the server and a cleanup func the caller must invoke
+// when done; server.Serve only assembles the server, so the caller must still call
 // (*server.Server).Start to begin serving HTTP.
+//
+// For Kubernetes discovered mode (vmcpCfg.OutgoingAuth.Source == "discovered") the
+// builder constructs the backend registry + watcher itself (VMCP_NAMESPACE must be
+// set); an embedder that wants to own that registry can inject it via
+// app.WithBackendRegistry in extraOpts.
 func BuildServer(
 	ctx context.Context,
 	vmcpCfg *vmcpconfig.Config,
 	decorate func(core.VMCP) core.VMCP,
 	extraOpts ...app.Option,
-) (*vmcpserver.Server, error) {
-	// Create a late-bound elicitation requester so composite-tool elicitation steps
-	// can resolve after the mcp-go server is built by server.Serve.
-	elicitation := vmcpserver.NewLateBoundElicitationRequester()
+) (*vmcpserver.Server, func(), error) {
+	opts := append([]app.Option{app.WithVersion(versions.Version)}, extraOpts...)
 
-	opts := append([]app.Option{
-		app.WithVersion(versions.Version),
-		app.WithElicitation(elicitation),
-	}, extraOpts...)
-
-	// A single disarm flag covers every resource acquired below: server.Serve only
-	// succeeds when BuildCore AND BuildServerConfig both succeeded, so once Serve
-	// returns without error the returned *Server owns all their lifecycles. Until
-	// then, the deferred cleanup releases whatever was acquired. Register each
-	// resource's cleanup as it is acquired so a new resource added between here and
-	// Serve is covered without adding another flag.
-	var cleanups []func()
-	disarmed := false
-	defer func() {
-		if !disarmed {
-			for i := len(cleanups) - 1; i >= 0; i-- {
-				cleanups[i]()
-			}
-		}
-	}()
-
-	// Build the domain core (config in → VMCP out).
-	coreVMCP, coreCleanup, err := app.BuildCore(ctx, vmcpCfg, opts...)
+	// One call replaces the manual BuildCore → decorate → BuildServerConfig →
+	// server.Serve → elicitation.Bind sequence and its cleanup choreography: the
+	// builder shares collaborators across both derivations, wires elicitation
+	// internally, and returns a single cleanup func.
+	srv, _, cleanup, err := app.NewBuilder(ctx, vmcpCfg, opts...).
+		Decorate(decorate).
+		Finish()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	cleanups = append(cleanups, coreCleanup)
-
-	// Apply the embedder-supplied decoration (the RFC THV-0076 extension mechanism).
-	// Decorators may only SUBTRACT reachability; they have no path to backends except
-	// through the inner VMCP, so they cannot widen access.
-	decoratedCore := coreVMCP
-	if decorate != nil {
-		decoratedCore = decorate(coreVMCP)
-	}
-
-	// Build the transport config (same opts → same shared collaborators).
-	serverCfg, srvCleanup, err := app.BuildServerConfig(ctx, vmcpCfg, opts...)
-	if err != nil {
-		return nil, err
-	}
-	cleanups = append(cleanups, srvCleanup)
-
-	srv, err := vmcpserver.Serve(ctx, decoratedCore, serverCfg)
-	if err != nil {
-		return nil, err
-	}
-
-	// Bind the late-bound elicitation to the SDK server so composite-tool
-	// elicitation steps reach the right mcp-go session.
-	elicitation.Bind(vmcpserver.NewSDKElicitationAdapter(srv.MCPServer()))
-
-	// Success: the returned *Server owns the core and server-config lifecycles.
-	disarmed = true
-	return srv, nil
+	return srv, cleanup, nil
 }

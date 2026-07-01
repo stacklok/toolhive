@@ -130,10 +130,17 @@ groups. Idempotent.
 ## Git-Based Plugin Resolution
 
 The git resolver reuses `pkg/skills/gitresolver`'s skill-agnostic helpers
-(`ParseGitReference`, `IsGitReference`, `ResolveAuth`, `WriteFiles`) but does
-NOT call `Resolver.Resolve` — that method is skill-specific (reads `SKILL.md`).
-Instead, `pluginsvc.installFromGit` clones directly, reads the plugin manifest,
-and collects the whole subtree (a plugin is multi-component, not a single file).
+(`ParseGitReference`, `IsGitReference`, `ResolveAuth`, `WriteFiles`,
+`CloneConfigForRef`, `ClientForURL`) but does NOT call `Resolver.Resolve` —
+that method is skill-specific (reads `SKILL.md`). Instead,
+`pluginsvc.installFromGit` clones directly, reads the plugin manifest, and
+collects the whole subtree (a plugin is multi-component, not a single file).
+
+A **name/repo consistency check** (mirroring the OCI check) enforces that the
+declared manifest name matches the name implied by the git reference — the
+subdir's last segment when `#subdir` is present, else the repo's last segment
+(422 on mismatch). When collecting files, the executable bit committed in the
+repo is **preserved** (rather than forcing 0644) so hook scripts keep `+x`.
 
 ## Storage
 

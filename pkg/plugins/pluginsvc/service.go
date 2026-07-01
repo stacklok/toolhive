@@ -125,21 +125,17 @@ func WithPluginLookup(pl PluginLookup) Option {
 // plugins on a single machine is expected to remain small (< 1000). The key
 // shape (scope/name/projectRoot) is identical to skillsvc.skillLock.
 //
-// The lock/unlock methods are currently unused: Wave 0 declares the seam, and
-// Wave 2's install/uninstall flows will acquire per-key mutexes through it
-// (mirroring skillsvc.service.install/uninstall). The nolint:unused directives
-// are intentional and should be removed once Wave 2 lands.
+// The install/uninstall flows acquire per-key mutexes through lock() (mirroring
+// skillsvc.service.install/uninstall).
 type pluginLock struct {
-	mu sync.Mutex //nolint:unused // Wave 2 seam
+	mu sync.Mutex
 	// locks holds per-key mutexes. INVARIANT: entries must never be deleted
 	// from this map. The two-phase lock() method depends on pointers remaining
 	// valid after the global mutex is released. See lock() for details.
-	locks map[string]*sync.Mutex //nolint:unused // Wave 2 seam
+	locks map[string]*sync.Mutex
 }
 
 // lock acquires a per-plugin mutex and returns a function that releases it.
-//
-//nolint:unused // Wave 2 seam: install/uninstall flows will call this.
 func (pl *pluginLock) lock(name string, scope plugins.Scope, projectRoot string) func() {
 	pl.mu.Lock()
 	key := string(scope) + "/" + name + "/" + projectRoot

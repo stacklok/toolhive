@@ -338,6 +338,25 @@ func TestInstallWithExtraction(t *testing.T) {
 		require.NoError(t, err)
 	})
 
+	t.Run("all combined with explicit client returns bad request", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockPluginStore(ctrl)
+
+		svc := newTestService(WithStore(store), WithMaterializers(map[string]plugins.MaterializationAdapter{
+			"claude-code": plugmocks.NewMockMaterializationAdapter(ctrl),
+		}))
+		_, err := svc.Install(t.Context(), plugins.InstallOptions{
+			Name:      "my-plugin",
+			LayerData: layerData,
+			Digest:    "sha256:abc",
+			Clients:   []string{"all", "claude-code"},
+		})
+		require.Error(t, err)
+		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
+		assert.Contains(t, err.Error(), "cannot be combined")
+	})
+
 	t.Run("same digest adds second client without re-materializing first", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)

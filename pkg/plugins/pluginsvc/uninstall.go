@@ -7,7 +7,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/plugins"
 	"github.com/stacklok/toolhive/pkg/storage"
@@ -21,7 +23,7 @@ import (
 // pathResolver + installer.Remove.
 func (s *service) Uninstall(ctx context.Context, opts plugins.UninstallOptions) error {
 	if err := plugins.ValidatePluginName(opts.Name); err != nil {
-		return err
+		return httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)

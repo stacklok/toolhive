@@ -4,12 +4,15 @@
 package pluginsvc
 
 import (
+	"errors"
+	"net/http"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/groups"
 	groupmocks "github.com/stacklok/toolhive/pkg/groups/mocks"
 	"github.com/stacklok/toolhive/pkg/plugins"
@@ -82,13 +85,14 @@ func TestInfo(t *testing.T) {
 		assert.ErrorIs(t, err, storage.ErrNotFound)
 	})
 
-	t.Run("invalid name returns error", func(t *testing.T) {
+	t.Run("invalid name returns bad request", func(t *testing.T) {
 		t.Parallel()
 		ctrl := gomock.NewController(t)
 		store := storemocks.NewMockPluginStore(ctrl)
 		svc := newTestService(WithStore(store))
 		_, err := svc.Info(t.Context(), plugins.InfoOptions{Name: "A"})
 		require.Error(t, err)
+		assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
 	})
 
 	t.Run("project-scope degradation surfaced for degrading client", func(t *testing.T) {
@@ -185,5 +189,48 @@ func TestList(t *testing.T) {
 		listed, err := svc.List(t.Context(), plugins.ListOptions{})
 		require.NoError(t, err)
 		assert.Len(t, listed, 2)
+	})
+
+	t.Run("group filter with nil group manager returns 500", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockPluginStore(ctrl)
+		// No WithGroupManager — group manager is nil.
+		store.EXPECT().List(gomock.Any(), gomock.Any()).Return([]plugins.InstalledPlugin{
+			{Metadata: plugins.PluginMetadata{Name: "a"}},
+		}, nil)
+
+		svc := newTestService(WithStore(store))
+		_, err := svc.List(t.Context(), plugins.ListOptions{Group: "mygroup"})
+		require.Error(t, err)
+		assert.Equal(t, http.StatusInternalServerError, httperr.Code(err))
+	})
+
+	t.Run("store List error propagates", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockPluginStore(ctrl)
+		store.EXPECT().List(gomock.Any(), gomock.Any()).Return(nil, errors.New("db down"))
+
+		svc := newTestService(WithStore(store))
+		_, err := svc.List(t.Context(), plugins.ListOptions{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "db down")
+	})
+
+	t.Run("group manager Get error propagates", func(t *testing.T) {
+		t.Parallel()
+		ctrl := gomock.NewController(t)
+		store := storemocks.NewMockPluginStore(ctrl)
+		gm := groupmocks.NewMockManager(ctrl)
+		store.EXPECT().List(gomock.Any(), gomock.Any()).Return([]plugins.InstalledPlugin{
+			{Metadata: plugins.PluginMetadata{Name: "a"}},
+		}, nil)
+		gm.EXPECT().Get(gomock.Any(), "mygroup").Return(nil, errors.New("etcd unavailable"))
+
+		svc := newTestService(WithStore(store), WithGroupManager(gm))
+		_, err := svc.List(t.Context(), plugins.ListOptions{Group: "mygroup"})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "getting group")
 	})
 }

@@ -5,8 +5,10 @@ package pluginsvc
 
 import (
 	"context"
+	"net/http"
 	"slices"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/plugins"
 )
 
@@ -15,7 +17,7 @@ import (
 // client adapter does NOT load (UnmaterializedComponents).
 func (s *service) Info(ctx context.Context, opts plugins.InfoOptions) (*plugins.PluginInfo, error) {
 	if err := plugins.ValidatePluginName(opts.Name); err != nil {
-		return nil, err
+		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)

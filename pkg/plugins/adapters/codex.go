@@ -58,7 +58,7 @@ func (a *CodexAdapter) Materialize(_ context.Context, req plugins.MaterializeReq
 		return nil, fmt.Errorf("resolving plugin cache path: %w", err)
 	}
 
-	if _, err := a.installer.Extract(req.LayerData, cacheDir, true); err != nil {
+	if _, err := a.installer.ExtractPlugin(req.LayerData, cacheDir, true); err != nil {
 		return nil, fmt.Errorf("extracting plugin: %w", err)
 	}
 
@@ -118,22 +118,22 @@ func (a *CodexAdapter) Dematerialize(_ context.Context, req plugins.Dematerializ
 		}
 	}
 
-	// Remove the [plugins."<name>@toolhive"] table from config.toml (idempotent).
+	// Remove the [plugins."<name>@toolhive"] table from config.toml (idempotent),
+	// and check inside the same lock whether any @toolhive plugins remain.
 	configPath, cfgErr := a.cm.GetConfigPath(client.Codex)
 	if cfgErr != nil {
 		errs = append(errs, fmt.Errorf("resolving codex config path: %w", cfgErr))
-	} else if err := removeCodexPlugin(configPath, req.Name); err != nil {
-		errs = append(errs, fmt.Errorf("removing plugin from codex config: %w", err))
 	} else {
-		// If no @toolhive plugins remain in config.toml, remove the shared
-		// marketplace.json so Codex doesn't reference a marketplace with no
-		// enabled plugins.
-		marketplacePath := codexMarketplacePath(a.cm.HomeDir())
-		if cfg, readErr := client.ReadTOMLConfig(configPath); readErr != nil {
-			errs = append(errs, fmt.Errorf("reading codex config for marketplace check: %w", readErr))
-		} else if !hasToolhivePlugin(cfg) {
-			if rmErr := removeCodexMarketplace(marketplacePath); rmErr != nil {
-				errs = append(errs, fmt.Errorf("removing codex marketplace: %w", rmErr))
+		toolhiveRemains, rmErr := removeCodexPlugin(configPath, req.Name)
+		if rmErr != nil {
+			errs = append(errs, fmt.Errorf("removing plugin from codex config: %w", rmErr))
+		} else if !toolhiveRemains {
+			// No @toolhive plugins remain in config.toml; remove the shared
+			// marketplace.json so Codex doesn't reference a marketplace with no
+			// enabled plugins.
+			marketplacePath := codexMarketplacePath(a.cm.HomeDir())
+			if mErr := removeCodexMarketplace(marketplacePath); mErr != nil {
+				errs = append(errs, fmt.Errorf("removing codex marketplace: %w", mErr))
 			}
 		}
 	}
@@ -197,30 +197,34 @@ func upsertCodexPlugin(configPath, name string) error {
 }
 
 // removeCodexPlugin removes the [plugins."<name>@toolhive"] table from the
-// Codex config.toml. Idempotent: a missing config file or missing table is not
-// an error.
-func removeCodexPlugin(configPath, name string) error {
+// Codex config.toml and reports whether any @toolhive plugins remain after
+// the removal. Idempotent: a missing config file or missing table is not an
+// error (returns false — no toolhive plugins in an empty/missing config).
+// The "any toolhive plugins remain" check runs inside the same lock hold as
+// the removal, avoiding a TOCTOU race where a concurrent dematerialize could
+// change the plugin set between the unlock and the check.
+func removeCodexPlugin(configPath, name string) (toolhiveRemains bool, err error) {
 	// Short-circuit when the config file doesn't exist so we don't fail trying
 	// to acquire a lock on a non-existent path's parent directory.
 	if _, err := os.Stat(configPath); err != nil {
-		if os.IsNotExist(err) {
-			return nil
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil
 		}
-		return fmt.Errorf("checking config file: %w", err)
+		return false, fmt.Errorf("checking config file: %w", err)
 	}
 
-	return fileutils.WithFileLock(configPath, func() error {
-		cfg, err := client.ReadTOMLConfig(configPath)
-		if err != nil {
-			return err
+	err = fileutils.WithFileLock(configPath, func() error {
+		cfg, readErr := client.ReadTOMLConfig(configPath)
+		if readErr != nil {
+			return readErr
 		}
 		if len(cfg) == 0 {
 			return nil
 		}
 
-		pluginsSection, err := getPluginsMap(cfg)
-		if err != nil {
-			return err
+		pluginsSection, pErr := getPluginsMap(cfg)
+		if pErr != nil {
+			return pErr
 		}
 		delete(pluginsSection, pluginKey(name))
 		if len(pluginsSection) == 0 {
@@ -229,8 +233,10 @@ func removeCodexPlugin(configPath, name string) error {
 			cfg[pluginsKey] = pluginsSection
 		}
 
+		toolhiveRemains = hasToolhivePlugin(cfg)
 		return client.WriteTOMLConfig(configPath, cfg)
 	})
+	return toolhiveRemains, err
 }
 
 // getPluginsMap returns the `plugins` table from the config. It returns a
@@ -309,7 +315,7 @@ func upsertCodexMarketplace(marketplacePath, cacheDir string) error {
 // a missing file is not an error.
 func removeCodexMarketplace(marketplacePath string) error {
 	if _, err := os.Stat(marketplacePath); err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("checking marketplace file: %w", err)
@@ -334,7 +340,7 @@ func readCodexMarketplace(path string) (map[string]codexMarketplaceEntry, error)
 	entries := make(map[string]codexMarketplaceEntry)
 	data, err := os.ReadFile(path) // #nosec G304 -- path is a known tool config file location
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return entries, nil
 		}
 		return nil, fmt.Errorf("reading marketplace.json: %w", err)

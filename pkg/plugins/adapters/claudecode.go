@@ -8,6 +8,7 @@ package adapters
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,7 +62,7 @@ func (a *ClaudeCodeAdapter) Materialize(_ context.Context, req plugins.Materiali
 		return nil, fmt.Errorf("resolving plugin path: %w", err)
 	}
 
-	if _, err := a.installer.Extract(req.LayerData, dir, true); err != nil {
+	if _, err := a.installer.ExtractPlugin(req.LayerData, dir, true); err != nil {
 		return nil, fmt.Errorf("extracting plugin: %w", err)
 	}
 
@@ -212,7 +213,7 @@ func disablePluginInSettings(settingsPath, pluginName string) error {
 	// Short-circuit when the settings file doesn't exist so we don't fail
 	// trying to acquire a lock on a non-existent path's parent directory.
 	if _, err := os.Stat(settingsPath); err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return fmt.Errorf("checking settings file: %w", err)
@@ -220,7 +221,7 @@ func disablePluginInSettings(settingsPath, pluginName string) error {
 	return fileutils.WithFileLock(settingsPath, func() error {
 		content, err := os.ReadFile(settingsPath) // #nosec G304 -- path is a known tool config file location
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, os.ErrNotExist) {
 				return nil
 			}
 			return fmt.Errorf("reading %s: %w", settingsPath, err)
@@ -293,7 +294,7 @@ func ensureObject(root map[string]any, key string) map[string]any {
 func readOrInitSettings(path string) ([]byte, error) {
 	data, err := os.ReadFile(path) // #nosec G304 -- path is a known tool config file location
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return []byte("{}"), nil
 		}
 		return nil, fmt.Errorf("reading %s: %w", path, err)

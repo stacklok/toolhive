@@ -125,6 +125,41 @@ func TestClaudeCodeAdapter_MaterializeWritesFiles(t *testing.T) {
 	requireMarketplaceEntry(t, settings, wantDir)
 }
 
+func TestClaudeCodeAdapter_ExecutableBitPreserved(t *testing.T) {
+	t.Parallel()
+	tempHome := t.TempDir()
+	cm := newTestClientManager(t, tempHome)
+	a := NewClaudeCodeAdapter(cm)
+
+	// Layer includes a hook script committed at 0755 — the exec bit must
+	// survive extraction to disk (not just in the in-memory FileEntry).
+	layer := makePluginLayer(t, []ociskills.FileEntry{
+		{Path: "hooks/preinstall.sh", Content: []byte("#!/bin/sh\necho hi"), Mode: 0755},
+		{Path: "commands/greet.md", Content: []byte("# greet"), Mode: 0644},
+	})
+
+	wantDir := filepath.Join(tempHome, ".claude", "plugins", "my-plugin")
+	_, err := a.Materialize(context.Background(), plugins.MaterializeRequest{
+		Name:       "my-plugin",
+		LayerData:  layer,
+		Scope:      plugins.ScopeUser,
+		Components: plugins.ComponentInventory{"hooks": 1, "commands": 1},
+	})
+	require.NoError(t, err)
+
+	// The hook script must be executable on disk.
+	info, err := os.Stat(filepath.Join(wantDir, "hooks", "preinstall.sh"))
+	require.NoError(t, err)
+	assert.NotZero(t, info.Mode().Perm()&0o100,
+		"executable bit should be preserved on disk, got mode %o", info.Mode().Perm())
+
+	// A regular markdown file must NOT be executable.
+	mdInfo, err := os.Stat(filepath.Join(wantDir, "commands", "greet.md"))
+	require.NoError(t, err)
+	assert.Zero(t, mdInfo.Mode().Perm()&0o100,
+		"non-executable file should not gain exec bit, got mode %o", mdInfo.Mode().Perm())
+}
+
 func TestClaudeCodeAdapter_DroppedComponents(t *testing.T) {
 	t.Parallel()
 	tempHome := t.TempDir()

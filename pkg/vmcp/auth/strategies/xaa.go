@@ -159,8 +159,26 @@ func (s *XAAStrategy) Authenticate(
 // This validation is typically called during configuration parsing to fail fast
 // if the strategy is misconfigured.
 func (s *XAAStrategy) Validate(strategy *authtypes.BackendAuthStrategy) error {
-	_, err := s.parseXAAConfig(strategy)
-	return err
+	config, err := s.parseXAAConfig(strategy)
+	if err != nil {
+		return err
+	}
+
+	// Emit configuration warnings here rather than in parseXAAConfig: Validate
+	// runs once per backend at wire-up, whereas parseXAAConfig also runs on every
+	// Authenticate call and would spam these on every request.
+	if config.allowInsecureHTTP {
+		slog.Warn("xaa: plain HTTP enabled for TargetTokenURL; do not use in production",
+			"targetTokenURL", config.targetTokenURL,
+		)
+	}
+	if config.targetClientID == "" {
+		slog.Warn("xaa: Step B will run without client authentication; " +
+			"most authorization servers reject unauthenticated JWT-bearer grants " +
+			"(ID-JAG draft §9.1 recommends confidential clients)")
+	}
+
+	return nil
 }
 
 // xaaParsedConfig holds the parsed and resolved XAA configuration.
@@ -175,6 +193,7 @@ type xaaParsedConfig struct {
 	targetResource      string
 	scopes              []string
 	subjectProviderName string
+	subjectTokenType    string
 	allowInsecureHTTP   bool
 }
 
@@ -214,7 +233,7 @@ func (*XAAStrategy) performStepA(
 		TokenURL:           config.idpTokenURL,
 		ClientID:           config.idpClientID,
 		ClientSecret:       config.idpClientSecret,
-		SubjectTokenType:   oauthproto.TokenTypeIDToken,
+		SubjectTokenType:   config.subjectTokenType,
 		RequestedTokenType: oauthproto.TokenTypeIDJAG,
 		Audience:           config.targetAudience,
 		Resource:           config.targetResource,
@@ -415,6 +434,11 @@ func (s *XAAStrategy) parseXAAConfig(strategy *authtypes.BackendAuthStrategy) (*
 		return nil, fmt.Errorf("target credentials: %w", err)
 	}
 
+	subjectTokenType := cfg.SubjectTokenType
+	if subjectTokenType == "" {
+		subjectTokenType = oauthproto.TokenTypeIDToken
+	}
+
 	return &xaaParsedConfig{
 		idpTokenURL:         cfg.IDPTokenURL,
 		idpClientID:         cfg.IDPClientID,
@@ -426,6 +450,7 @@ func (s *XAAStrategy) parseXAAConfig(strategy *authtypes.BackendAuthStrategy) (*
 		targetResource:      cfg.TargetResource,
 		scopes:              cfg.Scopes,
 		subjectProviderName: cfg.SubjectProviderName,
+		subjectTokenType:    subjectTokenType,
 		allowInsecureHTTP:   cfg.InsecureTargetTokenURL,
 	}, nil
 }

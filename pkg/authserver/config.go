@@ -236,6 +236,17 @@ func ResolveUpstreamName(name string) string {
 	return name
 }
 
+// ResolveFirstUpstreamName returns the resolved name of the first element of
+// names, or DefaultUpstreamName when names is empty. It is the single
+// implementation of the "first upstream or default" pattern used wherever a
+// subject-provider name must be derived from a list of configured upstreams.
+func ResolveFirstUpstreamName(names []string) string {
+	if len(names) > 0 {
+		return ResolveUpstreamName(names[0])
+	}
+	return DefaultUpstreamName
+}
+
 // upstreamNameRegex validates upstream provider names.
 // Names must be DNS-label-like to prevent delimiter injection in storage keys.
 var upstreamNameRegex = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`)

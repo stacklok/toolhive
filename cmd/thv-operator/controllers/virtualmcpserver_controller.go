@@ -2216,6 +2216,14 @@ func (*VirtualMCPServerReconciler) convertExternalAuthConfigToStrategy(
 		externalAuthConfig.Spec.HeaderInjection.ValueSecretRef != nil {
 		strategy.HeaderInjection.HeaderValueEnv = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfig.Name)
 	}
+	if strategy.XAA != nil && externalAuthConfig.Spec.XAA != nil {
+		if externalAuthConfig.Spec.XAA.IDPClientSecretRef != nil {
+			strategy.XAA.IDPClientSecretEnv = ctrlutil.GenerateUniqueXAAIDPSecretEnvVarName(externalAuthConfig.Name)
+		}
+		if externalAuthConfig.Spec.XAA.TargetClientSecretRef != nil {
+			strategy.XAA.TargetClientSecretEnv = ctrlutil.GenerateUniqueXAATargetSecretEnvVarName(externalAuthConfig.Name)
+		}
+	}
 
 	return strategy, nil
 }
@@ -2511,12 +2519,13 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 }
 
 // injectSubjectProviderIfNeeded auto-populates the upstream provider name on
-// token_exchange and aws_sts strategies when the field is empty and an embedded
-// auth server is configured on the VirtualMCPServer.
-// Both strategies use SubjectProviderName for the same concept: which upstream
-// provider's token to pull from Identity.UpstreamTokens. Mirrors
+// token_exchange, aws_sts, and xaa strategies when the field is empty and an
+// embedded auth server is configured on the VirtualMCPServer.
+// All three strategies use SubjectProviderName for the same concept: which
+// upstream provider's token to pull from Identity.UpstreamTokens. Mirrors
 // injectUpstreamProviderIfNeeded in pkg/runner/middleware.go, which does the
-// same for Cedar's PrimaryUpstreamProvider.
+// same for Cedar's PrimaryUpstreamProvider, and InjectSubjectProviderNames in
+// pkg/vmcp/config/defaults.go, which applies the same defaulting at serve time.
 // Returns strategy unchanged when it is nil, not an applicable strategy type,
 // already has the provider name set, or no embedded auth server is configured.
 func injectSubjectProviderIfNeeded(
@@ -2550,6 +2559,17 @@ func injectSubjectProviderIfNeeded(
 		copied.AwsSts = &stsCopied
 		return &copied
 
+	case authtypes.StrategyTypeXAA:
+		if strategy.XAA == nil || strategy.XAA.SubjectProviderName != "" {
+			return strategy
+		}
+		providerName := resolveFirstUpstreamProvider(embeddedCfg)
+		copied := *strategy
+		xaaCopied := *strategy.XAA
+		xaaCopied.SubjectProviderName = providerName
+		copied.XAA = &xaaCopied
+		return &copied
+
 	default:
 		return strategy
 	}
@@ -2559,10 +2579,11 @@ func injectSubjectProviderIfNeeded(
 // provider configured on the embedded auth server, or the default name if none
 // are configured.
 func resolveFirstUpstreamProvider(embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig) string {
-	if len(embeddedCfg.UpstreamProviders) > 0 {
-		return authserver.ResolveUpstreamName(embeddedCfg.UpstreamProviders[0].Name)
+	names := make([]string, len(embeddedCfg.UpstreamProviders))
+	for i, p := range embeddedCfg.UpstreamProviders {
+		names[i] = p.Name
 	}
-	return authserver.DefaultUpstreamName
+	return authserver.ResolveFirstUpstreamName(names)
 }
 
 // convertBackendsToStaticBackends converts Backend objects to StaticBackendConfig for ConfigMap embedding.

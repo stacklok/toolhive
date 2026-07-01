@@ -293,6 +293,24 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		if strategy.OBO.ClientSecret != "" && strategy.OBO.ClientSecretEnv != "" {
 			return fmt.Errorf("obo: clientSecret and clientSecretEnv are mutually exclusive")
 		}
+
+	case authtypes.StrategyTypeXAA:
+		if strategy.XAA == nil {
+			return fmt.Errorf("xaa requires XAA configuration")
+		}
+		if strategy.XAA.IDPTokenURL == "" {
+			return fmt.Errorf("xaa requires idpTokenUrl field")
+		}
+		if strategy.XAA.TargetTokenURL == "" {
+			return fmt.Errorf("xaa requires targetTokenUrl field")
+		}
+		if strategy.XAA.TargetAudience == "" {
+			return fmt.Errorf("xaa requires targetAudience field")
+		}
+		if strategy.XAA.SubjectTokenType != "" && strategy.XAA.SubjectTokenType != "urn:ietf:params:oauth:token-type:id_token" {
+			return fmt.Errorf("xaa: unsupported subjectTokenType %q; only %q is accepted",
+				strategy.XAA.SubjectTokenType, "urn:ietf:params:oauth:token-type:id_token")
+		}
 	}
 
 	return nil

@@ -872,6 +872,9 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 		// masked as a no-op.
 		return ctrlutil.OBOSecretEnvVars(externalAuthConfig)
 
+	case mcpv1beta1.ExternalAuthTypeXAA:
+		return xaaSecretEnvVars(externalAuthConfig, externalAuthConfigName), nil
+
 	default:
 		return nil, nil // Not applicable
 	}
@@ -887,6 +890,38 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 			},
 		},
 	}}, nil
+}
+
+// xaaSecretEnvVars returns the env vars needed to mount XAA client secrets into
+// the vMCP pod. Returns nil when the XAA spec is absent or has no secret refs.
+func xaaSecretEnvVars(externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig, configName string) []corev1.EnvVar {
+	if externalAuthConfig.Spec.XAA == nil {
+		return nil
+	}
+	var envVars []corev1.EnvVar
+	if ref := externalAuthConfig.Spec.XAA.IDPClientSecretRef; ref != nil {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: ctrlutil.GenerateUniqueXAAIDPSecretEnvVarName(configName),
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+					Key:                  ref.Key,
+				},
+			},
+		})
+	}
+	if ref := externalAuthConfig.Spec.XAA.TargetClientSecretRef; ref != nil {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: ctrlutil.GenerateUniqueXAATargetSecretEnvVarName(configName),
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+					Key:                  ref.Key,
+				},
+			},
+		})
+	}
+	return envVars
 }
 
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations

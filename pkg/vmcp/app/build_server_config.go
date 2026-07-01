@@ -18,7 +18,6 @@ import (
 	authfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
-	ratelimitfactory "github.com/stacklok/toolhive/pkg/vmcp/ratelimit/factory"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -138,30 +137,9 @@ func BuildServerConfig(ctx context.Context, cfg *vmcpconfig.Config, opts ...Opti
 		return nil, noop, fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
 
-	// Build rate-limit middleware.
-	namespace := vmcpNamespace()
-	rateLimitMiddleware, rateLimitCleanup, err := ratelimitfactory.NewMiddleware(ctx, ratelimitfactory.Config{
-		Namespace:      namespace,
-		ServerName:     cfg.Name,
-		RateLimiting:   cfg.RateLimiting,
-		SessionStorage: cfg.SessionStorage,
-	})
-	if err != nil {
-		runCleanup(cleanupFuncs)
-		return nil, noop, fmt.Errorf("failed to create rate limit middleware: %w", err)
-	}
-	if rateLimitCleanup != nil {
-		cleanupFuncs = append(cleanupFuncs, func() {
-			// The returned cleanup func takes no context, so it cannot carry a caller
-			// shutdown deadline; rateLimitCleanup is invoked with context.Background().
-			// This bounds graceful shutdown only by ratelimitfactory's own internal
-			// timeouts. If deadline-bounded cleanup becomes necessary, the cleanup
-			// signature must grow a context parameter.
-			if closeErr := rateLimitCleanup(context.Background()); closeErr != nil {
-				slog.Error("failed to close rate limit middleware", "error", closeErr)
-			}
-		})
-	}
+	// Rate limiting is applied as a core-layer decorator in BuildCore (post #5522),
+	// keyed on the resolved backend tool name below the optimizer — it is no longer
+	// HTTP middleware and is therefore not part of the transport ServerConfig.
 
 	// Resolve status reporter.
 	statusReporter := o.statusReporter
@@ -210,7 +188,6 @@ func BuildServerConfig(ctx context.Context, cfg *vmcpconfig.Config, opts ...Opti
 		AuthMiddleware:          authMiddleware,
 		AuthInfoHandler:         authInfoHandler,
 		PassthroughHeaders:      cfg.PassthroughHeaders,
-		RateLimitMiddleware:     rateLimitMiddleware,
 		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       o.telemetryProvider,
 		AuditConfig:             cfg.Audit,

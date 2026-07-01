@@ -26,6 +26,8 @@ import (
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
+	vmcpratelimit "github.com/stacklok/toolhive/pkg/vmcp/ratelimit"
+	ratelimitfactory "github.com/stacklok/toolhive/pkg/vmcp/ratelimit/factory"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 )
@@ -88,10 +90,47 @@ func BuildCore(ctx context.Context, cfg *vmcpconfig.Config, opts ...Option) (cor
 		return nil, noop, err
 	}
 
-	// Build conflict resolver for the aggregator.
+	// Derive the core collaborators from cfg and assemble the domain core.
+	coreVMCP, err := buildDomainCore(cfg, o, backendReg, backendClient)
+	if err != nil {
+		return nil, noop, err
+	}
+
+	// Apply the config-driven core decorators (rate limiter, then code mode). On error
+	// the freshly-built core is closed so it does not leak.
+	decoratedCore, limiterCleanup, err := applyCoreDecorators(ctx, coreVMCP, cfg)
+	if err != nil {
+		_ = coreVMCP.Close()
+		return nil, noop, err
+	}
+	coreVMCP = decoratedCore
+
+	cleanup := func() {
+		// Close is idempotent (sync.Once) and currently always returns nil, but log any
+		// error so a future Close that releases real resources is not silently dropped —
+		// mirroring the cleanup funcs in BuildServerConfig.
+		if err := coreVMCP.Close(); err != nil {
+			slog.Warn("failed to close core VMCP", "error", err)
+		}
+		if limiterCleanup != nil {
+			if err := limiterCleanup(context.Background()); err != nil {
+				slog.Warn("failed to close rate limiter", "error", err)
+			}
+		}
+	}
+	return coreVMCP, cleanup, nil
+}
+
+// buildDomainCore derives the aggregator, router, health-monitor config, workflow
+// definitions, and authz config from cfg (plus the injected telemetry provider) and
+// assembles the domain core via core.New. backendClient and backendReg are the
+// collaborators BuildCore already constructed.
+func buildDomainCore(
+	cfg *vmcpconfig.Config, o *options, backendReg vmcp.BackendRegistry, backendClient vmcp.BackendClient,
+) (core.VMCP, error) {
 	conflictResolver, err := aggregator.NewConflictResolver(cfg.Aggregation)
 	if err != nil {
-		return nil, noop, fmt.Errorf("failed to create conflict resolver: %w", err)
+		return nil, fmt.Errorf("failed to create conflict resolver: %w", err)
 	}
 
 	// Wire the provided telemetry provider into the aggregator if available.
@@ -100,33 +139,31 @@ func BuildCore(ctx context.Context, cfg *vmcpconfig.Config, opts ...Option) (cor
 		tracerProvider = o.telemetryProvider.TracerProvider()
 	}
 	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, cfg.Aggregation, tracerProvider)
-	// The caching aggregator collapses repeated capability sweeps within a short
-	// TTL, keyed on identity + forwarded credentials (no cross-principal leakage).
+	// The caching aggregator collapses repeated capability sweeps within a short TTL,
+	// keyed on identity + forwarded credentials (no cross-principal leakage).
 	cachedAgg := aggregator.NewCachingAggregator(agg, capabilityCacheTTL)
 
 	// Empty session router for composite-tool workflow validation; the core does not
 	// route through it at request time (per-call SessionRouter is built there).
 	rtr := vmcprouter.NewSessionRouter(&vmcp.RoutingTable{})
 
-	// Derive health monitor config from operational settings.
 	healthMonitorCfg, err := deriveHealthMonitorConfig(cfg)
 	if err != nil {
-		return nil, noop, err
+		return nil, err
 	}
 
-	// Convert composite tool config to workflow definitions.
 	workflowDefs, err := vmcpserver.ConvertConfigToWorkflowDefinitions(cfg.CompositeTools)
 	if err != nil {
-		return nil, noop, fmt.Errorf("failed to convert composite tool definitions: %w", err)
+		return nil, fmt.Errorf("failed to convert composite tool definitions: %w", err)
 	}
 	if len(workflowDefs) > 0 {
 		slog.Info("loaded composite tool workflow definitions", "count", len(workflowDefs))
 	}
 
-	// Build Cedar authz config — feeds the core admission seam (nil = allow-all).
+	// Cedar authz config — feeds the core admission seam (nil = allow-all).
 	authzCfg, err := deriveAuthzConfig(cfg)
 	if err != nil {
-		return nil, noop, err
+		return nil, err
 	}
 
 	coreVMCP, err := core.New(&core.Config{
@@ -143,28 +180,42 @@ func BuildCore(ctx context.Context, cfg *vmcpconfig.Config, opts ...Option) (cor
 		Elicitation:         o.elicitation,
 	})
 	if err != nil {
-		return nil, noop, fmt.Errorf("failed to create core VMCP: %w", err)
+		return nil, fmt.Errorf("failed to create core VMCP: %w", err)
+	}
+	return coreVMCP, nil
+}
+
+// applyCoreDecorators wraps coreVMCP with the config-driven core decorators and
+// returns the decorated core plus the rate limiter's cleanup (nil when rate limiting
+// is disabled). Decorator order mirrors the legacy server.New path:
+//
+//	core.New → rate-limit decorator → code-mode decorator
+//
+// so the rate limiter sits at the CallTool seam BELOW code mode and any Serve-layer
+// optimizer, keying buckets by the resolved backend tool name (#5522). Each decorator
+// delegates Close to the inner core, so closing the returned core releases the chain;
+// the limiter's own cleanup (its Redis connection) is returned separately.
+func applyCoreDecorators(
+	ctx context.Context, coreVMCP core.VMCP, cfg *vmcpconfig.Config,
+) (core.VMCP, func(context.Context) error, error) {
+	limiter, limiterCleanup, err := ratelimitfactory.NewLimiter(ctx, ratelimitfactory.Config{
+		Namespace:      vmcpNamespace(),
+		ServerName:     cfg.Name,
+		RateLimiting:   cfg.RateLimiting,
+		SessionStorage: cfg.SessionStorage,
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create rate limiter: %w", err)
+	}
+	if limiter != nil {
+		coreVMCP = vmcpratelimit.NewDecorator(coreVMCP, limiter)
 	}
 
-	// Wrap the core with the code mode decorator when enabled (parity with the legacy
-	// server.New path). It sits BELOW any Serve-layer optimizer: ListTools advertises
-	// execute_tool_script alongside the backend tools, so an enabled optimizer indexes it
-	// like any other tool, and a script's inner calls route back through core.CallTool for
-	// admission. The decorator delegates Close to the inner core, so the cleanup below
-	// (which closes coreVMCP) still releases the underlying core.
 	if codeModeCfg := codemode.FromConfig(cfg.CodeMode); codeModeCfg != nil {
 		coreVMCP = codemode.NewDecorator(coreVMCP, codeModeCfg)
 	}
 
-	cleanup := func() {
-		// Close is idempotent (sync.Once) and currently always returns nil, but log any
-		// error so a future Close that releases real resources is not silently dropped —
-		// mirroring the cleanup funcs in BuildServerConfig.
-		if err := coreVMCP.Close(); err != nil {
-			slog.Warn("failed to close core VMCP", "error", err)
-		}
-	}
-	return coreVMCP, cleanup, nil
+	return coreVMCP, limiterCleanup, nil
 }
 
 // resolveBackendRegistryForCore returns the backend registry BuildCore should use.

@@ -23,13 +23,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/audit"
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/app"
-	"github.com/stacklok/toolhive/pkg/vmcp/backendregistry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
-	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 )
 
 // ServeConfig holds all parameters needed to start the vMCP server.
@@ -169,74 +166,22 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		defer teiCleanup()
 	}
 
-	// Build telemetry provider once and share it between BuildCore and
-	// BuildServerConfig via WithTelemetryProvider, to avoid duplicate OTEL pipelines.
-	var telemetryProvider *telemetry.Provider
-	if vmcpCfg.Telemetry != nil {
-		telemetryProvider, err = telemetry.NewProvider(ctx, *vmcpCfg.Telemetry)
-		if err != nil {
-			return fmt.Errorf("failed to create telemetry provider: %w", err)
-		}
-		defer func() {
-			if shutdownErr := telemetryProvider.Shutdown(ctx); shutdownErr != nil {
-				slog.Error(fmt.Sprintf("failed to shutdown telemetry provider: %v", shutdownErr))
-			}
-		}()
-	}
-
-	// For the Kubernetes discovered mode, build the backend registry once and share
-	// it between BuildCore and BuildServerConfig via WithBackendRegistry, to avoid
-	// starting two informer caches (the watcher goroutine is bound to ctx).
-	// For static and dynamic modes, the app package builds its own registry from
-	// vmcpCfg; no WithBackendRegistry is provided.
-	var backendRegOpts []app.Option
-	if vmcpCfg.OutgoingAuth != nil && vmcpCfg.OutgoingAuth.Source == "discovered" {
-		namespace := os.Getenv("VMCP_NAMESPACE")
-		if namespace == "" {
-			return fmt.Errorf("VMCP_NAMESPACE environment variable not set")
-		}
-		reg, watcher, regErr := backendregistry.NewKubernetesBackendRegistry(ctx, namespace, vmcpCfg.Group)
-		if regErr != nil {
-			return fmt.Errorf("failed to build Kubernetes backend registry: %w", regErr)
-		}
-		backendRegOpts = []app.Option{app.WithBackendRegistry(reg, watcher)}
-	}
-
-	// Create a late-bound elicitation requester for composite-tool elicitation steps.
-	// The real adapter is bound after server.Serve returns the mcp-go server.
-	elicitation := vmcpserver.NewLateBoundElicitationRequester()
-
-	opts := append([]app.Option{
+	// Assemble the server via the app.Builder — the single assembly entry point. It
+	// builds the shared collaborators once (telemetry from vmcpCfg.Telemetry; the
+	// Kubernetes backend registry + watcher for the discovered source), wires
+	// composite-tool elicitation internally, and returns one cleanup func. The
+	// embedded auth server run config is threaded through so the builder can inject
+	// subject-provider names before assembly.
+	srv, _, cleanup, err := app.NewBuilder(ctx, vmcpCfg,
 		app.WithVersion(versions.Version),
 		app.WithHost(cfg.Host, cfg.Port),
 		app.WithSessionTTL(cfg.SessionTTL),
-		app.WithTelemetryProvider(telemetryProvider),
-		app.WithElicitation(elicitation),
 		app.WithAuthServerRunConfig(authServerRC),
-	}, backendRegOpts...)
-
-	// Build the domain core (config in → VMCP out).
-	coreVMCP, coreCleanup, err := app.BuildCore(ctx, vmcpCfg, opts...)
+	).Finish()
 	if err != nil {
-		return fmt.Errorf("failed to build vMCP core: %w", err)
+		return fmt.Errorf("failed to assemble Virtual MCP Server: %w", err)
 	}
-	defer coreCleanup()
-
-	// Build the transport config (independent derivation of the same vmcpCfg).
-	serverCfg, srvCleanup, err := app.BuildServerConfig(ctx, vmcpCfg, opts...)
-	if err != nil {
-		return fmt.Errorf("failed to build vMCP server config: %w", err)
-	}
-	defer srvCleanup()
-
-	srv, err := vmcpserver.Serve(ctx, coreVMCP, serverCfg)
-	if err != nil {
-		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
-	}
-
-	// Bind the late-bound elicitation to the SDK server so composite-tool
-	// elicitation steps reach the right mcp-go session.
-	elicitation.Bind(vmcpserver.NewSDKElicitationAdapter(srv.MCPServer()))
+	defer cleanup()
 
 	slog.Info(fmt.Sprintf("Starting Virtual MCP Server at %s", srv.Address()))
 	return srv.Start(ctx)

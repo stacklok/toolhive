@@ -73,7 +73,7 @@ per client:
 | Client | Layout | Config mutation | Components loaded | Scope degradation |
 |---|---|---|---|---|
 | Claude Code | `~/.claude/plugins/<name>/` | `~/.claude/settings.json`: `enabledPlugins["<name>@toolhive"]` + `extraKnownMarketplaces.toolhive` (local source pointing at the plugins parent dir); per-plugin `marketplace.json` with `source: "./"` | commands, agents, skills, hooks | none |
-| Codex | `~/.codex/plugins/cache/<name>/` | `~/.codex/config.toml` `[plugins.<name>]` | skills, mcpServers, hooks | project → user (config is user-scoped) |
+| Codex | `~/.codex/plugins/cache/<name>/` | `~/.codex/config.toml` `[plugins."<name>@toolhive"]` (enabled=true) + shared `~/.agents/plugins/marketplace.json` declaring the `toolhive` marketplace with a local source pointing at the plugins cache parent dir | skills, mcpServers, hooks | project → user (config is user-scoped) |
 
 The `MaterializationAdapter` interface (`pkg/plugins/adapter.go`) owns this:
 each adapter extracts the plugin tree and (optionally) mutates client config,
@@ -165,11 +165,23 @@ home/project dir.
 
 ### TOML Mutation (Codex)
 
-The Codex adapter mutates `~/.codex/config.toml` using map-key-based operations
-(no string interpolation) under `fileutils.WithFileLock`, so a malicious plugin
-name cannot inject TOML keys. `Dematerialize` reverts only its own
-`[plugins.*]` additions; unrelated tables (`[mcp_servers.*]`, etc.) survive
-(exit-gate test asserts this).
+The Codex adapter follows Codex's marketplace model. It enables a plugin in
+`~/.codex/config.toml` under a `[plugins."<name>@toolhive"]` table
+(`enabled = true`) — there is no invented `path` key. It also writes/maintains a
+shared `~/.agents/plugins/marketplace.json` (JSON) declaring the `toolhive`
+marketplace with `source.source: "local"` and `source.path` set to the
+**plugins cache parent directory** (`~/.codex/plugins/cache/`), not the
+per-plugin cache dir. Because the `toolhive` marketplace key is shared across
+every ToolHive-installed plugin, pointing the source at a per-plugin directory
+would let a later install or a non-LIFO uninstall silently break an earlier
+plugin by invalidating the path; the stable parent dir avoids this. All
+mutations use map-key-based operations (no string interpolation) under
+`fileutils.WithFileLock`, so a malicious plugin name cannot inject TOML/JSON
+keys. A `plugins` key that exists but is not a table is rejected (wrapping
+`errPluginsKeyNotTable`) rather than silently clobbered. `Dematerialize`
+reverts only its own `[plugins."*@toolhive"]` additions; unrelated tables
+(`[mcp_servers.*]`, etc.) survive, and the shared marketplace.json is removed
+only when no `@toolhive` plugins remain enabled.
 
 ### settings.json Mutation (Claude Code)
 

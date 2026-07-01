@@ -329,6 +329,11 @@ type OIDCUpstreamRunConfig struct {
 	// HTTP-scheme restrictions are unchanged — HTTPS is still required for
 	// non-localhost hosts. Defaults to false.
 	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
+
+	// CABundlePath is the filesystem path to a CA certificate bundle for verifying
+	// the OIDC issuer's TLS certificate. Used by oidc-trust providers when the issuer
+	// uses a non-public CA. When empty, the system trust store is used.
+	CABundlePath string `json:"ca_bundle_path,omitempty" yaml:"ca_bundle_path,omitempty"`
 }
 
 // OAuth2UpstreamRunConfig contains configuration for pure OAuth 2.0 providers.

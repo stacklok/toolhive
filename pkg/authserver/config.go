@@ -334,9 +334,6 @@ type OIDCUpstreamRunConfig struct {
 	// the OIDC issuer's TLS certificate. Used by oidc-trust providers when the issuer
 	// uses a non-public CA. When empty, the system trust store is used.
 	CABundlePath string `json:"ca_bundle_path,omitempty" yaml:"ca_bundle_path,omitempty"`
-
-	// AllowPrivateIP allows OIDC discovery and JWKS endpoints on private IP addresses.
-	AllowPrivateIP bool `json:"allow_private_ip,omitempty" yaml:"allow_private_ip,omitempty"`
 }
 
 // OAuth2UpstreamRunConfig contains configuration for pure OAuth 2.0 providers.

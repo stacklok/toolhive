@@ -836,10 +836,10 @@ func buildUpstreamRunConfig(
 				caBundlePath = fmt.Sprintf("%s/%s/%s", UpstreamCABundleMountBasePath, provider.Name, key)
 			}
 			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
-				IssuerURL:      provider.OIDCConfig.IssuerURL,
-				ClientID:       provider.OIDCConfig.ClientID,
-				CABundlePath:   caBundlePath,
-				AllowPrivateIP: provider.OIDCConfig.AllowPrivateIP,
+				IssuerURL:       provider.OIDCConfig.IssuerURL,
+				ClientID:        provider.OIDCConfig.ClientID,
+				CABundlePath:    caBundlePath,
+				AllowPrivateIPs: provider.OIDCConfig.AllowPrivateIP,
 			}
 		}
 	}

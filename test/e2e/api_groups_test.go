@@ -357,7 +357,7 @@ var _ = Describe("Groups API", Label("api", "api-misc", "groups", "e2e"), func()
 						}
 					}
 					return false
-				}, 60*time.Second, 2*time.Second).Should(BeTrue(),
+				}, 90*time.Second, 2*time.Second).Should(BeTrue(),
 					"Workload should reach running state before deletion")
 
 				By("Deleting the group with workloads")

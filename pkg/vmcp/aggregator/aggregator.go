@@ -134,7 +134,8 @@ type ResolvedTool struct {
 // AggregatedCapabilities is the final unified view of all backend capabilities.
 // This is what gets exposed to MCP clients via tools/list, resources/list, prompts/list.
 type AggregatedCapabilities struct {
-	// Tools are the aggregated backend tools (ready to expose to clients).
+	// Tools are the aggregated backend tools (ready to expose to clients),
+	// sorted by name for deterministic ordering.
 	Tools []vmcp.Tool
 
 	// CompositeTools are the composite workflow tools defined in vMCP configuration.

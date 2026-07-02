@@ -337,7 +337,7 @@ RunConfig is part of ToolHive's API contract because:
 - Portable across deployments
 - Reproducible configurations
 
-**Reference**: [Architecture Overview](00-overview.md#runconfig)
+**Reference**: [RunConfig and Permissions](05-runconfig-and-permissions.md)
 
 ## Implementation Patterns
 

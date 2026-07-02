@@ -35,6 +35,18 @@ For information on the ToolHive Operator, see the
 - **[Authorization](authz.md)** - Cedar policy-based authorization system
 - **[Middleware](middleware.md)** - HTTP middleware patterns for auth, authz, and telemetry
 - **[Runtime Implementation Guide](runtime-implementation-guide.md)** - Guide for implementing new container runtime support
+- **[Runtime Version Customization](runtime-version-customization.md)** - Customizing base images and packages for protocol-scheme builds
+- **[Remote MCP Authentication](remote-mcp-authentication.md)** - How ToolHive authenticates to remote MCP servers
+
+### Operator Documentation
+
+- **[VirtualMCPServer Kubernetes Guide](operator/virtualmcpserver-kubernetes-guide.md)** - Deploying and managing VirtualMCPServer on Kubernetes
+- **[VirtualMCPCompositeToolDefinition Guide](operator/virtualmcpcompositetooldefinition-guide.md)** - Multi-step composite tool workflows
+- **[Advanced Workflow Patterns](operator/advanced-workflow-patterns.md)** - Advanced patterns for virtual MCP composite tools
+- **[Composite Tools Quick Reference](operator/composite-tools-quick-reference.md)** - Quick reference for composite tool configuration
+- **[CRD API Reference](operator/crd-api.md)** - Generated API reference for all CRDs
+- **[Restart Annotation](operator/restart-annotation.md)** - Restarting MCPServer instances via annotations
+- **[MCPToolConfig Reconciliation](operator/toolconfig-reconciliation.md)** - How MCPToolConfig resources are reconciled
 
 ## Getting started
 

@@ -72,6 +72,9 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 		return "", fmt.Errorf("creating %s: %w", dir, err)
 	}
 
+	// Track whether the shim already existed so failure cleanup does not delete a
+	// shim an earlier successful setup still depends on (setup is idempotent).
+	shimExisted := fileExistsAt(cm.credentialHelperShimPath())
 	shimPath, err := cm.writeCredentialHelperShim(cfg.TokenHelperCommand)
 	if err != nil {
 		return "", err
@@ -121,6 +124,16 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 		return writeClaudeDesktopMeta(metaPath, meta)
 	})
 	if err != nil {
+		// Best-effort cleanup so a failed setup does not leave partial state.
+		// _meta.json is written last inside the lock, so on failure Claude Desktop
+		// is never left pointing at our config — only unreferenced files remain.
+		// Only remove the shim if we created it this call.
+		if !shimExisted {
+			_ = os.Remove(shimPath)
+		}
+		if configPath != "" {
+			_ = os.Remove(configPath)
+		}
 		return "", err
 	}
 	return configPath, nil
@@ -130,40 +143,59 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 // entry from _meta.json (leaving other entries untouched), clears appliedId when
 // it pointed at our config, deletes the config document, and removes the shim.
 // A missing file at any step is treated as already-reverted.
+//
+// Ordering matters: the selector (_meta.json) is de-referenced and the config
+// document deleted BEFORE the shim, so a mid-revert failure never leaves Claude
+// Desktop pointing at a config that references a missing helper executable. Any
+// leftover file after a partial failure is unreferenced and harmless.
 func (cm *ClientManager) revertCredentialHelper(appCfg *clientAppConfig, configPath string) error {
-	// Always attempt shim removal — it is ToolHive-owned and lives at a fixed path.
+	// Nothing recorded to revert. Do NOT touch the shim here: without the config
+	// path we cannot confirm _meta.json no longer references it, and removing it
+	// could break a still-applied config.
+	if configPath == "" {
+		return nil
+	}
+
+	id := metaIDFromConfigPath(configPath)
+	metaPath := filepath.Join(filepath.Dir(configPath), appCfg.LLMSettingsFile)
+
+	// Step 1: de-reference our config in _meta.json and delete the config
+	// document, under the file lock. After this, Claude Desktop no longer points
+	// at our config regardless of what happens to the shim.
+	if _, err := os.Stat(metaPath); err == nil {
+		if lockErr := fileutils.WithFileLock(metaPath, func() error {
+			meta, err := readClaudeDesktopMeta(metaPath)
+			if err != nil {
+				return err
+			}
+			meta["entries"] = removeMetaEntry(metaEntries(meta), id)
+			// Only clear appliedId if it still points at our config; leave a
+			// user's own active config selection alone.
+			if applied, _ := meta["appliedId"].(string); applied == id {
+				meta["appliedId"] = ""
+			}
+			if err := writeClaudeDesktopMeta(metaPath, meta); err != nil {
+				return err
+			}
+			return removeIfExists(configPath)
+		}); lockErr != nil {
+			return lockErr
+		}
+	} else if os.IsNotExist(err) {
+		// Selector already gone; still make sure the config document is removed.
+		if rmErr := removeIfExists(configPath); rmErr != nil {
+			return rmErr
+		}
+	} else {
+		return fmt.Errorf("checking %s: %w", metaPath, err)
+	}
+
+	// Step 2: remove the shim, now that nothing references it.
 	shimPath := cm.credentialHelperShimPath()
 	if err := os.Remove(shimPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing credential helper shim %s: %w", shimPath, err)
 	}
-
-	if configPath == "" {
-		return nil
-	}
-	id := metaIDFromConfigPath(configPath)
-	metaPath := filepath.Join(filepath.Dir(configPath), appCfg.LLMSettingsFile)
-
-	if _, err := os.Stat(metaPath); os.IsNotExist(err) {
-		// Selector already gone; just make sure the config document is removed.
-		return removeIfExists(configPath)
-	}
-
-	return fileutils.WithFileLock(metaPath, func() error {
-		meta, err := readClaudeDesktopMeta(metaPath)
-		if err != nil {
-			return err
-		}
-		meta["entries"] = removeMetaEntry(metaEntries(meta), id)
-		// Only clear appliedId if it still points at our config; leave a user's
-		// own active config selection alone.
-		if applied, _ := meta["appliedId"].(string); applied == id {
-			meta["appliedId"] = ""
-		}
-		if err := writeClaudeDesktopMeta(metaPath, meta); err != nil {
-			return err
-		}
-		return removeIfExists(configPath)
-	})
+	return nil
 }
 
 // credentialHelperShimPath is the fixed location of the generated shim.
@@ -295,6 +327,12 @@ func removeMetaEntry(entries []any, id string) []any {
 func metaIDFromConfigPath(configPath string) string {
 	base := filepath.Base(configPath)
 	return base[:len(base)-len(filepath.Ext(base))]
+}
+
+// fileExistsAt reports whether a file exists at path.
+func fileExistsAt(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // removeIfExists deletes path, treating a missing file as success.

@@ -170,6 +170,22 @@ func TestRevertCredentialHelper_RemovesEntryConfigAndShim(t *testing.T) {
 	assert.Equal(t, "", meta["appliedId"])
 }
 
+func TestRevertCredentialHelper_EmptyConfigPathLeavesShim(t *testing.T) {
+	t.Parallel()
+	cm, _ := newClaudeDesktopManager(t)
+
+	_, err := cm.ConfigureLLMGateway(ClientApp(ClaudeDesktop), claudeDesktopApplyCfg())
+	require.NoError(t, err)
+	shimPath := cm.credentialHelperShimPath()
+	require.FileExists(t, shimPath)
+
+	// With no recorded config path we cannot confirm _meta.json no longer
+	// references the shim, so revert must be a no-op and leave it in place rather
+	// than risk breaking a still-applied config.
+	require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), ""))
+	assert.FileExists(t, shimPath, "shim must not be deleted when configPath is empty")
+}
+
 func TestRevertCredentialHelper_LeavesForeignAppliedIDIntact(t *testing.T) {
 	t.Parallel()
 	cm, metaPath := newClaudeDesktopManager(t)

@@ -519,7 +519,7 @@ func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configu
 			continue
 		}
 		_, _ = fmt.Fprintf(out,
-			"%s reads its configuration only at launch — fully quit (Cmd-Q) and reopen it "+
+			"%s reads its configuration only at launch — fully quit and reopen it "+
 				"for the gateway change to take effect.\n", tc.Tool)
 		if gm.IsManaged(tc.Tool) {
 			_, _ = fmt.Fprintf(errOut,

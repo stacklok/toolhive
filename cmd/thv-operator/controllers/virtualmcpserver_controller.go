@@ -61,6 +61,10 @@ const (
 	authContextDefault          = "default"
 	authContextBackendPrefix    = "backend:"
 	authContextDiscoveredPrefix = "discovered:"
+
+	// authReasonAmbiguousSubjectProvider is the condition Reason surfaced when
+	// injectSubjectProviderIfNeeded returns authtypes.ErrAmbiguousSubjectProvider.
+	authReasonAmbiguousSubjectProvider = "AmbiguousSubjectProvider"
 )
 
 // AuthConfigError represents a single auth config conversion failure.
@@ -104,6 +108,16 @@ func authConfigErrorReason(authErr *AuthConfigError) string {
 		return authErr.Reason
 	}
 	return "ConversionFailed"
+}
+
+// subjectProviderErrorReason maps an error returned by injectSubjectProviderIfNeeded
+// to a condition Reason. Falls back to "" so the caller's AuthConfigError.Reason
+// stays empty and authConfigErrorReason applies its default ("ConversionFailed").
+func subjectProviderErrorReason(err error) string {
+	if stderrors.Is(err, authtypes.ErrAmbiguousSubjectProvider) {
+		return authReasonAmbiguousSubjectProvider
+	}
+	return ""
 }
 
 // VirtualMCPServerReconciler reconciles a VirtualMCPServer object
@@ -2399,12 +2413,24 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigs(
 			continue
 		}
 
-		// Only add if not already overridden in inline config
-		if vmcp.Spec.OutgoingAuth == nil || vmcp.Spec.OutgoingAuth.Backends == nil {
-			outgoing.Backends[workloadInfo.Name] = injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
-		} else if _, exists := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]; !exists {
-			// Only add discovered config if not explicitly overridden
-			outgoing.Backends[workloadInfo.Name] = injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
+		// Only add if not already overridden in inline config.
+		shouldAssign := true
+		if vmcp.Spec.OutgoingAuth != nil && vmcp.Spec.OutgoingAuth.Backends != nil {
+			_, exists := vmcp.Spec.OutgoingAuth.Backends[workloadInfo.Name]
+			shouldAssign = !exists
+		}
+		if shouldAssign {
+			injected, err := injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
+			if err != nil {
+				authErrors = append(authErrors, AuthConfigError{
+					Context:     fmt.Sprintf("%s%s", authContextDiscoveredPrefix, workloadInfo.Name),
+					BackendName: workloadInfo.Name,
+					Error:       fmt.Errorf("failed to inject subject provider name: %w", err),
+					Reason:      subjectProviderErrorReason(err),
+				})
+			} else {
+				outgoing.Backends[workloadInfo.Name] = injected
+			}
 		}
 	}
 
@@ -2483,8 +2509,15 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 				Error:       fmt.Errorf("failed to convert default auth config: %w", err),
 				Reason:      mirroredReasonFromError(err),
 			})
+		} else if injected, injectErr := injectSubjectProviderIfNeeded(defaultStrategy, vmcp.Spec.AuthServerConfig); injectErr != nil {
+			allAuthErrors = append(allAuthErrors, AuthConfigError{
+				Context:     authContextDefault,
+				BackendName: "",
+				Error:       fmt.Errorf("failed to inject subject provider name: %w", injectErr),
+				Reason:      subjectProviderErrorReason(injectErr),
+			})
 		} else {
-			outgoing.Default = injectSubjectProviderIfNeeded(defaultStrategy, vmcp.Spec.AuthServerConfig)
+			outgoing.Default = injected
 		}
 	}
 
@@ -2509,8 +2542,15 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 					Error:       fmt.Errorf("failed to convert backend auth config: %w", err),
 					Reason:      mirroredReasonFromError(err),
 				})
+			} else if injected, injectErr := injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig); injectErr != nil {
+				allAuthErrors = append(allAuthErrors, AuthConfigError{
+					Context:     fmt.Sprintf("%s%s", authContextBackendPrefix, backendName),
+					BackendName: backendName,
+					Error:       fmt.Errorf("failed to inject subject provider name: %w", injectErr),
+					Reason:      subjectProviderErrorReason(injectErr),
+				})
 			} else {
-				outgoing.Backends[backendName] = injectSubjectProviderIfNeeded(strategy, vmcp.Spec.AuthServerConfig)
+				outgoing.Backends[backendName] = injected
 			}
 		}
 	}
@@ -2520,59 +2560,30 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 
 // injectSubjectProviderIfNeeded auto-populates the upstream provider name on
 // token_exchange, aws_sts, and xaa strategies when the field is empty and an
-// embedded auth server is configured on the VirtualMCPServer.
-// All three strategies use SubjectProviderName for the same concept: which
-// upstream provider's token to pull from Identity.UpstreamTokens. Mirrors
+// embedded auth server is configured on the VirtualMCPServer. All three
+// strategies use SubjectProviderName for the same concept: which upstream
+// provider's token to pull from Identity.UpstreamTokens. Mirrors
 // injectUpstreamProviderIfNeeded in pkg/runner/middleware.go, which does the
 // same for Cedar's PrimaryUpstreamProvider, and InjectSubjectProviderNames in
 // pkg/vmcp/config/defaults.go, which applies the same defaulting at serve time.
-// Returns strategy unchanged when it is nil, not an applicable strategy type,
-// already has the provider name set, or no embedded auth server is configured.
+//
+// Delegates the actual defaulting to authtypes.DefaultSubjectProviderName.
+// Returns strategy unchanged when it is nil or no embedded auth server is
+// configured. Can return authtypes.ErrAmbiguousSubjectProvider when strategy
+// is xaa, SubjectProviderName is empty, and more than one upstream provider
+// is configured.
 func injectSubjectProviderIfNeeded(
 	strategy *authtypes.BackendAuthStrategy,
 	embeddedCfg *mcpv1beta1.EmbeddedAuthServerConfig,
-) *authtypes.BackendAuthStrategy {
+) (*authtypes.BackendAuthStrategy, error) {
 	if strategy == nil || embeddedCfg == nil {
-		return strategy
+		return strategy, nil
 	}
-
-	switch strategy.Type {
-	case authtypes.StrategyTypeTokenExchange:
-		if strategy.TokenExchange == nil || strategy.TokenExchange.SubjectProviderName != "" {
-			return strategy
-		}
-		providerName := resolveFirstUpstreamProvider(embeddedCfg)
-		copied := *strategy
-		teCopied := *strategy.TokenExchange
-		teCopied.SubjectProviderName = providerName
-		copied.TokenExchange = &teCopied
-		return &copied
-
-	case authtypes.StrategyTypeAwsSts:
-		if strategy.AwsSts == nil || strategy.AwsSts.SubjectProviderName != "" {
-			return strategy
-		}
-		providerName := resolveFirstUpstreamProvider(embeddedCfg)
-		copied := *strategy
-		stsCopied := *strategy.AwsSts
-		stsCopied.SubjectProviderName = providerName
-		copied.AwsSts = &stsCopied
-		return &copied
-
-	case authtypes.StrategyTypeXAA:
-		if strategy.XAA == nil || strategy.XAA.SubjectProviderName != "" {
-			return strategy
-		}
-		providerName := resolveFirstUpstreamProvider(embeddedCfg)
-		copied := *strategy
-		xaaCopied := *strategy.XAA
-		xaaCopied.SubjectProviderName = providerName
-		copied.XAA = &xaaCopied
-		return &copied
-
-	default:
-		return strategy
-	}
+	return authtypes.DefaultSubjectProviderName(
+		strategy,
+		resolveFirstUpstreamProvider(embeddedCfg),
+		len(embeddedCfg.UpstreamProviders) > 1,
+	)
 }
 
 // resolveFirstUpstreamProvider returns the resolved name of the first upstream

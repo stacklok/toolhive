@@ -41,6 +41,12 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 		return "", fmt.Errorf("client %q does not support LLM gateway configuration", clientType)
 	}
 
+	// Credential-helper clients (Claude Desktop) use a document + selector model
+	// that does not fit JSON-key patching; dispatch to the dedicated writer.
+	if appCfg.LLMCredentialHelper {
+		return cm.configureCredentialHelper(appCfg, cfg)
+	}
+
 	path := cm.buildLLMSettingsPath(appCfg)
 
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -168,6 +174,11 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 		return fmt.Errorf("client %q does not support LLM gateway configuration", clientType)
 	}
 
+	// Credential-helper clients (Claude Desktop) revert via the dedicated writer.
+	if appCfg.LLMCredentialHelper {
+		return cm.revertCredentialHelper(appCfg, configPath)
+	}
+
 	// Guard against a missing file (or deleted parent directory) before trying
 	// to acquire the lock — WithFileLock creates configPath+".lock", which
 	// fails when the directory no longer exists.
@@ -226,6 +237,14 @@ func (cm *ClientManager) IsLLMGatewaySupported(clientType ClientApp) bool {
 	return cfg != nil && cfg.LLMGatewayMode != ""
 }
 
+// IsManaged reports whether an MDM/managed-preferences profile is present for
+// the given client. When true, the client reads config from the managed profile
+// and ignores the local config "thv llm setup" writes, so setup warns the user.
+func (cm *ClientManager) IsManaged(clientType ClientApp) bool {
+	cfg := cm.lookupClientAppConfig(clientType)
+	return cfg != nil && managedProfilePresent(cfg.LLMManagedProfileDomain)
+}
+
 // LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 	cfg := cm.lookupClientAppConfig(clientType)
@@ -249,8 +268,17 @@ func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
 		if cfg.LLMGatewayMode == "" {
 			continue
 		}
-		path := cm.buildLLMSettingsPath(cfg)
-		if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		// Detection directory: for GUI apps whose settings directory does not
+		// exist until first configured (e.g. Claude Desktop's configLibrary),
+		// LLMDetectRelPath points at a directory that exists once the app is
+		// installed. Otherwise fall back to the settings directory.
+		detectDir := func() string {
+			if cfg.LLMDetectRelPath != nil {
+				return buildConfigFilePath("", cfg.LLMDetectRelPath, cfg.LLMDetectPlatformPrefix, []string{cm.homeDir})
+			}
+			return filepath.Dir(cm.buildLLMSettingsPath(cfg))
+		}()
+		if _, err := os.Stat(detectDir); err != nil {
 			continue
 		}
 		if cfg.LLMBinaryName != "" {

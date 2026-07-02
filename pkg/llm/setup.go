@@ -31,6 +31,9 @@ type GatewayManager interface {
 	ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error)
 	// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 	LLMGatewayModeFor(clientType string) string
+	// IsManaged reports whether a managed-preferences profile overrides the
+	// client's local config (so the config setup writes would be ignored).
+	IsManaged(clientType string) bool
 	// ConfigureEnvFile writes .env file entries for the client and returns the
 	// env file path. Returns ("", nil) when the client has no env-file entries.
 	ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error)
@@ -69,7 +72,7 @@ func Setup(
 	ctx context.Context, out, errOut io.Writer,
 	gm GatewayManager, provider ConfigUpdater, login LoginFunc,
 	inlineOpts SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
-	lazy bool,
+	lazy bool, models []string,
 ) error {
 	llmCfg := provider.GetLLMConfig()
 
@@ -131,13 +134,14 @@ func Setup(
 
 	configured, err := configureDetectedTools(
 		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand,
-		llmCfg.TLSSkipVerify, anthropicPrefix,
+		llmCfg.TLSSkipVerify, anthropicPrefix, models,
 	)
 	if err != nil {
 		return err
 	}
 
 	warnTLSSkipVerify(errOut, llmCfg.TLSSkipVerify, configured)
+	warnCredentialHelperTools(out, errOut, gm, configured)
 
 	if err := provider.UpdateLLMConfig(func(c *Config) error {
 		// SetFields applies inline opts to the on-disk config (preserving any
@@ -340,15 +344,18 @@ func configureDetectedTools(
 	gatewayURL, proxyBaseURL, tokenHelperCommand string,
 	tlsSkipVerify bool,
 	anthropicPathPrefix string,
+	models []string,
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
 		mode := gm.LLMGatewayModeFor(clientType)
 
-		// Only apply the Anthropic path prefix for direct-mode tools.
-		// Proxy-mode tools (Cursor, VS Code, Xcode) do not use ANTHROPIC_BASE_URL.
+		// Apply the Anthropic path prefix for tools that talk the Anthropic API
+		// directly — direct-mode (ANTHROPIC_BASE_URL) and credential-helper mode
+		// (Claude Desktop's inferenceGatewayBaseUrl). Proxy-mode tools (Cursor,
+		// VS Code, Xcode) do not use it.
 		anthropicBaseURL := ""
-		if mode == "direct" && anthropicPathPrefix != "" {
+		if usesAnthropicBaseURL(mode) && anthropicPathPrefix != "" {
 			// Trim any leading slash: url.JoinPath docs say elements should not
 			// start with "/", and path.Join already handles the join correctly.
 			if joined, err := url.JoinPath(gatewayURL, strings.TrimLeft(anthropicPathPrefix, "/")); err == nil {
@@ -362,6 +369,7 @@ func configureDetectedTools(
 			ProxyBaseURL:       proxyBaseURL,
 			TokenHelperCommand: tokenHelperCommand,
 			TLSSkipVerify:      tlsSkipVerify,
+			Models:             models,
 		}
 		configPath, err := gm.ConfigureLLMGateway(clientType, applyCfg)
 		if err != nil {
@@ -482,16 +490,44 @@ func buildTokenHelperCommand() (string, error) {
 	return fmt.Sprintf(`"%s" llm token`, self), nil
 }
 
-// hasDirectModeClient reports whether any client in the detected list uses
-// direct mode. Used to skip the Anthropic-prefix probe when no direct-mode
-// tools are present (proxy-mode tools ignore ANTHROPIC_BASE_URL entirely).
+// usesAnthropicBaseURL reports whether a client mode consumes the Anthropic base
+// URL (gateway + /anthropic prefix): direct mode via ANTHROPIC_BASE_URL, and
+// credential-helper mode (Claude Desktop) via inferenceGatewayBaseUrl.
+func usesAnthropicBaseURL(mode string) bool {
+	return mode == "direct" || mode == "credential-helper"
+}
+
+// hasDirectModeClient reports whether any client in the detected list uses a
+// mode that needs the Anthropic base URL. Used to skip the Anthropic-prefix
+// probe when no such tools are present (proxy-mode tools ignore it entirely).
 func hasDirectModeClient(gm GatewayManager, detected []string) bool {
 	for _, clientType := range detected {
-		if gm.LLMGatewayModeFor(clientType) == "direct" {
+		if usesAnthropicBaseURL(gm.LLMGatewayModeFor(clientType)) {
 			return true
 		}
 	}
 	return false
+}
+
+// warnCredentialHelperTools prints the follow-up notes credential-helper clients
+// (Claude Desktop) need: they read config only at launch, so the user must fully
+// quit and relaunch; and a managed-preferences profile, if present, overrides
+// the local config setup just wrote.
+func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configured []ToolConfig) {
+	for _, tc := range configured {
+		if tc.Mode != "credential-helper" {
+			continue
+		}
+		_, _ = fmt.Fprintf(out,
+			"%s reads its configuration only at launch — fully quit (Cmd-Q) and reopen it "+
+				"for the gateway change to take effect.\n", tc.Tool)
+		if gm.IsManaged(tc.Tool) {
+			_, _ = fmt.Fprintf(errOut,
+				"Warning: a managed-preferences profile for %s is present; it overrides the local "+
+					"configuration just written, which will be ignored. Remove the managed profile or "+
+					"configure the gateway there instead.\n", tc.Tool)
+		}
+	}
 }
 
 // revertToolConfig reverts the settings-file and .env patches for a single

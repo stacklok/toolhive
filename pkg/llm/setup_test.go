@@ -104,6 +104,7 @@ func (*stubGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfi
 	return "", nil
 }
 func (*stubGatewayManager) LLMGatewayModeFor(_ string) string { return "" }
+func (*stubGatewayManager) IsManaged(_ string) bool           { return false }
 func (*stubGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
@@ -193,6 +194,7 @@ func (*setupGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConf
 	return "/tmp/settings.json", nil
 }
 func (g *setupGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
+func (*setupGatewayManager) IsManaged(_ string) bool             { return false }
 func (*setupGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
@@ -227,7 +229,7 @@ func TestSetup_Lazy_SkipsLoginAndPersistsTools(t *testing.T) {
 	// anthropicPathPrefixSet=true skips the network probe; lazy=true.
 	err := Setup(
 		context.Background(), &stdout, &stderr, gm, provider, login,
-		SetOptions{}, "", true, "", true,
+		SetOptions{}, "", true, "", true, nil,
 	)
 	require.NoError(t, err)
 
@@ -255,7 +257,7 @@ func TestSetup_NonLazy_InvokesLogin(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := Setup(
 		context.Background(), &stdout, &stderr, gm, provider, login,
-		SetOptions{}, "", true, "", false,
+		SetOptions{}, "", true, "", false, nil,
 	)
 	require.NoError(t, err)
 
@@ -277,6 +279,7 @@ func (g *capturingGatewayManager) ConfigureLLMGateway(_ string, cfg llmgateway.A
 	return "/path/to/settings.json", nil
 }
 func (g *capturingGatewayManager) LLMGatewayModeFor(_ string) string { return g.mode }
+func (*capturingGatewayManager) IsManaged(_ string) bool             { return false }
 func (*capturingGatewayManager) LLMSetupNoteFor(_ string) string     { return "" }
 func (*capturingGatewayManager) RevertLLMGateway(_, _ string) error  { return nil }
 func (*capturingGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
@@ -294,7 +297,7 @@ func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
 		&out, &errOut, gm,
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
-		false, "/anthropic",
+		false, "/anthropic", nil,
 	)
 	require.NoError(t, err)
 	require.Len(t, gm.applied, 1)
@@ -314,7 +317,7 @@ func TestConfigureDetectedTools_NoPrefixWhenEmpty(t *testing.T) {
 		&out, &errOut, gm,
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
-		false, "", // no prefix
+		false, "", nil, // no prefix
 	)
 	require.NoError(t, err)
 	require.Len(t, gm.applied, 1)
@@ -333,7 +336,7 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 		&out, &errOut, gm,
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
-		false, "/anthropic",
+		false, "/anthropic", nil,
 	)
 	require.NoError(t, err)
 	require.Len(t, gm.applied, 1)

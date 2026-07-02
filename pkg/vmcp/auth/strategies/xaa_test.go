@@ -379,6 +379,16 @@ func TestXAAStrategy_Validate(t *testing.T) {
 			expectError: "embedded credentials",
 		},
 		{
+			name: "InsecureTargetTokenURL=true still rejects non-http scheme in TargetTokenURL",
+			strategy: createXAAStrategy(func(cfg *authtypes.XAAConfig) {
+				cfg.IDPTokenURL = testIDPTokenURL
+				cfg.TargetTokenURL = "ftp://target.example.com/token"
+				cfg.TargetAudience = testTargetAudience
+				cfg.InsecureTargetTokenURL = true
+			}),
+			expectError: "TargetTokenURL must use http or https scheme",
+		},
+		{
 			name: "InsecureTargetTokenURL=true does not relax IDPTokenURL validation",
 			strategy: createXAAStrategy(func(cfg *authtypes.XAAConfig) {
 				cfg.IDPTokenURL = "http://idp.example.com/token"

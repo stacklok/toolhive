@@ -18,7 +18,6 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 	"github.com/stacklok/toolhive/pkg/oauthproto/jwtbearer"
 	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
@@ -315,39 +314,6 @@ func (*XAAStrategy) performStepB(
 	return token.AccessToken, nil
 }
 
-// validateTokenURL checks that a configured token endpoint is a syntactically
-// valid HTTPS (or localhost HTTP) URL with a host and no fragment. Mirrors the
-// validator in pkg/oauthproto/jwtbearer.Config.Validate.
-func validateTokenURL(label, endpoint string) error {
-	return validateTokenURLWithInsecure(label, endpoint, false)
-}
-
-// validateTokenURLWithInsecure is like validateTokenURL but allows plain HTTP
-// when allowInsecureHTTP is true. Used for the TargetTokenURL when
-// InsecureTargetTokenURL is set.
-func validateTokenURLWithInsecure(label, endpoint string, allowInsecureHTTP bool) error {
-	if err := networking.ValidateEndpointURLWithInsecure(endpoint, allowInsecureHTTP); err != nil {
-		return fmt.Errorf("%s: %w", label, err)
-	}
-	u, err := url.Parse(endpoint)
-	if err != nil {
-		return fmt.Errorf("%s is not a valid URL: %w", label, err)
-	}
-	if u.Scheme != "https" && u.Scheme != "http" {
-		return fmt.Errorf("%s must use http or https scheme", label)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("%s must include a host", label)
-	}
-	if u.Fragment != "" {
-		return fmt.Errorf("%s must not contain a fragment", label)
-	}
-	if u.User != nil {
-		return fmt.Errorf("%s must not contain embedded credentials", label)
-	}
-	return nil
-}
-
 // resolveClientSecret resolves a client secret from either a direct value or an
 // environment variable. If both are provided, the direct value takes precedence.
 // Returns an error if a secret source requires a client ID but none is provided,
@@ -415,10 +381,10 @@ func (s *XAAStrategy) parseXAAConfig(strategy *authtypes.BackendAuthStrategy) (*
 
 	// Token endpoint URL shape: must be https (or http on localhost), have a
 	// host, and not carry a fragment. Applied to both IdP and target endpoints.
-	if err := validateTokenURL("IDPTokenURL", cfg.IDPTokenURL); err != nil {
+	if err := jwtbearer.ValidateTokenURL("IDPTokenURL", cfg.IDPTokenURL, false); err != nil {
 		return nil, err
 	}
-	if err := validateTokenURLWithInsecure("TargetTokenURL", cfg.TargetTokenURL, cfg.InsecureTargetTokenURL); err != nil {
+	if err := jwtbearer.ValidateTokenURL("TargetTokenURL", cfg.TargetTokenURL, cfg.InsecureTargetTokenURL); err != nil {
 		return nil, err
 	}
 

@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -398,6 +399,11 @@ func (a *defaultAggregator) MergeCapabilities(
 			break
 		}
 	}
+
+	// Sort tools deterministically for consistent embedding-batch ordering
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name < tools[j].Name
+	})
 
 	// Create final aggregated view
 	aggregated := &AggregatedCapabilities{

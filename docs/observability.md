@@ -30,7 +30,7 @@ operations through:
 4. **Protocol-aware instrumentation**: MCP-specific insights beyond generic HTTP
    metrics
 
-See [the original design document](./proposals/otel-integration-proposal.md) for
+See [the original design document](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0001-otel-integration-proposal.md) for
 more details on the design and goals of this observability architecture.
 
 ## Architecture
@@ -159,7 +159,7 @@ spec:
     serviceName: my-server    # unique per server
 ```
 
-See [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](./examples/operator/mcp-servers/mcpserver_fetch_otel.yaml)
+See [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](../examples/operator/mcp-servers/mcpserver_fetch_otel.yaml)
 for a complete example.
 
 **Inline (deprecated)**: The inline `spec.telemetry` (MCPServer, MCPRemoteProxy)

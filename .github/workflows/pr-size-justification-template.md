@@ -20,7 +20,7 @@ Add a section to your PR description with the following format:
 
 Consider splitting this PR into smaller, focused changes (< 1000 lines each) for easier review and reduced risk.
 
-See our [Contributing Guidelines](CONTRIBUTING_LINK) for more details.
+See our Contributing Guidelines (link replaced at runtime) for more details.
 
 ---
 *This review will be automatically dismissed once you add the justification section.*

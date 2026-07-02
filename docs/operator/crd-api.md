@@ -4,10 +4,12 @@
 - [toolhive.stacklok.dev/audit](#toolhivestacklokdevaudit)
 - [toolhive.stacklok.dev/authtypes](#toolhivestacklokdevauthtypes)
 - [toolhive.stacklok.dev/config](#toolhivestacklokdevconfig)
+- [toolhive.stacklok.dev/json](#toolhivestacklokdevjson)
 - [toolhive.stacklok.dev/ratelimit](#toolhivestacklokdevratelimit)
 - [toolhive.stacklok.dev/telemetry](#toolhivestacklokdevtelemetry)
 - [toolhive.stacklok.dev/v1alpha1](#toolhivestacklokdevv1alpha1)
 - [toolhive.stacklok.dev/v1beta1](#toolhivestacklokdevv1beta1)
+- [toolhive.stacklok.dev/vmcp](#toolhivestacklokdevvmcp)
 
 
 ## toolhive.stacklok.dev/audit
@@ -358,7 +360,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the workflow name (unique identifier). |  |  |
 | `description` _string_ | Description describes what the workflow does. |  |  |
-| `parameters` _[pkg.json.Map](#pkgjsonmap)_ | Parameters defines input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \}<br />We use json.Map rather than a typed struct because JSON Schema is highly<br />flexible with many optional fields (default, enum, minimum, maximum, pattern,<br />items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map<br />allows full JSON Schema compatibility without needing to define every possible<br />field, and matches how the MCP SDK handles inputSchema. |  | Optional: \{\} <br /> |
+| `parameters` _[pkg.json.Map](#pkgjsonmap)_ | Parameters defines input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \}<br />We use json.Map rather than a typed struct because JSON Schema is highly<br />flexible with many optional fields (default, enum, minimum, maximum, pattern,<br />items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map<br />allows full JSON Schema compatibility without needing to define every possible<br />field, and matches how the MCP SDK handles inputSchema. |  | Type: object <br />Optional: \{\} <br /> |
 | `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum workflow execution time. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
 | `steps` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig) array_ | Steps are the workflow steps to execute. |  |  |
 | `output` _[vmcp.config.OutputConfig](#vmcpconfigoutputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  | Optional: \{\} <br /> |
@@ -436,6 +438,28 @@ _Appears in:_
 
 
 
+
+#### vmcp.config.Duration
+
+_Underlying type:_ _Duration_
+
+Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
+This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
+
+_Validation:_
+- Pattern: `^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+- Type: string
+
+_Appears in:_
+- [vmcp.config.CircuitBreakerConfig](#vmcpconfigcircuitbreakerconfig)
+- [vmcp.config.CodeModeConfig](#vmcpconfigcodemodeconfig)
+- [vmcp.config.CompositeToolConfig](#vmcpconfigcompositetoolconfig)
+- [vmcp.config.FailureHandlingConfig](#vmcpconfigfailurehandlingconfig)
+- [vmcp.config.OptimizerConfig](#vmcpconfigoptimizerconfig)
+- [vmcp.config.StepErrorHandling](#vmcpconfigsteperrorhandling)
+- [vmcp.config.TimeoutConfig](#vmcpconfigtimeoutconfig)
+- [api.v1beta1.VirtualMCPCompositeToolDefinitionSpec](#apiv1beta1virtualmcpcompositetooldefinitionspec)
+- [vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig)
 
 
 
@@ -638,7 +662,7 @@ _Appears in:_
 | `description` _string_ | Description is a human-readable description exposed to clients and models |  | Optional: \{\} <br /> |
 | `value` _string_ | Value is a template string for constructing the runtime value.<br />For object types, this can be a JSON string that will be deserialized.<br />Supports template syntax: \{\{.steps.step_id.output.field\}\}, \{\{.params.param_name\}\} |  | Optional: \{\} <br /> |
 | `properties` _object (keys:string, values:[vmcp.config.OutputProperty](#vmcpconfigoutputproperty))_ | Properties defines nested properties for object types.<br />Each nested property has full metadata (type, description, value/properties). |  | Schemaless: \{\} <br />Type: object <br />Optional: \{\} <br /> |
-| `default` _[pkg.json.Any](#pkgjsonany)_ | Default is the fallback value if template expansion fails.<br />Type coercion is applied to match the declared Type. |  | Schemaless: \{\} <br />Optional: \{\} <br /> |
+| `default` _[pkg.json.Any](#pkgjsonany)_ | Default is the fallback value if template expansion fails.<br />Type coercion is applied to match the declared Type. |  | Schemaless: \{\} <br />Type: object <br />Optional: \{\} <br /> |
 
 
 #### vmcp.config.SessionStorageConfig
@@ -722,7 +746,7 @@ _Appears in:_
 
 #### vmcp.config.ToolAnnotationsOverride
 
-_Underlying type:_ _[vmcp.config.struct{Title *string "json:\"title,omitempty\" yaml:\"title,omitempty\""; ReadOnlyHint *bool "json:\"readOnlyHint,omitempty\" yaml:\"readOnlyHint,omitempty\""; DestructiveHint *bool "json:\"destructiveHint,omitempty\" yaml:\"destructiveHint,omitempty\""; IdempotentHint *bool "json:\"idempotentHint,omitempty\" yaml:\"idempotentHint,omitempty\""; OpenWorldHint *bool "json:\"openWorldHint,omitempty\" yaml:\"openWorldHint,omitempty\""}](#vmcpconfigstruct{title *string "json:\"title,omitempty\" yaml:\"title,omitempty\""; readonlyhint *bool "json:\"readonlyhint,omitempty\" yaml:\"readonlyhint,omitempty\""; destructivehint *bool "json:\"destructivehint,omitempty\" yaml:\"destructivehint,omitempty\""; idempotenthint *bool "json:\"idempotenthint,omitempty\" yaml:\"idempotenthint,omitempty\""; openworldhint *bool "json:\"openworldhint,omitempty\" yaml:\"openworldhint,omitempty\""})_
+_Underlying type:_ _struct{Title *string "json:\"title,omitempty\" yaml:\"title,omitempty\""; ReadOnlyHint *bool "json:\"readOnlyHint,omitempty\" yaml:\"readOnlyHint,omitempty\""; DestructiveHint *bool "json:\"destructiveHint,omitempty\" yaml:\"destructiveHint,omitempty\""; IdempotentHint *bool "json:\"idempotentHint,omitempty\" yaml:\"idempotentHint,omitempty\""; OpenWorldHint *bool "json:\"openWorldHint,omitempty\" yaml:\"openWorldHint,omitempty\""}_
 
 ToolAnnotationsOverride defines overrides for tool annotation fields.
 All fields use pointers so nil means "don't override" while zero values
@@ -800,7 +824,7 @@ _Appears in:_
 | `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum execution time for this step |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br />Optional: \{\} <br /> |
 | `onDecline` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ | OnDecline defines the action to take when the user explicitly declines the elicitation<br />Only used when Type is "elicitation" |  | Optional: \{\} <br /> |
 | `onCancel` _[vmcp.config.ElicitationResponseConfig](#vmcpconfigelicitationresponseconfig)_ | OnCancel defines the action to take when the user cancels/dismisses the elicitation<br />Only used when Type is "elicitation" |  | Optional: \{\} <br /> |
-| `defaultResults` _[pkg.json.Map](#pkgjsonmap)_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  | Schemaless: \{\} <br />Optional: \{\} <br /> |
+| `defaultResults` _[pkg.json.Map](#pkgjsonmap)_ | DefaultResults provides fallback output values when this step is skipped<br />(due to condition evaluating to false) or fails (when onError.action is "continue").<br />Each key corresponds to an output field name referenced by downstream steps.<br />Required if the step may be skipped AND downstream steps reference this step's output. |  | Schemaless: \{\} <br />Type: object <br />Optional: \{\} <br /> |
 | `collection` _string_ | Collection is a Go template expression that resolves to a JSON array or a slice.<br />Only used when Type is "forEach". |  | Optional: \{\} <br /> |
 | `itemVar` _string_ | ItemVar is the variable name used to reference the current item in forEach templates.<br />Defaults to "item" if not specified.<br />Only used when Type is "forEach". |  | Optional: \{\} <br /> |
 | `maxParallel` _integer_ | MaxParallel limits the number of concurrent iterations in a forEach step.<br />Defaults to the DAG executor's maxParallel (10).<br />Only used when Type is "forEach". |  | Optional: \{\} <br /> |
@@ -826,6 +850,40 @@ _Appears in:_
 | `filter` _string array_ | Filter is an allow-list of tool names to advertise to MCP clients.<br />Tools NOT in this list are hidden from clients (not in tools/list response)<br />but remain available in the routing table for composite tools to use.<br />This enables selective exposure of backend tools while allowing composite<br />workflows to orchestrate all backend capabilities.<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
 | `overrides` _object (keys:string, values:[vmcp.config.ToolOverride](#vmcpconfigtooloverride))_ | Overrides is an inline map of tool overrides for renaming and description changes.<br />Overrides are applied to tools before conflict resolution and affect both<br />advertising and routing (the overridden name is used everywhere).<br />Only used if ToolConfigRef is not specified. |  | Optional: \{\} <br /> |
 | `excludeAll` _boolean_ | ExcludeAll hides all tools from this workload from MCP clients when true.<br />Hidden tools are NOT advertised in tools/list responses, but they ARE<br />available in the routing table for composite tools to use.<br />This enables the use case where you want to hide raw backend tools from<br />direct client access while exposing curated composite tool workflows. |  | Optional: \{\} <br /> |
+
+
+
+
+
+## toolhive.stacklok.dev/json
+
+
+#### pkg.json.Any
+
+
+
+Any is a type alias for Data[any], storing arbitrary JSON values.
+This is the most flexible type, suitable when the JSON structure is unknown.
+
+_Validation:_
+- Type: object
+
+
+
+
+
+
+
+#### pkg.json.Map
+
+
+
+Map is a type alias for Data[map[string]any], storing JSON objects.
+Use this when you know the data will always be a JSON object (not array, string, etc.).
+
+_Validation:_
+- Type: object
+
 
 
 
@@ -968,60 +1026,581 @@ _Appears in:_
 
 
 
+#### api.v1alpha1.EmbeddingServer
+
+
+
+EmbeddingServer is the deprecated v1alpha1 version of the EmbeddingServer resource.
 
 
 
 
 
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `EmbeddingServer` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.EmbeddingServerSpec](#apiv1beta1embeddingserverspec)_ |  |  |  |
+| `status` _[api.v1beta1.EmbeddingServerStatus](#apiv1beta1embeddingserverstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.EmbeddingServerList
+
+
+
+EmbeddingServerList contains a list of EmbeddingServer.
 
 
 
 
 
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `EmbeddingServerList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.EmbeddingServer](#apiv1alpha1embeddingserver) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPAuthzConfig
+
+
+
+MCPAuthzConfig is the deprecated v1alpha1 version of the MCPAuthzConfig resource.
 
 
 
 
 
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPAuthzConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPAuthzConfigSpec](#apiv1beta1mcpauthzconfigspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPAuthzConfigStatus](#apiv1beta1mcpauthzconfigstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPAuthzConfigList
+
+
+
+MCPAuthzConfigList contains a list of MCPAuthzConfig.
 
 
 
 
 
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPAuthzConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPAuthzConfig](#apiv1alpha1mcpauthzconfig) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPExternalAuthConfig
+
+
+
+MCPExternalAuthConfig is the deprecated v1alpha1 version of the MCPExternalAuthConfig resource.
 
 
 
 
 
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPExternalAuthConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPExternalAuthConfigSpec](#apiv1beta1mcpexternalauthconfigspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPExternalAuthConfigStatus](#apiv1beta1mcpexternalauthconfigstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPExternalAuthConfigList
+
+
+
+MCPExternalAuthConfigList contains a list of MCPExternalAuthConfig.
 
 
 
 
 
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPExternalAuthConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPExternalAuthConfig](#apiv1alpha1mcpexternalauthconfig) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPGroup
+
+
+
+MCPGroup is the deprecated v1alpha1 version of the MCPGroup resource.
 
 
 
 
 
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPGroup` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPGroupSpec](#apiv1beta1mcpgroupspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPGroupStatus](#apiv1beta1mcpgroupstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPGroupList
+
+
+
+MCPGroupList contains a list of MCPGroup.
 
 
 
 
 
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPGroupList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPGroup](#apiv1alpha1mcpgroup) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPOIDCConfig
+
+
+
+MCPOIDCConfig is the deprecated v1alpha1 version of the MCPOIDCConfig resource.
 
 
 
 
 
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPOIDCConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPOIDCConfigSpec](#apiv1beta1mcpoidcconfigspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPOIDCConfigStatus](#apiv1beta1mcpoidcconfigstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPOIDCConfigList
+
+
+
+MCPOIDCConfigList contains a list of MCPOIDCConfig.
 
 
 
 
 
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPOIDCConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPOIDCConfig](#apiv1alpha1mcpoidcconfig) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPRegistry
+
+
+
+MCPRegistry is the deprecated v1alpha1 version of the MCPRegistry resource.
+The MCPRegistry CRD as a whole is deprecated and will be removed in a future
+release; install the ToolHive registry server via the toolhive-registry-server
+Helm chart instead: https://github.com/stacklok/toolhive-registry-server
 
 
 
 
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPRegistry` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPRegistrySpec](#apiv1beta1mcpregistryspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPRegistryStatus](#apiv1beta1mcpregistrystatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPRegistryList
+
+
+
+MCPRegistryList contains a list of MCPRegistry.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPRegistryList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPRegistry](#apiv1alpha1mcpregistry) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPRemoteProxy
+
+
+
+MCPRemoteProxy is the deprecated v1alpha1 version of the MCPRemoteProxy resource.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPRemoteProxy` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPRemoteProxySpec](#apiv1beta1mcpremoteproxyspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPRemoteProxyStatus](#apiv1beta1mcpremoteproxystatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPRemoteProxyList
+
+
+
+MCPRemoteProxyList contains a list of MCPRemoteProxy.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPRemoteProxyList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPRemoteProxy](#apiv1alpha1mcpremoteproxy) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPServer
+
+
+
+MCPServer is the deprecated v1alpha1 version of the MCPServer resource.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPServer` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPServerSpec](#apiv1beta1mcpserverspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPServerStatus](#apiv1beta1mcpserverstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPServerEntry
+
+
+
+MCPServerEntry is the deprecated v1alpha1 version of the MCPServerEntry resource.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPServerEntry` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPServerEntrySpec](#apiv1beta1mcpserverentryspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPServerEntryStatus](#apiv1beta1mcpserverentrystatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPServerEntryList
+
+
+
+MCPServerEntryList contains a list of MCPServerEntry.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPServerEntryList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPServerEntry](#apiv1alpha1mcpserverentry) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPServerList
+
+
+
+MCPServerList contains a list of MCPServer.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPServerList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPServer](#apiv1alpha1mcpserver) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPTelemetryConfig
+
+
+
+MCPTelemetryConfig is the deprecated v1alpha1 version of the MCPTelemetryConfig resource.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPTelemetryConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPTelemetryConfigSpec](#apiv1beta1mcptelemetryconfigspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPTelemetryConfigStatus](#apiv1beta1mcptelemetryconfigstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPTelemetryConfigList
+
+
+
+MCPTelemetryConfigList contains a list of MCPTelemetryConfig.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPTelemetryConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPTelemetryConfig](#apiv1alpha1mcptelemetryconfig) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPToolConfig
+
+
+
+MCPToolConfig is the deprecated v1alpha1 version of the MCPToolConfig resource.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPToolConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPToolConfigSpec](#apiv1beta1mcptoolconfigspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPToolConfigStatus](#apiv1beta1mcptoolconfigstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPToolConfigList
+
+
+
+MCPToolConfigList contains a list of MCPToolConfig.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPToolConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPToolConfig](#apiv1alpha1mcptoolconfig) array_ |  |  |  |
+
+
+#### api.v1alpha1.MCPWebhookConfig
+
+
+
+MCPWebhookConfig is the Schema for the mcpwebhookconfigs API.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPWebhookConfig` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.MCPWebhookConfigSpec](#apiv1beta1mcpwebhookconfigspec)_ |  |  |  |
+| `status` _[api.v1beta1.MCPWebhookConfigStatus](#apiv1beta1mcpwebhookconfigstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.MCPWebhookConfigList
+
+
+
+MCPWebhookConfigList contains a list of MCPWebhookConfig.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `MCPWebhookConfigList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.MCPWebhookConfig](#apiv1alpha1mcpwebhookconfig) array_ |  |  |  |
+
+
+#### api.v1alpha1.VirtualMCPCompositeToolDefinition
+
+
+
+VirtualMCPCompositeToolDefinition is the deprecated v1alpha1 version of the VirtualMCPCompositeToolDefinition resource.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `VirtualMCPCompositeToolDefinition` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.VirtualMCPCompositeToolDefinitionSpec](#apiv1beta1virtualmcpcompositetooldefinitionspec)_ |  |  |  |
+| `status` _[api.v1beta1.VirtualMCPCompositeToolDefinitionStatus](#apiv1beta1virtualmcpcompositetooldefinitionstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.VirtualMCPCompositeToolDefinitionList
+
+
+
+VirtualMCPCompositeToolDefinitionList contains a list of VirtualMCPCompositeToolDefinition.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `VirtualMCPCompositeToolDefinitionList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.VirtualMCPCompositeToolDefinition](#apiv1alpha1virtualmcpcompositetooldefinition) array_ |  |  |  |
+
+
+#### api.v1alpha1.VirtualMCPServer
+
+
+
+VirtualMCPServer is the deprecated v1alpha1 version of the VirtualMCPServer resource.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `VirtualMCPServer` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ObjectMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#objectmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `spec` _[api.v1beta1.VirtualMCPServerSpec](#apiv1beta1virtualmcpserverspec)_ |  |  |  |
+| `status` _[api.v1beta1.VirtualMCPServerStatus](#apiv1beta1virtualmcpserverstatus)_ |  |  |  |
+
+
+#### api.v1alpha1.VirtualMCPServerList
+
+
+
+VirtualMCPServerList contains a list of VirtualMCPServer.
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `apiVersion` _string_ | `toolhive.stacklok.dev/v1alpha1` | | |
+| `kind` _string_ | `VirtualMCPServerList` | | |
+| `kind` _string_ | Kind is a string value representing the REST resource this object represents.<br />Servers may infer this from the endpoint the client submits requests to.<br />Cannot be updated.<br />In CamelCase.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds |  | Optional: \{\} <br /> |
+| `apiVersion` _string_ | APIVersion defines the versioned schema of this representation of an object.<br />Servers should convert recognized schemas to the latest internal value, and<br />may reject unrecognized values.<br />More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources |  | Optional: \{\} <br /> |
+| `metadata` _[ListMeta](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#listmeta-v1-meta)_ | Refer to Kubernetes API documentation for fields of `metadata`. |  |  |
+| `items` _[api.v1alpha1.VirtualMCPServer](#apiv1alpha1virtualmcpserver) array_ |  |  |  |
 
 
 
@@ -1277,6 +1856,17 @@ _Appears in:_
 | `initialAccessTokenRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | InitialAccessTokenRef is an optional reference to a Kubernetes Secret<br />carrying an RFC 7591 §3 initial access token. When set, the resolver<br />presents the token value as a Bearer credential on the registration<br />request. Mirrors the ClientSecretRef pattern. |  | Optional: \{\} <br /> |
 | `softwareId` _string_ | SoftwareID is the RFC 7591 "software_id" registration metadata value,<br />identifying the client software independent of any particular<br />registration instance. Typically a UUID or short identifier. |  | MaxLength: 255 <br />Optional: \{\} <br /> |
 | `softwareStatement` _string_ | SoftwareStatement is the RFC 7591 "software_statement" JWT asserting<br />metadata about the client software, signed by a party the authorization<br />server trusts.<br />Stored inline on the CR. The JWT is signed but not encrypted, so its<br />contents are visible to anyone with get/list/watch on this resource and<br />appear in etcd backups in plaintext. Treat the value as non-confidential<br />(signed attestation, not a secret). Operators that rotate software<br />statements like bearer credentials should keep them at the authorization<br />server side and rely on the registration endpoint's initial access<br />token (see InitialAccessTokenRef) instead of placing them on the CR.<br />Bounded to 16384 characters as a defensive size cap (etcd object<br />budget, regex evaluation cost). Real-world signed statements with<br />embedded x5c certificate chains, JWKS keys, or OIDC-Federation<br />trust-framework metadata routinely exceed 4 KB. |  | MaxLength: 16384 <br />Optional: \{\} <br /> |
+
+
+#### api.v1beta1.DiscoveredBackend
+
+
+
+DiscoveredBackend is an alias to the canonical definition in pkg/vmcp/types.go
+This provides a local name for use in the CRD status.
+
+
+
 
 
 
@@ -3153,6 +3743,21 @@ _Appears in:_
 | `key` _string_ | Key is the key in the ConfigMap that contains the permission profile<br />Only used when Type is "configmap" |  | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.PermissionProfileSpec
+
+
+
+PermissionProfileSpec defines the permissions for an MCP server
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `read` _string array_ | Read is a list of paths that the MCP server can read from |  | Optional: \{\} <br /> |
+| `write` _string array_ | Write is a list of paths that the MCP server can write to |  | Optional: \{\} <br /> |
+| `network` _[api.v1beta1.NetworkPermissions](#apiv1beta1networkpermissions)_ | Network defines the network permissions for the MCP server |  | Optional: \{\} <br /> |
 
 
 #### api.v1beta1.PrometheusConfig
@@ -3189,6 +3794,27 @@ _Appears in:_
 | `podTemplateMetadataOverrides` _[api.v1beta1.ResourceMetadataOverrides](#apiv1beta1resourcemetadataoverrides)_ |  |  |  |
 | `env` _[api.v1beta1.EnvVar](#apiv1beta1envvar) array_ | Env are environment variables to set in the proxy container (thv run process)<br />These affect the toolhive proxy itself, not the MCP server it manages<br />Use TOOLHIVE_DEBUG=true to enable debug logging in the proxy |  | Optional: \{\} <br /> |
 | `imagePullSecrets` _[LocalObjectReference](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#localobjectreference-v1-core) array_ | ImagePullSecrets allows specifying image pull secrets for the proxy runner<br />These are applied to both the Deployment and the ServiceAccount |  | Optional: \{\} <br /> |
+
+
+#### api.v1beta1.RateLimitBucket
+
+
+
+RateLimitBucket defines a token bucket configuration with a maximum capacity
+and a refill period. Used by both shared and per-user rate limits.
+
+
+
+
+
+
+
+#### api.v1beta1.RateLimitConfig
+
+
+
+RateLimitConfig defines rate limiting configuration for an MCP server.
+
 
 
 
@@ -3445,7 +4071,7 @@ _Appears in:_
 
 #### api.v1beta1.SentinelServiceRef
 
-_Underlying type:_ _[api.v1beta1.struct{Name string "json:\"name\""; Namespace string "json:\"namespace,omitempty\""; Port int32 "json:\"port,omitempty\""}](#apiv1beta1struct{name string "json:\"name\""; namespace string "json:\"namespace,omitempty\""; port int32 "json:\"port,omitempty\""})_
+_Underlying type:_ _struct{Name string "json:\"name\""; Namespace string "json:\"namespace,omitempty\""; Port int32 "json:\"port,omitempty\""}_
 
 SentinelServiceRef references a Kubernetes Service for Sentinel discovery.
 
@@ -3611,6 +4237,16 @@ _Appears in:_
 | `annotations` _[api.v1beta1.ToolAnnotationsOverride](#apiv1beta1toolannotationsoverride)_ | Annotations overrides specific tool annotation fields.<br />Only specified fields are overridden; others pass through from the backend. |  | Optional: \{\} <br /> |
 
 
+#### api.v1beta1.ToolRateLimitConfig
+
+
+
+ToolRateLimitConfig defines rate limits for a specific tool.
+
+
+
+
+
 
 
 #### api.v1beta1.UpstreamInjectSpec
@@ -3704,7 +4340,7 @@ _Appears in:_
 
 #### api.v1beta1.UserInfoFieldMapping
 
-_Underlying type:_ _[api.v1beta1.struct{SubjectFields []string "json:\"subjectFields,omitempty\""; NameFields []string "json:\"nameFields,omitempty\""; EmailFields []string "json:\"emailFields,omitempty\""}](#apiv1beta1struct{subjectfields []string "json:\"subjectfields,omitempty\""; namefields []string "json:\"namefields,omitempty\""; emailfields []string "json:\"emailfields,omitempty\""})_
+_Underlying type:_ _struct{SubjectFields []string "json:\"subjectFields,omitempty\""; NameFields []string "json:\"nameFields,omitempty\""; EmailFields []string "json:\"emailFields,omitempty\""}_
 
 UserInfoFieldMapping maps provider-specific field names to standard UserInfo fields.
 This allows adapting non-standard provider responses to the canonical UserInfo structure.
@@ -3805,7 +4441,7 @@ _Appears in:_
 | --- | --- | --- | --- |
 | `name` _string_ | Name is the workflow name (unique identifier). |  |  |
 | `description` _string_ | Description describes what the workflow does. |  |  |
-| `parameters` _[pkg.json.Map](#pkgjsonmap)_ | Parameters defines input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \}<br />We use json.Map rather than a typed struct because JSON Schema is highly<br />flexible with many optional fields (default, enum, minimum, maximum, pattern,<br />items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map<br />allows full JSON Schema compatibility without needing to define every possible<br />field, and matches how the MCP SDK handles inputSchema. |  | Optional: \{\} <br /> |
+| `parameters` _[pkg.json.Map](#pkgjsonmap)_ | Parameters defines input parameter schema in JSON Schema format.<br />Should be a JSON Schema object with "type": "object" and "properties".<br />Example:<br />  \{<br />    "type": "object",<br />    "properties": \{<br />      "param1": \{"type": "string", "default": "value"\},<br />      "param2": \{"type": "integer"\}<br />    \},<br />    "required": ["param2"]<br />  \}<br />We use json.Map rather than a typed struct because JSON Schema is highly<br />flexible with many optional fields (default, enum, minimum, maximum, pattern,<br />items, additionalProperties, oneOf, anyOf, allOf, etc.). Using json.Map<br />allows full JSON Schema compatibility without needing to define every possible<br />field, and matches how the MCP SDK handles inputSchema. |  | Type: object <br />Optional: \{\} <br /> |
 | `timeout` _[vmcp.config.Duration](#vmcpconfigduration)_ | Timeout is the maximum workflow execution time. |  | Pattern: `^([0-9]+(\.[0-9]+)?(ns\|us\|µs\|ms\|s\|m\|h))+$` <br />Type: string <br /> |
 | `steps` _[vmcp.config.WorkflowStepConfig](#vmcpconfigworkflowstepconfig) array_ | Steps are the workflow steps to execute. |  |  |
 | `output` _[vmcp.config.OutputConfig](#vmcpconfigoutputconfig)_ | Output defines the structured output schema for this workflow.<br />If not specified, the workflow returns the last step's output (backward compatible). |  | Optional: \{\} <br /> |
@@ -4094,5 +4730,113 @@ _Appears in:_
 | `scopes` _string array_ | Scopes are the requested scopes for the XAA exchange (Steps A and B). |  | Optional: \{\} <br /> |
 | `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's ID token to use.<br />When left empty and an embedded authorization server is configured,<br />the controller automatically populates this field with the first configured<br />upstream provider name. |  | Optional: \{\} <br /> |
 | `subjectTokenType` _string_ | SubjectTokenType is the token-type URN of the upstream subject token<br />used in Step A. Defaults to "urn:ietf:params:oauth:token-type:id_token"<br />when empty. |  | Enum: [urn:ietf:params:oauth:token-type:id_token] <br />Optional: \{\} <br /> |
+
+
+
+## toolhive.stacklok.dev/vmcp
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+#### pkg.vmcp.ConflictResolutionStrategy
+
+_Underlying type:_ _string_
+
+ConflictResolutionStrategy defines how to handle capability name conflicts.
+Placed in vmcp root package to be shared by config and aggregator packages.
+
+
+
+_Appears in:_
+- [vmcp.config.AggregationConfig](#vmcpconfigaggregationconfig)
+
+| Field | Description |
+| --- | --- |
+| `prefix` | ConflictStrategyPrefix prefixes all tools with workload identifier.<br /> |
+| `priority` | ConflictStrategyPriority uses explicit priority ordering (first wins).<br /> |
+| `manual` | ConflictStrategyManual requires explicit overrides for all conflicts.<br /> |
+
+
+
+
+
+
+
+
+#### pkg.vmcp.DiscoveredBackend
+
+
+
+DiscoveredBackend represents a backend server discovered by vMCP runtime.
+This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
+
+
+
+
+
+| Field | Description | Default | Validation |
+| --- | --- | --- | --- |
+| `name` _string_ | Name is the name of the backend MCPServer |  |  |
+| `url` _string_ | URL is the URL of the backend MCPServer |  | Optional: \{\} <br /> |
+| `status` _string_ | Status is the current status of the backend (ready, degraded, unavailable, unauthenticated, unknown).<br />Use BackendHealthStatus.ToCRDStatus() to populate this field. |  | Optional: \{\} <br /> |
+| `authConfigRef` _string_ | AuthConfigRef is the name of the discovered MCPExternalAuthConfig (if any) |  | Optional: \{\} <br /> |
+| `authType` _string_ | AuthType is the type of authentication configured |  | Optional: \{\} <br /> |
+| `lastHealthCheck` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | LastHealthCheck is the timestamp of the last health check |  | Optional: \{\} <br /> |
+| `message` _string_ | Message provides additional information about the backend status |  | Optional: \{\} <br /> |
+| `circuitBreakerState` _string_ | CircuitBreakerState is the current circuit breaker state (closed, open, half-open).<br />Empty when circuit breaker is disabled or not configured. |  | Enum: [closed open half-open] <br />Optional: \{\} <br /> |
+| `circuitLastChanged` _[Time](https://kubernetes.io/docs/reference/generated/kubernetes-api/v1.27/#time-v1-meta)_ | CircuitLastChanged is the timestamp when the circuit breaker state last changed.<br />Empty when circuit breaker is disabled or has never changed state. |  | Optional: \{\} <br /> |
+| `consecutiveFailures` _integer_ | ConsecutiveFailures is the current count of consecutive health check failures.<br />Resets to 0 when the backend becomes healthy again. |  | Optional: \{\} <br /> |
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

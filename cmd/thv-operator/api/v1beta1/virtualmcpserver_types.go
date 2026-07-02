@@ -252,6 +252,7 @@ const (
 
 // DiscoveredBackend is an alias to the canonical definition in pkg/vmcp/types.go
 // This provides a local name for use in the CRD status.
+// +gendoc
 type DiscoveredBackend = vmcptypes.DiscoveredBackend
 
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer

@@ -3,8 +3,9 @@
 
 // Package ratelimit provides token-bucket rate limiting for MCP servers.
 //
-// The public API consists of the Limiter interface, Decision result type,
-// and NewLimiter constructor. The token bucket implementation is internal.
+// The public API consists of the Limiter interface, Decision and
+// RejectionSource result types, and NewLimiter constructor. The token bucket
+// implementation is internal.
 package ratelimit
 
 import (
@@ -27,6 +28,20 @@ type Limiter interface {
 	Allow(ctx context.Context, toolName, userID string) (*Decision, error)
 }
 
+// RejectionSource identifies the rate limit bucket that rejected a request.
+type RejectionSource string
+
+const (
+	// RejectionSourceSharedServer identifies the server-level shared bucket.
+	RejectionSourceSharedServer RejectionSource = "shared_server"
+	// RejectionSourceSharedTool identifies a tool-level shared bucket.
+	RejectionSourceSharedTool RejectionSource = "shared_tool"
+	// RejectionSourcePerUserServer identifies a server-level per-user bucket.
+	RejectionSourcePerUserServer RejectionSource = "per_user_server"
+	// RejectionSourcePerUserTool identifies a tool-level per-user bucket.
+	RejectionSourcePerUserTool RejectionSource = "per_user_tool"
+)
+
 // Decision holds the result of a rate limit check.
 type Decision struct {
 	// Allowed is true when the request may proceed.
@@ -35,6 +50,10 @@ type Decision struct {
 	// RetryAfter is populated when Allowed is false.
 	// It indicates the minimum wait before the next request may succeed.
 	RetryAfter time.Duration
+
+	// RejectedBy identifies the first rate limit bucket that rejected the
+	// request. It is empty when Allowed is true.
+	RejectedBy RejectionSource
 }
 
 // Allow checks whether identity may call toolName through limiter.
@@ -56,7 +75,10 @@ func Allow(ctx context.Context, limiter Limiter, identity *auth.Identity, toolNa
 		return err
 	}
 	if !decision.Allowed {
-		return &RateLimitedError{RetryAfter: decision.RetryAfter}
+		return &RateLimitedError{
+			RetryAfter: decision.RetryAfter,
+			RejectedBy: decision.RejectedBy,
+		}
 	}
 	return nil
 }
@@ -122,6 +144,13 @@ type bucketSpec struct {
 	refillPeriod time.Duration
 }
 
+// limitCheck keeps a bucket paired with the stable identifier used to report
+// which check rejected a request.
+type limitCheck struct {
+	bucket     *bucket.TokenBucket
+	rejectedBy RejectionSource
+}
+
 // limiter is the concrete implementation of Limiter.
 type limiter struct {
 	client       redis.Cmdable
@@ -136,13 +165,19 @@ type limiter struct {
 // a rejected per-tool or per-user call from draining other budgets.
 func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision, error) {
 	// Collect applicable buckets in priority order.
-	var buckets []*bucket.TokenBucket
+	var checks []limitCheck
 	if l.serverBucket != nil {
-		buckets = append(buckets, l.serverBucket)
+		checks = append(checks, limitCheck{
+			bucket:     l.serverBucket,
+			rejectedBy: RejectionSourceSharedServer,
+		})
 	}
 	if toolName != "" && l.toolBuckets != nil {
 		if tb, ok := l.toolBuckets[toolName]; ok {
-			buckets = append(buckets, tb)
+			checks = append(checks, limitCheck{
+				bucket:     tb,
+				rejectedBy: RejectionSourceSharedTool,
+			})
 		}
 	}
 
@@ -157,27 +192,38 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 	if userID != "" {
 		if l.perUserSpec != nil {
 			s := l.perUserSpec
-			buckets = append(buckets, bucket.New(
-				s.namespace, s.serverName,
-				"user:"+userID,
-				s.maxTokens, s.refillPeriod,
-			))
+			checks = append(checks, limitCheck{
+				bucket: bucket.New(
+					s.namespace, s.serverName,
+					"user:"+userID,
+					s.maxTokens, s.refillPeriod,
+				),
+				rejectedBy: RejectionSourcePerUserServer,
+			})
 		}
 		if toolName != "" && l.perUserTools != nil {
 			if s, ok := l.perUserTools[toolName]; ok {
 				// Key prefix "user-tool:" is distinct from "user:" to prevent
 				// collisions when a userID contains delimiter characters.
-				buckets = append(buckets, bucket.New(
-					s.namespace, s.serverName,
-					"user-tool:"+toolName+":"+userID,
-					s.maxTokens, s.refillPeriod,
-				))
+				checks = append(checks, limitCheck{
+					bucket: bucket.New(
+						s.namespace, s.serverName,
+						"user-tool:"+toolName+":"+userID,
+						s.maxTokens, s.refillPeriod,
+					),
+					rejectedBy: RejectionSourcePerUserTool,
+				})
 			}
 		}
 	}
 
-	if len(buckets) == 0 {
+	if len(checks) == 0 {
 		return &Decision{Allowed: true}, nil
+	}
+
+	buckets := make([]*bucket.TokenBucket, len(checks))
+	for i, check := range checks {
+		buckets[i] = check.bucket
 	}
 
 	rejectedIdx, err := bucket.ConsumeAll(ctx, l.client, buckets)
@@ -188,6 +234,7 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 		return &Decision{
 			Allowed:    false,
 			RetryAfter: buckets[rejectedIdx].RetryAfter(),
+			RejectedBy: checks[rejectedIdx].rejectedBy,
 		}, nil
 	}
 

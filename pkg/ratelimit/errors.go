@@ -22,6 +22,7 @@ const (
 // RateLimitedError reports that a request exceeded its configured rate limit.
 type RateLimitedError struct {
 	RetryAfter time.Duration
+	RejectedBy RejectionSource
 }
 
 var _ thvmcp.CodedError = (*RateLimitedError)(nil)

@@ -80,6 +80,7 @@ func TestAllowRateLimitedReturnsTypedError(t *testing.T) {
 		decision: &Decision{
 			Allowed:    false,
 			RetryAfter: 3 * time.Second,
+			RejectedBy: RejectionSourceSharedTool,
 		},
 	}
 
@@ -88,6 +89,7 @@ func TestAllowRateLimitedReturnsTypedError(t *testing.T) {
 	var limited *RateLimitedError
 	require.ErrorAs(t, err, &limited)
 	assert.Equal(t, 3*time.Second, limited.RetryAfter)
+	assert.Equal(t, RejectionSourceSharedTool, limited.RejectedBy)
 }
 
 func TestAllowPropagatesLimiterError(t *testing.T) {
@@ -148,12 +150,14 @@ func TestLimiter_ServerSharedExhausted(t *testing.T) {
 		d, err := l.Allow(ctx, "", "")
 		require.NoError(t, err)
 		require.True(t, d.Allowed)
+		assert.Empty(t, d.RejectedBy)
 	}
 
 	d, err := l.Allow(ctx, "", "")
 	require.NoError(t, err)
 	assert.False(t, d.Allowed)
 	assert.Greater(t, d.RetryAfter, time.Duration(0))
+	assert.Equal(t, RejectionSourceSharedServer, d.RejectedBy)
 }
 
 func TestLimiter_SharedUsesRedisKeys(t *testing.T) {
@@ -208,6 +212,7 @@ func TestLimiter_PerToolIsolation(t *testing.T) {
 	d, err = l.Allow(ctx, "search", "")
 	require.NoError(t, err)
 	assert.False(t, d.Allowed)
+	assert.Equal(t, RejectionSourceSharedTool, d.RejectedBy)
 
 	// Other tool is unaffected.
 	d, err = l.Allow(ctx, "execute", "")
@@ -242,6 +247,7 @@ func TestLimiter_ServerAndPerToolBothRequired(t *testing.T) {
 	d, err := l.Allow(ctx, "search", "")
 	require.NoError(t, err)
 	assert.False(t, d.Allowed)
+	assert.Equal(t, RejectionSourceSharedTool, d.RejectedBy)
 
 	// "list" has no per-tool limit — still allowed.
 	d, err = l.Allow(ctx, "list", "")
@@ -286,6 +292,7 @@ func TestLimiter_PerUserServerLevel(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, d.Allowed)
 	assert.Greater(t, d.RetryAfter, time.Duration(0))
+	assert.Equal(t, RejectionSourcePerUserServer, d.RejectedBy)
 
 	// User B is independent — still has full budget.
 	d, err = l.Allow(ctx, "", "user-b")
@@ -318,6 +325,7 @@ func TestLimiter_PerToolPerUserIsolation(t *testing.T) {
 	d, err = l.Allow(ctx, "search", "user-a")
 	require.NoError(t, err)
 	assert.False(t, d.Allowed)
+	assert.Equal(t, RejectionSourcePerUserTool, d.RejectedBy)
 
 	// User B can still use "search".
 	d, err = l.Allow(ctx, "search", "user-b")
@@ -358,6 +366,7 @@ func TestLimiter_ServerAndToolPerUserBothRequired(t *testing.T) {
 	d, err := l.Allow(ctx, "search", "user-a")
 	require.NoError(t, err)
 	assert.False(t, d.Allowed)
+	assert.Equal(t, RejectionSourcePerUserTool, d.RejectedBy)
 
 	// "list" (no per-tool limit) still allowed for user A.
 	d, err = l.Allow(ctx, "list", "user-a")
@@ -388,6 +397,7 @@ func TestLimiter_PerUserRejectionDoesNotDrainShared(t *testing.T) {
 	d, err = l.Allow(ctx, "", "user-a")
 	require.NoError(t, err)
 	assert.False(t, d.Allowed)
+	assert.Equal(t, RejectionSourcePerUserServer, d.RejectedBy)
 
 	// Users B and C should each succeed (shared still has 2 tokens).
 	d, err = l.Allow(ctx, "", "user-b")
@@ -402,6 +412,41 @@ func TestLimiter_PerUserRejectionDoesNotDrainShared(t *testing.T) {
 	d, err = l.Allow(ctx, "", "user-d")
 	require.NoError(t, err)
 	assert.False(t, d.Allowed, "user-d should be rejected — shared bucket is now exhausted")
+	assert.Equal(t, RejectionSourceSharedServer, d.RejectedBy)
+}
+
+func TestLimiter_MultipleExhaustedBucketsReportsFirstRejection(t *testing.T) {
+	t.Parallel()
+	client, _ := newTestClient(t)
+	ctx := t.Context()
+
+	crd := &v1beta1.RateLimitConfig{
+		Shared: &v1beta1.RateLimitBucket{
+			MaxTokens:    1,
+			RefillPeriod: metav1.Duration{Duration: time.Minute},
+		},
+		Tools: []v1beta1.ToolRateLimitConfig{
+			{
+				Name: "search",
+				Shared: &v1beta1.RateLimitBucket{
+					MaxTokens:    1,
+					RefillPeriod: metav1.Duration{Duration: time.Minute},
+				},
+			},
+		},
+	}
+	l, err := NewLimiter(client, "ns", "srv", crd)
+	require.NoError(t, err)
+
+	first, err := l.Allow(ctx, "search", "")
+	require.NoError(t, err)
+	require.True(t, first.Allowed)
+	assert.Empty(t, first.RejectedBy)
+
+	second, err := l.Allow(ctx, "search", "")
+	require.NoError(t, err)
+	require.False(t, second.Allowed)
+	assert.Equal(t, RejectionSourceSharedServer, second.RejectedBy)
 }
 
 func TestLimiter_RedisUnavailablePerUser(t *testing.T) {

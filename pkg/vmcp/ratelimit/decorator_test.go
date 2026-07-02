@@ -114,6 +114,7 @@ func TestCallToolRateLimitedDoesNotDelegate(t *testing.T) {
 		decision: &baseratelimit.Decision{
 			Allowed:    false,
 			RetryAfter: 5 * time.Second,
+			RejectedBy: baseratelimit.RejectionSourceSharedTool,
 		},
 	}
 	inner := &recordingCore{}
@@ -127,6 +128,7 @@ func TestCallToolRateLimitedDoesNotDelegate(t *testing.T) {
 	var limited *baseratelimit.RateLimitedError
 	require.ErrorAs(t, err, &limited)
 	assert.Equal(t, 5*time.Second, limited.RetryAfter)
+	assert.Equal(t, baseratelimit.RejectionSourceSharedTool, limited.RejectedBy)
 }
 
 func TestCallToolLimiterErrorFailsOpen(t *testing.T) {

@@ -57,7 +57,7 @@ func TestGetPluginPath(t *testing.T) {
 	// Platform prefix for the current OS (ClaudeCode uses the same path on
 	// all platforms, but build the expected path defensively).
 	ccGlobalWant := filepath.Join(append([]string{testHomeDir}, []string{".claude", "plugins", "my-plugin"}...)...)
-	codexGlobalWant := filepath.Join(testHomeDir, ".codex", "plugins", "cache", "my-plugin")
+	codexGlobalWant := filepath.Join(testHomeDir, ".agents", "plugins", "toolhive", "my-plugin")
 
 	tests := []struct {
 		name           string
@@ -97,7 +97,7 @@ func TestGetPluginPath(t *testing.T) {
 			pluginName:  "my-plugin",
 			scope:       plugins.ScopeProject,
 			projectRoot: "/tmp/myproject",
-			wantPath:    filepath.Join("/tmp/myproject", ".codex", "plugins", "cache", "my-plugin"),
+			wantPath:    filepath.Join("/tmp/myproject", ".agents", "plugins", "toolhive", "my-plugin"),
 		},
 		// Security-relevant: path traversal is rejected by the name validator.
 		{

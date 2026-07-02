@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/fileutils"
@@ -19,18 +18,23 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
-// CodexAdapter materializes plugins for the OpenAI Codex CLI. Codex uses a
-// marketplace model: a shared ~/.codex/plugins/marketplace.json declares the
-// "toolhive" marketplace (top-level name + a plugins array), and
-// ~/.codex/config.toml holds per-plugin enable state as
-// [plugins."<name>@toolhive"] tables.
+// CodexAdapter materializes plugins for the OpenAI Codex CLI.
 //
-// Codex loads a local plugin from its cache at
-// ~/.codex/plugins/cache/<marketplace>/<plugin>/<version>, where <version> is
-// "local" for local sources. ToolHive extracts each plugin directly into that
-// layout (cache/toolhive/<name>/local) and points the marketplace entry's
-// source at it with a "./"-relative path resolved against the marketplace root
-// (~/.codex/plugins). See https://developers.openai.com/codex/plugins/build.
+// Codex discovers marketplaces at a fixed set of paths, including the personal
+// ~/.agents/plugins/marketplace.json and the per-repo
+// $REPO_ROOT/.agents/plugins/marketplace.json. ToolHive extracts each plugin's
+// source under that marketplace root (namespaced by the "toolhive" marketplace
+// name, i.e. <root>/toolhive/<name>) and maintains the marketplace.json so Codex
+// can discover it, with a relative "./toolhive/<name>" source per the docs.
+//
+// Loading the plugin is then a one-time manual step the user runs with the Codex
+// CLI (`codex plugin install <name>@toolhive`). ToolHive deliberately does NOT
+// shell out to the `codex` binary or write speculative `~/.codex/config.toml`
+// enable state: enabling an un-installed plugin doesn't load it, and writing to
+// the user's shared config has blast radius for no benefit. The manual step is
+// documented in docs/arch/14-plugins-system.md.
+//
+// See https://developers.openai.com/codex/plugins/build.
 type CodexAdapter struct {
 	cm        *client.ClientManager
 	installer skills.Installer
@@ -52,9 +56,6 @@ var codexSupported = []plugins.ComponentType{
 }
 
 const (
-	// codexPluginVersion is the version segment Codex uses for local-source
-	// plugins in its cache layout (cache/<marketplace>/<plugin>/<version>).
-	codexPluginVersion = "local"
 	// codexPluginCategory is the category recorded for ToolHive plugins in the
 	// Codex marketplace manifest (a required field).
 	codexPluginCategory = "Productivity"
@@ -64,115 +65,80 @@ const (
 	codexPolicyAuthentication = "ON_INSTALL"
 )
 
-// codexPluginsRoot returns the Codex plugins root (the marketplace root) under
-// the manager's home directory: ~/.codex/plugins.
-func codexPluginsRoot(homeDir string) string {
-	return filepath.Join(homeDir, ".codex", "plugins")
-}
-
-// codexMarketplacePath returns the path to Codex's shared plugins marketplace
-// file: ~/.codex/plugins/marketplace.json.
-func codexMarketplacePath(homeDir string) string {
-	return filepath.Join(codexPluginsRoot(homeDir), "marketplace.json")
-}
-
-// codexCacheDir resolves the Codex cache directory for a plugin in the layout
-// Codex loads from: <cache>/<marketplace>/<plugin>/<version>. It builds on
-// ClientManager.GetPluginPath (which validates the name and resolves the
-// scope-specific cache base) and then appends the marketplace/plugin/version
-// segments.
-func (a *CodexAdapter) codexCacheDir(name string, scope plugins.Scope, projectRoot string) (string, error) {
-	// GetPluginPath returns <base>/cache/<name>; it validates the name (no
-	// traversal) and applies the scope-specific base.
-	leaf, err := a.cm.GetPluginPath(client.Codex, name, scope, projectRoot)
-	if err != nil {
-		return "", err
+// codexMarketplaceRoot returns the Codex marketplace root for the given scope:
+// the personal ~/.agents/plugins for user scope, or <projectRoot>/.agents/plugins
+// for project scope. Both are marketplace-discovery paths Codex reads.
+func (a *CodexAdapter) codexMarketplaceRoot(scope plugins.Scope, projectRoot string) string {
+	if scope == plugins.ScopeProject && projectRoot != "" {
+		return filepath.Join(projectRoot, ".agents", "plugins")
 	}
-	cacheBase := filepath.Dir(leaf) // <base>/cache
-	return filepath.Join(cacheBase, marketplaceName, name, codexPluginVersion), nil
+	return filepath.Join(a.cm.HomeDir(), ".agents", "plugins")
 }
 
-// Materialize extracts the plugin into the Codex cache layout, writes the shared
-// Codex marketplace entry, and enables the plugin in ~/.codex/config.toml.
+// codexMarketplaceFile returns the marketplace manifest path for a marketplace
+// rooted at root: <root>/marketplace.json.
+func codexMarketplaceFile(root string) string {
+	return filepath.Join(root, "marketplace.json")
+}
+
+// codexSourcePath returns the relative "./toolhive/<name>" source path recorded
+// in the manifest for a plugin, resolved against the marketplace root.
+func codexSourcePath(name string) string {
+	return "./" + filepath.ToSlash(filepath.Join(marketplaceName, name))
+}
+
+// Materialize extracts the plugin's source under the Codex marketplace root and
+// registers it in the shared marketplace.json. It does not touch config.toml or
+// invoke the Codex CLI; the user completes loading with a one-time
+// `codex plugin install` (see the package doc).
 func (a *CodexAdapter) Materialize(_ context.Context, req plugins.MaterializeRequest) (*plugins.MaterializeResult, error) {
-	cacheDir, err := a.codexCacheDir(req.Name, req.Scope, req.ProjectRoot)
+	// GetPluginPath returns <marketplaceRoot>/toolhive/<name>; it validates the
+	// name (no traversal) and resolves the scope-specific root.
+	pluginDir, err := a.cm.GetPluginPath(client.Codex, req.Name, req.Scope, req.ProjectRoot)
 	if err != nil {
-		return nil, fmt.Errorf("resolving plugin cache path: %w", err)
+		return nil, fmt.Errorf("resolving plugin path: %w", err)
 	}
 
-	if _, err := a.installer.ExtractPlugin(req.LayerData, cacheDir, true); err != nil {
+	if _, err := a.installer.ExtractPlugin(req.LayerData, pluginDir, true); err != nil {
 		return nil, fmt.Errorf("extracting plugin: %w", err)
 	}
 
-	// Compute dropped components before mutating config (so we don't lose
-	// the info on a partially successful operation).
-	dropped := droppedComponents(req.Components, codexSupported)
-
-	// Register in ~/.codex/config.toml — the config file is always user-scoped.
-	configPath, err := a.cm.GetConfigPath(client.Codex)
-	if err != nil {
-		return nil, fmt.Errorf("resolving codex config path: %w", err)
-	}
-
-	// Enable the plugin in config.toml first. Doing this before writing the
-	// marketplace means a malformed config (e.g. a non-table `plugins` key)
-	// is rejected without leaving a stale marketplace.json behind.
-	if err := upsertCodexPlugin(configPath, req.Name); err != nil {
-		return nil, fmt.Errorf("registering plugin in codex config: %w", err)
-	}
-
-	// Write/maintain the shared marketplace.json declaring the toolhive
-	// marketplace with a plugin entry whose local source points (relative to the
-	// marketplace root) at the plugin's cache directory.
-	marketplacePath := codexMarketplacePath(a.cm.HomeDir())
-	marketplaceRoot := codexPluginsRoot(a.cm.HomeDir())
-	if err := upsertCodexMarketplace(marketplacePath, marketplaceRoot, cacheDir, req.Name); err != nil {
+	// Register the plugin in the shared marketplace.json at the marketplace root
+	// so Codex can discover it.
+	root := a.codexMarketplaceRoot(req.Scope, req.ProjectRoot)
+	if err := upsertCodexMarketplace(codexMarketplaceFile(root), req.Name); err != nil {
 		return nil, fmt.Errorf("writing codex marketplace: %w", err)
 	}
 
-	// Project scope install degrades because config registration is always
-	// in the user-scoped ~/.codex/config.toml, even though the cache path
-	// is project-local.
-	projectDegraded := req.Scope == plugins.ScopeProject
-
 	return &plugins.MaterializeResult{
 		InstalledComponents:  codexSupported,
-		DroppedComponents:    dropped,
-		InstallPath:          cacheDir,
-		ProjectScopeDegraded: projectDegraded,
+		DroppedComponents:    droppedComponents(req.Components, codexSupported),
+		InstallPath:          pluginDir,
+		ProjectScopeDegraded: false,
 	}, nil
 }
 
-// Dematerialize removes the plugin from the cache directory, disables it in
-// config.toml, and removes it from the shared marketplace.json (deleting the
-// file when no plugins remain).
+// Dematerialize removes the plugin's source directory and its marketplace.json
+// entry (deleting the manifest when no plugins remain).
 func (a *CodexAdapter) Dematerialize(_ context.Context, req plugins.DematerializeRequest) error {
 	var errs []error
 
-	cacheDir, err := a.codexCacheDir(req.Name, req.Scope, req.ProjectRoot)
+	pluginDir, err := a.cm.GetPluginPath(client.Codex, req.Name, req.Scope, req.ProjectRoot)
 	if err != nil {
-		errs = append(errs, fmt.Errorf("resolving plugin cache path: %w", err))
+		errs = append(errs, fmt.Errorf("resolving plugin path: %w", err))
 	} else {
-		if rmErr := a.installer.Remove(cacheDir); rmErr != nil {
+		if rmErr := a.installer.Remove(pluginDir); rmErr != nil {
 			errs = append(errs, fmt.Errorf("removing plugin directory: %w", rmErr))
 		} else {
 			// Best-effort empty-parent cleanup.
-			cleanupAfterRemove(cacheDir, req.Scope, req.ProjectRoot, a.cm.HomeDir())
+			cleanupAfterRemove(pluginDir, req.Scope, req.ProjectRoot, a.cm.HomeDir())
 		}
-	}
-
-	// Remove the [plugins."<name>@toolhive"] table from config.toml (idempotent).
-	configPath, cfgErr := a.cm.GetConfigPath(client.Codex)
-	if cfgErr != nil {
-		errs = append(errs, fmt.Errorf("resolving codex config path: %w", cfgErr))
-	} else if rmErr := removeCodexPlugin(configPath, req.Name); rmErr != nil {
-		errs = append(errs, fmt.Errorf("removing plugin from codex config: %w", rmErr))
 	}
 
 	// Remove the plugin from the shared marketplace.json (idempotent). The file
 	// is deleted once no plugins remain.
-	marketplacePath := codexMarketplacePath(a.cm.HomeDir())
-	if mErr := removeCodexMarketplace(marketplacePath, req.Name); mErr != nil {
+	root := a.codexMarketplaceRoot(req.Scope, req.ProjectRoot)
+	if mErr := removeCodexMarketplace(codexMarketplaceFile(root), req.Name); mErr != nil {
 		errs = append(errs, fmt.Errorf("removing plugin from codex marketplace: %w", mErr))
 	}
 
@@ -187,103 +153,11 @@ func (*CodexAdapter) SupportedComponents() []plugins.ComponentType {
 	return codexSupported
 }
 
-// ScopeSupport returns true for Codex: plugin registration is written to the
-// user-scoped ~/.codex/config.toml regardless of install scope, so a
-// project-scoped install degrades (the cache is project-local, but the config
-// entry is user-wide).
+// ScopeSupport returns no degradation for Codex: user scope uses the personal
+// ~/.agents/plugins marketplace and project scope uses the per-repo
+// <root>/.agents/plugins marketplace, both of which Codex discovers.
 func (*CodexAdapter) ScopeSupport() plugins.ScopeSupport {
-	return plugins.ScopeSupport{
-		DegradesOnProjectScope: true,
-		Reason:                 "Codex plugin registration is user-scoped; project-scope cache installs write to the user-wide config",
-	}
-}
-
-// --- config.toml mutation helpers ---
-
-const pluginsKey = "plugins"
-
-// errPluginsKeyNotTable is returned when the config's `plugins` key exists but
-// is not a TOML table, which means ToolHive cannot safely manage plugin
-// entries under it.
-var errPluginsKeyNotTable = errors.New("plugins key exists but is not a table")
-
-// upsertCodexPlugin enables the plugin in ~/.codex/config.toml under a
-// [plugins."<name>@toolhive"] table with `enabled = true`. Uses the same
-// lock+atomic-write pattern as config_editor.go.
-func upsertCodexPlugin(configPath, name string) error {
-	// Ensure the config file's parent directory exists so the lock file can be
-	// created. Mirrors CreateClientConfig's MkdirAll of the parent dir.
-	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
-		return fmt.Errorf("creating config parent dir: %w", err)
-	}
-
-	return fileutils.WithFileLock(configPath, func() error {
-		cfg, err := client.ReadTOMLConfig(configPath)
-		if err != nil {
-			return err
-		}
-
-		pluginsSection, err := getPluginsMap(cfg)
-		if err != nil {
-			return err
-		}
-		pluginsSection[pluginKey(name)] = map[string]any{"enabled": true}
-		cfg[pluginsKey] = pluginsSection
-
-		return client.WriteTOMLConfig(configPath, cfg)
-	})
-}
-
-// removeCodexPlugin removes the [plugins."<name>@toolhive"] table from the
-// Codex config.toml. Idempotent: a missing config file or missing table is not
-// an error.
-func removeCodexPlugin(configPath, name string) error {
-	// Short-circuit when the config file doesn't exist so we don't fail trying
-	// to acquire a lock on a non-existent path's parent directory.
-	if _, err := os.Stat(configPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("checking config file: %w", err)
-	}
-
-	return fileutils.WithFileLock(configPath, func() error {
-		cfg, readErr := client.ReadTOMLConfig(configPath)
-		if readErr != nil {
-			return readErr
-		}
-		if len(cfg) == 0 {
-			return nil
-		}
-
-		pluginsSection, pErr := getPluginsMap(cfg)
-		if pErr != nil {
-			return pErr
-		}
-		delete(pluginsSection, pluginKey(name))
-		if len(pluginsSection) == 0 {
-			delete(cfg, pluginsKey)
-		} else {
-			cfg[pluginsKey] = pluginsSection
-		}
-
-		return client.WriteTOMLConfig(configPath, cfg)
-	})
-}
-
-// getPluginsMap returns the `plugins` table from the config. It returns a
-// fresh empty map when the key is absent, and an error when the key exists but
-// is not a table (so a malformed config is never silently clobbered).
-func getPluginsMap(cfg map[string]any) (map[string]any, error) {
-	existing, ok := cfg[pluginsKey]
-	if !ok {
-		return make(map[string]any), nil
-	}
-	m, ok := existing.(map[string]any)
-	if !ok {
-		return nil, errPluginsKeyNotTable
-	}
-	return m, nil
+	return plugins.ScopeSupport{DegradesOnProjectScope: false}
 }
 
 // --- marketplace.json helpers ---
@@ -307,7 +181,7 @@ type codexMarketplacePlugin struct {
 // is resolved relative to the marketplace root and starts with "./".
 type codexPluginSource struct {
 	Source string `json:"source"` // "local"
-	Path   string `json:"path"`   // "./cache/toolhive/<name>/local"
+	Path   string `json:"path"`   // "./toolhive/<name>"
 }
 
 // codexPluginPolicy carries the marketplace entry's install/auth policy.
@@ -316,22 +190,9 @@ type codexPluginPolicy struct {
 	Authentication string `json:"authentication"` // "ON_INSTALL"
 }
 
-// codexSourcePath returns the marketplace entry's source path for cacheDir,
-// relative to marketplaceRoot and prefixed with "./" when cacheDir is inside the
-// root (the normal user-scope case). A project-scoped cache lives outside the
-// user marketplace root, so the absolute path is used as a fallback (that case
-// already degrades — see ScopeSupport).
-func codexSourcePath(marketplaceRoot, cacheDir string) string {
-	rel, err := filepath.Rel(marketplaceRoot, cacheDir)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return cacheDir
-	}
-	return "./" + filepath.ToSlash(rel)
-}
-
-// upsertCodexMarketplace writes/maintains the shared marketplace.json, adding or
+// upsertCodexMarketplace writes/maintains the marketplace.json, adding or
 // updating the plugin entry for the toolhive marketplace under a file lock.
-func upsertCodexMarketplace(marketplacePath, marketplaceRoot, cacheDir, name string) error {
+func upsertCodexMarketplace(marketplacePath, name string) error {
 	if err := os.MkdirAll(filepath.Dir(marketplacePath), 0o700); err != nil {
 		return fmt.Errorf("creating marketplace dir: %w", err)
 	}
@@ -345,7 +206,7 @@ func upsertCodexMarketplace(marketplacePath, marketplaceRoot, cacheDir, name str
 			Name: name,
 			Source: codexPluginSource{
 				Source: "local",
-				Path:   codexSourcePath(marketplaceRoot, cacheDir),
+				Path:   codexSourcePath(name),
 			},
 			Policy: codexPluginPolicy{
 				Installation:   codexPolicyInstallation,
@@ -369,9 +230,9 @@ func upsertCodexMarketplace(marketplacePath, marketplaceRoot, cacheDir, name str
 	})
 }
 
-// removeCodexMarketplace removes the plugin entry from the shared
-// marketplace.json. When no entries remain, the file is deleted. Idempotent:
-// a missing file or missing entry is not an error.
+// removeCodexMarketplace removes the plugin entry from the marketplace.json.
+// When no entries remain, the file is deleted. Idempotent: a missing file or
+// missing entry is not an error.
 func removeCodexMarketplace(marketplacePath, name string) error {
 	if _, err := os.Stat(marketplacePath); err != nil {
 		if errors.Is(err, os.ErrNotExist) {

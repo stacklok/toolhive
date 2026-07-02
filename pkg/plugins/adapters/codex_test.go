@@ -6,7 +6,6 @@ package adapters
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"os"
 	"path/filepath"
 	"sort"
@@ -19,46 +18,24 @@ import (
 	"github.com/stacklok/toolhive/pkg/plugins"
 )
 
-// seedCodexConfig writes an initial ~/.codex/config.toml containing unrelated
-// tables that must survive plugin materialize/dematerialize.
-func seedCodexConfig(t *testing.T, tempHome string) {
-	t.Helper()
-	cfgDir := filepath.Join(tempHome, ".codex")
-	require.NoError(t, os.MkdirAll(cfgDir, 0o700))
-	seed := `[mcp_servers.bar]
-command = "echo"
-
-[other]
-key = "value"
-`
-	require.NoError(t, os.WriteFile(filepath.Join(cfgDir, "config.toml"), []byte(seed), 0o600))
+// codexMarketplaceFile returns the shared marketplace.json path for user scope:
+// ~/.agents/plugins/marketplace.json.
+func codexUserMarketplaceFile(tempHome string) string {
+	return filepath.Join(tempHome, ".agents", "plugins", "marketplace.json")
 }
 
-func readCodexConfig(t *testing.T, tempHome string) string {
-	t.Helper()
-	b, err := os.ReadFile(filepath.Join(tempHome, ".codex", "config.toml"))
-	require.NoError(t, err)
-	return string(b)
+// codexPluginDir returns the plugin source dir for a user-scope plugin:
+// ~/.agents/plugins/toolhive/<name>.
+func codexPluginDir(tempHome, name string) string {
+	return filepath.Join(tempHome, ".agents", "plugins", "toolhive", name)
 }
 
-// codexMarketplaceFile returns the shared marketplace.json path under tempHome.
-func codexMarketplaceFile(tempHome string) string {
-	return filepath.Join(tempHome, ".codex", "plugins", "marketplace.json")
-}
-
-// codexCachePath returns the Codex cache dir for a user-scope plugin:
-// ~/.codex/plugins/cache/toolhive/<name>/local.
-func codexCachePath(tempHome, name string) string {
-	return filepath.Join(tempHome, ".codex", "plugins", "cache", "toolhive", name, "local")
-}
-
-// readCodexMarketplaceFile parses the shared marketplace.json; fails the test
+// readCodexMarketplaceFile parses the marketplace.json at path; fails the test
 // if it is absent.
-func readCodexMarketplaceFile(t *testing.T, tempHome string) codexMarketplace {
+func readCodexMarketplaceFileAt(t *testing.T, path string) codexMarketplace {
 	t.Helper()
-	path := codexMarketplaceFile(tempHome)
 	b, err := os.ReadFile(path)
-	require.NoError(t, err, "marketplace.json should exist")
+	require.NoError(t, err, "marketplace.json should exist at %s", path)
 	var mp codexMarketplace
 	require.NoError(t, json.Unmarshal(b, &mp))
 	return mp
@@ -91,10 +68,9 @@ func TestCodexAdapter_SupportedComponents(t *testing.T) {
 	}, got)
 }
 
-func TestCodexAdapter_MaterializeAddsPluginTableAndPreservesUnrelatedTables(t *testing.T) {
+func TestCodexAdapter_MaterializeExtractsAndRegisters(t *testing.T) {
 	t.Parallel()
 	tempHome := t.TempDir()
-	seedCodexConfig(t, tempHome)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 
@@ -110,39 +86,32 @@ func TestCodexAdapter_MaterializeAddsPluginTableAndPreservesUnrelatedTables(t *t
 	})
 	require.NoError(t, err)
 
-	// Cache dir follows the Codex layout: ~/.codex/plugins/cache/toolhive/foo/local.
-	wantCache := codexCachePath(tempHome, "foo")
-	assert.Equal(t, wantCache, res.InstallPath)
-	_, err = os.Stat(filepath.Join(wantCache, "skills", "useful", "SKILL.md"))
+	// Plugin source is extracted under the marketplace root:
+	// ~/.agents/plugins/toolhive/foo.
+	wantDir := codexPluginDir(tempHome, "foo")
+	assert.Equal(t, wantDir, res.InstallPath)
+	_, err = os.Stat(filepath.Join(wantDir, "skills", "useful", "SKILL.md"))
 	require.NoError(t, err)
+	assert.False(t, res.ProjectScopeDegraded, "user scope must not be degraded")
 
-	// config.toml must now contain [plugins.'foo@toolhive'] with enabled = true
-	// (no invented `path` key), and the unrelated tables must survive.
-	content := readCodexConfig(t, tempHome)
-	assert.Contains(t, content, `[plugins.'foo@toolhive']`)
-	assert.Contains(t, content, "enabled = true")
-	assert.NotContains(t, content, wantCache)
-	assert.Contains(t, content, "[mcp_servers.bar]")
-	assert.Contains(t, content, "echo")
-	assert.Contains(t, content, "[other]")
-	assert.Contains(t, content, "value")
+	// The adapter must NOT touch ~/.codex/config.toml.
+	_, err = os.Stat(filepath.Join(tempHome, ".codex", "config.toml"))
+	assert.True(t, os.IsNotExist(err), "config.toml must not be created")
 
-	// The shared marketplace.json must exist with the toolhive marketplace and a
-	// plugin entry whose local source points (relative to the marketplace root)
-	// at the plugin's cache dir, with a policy and category.
-	mp := readCodexMarketplaceFile(t, tempHome)
+	// The shared marketplace.json must list the plugin with a relative source,
+	// policy, and category.
+	mp := readCodexMarketplaceFileAt(t, codexUserMarketplaceFile(tempHome))
 	p := findCodexPlugin(t, mp, "foo")
 	assert.Equal(t, "local", p.Source.Source)
-	assert.Equal(t, "./cache/toolhive/foo/local", p.Source.Path, "relative source path inside the marketplace root")
+	assert.Equal(t, "./toolhive/foo", p.Source.Path, "relative source path inside the marketplace root")
 	assert.Equal(t, codexPolicyInstallation, p.Policy.Installation)
 	assert.Equal(t, codexPolicyAuthentication, p.Policy.Authentication)
 	assert.NotEmpty(t, p.Category, "category is a required field")
 }
 
-func TestCodexAdapter_DematerializeRemovesPluginTableAndPreservesUnrelatedTables(t *testing.T) {
+func TestCodexAdapter_DematerializeRemovesPluginAndEntry(t *testing.T) {
 	t.Parallel()
 	tempHome := t.TempDir()
-	seedCodexConfig(t, tempHome)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 
@@ -160,24 +129,13 @@ func TestCodexAdapter_DematerializeRemovesPluginTableAndPreservesUnrelatedTables
 
 	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "foo", Scope: plugins.ScopeUser}))
 
-	// [plugins.'foo@toolhive'] must be gone; cache dir must be gone.
-	content := readCodexConfig(t, tempHome)
-	assert.NotContains(t, content, "foo@toolhive")
-	assert.NotContains(t, content, "[plugins]")
+	// Plugin source dir must be gone.
+	_, err = os.Stat(codexPluginDir(tempHome, "foo"))
+	assert.True(t, os.IsNotExist(err), "plugin dir should be gone after dematerialize")
 
-	// Unrelated tables must STILL survive.
-	assert.Contains(t, content, "[mcp_servers.bar]")
-	assert.Contains(t, content, "echo")
-	assert.Contains(t, content, "[other]")
-	assert.Contains(t, content, "value")
-
-	_, err = os.Stat(codexCachePath(tempHome, "foo"))
-	assert.True(t, os.IsNotExist(err), "cache dir should be gone after dematerialize")
-
-	// The last toolhive plugin was removed, so the marketplace.json must be
-	// deleted.
-	_, err = os.Stat(codexMarketplaceFile(tempHome))
-	assert.True(t, os.IsNotExist(err), "marketplace.json should be deleted after removing the last toolhive plugin")
+	// The last plugin was removed, so the marketplace.json must be deleted.
+	_, err = os.Stat(codexUserMarketplaceFile(tempHome))
+	assert.True(t, os.IsNotExist(err), "marketplace.json should be deleted after removing the last plugin")
 }
 
 func TestCodexAdapter_DroppedComponentsAllSix(t *testing.T) {
@@ -214,11 +172,11 @@ func TestCodexAdapter_DroppedComponentsAllSix(t *testing.T) {
 		plugins.ComponentLSP,
 	}, got)
 
-	// Clean up so this test leaves no global state behind.
+	// Clean up so this test leaves no state behind.
 	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "drop-all", Scope: plugins.ScopeUser}))
 }
 
-func TestCodexAdapter_ProjectScopeDegraded(t *testing.T) {
+func TestCodexAdapter_ProjectScopeUsesProjectMarketplace(t *testing.T) {
 	t.Parallel()
 	tempHome := t.TempDir()
 	cm := newTestClientManager(t, tempHome)
@@ -228,7 +186,8 @@ func TestCodexAdapter_ProjectScopeDegraded(t *testing.T) {
 		{Path: "skills/x/SKILL.md", Content: []byte("x"), Mode: 0644},
 	})
 
-	// Project scope degrades because config registration is always user-scoped.
+	// Project scope writes to <projectRoot>/.agents/plugins, a Codex discovery
+	// path, so it does NOT degrade.
 	projectRoot := t.TempDir()
 	res, err := a.Materialize(context.Background(), plugins.MaterializeRequest{
 		Name:        "proj-plugin",
@@ -238,26 +197,19 @@ func TestCodexAdapter_ProjectScopeDegraded(t *testing.T) {
 		Components:  plugins.ComponentInventory{"skills": 1},
 	})
 	require.NoError(t, err)
-	assert.True(t, res.ProjectScopeDegraded, "project scope must be degraded for codex")
-	content := readCodexConfig(t, tempHome)
-	assert.Contains(t, content, `[plugins.'proj-plugin@toolhive']`)
+	assert.False(t, res.ProjectScopeDegraded, "project scope must not be degraded for codex")
 
-	// Clean up so the user-scope config.toml is left empty for the next assertion.
+	wantDir := filepath.Join(projectRoot, ".agents", "plugins", "toolhive", "proj-plugin")
+	assert.Equal(t, wantDir, res.InstallPath)
+
+	// The marketplace must be the project one, not the user one.
+	projMarketplace := filepath.Join(projectRoot, ".agents", "plugins", "marketplace.json")
+	mp := readCodexMarketplaceFileAt(t, projMarketplace)
+	findCodexPlugin(t, mp, "proj-plugin")
+	_, err = os.Stat(codexUserMarketplaceFile(tempHome))
+	assert.True(t, os.IsNotExist(err), "user marketplace.json must not be created for project scope")
+
 	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "proj-plugin", Scope: plugins.ScopeProject, ProjectRoot: projectRoot}))
-
-	// User scope is NOT degraded.
-	res2, err := a.Materialize(context.Background(), plugins.MaterializeRequest{
-		Name:       "user-plugin",
-		LayerData:  layer,
-		Scope:      plugins.ScopeUser,
-		Components: plugins.ComponentInventory{"skills": 1},
-	})
-	require.NoError(t, err)
-	assert.False(t, res2.ProjectScopeDegraded, "user scope must not be degraded for codex")
-	content = readCodexConfig(t, tempHome)
-	assert.Contains(t, content, `[plugins.'user-plugin@toolhive']`)
-
-	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "user-plugin", Scope: plugins.ScopeUser}))
 }
 
 func TestCodexAdapter_DematerializeIdempotent(t *testing.T) {
@@ -267,13 +219,11 @@ func TestCodexAdapter_DematerializeIdempotent(t *testing.T) {
 	a := NewCodexAdapter(cm)
 
 	// Dematerializing something never installed is not an error, and does not
-	// create a config file or a marketplace.json.
+	// create a marketplace.json.
 	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "ghost", Scope: plugins.ScopeUser}))
 	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "ghost", Scope: plugins.ScopeUser}))
 
-	_, err := os.Stat(filepath.Join(tempHome, ".codex", "config.toml"))
-	assert.True(t, os.IsNotExist(err), "no config file should be created by dematerialize")
-	_, err = os.Stat(codexMarketplaceFile(tempHome))
+	_, err := os.Stat(codexUserMarketplaceFile(tempHome))
 	assert.True(t, os.IsNotExist(err), "no marketplace.json should be created by dematerialize")
 }
 
@@ -281,61 +231,16 @@ func TestCodexAdapter_ScopeSupport(t *testing.T) {
 	t.Parallel()
 	a := &CodexAdapter{}
 	ss := a.ScopeSupport()
-	assert.True(t, ss.DegradesOnProjectScope)
-	assert.NotEmpty(t, ss.Reason)
+	assert.False(t, ss.DegradesOnProjectScope)
+	assert.Empty(t, ss.Reason)
 }
 
-// TestCodexAdapter_NonTablePluginsKeyRejectsInstall seeds config.toml with a
-// non-table `plugins` key and asserts Materialize rejects it (wrapping
-// errPluginsKeyNotTable) without mangling the original config.
-func TestCodexAdapter_NonTablePluginsKeyRejectsInstall(t *testing.T) {
+// TestCodexAdapter_MarketplaceSurvivesWhenOtherPluginRemains installs two
+// plugins, removes one, and asserts the marketplace.json survives; removing the
+// second deletes it.
+func TestCodexAdapter_MarketplaceSurvivesWhenOtherPluginRemains(t *testing.T) {
 	t.Parallel()
 	tempHome := t.TempDir()
-	seedCodexConfig(t, tempHome)
-	// Overwrite config.toml with a `plugins` scalar that is NOT a table.
-	cfgDir := filepath.Join(tempHome, ".codex")
-	require.NoError(t, os.WriteFile(
-		filepath.Join(cfgDir, "config.toml"),
-		[]byte(`plugins = "not-a-table"`+"\n"),
-		0o600,
-	))
-	original, err := os.ReadFile(filepath.Join(cfgDir, "config.toml"))
-	require.NoError(t, err)
-
-	cm := newTestClientManager(t, tempHome)
-	a := NewCodexAdapter(cm)
-
-	layer := makePluginLayer(t, []ociskills.FileEntry{
-		{Path: "skills/x/SKILL.md", Content: []byte("x"), Mode: 0644},
-	})
-
-	_, err = a.Materialize(context.Background(), plugins.MaterializeRequest{
-		Name:       "foo",
-		LayerData:  layer,
-		Scope:      plugins.ScopeUser,
-		Components: plugins.ComponentInventory{"skills": 1},
-	})
-	require.Error(t, err)
-	assert.True(t, errors.Is(err, errPluginsKeyNotTable), "error should wrap errPluginsKeyNotTable, got: %v", err)
-
-	// Original config must be untouched (reject before write).
-	after, err := os.ReadFile(filepath.Join(cfgDir, "config.toml"))
-	require.NoError(t, err)
-	assert.Equal(t, string(original), string(after))
-
-	// No marketplace.json should have been created (marketplace write happens
-	// after a successful config enable).
-	_, err = os.Stat(codexMarketplaceFile(tempHome))
-	assert.True(t, os.IsNotExist(err), "no marketplace.json should be created on rejected install")
-}
-
-// TestCodexAdapter_MarketplaceSurvivesWhenOtherToolhivePluginRemains installs
-// two plugins, removes one, and asserts the marketplace.json survives; removing
-// the second deletes it.
-func TestCodexAdapter_MarketplaceSurvivesWhenOtherToolhivePluginRemains(t *testing.T) {
-	t.Parallel()
-	tempHome := t.TempDir()
-	seedCodexConfig(t, tempHome)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 
@@ -346,27 +251,26 @@ func TestCodexAdapter_MarketplaceSurvivesWhenOtherToolhivePluginRemains(t *testi
 	require.NoError(t, materializeCodex(a, "alpha", layer))
 	require.NoError(t, materializeCodex(a, "beta", layer))
 
-	// Remove alpha: marketplace.json survives because beta is still enabled.
+	// Remove alpha: marketplace.json survives because beta remains.
 	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "alpha", Scope: plugins.ScopeUser}))
-	_, err := os.Stat(codexMarketplaceFile(tempHome))
-	require.NoError(t, err, "marketplace.json should survive while beta remains")
-	content := readCodexConfig(t, tempHome)
-	assert.NotContains(t, content, "alpha@toolhive")
-	assert.Contains(t, content, `[plugins.'beta@toolhive']`)
+	mp := readCodexMarketplaceFileAt(t, codexUserMarketplaceFile(tempHome))
+	findCodexPlugin(t, mp, "beta")
+	for _, p := range mp.Plugins {
+		assert.NotEqual(t, "alpha", p.Name, "alpha removed from marketplace")
+	}
 
-	// Remove beta: marketplace.json is deleted (no toolhive plugins left).
+	// Remove beta: marketplace.json is deleted (no plugins left).
 	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "beta", Scope: plugins.ScopeUser}))
-	_, err = os.Stat(codexMarketplaceFile(tempHome))
-	assert.True(t, os.IsNotExist(err), "marketplace.json should be deleted when no toolhive plugins remain")
+	_, err := os.Stat(codexUserMarketplaceFile(tempHome))
+	assert.True(t, os.IsNotExist(err), "marketplace.json should be deleted when no plugins remain")
 }
 
 // TestCodexAdapter_NonLifoUninstallKeepsMarketplaceValid installs alpha then
-// beta, dematerializes beta (non-LIFO), and asserts alpha remains enabled, the
-// marketplace.json still exists, and alpha's cache dir is intact.
+// beta, dematerializes beta (non-LIFO), and asserts alpha remains registered
+// with its relative source and alpha's dir is intact.
 func TestCodexAdapter_NonLifoUninstallKeepsMarketplaceValid(t *testing.T) {
 	t.Parallel()
 	tempHome := t.TempDir()
-	seedCodexConfig(t, tempHome)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 
@@ -377,29 +281,22 @@ func TestCodexAdapter_NonLifoUninstallKeepsMarketplaceValid(t *testing.T) {
 	require.NoError(t, materializeCodex(a, "alpha", layer))
 	require.NoError(t, materializeCodex(a, "beta", layer))
 
-	alphaDir := codexCachePath(tempHome, "alpha")
-	betaDir := codexCachePath(tempHome, "beta")
+	alphaDir := codexPluginDir(tempHome, "alpha")
+	betaDir := codexPluginDir(tempHome, "beta")
 	require.DirExists(t, alphaDir)
 	require.DirExists(t, betaDir)
 
 	// Non-LIFO: beta was installed second but removed first.
 	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "beta", Scope: plugins.ScopeUser}))
 
-	// alpha@toolhive must still be enabled.
-	content := readCodexConfig(t, tempHome)
-	assert.Contains(t, content, `[plugins.'alpha@toolhive']`)
-	assert.NotContains(t, content, "beta@toolhive")
-
-	// marketplace.json still exists and lists alpha (with its relative source
-	// path) but no longer lists beta.
-	mp := readCodexMarketplaceFile(t, tempHome)
+	mp := readCodexMarketplaceFileAt(t, codexUserMarketplaceFile(tempHome))
 	alpha := findCodexPlugin(t, mp, "alpha")
-	assert.Equal(t, "./cache/toolhive/alpha/local", alpha.Source.Path)
+	assert.Equal(t, "./toolhive/alpha", alpha.Source.Path)
 	for _, p := range mp.Plugins {
 		assert.NotEqual(t, "beta", p.Name, "beta removed from marketplace")
 	}
 
-	// alpha's cache dir survives; beta's is gone.
+	// alpha's dir survives; beta's is gone.
 	assert.DirExists(t, alphaDir, "alpha directory still present")
 	assert.NoDirExists(t, betaDir, "beta directory removed")
 }

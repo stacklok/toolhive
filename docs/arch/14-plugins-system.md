@@ -11,8 +11,9 @@ The plugins system mirrors `pkg/skills` structurally — the scoping model
 (user vs. project), install-status lifecycle, storage shape, and OCI artifact
 layout are identical — but diverges at the materialization seam: a skill
 installs into a single directory, while a plugin must be materialized into
-each target client's directory layout (Claude Code's filesystem, Codex's
-cache + `config.toml`), and different clients load different component subsets.
+each target client's directory layout (Claude Code's plugins dir + settings.json
+marketplace, Codex's `.agents/plugins` marketplace), and different clients load
+different component subsets.
 
 ## Architecture
 
@@ -31,11 +32,11 @@ cache + `config.toml`), and different clients load different component subsets.
 ┌─────────────┐   ┌──────────────┐
 │ ClaudeCode  │   │    Codex     │
 │ Adapter     │   │   Adapter    │
-│ FS + JSON   │   │ FS + TOML    │
-│ ~/.claude/  │   │ ~/.codex/    │
-│ plugins/    │   │ plugins/cache│
-│ +settings   │   │ + config.toml│
-│ .json       │   │              │
+│ FS + JSON   │   │ FS + JSON    │
+│ ~/.claude/  │   │ ~/.agents/   │
+│ plugins/    │   │ plugins/     │
+│ +settings   │   │ marketplace  │
+│ .json       │   │ .json        │
 └─────────────┘   └──────────────┘
 ```
 
@@ -73,7 +74,7 @@ per client:
 | Client | Layout | Config mutation | Components loaded | Scope degradation |
 |---|---|---|---|---|
 | Claude Code | `~/.claude/plugins/<name>/` | `~/.claude/settings.json`: `enabledPlugins["<name>@toolhive"]` + `extraKnownMarketplaces.toolhive` (`directory` source pointing at the plugins root); shared `~/.claude/plugins/.claude-plugin/marketplace.json` (top-level `name`/`owner`/`plugins[]`, each `source: "./<name>"`) | commands, agents, skills, hooks | none |
-| Codex | `~/.codex/plugins/cache/toolhive/<name>/local/` | `~/.codex/config.toml` `[plugins."<name>@toolhive"]` (enabled=true) + shared `~/.codex/plugins/marketplace.json` (top-level `name` + `plugins[]`, each with a `local` `source.path` relative to the marketplace root, plus `policy`/`category`) | skills, mcpServers, hooks | project → user (config is user-scoped) |
+| Codex | `~/.agents/plugins/toolhive/<name>/` (user) or `<root>/.agents/plugins/toolhive/<name>/` (project) | shared `.agents/plugins/marketplace.json` (top-level `name` + `plugins[]`, each with a `local` `source.path` = `./toolhive/<name>` relative to the marketplace root, plus `policy`/`category`). No `config.toml` mutation — see "Codex load step" below. | skills, mcpServers, hooks | none |
 
 The `MaterializationAdapter` interface (`pkg/plugins/adapter.go`) owns this:
 each adapter extracts the plugin tree and (optionally) mutates client config,
@@ -170,25 +171,49 @@ prefix-containment on every written file.
 before `filepath.Join` — neither `clientType` nor `pluginName` can escape the
 home/project dir.
 
-### TOML Mutation (Codex)
+### Marketplace registration (Codex)
 
-The Codex adapter follows Codex's marketplace model. Codex loads a local plugin
-from its cache at `~/.codex/plugins/cache/<marketplace>/<plugin>/<version>`
-(`<version>` is `local` for local sources), so the adapter extracts each plugin
-directly into `~/.codex/plugins/cache/toolhive/<name>/local/`. It enables the
-plugin in `~/.codex/config.toml` under a `[plugins."<name>@toolhive"]` table
-(`enabled = true`) — there is no invented `path` key. It also writes/maintains a
-shared `~/.codex/plugins/marketplace.json` declaring the `toolhive` marketplace
-with a top-level `name` and a `plugins` array. Each entry has a `local`
-`source.path` that is **relative to the marketplace root** (`~/.codex/plugins`),
-e.g. `./cache/toolhive/<name>/local`, plus the required `policy` and `category`
-fields. All config mutations use map-key-based operations (no string
-interpolation) under `fileutils.WithFileLock`, so a malicious plugin name cannot
-inject TOML/JSON keys. A `plugins` key that exists but is not a table is rejected
-(wrapping `errPluginsKeyNotTable`) rather than silently clobbered.
-`Dematerialize` reverts only its own `[plugins."*@toolhive"]` additions;
-unrelated tables (`[mcp_servers.*]`, etc.) survive, and the shared
-marketplace.json is removed only when no plugins remain in its `plugins` array.
+The Codex adapter follows Codex's marketplace model. Codex discovers
+marketplaces at a fixed set of paths, including the personal
+`~/.agents/plugins/marketplace.json` and the per-repo
+`$REPO_ROOT/.agents/plugins/marketplace.json`. The adapter extracts each
+plugin's source under that marketplace root, namespaced by the marketplace name
+(`<root>/toolhive/<name>`), and maintains the `marketplace.json` so Codex can
+discover it. The manifest has a top-level `name` and a `plugins` array; each
+entry has a `local` `source.path` that is **relative to the marketplace root**
+and starts with `./` (`./toolhive/<name>`), plus the required `policy` and
+`category` fields. Writes use `fileutils.WithFileLock` + `AtomicWriteFile`, and
+the plugin name is validated (no traversal) by `GetPluginPath` before use.
+`Dematerialize` removes the plugin's source directory and its `plugins` array
+entry, deleting the manifest when no plugins remain.
+
+#### Codex load step (manual, by design)
+
+Unlike Claude Code, ToolHive does **not** fully automate Codex plugin loading,
+and this is deliberate:
+
+- **No `config.toml` mutation.** Codex's `[plugins."<name>@<marketplace>"]`
+  `enabled` key is only an on/off toggle for an *already-installed* plugin;
+  setting `enabled = true` for a plugin that was never installed does not load
+  it, and writing to the user's shared `config.toml` has blast radius for no
+  benefit. The adapter leaves `config.toml` untouched.
+- **No shelling out.** Loading a Codex plugin requires an explicit install
+  (`codex plugin install <name>@toolhive`), which is a CLI action. ToolHive
+  never invokes client binaries to mutate their state (every other client
+  integration is file-based config editing), so the adapter does not shell out
+  to `codex`.
+
+Instead, ToolHive lays down the plugin source and a discoverable
+`marketplace.json`, and the user completes loading with a one-time:
+
+```bash
+# The personal marketplace at ~/.agents/plugins is auto-discovered; if needed:
+codex plugin marketplace add ~/.agents/plugins
+codex plugin install <name>@toolhive
+```
+
+Automating this (e.g. a dedicated integration that drives the Codex install flow
+without shelling out) is tracked as a follow-up.
 
 ### settings.json Mutation (Claude Code)
 

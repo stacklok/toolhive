@@ -988,13 +988,18 @@ var supportedClientIntegrations = []clientAppConfig{
 			types.TransportTypeStreamableHTTP: defaultURLFieldName,
 		},
 		// TOML configuration: uses nested tables format [mcp_servers.servername]
-		TOMLStorageType:    TOMLStorageTypeMap,
-		SupportsSkills:     true,
-		SkillsGlobalPath:   []string{".agents", skillsDirName},
-		SkillsProjectPath:  []string{".agents", skillsDirName},
-		SupportsPlugins:    true,
-		PluginsGlobalPath:  []string{".codex", "plugins", "cache"},
-		PluginsProjectPath: []string{".codex", "plugins", "cache"},
+		TOMLStorageType:   TOMLStorageTypeMap,
+		SupportsSkills:    true,
+		SkillsGlobalPath:  []string{".agents", skillsDirName},
+		SkillsProjectPath: []string{".agents", skillsDirName},
+		SupportsPlugins:   true,
+		// Codex discovers marketplaces at ~/.agents/plugins/marketplace.json
+		// (personal) and $REPO_ROOT/.agents/plugins/marketplace.json (project).
+		// ToolHive lays each plugin's source under that marketplace root,
+		// namespaced by the "toolhive" marketplace name, so the manifest can
+		// reference it with a relative "./toolhive/<name>" source.
+		PluginsGlobalPath:  []string{".agents", "plugins", "toolhive"},
+		PluginsProjectPath: []string{".agents", "plugins", "toolhive"},
 	},
 	{
 		ClientType:           KimiCli,

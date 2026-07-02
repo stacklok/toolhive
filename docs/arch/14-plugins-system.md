@@ -72,8 +72,8 @@ per client:
 
 | Client | Layout | Config mutation | Components loaded | Scope degradation |
 |---|---|---|---|---|
-| Claude Code | `~/.claude/plugins/<name>/` | `~/.claude/settings.json`: `enabledPlugins["<name>@toolhive"]` + `extraKnownMarketplaces.toolhive` (local source pointing at the plugins parent dir); per-plugin `marketplace.json` with `source: "./"` | commands, agents, skills, hooks | none |
-| Codex | `~/.codex/plugins/cache/<name>/` | `~/.codex/config.toml` `[plugins."<name>@toolhive"]` (enabled=true) + shared `~/.agents/plugins/marketplace.json` declaring the `toolhive` marketplace with a local source pointing at the plugins cache parent dir | skills, mcpServers, hooks | project → user (config is user-scoped) |
+| Claude Code | `~/.claude/plugins/<name>/` | `~/.claude/settings.json`: `enabledPlugins["<name>@toolhive"]` + `extraKnownMarketplaces.toolhive` (`directory` source pointing at the plugins root); shared `~/.claude/plugins/.claude-plugin/marketplace.json` (top-level `name`/`owner`/`plugins[]`, each `source: "./<name>"`) | commands, agents, skills, hooks | none |
+| Codex | `~/.codex/plugins/cache/toolhive/<name>/local/` | `~/.codex/config.toml` `[plugins."<name>@toolhive"]` (enabled=true) + shared `~/.codex/plugins/marketplace.json` (top-level `name` + `plugins[]`, each with a `local` `source.path` relative to the marketplace root, plus `policy`/`category`) | skills, mcpServers, hooks | project → user (config is user-scoped) |
 
 The `MaterializationAdapter` interface (`pkg/plugins/adapter.go`) owns this:
 each adapter extracts the plugin tree and (optionally) mutates client config,
@@ -172,38 +172,39 @@ home/project dir.
 
 ### TOML Mutation (Codex)
 
-The Codex adapter follows Codex's marketplace model. It enables a plugin in
-`~/.codex/config.toml` under a `[plugins."<name>@toolhive"]` table
+The Codex adapter follows Codex's marketplace model. Codex loads a local plugin
+from its cache at `~/.codex/plugins/cache/<marketplace>/<plugin>/<version>`
+(`<version>` is `local` for local sources), so the adapter extracts each plugin
+directly into `~/.codex/plugins/cache/toolhive/<name>/local/`. It enables the
+plugin in `~/.codex/config.toml` under a `[plugins."<name>@toolhive"]` table
 (`enabled = true`) — there is no invented `path` key. It also writes/maintains a
-shared `~/.agents/plugins/marketplace.json` (JSON) declaring the `toolhive`
-marketplace with `source.source: "local"` and `source.path` set to the
-**plugins cache parent directory** (`~/.codex/plugins/cache/`), not the
-per-plugin cache dir. Because the `toolhive` marketplace key is shared across
-every ToolHive-installed plugin, pointing the source at a per-plugin directory
-would let a later install or a non-LIFO uninstall silently break an earlier
-plugin by invalidating the path; the stable parent dir avoids this. All
-mutations use map-key-based operations (no string interpolation) under
-`fileutils.WithFileLock`, so a malicious plugin name cannot inject TOML/JSON
-keys. A `plugins` key that exists but is not a table is rejected (wrapping
-`errPluginsKeyNotTable`) rather than silently clobbered. `Dematerialize`
-reverts only its own `[plugins."*@toolhive"]` additions; unrelated tables
-(`[mcp_servers.*]`, etc.) survive, and the shared marketplace.json is removed
-only when no `@toolhive` plugins remain enabled.
+shared `~/.codex/plugins/marketplace.json` declaring the `toolhive` marketplace
+with a top-level `name` and a `plugins` array. Each entry has a `local`
+`source.path` that is **relative to the marketplace root** (`~/.codex/plugins`),
+e.g. `./cache/toolhive/<name>/local`, plus the required `policy` and `category`
+fields. All config mutations use map-key-based operations (no string
+interpolation) under `fileutils.WithFileLock`, so a malicious plugin name cannot
+inject TOML/JSON keys. A `plugins` key that exists but is not a table is rejected
+(wrapping `errPluginsKeyNotTable`) rather than silently clobbered.
+`Dematerialize` reverts only its own `[plugins."*@toolhive"]` additions;
+unrelated tables (`[mcp_servers.*]`, etc.) survive, and the shared
+marketplace.json is removed only when no plugins remain in its `plugins` array.
 
 ### settings.json Mutation (Claude Code)
 
 The Claude Code adapter mutates `~/.claude/settings.json` (or the project
 `<root>/.claude/settings.json`) under `fileutils.WithFileLock`. It adds
 `enabledPlugins["<name>@toolhive"]` and an `extraKnownMarketplaces.toolhive`
-entry whose `source.path` points at the **plugins parent directory** (the
-directory containing all installed plugins), not the per-plugin directory.
-Because the `toolhive` marketplace key is shared across every ToolHive-installed
-plugin, pointing it at a per-plugin directory would let a later install or a
-non-LIFO uninstall silently break an earlier plugin by overwriting or
-invalidating the path. Each plugin carries its own `marketplace.json` with
-`source: "./"` (relative to its own directory); the shared entry only tells
-Claude Code the `toolhive` marketplace exists. `Dematerialize` reverts its own
-`enabledPlugins` additions and drops `extraKnownMarketplaces.toolhive` only when
+entry whose `source` is a `directory` source pointing at the **plugins root**
+(the directory containing all installed plugins), not the per-plugin directory.
+A single shared `marketplace.json` lives at `<root>/.claude-plugin/marketplace.json`
+with the required top-level `name`/`owner` fields and a `plugins` array; each
+plugin is one entry with a `source: "./<name>"` path resolved against the
+marketplace root. `upsert`/`remove` keep that array in sync as plugins are
+installed and uninstalled, so a non-LIFO uninstall cannot invalidate the shared
+marketplace path. `Dematerialize` removes the plugin from the `plugins` array
+(deleting the manifest and its `.claude-plugin` dir when empty), reverts its own
+`enabledPlugins` additions, and drops `extraKnownMarketplaces.toolhive` only when
 no remaining `@toolhive` plugins are enabled.
 
 ### Name/Repo Consistency

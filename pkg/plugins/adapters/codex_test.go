@@ -43,19 +43,38 @@ func readCodexConfig(t *testing.T, tempHome string) string {
 
 // codexMarketplaceFile returns the shared marketplace.json path under tempHome.
 func codexMarketplaceFile(tempHome string) string {
-	return filepath.Join(tempHome, ".agents", "plugins", "marketplace.json")
+	return filepath.Join(tempHome, ".codex", "plugins", "marketplace.json")
+}
+
+// codexCachePath returns the Codex cache dir for a user-scope plugin:
+// ~/.codex/plugins/cache/toolhive/<name>/local.
+func codexCachePath(tempHome, name string) string {
+	return filepath.Join(tempHome, ".codex", "plugins", "cache", "toolhive", name, "local")
 }
 
 // readCodexMarketplaceFile parses the shared marketplace.json; fails the test
 // if it is absent.
-func readCodexMarketplaceFile(t *testing.T, tempHome string) map[string]codexMarketplaceEntry {
+func readCodexMarketplaceFile(t *testing.T, tempHome string) codexMarketplace {
 	t.Helper()
 	path := codexMarketplaceFile(tempHome)
 	b, err := os.ReadFile(path)
 	require.NoError(t, err, "marketplace.json should exist")
-	var entries map[string]codexMarketplaceEntry
-	require.NoError(t, json.Unmarshal(b, &entries))
-	return entries
+	var mp codexMarketplace
+	require.NoError(t, json.Unmarshal(b, &mp))
+	return mp
+}
+
+// findCodexPlugin returns the marketplace entry for name, or fails the test.
+func findCodexPlugin(t *testing.T, mp codexMarketplace, name string) codexMarketplacePlugin {
+	t.Helper()
+	assert.Equal(t, "toolhive", mp.Name, "marketplace name")
+	for _, p := range mp.Plugins {
+		if p.Name == name {
+			return p
+		}
+	}
+	t.Fatalf("plugin %q not found in marketplace %+v", name, mp.Plugins)
+	return codexMarketplacePlugin{}
 }
 
 func TestCodexAdapter_SupportedComponents(t *testing.T) {
@@ -91,8 +110,8 @@ func TestCodexAdapter_MaterializeAddsPluginTableAndPreservesUnrelatedTables(t *t
 	})
 	require.NoError(t, err)
 
-	// Cache dir is ~/.codex/plugins/cache/foo.
-	wantCache := filepath.Join(tempHome, ".codex", "plugins", "cache", "foo")
+	// Cache dir follows the Codex layout: ~/.codex/plugins/cache/toolhive/foo/local.
+	wantCache := codexCachePath(tempHome, "foo")
 	assert.Equal(t, wantCache, res.InstallPath)
 	_, err = os.Stat(filepath.Join(wantCache, "skills", "useful", "SKILL.md"))
 	require.NoError(t, err)
@@ -108,13 +127,16 @@ func TestCodexAdapter_MaterializeAddsPluginTableAndPreservesUnrelatedTables(t *t
 	assert.Contains(t, content, "[other]")
 	assert.Contains(t, content, "value")
 
-	// The shared marketplace.json must exist with the toolhive marketplace
-	// pointing (local) at the plugins cache parent directory.
-	entries := readCodexMarketplaceFile(t, tempHome)
-	tv, ok := entries["toolhive"]
-	require.True(t, ok, "toolhive marketplace entry present")
-	assert.Equal(t, "local", tv.Source.Source)
-	assert.Equal(t, filepath.Dir(wantCache), tv.Source.Path, "marketplace path is the cache parent dir")
+	// The shared marketplace.json must exist with the toolhive marketplace and a
+	// plugin entry whose local source points (relative to the marketplace root)
+	// at the plugin's cache dir, with a policy and category.
+	mp := readCodexMarketplaceFile(t, tempHome)
+	p := findCodexPlugin(t, mp, "foo")
+	assert.Equal(t, "local", p.Source.Source)
+	assert.Equal(t, "./cache/toolhive/foo/local", p.Source.Path, "relative source path inside the marketplace root")
+	assert.Equal(t, codexPolicyInstallation, p.Policy.Installation)
+	assert.Equal(t, codexPolicyAuthentication, p.Policy.Authentication)
+	assert.NotEmpty(t, p.Category, "category is a required field")
 }
 
 func TestCodexAdapter_DematerializeRemovesPluginTableAndPreservesUnrelatedTables(t *testing.T) {
@@ -149,7 +171,7 @@ func TestCodexAdapter_DematerializeRemovesPluginTableAndPreservesUnrelatedTables
 	assert.Contains(t, content, "[other]")
 	assert.Contains(t, content, "value")
 
-	_, err = os.Stat(filepath.Join(tempHome, ".codex", "plugins", "cache", "foo"))
+	_, err = os.Stat(codexCachePath(tempHome, "foo"))
 	assert.True(t, os.IsNotExist(err), "cache dir should be gone after dematerialize")
 
 	// The last toolhive plugin was removed, so the marketplace.json must be
@@ -355,8 +377,8 @@ func TestCodexAdapter_NonLifoUninstallKeepsMarketplaceValid(t *testing.T) {
 	require.NoError(t, materializeCodex(a, "alpha", layer))
 	require.NoError(t, materializeCodex(a, "beta", layer))
 
-	alphaDir := filepath.Join(tempHome, ".codex", "plugins", "cache", "alpha")
-	betaDir := filepath.Join(tempHome, ".codex", "plugins", "cache", "beta")
+	alphaDir := codexCachePath(tempHome, "alpha")
+	betaDir := codexCachePath(tempHome, "beta")
 	require.DirExists(t, alphaDir)
 	require.DirExists(t, betaDir)
 
@@ -368,13 +390,14 @@ func TestCodexAdapter_NonLifoUninstallKeepsMarketplaceValid(t *testing.T) {
 	assert.Contains(t, content, `[plugins.'alpha@toolhive']`)
 	assert.NotContains(t, content, "beta@toolhive")
 
-	// marketplace.json still exists; its path points at the stable cache parent.
-	entries := readCodexMarketplaceFile(t, tempHome)
-	tv, ok := entries["toolhive"]
-	require.True(t, ok)
-	assert.Equal(t, filepath.Dir(alphaDir), tv.Source.Path, "marketplace path stays at the cache parent dir")
-	_, err := os.Stat(tv.Source.Path)
-	assert.NoError(t, err, "marketplace path directory still exists on disk")
+	// marketplace.json still exists and lists alpha (with its relative source
+	// path) but no longer lists beta.
+	mp := readCodexMarketplaceFile(t, tempHome)
+	alpha := findCodexPlugin(t, mp, "alpha")
+	assert.Equal(t, "./cache/toolhive/alpha/local", alpha.Source.Path)
+	for _, p := range mp.Plugins {
+		assert.NotEqual(t, "beta", p.Name, "beta removed from marketplace")
+	}
 
 	// alpha's cache dir survives; beta's is gone.
 	assert.DirExists(t, alphaDir, "alpha directory still present")

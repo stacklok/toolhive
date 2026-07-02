@@ -54,9 +54,9 @@ func readSettings(t *testing.T, path string) map[string]any {
 }
 
 // requireMarketplaceEntry asserts settings.json has extraKnownMarketplaces.toolhive
-// with a local source pointing at the plugins parent directory (the directory
-// containing pluginDir). Callers pass the per-plugin directory; the expected
-// marketplace path is derived as filepath.Dir(pluginDir).
+// with a "directory" source pointing at the plugins parent directory (the
+// directory containing pluginDir). Callers pass the per-plugin directory; the
+// expected marketplace path is derived as filepath.Dir(pluginDir).
 func requireMarketplaceEntry(t *testing.T, settings map[string]any, pluginDir string) {
 	t.Helper()
 	marketplaces, ok := settings["extraKnownMarketplaces"].(map[string]any)
@@ -65,8 +65,35 @@ func requireMarketplaceEntry(t *testing.T, settings map[string]any, pluginDir st
 	require.True(t, ok, "toolhive marketplace entry present")
 	src, ok := tv["source"].(map[string]any)
 	require.True(t, ok, "marketplace source object present")
-	assert.Equal(t, "local", src["source"], "marketplace source type")
+	assert.Equal(t, "directory", src["source"], "marketplace source type")
 	assert.Equal(t, filepath.Dir(pluginDir), src["path"], "marketplace source path")
+}
+
+// readClaudeMarketplaceManifest parses the shared marketplace.json at the
+// plugins root (<pluginsRoot>/.claude-plugin/marketplace.json).
+func readClaudeMarketplaceManifest(t *testing.T, pluginsRoot string) claudeMarketplace {
+	t.Helper()
+	path := filepath.Join(pluginsRoot, ".claude-plugin", "marketplace.json")
+	b, err := os.ReadFile(path)
+	require.NoError(t, err, "marketplace.json should exist at %s", path)
+	var mp claudeMarketplace
+	require.NoError(t, json.Unmarshal(b, &mp))
+	return mp
+}
+
+// requireMarketplacePlugin asserts the manifest lists a plugin with the given
+// name and a "./<name>" source.
+func requireMarketplacePlugin(t *testing.T, mp claudeMarketplace, name string) {
+	t.Helper()
+	assert.Equal(t, "toolhive", mp.Name, "marketplace name")
+	assert.NotEmpty(t, mp.Owner.Name, "marketplace owner name")
+	for _, p := range mp.Plugins {
+		if p.Name == name {
+			assert.Equal(t, "./"+name, p.Source, "plugin source is a relative ./<name> path")
+			return
+		}
+	}
+	t.Fatalf("plugin %q not found in marketplace manifest %+v", name, mp.Plugins)
 }
 
 func TestClaudeCodeAdapter_SupportedComponents(t *testing.T) {
@@ -113,9 +140,13 @@ func TestClaudeCodeAdapter_MaterializeWritesFiles(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, res.ProjectScopeDegraded)
 
-	// The per-plugin marketplace.json must exist.
+	// The shared marketplace.json at the plugins root must list the plugin with
+	// a "./<name>" source and the required top-level name/owner fields.
+	pluginsRoot := filepath.Dir(wantDir)
 	_, err = os.Stat(filepath.Join(wantDir, ".claude-plugin", "marketplace.json"))
-	require.NoError(t, err, "marketplace.json must exist")
+	assert.True(t, os.IsNotExist(err), "no per-plugin marketplace.json should exist")
+	mp := readClaudeMarketplaceManifest(t, pluginsRoot)
+	requireMarketplacePlugin(t, mp, "my-plugin")
 
 	// settings.json must register the plugin as enabled under toolhive.
 	settings := readSettings(t, userSettingsPath(tempHome))
@@ -223,6 +254,10 @@ func TestClaudeCodeAdapter_DematerializeRemovesDir(t *testing.T) {
 
 	_, err = os.Stat(dir)
 	assert.True(t, os.IsNotExist(err), "dir should be gone after dematerialize")
+
+	// The shared marketplace.json must be gone once the last plugin is removed.
+	_, err = os.Stat(filepath.Join(filepath.Dir(dir), ".claude-plugin", "marketplace.json"))
+	assert.True(t, os.IsNotExist(err), "shared marketplace.json removed when no plugins remain")
 
 	// The enabledPlugins entry for remove-me@toolhive must be gone, and the
 	// marketplace entry must also be gone (no remaining toolhive plugins).
@@ -434,6 +469,14 @@ func TestClaudeCodeAdapter_NonLifoUninstallKeepsMarketplacePathValid(t *testing.
 
 	// Non-LIFO: beta was installed second but removed first.
 	require.NoError(t, a.Dematerialize(context.Background(), plugins.DematerializeRequest{Name: "beta", Scope: plugins.ScopeUser}))
+
+	// The shared manifest must still list alpha (with its ./alpha source) and no
+	// longer list beta.
+	mp := readClaudeMarketplaceManifest(t, pluginsDir)
+	requireMarketplacePlugin(t, mp, "alpha")
+	for _, p := range mp.Plugins {
+		assert.NotEqual(t, "beta", p.Name, "beta removed from manifest")
+	}
 
 	settings := readSettings(t, userSettingsPath(tempHome))
 

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/tailscale/hujson"
@@ -24,10 +25,17 @@ import (
 
 // ClaudeCodeAdapter materializes plugins into Claude Code's
 // ~/.claude/plugins/<name> directory and registers them in Claude Code's
-// settings.json so the plugin is actually loaded. Claude Code requires both a
-// marketplace.json inside the plugin directory (declaring the plugin under the
-// "toolhive" marketplace with a local source) and an enabledPlugins entry plus
-// an extraKnownMarketplaces entry in settings.json.
+// settings.json so the plugin is actually loaded. Claude Code loads a plugin via
+// a marketplace: a single shared marketplace.json at the plugins root
+// (~/.claude/plugins/.claude-plugin/marketplace.json) lists every ToolHive
+// plugin, and settings.json carries an extraKnownMarketplaces entry (a
+// "directory" source pointing at that root) plus an enabledPlugins entry.
+//
+// The marketplace manifest and settings source type follow the Claude Code
+// plugin marketplace schema: the manifest has top-level name/owner/plugins, each
+// plugin's source is a "./<name>" relative path resolved against the marketplace
+// root, and the extraKnownMarketplaces source type is "directory".
+// See https://code.claude.com/docs/en/plugin-marketplaces.
 type ClaudeCodeAdapter struct {
 	cm        *client.ClientManager
 	installer skills.Installer
@@ -50,7 +58,7 @@ var claudeCodeSupported = []plugins.ComponentType{
 }
 
 // marketplaceName is the marketplace key under which ToolHive-installed
-// plugins are declared, both in the per-plugin marketplace.json and in
+// plugins are declared, both in the shared marketplace.json manifest and in
 // settings.json's extraKnownMarketplaces object.
 const marketplaceName = "toolhive"
 
@@ -66,16 +74,19 @@ func (a *ClaudeCodeAdapter) Materialize(_ context.Context, req plugins.Materiali
 		return nil, fmt.Errorf("extracting plugin: %w", err)
 	}
 
-	// Write the per-plugin marketplace.json so Claude Code resolves the plugin
-	// under the "toolhive" marketplace with a local source pointing at the
-	// plugin directory itself.
-	if err := writeMarketplaceFile(dir); err != nil {
+	// The marketplace root is the plugins parent directory; each plugin lives in
+	// a "<name>" subdirectory referenced as a "./<name>" source.
+	marketplaceRoot := filepath.Dir(dir)
+
+	// Upsert the plugin into the shared marketplace.json at the plugins root so
+	// Claude Code resolves it under the "toolhive" marketplace.
+	if err := upsertClaudeMarketplace(marketplaceRoot, req.Name); err != nil {
 		return nil, fmt.Errorf("writing marketplace.json: %w", err)
 	}
 
 	// Patch settings.json to enable the plugin under the toolhive marketplace.
 	settingsPath := a.settingsPath(req.Scope, req.ProjectRoot)
-	if err := enablePluginInSettings(settingsPath, req.Name, dir); err != nil {
+	if err := enablePluginInSettings(settingsPath, req.Name, marketplaceRoot); err != nil {
 		return nil, fmt.Errorf("enabling plugin in settings.json: %w", err)
 	}
 
@@ -97,6 +108,15 @@ func (a *ClaudeCodeAdapter) Dematerialize(_ context.Context, req plugins.Demater
 
 	if err := a.installer.Remove(dir); err != nil {
 		return fmt.Errorf("removing plugin directory: %w", err)
+	}
+
+	// Remove the plugin from the shared marketplace.json (idempotent). Done
+	// before the empty-parent cleanup so that, once the marketplace file and its
+	// .claude-plugin directory are gone, cleanup can reclaim the now-empty
+	// plugins root too.
+	marketplaceRoot := filepath.Dir(dir)
+	if err := removeClaudeMarketplace(marketplaceRoot, req.Name); err != nil {
+		return fmt.Errorf("removing plugin from marketplace.json: %w", err)
 	}
 
 	// Best-effort empty-parent cleanup.
@@ -135,41 +155,166 @@ func (a *ClaudeCodeAdapter) settingsPath(scope plugins.Scope, projectRoot string
 	return filepath.Join(a.cm.HomeDir(), ".claude", "settings.json")
 }
 
-// writeMarketplaceFile writes <cacheDir>/.claude-plugin/marketplace.json
-// declaring the plugin under the "toolhive" marketplace with source "./"
-// (local, relative to the cache directory).
-func writeMarketplaceFile(cacheDir string) error {
-	marketplaceDir := filepath.Join(cacheDir, ".claude-plugin")
-	if err := os.MkdirAll(marketplaceDir, 0o700); err != nil {
+// claudeMarketplace is the Claude Code marketplace manifest schema
+// (.claude-plugin/marketplace.json): a top-level name, owner, and a list of
+// plugin entries. See https://code.claude.com/docs/en/plugin-marketplaces.
+type claudeMarketplace struct {
+	Name    string                    `json:"name"`
+	Owner   claudeMarketplaceOwner    `json:"owner"`
+	Plugins []claudeMarketplacePlugin `json:"plugins"`
+}
+
+// claudeMarketplaceOwner identifies the marketplace maintainer. Claude Code
+// requires the owner object with a non-empty name.
+type claudeMarketplaceOwner struct {
+	Name string `json:"name"`
+}
+
+// claudeMarketplacePlugin is a single plugin entry. Source is a "./<name>"
+// relative path resolved against the marketplace root (the plugins parent dir).
+type claudeMarketplacePlugin struct {
+	Name   string `json:"name"`
+	Source string `json:"source"`
+}
+
+// claudeMarketplaceOwnerName is the owner name recorded in the manifest.
+const claudeMarketplaceOwnerName = "ToolHive"
+
+// claudeMarketplaceFilePath returns the shared marketplace manifest path for a
+// marketplace rooted at marketplaceRoot: <root>/.claude-plugin/marketplace.json.
+func claudeMarketplaceFilePath(marketplaceRoot string) string {
+	return filepath.Join(marketplaceRoot, ".claude-plugin", "marketplace.json")
+}
+
+// upsertClaudeMarketplace adds (or updates) the plugin entry in the shared
+// marketplace.json at <marketplaceRoot>/.claude-plugin/marketplace.json under a
+// file lock. The manifest lists every ToolHive plugin with a "./<name>" source
+// resolved against marketplaceRoot, so a single "directory" marketplace serves
+// all installed plugins regardless of install/uninstall order.
+func upsertClaudeMarketplace(marketplaceRoot, pluginName string) error {
+	marketplaceFile := claudeMarketplaceFilePath(marketplaceRoot)
+	if err := os.MkdirAll(filepath.Dir(marketplaceFile), 0o700); err != nil {
 		return fmt.Errorf("creating marketplace dir: %w", err)
 	}
-	doc := map[string]any{
-		marketplaceName: map[string]any{"source": "./"},
+	return fileutils.WithFileLock(marketplaceFile, func() error {
+		mp, err := readClaudeMarketplace(marketplaceFile)
+		if err != nil {
+			return err
+		}
+		entry := claudeMarketplacePlugin{Name: pluginName, Source: "./" + pluginName}
+		replaced := false
+		for i := range mp.Plugins {
+			if mp.Plugins[i].Name == pluginName {
+				mp.Plugins[i] = entry
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			mp.Plugins = append(mp.Plugins, entry)
+		}
+		sortClaudeMarketplacePlugins(mp.Plugins)
+		return writeClaudeMarketplace(marketplaceFile, mp)
+	})
+}
+
+// removeClaudeMarketplace removes the plugin entry from the shared
+// marketplace.json under a file lock. When no plugins remain, the manifest file
+// and its (now-empty) .claude-plugin directory are removed. Idempotent: a
+// missing file or missing entry is not an error.
+func removeClaudeMarketplace(marketplaceRoot, pluginName string) error {
+	marketplaceFile := claudeMarketplaceFilePath(marketplaceRoot)
+	if _, err := os.Stat(marketplaceFile); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("checking marketplace file: %w", err)
 	}
-	data, err := json.Marshal(doc)
+	return fileutils.WithFileLock(marketplaceFile, func() error {
+		mp, err := readClaudeMarketplace(marketplaceFile)
+		if err != nil {
+			return err
+		}
+		filtered := mp.Plugins[:0]
+		for _, p := range mp.Plugins {
+			if p.Name != pluginName {
+				filtered = append(filtered, p)
+			}
+		}
+		mp.Plugins = filtered
+		if len(mp.Plugins) == 0 {
+			if err := os.Remove(marketplaceFile); err != nil && !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("removing marketplace.json: %w", err)
+			}
+			// Best-effort removal of the now-empty .claude-plugin directory.
+			_ = os.Remove(filepath.Dir(marketplaceFile))
+			return nil
+		}
+		return writeClaudeMarketplace(marketplaceFile, mp)
+	})
+}
+
+// readClaudeMarketplace reads and parses the marketplace manifest, returning a
+// freshly-initialized manifest (with name/owner set) when the file is missing
+// or empty.
+func readClaudeMarketplace(path string) (*claudeMarketplace, error) {
+	mp := &claudeMarketplace{
+		Name:  marketplaceName,
+		Owner: claudeMarketplaceOwner{Name: claudeMarketplaceOwnerName},
+	}
+	data, err := os.ReadFile(path) // #nosec G304 -- path is a known tool config file location
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return mp, nil
+		}
+		return nil, fmt.Errorf("reading marketplace.json: %w", err)
+	}
+	if len(data) == 0 {
+		return mp, nil
+	}
+	if err := json.Unmarshal(data, mp); err != nil {
+		return nil, fmt.Errorf("parsing marketplace.json: %w", err)
+	}
+	// Ensure required identity fields are set even if a hand-edited file omitted
+	// them, so the rewritten manifest stays schema-valid.
+	if mp.Name == "" {
+		mp.Name = marketplaceName
+	}
+	if mp.Owner.Name == "" {
+		mp.Owner.Name = claudeMarketplaceOwnerName
+	}
+	return mp, nil
+}
+
+// writeClaudeMarketplace marshals and atomically writes the marketplace manifest.
+func writeClaudeMarketplace(path string, mp *claudeMarketplace) error {
+	data, err := json.MarshalIndent(mp, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling marketplace.json: %w", err)
 	}
-	return fileutils.AtomicWriteFile(filepath.Join(marketplaceDir, "marketplace.json"), data, 0o600)
+	return fileutils.AtomicWriteFile(path, data, 0o600)
+}
+
+// sortClaudeMarketplacePlugins orders entries by name for a stable manifest.
+func sortClaudeMarketplacePlugins(ps []claudeMarketplacePlugin) {
+	sort.Slice(ps, func(i, j int) bool { return ps[i].Name < ps[j].Name })
 }
 
 // enablePluginInSettings patches settings.json under a file lock to add:
-//   - extraKnownMarketplaces.toolhive = {"source": {"source":"local","path":<pluginsDir>}}
+//   - extraKnownMarketplaces.toolhive = {"source": {"source":"directory","path":<marketplaceRoot>}}
 //   - enabledPlugins["<name>@toolhive"] = true
 //
-// The marketplace path points at the shared plugins parent directory (the
-// directory containing all installed plugins), not the per-plugin cacheDir.
-// The toolhive marketplace key is shared across every ToolHive-installed
-// plugin, so pointing it at a per-plugin directory would let a later install
-// (or a non-LIFO uninstall) silently break an earlier plugin by overwriting or
-// invalidating the path. Each plugin carries its own marketplace.json with
-// source "./" relative to its own directory; this shared entry only tells Claude
-// Code the toolhive marketplace exists.
+// The marketplace source is a "directory" source pointing at the plugins root
+// (the directory containing all installed plugins and the shared
+// .claude-plugin/marketplace.json), matching the Claude Code settings schema.
+// The toolhive marketplace key is shared across every ToolHive-installed plugin,
+// so pointing it at the stable root keeps it valid regardless of
+// install/uninstall order.
 //
 // Unrelated keys are preserved. Comments are dropped on write (hujson
 // standardize→mutate→re-parse→format), matching the pattern used by
 // pkg/client/llm_gateway.go.
-func enablePluginInSettings(settingsPath, pluginName, cacheDir string) error {
+func enablePluginInSettings(settingsPath, pluginName, marketplaceRoot string) error {
 	if err := os.MkdirAll(filepath.Dir(settingsPath), 0o700); err != nil {
 		return fmt.Errorf("creating settings dir: %w", err)
 	}
@@ -183,15 +328,14 @@ func enablePluginInSettings(settingsPath, pluginName, cacheDir string) error {
 			return err
 		}
 
-		// extraKnownMarketplaces.toolhive points at the plugins parent dir so
-		// the shared marketplace key stays valid regardless of install/uninstall
-		// order across multiple plugins.
-		pluginsDir := filepath.Dir(cacheDir)
+		// extraKnownMarketplaces.toolhive is a "directory" source pointing at the
+		// plugins root so the shared marketplace key stays valid regardless of
+		// install/uninstall order across multiple plugins.
 		marketplaces := ensureObject(root, "extraKnownMarketplaces")
 		marketplaces[marketplaceName] = map[string]any{
 			"source": map[string]any{
-				"source": "local",
-				"path":   pluginsDir,
+				"source": "directory",
+				"path":   marketplaceRoot,
 			},
 		}
 

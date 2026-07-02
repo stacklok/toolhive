@@ -1,7 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-package cli
+package app
 
 import (
 	"testing"
@@ -123,10 +123,10 @@ func TestReadHeaderForwardFromEnv(t *testing.T) {
 		},
 		{
 			// DNS-1123 forbids underscores in MCPServerEntry names today, so
-			// real entries with the same NormalizeForEnvVar output cannot
-			// coexist. We pass two manifests that share the same suffix
-			// directly to verify the runtime keeps "last wins" behavior and
-			// surfaces a warning rather than silently dropping the first.
+			// real entries with the same NormalizeForEnvVar output cannot coexist.
+			// We pass two manifests that share the same suffix directly to verify
+			// the runtime keeps "last wins" behavior and surfaces a warning rather
+			// than silently dropping the first.
 			name: "duplicate manifest suffix retains last value",
 			env: []string{
 				`TOOLHIVE_HEADER_FORWARD_DUP={"addPlaintextHeaders":{"X-Trace":"first"}}`,

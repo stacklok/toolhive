@@ -44,7 +44,8 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 | `pkg/vmcp/config` | Stable | Config structs and YAML loader; `Config`, `BackendConfig`, `OptimizerConfig` |
 | `pkg/vmcp/aggregator` | Stable | Backend discovery and capability merge; `Aggregator` interface |
 | `pkg/vmcp/router` | Stable | Request routing and tool name translation; `Router` interface |
-| `pkg/vmcp/server` | Stable | Server constructor and lifecycle; `New`, `Start`, `Stop` |
+| `pkg/vmcp/app` | Experimental | Config-driven assembly API for embedders. `Builder` (`NewBuilder`/`Decorate`/`Finish`) is the primary entry point; `BuildCore`/`BuildServerConfig`/`Option` remain public as lower-level primitives for advanced composition. Signatures may change as embedder patterns stabilise |
+| `pkg/vmcp/server` | Stable | Server constructor and lifecycle; `New`, `Start`, `Stop`. The newly exported `LateBoundElicitationRequester` (and its `Bind`) is Experimental — see its doc comment |
 | `pkg/vmcp/session` | Stable | Session factory and per-session routing table |
 | `pkg/vmcp/auth` | Stable | Incoming/outgoing auth interfaces; `IncomingAuthenticator`, `OutgoingAuthRegistry` |
 | `pkg/vmcp/client` | Stable | Backend HTTP client; used for all backend MCP calls |

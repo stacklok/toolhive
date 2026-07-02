@@ -4,23 +4,16 @@
 package cli
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/mock/gomock"
 	"gopkg.in/yaml.v3"
 
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
-	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/vmcp"
-	aggregatormocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
-	clientmocks "github.com/stacklok/toolhive/pkg/vmcp/client/mocks"
-	"github.com/stacklok/toolhive/pkg/vmcp/config"
-	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // TestLoadAndValidateConfig covers all config-loading paths.
@@ -116,76 +109,6 @@ func TestLoadAuthServerConfig_NestedDir(t *testing.T) {
 	assert.Equal(t, "https://nested.example.com", rc.Issuer)
 }
 
-// TestDiscoverBackends_StaticMode exercises the static-backend path without
-// needing a live Kubernetes API.
-func TestDiscoverBackends_StaticMode(t *testing.T) {
-	t.Parallel()
-
-	// Build a minimal config with one static backend.
-	dir := t.TempDir()
-	path := filepath.Join(dir, "vmcp.yaml")
-	require.NoError(t, os.WriteFile(path, []byte(`
-name: test-vmcp
-groupRef: test-group
-
-incomingAuth:
-  type: anonymous
-
-outgoingAuth:
-  source: inline
-  default:
-    type: unauthenticated
-
-aggregation:
-  conflictResolution: prefix
-  conflictResolutionConfig:
-    prefixFormat: "{workload}_"
-
-backends:
-  - name: backend-one
-    url: http://127.0.0.1:9001/sse
-    transport: sse
-`), 0o600))
-
-	cfg, err := loadAndValidateConfig(path)
-	require.NoError(t, err)
-	require.Len(t, cfg.Backends, 1)
-
-	backends, client, registry, err := discoverBackends(t.Context(), cfg)
-	require.NoError(t, err)
-	assert.NotNil(t, client)
-	assert.NotNil(t, registry)
-	// Static mode: one backend discovered.
-	assert.Len(t, backends, 1)
-}
-
-// TestRunDiscovery_KubernetesGroupNotFound exercises the Kubernetes-specific branch
-// in runDiscovery where ErrGroupNotFound is treated as a non-fatal condition.
-// vMCP should start with zero backends and return nil error so it can begin
-// serving before the MCPGroup CRD is created by the operator.
-func TestRunDiscovery_KubernetesGroupNotFound(t *testing.T) {
-	// Cannot run in parallel: t.Setenv modifies the process environment.
-	t.Setenv("TOOLHIVE_RUNTIME", "kubernetes")
-
-	ctrl := gomock.NewController(t)
-	discoverer := aggregatormocks.NewMockBackendDiscoverer(ctrl)
-	backendClient := vmcpmocks.NewMockBackendClient(ctrl)
-	registry := clientmocks.NewMockOutgoingAuthRegistry(ctrl)
-
-	const groupRef = "test-group"
-	discoverer.EXPECT().
-		Discover(gomock.Any(), groupRef).
-		Return(nil, fmt.Errorf("wrapped: %w", groups.ErrGroupNotFound))
-
-	backends, gotClient, gotRegistry, err := runDiscovery(t.Context(), groupRef, discoverer, backendClient, registry)
-
-	require.NoError(t, err)
-	assert.NotNil(t, backends)
-	assert.Empty(t, backends)
-	assert.Same(t, backendClient, gotClient)
-	assert.Same(t, registry, gotRegistry)
-}
-
 // TestGenerateQuickModeConfig covers the generateQuickModeConfig helper.
 func TestGenerateQuickModeConfig(t *testing.T) {
 	t.Parallel()
@@ -232,7 +155,7 @@ func TestGenerateQuickModeConfig(t *testing.T) {
 			require.NotNil(t, cfg.IncomingAuth)
 			require.Equal(t, "anonymous", cfg.IncomingAuth.Type)
 			// Verify the generated config passes the real validator.
-			require.NoError(t, config.NewValidator().Validate(cfg))
+			require.NoError(t, vmcpconfig.NewValidator().Validate(cfg))
 		})
 	}
 }
@@ -288,44 +211,4 @@ func TestValidateQuickModeHost(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestVMCPNamespace(t *testing.T) {
-	t.Run("defaults to local", func(t *testing.T) {
-		t.Setenv("VMCP_NAMESPACE", "")
-
-		assert.Equal(t, "local", vmcpNamespace())
-	})
-
-	t.Run("uses environment value", func(t *testing.T) {
-		t.Setenv("VMCP_NAMESPACE", "toolhive-system")
-
-		assert.Equal(t, "toolhive-system", vmcpNamespace())
-	})
-}
-
-// TestRunDiscovery_ZeroBackends exercises the branch in runDiscovery where the
-// discoverer succeeds but returns no backends. The function must return a
-// non-error, an empty (non-nil) backend slice, and pass through the client and
-// registry it received.
-func TestRunDiscovery_ZeroBackends(t *testing.T) {
-	t.Parallel()
-
-	ctrl := gomock.NewController(t)
-	discoverer := aggregatormocks.NewMockBackendDiscoverer(ctrl)
-	backendClient := vmcpmocks.NewMockBackendClient(ctrl)
-	registry := clientmocks.NewMockOutgoingAuthRegistry(ctrl)
-
-	const groupRef = "test-group"
-	discoverer.EXPECT().
-		Discover(gomock.Any(), groupRef).
-		Return([]vmcp.Backend{}, nil)
-
-	backends, gotClient, gotRegistry, err := runDiscovery(t.Context(), groupRef, discoverer, backendClient, registry)
-
-	require.NoError(t, err)
-	assert.NotNil(t, backends)
-	assert.Empty(t, backends)
-	assert.Same(t, backendClient, gotClient)
-	assert.Same(t, registry, gotRegistry)
 }

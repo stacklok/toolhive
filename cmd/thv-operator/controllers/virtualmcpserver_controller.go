@@ -1649,6 +1649,10 @@ func (r *VirtualMCPServerReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	if r.podVolumesNeedsUpdate(ctx, deployment, vmcp, telemetryCfg, typedWorkloads) {
+		return true
+	}
+
 	// Check if spec.replicas has changed. Only compare when spec.replicas is non-nil;
 	// nil means hands-off mode (HPA or external controller manages replicas) and the live count is authoritative.
 	if vmcp.Spec.Replicas != nil {
@@ -1828,6 +1832,42 @@ func (r *VirtualMCPServerReconciler) imagePullSecretsNeedsUpdate(
 		return present
 	}
 	return deployment.Annotations[imagePullRefsHashAnnotation] != expectedHash
+}
+
+// podVolumesNeedsUpdate detects drift on the desired pod volumes and volumeMounts
+// by comparing a hash of the desired set against podVolumesHashAnnotation. We
+// cannot compare deployment.Spec.Template.Spec.Volumes directly because the
+// live list includes K8s-defaulted fields (defaultMode, etc.) that would cause
+// spurious drift or mask real changes when only the backing secret/configmap
+// ref changes (see #5619).
+func (r *VirtualMCPServerReconciler) podVolumesNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
+	typedWorkloads []workloads.TypedWorkload,
+) bool {
+	if deployment == nil || vmcp == nil {
+		return true
+	}
+
+	volumeMounts, volumes, err := r.buildPodVolumesForVmcp(ctx, vmcp, telemetryCfg, typedWorkloads)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to build pod volumes for drift check, assuming update needed")
+		return true
+	}
+
+	expectedHash, err := podVolumesHash(volumeMounts, volumes)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to hash pod volumes, assuming update needed")
+		return true
+	}
+
+	_, present := deployment.Annotations[podVolumesHashAnnotation]
+	if expectedHash == "" {
+		return present
+	}
+	return deployment.Annotations[podVolumesHashAnnotation] != expectedHash
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated

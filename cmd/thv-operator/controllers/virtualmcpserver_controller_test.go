@@ -1905,6 +1905,9 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
 		labelsForVirtualMCPServer(vmcp.Name), vmcp, vmcpConfigChecksum,
 	)
+	_, expectedDeploymentAnnotations := reconciler.buildDeploymentMetadataForVmcp(
+		context.Background(), labelsForVirtualMCPServer(vmcp.Name), vmcp, nil, []workloads.TypedWorkload{},
+	)
 
 	tests := []struct {
 		name           string
@@ -2014,7 +2017,7 @@ func TestVirtualMCPServerDeploymentNeedsUpdate(t *testing.T) {
 			deployment: &appsv1.Deployment{
 				ObjectMeta: metav1.ObjectMeta{
 					Labels:      labelsForVirtualMCPServer(vmcp.Name),
-					Annotations: make(map[string]string),
+					Annotations: expectedDeploymentAnnotations,
 				},
 				Spec: appsv1.DeploymentSpec{
 					Template: corev1.PodTemplateSpec{

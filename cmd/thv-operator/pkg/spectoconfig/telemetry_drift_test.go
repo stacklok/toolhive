@@ -44,6 +44,7 @@ var telemetryFieldMappings = []testutil.FieldMapping{
 	{CRD: "openTelemetry.tracing.samplingRate", Runtime: "samplingRate"},
 	{CRD: "openTelemetry.metrics.enabled", Runtime: "metricsEnabled"},
 	{CRD: "openTelemetry.useLegacyAttributes", Runtime: "useLegacyAttributes"},
+	{CRD: "openTelemetry.enableUserIDAttribute", Runtime: "enableUserIDAttribute"},
 	{CRD: "prometheus.enabled", Runtime: "enablePrometheusMetricsPath"},
 }
 

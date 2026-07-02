@@ -102,6 +102,20 @@ type Config struct {
 	// instead of relying solely on the system CA pool.
 	// +optional
 	CACertPath string `json:"caCertPath,omitempty" yaml:"caCertPath,omitempty"`
+
+	// EnableUserIDAttribute controls whether the authenticated subject is emitted
+	// as the OTEL "user.id" span attribute on the inbound MCP server span.
+	// When false (the default), no user attribution lands on spans and behavior is
+	// unchanged. When true, "user.id" is set from the authenticated identity's
+	// Subject only when an identity is present on the request context, so
+	// anonymous requests are unaffected.
+	//
+	// Defaults to false because the subject can be personally- or
+	// tenant-identifying. The attribute is high-cardinality and is intentionally
+	// never added to any metric instrument.
+	// +kubebuilder:default=false
+	// +optional
+	EnableUserIDAttribute bool `json:"enableUserIDAttribute,omitempty" yaml:"enableUserIDAttribute,omitempty"`
 }
 
 // Ensure Config implements fmt.Stringer and fmt.GoStringer
@@ -183,6 +197,7 @@ func MaybeMakeConfig(
 	otelInsecure bool,
 	otelEnvironmentVariables []string,
 	otelUseLegacyAttributes bool,
+	otelEnableUserIDAttribute bool,
 ) *Config {
 	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
 		return nil
@@ -220,6 +235,7 @@ func MaybeMakeConfig(
 		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
 		EnvironmentVariables:        processedEnvVars,
 		UseLegacyAttributes:         otelUseLegacyAttributes,
+		EnableUserIDAttribute:       otelEnableUserIDAttribute,
 	}
 }
 

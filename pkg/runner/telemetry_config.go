@@ -93,6 +93,7 @@ func BuildTelemetryConfigFromAppConfig(
 		EnvironmentVariables:        processedEnvVars,
 		CustomAttributes:            customAttrs,
 		UseLegacyAttributes:         useLegacyAttributes,
+		EnableUserIDAttribute:       otel.EnableUserIDAttribute,
 	}
 	cfg.SetSamplingRateFromFloat(otel.SamplingRate)
 	return cfg

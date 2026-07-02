@@ -2710,6 +2710,20 @@ spec:
                           The metrics are served on the main transport port at /metrics.
                           This is separate from OTLP metrics which are sent to the Endpoint.
                         type: boolean
+                      enableUserIDAttribute:
+                        default: false
+                        description: |-
+                          EnableUserIDAttribute controls whether the authenticated subject is emitted
+                          as the OTEL "user.id" span attribute on the inbound MCP server span.
+                          When false (the default), no user attribution lands on spans and behavior is
+                          unchanged. When true, "user.id" is set from the authenticated identity's
+                          Subject only when an identity is present on the request context, so
+                          anonymous requests are unaffected.
+
+                          Defaults to false because the subject can be personally- or
+                          tenant-identifying. The attribute is high-cardinality and is intentionally
+                          never added to any metric instrument.
+                        type: boolean
                       endpoint:
                         description: Endpoint is the OTLP endpoint URL
                         type: string
@@ -6115,6 +6129,20 @@ spec:
                           EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.
                           The metrics are served on the main transport port at /metrics.
                           This is separate from OTLP metrics which are sent to the Endpoint.
+                        type: boolean
+                      enableUserIDAttribute:
+                        default: false
+                        description: |-
+                          EnableUserIDAttribute controls whether the authenticated subject is emitted
+                          as the OTEL "user.id" span attribute on the inbound MCP server span.
+                          When false (the default), no user attribution lands on spans and behavior is
+                          unchanged. When true, "user.id" is set from the authenticated identity's
+                          Subject only when an identity is present on the request context, so
+                          anonymous requests are unaffected.
+
+                          Defaults to false because the subject can be personally- or
+                          tenant-identifying. The attribute is high-cardinality and is intentionally
+                          never added to any metric instrument.
                         type: boolean
                       endpoint:
                         description: Endpoint is the OTLP endpoint URL

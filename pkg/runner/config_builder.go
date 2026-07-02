@@ -555,6 +555,7 @@ func WithTelemetryConfigFromFlags(
 	otelInsecure bool,
 	otelEnvironmentVariables []string,
 	otelUseLegacyAttributes bool,
+	otelEnableUserIDAttribute bool,
 ) RunConfigBuilderOption {
 	config := telemetry.MaybeMakeConfig(
 		otelEndpoint,
@@ -567,6 +568,7 @@ func WithTelemetryConfigFromFlags(
 		otelInsecure,
 		otelEnvironmentVariables,
 		otelUseLegacyAttributes,
+		otelEnableUserIDAttribute,
 	)
 	return WithTelemetryConfig(config)
 }

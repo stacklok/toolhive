@@ -367,6 +367,7 @@ func TestBuildRunnerConfig_TelemetryProcessing(t *testing.T) {
 				tt.runFlags.OtelInsecure,
 				tt.runFlags.OtelEnablePrometheusMetricsPath,
 				tt.runFlags.OtelUseLegacyAttributes,
+				tt.runFlags.OtelEnableUserIDAttribute,
 				tt.runFlags.OtelTracingEnabled,
 				tt.runFlags.OtelMetricsEnabled,
 			)
@@ -513,6 +514,7 @@ func TestBuildRunnerConfig_TelemetryProcessing_Integration(t *testing.T) {
 		runFlags.OtelInsecure,
 		runFlags.OtelEnablePrometheusMetricsPath,
 		runFlags.OtelUseLegacyAttributes,
+		runFlags.OtelEnableUserIDAttribute,
 		runFlags.OtelTracingEnabled,
 		runFlags.OtelMetricsEnabled,
 	)
@@ -584,7 +586,7 @@ func TestCreateTelemetryConfig_DisabledSignals(t *testing.T) {
 			result := createTelemetryConfig(
 				tt.endpoint, tt.enablePrometheusMetricsPath,
 				"test-service", tt.tracingEnabled, tt.metricsEnabled,
-				1.0, nil, false, nil, "", true,
+				1.0, nil, false, nil, "", true, false,
 			)
 
 			if tt.expectNil {
@@ -682,7 +684,7 @@ func TestSetupTelemetryConfiguration_LoadOrCreateConfigPath(t *testing.T) {
 
 	result := getTelemetryFromFlags(
 		cmd, appConfig,
-		"", 0.0, nil, false, false, false, true, true,
+		"", 0.0, nil, false, false, false, false, true, true,
 	)
 
 	assert.Equal(t, "https://provider-endpoint.example.com", result.OtelEndpoint,

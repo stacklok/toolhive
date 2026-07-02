@@ -23,6 +23,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -358,6 +359,32 @@ func (m *HTTPMiddleware) addMCPAttributes(ctx context.Context, span trace.Span, 
 	if parsedMCP.IsBatch {
 		span.SetAttributes(attribute.Bool("mcp.is_batch", true))
 	}
+
+	// Add authenticated-user attribution (opt-in, default-off)
+	m.addUserIDAttribute(ctx, span)
+}
+
+// addUserIDAttribute emits the OTEL standard "user.id" span attribute, sourced
+// from the authenticated subject on the request context, when the feature is
+// explicitly enabled in the telemetry config.
+//
+// This is default-off because the subject can be personally- or
+// tenant-identifying. When disabled (the default) nothing is emitted, leaving
+// behavior unchanged. When enabled, the attribute is only set if an identity is
+// present on the context with a non-empty Subject, so anonymous/unauthenticated
+// requests are unaffected. "user.id" is intentionally not added to any metric
+// instrument because it is high-cardinality.
+func (m *HTTPMiddleware) addUserIDAttribute(ctx context.Context, span trace.Span) {
+	if !m.config.EnableUserIDAttribute {
+		return
+	}
+
+	identity, ok := auth.IdentityFromContext(ctx)
+	if !ok || identity == nil || identity.Subject == "" {
+		return
+	}
+
+	span.SetAttributes(attribute.String("user.id", identity.Subject))
 }
 
 // addNetworkAttributes adds network, client, and session attributes to the span.

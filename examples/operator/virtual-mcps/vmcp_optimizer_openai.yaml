@@ -68,6 +68,10 @@ spec:
       # Model requested from the service (required for the openai provider).
       embeddingModel: text-embedding-3-small
       embeddingServiceTimeout: 15s
+      # Optional extra headers sent with every embedding request (e.g. a
+      # gateway cache-scoping key). Plain text — never put secrets here.
+      embeddingHeaders:
+        x-cache-key: toolhive-optimizer
 
   incomingAuth:
     type: anonymous

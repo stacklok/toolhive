@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"strings"
 	"time"
@@ -29,15 +30,17 @@ type openAIClient struct {
 	baseURL      string
 	apiKey       string
 	model        string
+	headers      map[string]string
 	httpClient   *http.Client
 	maxBatchSize int
 }
 
 // newOpenAIClient creates a client that POSTs to baseURL+"/embeddings" using the
 // given model. A non-empty apiKey is sent as a Bearer token; an empty apiKey
-// omits the Authorization header so keyless endpoints work. Zero timeout uses
-// defaultTimeout.
-func newOpenAIClient(baseURL, model, apiKey string, timeout time.Duration) (*openAIClient, error) {
+// omits the Authorization header so keyless endpoints work. headers are set on
+// every request but cannot override Content-Type or Authorization. Zero timeout
+// uses defaultTimeout.
+func newOpenAIClient(baseURL, model, apiKey string, headers map[string]string, timeout time.Duration) (*openAIClient, error) {
 	if baseURL == "" {
 		return nil, fmt.Errorf("OpenAI embedding base URL is required")
 	}
@@ -51,12 +54,13 @@ func newOpenAIClient(baseURL, model, apiKey string, timeout time.Duration) (*ope
 	}
 
 	slog.Debug("OpenAI embedding client created",
-		"base_url", baseURL, "model", model, "timeout", timeout)
+		"base_url", baseURL, "model", model, "timeout", timeout, "custom_headers", len(headers))
 
 	return &openAIClient{
 		baseURL:      baseURL,
 		apiKey:       apiKey,
 		model:        model,
+		headers:      maps.Clone(headers),
 		httpClient:   &http.Client{Timeout: timeout},
 		maxBatchSize: openAIMaxBatchSize,
 	}, nil
@@ -129,6 +133,10 @@ func (c *openAIClient) embedChunk(ctx context.Context, texts []string) ([][]floa
 	if err != nil {
 		return nil, fmt.Errorf("failed to create OpenAI request: %w", err)
 	}
+	for name, value := range c.headers {
+		req.Header.Set(name, value)
+	}
+	// Set after the custom headers so they can never be overridden.
 	req.Header.Set("Content-Type", "application/json")
 	if c.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+c.apiKey)

@@ -78,6 +78,103 @@ func TestGetAndValidateConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "openai provider with custom headers",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "toolhive-optimizer"},
+			},
+			expected: &Config{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]string{"x-cache-key": "toolhive-optimizer"},
+			},
+		},
+		{
+			name: "openai provider with uncommon valid header name",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x-key'name`x": "value"},
+			},
+			expected: &Config{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]string{"x-key'name`x": "value"},
+			},
+		},
+		{
+			name: "error: headers with tei provider",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://embeddings:8080",
+				EmbeddingProvider: types.EmbeddingProviderTEI,
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "toolhive-optimizer"},
+			},
+			errContains: "optimizer.embeddingHeaders is only supported",
+		},
+		{
+			name: "error: headers with default provider",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService: "http://embeddings:8080",
+				EmbeddingHeaders: map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "toolhive-optimizer"},
+			},
+			errContains: "optimizer.embeddingHeaders is only supported",
+		},
+		{
+			name: "error: headers set authorization case-insensitively",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"AUTHORIZATION": "Bearer spoofed"},
+			},
+			errContains: "optimizer.embeddingHeaders must not set \"AUTHORIZATION\"",
+		},
+		{
+			name: "error: headers set content-type",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"Content-Type": "text/plain"},
+			},
+			errContains: "optimizer.embeddingHeaders must not set \"Content-Type\"",
+		},
+		{
+			name: "error: empty header name",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"": "value"},
+			},
+			errContains: "invalid header name",
+		},
+		{
+			name: "error: header name with invalid characters",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x bad": "value"},
+			},
+			errContains: "invalid header name \"x bad\"",
+		},
+		{
+			name: "error: header value with control characters",
+			cfg: &vmcpconfig.OptimizerConfig{
+				EmbeddingService:  "http://gateway:8080/v1",
+				EmbeddingProvider: types.EmbeddingProviderOpenAI,
+				EmbeddingModel:    "text-embedding-3-small",
+				EmbeddingHeaders:  map[string]vmcpconfig.EmbeddingHeaderValue{"x-cache-key": "a\r\nb"},
+			},
+			errContains: "invalid HTTP header value",
+		},
+		{
 			name: "error: openai provider without service",
 			cfg: &vmcpconfig.OptimizerConfig{
 				EmbeddingProvider: types.EmbeddingProviderOpenAI,
@@ -263,6 +360,7 @@ func TestGetAndValidateConfig(t *testing.T) {
 			}
 			assert.Equal(t, wantProvider, result.EmbeddingProvider)
 			assert.Equal(t, tt.expected.EmbeddingModel, result.EmbeddingModel)
+			assert.Equal(t, tt.expected.EmbeddingHeaders, result.EmbeddingHeaders)
 
 			if tt.expected.MaxToolsToReturn != nil {
 				require.NotNil(t, result.MaxToolsToReturn)

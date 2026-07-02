@@ -18,11 +18,13 @@ import (
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
+	httpval "github.com/stacklok/toolhive-core/validation/http"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/similarity"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/tokencounter"
@@ -54,6 +56,7 @@ func GetAndValidateConfig(cfg *vmcpconfig.OptimizerConfig) (*Config, error) {
 		EmbeddingServiceTimeout: time.Duration(cfg.EmbeddingServiceTimeout),
 		EmbeddingProvider:       cfg.EmbeddingProvider,
 		EmbeddingModel:          cfg.EmbeddingModel,
+		EmbeddingHeaders:        convertEmbeddingHeaders(cfg.EmbeddingHeaders),
 	}
 
 	if err := resolveEmbeddingProvider(optCfg); err != nil {
@@ -100,8 +103,9 @@ func GetAndValidateConfig(cfg *vmcpconfig.OptimizerConfig) (*Config, error) {
 
 // resolveEmbeddingProvider normalizes and validates the embedding provider on
 // optCfg in place. An empty provider defaults to TEI so existing configs keep
-// working; the OpenAI provider requires a service and model and reads its API
-// key from the environment.
+// working; the OpenAI provider requires a service and model, reads its API
+// key from the environment, and is the only provider that accepts custom
+// embedding headers.
 func resolveEmbeddingProvider(optCfg *Config) error {
 	switch optCfg.EmbeddingProvider {
 	case "":
@@ -116,10 +120,60 @@ func resolveEmbeddingProvider(optCfg *Config) error {
 			return fmt.Errorf("optimizer.embeddingModel is required when optimizer.embeddingProvider is %q",
 				types.EmbeddingProviderOpenAI)
 		}
+		if err := validateEmbeddingHeaders(optCfg.EmbeddingHeaders); err != nil {
+			return err
+		}
 		optCfg.EmbeddingAPIKey = os.Getenv(embeddingAPIKeyEnvVar)
 	default:
 		return fmt.Errorf("optimizer.embeddingProvider must be %q or %q, got %q",
 			types.EmbeddingProviderTEI, types.EmbeddingProviderOpenAI, optCfg.EmbeddingProvider)
+	}
+
+	// Defense in depth: mirrors the CEL rule on config.OptimizerConfig,
+	// covering config sources with no admission validation.
+	if optCfg.EmbeddingProvider != types.EmbeddingProviderOpenAI && len(optCfg.EmbeddingHeaders) > 0 {
+		return fmt.Errorf("optimizer.embeddingHeaders is only supported when optimizer.embeddingProvider is %q",
+			types.EmbeddingProviderOpenAI)
+	}
+
+	return nil
+}
+
+// convertEmbeddingHeaders converts the config header map to the internal
+// plain-string representation, returning nil for an empty map.
+func convertEmbeddingHeaders(headers map[string]vmcpconfig.EmbeddingHeaderValue) map[string]string {
+	if len(headers) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(headers))
+	for name, value := range headers {
+		out[name] = string(value)
+	}
+	return out
+}
+
+// validateEmbeddingHeaders rejects custom embedding headers with invalid
+// RFC 7230 names or values, and headers the OpenAI client sets itself:
+// Content-Type is always application/json, and Authorization is derived from
+// the OPENAI_API_KEY environment variable so the token never lands in config.
+// Reserved names are compared case-insensitively, matching HTTP semantics.
+// Mirrors the CEL rule on config.OptimizerConfig as defense in depth.
+func validateEmbeddingHeaders(headers map[string]string) error {
+	for name, value := range headers {
+		if err := httpval.ValidateHeaderName(name); err != nil {
+			return fmt.Errorf("optimizer.embeddingHeaders: invalid header name %q: %w", name, err)
+		}
+		if err := httpval.ValidateHeaderValue(value); err != nil {
+			return fmt.Errorf("optimizer.embeddingHeaders[%q]: %w", name, err)
+		}
+		switch strings.ToLower(name) {
+		case "authorization":
+			return fmt.Errorf("optimizer.embeddingHeaders must not set %q: the Authorization header is derived "+
+				"from the %s environment variable", name, embeddingAPIKeyEnvVar)
+		case "content-type":
+			return fmt.Errorf("optimizer.embeddingHeaders must not set %q: the Content-Type header is always "+
+				"application/json", name)
+		}
 	}
 	return nil
 }

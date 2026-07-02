@@ -94,6 +94,11 @@ type OptimizerConfig struct {
 	// keyless in-cluster gateways. Never populated for the TEI provider.
 	EmbeddingAPIKey string
 
+	// EmbeddingHeaders holds additional HTTP headers sent with every request
+	// to an OpenAI-compatible embedding service. Never populated for the TEI
+	// provider.
+	EmbeddingHeaders map[string]string
+
 	// MaxToolsToReturn limits the number of tools returned by FindTool.
 	MaxToolsToReturn *int
 

@@ -24,6 +24,21 @@ const ClaudeCodeHelperTTL = 5 * time.Minute
 // suspenders pairing work; keep the two values in sync (guarded by a test).
 const LLMTokenRefreshWindow = 2 * ClaudeCodeHelperTTL
 
+// ClaudeDesktopHelperTTL is written to the Claude Desktop config as
+// inferenceCredentialHelperTtlSec: how often Claude Desktop re-invokes the
+// credential helper (a shim that runs "thv llm token"). Kept equal to
+// ClaudeCodeHelperTTL so the same LLMTokenRefreshWindow invariant holds — every
+// invocation in the final window forces a refresh, so Claude Desktop never
+// receives an about-to-expire token.
+const ClaudeDesktopHelperTTL = ClaudeCodeHelperTTL
+
+// ClaudeDesktopHelperTimeout is written as inferenceCredentialHelperTimeoutSec:
+// how long Claude Desktop waits for the credential helper to print a token
+// before killing it. Sized to allow a silent OIDC refresh (cached refresh token
+// → new access token) but not a full interactive re-auth, which "thv llm setup"
+// performs up front so the steady-state helper call stays fast.
+const ClaudeDesktopHelperTimeout = 30 * time.Second
+
 // ProxyOriginOf returns rawURL with its path, query, fragment, and userinfo
 // stripped so only the scheme and host remain (the "origin"). Tools like
 // Gemini CLI that append their own API path (e.g. /v1beta/...) need the
@@ -56,4 +71,8 @@ type ApplyConfig struct {
 	ProxyBaseURL       string // proxy-mode: URL of the localhost reverse proxy
 	TokenHelperCommand string // direct-mode: shell command that prints a fresh token
 	TLSSkipVerify      bool   // when true, instruct the tool to skip TLS verification
+	// Models is the optional explicit model list written to clients that support
+	// a model override (e.g. Claude Desktop's inferenceModels). Empty means the
+	// client falls back to gateway-side model auto-discovery.
+	Models []string
 }

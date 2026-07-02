@@ -228,16 +228,23 @@ func newLLMSetupCommand() *cobra.Command {
 		anthropicPathPrefix string
 		lazy                bool
 		skipBrowser         bool
+		models              []string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Configure detected AI tools to use the LLM gateway",
-		Long: `Detect installed AI coding tools (Claude Code, Gemini CLI, Cursor, VS Code,
-Xcode) and patch each tool's configuration to route through the LLM gateway.
+		Long: `Detect installed AI tools (Claude Code, Gemini CLI, Cursor, VS Code, Xcode,
+Claude Desktop) and patch each tool's configuration to route through the LLM
+gateway.
 
 Token-helper tools (Claude Code, Gemini CLI) are configured to call
 "thv llm token" to obtain a fresh OIDC token on demand.
+
+Claude Desktop is configured via its third-party inference credential helper,
+which also calls "thv llm token". It reads its configuration only at launch, so
+fully quit and relaunch it after setup. Pass --models to list the models it
+should offer until the gateway serves model discovery itself.
 
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
@@ -265,7 +272,7 @@ Run "thv llm teardown" to revert all changes.`,
 			return runLLMSetup(
 				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				cm, config.NewDefaultProvider(), login, opts,
-				anthropicPathPrefix, cmd.Flags().Changed("anthropic-path-prefix"), targetClient, lazy,
+				anthropicPathPrefix, cmd.Flags().Changed("anthropic-path-prefix"), targetClient, lazy, models,
 			)
 		},
 	}
@@ -291,6 +298,9 @@ Run "thv llm teardown" to revert all changes.`,
 			"accesses the gateway. Tool config and persisted settings are written normally. "+
 			"Useful for unattended provisioning (e.g. an MDM profile).")
 	cmd.Flags().BoolVar(&skipBrowser, "skip-browser", false, skipBrowserFlagUsage)
+	cmd.Flags().StringSliceVar(&models, "models", nil,
+		"Explicit model IDs to expose to credential-helper clients (Claude Desktop's inferenceModels). "+
+			"Repeat or comma-separate. Omit to rely on the gateway's own model discovery once it is available.")
 
 	return cmd
 }
@@ -310,12 +320,12 @@ func runLLMSetup(
 	ctx context.Context, out, errOut io.Writer,
 	cm *client.ClientManager, provider config.Provider, login llm.LoginFunc,
 	inlineOpts llm.SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
-	lazy bool,
+	lazy bool, models []string,
 ) error {
 	return llm.Setup(
 		ctx, out, errOut,
 		&clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login,
-		inlineOpts, anthropicPathPrefix, anthropicPathPrefixSet, targetClient, lazy,
+		inlineOpts, anthropicPathPrefix, anthropicPathPrefixSet, targetClient, lazy, models,
 	)
 }
 
@@ -401,6 +411,10 @@ func (a *clientManagerAdapter) ConfigureLLMGateway(clientType string, cfg llmgat
 
 func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {
 	return a.cm.LLMGatewayModeFor(client.ClientApp(clientType))
+}
+
+func (a *clientManagerAdapter) IsManaged(clientType string) bool {
+	return a.cm.IsManaged(client.ClientApp(clientType))
 }
 
 func (a *clientManagerAdapter) ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error) {

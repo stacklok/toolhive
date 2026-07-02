@@ -49,8 +49,8 @@ const (
 
 	// ExternalAuthTypeXAA is the type for XAA (Cross-Application Access) auth.
 	// XAA performs a two-step token exchange to obtain access tokens for target services:
-	//   - Step A (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
-	//   - Step B (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+	//   - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+	//   - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
 	ExternalAuthTypeXAA ExternalAuthType = "xaa"
 )
 
@@ -1334,16 +1334,16 @@ const (
 // XAASpec holds configuration for the XAA (Cross-Application Access) auth strategy.
 // XAA implements draft-ietf-oauth-identity-assertion-authz-grant (ID-JAG) — a
 // two-step token exchange to obtain access tokens for target services:
-//   - Step A (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
-//   - Step B (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+//   - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+//   - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
 type XAASpec struct {
-	// IDPTokenURL is the IdP token endpoint for Step A (RFC 8693 exchange).
+	// IDPTokenURL is the IdP token endpoint for IdP exchange (RFC 8693).
 	// Must be a valid HTTPS URL.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^https://.*$`
 	IDPTokenURL string `json:"idpTokenUrl"`
 
-	// IDPClientID is the OAuth client ID at the IdP for Step A.
+	// IDPClientID is the OAuth client ID at the IdP for IdP exchange.
 	// +optional
 	IDPClientID string `json:"idpClientId,omitempty"`
 
@@ -1351,7 +1351,7 @@ type XAASpec struct {
 	// +optional
 	IDPClientSecretRef *SecretKeyRef `json:"idpClientSecretRef,omitempty"`
 
-	// TargetTokenURL is the target AS token endpoint for Step B (JWT Bearer grant).
+	// TargetTokenURL is the target AS token endpoint for target grant (RFC 7523).
 	// +kubebuilder:validation:Required
 	TargetTokenURL string `json:"targetTokenUrl"`
 
@@ -1361,8 +1361,8 @@ type XAASpec struct {
 	// +optional
 	InsecureTargetTokenURL bool `json:"insecureTargetTokenUrl,omitempty"`
 
-	// TargetClientID is the OAuth client ID at the target AS for Step B.
-	// ID-JAG draft §9.1 RECOMMENDS confidential clients for Step B; most
+	// TargetClientID is the OAuth client ID at the target AS for target grant.
+	// ID-JAG draft §9.1 RECOMMENDS confidential clients for target grant; most
 	// conformant target authorization servers will reject an unauthenticated
 	// JWT-bearer grant per the §4.4.1 client_id continuity requirement.
 	// +optional
@@ -1377,7 +1377,7 @@ type XAASpec struct {
 	TargetAudience string `json:"targetAudience"`
 
 	// TargetResource is the RFC 8707 resource indicator sent as the `resource`
-	// parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+	// parameter in IdP exchange (RFC 8693, draft §4.3, OPTIONAL). It
 	// identifies the target resource server — not the access-token audience, which
 	// is governed by TargetAudience. For MCP backends, set to the MCP server URL.
 	// Some authorization servers (e.g. Okta's early ID-JAG implementation) require
@@ -1386,7 +1386,7 @@ type XAASpec struct {
 	// +optional
 	TargetResource string `json:"targetResource,omitempty"`
 
-	// Scopes are the requested scopes for the XAA exchange (Steps A and B).
+	// Scopes are the requested scopes for the XAA exchange (IdP exchange and target grant).
 	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
@@ -1399,7 +1399,7 @@ type XAASpec struct {
 	SubjectProviderName string `json:"subjectProviderName,omitempty"`
 
 	// SubjectTokenType is the token-type URN of the upstream subject token
-	// used in Step A. Defaults to "urn:ietf:params:oauth:token-type:id_token"
+	// used in IdP exchange. Defaults to "urn:ietf:params:oauth:token-type:id_token"
 	// when empty.
 	// +kubebuilder:validation:Enum="urn:ietf:params:oauth:token-type:id_token"
 	// +optional

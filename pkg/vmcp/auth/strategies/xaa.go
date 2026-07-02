@@ -29,16 +29,16 @@ import (
 // XAAStrategy implements XAA (Cross-Application Access) as a two-step token
 // exchange, following draft-ietf-oauth-identity-assertion-authz-grant (ID-JAG):
 //
-//   - Step A (RFC 8693): Exchange the user's ID token at the IdP for an ID-JAG JWT.
-//   - Step B (RFC 7523): Exchange the ID-JAG at the target AS for an access token.
+//   - IdP exchange (RFC 8693): Exchange the user's ID token at the IdP for an ID-JAG JWT.
+//   - Target grant (RFC 7523): Exchange the ID-JAG at the target AS for an access token.
 //
 // Both steps run on every Authenticate call. The upper vMCP TokenCache layer is
 // responsible for reusing the resulting access token across requests; this
 // strategy holds no local cache.
 //
-// The subject ID token is not validated locally before Step A. The IdP enforces
-// its own exp check; if the token is expired, Step A returns an OAuth
-// invalid_grant error which propagates to the caller. Callers that need
+// The subject ID token is not validated locally before IdP exchange. The IdP
+// enforces its own exp check; if the token is expired, IdP exchange returns an
+// OAuth invalid_grant error which propagates to the caller. Callers that need
 // fine-grained re-auth signals can inspect it with:
 //
 //	var re *oauth2.RetrieveError
@@ -67,8 +67,8 @@ func (*XAAStrategy) Name() string {
 //  2. For health check requests: uses a client credentials grant at TargetTokenURL
 //     if target client credentials are configured; otherwise skips authentication
 //  3. For regular requests: retrieves the user's ID token from the identity's
-//     UpstreamIDTokens map, performs Step A (token exchange for ID-JAG) and
-//     Step B (JWT Bearer grant for access token), then injects the access token
+//     UpstreamIDTokens map, performs IdP exchange (token exchange for ID-JAG) and
+//     target grant (JWT Bearer grant for access token), then injects the access token
 //
 // Parameters:
 //   - ctx: Request context containing the authenticated identity (or health check marker)
@@ -79,7 +79,7 @@ func (*XAAStrategy) Name() string {
 //   - Strategy configuration is invalid or incomplete
 //   - No identity is found in the context (regular requests only)
 //   - The upstream ID token for the configured provider is not found
-//   - Step A (token exchange) or Step B (JWT Bearer grant) fails
+//   - IdP exchange (token exchange) or target grant (JWT Bearer grant) fails
 func (s *XAAStrategy) Authenticate(
 	ctx context.Context, req *http.Request, strategy *authtypes.BackendAuthStrategy,
 ) error {
@@ -122,23 +122,23 @@ func (s *XAAStrategy) Authenticate(
 
 	slog.Debug("xaa: found ID token for provider", "provider", config.subjectProviderName)
 
-	// Step A: Exchange the user's ID token for an ID-JAG at the IdP.
-	assertion, err := s.performStepA(ctx, idToken, config)
+	// IdP exchange: Exchange the user's ID token for an ID-JAG at the IdP.
+	assertion, err := s.performIDPExchange(ctx, idToken, config)
 	if err != nil {
-		slog.Debug("xaa: Step A failed", "error", err)
-		return fmt.Errorf("step A (ID-JAG exchange) failed: %w", err)
+		slog.Debug("xaa: IdP exchange failed", "error", err)
+		return fmt.Errorf("IdP exchange failed: %w", err)
 	}
 
-	slog.Debug("xaa: Step A succeeded, got ID-JAG")
+	slog.Debug("xaa: IdP exchange succeeded, got ID-JAG")
 
-	// Step B: Exchange the ID-JAG for an access token at the target AS.
-	accessToken, err := s.performStepB(ctx, assertion, config)
+	// Target grant: Exchange the ID-JAG for an access token at the target AS.
+	accessToken, err := s.performTargetGrant(ctx, assertion, config)
 	if err != nil {
-		slog.Debug("xaa: Step B failed", "error", err)
-		return fmt.Errorf("step B (JWT Bearer grant) failed: %w", err)
+		slog.Debug("xaa: target grant failed", "error", err)
+		return fmt.Errorf("target grant failed: %w", err)
 	}
 
-	slog.Debug("xaa: Step B succeeded, setting Bearer token")
+	slog.Debug("xaa: target grant succeeded, setting Bearer token")
 
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", accessToken))
 	return nil
@@ -173,7 +173,7 @@ func (s *XAAStrategy) Validate(strategy *authtypes.BackendAuthStrategy) error {
 		)
 	}
 	if config.targetClientID == "" {
-		slog.Warn("xaa: Step B will run without client authentication; " +
+		slog.Warn("xaa: target grant will run without client authentication; " +
 			"most authorization servers reject unauthenticated JWT-bearer grants " +
 			"(ID-JAG draft §9.1 recommends confidential clients)")
 	}
@@ -223,10 +223,10 @@ func (*XAAStrategy) authenticateWithClientCredentials(
 	return nil
 }
 
-// performStepA runs the RFC 8693 token exchange at the IdP to obtain an ID-JAG.
-// It verifies the response's issued_token_type matches the ID-JAG URN per
-// draft-ietf-oauth-identity-assertion-authz-grant §4.3.3.
-func (*XAAStrategy) performStepA(
+// performIDPExchange runs the RFC 8693 token exchange at the IdP to obtain an
+// ID-JAG. It verifies the response's issued_token_type matches the ID-JAG URN
+// per draft-ietf-oauth-identity-assertion-authz-grant §4.3.3.
+func (*XAAStrategy) performIDPExchange(
 	ctx context.Context, idToken string, config *xaaParsedConfig,
 ) (string, error) {
 	exchangeCfg := &tokenexchange.ExchangeConfig{
@@ -245,34 +245,34 @@ func (*XAAStrategy) performStepA(
 
 	token, err := exchangeCfg.TokenSource(ctx).Token()
 	if err != nil {
-		return "", fmt.Errorf("step A token exchange: %w", err)
+		return "", fmt.Errorf("IdP exchange: %w", err)
 	}
 
 	// Per draft-ietf-oauth-identity-assertion-authz-grant §4.3.3, the IdP MUST
 	// return issued_token_type = urn:ietf:params:oauth:token-type:id-jag. Fail
-	// loudly if it returned anything else so Step B cannot accidentally be fed
-	// a non-assertion token.
+	// loudly if it returned anything else so target grant cannot accidentally
+	// be fed a non-assertion token.
 	got, _ := token.Extra("issued_token_type").(string)
 	if got != oauthproto.TokenTypeIDJAG {
-		return "", fmt.Errorf("step A: IdP returned issued_token_type=%q, want %q", got, oauthproto.TokenTypeIDJAG)
+		return "", fmt.Errorf("IdP exchange: IdP returned issued_token_type=%q, want %q", got, oauthproto.TokenTypeIDJAG)
 	}
 
 	// Per draft-ietf-oauth-identity-assertion-authz-grant §5.2, the RFC 8693
 	// response MUST carry token_type=N_A for an assertion that is not usable
 	// as a bearer token at the IdP.
 	if !strings.EqualFold(token.TokenType, "N_A") {
-		return "", fmt.Errorf("step A: IdP returned token_type=%q, want N_A (draft §5.2)", token.TokenType)
+		return "", fmt.Errorf("IdP exchange: IdP returned token_type=%q, want N_A (draft §5.2)", token.TokenType)
 	}
 
 	// The AccessToken field holds the ID-JAG per RFC 8693 response format.
 	assertion := token.AccessToken
 	if assertion == "" {
-		return "", fmt.Errorf("step A: IdP returned an empty ID-JAG assertion")
+		return "", fmt.Errorf("IdP exchange: IdP returned an empty ID-JAG assertion")
 	}
 
 	// Defence-in-depth: inspect the JWT typ header. The draft §3.1 MUST for
 	// typ: oauth-id-jag+jwt is on the issuer (IdP); ToolHive is the
-	// holder/presenter — the target AS validates the ID-JAG in Step B. A
+	// holder/presenter — the target AS validates the ID-JAG in target grant. A
 	// mismatch is deliberately logged rather than fatal; the fatal contract
 	// enforced here is issued_token_type (RFC 8693 §2.2.1, checked above).
 	const idJAGJWTType = "oauth-id-jag+jwt"
@@ -291,9 +291,9 @@ func (*XAAStrategy) performStepA(
 	return assertion, nil
 }
 
-// performStepB runs the RFC 7523 JWT Bearer grant at the target AS using the
-// ID-JAG assertion returned by Step A.
-func (*XAAStrategy) performStepB(
+// performTargetGrant runs the RFC 7523 JWT Bearer grant at the target AS using
+// the ID-JAG assertion returned by IdP exchange.
+func (*XAAStrategy) performTargetGrant(
 	ctx context.Context, assertion string, config *xaaParsedConfig,
 ) (string, error) {
 	bearerCfg := &jwtbearer.Config{
@@ -309,7 +309,7 @@ func (*XAAStrategy) performStepB(
 
 	token, err := bearerCfg.TokenSource(ctx).Token()
 	if err != nil {
-		return "", fmt.Errorf("step B jwt-bearer grant: %w", err)
+		return "", fmt.Errorf("target grant: %w", err)
 	}
 
 	return token.AccessToken, nil

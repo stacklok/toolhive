@@ -37,7 +37,7 @@ type Config struct {
 	// Scopes are the requested scopes for the access token.
 	Scopes []string
 
-	// AssertionProvider returns the JWT assertion (e.g., the ID-JAG from Step A).
+	// AssertionProvider returns the JWT assertion (e.g., the ID-JAG from XAA's IdP exchange).
 	// Called on each Token() invocation; must not be nil. The returned JWT must
 	// satisfy RFC 7523 Section 3 (iss/sub/aud/exp). For an ID-JAG the aud is the
 	// Resource AS issuer identifier (per draft-ietf-oauth-identity-assertion-authz-grant),

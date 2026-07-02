@@ -9,14 +9,9 @@ import "context"
 
 // PluginService declares the plugin lifecycle surface (mirrors skills.SkillService).
 //
-// Phase 2 implements ONLY: Validate, Build, Push, ListBuilds, DeleteBuild, and
-// GetContent — the build/validate/push/content surface. The install/uninstall/
-// list/info methods are NOT declared on the interface yet: they land in Phase 3
-// (#5527), which will widen this interface (the only change is the addition;
-// existing method signatures stay stable). The Phase-3 option/result types they
-// will use (InstallOptions, InstallResult, UninstallOptions, InfoOptions,
-// PluginInfo, ListOptions) are already declared in options.go as forward
-// declarations of the Phase-3 contract.
+// Phase 3 widens the Phase-2 surface with Install, Uninstall, List, and Info —
+// the install/materialization lifecycle. The build/validate/push/content methods
+// from Phase 2 stay stable; this is purely additive.
 type PluginService interface {
 	// Validate checks whether a plugin definition is valid.
 	Validate(ctx context.Context, path string) (*ValidationResult, error)
@@ -32,4 +27,17 @@ type PluginService interface {
 	// artifact without installing it. Works for both remote registry references
 	// and local build tags.
 	GetContent(ctx context.Context, opts ContentOptions) (*PluginContent, error)
+	// Install resolves a plugin reference (OCI, git, or registry name), extracts
+	// it, materializes it into each target client's directory layout via the
+	// configured MaterializationAdapters, and persists the install record.
+	Install(ctx context.Context, opts InstallOptions) (*InstallResult, error)
+	// Uninstall removes a plugin from all target clients (dematerialize) and
+	// deletes the install record. Idempotent for already-removed plugins.
+	Uninstall(ctx context.Context, opts UninstallOptions) error
+	// List returns installed plugins, optionally filtered by scope, client, or
+	// group membership.
+	List(ctx context.Context, opts ListOptions) ([]InstalledPlugin, error)
+	// Info returns details for a single installed plugin, including the
+	// component types each installed client adapter does NOT load.
+	Info(ctx context.Context, opts InfoOptions) (*PluginInfo, error)
 }

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"golang.org/x/oauth2"
 
@@ -25,6 +26,7 @@ type Handler struct {
 	tokenPersister             TokenPersister
 	clientCredentialsPersister ClientCredentialsPersister
 	secretProvider             secrets.Provider
+	httpClient                 networking.HTTPClient
 }
 
 // NewHandler creates a new remote authentication handler
@@ -49,6 +51,11 @@ func (h *Handler) SetSecretProvider(provider secrets.Provider) {
 // when DCR client credentials are obtained and need to be persisted.
 func (h *Handler) SetClientCredentialsPersister(persister ClientCredentialsPersister) {
 	h.clientCredentialsPersister = persister
+}
+
+// SetHTTPClient sets the HTTP client used for RFC 7592 registration management requests.
+func (h *Handler) SetHTTPClient(client networking.HTTPClient) {
+	h.httpClient = client
 }
 
 // Authenticate is the main entry point for remote MCP server authentication
@@ -208,7 +215,15 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 	// CIMD client IDs (HTTPS URLs) are stable constants and are stored separately below.
 	if h.clientCredentialsPersister != nil && result.ClientID != "" &&
 		!oauthproto.IsClientIDMetadataDocumentURL(result.ClientID) {
-		if err := h.clientCredentialsPersister(result.ClientID, result.ClientSecret); err != nil {
+		if err := h.clientCredentialsPersister(
+			result.ClientID,
+			result.ClientSecret,
+			result.SecretExpiry,
+			result.RegistrationAccessToken,
+			result.RegistrationClientURI,
+			result.TokenEndpointAuthMethod,
+			result.RegisteredCallbackPort,
+		); err != nil {
 			slog.Warn("Failed to persist DCR client credentials", "error", err)
 		} else {
 			slog.Debug("Successfully persisted DCR client credentials for future restarts")
@@ -233,6 +248,8 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 
 // resolveClientCredentials returns the client ID and secret to use, preferring
 // cached DCR credentials over statically configured ones.
+// If the cached client secret is expiring soon, it attempts renewal via RFC 7592
+// before returning the credentials.
 func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clientSecret string) {
 	// First try to use statically configured credentials
 	clientID = h.config.ClientID
@@ -252,6 +269,18 @@ func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clien
 		// ClientID is stored as plain text (it's public information)
 		clientID = h.config.CachedClientID
 		slog.Debug("Using cached DCR client credentials", "client_id", clientID)
+
+		// Proactively renew the client secret if it is expiring soon (RFC 7592)
+		if h.isSecretExpiredOrExpiringSoon() {
+			slog.Debug("Cached client secret is expiring soon, attempting renewal",
+				"expiry", h.config.CachedSecretExpiry)
+			if renewErr := h.renewClientSecret(ctx); renewErr != nil {
+				slog.Warn("Failed to proactively renew client secret; continuing with existing secret",
+					"error", renewErr)
+			} else {
+				slog.Debug("Successfully renewed client secret ahead of expiry")
+			}
+		}
 
 		// Client secret is stored securely and may be empty for PKCE flows
 		if h.config.CachedClientSecretRef != "" && h.secretProvider != nil {
@@ -277,6 +306,27 @@ func (h *Handler) tryRestoreFromCachedTokens(
 	// Resolve the refresh token from the secret manager
 	if h.secretProvider == nil {
 		return nil, fmt.Errorf("secret provider not configured, cannot restore cached tokens")
+	}
+
+	// Check if the cached client secret is expired before attempting token refresh.
+	// If it has fully expired and renewal also fails we must force a fresh OAuth flow.
+	if h.isSecretExpiredOrExpiringSoon() {
+		slog.Debug("Cached client secret is expiring or expired; attempting renewal before token restore",
+			"expiry", h.config.CachedSecretExpiry)
+		if renewErr := h.renewClientSecret(ctx); renewErr != nil {
+			slog.Warn("Client secret renewal failed", "error", renewErr)
+			// Hard-fail only when the secret is already past its expiry.
+			// If we are still in the buffer window the existing secret may work.
+			if !h.config.CachedSecretExpiry.IsZero() && time.Now().After(h.config.CachedSecretExpiry) {
+				return nil, fmt.Errorf(
+					"client secret expired at %v and renewal failed: %w",
+					h.config.CachedSecretExpiry, renewErr)
+			}
+			// Still within buffer — log and continue with the existing (still-valid) secret
+			slog.Warn("Proceeding with expiring client secret after failed renewal attempt")
+		} else {
+			slog.Debug("Successfully renewed client secret before token restore")
+		}
 	}
 
 	refreshToken, err := h.secretProvider.GetSecret(ctx, h.config.CachedRefreshTokenRef)

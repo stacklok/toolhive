@@ -2128,11 +2128,11 @@ spec:
                               properties:
                                 idpClientId:
                                   description: IDPClientID is the OAuth client ID
-                                    at the IdP for Step A.
+                                    at the IdP for IdP exchange.
                                   type: string
                                 idpClientSecret:
                                   description: IDPClientSecret is the client secret
-                                    at the IdP for Step A.
+                                    at the IdP for IdP exchange.
                                   type: string
                                 idpClientSecretEnv:
                                   description: IDPClientSecretEnv is the env var containing
@@ -2140,7 +2140,7 @@ spec:
                                   type: string
                                 idpTokenUrl:
                                   description: IDPTokenURL is the IdP token endpoint
-                                    for Step A (RFC 8693 exchange).
+                                    for IdP exchange (RFC 8693 exchange).
                                   type: string
                                 insecureTargetTokenUrl:
                                   description: |-
@@ -2150,7 +2150,7 @@ spec:
                                   type: boolean
                                 scopes:
                                   description: Scopes are the requested scopes for
-                                    Steps A and B.
+                                    IdP exchange and target grant.
                                   items:
                                     type: string
                                   type: array
@@ -2163,7 +2163,7 @@ spec:
                                 subjectTokenType:
                                   description: |-
                                     SubjectTokenType is the token-type URN of the upstream subject token
-                                    used in Step A. Defaults to TokenTypeIDToken when empty. Currently only
+                                    used in IdP exchange. Defaults to TokenTypeIDToken when empty. Currently only
                                     urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
                                     to allow future expansion to SAML upstreams without an API break.
                                   type: string
@@ -2173,11 +2173,11 @@ spec:
                                   type: string
                                 targetClientId:
                                   description: TargetClientID is the OAuth client
-                                    ID at the target AS for Step B.
+                                    ID at the target AS for target grant.
                                   type: string
                                 targetClientSecret:
                                   description: TargetClientSecret is the client secret
-                                    at the target AS for Step B.
+                                    at the target AS for target grant.
                                   type: string
                                 targetClientSecretEnv:
                                   description: TargetClientSecretEnv is the env var
@@ -2186,13 +2186,13 @@ spec:
                                 targetResource:
                                   description: |-
                                     TargetResource is the RFC 8707 resource indicator sent as the `resource`
-                                    parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                    parameter in IdP exchange's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
                                     identifies the target resource server — not the access-token audience, which
                                     is governed by TargetAudience. For MCP backends, set to the MCP server URL.
                                   type: string
                                 targetTokenUrl:
                                   description: TargetTokenURL is the target AS token
-                                    endpoint for Step B (JWT Bearer grant).
+                                    endpoint for target grant (JWT Bearer grant).
                                   type: string
                               required:
                               - idpTokenUrl
@@ -2432,11 +2432,11 @@ spec:
                             properties:
                               idpClientId:
                                 description: IDPClientID is the OAuth client ID at
-                                  the IdP for Step A.
+                                  the IdP for IdP exchange.
                                 type: string
                               idpClientSecret:
                                 description: IDPClientSecret is the client secret
-                                  at the IdP for Step A.
+                                  at the IdP for IdP exchange.
                                 type: string
                               idpClientSecretEnv:
                                 description: IDPClientSecretEnv is the env var containing
@@ -2444,7 +2444,7 @@ spec:
                                 type: string
                               idpTokenUrl:
                                 description: IDPTokenURL is the IdP token endpoint
-                                  for Step A (RFC 8693 exchange).
+                                  for IdP exchange (RFC 8693 exchange).
                                 type: string
                               insecureTargetTokenUrl:
                                 description: |-
@@ -2453,8 +2453,8 @@ spec:
                                   development/testing endpoints — never in production.
                                 type: boolean
                               scopes:
-                                description: Scopes are the requested scopes for Steps
-                                  A and B.
+                                description: Scopes are the requested scopes for IdP
+                                  exchange and target grant.
                                 items:
                                   type: string
                                 type: array
@@ -2467,7 +2467,7 @@ spec:
                               subjectTokenType:
                                 description: |-
                                   SubjectTokenType is the token-type URN of the upstream subject token
-                                  used in Step A. Defaults to TokenTypeIDToken when empty. Currently only
+                                  used in IdP exchange. Defaults to TokenTypeIDToken when empty. Currently only
                                   urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
                                   to allow future expansion to SAML upstreams without an API break.
                                 type: string
@@ -2477,11 +2477,11 @@ spec:
                                 type: string
                               targetClientId:
                                 description: TargetClientID is the OAuth client ID
-                                  at the target AS for Step B.
+                                  at the target AS for target grant.
                                 type: string
                               targetClientSecret:
                                 description: TargetClientSecret is the client secret
-                                  at the target AS for Step B.
+                                  at the target AS for target grant.
                                 type: string
                               targetClientSecretEnv:
                                 description: TargetClientSecretEnv is the env var
@@ -2490,13 +2490,13 @@ spec:
                               targetResource:
                                 description: |-
                                   TargetResource is the RFC 8707 resource indicator sent as the `resource`
-                                  parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                  parameter in IdP exchange's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
                                   identifies the target resource server — not the access-token audience, which
                                   is governed by TargetAudience. For MCP backends, set to the MCP server URL.
                                 type: string
                               targetTokenUrl:
                                 description: TargetTokenURL is the target AS token
-                                  endpoint for Step B (JWT Bearer grant).
+                                  endpoint for target grant (JWT Bearer grant).
                                 type: string
                             required:
                             - idpTokenUrl
@@ -5534,11 +5534,11 @@ spec:
                               properties:
                                 idpClientId:
                                   description: IDPClientID is the OAuth client ID
-                                    at the IdP for Step A.
+                                    at the IdP for IdP exchange.
                                   type: string
                                 idpClientSecret:
                                   description: IDPClientSecret is the client secret
-                                    at the IdP for Step A.
+                                    at the IdP for IdP exchange.
                                   type: string
                                 idpClientSecretEnv:
                                   description: IDPClientSecretEnv is the env var containing
@@ -5546,7 +5546,7 @@ spec:
                                   type: string
                                 idpTokenUrl:
                                   description: IDPTokenURL is the IdP token endpoint
-                                    for Step A (RFC 8693 exchange).
+                                    for IdP exchange (RFC 8693 exchange).
                                   type: string
                                 insecureTargetTokenUrl:
                                   description: |-
@@ -5556,7 +5556,7 @@ spec:
                                   type: boolean
                                 scopes:
                                   description: Scopes are the requested scopes for
-                                    Steps A and B.
+                                    IdP exchange and target grant.
                                   items:
                                     type: string
                                   type: array
@@ -5569,7 +5569,7 @@ spec:
                                 subjectTokenType:
                                   description: |-
                                     SubjectTokenType is the token-type URN of the upstream subject token
-                                    used in Step A. Defaults to TokenTypeIDToken when empty. Currently only
+                                    used in IdP exchange. Defaults to TokenTypeIDToken when empty. Currently only
                                     urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
                                     to allow future expansion to SAML upstreams without an API break.
                                   type: string
@@ -5579,11 +5579,11 @@ spec:
                                   type: string
                                 targetClientId:
                                   description: TargetClientID is the OAuth client
-                                    ID at the target AS for Step B.
+                                    ID at the target AS for target grant.
                                   type: string
                                 targetClientSecret:
                                   description: TargetClientSecret is the client secret
-                                    at the target AS for Step B.
+                                    at the target AS for target grant.
                                   type: string
                                 targetClientSecretEnv:
                                   description: TargetClientSecretEnv is the env var
@@ -5592,13 +5592,13 @@ spec:
                                 targetResource:
                                   description: |-
                                     TargetResource is the RFC 8707 resource indicator sent as the `resource`
-                                    parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                    parameter in IdP exchange's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
                                     identifies the target resource server — not the access-token audience, which
                                     is governed by TargetAudience. For MCP backends, set to the MCP server URL.
                                   type: string
                                 targetTokenUrl:
                                   description: TargetTokenURL is the target AS token
-                                    endpoint for Step B (JWT Bearer grant).
+                                    endpoint for target grant (JWT Bearer grant).
                                   type: string
                               required:
                               - idpTokenUrl
@@ -5838,11 +5838,11 @@ spec:
                             properties:
                               idpClientId:
                                 description: IDPClientID is the OAuth client ID at
-                                  the IdP for Step A.
+                                  the IdP for IdP exchange.
                                 type: string
                               idpClientSecret:
                                 description: IDPClientSecret is the client secret
-                                  at the IdP for Step A.
+                                  at the IdP for IdP exchange.
                                 type: string
                               idpClientSecretEnv:
                                 description: IDPClientSecretEnv is the env var containing
@@ -5850,7 +5850,7 @@ spec:
                                 type: string
                               idpTokenUrl:
                                 description: IDPTokenURL is the IdP token endpoint
-                                  for Step A (RFC 8693 exchange).
+                                  for IdP exchange (RFC 8693 exchange).
                                 type: string
                               insecureTargetTokenUrl:
                                 description: |-
@@ -5859,8 +5859,8 @@ spec:
                                   development/testing endpoints — never in production.
                                 type: boolean
                               scopes:
-                                description: Scopes are the requested scopes for Steps
-                                  A and B.
+                                description: Scopes are the requested scopes for IdP
+                                  exchange and target grant.
                                 items:
                                   type: string
                                 type: array
@@ -5873,7 +5873,7 @@ spec:
                               subjectTokenType:
                                 description: |-
                                   SubjectTokenType is the token-type URN of the upstream subject token
-                                  used in Step A. Defaults to TokenTypeIDToken when empty. Currently only
+                                  used in IdP exchange. Defaults to TokenTypeIDToken when empty. Currently only
                                   urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
                                   to allow future expansion to SAML upstreams without an API break.
                                 type: string
@@ -5883,11 +5883,11 @@ spec:
                                 type: string
                               targetClientId:
                                 description: TargetClientID is the OAuth client ID
-                                  at the target AS for Step B.
+                                  at the target AS for target grant.
                                 type: string
                               targetClientSecret:
                                 description: TargetClientSecret is the client secret
-                                  at the target AS for Step B.
+                                  at the target AS for target grant.
                                 type: string
                               targetClientSecretEnv:
                                 description: TargetClientSecretEnv is the env var
@@ -5896,13 +5896,13 @@ spec:
                               targetResource:
                                 description: |-
                                   TargetResource is the RFC 8707 resource indicator sent as the `resource`
-                                  parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                  parameter in IdP exchange's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
                                   identifies the target resource server — not the access-token audience, which
                                   is governed by TargetAudience. For MCP backends, set to the MCP server URL.
                                 type: string
                               targetTokenUrl:
                                 description: TargetTokenURL is the target AS token
-                                  endpoint for Step B (JWT Bearer grant).
+                                  endpoint for target grant (JWT Bearer grant).
                                 type: string
                             required:
                             - idpTokenUrl

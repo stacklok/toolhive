@@ -267,26 +267,26 @@ type AwsStsConfig struct {
 // XAAConfig configures the XAA (Cross-Application Access) auth strategy.
 // XAA implements draft-ietf-oauth-identity-assertion-authz-grant (ID-JAG) as a
 // two-step flow:
-//   - Step A (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
-//   - Step B (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+//   - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+//   - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
 //
 // +kubebuilder:object:generate=true
 // +gendoc
 type XAAConfig struct {
-	// IDPTokenURL is the IdP token endpoint for Step A (RFC 8693 exchange).
+	// IDPTokenURL is the IdP token endpoint for IdP exchange (RFC 8693 exchange).
 	IDPTokenURL string `json:"idpTokenUrl" yaml:"idpTokenUrl"`
 
-	// IDPClientID is the OAuth client ID at the IdP for Step A.
+	// IDPClientID is the OAuth client ID at the IdP for IdP exchange.
 	IDPClientID string `json:"idpClientId,omitempty" yaml:"idpClientId,omitempty"`
 
-	// IDPClientSecret is the client secret at the IdP for Step A.
+	// IDPClientSecret is the client secret at the IdP for IdP exchange.
 	//nolint:gosec // G101: field legitimately holds sensitive data
 	IDPClientSecret string `json:"idpClientSecret,omitempty" yaml:"idpClientSecret,omitempty"`
 
 	// IDPClientSecretEnv is the env var containing the IdP client secret.
 	IDPClientSecretEnv string `json:"idpClientSecretEnv,omitempty" yaml:"idpClientSecretEnv,omitempty"`
 
-	// TargetTokenURL is the target AS token endpoint for Step B (JWT Bearer grant).
+	// TargetTokenURL is the target AS token endpoint for target grant (JWT Bearer grant).
 	TargetTokenURL string `json:"targetTokenUrl" yaml:"targetTokenUrl"`
 
 	// InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
@@ -294,10 +294,10 @@ type XAAConfig struct {
 	// development/testing endpoints — never in production.
 	InsecureTargetTokenURL bool `json:"insecureTargetTokenUrl,omitempty" yaml:"insecureTargetTokenUrl,omitempty"`
 
-	// TargetClientID is the OAuth client ID at the target AS for Step B.
+	// TargetClientID is the OAuth client ID at the target AS for target grant.
 	TargetClientID string `json:"targetClientId,omitempty" yaml:"targetClientId,omitempty"`
 
-	// TargetClientSecret is the client secret at the target AS for Step B.
+	// TargetClientSecret is the client secret at the target AS for target grant.
 	//nolint:gosec // G101: field legitimately holds sensitive data
 	TargetClientSecret string `json:"targetClientSecret,omitempty" yaml:"targetClientSecret,omitempty"`
 
@@ -308,12 +308,12 @@ type XAAConfig struct {
 	TargetAudience string `json:"targetAudience" yaml:"targetAudience"`
 
 	// TargetResource is the RFC 8707 resource indicator sent as the `resource`
-	// parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+	// parameter in IdP exchange's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
 	// identifies the target resource server — not the access-token audience, which
 	// is governed by TargetAudience. For MCP backends, set to the MCP server URL.
 	TargetResource string `json:"targetResource,omitempty" yaml:"targetResource,omitempty"`
 
-	// Scopes are the requested scopes for Steps A and B.
+	// Scopes are the requested scopes for IdP exchange and target grant.
 	// +listType=atomic
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
@@ -322,7 +322,7 @@ type XAAConfig struct {
 	SubjectProviderName string `json:"subjectProviderName,omitempty" yaml:"subjectProviderName,omitempty"`
 
 	// SubjectTokenType is the token-type URN of the upstream subject token
-	// used in Step A. Defaults to TokenTypeIDToken when empty. Currently only
+	// used in IdP exchange. Defaults to TokenTypeIDToken when empty. Currently only
 	// urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
 	// to allow future expansion to SAML upstreams without an API break.
 	SubjectTokenType string `json:"subjectTokenType,omitempty" yaml:"subjectTokenType,omitempty"`

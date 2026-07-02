@@ -222,8 +222,8 @@ _Appears in:_
 XAAConfig configures the XAA (Cross-Application Access) auth strategy.
 XAA implements draft-ietf-oauth-identity-assertion-authz-grant (ID-JAG) as a
 two-step flow:
-  - Step A (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
-  - Step B (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+  - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+  - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
 
 
 
@@ -232,20 +232,20 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `idpTokenUrl` _string_ | IDPTokenURL is the IdP token endpoint for Step A (RFC 8693 exchange). |  |  |
-| `idpClientId` _string_ | IDPClientID is the OAuth client ID at the IdP for Step A. |  |  |
-| `idpClientSecret` _string_ | IDPClientSecret is the client secret at the IdP for Step A. |  |  |
+| `idpTokenUrl` _string_ | IDPTokenURL is the IdP token endpoint for IdP exchange (RFC 8693 exchange). |  |  |
+| `idpClientId` _string_ | IDPClientID is the OAuth client ID at the IdP for IdP exchange. |  |  |
+| `idpClientSecret` _string_ | IDPClientSecret is the client secret at the IdP for IdP exchange. |  |  |
 | `idpClientSecretEnv` _string_ | IDPClientSecretEnv is the env var containing the IdP client secret. |  |  |
-| `targetTokenUrl` _string_ | TargetTokenURL is the target AS token endpoint for Step B (JWT Bearer grant). |  |  |
+| `targetTokenUrl` _string_ | TargetTokenURL is the target AS token endpoint for target grant (JWT Bearer grant). |  |  |
 | `insecureTargetTokenUrl` _boolean_ | InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.<br />WARNING: this is insecure and must only be set for in-cluster or<br />development/testing endpoints — never in production. |  |  |
-| `targetClientId` _string_ | TargetClientID is the OAuth client ID at the target AS for Step B. |  |  |
-| `targetClientSecret` _string_ | TargetClientSecret is the client secret at the target AS for Step B. |  |  |
+| `targetClientId` _string_ | TargetClientID is the OAuth client ID at the target AS for target grant. |  |  |
+| `targetClientSecret` _string_ | TargetClientSecret is the client secret at the target AS for target grant. |  |  |
 | `targetClientSecretEnv` _string_ | TargetClientSecretEnv is the env var containing the target AS client secret. |  |  |
 | `targetAudience` _string_ | TargetAudience is the resource AS URL for the ID-JAG audience claim (required). |  |  |
-| `targetResource` _string_ | TargetResource is the RFC 8707 resource indicator sent as the `resource`<br />parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It<br />identifies the target resource server — not the access-token audience, which<br />is governed by TargetAudience. For MCP backends, set to the MCP server URL. |  |  |
-| `scopes` _string array_ | Scopes are the requested scopes for Steps A and B. |  |  |
+| `targetResource` _string_ | TargetResource is the RFC 8707 resource indicator sent as the `resource`<br />parameter in IdP exchange's RFC 8693 token exchange (draft §4.3, OPTIONAL). It<br />identifies the target resource server — not the access-token audience, which<br />is governed by TargetAudience. For MCP backends, set to the MCP server URL. |  |  |
+| `scopes` _string array_ | Scopes are the requested scopes for IdP exchange and target grant. |  |  |
 | `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's ID token to use.<br />Auto-populated when embedded AS is active. |  |  |
-| `subjectTokenType` _string_ | SubjectTokenType is the token-type URN of the upstream subject token<br />used in Step A. Defaults to TokenTypeIDToken when empty. Currently only<br />urn:ietf:params:oauth:token-type:id_token is accepted; the field exists<br />to allow future expansion to SAML upstreams without an API break. |  |  |
+| `subjectTokenType` _string_ | SubjectTokenType is the token-type URN of the upstream subject token<br />used in IdP exchange. Defaults to TokenTypeIDToken when empty. Currently only<br />urn:ietf:params:oauth:token-type:id_token is accepted; the field exists<br />to allow future expansion to SAML upstreams without an API break. |  |  |
 
 
 
@@ -1555,7 +1555,7 @@ _Appears in:_
 | `awsSts` | ExternalAuthTypeAWSSts is the type for AWS STS authentication<br /> |
 | `upstreamInject` | ExternalAuthTypeUpstreamInject is the type for upstream token injection<br />This injects an upstream IdP access token as the Authorization: Bearer header<br /> |
 | `obo` | ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.<br />This type requires a build with an OBO handler registered via<br />controllerutil.RegisterOBOHandler; an upstream-only build surfaces<br />status.conditions[Valid] = False with Reason: EnterpriseRequired<br />when an obo-typed MCPExternalAuthConfig is applied.<br /> |
-| `xaa` | ExternalAuthTypeXAA is the type for XAA (Cross-Application Access) auth.<br />XAA performs a two-step token exchange to obtain access tokens for target services:<br />  - Step A (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT<br />  - Step B (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token<br /> |
+| `xaa` | ExternalAuthTypeXAA is the type for XAA (Cross-Application Access) auth.<br />XAA performs a two-step token exchange to obtain access tokens for target services:<br />  - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT<br />  - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token<br /> |
 
 
 #### api.v1beta1.HeaderForwardConfig
@@ -4072,8 +4072,8 @@ _Appears in:_
 XAASpec holds configuration for the XAA (Cross-Application Access) auth strategy.
 XAA implements draft-ietf-oauth-identity-assertion-authz-grant (ID-JAG) — a
 two-step token exchange to obtain access tokens for target services:
-  - Step A (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
-  - Step B (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+  - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+  - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
 
 
 
@@ -4082,17 +4082,17 @@ _Appears in:_
 
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
-| `idpTokenUrl` _string_ | IDPTokenURL is the IdP token endpoint for Step A (RFC 8693 exchange).<br />Must be a valid HTTPS URL. |  | Pattern: `^https://.*$` <br />Required: \{\} <br /> |
-| `idpClientId` _string_ | IDPClientID is the OAuth client ID at the IdP for Step A. |  | Optional: \{\} <br /> |
+| `idpTokenUrl` _string_ | IDPTokenURL is the IdP token endpoint for IdP exchange (RFC 8693).<br />Must be a valid HTTPS URL. |  | Pattern: `^https://.*$` <br />Required: \{\} <br /> |
+| `idpClientId` _string_ | IDPClientID is the OAuth client ID at the IdP for IdP exchange. |  | Optional: \{\} <br /> |
 | `idpClientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | IDPClientSecretRef references a Kubernetes Secret containing the IdP client secret. |  | Optional: \{\} <br /> |
-| `targetTokenUrl` _string_ | TargetTokenURL is the target AS token endpoint for Step B (JWT Bearer grant). |  | Required: \{\} <br /> |
+| `targetTokenUrl` _string_ | TargetTokenURL is the target AS token endpoint for target grant (RFC 7523). |  | Required: \{\} <br /> |
 | `insecureTargetTokenUrl` _boolean_ | InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.<br />WARNING: this is insecure and must only be set for in-cluster or<br />development/testing endpoints — never in production. |  | Optional: \{\} <br /> |
-| `targetClientId` _string_ | TargetClientID is the OAuth client ID at the target AS for Step B.<br />ID-JAG draft §9.1 RECOMMENDS confidential clients for Step B; most<br />conformant target authorization servers will reject an unauthenticated<br />JWT-bearer grant per the §4.4.1 client_id continuity requirement. |  | Optional: \{\} <br /> |
+| `targetClientId` _string_ | TargetClientID is the OAuth client ID at the target AS for target grant.<br />ID-JAG draft §9.1 RECOMMENDS confidential clients for target grant; most<br />conformant target authorization servers will reject an unauthenticated<br />JWT-bearer grant per the §4.4.1 client_id continuity requirement. |  | Optional: \{\} <br /> |
 | `targetClientSecretRef` _[api.v1beta1.SecretKeyRef](#apiv1beta1secretkeyref)_ | TargetClientSecretRef references a Kubernetes Secret for the target AS client secret. |  | Optional: \{\} <br /> |
 | `targetAudience` _string_ | TargetAudience is the resource AS URL for the ID-JAG audience claim. |  | Required: \{\} <br /> |
-| `targetResource` _string_ | TargetResource is the RFC 8707 resource indicator sent as the `resource`<br />parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It<br />identifies the target resource server — not the access-token audience, which<br />is governed by TargetAudience. For MCP backends, set to the MCP server URL.<br />Some authorization servers (e.g. Okta's early ID-JAG implementation) require<br />this parameter in practice despite the draft marking it optional — set it<br />when your IdP needs it. |  | Optional: \{\} <br /> |
-| `scopes` _string array_ | Scopes are the requested scopes for the XAA exchange (Steps A and B). |  | Optional: \{\} <br /> |
+| `targetResource` _string_ | TargetResource is the RFC 8707 resource indicator sent as the `resource`<br />parameter in IdP exchange (RFC 8693, draft §4.3, OPTIONAL). It<br />identifies the target resource server — not the access-token audience, which<br />is governed by TargetAudience. For MCP backends, set to the MCP server URL.<br />Some authorization servers (e.g. Okta's early ID-JAG implementation) require<br />this parameter in practice despite the draft marking it optional — set it<br />when your IdP needs it. |  | Optional: \{\} <br /> |
+| `scopes` _string array_ | Scopes are the requested scopes for the XAA exchange (IdP exchange and target grant). |  | Optional: \{\} <br /> |
 | `subjectProviderName` _string_ | SubjectProviderName selects which upstream provider's ID token to use.<br />When left empty and an embedded authorization server is configured,<br />the controller automatically populates this field with the first configured<br />upstream provider name. |  | Optional: \{\} <br /> |
-| `subjectTokenType` _string_ | SubjectTokenType is the token-type URN of the upstream subject token<br />used in Step A. Defaults to "urn:ietf:params:oauth:token-type:id_token"<br />when empty. |  | Enum: [urn:ietf:params:oauth:token-type:id_token] <br />Optional: \{\} <br /> |
+| `subjectTokenType` _string_ | SubjectTokenType is the token-type URN of the upstream subject token<br />used in IdP exchange. Defaults to "urn:ietf:params:oauth:token-type:id_token"<br />when empty. |  | Enum: [urn:ietf:params:oauth:token-type:id_token] <br />Optional: \{\} <br /> |
 
 

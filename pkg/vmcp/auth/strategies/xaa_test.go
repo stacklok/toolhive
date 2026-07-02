@@ -60,8 +60,8 @@ func createXAAStrategy(opts ...func(*authtypes.XAAConfig)) *authtypes.BackendAut
 	}
 }
 
-// createXAAIdPServer creates a mock IdP server that validates Step A (RFC 8693)
-// token exchange requests and returns an ID-JAG response.
+// createXAAIdPServer creates a mock IdP server that validates IdP exchange
+// (RFC 8693) token exchange requests and returns an ID-JAG response.
 func createXAAIdPServer(t *testing.T, expectedIDToken, idJAGToReturn string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -91,8 +91,8 @@ func createXAAIdPServer(t *testing.T, expectedIDToken, idJAGToReturn string) *ht
 	}))
 }
 
-// createXAATargetServer creates a mock target AS server that validates Step B
-// (RFC 7523 JWT Bearer grant) requests and returns an access token.
+// createXAATargetServer creates a mock target AS server that validates target
+// grant (RFC 7523 JWT Bearer grant) requests and returns an access token.
 func createXAATargetServer(t *testing.T, expectedAssertion, accessTokenToReturn string) *httptest.Server {
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -592,7 +592,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 		},
 		{
-			name: "Step A fails with IdP error",
+			name: "IdP exchange fails with IdP error",
 			setupCtx: func() context.Context {
 				return createContextWithUpstreamIDTokens(
 					map[string]string{testProviderGitHub: "bad-id-token"})
@@ -608,7 +608,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 					assert.NoError(t, err)
 				}))
 				targetServer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-					t.Error("target AS should not be called when Step A fails")
+					t.Error("target AS should not be called when IdP exchange fails")
 				}))
 				return idpServer, targetServer
 			},
@@ -622,10 +622,10 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 				})
 			},
 			expectError:   true,
-			errorContains: []string{"step A (ID-JAG exchange) failed"},
+			errorContains: []string{"IdP exchange failed"},
 		},
 		{
-			name: "Step B fails with target AS error",
+			name: "target grant fails with target AS error",
 			setupCtx: func() context.Context {
 				return createContextWithUpstreamIDTokens(
 					map[string]string{testProviderGitHub: "valid-id-token"})
@@ -653,10 +653,10 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 				})
 			},
 			expectError:   true,
-			errorContains: []string{"step B (JWT Bearer grant) failed"},
+			errorContains: []string{"target grant failed"},
 		},
 		{
-			name: "Step A rejects wrong issued_token_type",
+			name: "IdP exchange rejects wrong issued_token_type",
 			setupCtx: func() context.Context {
 				return createContextWithUpstreamIDTokens(
 					map[string]string{testProviderGitHub: "user-id-token-jwt"})
@@ -674,7 +674,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 					assert.NoError(t, err)
 				}))
 				targetServer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-					t.Error("target AS must not be called when Step A returns the wrong issued_token_type")
+					t.Error("target AS must not be called when IdP exchange returns the wrong issued_token_type")
 				}))
 				return idpServer, targetServer
 			},
@@ -688,10 +688,10 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 				})
 			},
 			expectError:   true,
-			errorContains: []string{"step A", "issued_token_type", oauthproto.TokenTypeIDJAG},
+			errorContains: []string{"IdP exchange", "issued_token_type", oauthproto.TokenTypeIDJAG},
 		},
 		{
-			name: "Step A rejects wrong token_type",
+			name: "IdP exchange rejects wrong token_type",
 			setupCtx: func() context.Context {
 				return createContextWithUpstreamIDTokens(
 					map[string]string{testProviderGitHub: "user-id-token-jwt"})
@@ -709,7 +709,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 					assert.NoError(t, err)
 				}))
 				targetServer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-					t.Error("target AS must not be called when Step A returns the wrong token_type")
+					t.Error("target AS must not be called when IdP exchange returns the wrong token_type")
 				}))
 				return idpServer, targetServer
 			},
@@ -726,7 +726,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			errorContains: []string{"N_A"},
 		},
 		{
-			name: "Step A rejects empty access_token",
+			name: "IdP exchange rejects empty access_token",
 			setupCtx: func() context.Context {
 				return createContextWithUpstreamIDTokens(
 					map[string]string{testProviderGitHub: "user-id-token-jwt"})
@@ -744,7 +744,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 					assert.NoError(t, err)
 				}))
 				targetServer := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-					t.Error("target AS must not be called when Step A returns an empty assertion")
+					t.Error("target AS must not be called when IdP exchange returns an empty assertion")
 				}))
 				return idpServer, targetServer
 			},
@@ -758,10 +758,10 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 				})
 			},
 			expectError:   true,
-			errorContains: []string{"step A", "access_token"},
+			errorContains: []string{"IdP exchange", "access_token"},
 		},
 		{
-			name: "Step A typ header mismatch is not fatal",
+			name: "IdP exchange typ header mismatch is not fatal",
 			setupCtx: func() context.Context {
 				return createContextWithUpstreamIDTokens(
 					map[string]string{testProviderGitHub: "user-id-token-jwt"})
@@ -798,7 +798,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 			},
 		},
 		{
-			name: "Step A typ header matches oauth-id-jag+jwt",
+			name: "IdP exchange typ header matches oauth-id-jag+jwt",
 			setupCtx: func() context.Context {
 				return createContextWithUpstreamIDTokens(
 					map[string]string{testProviderGitHub: "user-id-token-jwt"})
@@ -878,7 +878,7 @@ func TestXAAStrategy_Authenticate(t *testing.T) {
 
 // buildJWTWithTypHeader signs a minimal JWT with the given typ header value using
 // a throwaway RSA key. The token is not intended to be verified — it exists only
-// to exercise the header-parsing path in performStepA.
+// to exercise the header-parsing path in performIDPExchange.
 func buildJWTWithTypHeader(t *testing.T, typ string) string {
 	t.Helper()
 

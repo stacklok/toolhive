@@ -1455,7 +1455,7 @@ spec:
                   targetResource:
                     description: |-
                       TargetResource is the RFC 8707 resource indicator sent as the `resource`
-                      parameter in the IdP exchange (RFC 8693, draft §4.3, OPTIONAL). It
+                      parameter in IdP exchange (RFC 8693, draft §4.3, OPTIONAL). It
                       identifies the target resource server — not the access-token audience, which
                       is governed by TargetAudience. For MCP backends, set to the MCP server URL.
                       Some authorization servers (e.g. Okta's early ID-JAG implementation) require
@@ -3057,7 +3057,7 @@ spec:
                   targetResource:
                     description: |-
                       TargetResource is the RFC 8707 resource indicator sent as the `resource`
-                      parameter in the IdP exchange (RFC 8693, draft §4.3, OPTIONAL). It
+                      parameter in IdP exchange (RFC 8693, draft §4.3, OPTIONAL). It
                       identifies the target resource server — not the access-token audience, which
                       is governed by TargetAudience. For MCP backends, set to the MCP server URL.
                       Some authorization servers (e.g. Okta's early ID-JAG implementation) require

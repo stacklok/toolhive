@@ -77,6 +77,18 @@ func (v *DefaultValidator) Validate(cfg *Config) error {
 		errors = append(errors, err.Error())
 	}
 
+	// Cross-field: static backends and the "discovered" source are mutually exclusive.
+	// "discovered" auto-discovers backends at runtime (empty Backends); a non-empty
+	// Backends list is the inline/static path. Allowing both is contradictory and
+	// produces divergent behavior across the assembly primitives, so reject it.
+	if cfg.OutgoingAuth != nil &&
+		cfg.OutgoingAuth.Source == OutgoingAuthSourceDiscovered &&
+		len(cfg.Backends) > 0 {
+		errors = append(errors,
+			fmt.Sprintf("backends must be empty when outgoingAuth.source is %q "+
+				"(discovered mode auto-discovers backends at runtime)", OutgoingAuthSourceDiscovered))
+	}
+
 	// Validate composite tools
 	if err := v.validateCompositeTools(cfg.CompositeTools); err != nil {
 		errors = append(errors, err.Error())

@@ -21,6 +21,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	authfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
+	"github.com/stacklok/toolhive/pkg/vmcp/backendregistry"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
 	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
@@ -71,6 +72,13 @@ var errDiscoveredModeRequiresRegistry = fmt.Errorf(
 func BuildCore(ctx context.Context, cfg *vmcpconfig.Config, opts ...Option) (core.VMCP, func(), error) {
 	if cfg == nil {
 		return nil, noop, fmt.Errorf("%w: nil vmcp config", vmcp.ErrInvalidConfig)
+	}
+	// Validate before assembling: an embedder building a config programmatically must
+	// get a loud startup error rather than, say, a nil IncomingAuth silently defaulting
+	// to anonymous + allow-all. The CLI/operator path validates at load time too; the
+	// second pass here is cheap and closes the gap for the public assembly contract.
+	if err := vmcpconfig.NewValidator().Validate(cfg); err != nil {
+		return nil, noop, fmt.Errorf("invalid vmcp config: %w", err)
 	}
 	o := applyOptions(opts)
 
@@ -218,22 +226,65 @@ func applyCoreDecorators(
 	return coreVMCP, limiterCleanup, nil
 }
 
-// resolveBackendRegistryForCore returns the backend registry BuildCore should use.
+// resolveBackendRegistryForCore returns the backend registry BuildCore should use as a
+// standalone primitive (no Builder). The branch order matches
+// resolveBackendRegistryForServerConfig exactly — injected, then discovered, then
+// static, then dynamic — so the two primitives never disagree for a given config; the
+// validator additionally rejects the contradictory Backends + discovered combination.
+//
+// The discovered source requires an injected registry here (it does NOT build one):
+// calling both primitives standalone in discovered mode would otherwise start two K8s
+// informers. The Builder, which owns single construction, uses resolveBackendRegistry
+// instead (which does build the discovered registry, once).
 func resolveBackendRegistryForCore(ctx context.Context, cfg *vmcpconfig.Config, o *options) (vmcp.BackendRegistry, error) {
 	if o.backendRegistry != nil {
 		slog.Info("using pre-built backend registry from option")
 		return o.backendRegistry, nil
 	}
+	if isDiscoveredSource(cfg) {
+		return nil, errDiscoveredModeRequiresRegistry
+	}
 	if len(cfg.Backends) > 0 {
 		return buildStaticBackendRegistry(ctx, cfg)
 	}
-	if cfg.OutgoingAuth != nil && cfg.OutgoingAuth.Source == vmcpconfig.OutgoingAuthSourceDiscovered {
-		// Symmetric with BuildServerConfig: require an injected registry for the
-		// Kubernetes discovered source so a single informer cache (and its readiness
-		// handle) is shared between both Build calls rather than each starting its own.
-		return nil, errDiscoveredModeRequiresRegistry
-	}
 	return buildDynamicBackendRegistry(ctx, cfg)
+}
+
+// resolveBackendRegistry constructs (or returns the injected) backend registry for ALL
+// modes. The Builder uses it to construct the registry exactly once and inject the same
+// instance into both derivations, so core aggregation and the session manager operate
+// on one snapshot (satisfying the Builder's "construct once" contract). Returns the
+// registry and, for the discovered source, a readiness watcher (nil for static/dynamic).
+func resolveBackendRegistry(
+	ctx context.Context, cfg *vmcpconfig.Config, o *options,
+) (vmcp.BackendRegistry, vmcpserver.Watcher, error) {
+	if o.backendRegistry != nil {
+		return o.backendRegistry, o.watcher, nil
+	}
+	if isDiscoveredSource(cfg) {
+		return buildDiscoveredRegistry(ctx, cfg)
+	}
+	if len(cfg.Backends) > 0 {
+		reg, err := buildStaticBackendRegistry(ctx, cfg)
+		return reg, nil, err
+	}
+	reg, err := buildDynamicBackendRegistry(ctx, cfg)
+	return reg, nil, err
+}
+
+// buildDiscoveredRegistry builds the live Kubernetes backend registry + readiness
+// watcher for the discovered source. The watcher goroutine is bound to ctx and is
+// released when ctx is cancelled (no separate cleanup).
+func buildDiscoveredRegistry(ctx context.Context, cfg *vmcpconfig.Config) (vmcp.BackendRegistry, vmcpserver.Watcher, error) {
+	namespace := os.Getenv("VMCP_NAMESPACE")
+	if namespace == "" {
+		return nil, nil, fmt.Errorf("VMCP_NAMESPACE environment variable not set")
+	}
+	reg, watcher, err := backendregistry.NewKubernetesBackendRegistry(ctx, namespace, cfg.Group)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to build Kubernetes backend registry: %w", err)
+	}
+	return reg, watcher, nil
 }
 
 // buildStaticBackendRegistry builds an immutable backend registry from the

@@ -181,10 +181,10 @@ func TestBuildCore_CleanupDoesNotPanic(t *testing.T) {
 	assert.NotPanics(t, cleanup)
 }
 
-// TestBuildCore_HealthMonitorConfig_InvalidThreshold verifies that BuildCore surfaces
-// the deriveHealthMonitorConfig validation error when HealthCheckInterval is set but
-// UnhealthyThreshold is below 1. An injected registry isolates this to the health-config
-// path (no real discovery).
+// TestBuildCore_HealthMonitorConfig_InvalidThreshold verifies that BuildCore rejects a
+// config whose health-check interval is set with an invalid unhealthy threshold. The
+// config validator (now run at the top of BuildCore) catches this and BuildCore returns
+// a vmcp.ErrInvalidConfig-wrapped error rather than proceeding.
 func TestBuildCore_HealthMonitorConfig_InvalidThreshold(t *testing.T) {
 	t.Parallel()
 
@@ -196,13 +196,14 @@ func TestBuildCore_HealthMonitorConfig_InvalidThreshold(t *testing.T) {
 	cfg.Operational = &vmcpconfig.OperationalConfig{
 		FailureHandling: &vmcpconfig.FailureHandlingConfig{
 			HealthCheckInterval: vmcpconfig.Duration(time.Second),
-			UnhealthyThreshold:  0, // invalid: must be >= 1 when the interval is set
+			UnhealthyThreshold:  0, // invalid: must be positive when the interval is set
 		},
 	}
 
 	_, cleanup, err := app.BuildCore(t.Context(), cfg, app.WithBackendRegistry(reg, nil))
 	require.Error(t, err)
-	assert.Contains(t, err.Error(), "unhealthy threshold")
+	require.ErrorIs(t, err, vmcp.ErrInvalidConfig)
+	assert.Contains(t, err.Error(), "unhealthyThreshold")
 	assert.NotNil(t, cleanup)
 }
 

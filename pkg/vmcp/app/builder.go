@@ -7,11 +7,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"os"
 
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/backendregistry"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -77,10 +75,10 @@ func (b *Builder) Decorate(fn func(core.VMCP) core.VMCP) *Builder {
 //
 // A collaborator supplied via options is used as-is; otherwise Finish builds it:
 //   - Telemetry: built from cfg.Telemetry when set (unless WithTelemetryProvider).
-//   - Backend registry: for the "discovered" source, built once via
-//     backendregistry.NewKubernetesBackendRegistry (unless WithBackendRegistry);
-//     VMCP_NAMESPACE must be set. Static/dynamic modes are derived by BuildCore/
-//     BuildServerConfig from cfg.
+//   - Backend registry: built ONCE for every mode (unless WithBackendRegistry) and
+//     injected into both derivations, so core aggregation and the session manager
+//     operate on one snapshot. For the discovered source this is the K8s registry +
+//     watcher (VMCP_NAMESPACE must be set); for static/dynamic it runs discovery once.
 //   - Elicitation: a LateBoundElicitationRequester is created, threaded into the
 //     core, and bound to the SDK server after serving (unless WithElicitation).
 func (b *Builder) Finish() (*vmcpserver.Server, core.VMCP, func(), error) {
@@ -182,10 +180,12 @@ func (b *Builder) buildSharedCollaborators(
 		})
 	}
 
-	// Kubernetes backend registry: built once for the discovered source so both
-	// derivations share one informer cache and readiness handle.
-	if o.backendRegistry == nil && isDiscoveredSource(cfg) {
-		reg, watcher, err := b.buildDiscoveredRegistry(cfg)
+	// Backend registry: built ONCE for every mode (static, dynamic, and discovered)
+	// and injected into both derivations, so core aggregation and the session manager
+	// operate on one snapshot rather than each running discovery independently. For the
+	// discovered source this is also the single informer cache + readiness handle.
+	if o.backendRegistry == nil {
+		reg, watcher, err := resolveBackendRegistry(b.ctx, cfg, o)
 		if err != nil {
 			return nil, cleanups, nil, err
 		}
@@ -201,21 +201,6 @@ func (b *Builder) buildSharedCollaborators(
 	}
 
 	return extra, cleanups, elicitation, nil
-}
-
-// buildDiscoveredRegistry builds the Kubernetes backend registry + watcher for the
-// discovered source. The watcher goroutine is bound to b.ctx, so it is released when
-// the context is cancelled (no separate cleanup).
-func (b *Builder) buildDiscoveredRegistry(cfg *vmcpconfig.Config) (vmcp.BackendRegistry, vmcpserver.Watcher, error) {
-	namespace := os.Getenv("VMCP_NAMESPACE")
-	if namespace == "" {
-		return nil, nil, fmt.Errorf("VMCP_NAMESPACE environment variable not set")
-	}
-	reg, watcher, err := backendregistry.NewKubernetesBackendRegistry(b.ctx, namespace, cfg.Group)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to build Kubernetes backend registry: %w", err)
-	}
-	return reg, watcher, nil
 }
 
 // combinedOptions returns b.opts followed by the Builder-built extras, without

@@ -51,6 +51,12 @@ func BuildServerConfig(ctx context.Context, cfg *vmcpconfig.Config, opts ...Opti
 	if cfg == nil {
 		return nil, noop, fmt.Errorf("%w: nil vmcp config", vmcp.ErrInvalidConfig)
 	}
+	// Validate before assembling so a programmatic embedder gets a loud error rather
+	// than a silently unauthenticated server (e.g. nil IncomingAuth → anonymous). See
+	// the matching guard in BuildCore.
+	if err := vmcpconfig.NewValidator().Validate(cfg); err != nil {
+		return nil, noop, fmt.Errorf("invalid vmcp config: %w", err)
+	}
 	o := applyOptions(opts)
 
 	// Work on a copy to avoid mutating the caller's config: InjectSubjectProviderNames

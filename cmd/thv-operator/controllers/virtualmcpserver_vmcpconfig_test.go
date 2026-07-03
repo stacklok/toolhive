@@ -1727,6 +1727,326 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 	t.Log("Static mode ConfigMap contains both auth configs, backend URLs/transports, and metadata")
 }
 
+// TestConfigMapContent_StaticMode_ExcludesBackendWithFailedAuth is a regression test for the
+// fail-open bug where a backend whose outgoing auth strategy failed to build (here, an xaa
+// strategy with an empty SubjectProviderName made ambiguous by 2 configured upstreams) was
+// correctly omitted from config.OutgoingAuth.Backends, but was still embedded in the static
+// config.Backends list served to the vMCP runtime. Since OutgoingAuthConfig.ResolveForBackend
+// falls through to Default for any backend absent from Backends, that backend would have been
+// silently served with the Default (token_exchange) identity instead of being unroutable.
+//
+// This test exercises the full ensureVmcpConfigConfigMap pipeline (not just
+// buildOutgoingAuthConfig in isolation) and asserts the failed backend is absent from BOTH
+// config.OutgoingAuth.Backends and the served config.Backends list, while an unaffected
+// backend relying on the same Default strategy is still served.
+func TestConfigMapContent_StaticMode_ExcludesBackendWithFailedAuth(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer   = "https://auth.example.com"
+		audience = "https://api.example.com"
+	)
+
+	ctx := context.Background()
+	testScheme := testutil.NewScheme(t)
+
+	mcpGroup := &mcpv1beta1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-group", Namespace: "default"},
+		Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
+	}
+
+	// An embedded auth server requires OIDC incoming auth, and the two must agree on
+	// issuer/audience (ValidateAuthServerIntegration) — this is plumbing required to
+	// reach the xaa ambiguity check, not itself under test.
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type:   mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: issuer},
+		},
+	}
+
+	// b1's override strategy is xaa with an empty SubjectProviderName, which becomes
+	// ambiguous once 2 upstream providers are configured on the embedded auth server below.
+	xaaAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "xaa-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeXAA,
+			XAA: &mcpv1beta1.XAASpec{
+				IDPTokenURL:    "https://idp.example.com/token",
+				TargetTokenURL: "https://target.example.com/token",
+				TargetAudience: "https://target.example.com",
+				// SubjectProviderName intentionally left empty.
+			},
+		},
+	}
+
+	// Default strategy is a valid token_exchange config, used by b2.
+	tokenExchangeAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "te-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+			},
+		},
+	}
+
+	b1 := v1beta1test.NewMCPServer("b1", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
+			URL:   "http://b1.default.svc.cluster.local:8080",
+		}),
+	)
+	b2 := v1beta1test.NewMCPServer("b2", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
+			URL:   "http://b2.default.svc.cluster.local:8080",
+		}),
+	)
+
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "oidc",
+			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+				Name:        "test-oidc",
+				Audience:    audience,
+				ResourceURL: audience,
+			},
+		}),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "inline",
+			Default: &mcpv1beta1.BackendAuthConfig{
+				Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "te-auth"},
+			},
+			Backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"b1": {
+					Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "xaa-auth"},
+				},
+			},
+		}),
+		// 2 upstreams makes b1's xaa override ambiguous.
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: issuer,
+			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+				{Name: "signing-key-secret", Key: "key.pem"},
+			},
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{
+					Name: "first",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL: "https://first-idp.example.com",
+						ClientID:  "first-client-id",
+					},
+				},
+				{
+					Name: "second",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL: "https://second-idp.example.com",
+						ClientID:  "second-client-id",
+					},
+				},
+			},
+		}),
+	)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, mcpGroup, b1, b2, xaaAuthConfig, tokenExchangeAuthConfig, oidcConfig).
+		WithStatusSubresource(b1, b2).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: testScheme,
+	}
+
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
+	require.NoError(t, err)
+	require.Len(t, workloadNames, 2, "should have discovered both backends")
+
+	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
+	require.NoError(t, err, "reconciliation must succeed in degraded mode, not fail outright")
+
+	configMap := &corev1.ConfigMap{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      vmcpConfigMapName("test-vmcp"),
+		Namespace: "default",
+	}, configMap)
+	require.NoError(t, err)
+
+	var config vmcpconfig.Config
+	err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
+	require.NoError(t, err)
+
+	require.NotNil(t, config.OutgoingAuth)
+	require.NotNil(t, config.OutgoingAuth.Default, "Default strategy must still build successfully")
+	assert.Equal(t, "token_exchange", config.OutgoingAuth.Default.Type)
+	assert.NotContains(t, config.OutgoingAuth.Backends, "b1",
+		"b1's ambiguous xaa override must not be assigned")
+
+	// The actual regression: b1 must be excluded from the served/routable backend set
+	// entirely, not merely absent from OutgoingAuth.Backends while still reachable and
+	// falling back to Default at runtime.
+	servedNames := make([]string, 0, len(config.Backends))
+	for _, backend := range config.Backends {
+		servedNames = append(servedNames, backend.Name)
+	}
+	assert.NotContains(t, servedNames, "b1", "b1 must be excluded from the served backend set")
+	assert.Contains(t, servedNames, "b2", "b2 must still be served via the valid Default strategy")
+}
+
+// TestConfigMapContent_StaticMode_KeepsBackendWithValidInlineOverrideDespiteDiscoveredError
+// is a regression test for an over-exclusion bug introduced by the fix for
+// TestConfigMapContent_StaticMode_ExcludesBackendWithFailedAuth: backendsWithFailedAuth
+// excluded a backend from the served set whenever ANY AuthConfigError named it, even if
+// that same backend also had a fully valid, resolved strategy from another source.
+//
+// b1 here has both: a discovered ExternalAuthConfigRef on its own MCPServer spec that
+// mirrors a Valid=False condition (mirroredExternalAuthConfigInvalid), which makes
+// discoverExternalAuthConfigs record an AuthConfigError for "b1" unconditionally, and a
+// valid inline override in vmcp.Spec.OutgoingAuth.Backends["b1"], applied in a separate,
+// unconditional pass that ends up correctly populated in authConfig.Backends.
+// discoverExternalAuthConfigs records the mirrored-invalid error before it even checks
+// whether an inline override exists, so both the error and the valid strategy coexist for
+// the same backend name. b1 must still be served using its valid inline strategy.
+//
+// The Valid=False mirror check is unique to the operator's own discovery path
+// (mirroredExternalAuthConfigInvalid) and is not replicated by the independent backend
+// discovery in pkg/vmcp/workloads (converters.DiscoverAndResolveAuth), so this scenario
+// does not also trip that unrelated fail-closed mechanism.
+func TestConfigMapContent_StaticMode_KeepsBackendWithValidInlineOverrideDespiteDiscoveredError(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	testScheme := testutil.NewScheme(t)
+
+	mcpGroup := &mcpv1beta1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-group", Namespace: "default"},
+		Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
+	}
+
+	// The valid inline override strategy for b1.
+	validAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "valid-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+			},
+		},
+	}
+
+	// b1's own discovered ref exists and is otherwise convertible, but carries a
+	// Valid=False condition (e.g. as set by a validating webhook/controller). This
+	// makes discoverExternalAuthConfigs record an AuthConfigError for "b1" without
+	// affecting the independent, condition-agnostic auth discovery used for backend
+	// listing (converters.DiscoverAndResolveAuth), so b1 remains discoverable.
+	invalidRefAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "invalid-ref-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+				TokenURL: "https://broken.example.com/token",
+			},
+		},
+		Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               mcpv1beta1.ConditionTypeValid,
+					Status:             metav1.ConditionFalse,
+					Reason:             "SomeValidationFailure",
+					Message:            "this config is not valid",
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	b1 := v1beta1test.NewMCPServer("b1", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.WithExternalAuthConfigRef("invalid-ref-auth"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
+			URL:   "http://b1.default.svc.cluster.local:8080",
+		}),
+	)
+
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "inline",
+			Backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"b1": {
+					Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "valid-auth"},
+				},
+			},
+		}),
+	)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, mcpGroup, b1, validAuthConfig, invalidRefAuthConfig).
+		WithStatusSubresource(b1, invalidRefAuthConfig).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: testScheme,
+	}
+
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
+	require.NoError(t, err)
+	require.Len(t, workloadNames, 1, "should have discovered b1")
+
+	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
+	require.NoError(t, err, "reconciliation must succeed despite the discovered-path error")
+
+	configMap := &corev1.ConfigMap{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      vmcpConfigMapName("test-vmcp"),
+		Namespace: "default",
+	}, configMap)
+	require.NoError(t, err)
+
+	var config vmcpconfig.Config
+	err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
+	require.NoError(t, err)
+
+	require.NotNil(t, config.OutgoingAuth)
+	b1Strategy, exists := config.OutgoingAuth.Backends["b1"]
+	require.True(t, exists, "b1's valid inline override must still be assigned")
+	require.NotNil(t, b1Strategy)
+	assert.Equal(t, "token_exchange", b1Strategy.Type)
+
+	// The actual regression: b1 must remain in the served/routable backend set because it
+	// has a valid, resolved strategy, even though an AuthConfigError was also recorded for
+	// it via the unrelated broken discovered ref.
+	servedNames := make([]string, 0, len(config.Backends))
+	for _, backend := range config.Backends {
+		servedNames = append(servedNames, backend.Name)
+	}
+	assert.Contains(t, servedNames, "b1", "b1 must not be excluded when it has a valid resolved strategy")
+}
+
 // TestConvertBackendsToStaticBackends_SkipsInvalidBackends tests that backends
 // without URL or transport are skipped with appropriate logging
 func TestConvertBackendsToStaticBackends_SkipsInvalidBackends(t *testing.T) {
@@ -1759,7 +2079,7 @@ func TestConvertBackendsToStaticBackends_SkipsInvalidBackends(t *testing.T) {
 		// "no-transport-backend" intentionally missing
 	}
 
-	result := convertBackendsToStaticBackends(ctx, backends, transportMap, nil)
+	result := convertBackendsToStaticBackends(ctx, backends, transportMap, nil, nil)
 
 	// Should only include the valid backend
 	assert.Len(t, result, 1, "should only include backends with URL and transport")
@@ -1767,6 +2087,35 @@ func TestConvertBackendsToStaticBackends_SkipsInvalidBackends(t *testing.T) {
 	assert.Equal(t, "http://backend1:8080", result[0].URL)
 	assert.Equal(t, "sse", result[0].Transport)
 	assert.Equal(t, "value", result[0].Metadata["key"])
+}
+
+// TestConvertBackendsToStaticBackends_ExcludesFailedAuthBackends verifies that a backend
+// named in excludedBackends is dropped from the served set even though it otherwise has a
+// valid URL and transport. This is the fix for the fail-open bug where a backend whose
+// outgoing auth strategy failed to build (e.g. an ambiguous XAA SubjectProviderName) would
+// still be embedded in the static backend list and silently fall back to the Default auth
+// strategy at runtime.
+func TestConvertBackendsToStaticBackends_ExcludesFailedAuthBackends(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	backends := []vmcp.Backend{
+		{Name: "healthy-backend", BaseURL: "http://backend1:8080", TransportType: "sse"},
+		{Name: "failed-auth-backend", BaseURL: "http://backend2:8080", TransportType: "sse"},
+	}
+	transportMap := map[string]string{
+		"healthy-backend":     "sse",
+		"failed-auth-backend": "sse",
+	}
+	excludedBackends := map[string]struct{}{
+		"failed-auth-backend": {},
+	}
+
+	result := convertBackendsToStaticBackends(ctx, backends, transportMap, nil, excludedBackends)
+
+	require.Len(t, result, 1, "the excluded backend must not be served")
+	assert.Equal(t, "healthy-backend", result[0].Name)
 }
 
 // TestStaticModeTransportConstants verifies that the transport constants match the CRD enum.
@@ -2247,7 +2596,7 @@ func TestConvertBackendsToStaticBackends_WithCABundlePathMap(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := convertBackendsToStaticBackends(t.Context(), tt.backends, tt.transportMap, tt.caBundlePathMap)
+			result := convertBackendsToStaticBackends(t.Context(), tt.backends, tt.transportMap, tt.caBundlePathMap, nil)
 			assert.Len(t, result, tt.expectedCount)
 
 			if tt.validateBackends != nil {

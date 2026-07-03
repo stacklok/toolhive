@@ -2562,10 +2562,13 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthConfig(
 // token_exchange, aws_sts, and xaa strategies when the field is empty and an
 // embedded auth server is configured on the VirtualMCPServer. All three
 // strategies use SubjectProviderName for the same concept: which upstream
-// provider's token to pull from Identity.UpstreamTokens. Mirrors
-// injectUpstreamProviderIfNeeded in pkg/runner/middleware.go, which does the
-// same for Cedar's PrimaryUpstreamProvider, and InjectSubjectProviderNames in
-// pkg/vmcp/config/defaults.go, which applies the same defaulting at serve time.
+// provider's token to pull from Identity.UpstreamTokens.
+//
+// The same first-upstream-name extraction appears in pkg/runner/middleware.go
+// and pkg/vmcp/config/defaults.go, which share the authserver.UpstreamRunConfig
+// type and are candidates for a shared authserver helper (tracked as follow-up
+// work). This function operates on the CRD-specific EmbeddedAuthServerConfig
+// type and is intentionally kept separate.
 //
 // Delegates the actual defaulting to authtypes.DefaultSubjectProviderName.
 // Returns strategy unchanged when it is nil or no embedded auth server is
@@ -2601,15 +2604,25 @@ func resolveFirstUpstreamProvider(embeddedCfg *mcpv1beta1.EmbeddedAuthServerConf
 // Preserves metadata and uses transport types from workload Specs.
 // Logs warnings when backends are skipped due to missing URL or transport information.
 // caBundlePathMap maps backend names to their CA bundle mount paths (populated for MCPServerEntry backends).
+// excludedBackends names backends whose outgoing auth strategy failed to build (see
+// backendsWithFailedAuth); they are dropped from the served set entirely rather than
+// left to fall through to the Default strategy at runtime.
 func convertBackendsToStaticBackends(
 	ctx context.Context,
 	backends []vmcptypes.Backend,
 	transportMap map[string]string,
 	caBundlePathMap map[string]string,
+	excludedBackends map[string]struct{},
 ) []vmcpconfig.StaticBackendConfig {
 	logger := log.FromContext(ctx)
 	static := make([]vmcpconfig.StaticBackendConfig, 0, len(backends))
 	for _, backend := range backends {
+		if _, excluded := excludedBackends[backend.Name]; excluded {
+			logger.V(1).Info("Skipping backend with failed outgoing auth configuration",
+				"backend", backend.Name)
+			continue
+		}
+
 		if backend.BaseURL == "" {
 			logger.V(1).Info("Skipping backend without URL in static mode",
 				"backend", backend.Name)

@@ -42,6 +42,7 @@ var StaticModeAllowedTransports = []string{TransportSSE, TransportStreamableHTTP
 
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
 // This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
+// +gendoc
 // +kubebuilder:validation:Type=string
 // +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 type Duration time.Duration

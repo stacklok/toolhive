@@ -1082,14 +1082,6 @@ func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
 		Claims:  map[string]interface{}{"sub": "user1"},
 	}}
 
-	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
-	require.NoError(t, err)
-	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
-
-	// Masquerades as a notification (has "method") but smuggles a tools/list
-	// result. DecodeMessage returns a non-Response for this frame.
-	disguised := `data: {"jsonrpc":"2.0","method":"notifications/initialized","id":1,"result":{"tools":[{"name":"admin_tool","description":"smuggled"}]}}`
-
 	// A genuine, filterable tools/list response on a later line.
 	realResultJSON, err := json.Marshal(mcp.ListToolsResult{
 		Tools: []mcp.Tool{{Name: "weather", Description: "Get weather information"}},
@@ -1101,23 +1093,83 @@ func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
 	})
 	require.NoError(t, err)
 
+	// Each frame smuggles a tools/list result outside a clean Response, via a
+	// different upstream-controlled shape. DecodeMessage either classifies them
+	// as non-Response or rejects them outright, so the pre-fix code passed them
+	// through unfiltered. All must be dropped, not leaked.
+	frames := []struct {
+		name    string
+		payload string
+	}{
+		{"method+result non-response", `data: {"jsonrpc":"2.0","method":"notifications/initialized","id":1,"result":{"tools":[{"name":"admin_tool"}]}}`},
+		{"missing jsonrpc tag", `data: {"id":1,"result":{"tools":[{"name":"admin_tool"}]}}`},
+		{"no id", `data: {"jsonrpc":"2.0","result":{"tools":[{"name":"admin_tool"}]}}`},
+		{"non-scalar id", `data: {"jsonrpc":"2.0","id":{"x":1},"result":{"tools":[{"name":"admin_tool"}]}}`},
+		{"batch array", `data: [{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"admin_tool"}]}}]`},
+	}
+
+	for _, f := range frames {
+		f := f
+		t.Run(f.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+			require.NoError(t, err)
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+			body := strings.Join([]string{f.payload, "data: " + string(realResp), ""}, "\n")
+			_, err = rfw.Write([]byte(body))
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			out := rr.Body.String()
+			assert.NotContains(t, out, "admin_tool",
+				"smuggled result leaked past the filter")
+			assert.Contains(t, out, "weather",
+				"genuine list response on a later line must still be delivered")
+		})
+	}
+}
+
+// TestResponseFilteringWriter_JSON_DisguisedResponseFrame is the application/json
+// counterpart: the disguised-result bypass is transport-independent, so the JSON
+// path must also fail closed on a smuggled result rather than write it through.
+func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]interface{}{"sub": "user1"},
+	}}
+
+	// A batch array smuggling a tools/list result. DecodeMessage rejects the
+	// array, so the pre-fix JSON path wrote it through raw.
+	smuggled := `[{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"admin_tool"}]}}]`
+
+	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+	require.NoError(t, err)
+	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
 	rr := httptest.NewRecorder()
 	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
-	rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
 
-	body := strings.Join([]string{disguised, "data: " + string(realResp), ""}, "\n")
-	_, err = rfw.Write([]byte(body))
+	_, err = rfw.Write([]byte(smuggled))
 	require.NoError(t, err)
 	require.NoError(t, rfw.FlushAndFilter())
 
-	out := rr.Body.String()
-
-	// The smuggled list must not leak: the disguised frame is dropped.
-	assert.NotContains(t, out, "admin_tool",
-		"result smuggled on a non-Response frame leaked past the filter")
-	assert.NotContains(t, out, "notifications/initialized",
-		"protocol-violating frame should be dropped, not passed through")
-
-	// The genuine response on the later line is still filtered and delivered.
-	assert.Contains(t, out, "weather", "genuine list response must still be delivered")
+	assert.NotContains(t, rr.Body.String(), "admin_tool",
+		"smuggled result on the application/json transport leaked past the filter")
 }

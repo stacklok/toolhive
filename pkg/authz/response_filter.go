@@ -131,17 +131,22 @@ func (rfw *ResponseFilteringWriter) Flush() {
 
 func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) error {
 	message, err := jsonrpc2.DecodeMessage(rawResponse)
-	if err != nil {
-		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rawResponse)
-		return err
-	}
-
 	response, ok := message.(*jsonrpc2.Response)
-	if !ok {
+	if err != nil || !ok {
+		// Not a clean Response. The disguised-result bypass (#5257) is
+		// transport-independent, so apply the same check here as on the SSE
+		// path: if a non-Response, undecodable, or batch frame still carries a
+		// result, fail closed rather than passing the smuggled list through.
+		if carriesResult(rawResponse) {
+			slog.Warn("JSON response carried a result outside a clean Response frame; dropping as a protocol violation",
+				"method", rfw.method)
+			rfw.ResponseWriter.WriteHeader(rfw.statusCode)
+			_, werr := rfw.ResponseWriter.Write([]byte("{}"))
+			return werr
+		}
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rawResponse)
-		return err
+		_, werr := rfw.ResponseWriter.Write(rawResponse)
+		return werr
 	}
 
 	filteredResponse, err := rfw.filterListResponse(response)
@@ -188,15 +193,7 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
 			message, err := jsonrpc2.DecodeMessage(data)
 			response, isResponse := message.(*jsonrpc2.Response)
-			if err != nil {
-				// Could not decode as JSON-RPC. Pass this line through
-				// unfiltered (this line only). Earlier revisions dumped the
-				// whole rawResponse here and leaked every subsequent data line
-				// past the filter (issue #5257). The WARN fires for every
-				// filtered method, since processSSEResponse only runs for those.
-				slog.Warn("SSE data line could not be decoded as JSON-RPC; passing through unfiltered",
-					"method", rfw.method, "error", err)
-			} else if isResponse {
+			if isResponse {
 				filteredResponse, err := rfw.filterListResponse(response)
 				if err != nil {
 					return rfw.writeErrorResponse(response.ID, err)
@@ -215,21 +212,27 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 
 				written = true
 			} else if carriesResult(data) {
-				// A non-Response frame that still carries a result field is a
-				// protocol violation: a JSON-RPC message is a request or a
-				// response, never both. DecodeMessage classifies it by the
-				// method field, so without this check it would fall through to
-				// the pass-through branch and leak the very list this filter
-				// exists to scrub (a narrowed form of #5257). Drop the line.
-				slog.Warn("SSE data line carried a result on a non-Response frame; dropping as a protocol violation",
+				// The frame is not a clean Response but still carries a result.
+				// This covers a non-Response type (a request/notification frame
+				// smuggling a result), a decode error (missing or invalid jsonrpc
+				// tag, a response frame with no or a non-scalar id), and a batch
+				// array. All are upstream-controlled shapes that would otherwise
+				// fall through and leak the very list this filter scrubs (#5257).
+				// Fail closed and drop the line.
+				slog.Warn("SSE data line carried a result outside a clean Response frame; dropping as a protocol violation",
 					"method", rfw.method)
 				written = true
+			} else if err != nil {
+				// Genuinely undecodable and no smuggled result. Pass this line
+				// through unfiltered (this line only).
+				slog.Warn("SSE data line could not be decoded as JSON-RPC; passing through unfiltered",
+					"method", rfw.method, "error", err)
 			} else {
 				// Genuine non-Response frame (e.g. an interleaved notifications/*
-				// message) with no result payload. Pass through unfiltered for
-				// this line only; a later data line may still carry the real
-				// response and must reach the filter.
-				slog.Warn("SSE data line was not a JSON-RPC Response; passing through unfiltered",
+				// message) with no result payload. Routine SSE traffic, so log at
+				// Debug to keep the suspicious branches above from being buried.
+				// Pass through this line only.
+				slog.Debug("SSE data line was not a JSON-RPC Response; passing through unfiltered",
 					"method", rfw.method)
 			}
 		}
@@ -270,16 +273,37 @@ func requiresResponseFiltering(method string) bool {
 		method == optimizerdec.FindToolName
 }
 
-// carriesResult reports whether an SSE data payload contains a JSON-RPC
-// "result" field. A frame that DecodeMessage classifies as a request or
-// notification (because it has a method field) but still carries a result is a
-// protocol violation, and must not pass through: it would leak the list the
-// filter exists to scrub. See issue #5257.
+// carriesResult reports whether a data payload contains a JSON-RPC "result"
+// field, either directly on an object or in any element of a batch array. A
+// frame that is not a clean Response (a request/notification smuggling a
+// result, a shape DecodeMessage rejects, or a batch array) but still carries a
+// result must not pass through: it would leak the list the filter exists to
+// scrub. See issue #5257.
 func carriesResult(data []byte) bool {
-	var probe struct {
-		Result json.RawMessage `json:"result"`
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return false
 	}
-	return json.Unmarshal(data, &probe) == nil && probe.Result != nil
+	switch trimmed[0] {
+	case '{':
+		var probe struct {
+			Result json.RawMessage `json:"result"`
+		}
+		return json.Unmarshal(trimmed, &probe) == nil && probe.Result != nil
+	case '[':
+		var batch []struct {
+			Result json.RawMessage `json:"result"`
+		}
+		if json.Unmarshal(trimmed, &batch) != nil {
+			return false
+		}
+		for i := range batch {
+			if batch[i].Result != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // filterListResponse filters the list response based on authorization policies

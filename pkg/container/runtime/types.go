@@ -283,6 +283,8 @@ type DeployWorkloadOptions struct {
 	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
 	// blocked by default in the egress proxy even when InsecureAllowAll is set.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateway access is port-independent: it ignores the permission profile's
+	// allowed ports, so once enabled the gateway is reachable on any port.
 	AllowDockerGateway bool
 
 	// RunConfigMCPServerGeneration is the monotonic version stamp from the source RunConfig

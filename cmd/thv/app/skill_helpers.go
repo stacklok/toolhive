@@ -10,6 +10,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	tclient "github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/skills"
 	skillclient "github.com/stacklok/toolhive/pkg/skills/client"
 )
@@ -64,4 +65,19 @@ func validateProjectRootForScope(scopeVar, projectRootVar *string) func(*cobra.C
 		}
 		return nil
 	}
+}
+
+// resolveProjectRoot returns explicit unchanged when non-empty. Otherwise it
+// auto-detects the project root by walking up from the current working
+// directory looking for a .git directory or file, matching the lock file's
+// commit-to-git-root assumption used by "thv skill sync" and "thv skill upgrade".
+func resolveProjectRoot(explicit string) (string, error) {
+	if explicit != "" {
+		return explicit, nil
+	}
+	root, err := tclient.DetectProjectRoot("")
+	if err != nil {
+		return "", fmt.Errorf("%w; run inside a git repository or pass --project-root explicitly", err)
+	}
+	return root, nil
 }

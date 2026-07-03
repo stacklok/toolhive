@@ -159,6 +159,21 @@ func (mr *MockSkillServiceMockRecorder) Push(ctx, opts any) *gomock.Call {
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Push", reflect.TypeOf((*MockSkillService)(nil).Push), ctx, opts)
 }
 
+// Sync mocks base method.
+func (m *MockSkillService) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Sync", ctx, opts)
+	ret0, _ := ret[0].(*skills.SyncResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Sync indicates an expected call of Sync.
+func (mr *MockSkillServiceMockRecorder) Sync(ctx, opts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Sync", reflect.TypeOf((*MockSkillService)(nil).Sync), ctx, opts)
+}
+
 // Uninstall mocks base method.
 func (m *MockSkillService) Uninstall(ctx context.Context, opts skills.UninstallOptions) error {
 	m.ctrl.T.Helper()
@@ -171,6 +186,21 @@ func (m *MockSkillService) Uninstall(ctx context.Context, opts skills.UninstallO
 func (mr *MockSkillServiceMockRecorder) Uninstall(ctx, opts any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Uninstall", reflect.TypeOf((*MockSkillService)(nil).Uninstall), ctx, opts)
+}
+
+// Upgrade mocks base method.
+func (m *MockSkillService) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*skills.UpgradeResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Upgrade", ctx, opts)
+	ret0, _ := ret[0].(*skills.UpgradeResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Upgrade indicates an expected call of Upgrade.
+func (mr *MockSkillServiceMockRecorder) Upgrade(ctx, opts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Upgrade", reflect.TypeOf((*MockSkillService)(nil).Upgrade), ctx, opts)
 }
 
 // Validate mocks base method.

@@ -37,6 +37,8 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 	r.Get("/builds", apierrors.ErrorHandler(routes.listBuilds))
 	r.Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
 	r.Get("/content", apierrors.ErrorHandler(routes.getSkillContent))
+	r.Post("/sync", apierrors.ErrorHandler(routes.syncSkills))
+	r.Post("/upgrade", apierrors.ErrorHandler(routes.upgradeSkills))
 
 	return r
 }
@@ -364,4 +366,76 @@ func (s *SkillsRoutes) getSkillContent(w http.ResponseWriter, r *http.Request) e
 
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(content)
+}
+
+// syncSkills installs the exact name/digest pinned in a project's skills lock
+// file for every entry, restoring skills that are missing or drifted.
+//
+//	@Summary		Sync a project's skills to its lock file
+//	@Description	Install the exact pinned digest for every lock file entry, restoring drift
+//	@Tags			skills
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		syncSkillsRequest	true	"Sync request"
+//	@Success		200		{object}	skills.SyncResult
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		500		{string}	string	"Internal Server Error"
+//	@Router			/api/v1beta/skills/sync [post]
+func (s *SkillsRoutes) syncSkills(w http.ResponseWriter, r *http.Request) error {
+	var req syncSkillsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	result, err := s.skillService.Sync(r.Context(), skills.SyncOptions{
+		ProjectRoot: req.ProjectRoot,
+		Clients:     req.Clients,
+		Prune:       req.Prune,
+	})
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(result)
+}
+
+// upgradeSkills re-resolves each lock file entry's original source and
+// installs any newer content it finds.
+//
+//	@Summary		Upgrade a project's locked skills
+//	@Description	Re-resolve each lock file entry's source and install newer content, if any
+//	@Tags			skills
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		upgradeSkillsRequest	true	"Upgrade request"
+//	@Success		200		{object}	skills.UpgradeResult
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		404		{string}	string	"Not Found (requested skill name not in lock file)"
+//	@Failure		500		{string}	string	"Internal Server Error"
+//	@Router			/api/v1beta/skills/upgrade [post]
+func (s *SkillsRoutes) upgradeSkills(w http.ResponseWriter, r *http.Request) error {
+	var req upgradeSkillsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	result, err := s.skillService.Upgrade(r.Context(), skills.UpgradeOptions{
+		ProjectRoot: req.ProjectRoot,
+		Names:       req.Names,
+		DryRun:      req.DryRun,
+		Clients:     req.Clients,
+	})
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(result)
 }

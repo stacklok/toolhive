@@ -133,6 +133,90 @@ type PushOptions struct {
 	Reference string `json:"reference"`
 }
 
+// SyncOptions configures the behavior of the Sync operation.
+type SyncOptions struct {
+	// ProjectRoot is the project root path whose lock file should be synced.
+	ProjectRoot string `json:"project_root"`
+	// Clients lists target clients (e.g., "claude-code"). Empty means every
+	// skill-supporting client detected on this host.
+	Clients []string `json:"clients,omitempty"`
+	// Prune removes project-scoped skills that are installed but not present
+	// in the lock file. When false, such skills are only reported.
+	Prune bool `json:"prune,omitempty"`
+}
+
+// SyncFailure describes a single skill that failed to sync.
+type SyncFailure struct {
+	// Name is the skill name that failed.
+	Name string `json:"name"`
+	// Error is a human-readable description of the failure.
+	Error string `json:"error"`
+}
+
+// SyncResult contains the outcome of a Sync operation.
+type SyncResult struct {
+	// Installed lists skills that were installed or reinstalled to match the lock file.
+	Installed []string `json:"installed,omitempty"`
+	// UpToDate lists skills that already matched the lock file's pinned digest.
+	UpToDate []string `json:"up_to_date,omitempty"`
+	// Unmanaged lists project-scoped skills present on disk but absent from the lock file.
+	Unmanaged []string `json:"unmanaged,omitempty"`
+	// Pruned lists unmanaged skills that were uninstalled because Prune was set.
+	Pruned []string `json:"pruned,omitempty"`
+	// Failed lists skills that could not be synced, with the reason for each.
+	Failed []SyncFailure `json:"failed,omitempty"`
+}
+
+// UpgradeOptions configures the behavior of the Upgrade operation.
+type UpgradeOptions struct {
+	// ProjectRoot is the project root path whose lock file should be upgraded.
+	ProjectRoot string `json:"project_root"`
+	// Names restricts the upgrade to specific skill names. Empty means every
+	// entry in the lock file.
+	Names []string `json:"names,omitempty"`
+	// DryRun reports what would change without installing anything.
+	DryRun bool `json:"dry_run,omitempty"`
+	// Clients lists target clients (e.g., "claude-code"). Empty means every
+	// skill-supporting client detected on this host.
+	Clients []string `json:"clients,omitempty"`
+}
+
+// UpgradeStatus represents the outcome of upgrading a single skill.
+type UpgradeStatus string
+
+const (
+	// UpgradeStatusUpgraded indicates the skill was installed at a new digest.
+	UpgradeStatusUpgraded UpgradeStatus = "upgraded"
+	// UpgradeStatusUpToDate indicates the resolved source still points at the pinned digest.
+	UpgradeStatusUpToDate UpgradeStatus = "up-to-date"
+	// UpgradeStatusNotUpgradable indicates the entry is pinned to an immutable
+	// reference (an OCI digest or a full git commit hash) and cannot be upgraded.
+	UpgradeStatusNotUpgradable UpgradeStatus = "not-upgradable"
+	// UpgradeStatusFailed indicates the upgrade attempt failed.
+	UpgradeStatusFailed UpgradeStatus = "failed"
+)
+
+// UpgradeOutcome describes the result of attempting to upgrade one skill.
+type UpgradeOutcome struct {
+	// Name is the skill name.
+	Name string `json:"name"`
+	// Status is the outcome of the upgrade attempt.
+	Status UpgradeStatus `json:"status"`
+	// OldDigest is the digest pinned in the lock file before this operation.
+	OldDigest string `json:"old_digest,omitempty"`
+	// NewDigest is the digest the source currently resolves to. Equal to
+	// OldDigest when Status is UpgradeStatusUpToDate.
+	NewDigest string `json:"new_digest,omitempty"`
+	// Error is a human-readable description of the failure, set only when Status is UpgradeStatusFailed.
+	Error string `json:"error,omitempty"`
+}
+
+// UpgradeResult contains the outcome of an Upgrade operation.
+type UpgradeResult struct {
+	// Outcomes contains one entry per skill considered for upgrade.
+	Outcomes []UpgradeOutcome `json:"outcomes"`
+}
+
 // LocalBuild represents a locally-built OCI skill artifact in the local store.
 type LocalBuild struct {
 	// Tag is the OCI tag or name used to reference the artifact.

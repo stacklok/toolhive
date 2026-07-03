@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
 // Install installs a skill. When the Name field contains an OCI reference
@@ -21,7 +22,49 @@ import (
 // the registry and extracted. When LayerData is provided, the skill is extracted
 // to disk and a full installation record is created. Without LayerData, a
 // pending record is created.
+//
+// For project-scoped installs, a successful result also upserts an entry in
+// the project's toolhive.lock.yaml, pinning the resolved reference and digest
+// so the install can be restored later with "thv skill sync". opts.Name is
+// recorded as the entry's Source exactly as given here (before any internal
+// resolution), so "thv skill upgrade" can re-resolve it later.
 func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*skills.InstallResult, error) {
+	source := opts.Name
+	result, err := s.installInternal(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	recordLockEntry(source, result.Skill)
+	return result, nil
+}
+
+// recordLockEntry upserts a project-scope lock file entry after a successful
+// install. It is a no-op for user-scoped installs. Lock-file errors are
+// logged but never fail the install — the skill's files and DB record are
+// already correct at this point, so surfacing an error here would be
+// misleading (and a subsequent sync/upgrade can repair the lock file).
+func recordLockEntry(source string, sk skills.InstalledSkill) {
+	if sk.Scope != skills.ScopeProject || sk.ProjectRoot == "" {
+		return
+	}
+	entry := lockfile.Entry{
+		Name:              sk.Metadata.Name,
+		Version:           sk.Metadata.Version,
+		Source:            source,
+		ResolvedReference: sk.Reference,
+		Digest:            sk.Digest,
+	}
+	if err := lockfile.UpsertEntry(sk.ProjectRoot, entry); err != nil {
+		slog.Warn("failed to update skills lock file",
+			"skill", sk.Metadata.Name, "project_root", sk.ProjectRoot, "error", err)
+	}
+}
+
+// installInternal performs the actual install dispatch without touching the
+// lock file. It is used directly by Install, and by Sync/Upgrade which
+// manage lock file entries themselves (they pass a Name that has already
+// been resolved or pinned, which must not be recorded as the entry's Source).
+func (s *service) installInternal(ctx context.Context, opts skills.InstallOptions) (*skills.InstallResult, error) {
 	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
 	if err != nil {
 		return nil, err

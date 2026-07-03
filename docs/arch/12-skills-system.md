@@ -37,11 +37,13 @@ graph TB
         Packager[SkillPackager<br/>Build OCI artifacts]
         Installer[Installer<br/>Extract + validate]
         Store[SkillStore<br/>SQLite persistence]
+        Lock[Lockfile<br/>pkg/skills/lockfile]
     end
 
     subgraph "Client Filesystem"
         UserSkills["~/.claude/skills/<br/>(user scope)"]
         ProjectSkills[".claude/skills/<br/>(project scope)"]
+        LockFile["toolhive.lock.yaml<br/>(project root)"]
     end
 
     subgraph "Access Layer"
@@ -65,14 +67,17 @@ graph TB
     SVC --> Packager
     SVC --> Installer
     SVC --> Store
+    SVC --> Lock
 
     Installer --> UserSkills
     Installer --> ProjectSkills
+    Lock --> LockFile
 
     style SVC fill:#90caf9,stroke:#1565c0,stroke-width:2px
     style Store fill:#e3f2fd
     style UserSkills fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
     style ProjectSkills fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
+    style LockFile fill:#c8e6c9,stroke:#2e7d32,stroke-width:2px
     style CLI fill:#fff9c4
     style API fill:#fff9c4
 ```
@@ -258,6 +263,43 @@ Removes the skill files from the filesystem, deletes the database record, and re
 
 **Implementation:** `pkg/skills/skillsvc/uninstall.go` (Uninstall), `pkg/groups/skills.go` (RemoveSkillFromAllGroups)
 
+## Project Lock File
+
+Every `--scope project` install writes an entry to a `toolhive.lock.yaml` file at the project root, alongside `.git`. The lock file pins the exact **name**, **version**, **source**, **resolved reference**, and **digest** of each project-scoped skill so a team can commit it to version control, restore an identical set of skills on another machine, and later check for newer content — the same role `package-lock.json` or `go.sum` play for other package managers. User-scope installs never touch the lock file.
+
+```yaml
+version: 1
+skills:
+  - name: code-review
+    version: 1.0.0
+    source: code-review                          # what the user/registry resolver originally typed
+    resolvedReference: ghcr.io/org/code-review:1.0.0
+    digest: sha256:9f2b1e...
+```
+
+The lock file is **client-agnostic**: it pins skill content, not which client applications installed it. `thv skill sync` installs pinned skills for whichever clients are targeted (all detected clients by default, or `--clients`), independent of what was targeted at install time.
+
+### Sync
+
+```bash
+thv skill sync              # restore every pinned skill at its exact digest
+thv skill sync --prune      # also uninstall project-scoped skills absent from the lock file
+```
+
+For each lock entry, `Sync` compares the currently installed digest (if any) against the pinned digest. A mismatch or missing install triggers a fresh install pinned to `resolvedReference@digest` — an OCI digest reference, or a git reference pinned to the exact commit hash — so the installed content is byte-for-byte reproducible regardless of what a mutable tag or branch currently points to. Project-scoped skills installed outside the lock file are reported as unmanaged, or removed when `--prune` is set. A sync never rewrites the lock file itself: it only makes the filesystem and database match what is already pinned.
+
+### Upgrade
+
+```bash
+thv skill upgrade                    # check every locked skill for newer content
+thv skill upgrade code-review        # check specific skills only
+thv skill upgrade --dry-run          # report without installing or writing the lock file
+```
+
+`Upgrade` re-resolves each entry's original `source` exactly as a fresh `thv skill install <source>` would (registry name -> catalog lookup, git branch/tag -> current head, OCI tag -> current digest) and compares the result against the pinned digest. A different digest installs the new content and rewrites the entry's `resolvedReference`, `digest`, and `version` — `source` never changes, so future upgrades keep re-resolving the same catalog name or ref. Entries already pinned to an immutable reference (an OCI `@sha256:...` digest or a full 40-character git commit hash) are reported as `not-upgradable` without contacting the network, since re-resolving them can never surface different content.
+
+**Implementation:** `pkg/skills/lockfile/` (schema, file-locked read/write/upsert/remove), `pkg/skills/skillsvc/sync.go` (Sync), `pkg/skills/skillsvc/upgrade.go` (Upgrade), `pkg/skills/skillsvc/pin.go` (digest-pinning and immutability helpers)
+
 ## Git-Based Skill Resolution
 
 Skills can be installed directly from git repositories using the `git://` scheme:
@@ -342,6 +384,8 @@ oci_tags table (reserved; not currently populated)
 | `GET` | `/builds` | List local builds |
 | `DELETE` | `/builds/{tag}` | Delete a local build |
 | `GET` | `/content` | Get a skill's SKILL.md body and file listing for a reference |
+| `POST` | `/sync` | Install pinned skills from a project's lock file |
+| `POST` | `/upgrade` | Re-resolve locked skills and install newer content, if any |
 
 **Implementation:** `pkg/api/v1/skills.go`
 
@@ -366,7 +410,9 @@ thv skill
 ├── build [path]         Build skill to OCI artifact
 ├── push [reference]     Push built skill to registry
 ├── builds               List locally-built OCI artifacts
-└── builds remove [tag]  Delete a locally-built artifact
+├── builds remove [tag]  Delete a locally-built artifact
+├── sync                 Install skills exactly as pinned in toolhive.lock.yaml
+└── upgrade [name...]    Check for and install newer content for locked skills
 ```
 
 **Implementation:** `cmd/thv/app/skill*.go`
@@ -448,6 +494,7 @@ ToolHive owns the installation lifecycle, scoping model, CLI/API interfaces, and
 | Parsing | `pkg/skills/parser.go` |
 | Extraction | `pkg/skills/installer.go` |
 | Git resolution | `pkg/skills/gitresolver/` |
+| Project lock file | `pkg/skills/lockfile/` |
 | Storage interface | `pkg/storage/interfaces.go` |
 | SQLite backend | `pkg/storage/sqlite/skill_store.go` |
 | REST API | `pkg/api/v1/skills.go` |

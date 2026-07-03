@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
 // Uninstall removes an installed skill and cleans up files for all clients.
@@ -70,6 +72,8 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 		return err
 	}
 
+	removeLockEntry(scope, opts.ProjectRoot, opts.Name)
+
 	// Remove the skill from all groups — best-effort, same pattern as file cleanup.
 	if s.groupManager != nil {
 		if groupErr := groups.RemoveSkillFromAllGroups(ctx, s.groupManager, opts.Name); groupErr != nil {
@@ -78,4 +82,17 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 	}
 
 	return errors.Join(cleanupErrs...)
+}
+
+// removeLockEntry removes a project's lock file entry, if any — best-effort,
+// same pattern as file cleanup. A no-op for user scope or for skills that
+// predate the lock file.
+func removeLockEntry(scope skills.Scope, projectRoot, name string) {
+	if scope != skills.ScopeProject || projectRoot == "" {
+		return
+	}
+	if err := lockfile.RemoveEntry(projectRoot, name); err != nil {
+		slog.Warn("failed to update skills lock file",
+			"skill", name, "project_root", projectRoot, "error", err)
+	}
 }

@@ -1804,6 +1804,117 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_skills.SyncFailure": {
+                "properties": {
+                    "error": {
+                        "description": "Error is a human-readable description of the failure.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name that failed.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.SyncResult": {
+                "properties": {
+                    "failed": {
+                        "description": "Failed lists skills that could not be synced, with the reason for each.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SyncFailure"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "installed": {
+                        "description": "Installed lists skills that were installed or reinstalled to match the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "pruned": {
+                        "description": "Pruned lists unmanaged skills that were uninstalled because Prune was set.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "unmanaged": {
+                        "description": "Unmanaged lists project-scoped skills present on disk but absent from the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "up_to_date": {
+                        "description": "UpToDate lists skills that already matched the lock file's pinned digest.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.UpgradeOutcome": {
+                "properties": {
+                    "error": {
+                        "description": "Error is a human-readable description of the failure, set only when Status is UpgradeStatusFailed.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name.",
+                        "type": "string"
+                    },
+                    "new_digest": {
+                        "description": "NewDigest is the digest the source currently resolves to. Equal to\nOldDigest when Status is UpgradeStatusUpToDate.",
+                        "type": "string"
+                    },
+                    "old_digest": {
+                        "description": "OldDigest is the digest pinned in the lock file before this operation.",
+                        "type": "string"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeStatus"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.UpgradeResult": {
+                "properties": {
+                    "outcomes": {
+                        "description": "Outcomes contains one entry per skill considered for upgrade.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeOutcome"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.UpgradeStatus": {
+                "description": "Status is the outcome of the upgrade attempt.",
+                "enum": [
+                    "upgraded",
+                    "up-to-date",
+                    "not-upgradable",
+                    "failed"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "UpgradeStatusUpgraded",
+                    "UpgradeStatusUpToDate",
+                    "UpgradeStatusNotUpgradable",
+                    "UpgradeStatusFailed"
+                ]
+            },
             "github_com_stacklok_toolhive_pkg_skills.ValidationResult": {
                 "properties": {
                     "errors": {
@@ -3397,6 +3508,28 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "pkg_api_v1.syncSkillsRequest": {
+                "description": "Request to sync a project's installed skills to match its lock file",
+                "properties": {
+                    "clients": {
+                        "description": "Clients lists target client identifiers, or omit for every detected client",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path whose lock file should be synced",
+                        "type": "string"
+                    },
+                    "prune": {
+                        "description": "Prune removes project-scoped skills that are installed but not present in the lock file",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
             "pkg_api_v1.toolOverride": {
                 "description": "Tool override",
                 "properties": {
@@ -3593,6 +3726,36 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.upgradeSkillsRequest": {
+                "description": "Request to check for and install newer content for locked skills",
+                "properties": {
+                    "clients": {
+                        "description": "Clients lists target client identifiers, or omit for every detected client",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "dry_run": {
+                        "description": "DryRun reports what would change without installing anything",
+                        "type": "boolean"
+                    },
+                    "names": {
+                        "description": "Names restricts the upgrade to specific skill names, or omit for every locked skill",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path whose lock file should be upgraded",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -6196,6 +6359,138 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Push a skill",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/sync": {
+            "post": {
+                "description": "Install the exact pinned digest for every lock file entry, restoring drift",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.syncSkillsRequest",
+                                        "summary": "request",
+                                        "description": "Sync request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Sync request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SyncResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Sync a project's skills to its lock file",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/upgrade": {
+            "post": {
+                "description": "Re-resolve each lock file entry's source and install newer content, if any",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.upgradeSkillsRequest",
+                                        "summary": "request",
+                                        "description": "Upgrade request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Upgrade request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (requested skill name not in lock file)"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Upgrade a project's locked skills",
                 "tags": [
                     "skills"
                 ]

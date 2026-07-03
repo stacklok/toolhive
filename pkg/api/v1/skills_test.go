@@ -575,6 +575,115 @@ func TestSkillsRouter(t *testing.T) {
 			expectedStatus: http.StatusInternalServerError,
 			expectedBody:   "Internal Server Error",
 		},
+		// syncSkills
+		{
+			name:   "sync skills success",
+			method: "POST",
+			path:   "/sync",
+			body:   `{"project_root":"{{project_root}}"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
+				svc.EXPECT().Sync(gomock.Any(), skills.SyncOptions{ProjectRoot: projectRoot}).
+					Return(&skills.SyncResult{Installed: []string{"my-skill"}}, nil)
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"installed":["my-skill"]`,
+		},
+		{
+			name:   "sync skills with prune and clients",
+			method: "POST",
+			path:   "/sync",
+			body:   `{"project_root":"{{project_root}}","clients":["claude-code"],"prune":true}`,
+			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
+				svc.EXPECT().Sync(gomock.Any(), skills.SyncOptions{
+					ProjectRoot: projectRoot,
+					Clients:     []string{"claude-code"},
+					Prune:       true,
+				}).Return(&skills.SyncResult{Pruned: []string{"extra-skill"}}, nil)
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"pruned":["extra-skill"]`,
+		},
+		{
+			name:           "sync skills malformed json",
+			method:         "POST",
+			path:           "/sync",
+			body:           `{invalid`,
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "invalid request body",
+		},
+		{
+			name:   "sync skills service error",
+			method: "POST",
+			path:   "/sync",
+			body:   `{"project_root":"/not/a/repo"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+				svc.EXPECT().Sync(gomock.Any(), skills.SyncOptions{ProjectRoot: "/not/a/repo"}).
+					Return(nil, httperr.WithCode(fmt.Errorf("project_root must be a git repository"), http.StatusBadRequest))
+			},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "must be a git repository",
+		},
+		// upgradeSkills
+		{
+			name:   "upgrade skills success",
+			method: "POST",
+			path:   "/upgrade",
+			body:   `{"project_root":"{{project_root}}"}`,
+			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
+				svc.EXPECT().Upgrade(gomock.Any(), skills.UpgradeOptions{ProjectRoot: projectRoot}).
+					Return(&skills.UpgradeResult{
+						Outcomes: []skills.UpgradeOutcome{
+							{Name: "my-skill", Status: skills.UpgradeStatusUpgraded, OldDigest: "sha256:old", NewDigest: "sha256:new"},
+						},
+					}, nil)
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"status":"upgraded"`,
+		},
+		{
+			name:   "upgrade skills dry run with names and clients",
+			method: "POST",
+			path:   "/upgrade",
+			body:   `{"project_root":"{{project_root}}","names":["my-skill"],"dry_run":true,"clients":["claude-code"]}`,
+			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
+				svc.EXPECT().Upgrade(gomock.Any(), skills.UpgradeOptions{
+					ProjectRoot: projectRoot,
+					Names:       []string{"my-skill"},
+					DryRun:      true,
+					Clients:     []string{"claude-code"},
+				}).Return(&skills.UpgradeResult{
+					Outcomes: []skills.UpgradeOutcome{
+						{Name: "my-skill", Status: skills.UpgradeStatusUpToDate, OldDigest: "sha256:old", NewDigest: "sha256:old"},
+					},
+				}, nil)
+			},
+			expectedStatus: http.StatusOK,
+			expectedBody:   `"status":"up-to-date"`,
+		},
+		{
+			name:           "upgrade skills malformed json",
+			method:         "POST",
+			path:           "/upgrade",
+			body:           `{invalid`,
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			expectedStatus: http.StatusBadRequest,
+			expectedBody:   "invalid request body",
+		},
+		{
+			name:   "upgrade skills unknown name",
+			method: "POST",
+			path:   "/upgrade",
+			body:   `{"project_root":"{{project_root}}","names":["missing-skill"]}`,
+			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
+				svc.EXPECT().Upgrade(gomock.Any(), skills.UpgradeOptions{
+					ProjectRoot: projectRoot,
+					Names:       []string{"missing-skill"},
+				}).Return(nil, httperr.WithCode(fmt.Errorf(`skill "missing-skill" is not present in the lock file`), http.StatusNotFound))
+			},
+			expectedStatus: http.StatusNotFound,
+			expectedBody:   "not present in the lock file",
+		},
 	}
 
 	for _, tt := range tests {

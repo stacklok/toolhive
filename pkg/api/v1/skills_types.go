@@ -76,3 +76,29 @@ type buildListResponse struct {
 	// List of locally-built OCI skill artifacts
 	Builds []skills.LocalBuild `json:"builds"`
 }
+
+// syncSkillsRequest represents the request to sync a project's skills lock file.
+//
+//	@Description	Request to sync a project's installed skills to match its lock file
+type syncSkillsRequest struct {
+	// ProjectRoot is the project root path whose lock file should be synced
+	ProjectRoot string `json:"project_root"`
+	// Clients lists target client identifiers, or omit for every detected client
+	Clients []string `json:"clients,omitempty"`
+	// Prune removes project-scoped skills that are installed but not present in the lock file
+	Prune bool `json:"prune,omitempty"`
+}
+
+// upgradeSkillsRequest represents the request to upgrade a project's locked skills.
+//
+//	@Description	Request to check for and install newer content for locked skills
+type upgradeSkillsRequest struct {
+	// ProjectRoot is the project root path whose lock file should be upgraded
+	ProjectRoot string `json:"project_root"`
+	// Names restricts the upgrade to specific skill names, or omit for every locked skill
+	Names []string `json:"names,omitempty"`
+	// DryRun reports what would change without installing anything
+	DryRun bool `json:"dry_run,omitempty"`
+	// Clients lists target client identifiers, or omit for every detected client
+	Clients []string `json:"clients,omitempty"`
+}

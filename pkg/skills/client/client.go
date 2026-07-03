@@ -267,6 +267,39 @@ func (c *Client) GetContent(ctx context.Context, opts skills.ContentOptions) (*s
 	return &content, nil
 }
 
+// Sync installs the exact name/digest pinned in the project's lock file for
+// every entry, restoring skills that are missing or have drifted.
+func (c *Client) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error) {
+	body := syncRequest{
+		ProjectRoot: opts.ProjectRoot,
+		Clients:     opts.Clients,
+		Prune:       opts.Prune,
+	}
+
+	var result skills.SyncResult
+	if err := c.doJSONRequest(ctx, http.MethodPost, "/sync", nil, body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
+// Upgrade re-resolves each lock file entry's original source and installs
+// any newer content it finds.
+func (c *Client) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*skills.UpgradeResult, error) {
+	body := upgradeRequest{
+		ProjectRoot: opts.ProjectRoot,
+		Names:       opts.Names,
+		DryRun:      opts.DryRun,
+		Clients:     opts.Clients,
+	}
+
+	var result skills.UpgradeResult
+	if err := c.doJSONRequest(ctx, http.MethodPost, "/upgrade", nil, body, &result); err != nil {
+		return nil, err
+	}
+	return &result, nil
+}
+
 // --- internal helpers ---
 
 func (c *Client) buildURL(path string, query url.Values) string {

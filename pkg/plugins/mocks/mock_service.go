@@ -85,6 +85,51 @@ func (mr *MockPluginServiceMockRecorder) GetContent(ctx, opts any) *gomock.Call 
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "GetContent", reflect.TypeOf((*MockPluginService)(nil).GetContent), ctx, opts)
 }
 
+// Info mocks base method.
+func (m *MockPluginService) Info(ctx context.Context, opts plugins.InfoOptions) (*plugins.PluginInfo, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Info", ctx, opts)
+	ret0, _ := ret[0].(*plugins.PluginInfo)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Info indicates an expected call of Info.
+func (mr *MockPluginServiceMockRecorder) Info(ctx, opts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Info", reflect.TypeOf((*MockPluginService)(nil).Info), ctx, opts)
+}
+
+// Install mocks base method.
+func (m *MockPluginService) Install(ctx context.Context, opts plugins.InstallOptions) (*plugins.InstallResult, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Install", ctx, opts)
+	ret0, _ := ret[0].(*plugins.InstallResult)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// Install indicates an expected call of Install.
+func (mr *MockPluginServiceMockRecorder) Install(ctx, opts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Install", reflect.TypeOf((*MockPluginService)(nil).Install), ctx, opts)
+}
+
+// List mocks base method.
+func (m *MockPluginService) List(ctx context.Context, opts plugins.ListOptions) ([]plugins.InstalledPlugin, error) {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "List", ctx, opts)
+	ret0, _ := ret[0].([]plugins.InstalledPlugin)
+	ret1, _ := ret[1].(error)
+	return ret0, ret1
+}
+
+// List indicates an expected call of List.
+func (mr *MockPluginServiceMockRecorder) List(ctx, opts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "List", reflect.TypeOf((*MockPluginService)(nil).List), ctx, opts)
+}
+
 // ListBuilds mocks base method.
 func (m *MockPluginService) ListBuilds(ctx context.Context) ([]plugins.LocalBuild, error) {
 	m.ctrl.T.Helper()
@@ -112,6 +157,20 @@ func (m *MockPluginService) Push(ctx context.Context, opts plugins.PushOptions) 
 func (mr *MockPluginServiceMockRecorder) Push(ctx, opts any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Push", reflect.TypeOf((*MockPluginService)(nil).Push), ctx, opts)
+}
+
+// Uninstall mocks base method.
+func (m *MockPluginService) Uninstall(ctx context.Context, opts plugins.UninstallOptions) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "Uninstall", ctx, opts)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// Uninstall indicates an expected call of Uninstall.
+func (mr *MockPluginServiceMockRecorder) Uninstall(ctx, opts any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Uninstall", reflect.TypeOf((*MockPluginService)(nil).Uninstall), ctx, opts)
 }
 
 // Validate mocks base method.

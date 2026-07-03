@@ -126,6 +126,14 @@ func ParsePluginManifest(pluginDir string) (*PluginManifest, error) {
 	return parseManifestBytes(content)
 }
 
+// ParsePluginManifestFromBytes parses manifest bytes into a PluginManifest,
+// applying the same strictness checks as ParsePluginManifest. Split out for
+// callers (e.g. the git install flow) that already hold the manifest bytes
+// rather than a directory on disk.
+func ParsePluginManifestFromBytes(content []byte) (*PluginManifest, error) {
+	return parseManifestBytes(content)
+}
+
 // parseManifestBytes parses manifest bytes into a PluginManifest, applying the
 // strictness checks. Split from ParsePluginManifest for testability.
 func parseManifestBytes(content []byte) (*PluginManifest, error) {

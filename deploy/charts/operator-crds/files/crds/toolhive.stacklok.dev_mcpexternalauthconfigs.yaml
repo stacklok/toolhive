@@ -1377,7 +1377,7 @@ spec:
                 properties:
                   idpClientId:
                     description: IDPClientID is the OAuth client ID at the IdP for
-                      Step A.
+                      IdP exchange.
                     type: string
                   idpClientSecretRef:
                     description: IDPClientSecretRef references a Kubernetes Secret
@@ -1395,7 +1395,7 @@ spec:
                     type: object
                   idpTokenUrl:
                     description: |-
-                      IDPTokenURL is the IdP token endpoint for Step A (RFC 8693 exchange).
+                      IDPTokenURL is the IdP token endpoint for IdP exchange (RFC 8693).
                       Must be a valid HTTPS URL.
                     pattern: ^https://.*$
                     type: string
@@ -1407,7 +1407,7 @@ spec:
                     type: boolean
                   scopes:
                     description: Scopes are the requested scopes for the XAA exchange
-                      (Steps A and B).
+                      (IdP exchange and target grant).
                     items:
                       type: string
                     type: array
@@ -1422,7 +1422,7 @@ spec:
                   subjectTokenType:
                     description: |-
                       SubjectTokenType is the token-type URN of the upstream subject token
-                      used in Step A. Defaults to "urn:ietf:params:oauth:token-type:id_token"
+                      used in IdP exchange. Defaults to "urn:ietf:params:oauth:token-type:id_token"
                       when empty.
                     enum:
                     - urn:ietf:params:oauth:token-type:id_token
@@ -1433,8 +1433,8 @@ spec:
                     type: string
                   targetClientId:
                     description: |-
-                      TargetClientID is the OAuth client ID at the target AS for Step B.
-                      ID-JAG draft §9.1 RECOMMENDS confidential clients for Step B; most
+                      TargetClientID is the OAuth client ID at the target AS for target grant.
+                      ID-JAG draft §9.1 RECOMMENDS confidential clients for target grant; most
                       conformant target authorization servers will reject an unauthenticated
                       JWT-bearer grant per the §4.4.1 client_id continuity requirement.
                     type: string
@@ -1455,7 +1455,7 @@ spec:
                   targetResource:
                     description: |-
                       TargetResource is the RFC 8707 resource indicator sent as the `resource`
-                      parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                      parameter in IdP exchange (RFC 8693, draft §4.3, OPTIONAL). It
                       identifies the target resource server — not the access-token audience, which
                       is governed by TargetAudience. For MCP backends, set to the MCP server URL.
                       Some authorization servers (e.g. Okta's early ID-JAG implementation) require
@@ -1464,7 +1464,7 @@ spec:
                     type: string
                   targetTokenUrl:
                     description: TargetTokenURL is the target AS token endpoint for
-                      Step B (JWT Bearer grant).
+                      target grant (RFC 7523).
                     type: string
                 required:
                 - idpTokenUrl
@@ -2979,7 +2979,7 @@ spec:
                 properties:
                   idpClientId:
                     description: IDPClientID is the OAuth client ID at the IdP for
-                      Step A.
+                      IdP exchange.
                     type: string
                   idpClientSecretRef:
                     description: IDPClientSecretRef references a Kubernetes Secret
@@ -2997,7 +2997,7 @@ spec:
                     type: object
                   idpTokenUrl:
                     description: |-
-                      IDPTokenURL is the IdP token endpoint for Step A (RFC 8693 exchange).
+                      IDPTokenURL is the IdP token endpoint for IdP exchange (RFC 8693).
                       Must be a valid HTTPS URL.
                     pattern: ^https://.*$
                     type: string
@@ -3009,7 +3009,7 @@ spec:
                     type: boolean
                   scopes:
                     description: Scopes are the requested scopes for the XAA exchange
-                      (Steps A and B).
+                      (IdP exchange and target grant).
                     items:
                       type: string
                     type: array
@@ -3024,7 +3024,7 @@ spec:
                   subjectTokenType:
                     description: |-
                       SubjectTokenType is the token-type URN of the upstream subject token
-                      used in Step A. Defaults to "urn:ietf:params:oauth:token-type:id_token"
+                      used in IdP exchange. Defaults to "urn:ietf:params:oauth:token-type:id_token"
                       when empty.
                     enum:
                     - urn:ietf:params:oauth:token-type:id_token
@@ -3035,8 +3035,8 @@ spec:
                     type: string
                   targetClientId:
                     description: |-
-                      TargetClientID is the OAuth client ID at the target AS for Step B.
-                      ID-JAG draft §9.1 RECOMMENDS confidential clients for Step B; most
+                      TargetClientID is the OAuth client ID at the target AS for target grant.
+                      ID-JAG draft §9.1 RECOMMENDS confidential clients for target grant; most
                       conformant target authorization servers will reject an unauthenticated
                       JWT-bearer grant per the §4.4.1 client_id continuity requirement.
                     type: string
@@ -3057,7 +3057,7 @@ spec:
                   targetResource:
                     description: |-
                       TargetResource is the RFC 8707 resource indicator sent as the `resource`
-                      parameter in Step A's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                      parameter in IdP exchange (RFC 8693, draft §4.3, OPTIONAL). It
                       identifies the target resource server — not the access-token audience, which
                       is governed by TargetAudience. For MCP backends, set to the MCP server URL.
                       Some authorization servers (e.g. Okta's early ID-JAG implementation) require
@@ -3066,7 +3066,7 @@ spec:
                     type: string
                   targetTokenUrl:
                     description: TargetTokenURL is the target AS token endpoint for
-                      Step B (JWT Bearer grant).
+                      target grant (RFC 7523).
                     type: string
                 required:
                 - idpTokenUrl

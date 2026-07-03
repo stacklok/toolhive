@@ -103,9 +103,12 @@ type HttpClientBuilder struct {
 	tlsHandshakeTimeout   time.Duration
 	responseHeaderTimeout time.Duration
 	caCertPath            string
+	clientCertPath        string
+	clientKeyPath         string
 	authTokenFile         string
 	allowPrivate          bool
 	insecureAllowHTTP     bool
+	insecureSkipVerify    bool
 	disableKeepAlives     bool
 }
 
@@ -121,6 +124,13 @@ func NewHttpClientBuilder() *HttpClientBuilder {
 // WithCABundle sets the CA certificate bundle path
 func (b *HttpClientBuilder) WithCABundle(path string) *HttpClientBuilder {
 	b.caCertPath = path
+	return b
+}
+
+// WithClientCert sets a client certificate and key for mutual TLS (mTLS) authentication.
+func (b *HttpClientBuilder) WithClientCert(certPath, keyPath string) *HttpClientBuilder {
+	b.clientCertPath = certPath
+	b.clientKeyPath = keyPath
 	return b
 }
 
@@ -140,6 +150,13 @@ func (b *HttpClientBuilder) WithPrivateIPs(allow bool) *HttpClientBuilder {
 // WARNING: This is insecure and should NEVER be used in production
 func (b *HttpClientBuilder) WithInsecureAllowHTTP(allow bool) *HttpClientBuilder {
 	b.insecureAllowHTTP = allow
+	return b
+}
+
+// WithInsecureSkipVerify disables TLS server certificate verification.
+// WARNING: This is insecure and should NEVER be used in production
+func (b *HttpClientBuilder) WithInsecureSkipVerify(skip bool) *HttpClientBuilder {
+	b.insecureSkipVerify = skip
 	return b
 }
 
@@ -188,6 +205,34 @@ func (b *HttpClientBuilder) Build() (*http.Client, error) {
 			}
 		}
 		transport.TLSClientConfig.RootCAs = caCertPool
+	}
+
+	if (b.clientCertPath == "") != (b.clientKeyPath == "") {
+		return nil, fmt.Errorf("both client certificate and key paths must be set for mTLS")
+	}
+	if b.clientCertPath != "" {
+		cert, err := tls.LoadX509KeyPair(b.clientCertPath, b.clientKeyPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to load client certificate: %w", err)
+		}
+
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{
+				MinVersion: tls.VersionTLS12,
+			}
+		}
+		transport.TLSClientConfig.Certificates = []tls.Certificate{cert}
+	}
+
+	if b.insecureSkipVerify {
+		if transport.TLSClientConfig == nil {
+			transport.TLSClientConfig = &tls.Config{
+				MinVersion: tls.VersionTLS12,
+			}
+		}
+		//#nosec G402 -- InsecureSkipVerify is intentionally user-configurable via WithInsecureSkipVerify;
+		// callers must opt in explicitly.
+		transport.TLSClientConfig.InsecureSkipVerify = true
 	}
 
 	// Start with validation transport

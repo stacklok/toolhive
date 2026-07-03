@@ -10,11 +10,11 @@ import (
 	"github.com/stacklok/toolhive/pkg/webhook"
 )
 
-// TestMain installs a permissive dialer control hook for the entire test
+// TestMain disables the webhook SSRF dial-time guard for the entire test
 // binary so that webhook clients can dial httptest servers bound to 127.0.0.1.
-// The production hook (networking.ProtectedDialerControl) would otherwise reject
-// loopback addresses as part of the SSRF guard.
+// The production guard (networking.ProtectedDialerControl) would otherwise
+// reject loopback addresses.
 func TestMain(m *testing.M) {
-	webhook.SetDialerControlForTestMain(webhook.AllowAnyDialerControl)
+	webhook.SetAllowPrivateIPsForTestMain()
 	os.Exit(m.Run())
 }

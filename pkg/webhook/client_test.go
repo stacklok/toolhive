@@ -323,9 +323,9 @@ func TestClientHMACSigningHeaders(t *testing.T) {
 	assert.NotEmpty(t, capturedHeaders.Get(TimestampHeader), "expected %s header", TimestampHeader)
 }
 
-//nolint:paralleltest // mutates package-level dialerControl hook
+//nolint:paralleltest // mutates package-level allowPrivateIPsForTesting flag
 func TestClientRereadsMountedHMACSecret(t *testing.T) {
-	SetDialerControlForTesting(t, AllowAnyDialerControl)
+	SetAllowPrivateIPsForTesting(t)
 
 	type signedRequest struct {
 		body      []byte
@@ -558,7 +558,7 @@ func TestClientRequestContentType(t *testing.T) {
 	assert.Equal(t, "application/json", capturedContentType)
 }
 
-func TestBuildTransport(t *testing.T) {
+func TestBuildHTTPClient(t *testing.T) {
 	t.Parallel()
 
 	tmpDir := t.TempDir()
@@ -625,15 +625,15 @@ func TestBuildTransport(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			transport, err := buildTransport(tt.tlsCfg)
+			client, err := buildHTTPClient(tt.tlsCfg, DefaultTimeout)
 			if tt.expectError {
 				assert.Error(t, err)
-				assert.Nil(t, transport)
+				assert.Nil(t, client)
 			} else {
 				assert.NoError(t, err)
-				assert.NotNil(t, transport)
+				require.NotNil(t, client)
 				if tt.tlsCfg != nil && tt.tlsCfg.InsecureSkipVerify {
-					vt, ok := transport.(*networking.ValidatingTransport)
+					vt, ok := client.Transport.(*networking.ValidatingTransport)
 					require.True(t, ok, "expected *networking.ValidatingTransport")
 					tr, ok := vt.Transport.(*http.Transport)
 					require.True(t, ok, "expected *http.Transport")
@@ -694,23 +694,23 @@ func TestClientSSRFGuardBlocksPrivateAddress(t *testing.T) {
 	}
 }
 
-// TestBuildTransportInstallsDialerGuard is a narrow unit check that buildTransport
-// installs a non-nil DialContext on the inner *http.Transport. The integration
-// coverage in TestClientSSRFGuardBlocksPrivateAddress is the load-bearing test;
-// this assertion just ensures the wiring does not silently regress to a bare
-// transport with no Control hook.
-func TestBuildTransportInstallsDialerGuard(t *testing.T) {
+// TestBuildHTTPClientInstallsDialerGuard is a narrow unit check that
+// buildHTTPClient installs a non-nil DialContext on the inner *http.Transport.
+// The integration coverage in TestClientSSRFGuardBlocksPrivateAddress is the
+// load-bearing test; this assertion just ensures the wiring does not silently
+// regress to a bare transport with no Control hook.
+func TestBuildHTTPClientInstallsDialerGuard(t *testing.T) {
 	t.Parallel()
 
-	rt, err := buildTransport(nil)
+	client, err := buildHTTPClient(nil, DefaultTimeout)
 	require.NoError(t, err)
-	require.NotNil(t, rt)
+	require.NotNil(t, client)
 
-	vt, ok := rt.(*networking.ValidatingTransport)
-	require.True(t, ok, "expected *networking.ValidatingTransport, got %T", rt)
+	vt, ok := client.Transport.(*networking.ValidatingTransport)
+	require.True(t, ok, "expected *networking.ValidatingTransport, got %T", client.Transport)
 	inner, ok := vt.Transport.(*http.Transport)
 	require.True(t, ok, "expected inner *http.Transport, got %T", vt.Transport)
-	assert.NotNil(t, inner.DialContext, "buildTransport must install a DialContext that runs the SSRF dialer guard")
+	assert.NotNil(t, inner.DialContext, "buildHTTPClient must install a DialContext that runs the SSRF dialer guard")
 }
 
 func TestClassifyError(t *testing.T) {

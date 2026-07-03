@@ -22,12 +22,12 @@ import (
 // TestWebhookMiddlewareChainIntegration tests the full execution of the webhook middleware chain
 // populated by PopulateMiddlewareConfigs in the runner.
 //
-//nolint:paralleltest // mutates package-level dialerControl hook via SetDialerControlForTesting
+//nolint:paralleltest // mutates package-level allowPrivateIPsForTesting flag via SetAllowPrivateIPsForTesting
 func TestWebhookMiddlewareChainIntegration(t *testing.T) {
 	// The webhook clients built by the middleware factories use the production
 	// dialer guard, which rejects the 127.0.0.1 httptest servers below as part of
-	// the SSRF protection. Install the permissive test hook so the dial succeeds.
-	webhook.SetDialerControlForTesting(t, webhook.AllowAnyDialerControl)
+	// the SSRF protection. Disable the guard for this test so the dial succeeds.
+	webhook.SetAllowPrivateIPsForTesting(t)
 
 	// 1. Set up a mutating webhook server that adds a new argument field
 	mutatingServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

@@ -6,8 +6,6 @@ package webhook
 import (
 	"bytes"
 	"context"
-	"crypto/tls"
-	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,35 +13,26 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strconv"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/networking"
 )
 
-// dialerControlFunc is the type of the Control hook installed on the underlying
-// *net.Dialer used by the webhook HTTP transport.
-type dialerControlFunc func(network, address string, c syscall.RawConn) error
-
-// dialerControl holds the active Control hook. By default it wraps
-// networking.ProtectedDialerControl, which rejects dials to private, loopback,
-// and link-local addresses (SSRF guard).
+// allowPrivateIPsForTesting is a test-only escape hatch for the webhook SSRF
+// dial-time guard (networking.ProtectedDialerControl, installed via
+// networking.HttpClientBuilder.WithPrivateIPs). When true, buildHTTPClient
+// allows dials to private, loopback, and link-local addresses so tests can
+// talk to httptest servers, which always bind 127.0.0.1.
 //
-// It is wrapped in atomic.Pointer so cross-goroutine writes from tests
-// (SetDialerControlForTesting / SetDialerControlForTestMain) and
-// cross-goroutine reads from the production dial path are race-free, even if
-// a future test introduces t.Parallel(). Production callers must not
-// reassign this variable.
-var dialerControl atomic.Pointer[dialerControlFunc]
-
-func init() {
-	fn := dialerControlFunc(networking.ProtectedDialerControl)
-	dialerControl.Store(&fn)
-}
+// It is an atomic.Bool so cross-goroutine writes from tests
+// (SetAllowPrivateIPsForTesting / SetAllowPrivateIPsForTestMain) and
+// cross-goroutine reads from the production client-build path are race-free,
+// even if a future test introduces t.Parallel(). Production callers must not
+// set this variable.
+var allowPrivateIPsForTesting atomic.Bool
 
 // Client is an HTTP client for calling webhook endpoints.
 type Client struct {
@@ -71,16 +60,13 @@ func NewClient(cfg Config, webhookType Type, hmacSecret []byte) (*Client, error)
 		timeout = DefaultTimeout
 	}
 
-	transport, err := buildTransport(cfg.TLSConfig)
+	httpClient, err := buildHTTPClient(cfg.TLSConfig, timeout)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build HTTP transport: %w", err)
+		return nil, fmt.Errorf("failed to build HTTP client: %w", err)
 	}
 
 	return &Client{
-		httpClient: &http.Client{
-			Transport: transport,
-			Timeout:   timeout,
-		},
+		httpClient:  httpClient,
 		config:      cfg,
 		hmacSecret:  hmacSecret,
 		webhookType: webhookType,
@@ -224,68 +210,30 @@ func (c *Client) hmacSecretForRequest(ctx context.Context) ([]byte, error) {
 	return secret, nil
 }
 
-// buildTransport creates an http.RoundTripper with the specified TLS configuration.
-// The inner *http.Transport installs a dialer Control hook (the package-level
-// dialerControl) that rejects connections to private, loopback, and link-local
-// addresses, providing an SSRF guard regardless of TLS or HTTP mode. The outer
-// ValidatingTransport additionally enforces HTTPS unless InsecureAllowHTTP is set.
-func buildTransport(tlsCfg *TLSConfig) (http.RoundTripper, error) {
-	transport := &http.Transport{
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-		MaxIdleConns:          100,
-		MaxIdleConnsPerHost:   10,
-		IdleConnTimeout:       90 * time.Second,
-		DialContext: (&net.Dialer{
-			Control: func(network, address string, c syscall.RawConn) error {
-				return (*dialerControl.Load())(network, address, c)
-			},
-		}).DialContext,
-	}
-
-	// allowHTTP is true when InsecureSkipVerify is set, which also covers in-cluster
-	allowHTTP := tlsCfg != nil && tlsCfg.InsecureSkipVerify
+// buildHTTPClient creates an *http.Client for the given webhook TLS configuration
+// and timeout. The dial-time SSRF guard, HTTPS enforcement, CA bundle, and mTLS
+// wiring are all delegated to networking.HttpClientBuilder so the webhook client
+// does not maintain its own copy of this logic.
+func buildHTTPClient(tlsCfg *TLSConfig, timeout time.Duration) (*http.Client, error) {
+	builder := networking.NewHttpClientBuilder().
+		WithTimeout(timeout).
+		WithPrivateIPs(allowPrivateIPsForTesting.Load())
 
 	if tlsCfg != nil {
-		tlsConfig := &tls.Config{
-			MinVersion: tls.VersionTLS12,
-		}
-
-		// Load CA bundle if provided.
 		if tlsCfg.CABundlePath != "" {
-			caCert, err := os.ReadFile(tlsCfg.CABundlePath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read CA bundle: %w", err)
-			}
-			caCertPool := x509.NewCertPool()
-			if !caCertPool.AppendCertsFromPEM(caCert) {
-				return nil, fmt.Errorf("failed to parse CA certificate bundle")
-			}
-			tlsConfig.RootCAs = caCertPool
+			builder = builder.WithCABundle(tlsCfg.CABundlePath)
 		}
-
-		// Load client certificate for mTLS if provided.
-		if tlsCfg.ClientCertPath != "" && tlsCfg.ClientKeyPath != "" {
-			cert, err := tls.LoadX509KeyPair(tlsCfg.ClientCertPath, tlsCfg.ClientKeyPath)
-			if err != nil {
-				return nil, fmt.Errorf("failed to load client certificate: %w", err)
-			}
-			tlsConfig.Certificates = []tls.Certificate{cert}
+		if tlsCfg.ClientCertPath != "" || tlsCfg.ClientKeyPath != "" {
+			builder = builder.WithClientCert(tlsCfg.ClientCertPath, tlsCfg.ClientKeyPath)
 		}
-
 		if tlsCfg.InsecureSkipVerify {
-			//#nosec G402 -- InsecureSkipVerify is intentionally user-configurable for development/testing only.
-			tlsConfig.InsecureSkipVerify = true
+			// InsecureSkipVerify also allows plaintext HTTP (e.g. for in-cluster
+			// endpoints), mirroring the pre-existing webhook behavior.
+			builder = builder.WithInsecureSkipVerify(true).WithInsecureAllowHTTP(true)
 		}
-
-		transport.TLSClientConfig = tlsConfig
 	}
 
-	// Always wrap in ValidatingTransport for SSRF protection, even without TLS config.
-	return &networking.ValidatingTransport{
-		Transport:         transport,
-		InsecureAllowHTTP: allowHTTP,
-	}, nil
+	return builder.Build()
 }
 
 // classifyError examines an HTTP client error and returns an appropriately

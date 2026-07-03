@@ -4,8 +4,15 @@
 package networking
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -18,6 +25,35 @@ import (
 	"github.com/stretchr/testify/require"
 	"golang.org/x/oauth2"
 )
+
+// generateTestClientCert creates a self-signed certificate/key pair in PEM
+// format for testing mTLS client certificate loading.
+func generateTestClientCert(t *testing.T) (certPEM, keyPEM []byte) {
+	t.Helper()
+
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	require.NoError(t, err)
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "test-client"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth},
+	}
+
+	certDER, err := x509.CreateCertificate(rand.Reader, template, template, &key.PublicKey, key)
+	require.NoError(t, err)
+
+	certPEM = pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	require.NoError(t, err)
+	keyPEM = pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	return certPEM, keyPEM
+}
 
 func TestNewHttpClientBuilder(t *testing.T) {
 	t.Parallel()
@@ -42,6 +78,43 @@ func TestHttpClientBuilder_WithCABundle(t *testing.T) {
 
 	assert.Same(t, builder, result) // fluent interface
 	assert.Equal(t, path, builder.caCertPath)
+}
+
+func TestHttpClientBuilder_WithClientCert(t *testing.T) {
+	t.Parallel()
+
+	builder := NewHttpClientBuilder()
+	certPath, keyPath := "/path/to/client.crt", "/path/to/client.key"
+
+	result := builder.WithClientCert(certPath, keyPath)
+
+	assert.Same(t, builder, result) // fluent interface
+	assert.Equal(t, certPath, builder.clientCertPath)
+	assert.Equal(t, keyPath, builder.clientKeyPath)
+}
+
+func TestHttpClientBuilder_WithInsecureSkipVerify(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		skip bool
+	}{
+		{name: "skip verification", skip: true},
+		{name: "verify normally", skip: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := NewHttpClientBuilder()
+			result := builder.WithInsecureSkipVerify(tt.skip)
+
+			assert.Same(t, builder, result) // fluent interface
+			assert.Equal(t, tt.skip, builder.insecureSkipVerify)
+		})
+	}
 }
 
 func TestHttpClientBuilder_WithTokenFromFile(t *testing.T) {
@@ -249,6 +322,23 @@ lT/G27CBRUlDiDhthwY1dccTCFhICg6ENUGqh2I=
 			},
 		},
 		{
+			name: "insecure skip verify",
+			setupBuilder: func() *HttpClientBuilder {
+				return NewHttpClientBuilder().WithInsecureSkipVerify(true)
+			},
+			setupFiles: func(_ *testing.T) (string, string) {
+				return "", ""
+			},
+			expectError: false,
+			validateClient: func(t *testing.T, client *http.Client) {
+				t.Helper()
+				transport := client.Transport.(*ValidatingTransport)
+				httpTransport := transport.Transport.(*http.Transport)
+				require.NotNil(t, httpTransport.TLSClientConfig)
+				assert.True(t, httpTransport.TLSClientConfig.InsecureSkipVerify)
+			},
+		},
+		{
 			name: "invalid CA certificate file",
 			setupBuilder: func() *HttpClientBuilder {
 				return NewHttpClientBuilder()
@@ -342,6 +432,93 @@ lT/G27CBRUlDiDhthwY1dccTCFhICg6ENUGqh2I=
 				if tt.validateClient != nil {
 					tt.validateClient(t, client)
 				}
+			}
+		})
+	}
+}
+
+func TestHttpClientBuilder_Build_ClientCert(t *testing.T) {
+	t.Parallel()
+
+	validCertPEM, validKeyPEM := generateTestClientCert(t)
+
+	writeFile := func(t *testing.T, name string, data []byte) string {
+		t.Helper()
+		path := filepath.Join(t.TempDir(), name)
+		require.NoError(t, os.WriteFile(path, data, 0600))
+		return path
+	}
+
+	tests := []struct {
+		name          string
+		setupBuilder  func(t *testing.T) *HttpClientBuilder
+		expectError   bool
+		errorContains string
+		validateCert  bool
+	}{
+		{
+			name: "valid client certificate and key",
+			setupBuilder: func(t *testing.T) *HttpClientBuilder {
+				t.Helper()
+				certPath := writeFile(t, "client.crt", validCertPEM)
+				keyPath := writeFile(t, "client.key", validKeyPEM)
+				return NewHttpClientBuilder().WithClientCert(certPath, keyPath)
+			},
+			validateCert: true,
+		},
+		{
+			name: "certificate without matching key",
+			setupBuilder: func(t *testing.T) *HttpClientBuilder {
+				t.Helper()
+				certPath := writeFile(t, "client.crt", validCertPEM)
+				return NewHttpClientBuilder().WithClientCert(certPath, "")
+			},
+			expectError:   true,
+			errorContains: "both client certificate and key paths must be set",
+		},
+		{
+			name: "key without matching certificate",
+			setupBuilder: func(t *testing.T) *HttpClientBuilder {
+				t.Helper()
+				keyPath := writeFile(t, "client.key", validKeyPEM)
+				return NewHttpClientBuilder().WithClientCert("", keyPath)
+			},
+			expectError:   true,
+			errorContains: "both client certificate and key paths must be set",
+		},
+		{
+			name: "invalid certificate content",
+			setupBuilder: func(t *testing.T) *HttpClientBuilder {
+				t.Helper()
+				certPath := writeFile(t, "client.crt", []byte("invalid cert"))
+				keyPath := writeFile(t, "client.key", []byte("invalid key"))
+				return NewHttpClientBuilder().WithClientCert(certPath, keyPath)
+			},
+			expectError:   true,
+			errorContains: "failed to load client certificate",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := tt.setupBuilder(t).Build()
+
+			if tt.expectError {
+				assert.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorContains)
+				assert.Nil(t, client)
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, client)
+			if tt.validateCert {
+				transport := client.Transport.(*ValidatingTransport)
+				httpTransport := transport.Transport.(*http.Transport)
+				require.NotNil(t, httpTransport.TLSClientConfig)
+				assert.Len(t, httpTransport.TLSClientConfig.Certificates, 1)
 			}
 		})
 	}

@@ -259,11 +259,11 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 				"the egress proxy must deny the bridge gateway IP without --allow-docker-gateway")
 			retireServer(denyServer)
 
-			By("Confirming --allow-docker-gateway removes the deny so the host is reachable")
+			By("Confirming --allow-docker-gateway grants access so the host is reachable")
 			allowServer := startFetchServer("allow", "", "--allow-docker-gateway")
 			result := fetchThrough(allowServer, target)
 			if result.IsError {
-				// The deny removal is pinned deterministically by the config test
+				// The deny→allow swap is pinned deterministically by the config test
 				// below; whether the bridge gateway actually routes to a host
 				// service is environment-specific — it works on Linux Docker Engine
 				// (where the bridge gateway is the host), but on Docker Desktop the
@@ -276,12 +276,13 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 		})
 
 		// This test pins the egress ACL rules deterministically on a real, deployed
-		// container — both the hostname deny (which the traffic test above cannot
-		// exercise without the host.docker.internal DNS confounder of #5640) and the
-		// direct-IP deny. It complements, rather than duplicates, the unit test for
+		// container — the default hostname and direct-IP deny rules (which the
+		// traffic test above cannot exercise without the host.docker.internal DNS
+		// confounder of #5640), and the allow rules the flag emits in their place.
+		// It complements, rather than duplicates, the unit test for
 		// createTempEgressSquidConf: it proves thv actually generates and mounts the
 		// config into the running egress proxy, alongside the real-traffic assertion above.
-		It("carries both gateway deny rules in the egress config by default and drops them with the flag", func() {
+		It("carries both gateway deny rules by default and replaces them with allow rules under the flag", func() {
 			squidConf := func(serverName string) string {
 				//nolint:gosec // container name is test-controlled
 				out, err := exec.Command("docker", "exec", serverName+"-egress",
@@ -300,12 +301,17 @@ var _ = Describe("NetworkIsolation", Label("proxy", "network", "isolation", "e2e
 				"default config must deny the docker gateway IP (the DNS-bypass path)")
 			retireServer(denyServer)
 
-			By("With --allow-docker-gateway: both deny rules are absent")
+			By("With --allow-docker-gateway: the deny rules are replaced by explicit allow rules")
 			allowConf := squidConf(startFetchServer("cfg-allow", "", "--allow-docker-gateway"))
-			Expect(allowConf).ToNot(ContainSubstring("docker_gateway_hosts"),
+			Expect(allowConf).ToNot(ContainSubstring("http_access deny docker_gateway_hosts"),
 				"--allow-docker-gateway must remove the gateway hostname deny rule")
-			Expect(allowConf).ToNot(ContainSubstring("docker_gateway_ip"),
+			Expect(allowConf).ToNot(ContainSubstring("http_access deny docker_gateway_ip"),
 				"--allow-docker-gateway must remove the gateway IP deny rule")
+			Expect(allowConf).To(ContainSubstring("http_access allow docker_gateway_hosts"),
+				"--allow-docker-gateway must grant access to the gateway hostnames")
+			Expect(allowConf).To(ContainSubstring("dstdomain host.docker.internal gateway.docker.internal"))
+			Expect(allowConf).To(ContainSubstring("http_access allow docker_gateway_ip"),
+				"--allow-docker-gateway must grant access to the gateway IP")
 		})
 	})
 })

@@ -1270,7 +1270,7 @@
                         "uniqueItems": false
                     },
                     "allow_docker_gateway": {
-                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.\nGateway access is port-independent: it ignores the permission profile's\nallowed ports, so once enabled the gateway is reachable on any port.",
                         "type": "boolean"
                     },
                     "allowed_origins": {

@@ -271,7 +271,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Isolate the container network from the host. Use --isolate-network=false to opt out.")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
 		"Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). "+
-			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled.")
+			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled. "+
+			"Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the "+
+			"gateway is reachable on any port.")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) "+
 			"(default false)")

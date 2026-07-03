@@ -111,7 +111,7 @@ thv run [flags] SERVER_OR_IMAGE_OR_PROTOCOL [-- ARGS...]
 ### Options
 
 ```
-      --allow-docker-gateway                        Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled.
+      --allow-docker-gateway                        Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled. Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the gateway is reachable on any port.
       --allowed-origins stringArray                 Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; loopback binds derive a default allowlist automatically, non-loopback binds log a warning when no value is supplied. Example: https://my-mcp.example.com
       --audit-config string                         Path to the audit configuration file
       --authz-config string                         Path to the authorization configuration file

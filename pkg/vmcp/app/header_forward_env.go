@@ -24,7 +24,8 @@ import (
 //
 // AddHeadersFromSecret values are secret IDENTIFIERS, not values. Secret values
 // resolve later inside resolveHeaderForward via secrets.EnvironmentProvider, which
-// reads TOOLHIVE_SECRET_<identifier> env vars.
+// reads TOOLHIVE_SECRET_<identifier> env vars (delivered separately via
+// valueFrom.secretKeyRef so the value never enters the operator's view of the world).
 //
 // The map key is the normalized entry segment from the env-var suffix — the same
 // value the operator's GenerateHeaderForwardManifestEnvVarName produces for that

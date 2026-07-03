@@ -43,23 +43,12 @@ func NewLateBoundElicitationRequester() *LateBoundElicitationRequester {
 	return &LateBoundElicitationRequester{}
 }
 
-// newLateBoundElicitationRequester is the package-internal alias used by server.New,
-// retained so that existing call sites in this package do not need to change.
-func newLateBoundElicitationRequester() *LateBoundElicitationRequester {
-	return NewLateBoundElicitationRequester()
-}
-
 // Bind sets the backing requester. New calls it exactly once, after Serve returns
 // and before the server starts serving.
 func (l *LateBoundElicitationRequester) Bind(target vmcp.ElicitationRequester) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.target = target
-}
-
-// bind is the package-internal alias for Bind, retained for existing server.New usage.
-func (l *LateBoundElicitationRequester) bind(target vmcp.ElicitationRequester) {
-	l.Bind(target)
 }
 
 // RequestElicitation forwards to the bound requester, returning an error if invoked

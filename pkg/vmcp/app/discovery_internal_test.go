@@ -6,6 +6,7 @@ package app
 import (
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -14,6 +15,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	aggregatormocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 )
 
 // TestRunDiscovery_ZeroBackends exercises the branch in runDiscovery where the
@@ -72,5 +75,74 @@ func TestVMCPNamespace(t *testing.T) {
 	t.Run("uses environment value", func(t *testing.T) {
 		t.Setenv("VMCP_NAMESPACE", "toolhive-system")
 		assert.Equal(t, "toolhive-system", vmcpNamespace())
+	})
+}
+
+// TestDeriveHealthMonitorConfig covers the health-monitor config derivation: disabled
+// when operational failure-handling is absent or the interval is unset, and the happy
+// path where a valid config yields a MonitorConfig with the interval, threshold, and
+// timeout (default or overridden) populated.
+func TestDeriveHealthMonitorConfig(t *testing.T) {
+	t.Parallel()
+
+	defaults := health.DefaultConfig()
+
+	t.Run("nil operational disables monitoring", func(t *testing.T) {
+		t.Parallel()
+		mc, err := deriveHealthMonitorConfig(&vmcpconfig.Config{})
+		require.NoError(t, err)
+		assert.Nil(t, mc)
+	})
+
+	t.Run("zero interval disables monitoring", func(t *testing.T) {
+		t.Parallel()
+		cfg := &vmcpconfig.Config{Operational: &vmcpconfig.OperationalConfig{
+			FailureHandling: &vmcpconfig.FailureHandlingConfig{UnhealthyThreshold: 3},
+		}}
+		mc, err := deriveHealthMonitorConfig(cfg)
+		require.NoError(t, err)
+		assert.Nil(t, mc)
+	})
+
+	t.Run("happy path uses defaults for unset timeout", func(t *testing.T) {
+		t.Parallel()
+		cfg := &vmcpconfig.Config{Operational: &vmcpconfig.OperationalConfig{
+			FailureHandling: &vmcpconfig.FailureHandlingConfig{
+				HealthCheckInterval: vmcpconfig.Duration(30 * time.Second),
+				UnhealthyThreshold:  3,
+			},
+		}}
+		mc, err := deriveHealthMonitorConfig(cfg)
+		require.NoError(t, err)
+		require.NotNil(t, mc)
+		assert.Equal(t, 30*time.Second, mc.CheckInterval)
+		assert.Equal(t, 3, mc.UnhealthyThreshold)
+		assert.Equal(t, defaults.Timeout, mc.Timeout)
+		assert.Equal(t, defaults.DegradedThreshold, mc.DegradedThreshold)
+		assert.Nil(t, mc.CircuitBreaker)
+	})
+
+	t.Run("happy path honors explicit timeout and circuit breaker", func(t *testing.T) {
+		t.Parallel()
+		cfg := &vmcpconfig.Config{Operational: &vmcpconfig.OperationalConfig{
+			FailureHandling: &vmcpconfig.FailureHandlingConfig{
+				HealthCheckInterval: vmcpconfig.Duration(30 * time.Second),
+				HealthCheckTimeout:  vmcpconfig.Duration(5 * time.Second),
+				UnhealthyThreshold:  2,
+				CircuitBreaker: &vmcpconfig.CircuitBreakerConfig{
+					Enabled:          true,
+					FailureThreshold: 4,
+					Timeout:          vmcpconfig.Duration(time.Minute),
+				},
+			},
+		}}
+		mc, err := deriveHealthMonitorConfig(cfg)
+		require.NoError(t, err)
+		require.NotNil(t, mc)
+		assert.Equal(t, 5*time.Second, mc.Timeout)
+		require.NotNil(t, mc.CircuitBreaker)
+		assert.True(t, mc.CircuitBreaker.Enabled)
+		assert.Equal(t, 4, mc.CircuitBreaker.FailureThreshold)
+		assert.Equal(t, time.Minute, mc.CircuitBreaker.Timeout)
 	})
 }

@@ -291,9 +291,32 @@ func (w *BackendWatcher) SyncRegistry(ctx context.Context) (int, error) {
 
 	discoverer := workloads.NewK8SDiscovererWithClient(directClient, w.namespace)
 
-	wls, err := discoverer.ListWorkloadsInGroup(ctx, w.groupRef)
+	seeded, err := seedRegistryFromDiscoverer(ctx, discoverer, w.groupRef, w.registry)
 	if err != nil {
-		return 0, fmt.Errorf("failed to list workloads in group %q: %w", w.groupRef, err)
+		return 0, err
+	}
+
+	slog.Info("seeded backend registry with initial discovery",
+		"namespace", w.namespace, "group", w.groupRef, "count", seeded)
+	return seeded, nil
+}
+
+// seedRegistryFromDiscoverer lists the workloads in groupRef via discoverer, converts
+// each to a vmcp.Backend, and upserts it into registry, returning the count seeded. It
+// is the testable core of SyncRegistry (which supplies a direct-client discoverer):
+//   - A ListWorkloadsInGroup failure is fatal (returns the error, nothing seeded).
+//   - A per-workload conversion error is logged and skipped — the watcher retries it.
+//   - A nil backend (workload not accessible yet: no URL / auth failure) is skipped.
+//   - An Upsert error is logged and skipped.
+//
+// This mirrors the reconciler's per-resource conversion (GetWorkloadAsVMCPBackend),
+// so seeded backends are identical to what the watcher would produce.
+func seedRegistryFromDiscoverer(
+	ctx context.Context, discoverer workloads.Discoverer, groupRef string, registry vmcp.DynamicRegistry,
+) (int, error) {
+	wls, err := discoverer.ListWorkloadsInGroup(ctx, groupRef)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list workloads in group %q: %w", groupRef, err)
 	}
 
 	seeded := 0
@@ -309,15 +332,13 @@ func (w *BackendWatcher) SyncRegistry(ctx context.Context) (int, error) {
 		if backend == nil {
 			continue
 		}
-		if upsertErr := w.registry.Upsert(*backend); upsertErr != nil {
+		if upsertErr := registry.Upsert(*backend); upsertErr != nil {
 			slog.Warn("failed to upsert backend during initial sync", "backend", backend.ID, "error", upsertErr)
 			continue
 		}
 		seeded++
 	}
 
-	slog.Info("seeded backend registry with initial discovery",
-		"namespace", w.namespace, "group", w.groupRef, "count", seeded)
 	return seeded, nil
 }
 

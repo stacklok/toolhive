@@ -134,15 +134,16 @@ func TestBuildCore_DiscoveredMode_RequiresBackendRegistry(t *testing.T) {
 	assert.NotNil(t, cleanup) // cleanup must always be returned (even on error; it's noop)
 }
 
-// TestBuildCore_SharedCollaboratorBuiltOnce verifies that passing the same registry
-// via WithBackendRegistry to two BuildCore calls does not double-build anything that
-// would conflict (the registry is a shared read-only view, not rebuilt).
-func TestBuildCore_SharedCollaboratorBuiltOnce(t *testing.T) {
+// TestBuildCore_InjectedRegistryUsedByBothBuilds verifies that the same injected
+// registry can back two independent BuildCore calls (each yielding a distinct, live
+// core) without error. It asserts reuse of the injected instance, not that any
+// collaborator is constructed exactly once — single construction is the Builder's job
+// and is covered there; this is the standalone-primitive reuse path.
+func TestBuildCore_InjectedRegistryUsedByBothBuilds(t *testing.T) {
 	t.Parallel()
 
 	ctrl := gomock.NewController(t)
 	reg := vmcpmocks.NewMockBackendRegistry(ctrl)
-	// List is called at most twice total (once per BuildCore call, at most).
 	reg.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
 
 	cfg := minimalInlineConfig()

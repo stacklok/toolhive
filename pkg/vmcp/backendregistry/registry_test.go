@@ -89,11 +89,14 @@ func TestNewKubernetesBackendRegistry_DefaultUsesInClusterConfig(t *testing.T) {
 	assert.Nil(t, watcher)
 }
 
-// TestNewKubernetesBackendRegistry_StartsEmpty verifies the constructor returns a
-// non-nil registry and readiness watcher, and that the registry starts empty —
-// the watcher's initial informer sync (not the static-discovery path) populates
-// it.
-func TestNewKubernetesBackendRegistry_StartsEmpty(t *testing.T) {
+// TestNewKubernetesBackendRegistry_ReturnsRegistryAndWatcher verifies the constructor
+// returns a non-nil registry and readiness watcher and does not fail when the initial
+// synchronous seed finds no backends. Against the fake REST config here the seed's
+// List reaches no real API, so it is tolerated (logged, not fatal) and the registry is
+// empty; the watcher then keeps it current. This does NOT assert the seed's happy path
+// (that a reachable backend is upserted) — that is covered by
+// TestSeedRegistryFromDiscoverer in pkg/vmcp/k8s and the operator lifecycle E2E.
+func TestNewKubernetesBackendRegistry_ReturnsRegistryAndWatcher(t *testing.T) {
 	t.Parallel()
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -106,6 +109,8 @@ func TestNewKubernetesBackendRegistry_StartsEmpty(t *testing.T) {
 	require.NotNil(t, reg)
 	require.NotNil(t, watcher)
 
+	// Seed against an unreachable fake API finds nothing (tolerated), so the registry
+	// is empty here — not by design, but because there are no reachable backends.
 	assert.Equal(t, 0, reg.Count())
 	assert.Empty(t, reg.List(ctx))
 }

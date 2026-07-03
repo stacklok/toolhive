@@ -154,9 +154,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		}
 	}
 
-	// Auto-populate SubjectProviderName on any token_exchange strategy that
+	// Auto-populate SubjectProviderName on backend auth strategies that
 	// omitted it when an embedded auth server is active.
-	config.InjectSubjectProviderNames(vmcpCfg, authServerRC)
+	if err := config.InjectSubjectProviderNames(vmcpCfg, authServerRC); err != nil {
+		return fmt.Errorf("failed to default outgoing auth subject provider names: %w", err)
+	}
 
 	// Construct embedded authorization server if configured.
 	var embeddedAuthServer *authserverrunner.EmbeddedAuthServer

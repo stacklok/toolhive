@@ -5,6 +5,7 @@ package controllerutil
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -59,7 +60,14 @@ func GenerateOpenTelemetryEnvVarsFromRef(
 }
 
 // normalizeHeaderEnvVarName converts a header name to a valid env var suffix.
-// Dashes become underscores and the result is uppercased.
+// Dashes become underscores, invalid characters are removed, and the result is uppercased.
+// The result must start with a letter or underscore and contain only alphanumeric characters and underscores.
 func normalizeHeaderEnvVarName(name string) string {
-	return strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	name = strings.ToUpper(strings.ReplaceAll(name, "-", "_"))
+	name = regexp.MustCompile(`[^A-Z0-9_]`).ReplaceAllString(name, "")
+	name = regexp.MustCompile(`^[^A-Z_]+`).ReplaceAllString(name, "")
+	if len(name) > 64 {
+		name = name[:64]
+	}
+	return name
 }

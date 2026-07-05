@@ -54,9 +54,9 @@ type Handler struct {
 }
 
 // UpstreamFilter narrows the authorization chain to a subset of the configured
-// upstreams. It is consulted once in the callback handler, after the first
-// upstream (upstreams[0]) resolves. The first upstream is always required: it is
-// never passed to the filter and cannot be removed by it.
+// upstreams. It is consulted exactly once per authorization, in the callback
+// handler, after the first upstream (upstreams[0]) resolves. The first upstream is
+// always required: it is never passed to the filter and cannot be removed by it.
 //
 // FilterUpstreams receives the request context of the first leg's callback and
 // the names of the non-first configured upstreams, in configured order. It
@@ -65,6 +65,16 @@ type Handler struct {
 // filter cannot reorder the chain or introduce unknown providers. A returned
 // error fails the authorization with a server error — the handler never falls
 // back to walking every upstream on error.
+//
+// The context carries the resolved canonical user via auth.WithPlatformUser (set
+// just before the filter runs), which is the most concrete signal a filter keyed
+// on the authenticated principal would use. It does not carry the requesting
+// client, scopes, or resource — those live in the pending authorization, not ctx.
+//
+// The "first-leg context" guarantee holds even across a rolling upgrade of a
+// persistent backend: a subsequent-leg pending that lacks a computed chain (e.g.
+// one written before this feature existed) is rejected and forces a fresh
+// authorization, rather than re-running the filter against a later leg's context.
 type UpstreamFilter interface {
 	FilterUpstreams(ctx context.Context, configured []string) ([]string, error)
 }
@@ -253,6 +263,55 @@ func (h *Handler) computeChain(ctx context.Context) ([]string, error) {
 		}
 	}
 	return chain, nil
+}
+
+// resolveChain returns the effective upstream chain for the leg that just
+// completed. A true first leg — identified by an as-yet-unresolved user
+// (pending.ResolvedUserID == "") — computes the chain now, consulting the optional
+// filter with this leg's request context. A subsequent leg reuses the chain the
+// first leg carried forward in the pending authorization, after validating it
+// against the configured upstreams.
+//
+// A subsequent leg whose pending carries no chain (e.g. one written before the
+// ChainUpstreams field existed, a possible rolling-upgrade window on a persistent
+// backend) is a hard error rather than a silent recompute: the filter's contract
+// is to run once, with the first leg's context, so recomputing here with a later
+// leg's context could narrow the chain against the wrong request. Failing closed
+// forces a fresh authorization that starts cleanly at the first leg.
+func (h *Handler) resolveChain(ctx context.Context, pending *storage.PendingAuthorization) ([]string, error) {
+	if pending.ResolvedUserID == "" {
+		// True first leg — compute with this (the first) leg's request context.
+		return h.computeChain(ctx)
+	}
+	if len(pending.ChainUpstreams) == 0 {
+		return nil, fmt.Errorf("subsequent chain leg is missing its computed upstream chain (stale pending authorization)")
+	}
+	if err := h.validateChain(pending.ChainUpstreams); err != nil {
+		return nil, fmt.Errorf("stored upstream chain is invalid: %w", err)
+	}
+	return pending.ChainUpstreams, nil
+}
+
+// validateChain rejects an upstream chain loaded from storage that does not agree
+// with the configured upstreams. A valid chain is non-empty, leads with the
+// required first upstream, and names only configured upstreams. This guards the
+// reuse path against a corrupt or tampered PendingAuthorization row shrinking an
+// in-flight chain to skip legs — which would also silently disable the cross-leg
+// identity check, since verifyChainIdentity is a no-op for a single-element chain.
+func (h *Handler) validateChain(chain []string) error {
+	if len(chain) == 0 {
+		return fmt.Errorf("chain is empty")
+	}
+	if chain[0] != h.upstreams[0].Name {
+		return fmt.Errorf("chain must lead with the first configured upstream %q, got %q",
+			h.upstreams[0].Name, chain[0])
+	}
+	for _, name := range chain {
+		if _, ok := h.upstreamByName(name); !ok {
+			return fmt.Errorf("chain contains unconfigured upstream %q", name)
+		}
+	}
+	return nil
 }
 
 // refreshExpiredLeg attempts to refresh an expired upstream token for one chain

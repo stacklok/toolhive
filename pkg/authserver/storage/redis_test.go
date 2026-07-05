@@ -1409,6 +1409,42 @@ func TestRedisStorage_PendingAuthorization(t *testing.T) {
 		})
 	})
 
+	t.Run("legacy JSON without chain_upstreams decodes with empty ChainUpstreams", func(t *testing.T) {
+		// Pin the wire-shape contract: pre-feature Redis data that has no
+		// "chain_upstreams" key must deserialise to an empty ChainUpstreams, which
+		// the callback treats as "no chain computed yet". A JSON tag rename or a
+		// DisallowUnknownFields flip would break this without failing another test.
+		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, mr *miniredis.Miniredis) {
+			legacyJSON := fmt.Sprintf(`{
+				"client_id": "legacy-client",
+				"redirect_uri": "https://example.com/callback",
+				"state": "client-state",
+				"pkce_challenge": "challenge",
+				"pkce_method": "S256",
+				"scopes": ["openid"],
+				"internal_state": "legacy-internal-state",
+				"upstream_pkce_verifier": "verifier",
+				"upstream_nonce": "nonce",
+				"session_id": "legacy-session",
+				"created_at": %d
+			}`, time.Now().Unix())
+
+			// Inject directly into miniredis, bypassing the Store path, to simulate a
+			// pre-feature row written without "chain_upstreams".
+			key := redisKey(s.keyPrefix, KeyTypePending, "legacy-internal-state")
+			require.NoError(t, mr.Set(key, legacyJSON))
+
+			retrieved, err := s.LoadPendingAuthorization(ctx, "legacy-internal-state")
+			require.NoError(t, err)
+			require.NotNil(t, retrieved)
+
+			assert.Empty(t, retrieved.ChainUpstreams, "legacy record must decode with empty ChainUpstreams")
+			// Sanity-check that unrelated fields still populate from the legacy blob.
+			assert.Equal(t, "legacy-client", retrieved.ClientID)
+			assert.Equal(t, "legacy-session", retrieved.SessionID)
+		})
+	})
+
 	t.Run("load non-existent", func(t *testing.T) {
 		withRedisStorage(t, func(ctx context.Context, s *RedisStorage, _ *miniredis.Miniredis) {
 			_, err := s.LoadPendingAuthorization(ctx, "non-existent")

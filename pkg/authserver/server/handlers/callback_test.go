@@ -481,6 +481,7 @@ func TestCallbackHandler_TwoUpstreams_SecondLeg_IssuesCode(t *testing.T) {
 		UpstreamNonce:        "second-leg-nonce",
 		UpstreamProviderName: "provider-2",
 		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
 		ResolvedUserID:       "resolved-user-id-from-leg1",
 		ResolvedUserName:     "First Leg User",
 		ResolvedUserEmail:    "firstleg@example.com",
@@ -698,6 +699,62 @@ func TestCallbackHandler_SecondLeg_ReusesChain_DoesNotReRunFilter(t *testing.T) 
 	assert.Equal(t, "provider2-code", provider2.capturedCode)
 }
 
+func TestCallbackHandler_SubsequentLeg_MissingChain_FailsClosed(t *testing.T) {
+	t.Parallel()
+	handler, storState, _, _ := multiUpstreamTestSetup(t)
+
+	sessionID := "stale-pending-session"
+	const leg1User = "resolved-user-id-from-leg1"
+
+	// First leg already completed.
+	storState.upstreamTokens[sessionID+":provider-1"] = &storage.UpstreamTokens{
+		ProviderID:  "provider-1",
+		AccessToken: "p1-at",
+		ExpiresAt:   time.Now().Add(time.Hour),
+		ClientID:    testAuthClientID,
+		UserID:      leg1User,
+	}
+
+	// A subsequent-leg pending that predates ChainUpstreams: ResolvedUserID is set
+	// (not a first leg) but ChainUpstreams is empty, as an older build would have
+	// written it mid-rollout.
+	secondLegState := "stale-pending-state"
+	storState.pendingAuths[secondLegState] = &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-original-state",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid"},
+		InternalState:        secondLegState,
+		UpstreamPKCEVerifier: "stale-verifier-1234567890123456789012345678",
+		UpstreamNonce:        "stale-nonce",
+		UpstreamProviderName: "provider-2",
+		SessionID:            sessionID,
+		ResolvedUserID:       leg1User,
+		ResolvedUserName:     "First Leg User",
+		ResolvedUserEmail:    "firstleg@example.com",
+		// ChainUpstreams intentionally empty (stale pending).
+		CreatedAt: time.Now(),
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider2-code&state="+secondLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	// The stale pending is rejected (fail closed) rather than recomputing the chain
+	// against this later leg's context.
+	assert.Equal(t, http.StatusSeeOther, rec.Code, "stale pending should produce a fosite error redirect")
+	location := rec.Header().Get("Location")
+	assert.Contains(t, location, "error=server_error")
+	assert.Contains(t, location, "state=client-original-state")
+
+	// Upstream tokens for the session are cleaned up.
+	for key := range storState.upstreamTokens {
+		assert.Failf(t, "upstream tokens should be cleaned up", "found leftover token %q", key)
+	}
+}
+
 func TestCallbackHandler_SingleLeg_IssuesCodeWithoutChaining(t *testing.T) {
 	t.Parallel()
 	handler, storState, provider1, _ := multiUpstreamTestSetup(t)
@@ -790,6 +847,7 @@ func TestCallbackHandler_TwoUpstreams_IdentityFromFirstLeg(t *testing.T) {
 		UpstreamNonce:        "identity-test-nonce",
 		UpstreamProviderName: "provider-2",
 		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
 		ResolvedUserID:       firstLegUserID,
 		ResolvedUserName:     "First Leg Name",
 		ResolvedUserEmail:    "firstleg@example.com",
@@ -850,6 +908,7 @@ func TestCallbackHandler_TwoUpstreams_IdentityMismatch_RejectsChain(t *testing.T
 		UpstreamNonce:        "mismatch-nonce",
 		UpstreamProviderName: "provider-2",
 		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
 		ResolvedUserID:       "correct-user-id", // does NOT match provider-1's UserID above
 		ResolvedUserName:     "Correct User",
 		ResolvedUserEmail:    "correct@example.com",
@@ -1224,9 +1283,11 @@ func TestCallbackHandler_RefreshTokenCarryForward(t *testing.T) {
 				// Synthetic carry-forward only applies on a subsequent leg, where the
 				// stable user identity is carried from the first leg (so the prior row
 				// is found by UserID) while the provider's own subject rotates per flow.
+				// A subsequent leg carries the effective chain computed on the first leg.
 				pendingAuth.ResolvedUserID = existingUserID
 				pendingAuth.ResolvedUserName = "First Leg User"
 				pendingAuth.ResolvedUserEmail = "firstleg@example.com"
+				pendingAuth.ChainUpstreams = []string{providerName}
 			}
 			storState.pendingAuths[internalState] = pendingAuth
 
@@ -1329,6 +1390,7 @@ func TestCallbackHandler_PlacesPlatformUserInContext_OnChainRead(t *testing.T) {
 		UpstreamNonce:        "second-leg-nonce",
 		UpstreamProviderName: "provider-2",
 		SessionID:            sessionID,
+		ChainUpstreams:       []string{"provider-1", "provider-2"},
 		ResolvedUserID:       leg1User,
 		ResolvedUserName:     "First Leg User",
 		ResolvedUserEmail:    "firstleg@example.com",

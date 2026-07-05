@@ -433,21 +433,17 @@ func (h *Handler) continueChainOrComplete(
 		return
 	}
 
-	// Resolve the effective chain of upstreams to walk. The first leg (which
-	// carries no computed chain) consults the optional filter once; every
-	// subsequent leg reuses the chain carried in the pending authorization so the
-	// filter is not re-run per leg. A legacy pending predating ChainUpstreams also
-	// lands here and is safely recomputed.
-	chain := pending.ChainUpstreams
-	if len(chain) == 0 {
-		computed, err := h.computeChain(ctx)
-		if err != nil {
-			slog.Error("failed to compute upstream chain", "error", err)
-			_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
-			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to determine authorization chain"))
-			return
-		}
-		chain = computed
+	// Resolve the effective chain of upstreams to walk. The first leg computes it
+	// (consulting the optional filter with this leg's request context); every
+	// subsequent leg reuses the validated chain the first leg carried forward, so
+	// the filter is not re-run per leg. A subsequent leg whose pending predates the
+	// chain is rejected rather than recomputed against a later leg's context.
+	chain, err := h.resolveChain(ctx, pending)
+	if err != nil {
+		slog.Error("failed to resolve upstream chain", "error", err)
+		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
+		h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("failed to determine authorization chain"))
+		return
 	}
 
 	nextProvider, err := h.nextMissingUpstream(ctx, sessionID, chain)
@@ -460,7 +456,8 @@ func (h *Handler) continueChainOrComplete(
 
 	if nextProvider == "" {
 		if err := h.verifyChainIdentity(ctx, sessionID, chain, subject); err != nil {
-			slog.Error("chain identity verification failed", "error", err)
+			// verifyChainIdentity already logged the specific cause (with structured
+			// fields for a mismatch); here we just clean up and fail closed.
 			_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)
 			h.provider.WriteAuthorizeError(ctx, w, ar, fosite.ErrServerError.WithHint("identity verification failed"))
 			return
@@ -559,12 +556,20 @@ func (h *Handler) verifyChainIdentity(ctx context.Context, sessionID string, cha
 	}
 	allTokens, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
 	if err != nil {
+		slog.Error("failed to load upstream tokens for chain identity check", "error", err)
 		return fmt.Errorf("failed to load upstream tokens for identity check: %w", err)
 	}
 	firstProvider := chain[0]
 	if firstTokens, ok := allTokens[firstProvider]; ok && firstTokens.UserID != subject {
-		return fmt.Errorf("identity mismatch on provider %q: chain subject %q != stored user %q",
-			firstProvider, subject, firstTokens.UserID)
+		// Emit the mismatch as discrete slog fields — not folded into the returned
+		// error string — so log pipelines can filter/alert on this defense-in-depth
+		// check, matching the logging from before this check was extracted here.
+		slog.Error("identity mismatch between chain state and stored tokens",
+			"expected", subject,
+			"got", firstTokens.UserID,
+			"provider", firstProvider,
+		)
+		return fmt.Errorf("identity mismatch on provider %q", firstProvider)
 	}
 	return nil
 }

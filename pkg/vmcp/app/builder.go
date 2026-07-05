@@ -92,7 +92,10 @@ func (b *Builder) Finish() (*vmcpserver.Server, core.VMCP, func(), error) {
 	// the single registry build, so the core's backend client and the transport's
 	// session factory derive from the same backend-auth metadata (they would
 	// otherwise disagree — only BuildServerConfig injects on its own copy).
-	cfg := b.prepareConfig(o)
+	cfg, err := b.prepareConfig(o)
+	if err != nil {
+		return nil, nil, noop, err
+	}
 
 	// Build the shared collaborators once, collecting the extra options that inject
 	// them into both BuildCore and BuildServerConfig, the cleanups they require, and
@@ -142,17 +145,20 @@ func (b *Builder) Finish() (*vmcpserver.Server, core.VMCP, func(), error) {
 // prepareConfig returns a copy of b.cfg with token-exchange subject-provider names
 // injected when an embedded auth server run config is present. Injection is
 // idempotent (it only fills empty names), so BuildServerConfig re-running it on its
-// own copy is a harmless no-op.
-func (b *Builder) prepareConfig(o *options) *vmcpconfig.Config {
+// own copy is a harmless no-op. It returns an error if subject-provider defaulting
+// fails (e.g. a strategy references an unknown provider).
+func (b *Builder) prepareConfig(o *options) (*vmcpconfig.Config, error) {
 	cfgCopy := *b.cfg
 	cfg := &cfgCopy
 	if o.authServerRunConfig != nil {
 		if cfg.OutgoingAuth != nil {
 			cfg.OutgoingAuth = cfg.OutgoingAuth.DeepCopy()
 		}
-		vmcpconfig.InjectSubjectProviderNames(cfg, o.authServerRunConfig)
+		if err := vmcpconfig.InjectSubjectProviderNames(cfg, o.authServerRunConfig); err != nil {
+			return nil, fmt.Errorf("failed to default outgoing auth subject provider names: %w", err)
+		}
 	}
-	return cfg
+	return cfg, nil
 }
 
 // buildSharedCollaborators constructs the stateful collaborators the Builder owns

@@ -80,7 +80,10 @@ func BuildServerConfig(ctx context.Context, cfg *vmcpconfig.Config, opts ...Opti
 	var embeddedAuthServer *authserverrunner.EmbeddedAuthServer
 	if o.authServerRunConfig != nil {
 		// Inject SubjectProviderName on token_exchange strategies that omitted it.
-		vmcpconfig.InjectSubjectProviderNames(cfg, o.authServerRunConfig)
+		if err := vmcpconfig.InjectSubjectProviderNames(cfg, o.authServerRunConfig); err != nil {
+			runCleanup(cleanupFuncs)
+			return nil, noop, fmt.Errorf("failed to default outgoing auth subject provider names: %w", err)
+		}
 
 		var err error
 		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, o.authServerRunConfig)

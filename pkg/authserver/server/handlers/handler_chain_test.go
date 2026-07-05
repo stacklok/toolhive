@@ -24,6 +24,159 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
 
+// twoUpstreamChain is the effective chain for multiUpstreamTestSetup's two
+// configured providers, in configured order.
+var twoUpstreamChain = []string{"provider-1", "provider-2"}
+
+// stubUpstreamFilter is a hand-written test double for UpstreamFilter, mirroring
+// the mockIDPProvider pattern used elsewhere in this package. It records how many
+// times it was called and the names it was passed, and returns a canned keep set
+// or error.
+type stubUpstreamFilter struct {
+	keep         []string
+	err          error
+	calls        int
+	capturedArgs []string
+}
+
+func (f *stubUpstreamFilter) FilterUpstreams(_ context.Context, configured []string) ([]string, error) {
+	f.calls++
+	f.capturedArgs = configured
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.keep, nil
+}
+
+// newChainTestHandler builds a Handler over upstreams named after the given
+// slice (each backed by a throwaway OAuth2 mock provider), forwarding any
+// Options. It exists so chain-resolution tests can control the exact number and
+// order of configured upstreams.
+func newChainTestHandler(t *testing.T, names []string, opts ...Option) *Handler {
+	t.Helper()
+
+	provider, oauth2Config, stor, _ := baseTestSetup(t)
+	upstreams := make([]NamedUpstream, len(names))
+	for i, n := range names {
+		upstreams[i] = NamedUpstream{Name: n, Provider: &mockIDPProvider{providerType: upstream.ProviderTypeOAuth2}}
+	}
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams, opts...)
+	require.NoError(t, err)
+	return handler
+}
+
+func TestComputeChain(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		upstreams    []string
+		filter       *stubUpstreamFilter
+		want         []string
+		wantErr      bool
+		wantCalls    int
+		wantFilterIn []string
+	}{
+		{
+			name:      "no filter walks all configured upstreams in order",
+			upstreams: []string{"provider-1", "provider-2", "provider-3"},
+			filter:    nil,
+			want:      []string{"provider-1", "provider-2", "provider-3"},
+		},
+		{
+			name:      "single upstream does not consult filter",
+			upstreams: []string{"provider-1"},
+			filter:    &stubUpstreamFilter{keep: []string{"anything"}},
+			want:      []string{"provider-1"},
+			wantCalls: 0,
+		},
+		{
+			name:         "filter keeps a subset, first upstream always leads",
+			upstreams:    []string{"provider-1", "provider-2", "provider-3"},
+			filter:       &stubUpstreamFilter{keep: []string{"provider-3"}},
+			want:         []string{"provider-1", "provider-3"},
+			wantCalls:    1,
+			wantFilterIn: []string{"provider-2", "provider-3"},
+		},
+		{
+			name:         "filter keeps none leaves only the first upstream",
+			upstreams:    []string{"provider-1", "provider-2", "provider-3"},
+			filter:       &stubUpstreamFilter{keep: []string{}},
+			want:         []string{"provider-1"},
+			wantCalls:    1,
+			wantFilterIn: []string{"provider-2", "provider-3"},
+		},
+		{
+			name:      "returned order is ignored, configured order is preserved",
+			upstreams: []string{"provider-1", "provider-2", "provider-3"},
+			filter:    &stubUpstreamFilter{keep: []string{"provider-3", "provider-2"}},
+			want:      []string{"provider-1", "provider-2", "provider-3"},
+			wantCalls: 1,
+		},
+		{
+			name:      "unknown and first-upstream names in keep set are ignored",
+			upstreams: []string{"provider-1", "provider-2"},
+			filter:    &stubUpstreamFilter{keep: []string{"provider-1", "does-not-exist", "provider-2"}},
+			want:      []string{"provider-1", "provider-2"},
+			wantCalls: 1,
+		},
+		{
+			name:      "filter error is propagated, no fallback to full walk",
+			upstreams: []string{"provider-1", "provider-2"},
+			filter:    &stubUpstreamFilter{err: errors.New("filter boom")},
+			wantErr:   true,
+			wantCalls: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var opts []Option
+			if tt.filter != nil {
+				opts = append(opts, WithUpstreamFilter(tt.filter))
+			}
+			handler := newChainTestHandler(t, tt.upstreams, opts...)
+
+			got, err := handler.computeChain(context.Background())
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Nil(t, got)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, got)
+			}
+			if tt.filter != nil {
+				assert.Equal(t, tt.wantCalls, tt.filter.calls, "filter call count")
+				if tt.wantFilterIn != nil {
+					assert.Equal(t, tt.wantFilterIn, tt.filter.capturedArgs,
+						"filter must receive non-first configured upstreams in order")
+				}
+			}
+		})
+	}
+}
+
+// TestNextMissingUpstream_RespectsChainSubset verifies that a leg absent from the
+// chain is never reported missing even when it has no stored token — the filter
+// dropped it, so the walk must not prompt for it.
+func TestNextMissingUpstream_RespectsChainSubset(t *testing.T) {
+	t.Parallel()
+
+	handler, storState, _, _ := multiUpstreamTestSetup(t)
+	// provider-1 satisfied; provider-2 has no token but is not in the chain.
+	storState.upstreamTokens["test-session:provider-1"] = &storage.UpstreamTokens{
+		ProviderID:  "provider-1",
+		AccessToken: "tok-1",
+		ExpiresAt:   time.Now().Add(time.Hour),
+	}
+
+	got, err := handler.nextMissingUpstream(context.Background(), "test-session", []string{"provider-1"})
+	require.NoError(t, err)
+	assert.Empty(t, got, "provider-2 is not in the chain, so it must not be prompted")
+}
+
 func TestNextMissingUpstream(t *testing.T) {
 	t.Parallel()
 
@@ -74,7 +227,7 @@ func TestNextMissingUpstream(t *testing.T) {
 			handler, storState, _, _ := multiUpstreamTestSetup(t)
 			tt.setupTokens(storState)
 
-			got, err := handler.nextMissingUpstream(context.Background(), "test-session")
+			got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -167,7 +320,7 @@ func TestNextMissingUpstream_RefreshExpired(t *testing.T) {
 			handler, storState, _, _ := multiUpstreamTestSetup(t, opts...)
 			tt.setupTokens(storState)
 
-			got, err := handler.nextMissingUpstream(context.Background(), "test-session")
+			got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, got)
 		})
@@ -237,7 +390,7 @@ func TestNextMissingUpstream_StorageError(t *testing.T) {
 	)
 	require.NoError(t, err)
 
-	got, err := handler.nextMissingUpstream(context.Background(), "test-session")
+	got, err := handler.nextMissingUpstream(context.Background(), "test-session", twoUpstreamChain)
 	require.Error(t, err)
 	assert.ErrorContains(t, err, "failed to check upstream token state")
 	assert.ErrorIs(t, err, storageErr)

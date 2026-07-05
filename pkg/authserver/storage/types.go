@@ -458,6 +458,16 @@ type PendingAuthorization struct {
 	// preserves the multi-upstream chaining behavior.
 	SingleLeg bool
 
+	// ChainUpstreams is the ordered, effective set of upstream provider names this
+	// authorization must walk, always led by the required first upstream. It is
+	// computed once when the first leg resolves — narrowed by the optional upstream
+	// filter when one is configured — and carried forward across subsequent legs so
+	// the filter is not re-run per leg. Empty on the first leg's inbound pending;
+	// populated on every subsequent leg. When empty (no chain has been computed yet,
+	// or a legacy pending predating this field), the callback recomputes it, which
+	// for the no-filter case yields all configured upstreams in order.
+	ChainUpstreams []string
+
 	// CreatedAt is when the pending authorization was created.
 	CreatedAt time.Time
 }

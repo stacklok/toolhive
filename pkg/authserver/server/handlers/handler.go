@@ -47,6 +47,26 @@ type Handler struct {
 	// expired upstream leg during chain evaluation instead of re-prompting. Nil
 	// when no refresher is configured; an expired leg is then treated as missing.
 	refresher storage.UpstreamTokenRefresher
+	// filter, when set, narrows the authorization chain to a subset of the
+	// configured upstreams once the first leg resolves. Nil when no filter is
+	// configured; the chain then walks all configured upstreams as before.
+	filter UpstreamFilter
+}
+
+// UpstreamFilter narrows the authorization chain to a subset of the configured
+// upstreams. It is consulted once in the callback handler, after the first
+// upstream (upstreams[0]) resolves. The first upstream is always required: it is
+// never passed to the filter and cannot be removed by it.
+//
+// FilterUpstreams receives the request context of the first leg's callback and
+// the names of the non-first configured upstreams, in configured order. It
+// returns the subset to keep. The handler preserves configured order and ignores
+// any returned name that is not one of the non-first configured upstreams, so the
+// filter cannot reorder the chain or introduce unknown providers. A returned
+// error fails the authorization with a server error — the handler never falls
+// back to walking every upstream on error.
+type UpstreamFilter interface {
+	FilterUpstreams(ctx context.Context, configured []string) ([]string, error)
 }
 
 // Option configures optional Handler behavior at construction time.
@@ -59,6 +79,16 @@ type Option func(*Handler)
 func WithUpstreamRefresher(r storage.UpstreamTokenRefresher) Option {
 	return func(h *Handler) {
 		h.refresher = r
+	}
+}
+
+// WithUpstreamFilter injects a filter that narrows the authorization chain to a
+// subset of the configured upstreams once the first leg resolves. When unset, the
+// handler walks all configured upstreams — the behavior before this option
+// existed. See UpstreamFilter for the contract.
+func WithUpstreamFilter(f UpstreamFilter) Option {
+	return func(h *Handler) {
+		h.filter = f
 	}
 }
 
@@ -141,7 +171,10 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 
 // nextMissingUpstream returns the name of the next upstream provider in the
 // authorization chain that the user must (re-)authenticate with for this session.
-// Returns empty string if all upstreams are satisfied, or an error if the storage
+// It walks the provided chain — the effective, possibly filtered, ordered set of
+// upstream names for this authorization (see computeChain) — rather than the raw
+// configured list, so a leg the filter dropped is never prompted for. Returns
+// empty string if all legs in the chain are satisfied, or an error if the storage
 // lookup fails.
 //
 // A leg is satisfied when it has a stored token that is live (or asserts no
@@ -151,27 +184,75 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 // succeeds. If refresh is impossible or fails, the leg is reported as missing so
 // the user is re-prompted up front, rather than the stale token surfacing as a
 // runtime auth error later at MCP-request token-swap time.
-func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string) (string, error) {
+func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, chain []string) (string, error) {
 	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
 	if err != nil {
 		return "", fmt.Errorf("failed to check upstream token state: %w", err)
 	}
-	for _, u := range h.upstreams {
-		tokens, ok := stored[u.Name]
+	for _, name := range chain {
+		tokens, ok := stored[name]
 		if !ok || tokens == nil {
 			// No token stored for this leg — prompt.
-			return u.Name, nil
+			return name, nil
 		}
 		// A live token (or one with no asserted expiry) satisfies the leg.
 		if tokens.ExpiresAt.IsZero() || !tokens.IsExpired(time.Now()) {
 			continue
 		}
 		// Expired — attempt a transparent refresh; prompt now if it can't be done.
-		if !h.refreshExpiredLeg(ctx, sessionID, u.Name, tokens) {
-			return u.Name, nil
+		if !h.refreshExpiredLeg(ctx, sessionID, name, tokens) {
+			return name, nil
 		}
 	}
 	return "", nil
+}
+
+// computeChain returns the ordered, effective set of upstream names this
+// authorization must walk. The first configured upstream always leads the chain
+// and is never filtered out. When no filter is configured, the chain is the full
+// configured list in order (the behavior before the filter hook existed). When a
+// filter is configured, it is consulted with the names of the non-first upstreams
+// (in configured order) and the chain becomes the first upstream plus the kept
+// subset. Configured order is preserved and any returned name that is not a
+// non-first configured upstream is ignored, so the filter can only narrow — never
+// reorder or extend — the chain.
+//
+// A filter error is returned to the caller so the authorization fails cleanly; it
+// never silently falls back to walking every upstream.
+func (h *Handler) computeChain(ctx context.Context) ([]string, error) {
+	chain := []string{h.upstreams[0].Name}
+	rest := h.upstreams[1:]
+	if len(rest) == 0 {
+		return chain, nil
+	}
+
+	restNames := make([]string, len(rest))
+	for i := range rest {
+		restNames[i] = rest[i].Name
+	}
+
+	if h.filter == nil {
+		return append(chain, restNames...), nil
+	}
+
+	keep, err := h.filter.FilterUpstreams(ctx, restNames)
+	if err != nil {
+		return nil, fmt.Errorf("upstream filter failed: %w", err)
+	}
+
+	keepSet := make(map[string]struct{}, len(keep))
+	for _, name := range keep {
+		keepSet[name] = struct{}{}
+	}
+	// Iterate configured order (not the filter's return order) so the chain
+	// preserves the operator-defined sequence and silently drops any name the
+	// filter returned that is not a non-first configured upstream.
+	for i := range rest {
+		if _, ok := keepSet[rest[i].Name]; ok {
+			chain = append(chain, rest[i].Name)
+		}
+	}
+	return chain, nil
 }
 
 // refreshExpiredLeg attempts to refresh an expired upstream token for one chain

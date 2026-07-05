@@ -871,7 +871,8 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
 			Scopes: []string{"openid", "profile"}, InternalState: state,
 			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
-			SingleLeg: true, CreatedAt: time.Now(),
+			SingleLeg: true, ChainUpstreams: []string{"provider-1", "provider-2"},
+			CreatedAt: time.Now(),
 		}
 	}
 
@@ -886,6 +887,7 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.PKCEChallenge, retrieved.PKCEChallenge)
 			assert.Equal(t, pending.Scopes, retrieved.Scopes)
 			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
+			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
 		})
 	})
 

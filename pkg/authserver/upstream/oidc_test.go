@@ -605,6 +605,54 @@ func TestOIDCProviderImpl_ExchangeCodeForIdentity(t *testing.T) {
 		assert.NotEmpty(t, result.Tokens.IDToken)
 	})
 
+	t.Run("captures ID token claims for authorization inputs", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOIDCServer(t)
+		t.Cleanup(mock.Close)
+
+		// Issue an ID token carrying claims a downstream authorization filter would
+		// key on (email, groups) alongside the standard set.
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			idToken := mock.signIDTokenWithClaims(
+				testClientID, "user-789", "", time.Now().Add(time.Hour),
+				map[string]any{
+					"email":  "dev@example.com",
+					"groups": []any{"engineering", "admins"},
+				},
+			)
+			resp := testTokenResponse{
+				AccessToken: "access-token",
+				TokenType:   "Bearer",
+				IDToken:     idToken,
+				ExpiresIn:   3600,
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+		}
+
+		config := &OIDCConfig{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     testClientID,
+				ClientSecret: testClientSecret,
+				RedirectURI:  testRedirectURI,
+			},
+			Issuer: mock.issuer,
+		}
+
+		provider, err := NewOIDCProvider(ctx, config)
+		require.NoError(t, err)
+
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+
+		require.NotNil(t, result.Claims, "ID token claims must be captured for authorization inputs")
+		assert.Equal(t, "user-789", result.Claims["sub"], "standard sub claim must be captured")
+		assert.Equal(t, "dev@example.com", result.Claims["email"], "custom email claim must be captured")
+		assert.Equal(t, []any{"engineering", "admins"}, result.Claims["groups"],
+			"multi-valued groups claim must be captured verbatim")
+	})
+
 	t.Run("successful exchange without nonce", func(t *testing.T) {
 		t.Parallel()
 

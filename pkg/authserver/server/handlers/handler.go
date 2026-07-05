@@ -24,6 +24,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/ory/fosite"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
@@ -54,29 +55,42 @@ type Handler struct {
 }
 
 // UpstreamFilter narrows the authorization chain to a subset of the configured
-// upstreams. It is consulted exactly once per authorization, in the callback
-// handler, after the first upstream (upstreams[0]) resolves. The first upstream is
-// always required: it is never passed to the filter and cannot be removed by it.
+// upstreams, keyed on the identity established by the first upstream. It is
+// consulted exactly once per authorization, in the callback handler, after the
+// first upstream (upstreams[0]) resolves. The first upstream is always required:
+// it is never passed to the filter and cannot be removed by it.
 //
-// FilterUpstreams receives the request context of the first leg's callback and
-// the names of the non-first configured upstreams, in configured order. It
-// returns the subset to keep. The handler preserves configured order and ignores
-// any returned name that is not one of the non-first configured upstreams, so the
-// filter cannot reorder the chain or introduce unknown providers. A returned
-// error fails the authorization with a server error — the handler never falls
-// back to walking every upstream on error.
+// FilterUpstreams receives, in order:
+//   - ctx: the request context of the first leg's callback.
+//   - platformUserID: the canonical ToolHive user ID resolved from the first
+//     upstream (the stable internal identifier; equals principal.PlatformUserID).
+//   - principal: the upstream-derived identity for authorization decisions. Its
+//     Subject is the claim-mapped upstream subject (OIDC SubjectClaim, or "sub");
+//     Claims carries the ID-token/userinfo claims (nil for OAuth2 identityFromToken
+//     or synthetic upstreams, which resolve no structured claim set); Name and
+//     Email are populated when the upstream provides them. It carries NO tokens —
+//     it is the credential-free auth.PrincipalInfo projection. The filter MUST
+//     treat principal (including its Claims map) as read-only.
+//   - configured: the names of the non-first configured upstreams, in configured
+//     order.
 //
-// The context carries the resolved canonical user via auth.WithPlatformUser (set
-// just before the filter runs), which is the most concrete signal a filter keyed
-// on the authenticated principal would use. It does not carry the requesting
-// client, scopes, or resource — those live in the pending authorization, not ctx.
+// It returns the subset to keep. The handler preserves configured order and
+// ignores any returned name that is not one of the non-first configured upstreams,
+// so the filter cannot reorder the chain or introduce unknown providers. A
+// returned error fails the authorization with a server error — the handler never
+// falls back to walking every upstream on error.
 //
-// The "first-leg context" guarantee holds even across a rolling upgrade of a
+// The "first-leg identity" guarantee holds even across a rolling upgrade of a
 // persistent backend: a subsequent-leg pending that lacks a computed chain (e.g.
 // one written before this feature existed) is rejected and forces a fresh
-// authorization, rather than re-running the filter against a later leg's context.
+// authorization, rather than re-running the filter against a later leg.
 type UpstreamFilter interface {
-	FilterUpstreams(ctx context.Context, configured []string) ([]string, error)
+	FilterUpstreams(
+		ctx context.Context,
+		platformUserID string,
+		principal auth.PrincipalInfo,
+		configured []string,
+	) ([]string, error)
 }
 
 // Option configures optional Handler behavior at construction time.
@@ -229,7 +243,10 @@ func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, cha
 //
 // A filter error is returned to the caller so the authorization fails cleanly; it
 // never silently falls back to walking every upstream.
-func (h *Handler) computeChain(ctx context.Context) ([]string, error) {
+//
+// principal is the first upstream's resolved identity, passed through to the filter
+// (see UpstreamFilter); it is unused when no filter is configured.
+func (h *Handler) computeChain(ctx context.Context, principal auth.PrincipalInfo) ([]string, error) {
 	chain := []string{h.upstreams[0].Name}
 	rest := h.upstreams[1:]
 	if len(rest) == 0 {
@@ -245,7 +262,7 @@ func (h *Handler) computeChain(ctx context.Context) ([]string, error) {
 		return append(chain, restNames...), nil
 	}
 
-	keep, err := h.filter.FilterUpstreams(ctx, restNames)
+	keep, err := h.filter.FilterUpstreams(ctx, principal.PlatformUserID, principal, restNames)
 	if err != nil {
 		return nil, fmt.Errorf("upstream filter failed: %w", err)
 	}
@@ -278,10 +295,18 @@ func (h *Handler) computeChain(ctx context.Context) ([]string, error) {
 // is to run once, with the first leg's context, so recomputing here with a later
 // leg's context could narrow the chain against the wrong request. Failing closed
 // forces a fresh authorization that starts cleanly at the first leg.
-func (h *Handler) resolveChain(ctx context.Context, pending *storage.PendingAuthorization) ([]string, error) {
+//
+// principal is the identity resolved by the leg that just completed; it is passed
+// to computeChain (and thus the filter) only on the first leg, where it reflects
+// the identity provider. Subsequent legs reuse the stored chain and ignore it.
+func (h *Handler) resolveChain(
+	ctx context.Context,
+	pending *storage.PendingAuthorization,
+	principal auth.PrincipalInfo,
+) ([]string, error) {
 	if pending.ResolvedUserID == "" {
 		// True first leg — compute with this (the first) leg's request context.
-		return h.computeChain(ctx)
+		return h.computeChain(ctx, principal)
 	}
 	if len(pending.ChainUpstreams) == 0 {
 		return nil, fmt.Errorf("subsequent chain leg is missing its computed upstream chain (stale pending authorization)")

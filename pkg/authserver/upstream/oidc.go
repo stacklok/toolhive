@@ -344,11 +344,22 @@ func (p *OIDCProviderImpl) ExchangeCodeForIdentity(
 		return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
 	}
 
+	// Capture all ID-token claims for downstream authorization inputs. Best-effort:
+	// the subject/name/email above are already resolved, so a claims-extraction
+	// failure only loses the enrichment, it does not fail the login.
+	var allClaims map[string]any
+	if err := validatedToken.Claims(&allClaims); err != nil {
+		slog.Warn("failed to extract full claims from ID token for authorization inputs",
+			"error", err,
+		)
+	}
+
 	return &Identity{
 		Tokens:  exchanged.tokens,
 		Subject: subject,
 		Name:    idClaims.Name,
 		Email:   idClaims.Email,
+		Claims:  allClaims,
 	}, nil
 }
 

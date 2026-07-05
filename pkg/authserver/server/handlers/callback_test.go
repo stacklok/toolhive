@@ -699,6 +699,68 @@ func TestCallbackHandler_SecondLeg_ReusesChain_DoesNotReRunFilter(t *testing.T) 
 	assert.Equal(t, "provider2-code", provider2.capturedCode)
 }
 
+func TestCallbackHandler_Filter_ReceivesFirstUpstreamIdentity(t *testing.T) {
+	t.Parallel()
+	filter := &stubUpstreamFilter{keep: []string{"provider-2"}}
+	handler, storState, provider1, _ := multiUpstreamTestSetup(t, WithUpstreamFilter(filter))
+
+	// Model an OIDC first upstream that resolved ID-token claims an authz filter
+	// would key on. (The real OIDC provider's capture of these claims is covered by
+	// TestOIDCProviderImpl_ExchangeCodeForIdentity/"captures ID token claims…"; this
+	// test covers the callback -> filter propagation.)
+	provider1.providerType = upstream.ProviderTypeOIDC
+	provider1.exchangeResult.Claims = map[string]any{
+		"sub":    "user-from-provider1",
+		"email":  "firstleg@example.com",
+		"groups": []any{"engineering", "admins"},
+	}
+
+	sessionID := "chain-session-filter-identity"
+	firstLegState := "filter-identity-first-leg-state"
+	pending := &storage.PendingAuthorization{
+		ClientID:             testAuthClientID,
+		RedirectURI:          testAuthRedirectURI,
+		State:                "client-state-identity",
+		PKCEChallenge:        "client-challenge",
+		PKCEMethod:           "S256",
+		Scopes:               []string{"openid", "profile"},
+		InternalState:        firstLegState,
+		UpstreamPKCEVerifier: "filter-identity-verifier-123456789012345678",
+		UpstreamNonce:        "filter-identity-nonce",
+		UpstreamProviderName: "provider-1",
+		SessionID:            sessionID,
+		CreatedAt:            time.Now(),
+	}
+	storState.pendingAuths[firstLegState] = pending
+
+	req := httptest.NewRequest(http.MethodGet, "/oauth/callback?code=provider1-code&state="+firstLegState, nil)
+	rec := httptest.NewRecorder()
+	handler.CallbackHandler(rec, req)
+
+	// Kept provider-2, so the chain continues onward (proving the filter ran).
+	require.Equal(t, http.StatusFound, rec.Code, "kept second leg should redirect onward")
+	require.Equal(t, 1, filter.calls, "filter should be consulted once on the first leg")
+
+	// The filter received the first upstream's resolved identity.
+	assert.Equal(t, "user-from-provider1", filter.capturedPrincipal.Subject,
+		"principal.Subject must be the claim-mapped upstream subject")
+	assert.Equal(t, "firstleg@example.com", filter.capturedPrincipal.Email,
+		"principal.Email must come from the first upstream")
+	assert.Equal(t, map[string]any{
+		"sub":    "user-from-provider1",
+		"email":  "firstleg@example.com",
+		"groups": []any{"engineering", "admins"},
+	}, filter.capturedPrincipal.Claims, "principal.Claims must carry the first upstream's claims")
+
+	// The platform user ID is the canonical (resolved) ToolHive user: non-empty,
+	// equal to principal.PlatformUserID, and distinct from the raw upstream subject.
+	assert.NotEmpty(t, filter.capturedUser, "platform user ID must be populated")
+	assert.Equal(t, filter.capturedUser, filter.capturedPrincipal.PlatformUserID,
+		"the standalone platform user ID must mirror principal.PlatformUserID")
+	assert.NotEqual(t, "user-from-provider1", filter.capturedUser,
+		"platform user ID is the canonical ToolHive user, not the raw upstream subject")
+}
+
 func TestCallbackHandler_SubsequentLeg_MissingChain_FailsClosed(t *testing.T) {
 	t.Parallel()
 	handler, storState, _, _ := multiUpstreamTestSetup(t)

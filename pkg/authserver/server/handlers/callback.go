@@ -180,7 +180,20 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, subject, userName, userEmail)
+	// Build the credential-free principal for the optional upstream filter, keyed on
+	// the identity the first leg just established. providerSubject is the claim-mapped
+	// upstream subject; subject is the canonical ToolHive user ID. On subsequent legs
+	// the filter is not consulted, so this only drives filtering for upstreams[0].
+	// result.Claims carries the ID-token/userinfo claims (nil for synthetic upstreams).
+	principal := auth.PrincipalInfo{
+		Subject:        providerSubject,
+		PlatformUserID: subject,
+		Name:           userName,
+		Email:          userEmail,
+		Claims:         result.Claims,
+	}
+
+	h.continueChainOrComplete(ctx, w, req, ar, pending, sessionID, principal)
 }
 
 // maybeCarryForwardRefreshToken preserves a prior refresh token when the upstream IdP
@@ -409,10 +422,15 @@ func (h *Handler) continueChainOrComplete(
 	ar fosite.AuthorizeRequester,
 	pending *storage.PendingAuthorization,
 	sessionID string,
-	subject string,
-	name string,
-	email string,
+	principal auth.PrincipalInfo,
 ) {
+	// subject is the canonical ToolHive user ID used for chain state, token keying,
+	// and the cross-leg identity check. Note this is principal.PlatformUserID, NOT
+	// principal.Subject (which is the upstream provider's subject).
+	subject := principal.PlatformUserID
+	name := principal.Name
+	email := principal.Email
+
 	// SingleLeg authorizations intentionally bypass chain continuation: the caller
 	// scoped this flow to one specific upstream (e.g. a UI-initiated "connect one
 	// backend" request), so other configured-but-tokenless upstreams must not
@@ -438,7 +456,7 @@ func (h *Handler) continueChainOrComplete(
 	// subsequent leg reuses the validated chain the first leg carried forward, so
 	// the filter is not re-run per leg. A subsequent leg whose pending predates the
 	// chain is rejected rather than recomputed against a later leg's context.
-	chain, err := h.resolveChain(ctx, pending)
+	chain, err := h.resolveChain(ctx, pending, principal)
 	if err != nil {
 		slog.Error("failed to resolve upstream chain", "error", err)
 		_ = h.storage.DeleteUpstreamTokens(ctx, sessionID)

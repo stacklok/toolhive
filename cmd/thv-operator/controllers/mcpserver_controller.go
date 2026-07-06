@@ -526,8 +526,11 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		newService := r.serviceForMCPServer(ctx, mcpServer)
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
-		service.Labels = newService.Labels
-		service.Annotations = newService.Annotations
+		// Merge (not replace) Labels/Annotations so keys written by external controllers
+		// (e.g. GKE NEG's cloud.google.com/* annotations) are preserved while the
+		// operator-owned values are applied.
+		service.Labels = ctrlutil.MergeLabels(newService.Labels, service.Labels)
+		service.Annotations = ctrlutil.MergeAnnotations(newService.Annotations, service.Annotations)
 		err = r.Update(ctx, service)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
@@ -2062,11 +2065,15 @@ func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1beta1.MCPServer
 		}
 	}
 
-	if !maps.Equal(service.Labels, expectedLabels) {
+	// Subset check rather than exact equality: the Service is co-owned by external
+	// controllers (e.g. GKE NEG/Gateway writes cloud.google.com/* annotations), so only
+	// the operator-owned keys must match. maps.Equal would treat those external
+	// annotations as drift and hot-loop Update against the concurrent writer.
+	if !ctrlutil.MapIsSubset(expectedLabels, service.Labels) {
 		return true
 	}
 
-	if !maps.Equal(service.Annotations, expectedAnnotations) {
+	if !ctrlutil.MapIsSubset(expectedAnnotations, service.Annotations) {
 		return true
 	}
 

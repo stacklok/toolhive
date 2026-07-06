@@ -376,8 +376,11 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 		}
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
-		service.Labels = newService.Labels
-		service.Annotations = newService.Annotations
+		// Merge (not replace) Labels/Annotations so keys written by external controllers
+		// (e.g. GKE NEG's cloud.google.com/* annotations) are preserved while the
+		// operator-owned values are applied.
+		service.Labels = ctrlutil.MergeLabels(newService.Labels, service.Labels)
+		service.Annotations = ctrlutil.MergeAnnotations(newService.Annotations, service.Annotations)
 
 		ctxLogger.Info("Updating Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
 		if err := r.Update(ctx, service); err != nil {
@@ -1642,11 +1645,15 @@ func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, pro
 		}
 	}
 
-	if !maps.Equal(service.Labels, expectedLabels) {
+	// Subset check rather than exact equality: the Service is co-owned by external
+	// controllers (e.g. GKE NEG/Gateway writes cloud.google.com/* annotations), so only
+	// the operator-owned keys must match. maps.Equal would treat those external
+	// annotations as drift and hot-loop Update against the concurrent writer.
+	if !ctrlutil.MapIsSubset(expectedLabels, service.Labels) {
 		return true
 	}
 
-	if !maps.Equal(service.Annotations, expectedAnnotations) {
+	if !ctrlutil.MapIsSubset(expectedAnnotations, service.Annotations) {
 		return true
 	}
 

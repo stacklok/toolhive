@@ -11,7 +11,6 @@ import (
 	"fmt"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
-
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"

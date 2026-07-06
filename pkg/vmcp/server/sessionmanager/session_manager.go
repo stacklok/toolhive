@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/cache"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"

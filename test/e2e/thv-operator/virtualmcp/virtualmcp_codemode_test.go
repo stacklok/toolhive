@@ -9,11 +9,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	"k8s.io/apimachinery/pkg/types"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"

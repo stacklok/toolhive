@@ -21,12 +21,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/stacklok/toolhive-core/mcpcompat/client"
-	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
-	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/versions"

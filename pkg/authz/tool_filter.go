@@ -8,7 +8,6 @@ import (
 	"log/slog"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
-
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 )
 

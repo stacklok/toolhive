@@ -23,7 +23,6 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
-
 	httpval "github.com/stacklok/toolhive-core/validation/http"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/similarity"

@@ -15,7 +15,6 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
-
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/versions"
 )

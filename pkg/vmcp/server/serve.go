@@ -11,7 +11,6 @@ import (
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
-
 	"github.com/stacklok/toolhive/pkg/audit"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/telemetry"

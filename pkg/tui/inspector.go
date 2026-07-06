@@ -14,9 +14,9 @@ import (
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
 	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
-
 	"github.com/stacklok/toolhive/pkg/core"
 )
 

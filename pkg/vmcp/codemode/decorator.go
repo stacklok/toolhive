@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
-
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/script"
 	"github.com/stacklok/toolhive/pkg/vmcp"

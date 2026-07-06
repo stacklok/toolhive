@@ -12,9 +12,9 @@ import (
 	"os"
 	"time"
 
-	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	thclient "github.com/stacklok/toolhive/pkg/mcp/client"
 )
 

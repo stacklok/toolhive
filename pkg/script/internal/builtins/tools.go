@@ -7,7 +7,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"go.starlark.net/starlark"
 
 	"github.com/stacklok/toolhive/pkg/script/internal/conversions"

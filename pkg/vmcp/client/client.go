@@ -4,7 +4,7 @@
 // Package client provides MCP protocol client implementation for communicating with backend servers.
 //
 // This package implements the BackendClient interface defined in the vmcp package,
-// using the mark3labs/mcp-go SDK for protocol communication.
+// using the stacklok/toolhive-core/mcpcompat SDK for protocol communication.
 package client
 
 import (
@@ -21,9 +21,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
@@ -100,7 +100,7 @@ func WithDialControl(control func(network, address string, c syscall.RawConn) er
 	}
 }
 
-// httpBackendClient implements vmcp.BackendClient using mark3labs/mcp-go HTTP client.
+// httpBackendClient implements vmcp.BackendClient using stacklok/toolhive-core/mcpcompat HTTP client.
 // It supports streamable-HTTP and SSE transports for backend MCP servers.
 type httpBackendClient struct {
 	// clientFactory creates MCP clients for backends.

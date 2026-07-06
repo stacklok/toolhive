@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	mcpmcp "github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 

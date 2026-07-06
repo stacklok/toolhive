@@ -12,7 +12,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/spf13/cobra"
 
 	thclient "github.com/stacklok/toolhive/pkg/mcp/client"

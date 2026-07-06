@@ -11,8 +11,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	mcpmcp "github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 )
 
 // startRealMCPBackend creates a real in-process MCP server over streamable-HTTP

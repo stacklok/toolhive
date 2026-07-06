@@ -182,6 +182,58 @@ func TestComputeChain(t *testing.T) {
 	}
 }
 
+func TestValidateChain(t *testing.T) {
+	t.Parallel()
+
+	// Configured order is provider-1, provider-2, provider-3.
+	handler := newChainTestHandler(t, []string{"provider-1", "provider-2", "provider-3"})
+
+	tests := []struct {
+		name    string
+		chain   []string
+		wantErr string // substring to match; empty means no error expected
+	}{
+		{name: "full configured chain", chain: []string{"provider-1", "provider-2", "provider-3"}},
+		{name: "in-order subsequence", chain: []string{"provider-1", "provider-3"}},
+		{name: "first upstream only", chain: []string{"provider-1"}},
+		{name: "empty chain", chain: nil, wantErr: "chain is empty"},
+		{
+			name: "wrong first upstream", chain: []string{"provider-2", "provider-3"},
+			wantErr: "must lead with the first configured upstream",
+		},
+		{
+			name: "unconfigured entry", chain: []string{"provider-1", "provider-x"},
+			wantErr: "unconfigured, out of order, or duplicated",
+		},
+		{
+			name: "out of order", chain: []string{"provider-1", "provider-3", "provider-2"},
+			wantErr: "unconfigured, out of order, or duplicated",
+		},
+		{
+			name: "duplicate first upstream", chain: []string{"provider-1", "provider-1"},
+			wantErr: "unconfigured, out of order, or duplicated",
+		},
+		{
+			name: "duplicate non-first upstream", chain: []string{"provider-1", "provider-2", "provider-2"},
+			wantErr: "unconfigured, out of order, or duplicated",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := handler.validateChain(tt.chain)
+			if tt.wantErr == "" {
+				assert.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.ErrorContains(t, err, tt.wantErr)
+			}
+		})
+	}
+}
+
 // TestNextMissingUpstream_RespectsChainSubset verifies that a leg absent from the
 // chain is never reported missing even when it has no stored token — the filter
 // dropped it, so the walk must not prompt for it.

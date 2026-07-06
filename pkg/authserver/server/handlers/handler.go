@@ -66,13 +66,21 @@ type Handler struct {
 //     upstream (the stable internal identifier; equals principal.PlatformUserID).
 //   - principal: the upstream-derived identity for authorization decisions. Its
 //     Subject is the claim-mapped upstream subject (OIDC SubjectClaim, or "sub");
-//     Claims carries the ID-token/userinfo claims (nil for OAuth2 identityFromToken
-//     or synthetic upstreams, which resolve no structured claim set); Name and
-//     Email are populated when the upstream provides them. It carries NO tokens —
-//     it is the credential-free auth.PrincipalInfo projection. The filter MUST
-//     treat principal (including its Claims map) as read-only.
+//     Claims carries the ID-token/userinfo claims; Name and Email are populated
+//     when the upstream provides them. It carries NO tokens — it is the
+//     credential-free auth.PrincipalInfo projection. The filter MUST treat
+//     principal (including its Claims map) as read-only.
 //   - configured: the names of the non-first configured upstreams, in configured
 //     order.
+//
+// Claims contract: values are untyped and come straight from the upstream IdP, so
+// implementations MUST assert types defensively (e.g. comma-ok on map/slice
+// access) — a malformed IdP response must not be able to panic the filter. Claims
+// is nil not only for OAuth2 identityFromToken / synthetic upstreams (which resolve
+// no structured claim set) but also on a transient OIDC claims-extraction failure,
+// so a security-relevant filter MUST treat nil/absent claims as fail-closed. Note
+// that the `aud` claim, when present, is the upstream IdP's client_id — not this
+// authorization server.
 //
 // It returns the subset to keep. The handler preserves configured order and
 // ignores any returned name that is not one of the non-first configured upstreams,
@@ -121,9 +129,12 @@ func WithUpstreamFilter(f UpstreamFilter) Option {
 // during multi-upstream authorization flows (e.g., sequential token acquisition).
 //
 // Returns an error if config is nil, if config's embedded *fosite.Config is
-// nil, if upstreams is empty, or if any entry has an empty name or nil
-// provider. Catching misconfiguration here is far easier to diagnose than
-// a nil-deref panic deep inside an HTTP handler at request time.
+// nil, if upstreams is empty, or if any entry has an empty name, a nil provider,
+// or a duplicate name. Upstream names must be unique: upstreamByName returns the
+// first match, tokens are keyed by name, and the authorization chain is keyed by
+// name — a duplicate would silently shadow a provider. Catching misconfiguration
+// here is far easier to diagnose than a nil-deref panic or a shadowed provider
+// deep inside an HTTP handler at request time.
 func NewHandler(
 	provider fosite.OAuth2Provider,
 	config *server.AuthorizationServerConfig,
@@ -138,6 +149,7 @@ func NewHandler(
 	if len(upstreams) == 0 {
 		return nil, fmt.Errorf("handlers: upstreams must not be empty")
 	}
+	seen := make(map[string]struct{}, len(upstreams))
 	for _, u := range upstreams {
 		if u.Name == "" {
 			return nil, fmt.Errorf("handlers: upstream entry has empty name")
@@ -145,6 +157,10 @@ func NewHandler(
 		if u.Provider == nil {
 			return nil, fmt.Errorf("handlers: upstream %q has nil provider", u.Name)
 		}
+		if _, dup := seen[u.Name]; dup {
+			return nil, fmt.Errorf("handlers: duplicate upstream name %q", u.Name)
+		}
+		seen[u.Name] = struct{}{}
 	}
 	h := &Handler{
 		provider:     provider,
@@ -318,11 +334,17 @@ func (h *Handler) resolveChain(
 }
 
 // validateChain rejects an upstream chain loaded from storage that does not agree
-// with the configured upstreams. A valid chain is non-empty, leads with the
-// required first upstream, and names only configured upstreams. This guards the
-// reuse path against a corrupt or tampered PendingAuthorization row shrinking an
-// in-flight chain to skip legs — which would also silently disable the cross-leg
-// identity check, since verifyChainIdentity is a no-op for a single-element chain.
+// with the configured upstreams. A valid chain is a non-empty, in-order,
+// duplicate-free subsequence of the configured upstreams led by the required
+// first upstream. This guards the reuse path against a corrupt or tampered
+// PendingAuthorization row shrinking or reordering an in-flight chain to skip legs
+// — which would also silently disable the cross-leg identity check, since
+// verifyChainIdentity is a no-op for a single-element chain.
+//
+// Note: this validates that each name is currently configured, not that the name
+// still points at the same provider it did when the chain was computed. A name
+// rebound to a different IdP mid-flight (a rolling config change) still validates;
+// the frozen subject and the pending TTL bound that exposure.
 func (h *Handler) validateChain(chain []string) error {
 	if len(chain) == 0 {
 		return fmt.Errorf("chain is empty")
@@ -331,10 +353,18 @@ func (h *Handler) validateChain(chain []string) error {
 		return fmt.Errorf("chain must lead with the first configured upstream %q, got %q",
 			h.upstreams[0].Name, chain[0])
 	}
+	// Walk both, advancing the config cursor past each match. A name that never
+	// matches — unconfigured, out of order, or a duplicate of an already-consumed
+	// entry — is rejected, so the stored chain is a faithful narrowing of the config.
+	ci := 0
 	for _, name := range chain {
-		if _, ok := h.upstreamByName(name); !ok {
-			return fmt.Errorf("chain contains unconfigured upstream %q", name)
+		for ci < len(h.upstreams) && h.upstreams[ci].Name != name {
+			ci++
 		}
+		if ci >= len(h.upstreams) {
+			return fmt.Errorf("chain entry %q is unconfigured, out of order, or duplicated", name)
+		}
+		ci++ // consume the matched upstream so it cannot be reused
 	}
 	return nil
 }

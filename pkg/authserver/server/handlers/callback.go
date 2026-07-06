@@ -552,8 +552,12 @@ func (h *Handler) continueChainOrComplete(
 	http.Redirect(w, req, nextURL, http.StatusFound)
 }
 
-// verifyChainIdentity performs the defense-in-depth cross-leg identity check once
-// every leg of the effective chain is satisfied.
+// verifyChainIdentity is a defense-in-depth check run once every leg of the
+// effective chain is satisfied. Despite the "chain" framing, it reconciles only
+// the first leg: it confirms the identity provider's stored token (chain[0]) still
+// belongs to the subject carried through the flow. Intermediate/later legs are
+// deliberately NOT identity-checked — those are connect-this-backend flows whose
+// upstream identity can legitimately differ from the first leg's user.
 //
 // subject MUST be the canonical ToolHive user ID resolved from the first leg's
 // upstream via that provider's configured subject-claim mapping (the OIDC
@@ -561,11 +565,12 @@ func (h *Handler) continueChainOrComplete(
 // through PendingAuthorization.ResolvedUserID. The caller resolves it exactly once,
 // on the first leg, from the claim-mapped upstream subject. This cross-checks it
 // against firstTokens.UserID — the same canonical ID persisted when the first leg
-// stored its tokens — so a chain whose legs disagree on the user is rejected.
+// stored its tokens — so a first leg whose stored user disagrees with the carried
+// subject is rejected.
 //
 // It gates on the effective chain rather than the raw config: chain[0] is always
 // the first (required) upstream, so a chain the filter narrowed to just that
-// upstream has no cross-legs to reconcile and the check is a no-op. Returns a
+// upstream has no first-leg cross-check to run and the check is a no-op. Returns a
 // non-nil error when the storage lookup fails or an identity mismatch is detected;
 // the caller maps either to a server error.
 func (h *Handler) verifyChainIdentity(ctx context.Context, sessionID string, chain []string, subject string) error {

@@ -9,7 +9,7 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-	mcpclient "github.com/mark3labs/mcp-go/client"
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
 
 	"github.com/stacklok/toolhive/pkg/core"
 	"github.com/stacklok/toolhive/pkg/runner"

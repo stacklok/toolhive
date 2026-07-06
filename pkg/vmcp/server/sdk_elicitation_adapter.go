@@ -9,8 +9,8 @@ import (
 	"context"
 	"maps"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )

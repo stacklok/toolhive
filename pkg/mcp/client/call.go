@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
 // CallTool connects to the MCP server at serverURL, performs the initialize

@@ -21,7 +21,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	mcpserver "github.com/mark3labs/mcp-go/server"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/cache"

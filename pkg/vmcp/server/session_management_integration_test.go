@@ -15,8 +15,8 @@ import (
 	"testing"
 	"time"
 
-	mcpmcp "github.com/mark3labs/mcp-go/mcp"
-	mcpsdk "github.com/mark3labs/mcp-go/server"
+	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpsdk "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"

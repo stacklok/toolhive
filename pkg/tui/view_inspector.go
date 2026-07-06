@@ -9,7 +9,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 
 	"github.com/stacklok/toolhive/cmd/thv/app/ui"
 )

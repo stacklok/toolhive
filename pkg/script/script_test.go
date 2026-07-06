@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stretchr/testify/require"
 )
 

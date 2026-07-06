@@ -21,7 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 
 	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/audit"
@@ -265,7 +265,7 @@ type Server struct {
 	// session manager; this is the resolved factory surfaced via Manager.OptimizerFactory.
 	optimizerFactory func(context.Context, []server.ServerTool) (optimizer.Optimizer, error)
 
-	// MCP protocol server (mark3labs/mcp-go)
+	// MCP protocol server (stacklok/toolhive-core/mcpcompat)
 	mcpServer *server.MCPServer
 
 	// HTTP server for Streamable HTTP transport

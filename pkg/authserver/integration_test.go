@@ -29,8 +29,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -86,6 +88,8 @@ type testServerOptions struct {
 	// miniredis return value is valid (e.g., for non-Redis alternative
 	// backends).
 	storageFactory func(t *testing.T) (storage.Storage, *miniredis.Miniredis)
+	// upstreamFilter, when set, is passed through to Config.UpstreamFilter.
+	upstreamFilter handlers.UpstreamFilter
 }
 
 // testServerOption is a functional option for test server setup.
@@ -109,6 +113,15 @@ func withScopes(scopes []string) testServerOption {
 func withAccessTokenLifespan(d time.Duration) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.accessTokenLifespan = d
+	}
+}
+
+// withUpstreamFilter configures Config.UpstreamFilter, exercising the
+// authserver.New -> handlers.NewHandler wiring end-to-end rather than the
+// handler-level WithUpstreamFilter option directly.
+func withUpstreamFilter(f handlers.UpstreamFilter) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.upstreamFilter = f
 	}
 }
 
@@ -1820,6 +1833,7 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC, op
 			{Name: "provider-2", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg2},
 		},
 		AllowedAudiences: []string{testAudience},
+		UpstreamFilter:   options.upstreamFilter,
 	}
 
 	// 8. Create server using newServer with a factory that returns the correct provider per name
@@ -1952,6 +1966,127 @@ func TestIntegration_MultiUpstreamSequentialChain(t *testing.T) {
 		"provider-2 UpstreamSubject should come from m2's queued user")
 	assert.NotEqual(t, tokens1.UpstreamSubject, tokens2.UpstreamSubject,
 		"upstream subjects should differ (different IDPs)")
+}
+
+// stubChainFilter is a minimal handlers.UpstreamFilter test double that always
+// keeps the given set of upstream names, regardless of the principal or
+// configured list it is passed. The lower-level filter-narrowing behavior
+// (computeChain) is already covered directly in
+// pkg/authserver/server/handlers/handler_chain_test.go; this double exists only
+// to drive the Config.UpstreamFilter -> authserver.New -> handlers.NewHandler
+// wiring end-to-end.
+type stubChainFilter struct {
+	keep []string
+}
+
+func (f *stubChainFilter) FilterUpstreams(
+	_ context.Context,
+	_ auth.PrincipalInfo,
+	_ []string,
+) ([]string, error) {
+	return f.keep, nil
+}
+
+// TestIntegration_MultiUpstreamChain_ConfigUpstreamFilter proves that a
+// Config.UpstreamFilter set through the public authserver.New facade reaches
+// the handler and narrows the authorization chain. Before Config gained this
+// field, WithUpstreamFilter was only reachable via the low-level
+// handlers.NewHandler constructor, so a caller using authserver.New had no way
+// to install a filter at all.
+//
+// The filter here drops provider-2 entirely, so after the provider-1 callback
+// the chain must be satisfied and the handler must redirect straight to the
+// client (303) instead of on to provider-2 (302). No user is queued on m2, so
+// if the filter failed to reach the handler and provider-2 were still
+// consulted, mockoidc would error — a second failure signal backing up the
+// status-code assertion.
+func TestIntegration_MultiUpstreamChain_ConfigUpstreamFilter(t *testing.T) {
+	t.Parallel()
+
+	m1, err := mockoidc.Run()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, m1.Shutdown()) })
+
+	m2, err := mockoidc.Run()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, m2.Shutdown()) })
+
+	m1.QueueUser(&mockoidc.MockUser{
+		Subject: "user-from-provider-1",
+		Email:   "user1@provider1.example.com",
+	})
+
+	filter := &stubChainFilter{keep: nil}
+	ts := setupTestServerWithTwoUpstreams(t, m1, m2, withUpstreamFilter(filter))
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+	clientState := "upstream-filter-client-state"
+	client := noRedirectClient()
+
+	parsedServerURL, err := url.Parse(ts.Server.URL)
+	require.NoError(t, err)
+
+	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
+		"client_id":             {testClientID},
+		"redirect_uri":          {testRedirectURI},
+		"state":                 {clientState},
+		"code_challenge":        {challenge},
+		"code_challenge_method": {"S256"},
+		"response_type":         {"code"},
+		"scope":                 {"openid profile"},
+	}.Encode()
+
+	resp, err := client.Get(authorizeURL)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	firstUpstreamLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	resp, err = client.Get(firstUpstreamLocation.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusFound, resp.StatusCode)
+	firstCallback, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+	firstCallback.Scheme = parsedServerURL.Scheme
+	firstCallback.Host = parsedServerURL.Host
+
+	resp, err = client.Get(firstCallback.String())
+	require.NoError(t, err)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
+		"expected 303 straight to client: the Config-supplied filter should have dropped provider-2 from the chain")
+	clientLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	require.Equal(t, clientState, clientLocation.Query().Get("state"))
+	authCode := clientLocation.Query().Get("code")
+	require.NotEmpty(t, authCode)
+
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, accessToken)
+
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var claims map[string]interface{}
+	require.NoError(t, parsedToken.Claims(ts.PrivateKey.Public(), &claims))
+	tsid, ok := claims["tsid"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, tsid)
+
+	ctx := context.Background()
+
+	tokens1, err := ts.storage.GetUpstreamTokens(ctx, tsid, "provider-1")
+	require.NoError(t, err, "provider-1 tokens should be stored")
+	require.NotNil(t, tokens1)
+
+	_, err = ts.storage.GetUpstreamTokens(ctx, tsid, "provider-2")
+	require.Error(t, err, "provider-2 should have been dropped from the chain by the filter")
+	assert.ErrorIs(t, err, storage.ErrNotFound)
 }
 
 // ============================================================================

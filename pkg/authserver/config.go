@@ -14,6 +14,7 @@ import (
 	"time"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
@@ -601,6 +602,11 @@ type Config struct {
 	// At least one upstream is required - the server delegates authentication to the upstream IDP.
 	// Multiple upstreams form a sequential authorization chain.
 	Upstreams []UpstreamConfig
+
+	// UpstreamFilter, when set, narrows the upstream authorization chain after the
+	// first leg resolves (see handlers.WithUpstreamFilter). When nil, all
+	// configured upstreams are walked — the current behavior.
+	UpstreamFilter handlers.UpstreamFilter
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
 	// If nil or empty, defaults to registration.DefaultScopes (["openid", "profile", "email", "offline_access"]).

@@ -752,12 +752,10 @@ func TestCallbackHandler_Filter_ReceivesFirstUpstreamIdentity(t *testing.T) {
 		"groups": []any{"engineering", "admins"},
 	}, filter.capturedPrincipal.Claims, "principal.Claims must carry the first upstream's claims")
 
-	// The platform user ID is the canonical (resolved) ToolHive user: non-empty,
-	// equal to principal.PlatformUserID, and distinct from the raw upstream subject.
-	assert.NotEmpty(t, filter.capturedUser, "platform user ID must be populated")
-	assert.Equal(t, filter.capturedUser, filter.capturedPrincipal.PlatformUserID,
-		"the standalone platform user ID must mirror principal.PlatformUserID")
-	assert.NotEqual(t, "user-from-provider1", filter.capturedUser,
+	// principal.PlatformUserID is the canonical (resolved) ToolHive user: non-empty
+	// and distinct from the raw upstream subject.
+	assert.NotEmpty(t, filter.capturedPrincipal.PlatformUserID, "platform user ID must be populated")
+	assert.NotEqual(t, "user-from-provider1", filter.capturedPrincipal.PlatformUserID,
 		"platform user ID is the canonical ToolHive user, not the raw upstream subject")
 }
 

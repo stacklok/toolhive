@@ -32,26 +32,22 @@ var twoUpstreamChain = []string{"provider-1", "provider-2"}
 // stubUpstreamFilter is a hand-written test double for UpstreamFilter, mirroring
 // the mockIDPProvider pattern used elsewhere in this package. It records how many
 // times it was called and the arguments it was passed (the non-first upstream
-// names, the platform user ID, and the resolved principal), and returns a canned
-// keep set or error.
+// names and the resolved principal), and returns a canned keep set or error.
 type stubUpstreamFilter struct {
 	keep              []string
 	err               error
 	calls             int
 	capturedArgs      []string
-	capturedUser      string
 	capturedPrincipal auth.PrincipalInfo
 }
 
 func (f *stubUpstreamFilter) FilterUpstreams(
 	_ context.Context,
-	platformUserID string,
 	principal auth.PrincipalInfo,
 	configured []string,
 ) ([]string, error) {
 	f.calls++
 	f.capturedArgs = configured
-	f.capturedUser = platformUserID
 	f.capturedPrincipal = principal
 	if f.err != nil {
 		return nil, f.err
@@ -172,10 +168,8 @@ func TestComputeChain(t *testing.T) {
 						"filter must receive non-first configured upstreams in order")
 				}
 				if tt.wantCalls > 0 {
-					assert.Equal(t, principal.PlatformUserID, tt.filter.capturedUser,
-						"filter must receive the platform user ID")
 					assert.Equal(t, principal, tt.filter.capturedPrincipal,
-						"filter must receive the resolved principal (subject + claims) verbatim")
+						"filter must receive the resolved principal (platform user, subject + claims) verbatim")
 				}
 			}
 		})

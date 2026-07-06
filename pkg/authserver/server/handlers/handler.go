@@ -62,12 +62,11 @@ type Handler struct {
 //
 // FilterUpstreams receives, in order:
 //   - ctx: the request context of the first leg's callback.
-//   - platformUserID: the canonical ToolHive user ID resolved from the first
-//     upstream (the stable internal identifier; equals principal.PlatformUserID).
 //   - principal: the upstream-derived identity for authorization decisions. Its
-//     Subject is the claim-mapped upstream subject (OIDC SubjectClaim, or "sub");
-//     Claims carries the ID-token/userinfo claims; Name and Email are populated
-//     when the upstream provides them. It carries NO tokens — it is the
+//     PlatformUserID is the canonical ToolHive user ID (the stable internal
+//     identifier); Subject is the claim-mapped upstream subject (OIDC SubjectClaim,
+//     or "sub"); Claims carries the ID-token/userinfo claims; Name and Email are
+//     populated when the upstream provides them. It carries NO tokens — it is the
 //     credential-free auth.PrincipalInfo projection. The filter MUST treat
 //     principal (including its Claims map) as read-only.
 //   - configured: the names of the non-first configured upstreams, in configured
@@ -95,7 +94,6 @@ type Handler struct {
 type UpstreamFilter interface {
 	FilterUpstreams(
 		ctx context.Context,
-		platformUserID string,
 		principal auth.PrincipalInfo,
 		configured []string,
 	) ([]string, error)
@@ -278,7 +276,7 @@ func (h *Handler) computeChain(ctx context.Context, principal auth.PrincipalInfo
 		return append(chain, restNames...), nil
 	}
 
-	keep, err := h.filter.FilterUpstreams(ctx, principal.PlatformUserID, principal, restNames)
+	keep, err := h.filter.FilterUpstreams(ctx, principal, restNames)
 	if err != nil {
 		return nil, fmt.Errorf("upstream filter failed: %w", err)
 	}

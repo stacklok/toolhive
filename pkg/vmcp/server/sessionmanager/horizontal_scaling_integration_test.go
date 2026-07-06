@@ -12,11 +12,11 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
-	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"

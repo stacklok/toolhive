@@ -12,12 +12,12 @@ import (
 	"sync"
 	"testing"
 
-	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
-	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
-	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 

@@ -22,7 +22,6 @@ import (
 	"time"
 
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
-
 	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"

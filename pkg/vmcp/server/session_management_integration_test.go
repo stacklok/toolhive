@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
-	mcpsdk "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpsdk "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"

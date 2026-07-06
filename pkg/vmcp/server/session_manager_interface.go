@@ -7,7 +7,6 @@ import (
 	"context"
 
 	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
-
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )

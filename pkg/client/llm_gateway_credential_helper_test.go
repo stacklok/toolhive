@@ -24,7 +24,7 @@ func newClaudeDesktopManager(t *testing.T) (*ClientManager, string) {
 	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
 	cfg := cm.lookupClientAppConfig(ClientApp(ClaudeDesktop))
 	require.NotNil(t, cfg, "ClaudeDesktop must be a supported integration")
-	require.True(t, cfg.LLMCredentialHelper, "ClaudeDesktop must use the credential-helper model")
+	require.Equal(t, credentialHelperMode, cfg.LLMGatewayMode, "ClaudeDesktop must use the credential-helper model")
 	return cm, cm.buildLLMSettingsPath(cfg)
 }
 
@@ -170,6 +170,37 @@ func TestRevertCredentialHelper_RemovesEntryConfigAndShim(t *testing.T) {
 	assert.Equal(t, "", meta["appliedId"])
 }
 
+func TestConfigureCredentialHelper_RejectsPathTraversalID(t *testing.T) {
+	t.Parallel()
+	cm, metaPath := newClaudeDesktopManager(t)
+	dir := filepath.Dir(metaPath)
+
+	// Seed _meta.json with a ToolHive-named entry whose id escapes configLibrary,
+	// as a corrupted/hand-edited file might.
+	require.NoError(t, os.MkdirAll(dir, 0o700))
+	seed := map[string]any{
+		"appliedId": "../../evil",
+		"entries": []any{
+			map[string]any{"id": "../../evil", "name": claudeDesktopManagedEntryName},
+		},
+	}
+	seedBytes, err := json.Marshal(seed)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(metaPath, seedBytes, 0o600))
+
+	configPath, err := cm.ConfigureLLMGateway(ClientApp(ClaudeDesktop), claudeDesktopApplyCfg())
+	require.NoError(t, err)
+
+	// The tainted id must be rejected: the written config stays inside
+	// configLibrary and appliedId points at a fresh, safe id — not the escape.
+	assert.Equal(t, dir, filepath.Dir(configPath), "config document must stay inside configLibrary")
+	id := strings.TrimSuffix(filepath.Base(configPath), ".json")
+	assert.True(t, isSafeConfigID(id), "minted id must be a safe bare filename")
+	meta := readMeta(t, metaPath)
+	assert.Equal(t, id, meta["appliedId"], "appliedId must point at the safe minted id, not the traversal value")
+	assert.NoFileExists(t, filepath.Join(dir, "..", "..", "evil.json"), "must not write outside configLibrary")
+}
+
 func TestRevertCredentialHelper_EmptyConfigPathLeavesShim(t *testing.T) {
 	t.Parallel()
 	cm, _ := newClaudeDesktopManager(t)
@@ -208,4 +239,55 @@ func TestRevertCredentialHelper_LeavesForeignAppliedIDIntact(t *testing.T) {
 	assert.Equal(t, "user-config", meta["appliedId"])
 	assert.Len(t, metaEntries(meta), 1)
 	assert.Equal(t, "user-config", metaEntryID(meta, "My Bedrock"))
+}
+
+func TestConfigureCredentialHelper_CleansUpOnWriteFailure(t *testing.T) {
+	t.Parallel()
+	cm, metaPath := newClaudeDesktopManager(t)
+
+	// First setup succeeds: creates the entry, config document, and shim.
+	configPath, err := cm.ConfigureLLMGateway(ClientApp(ClaudeDesktop), claudeDesktopApplyCfg())
+	require.NoError(t, err)
+	shimPath := cm.credentialHelperShimPath()
+	require.FileExists(t, shimPath)
+	_ = metaPath
+
+	// Force the config-document write to fail on the next (idempotent) setup:
+	// replace the config document with a non-empty directory at the same path.
+	// The reused id targets it and AtomicWriteFile cannot overwrite a directory,
+	// so the in-lock cleanup path runs.
+	require.NoError(t, os.Remove(configPath))
+	require.NoError(t, os.MkdirAll(configPath, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(configPath, "block"), []byte("x"), 0o600))
+
+	_, err = cm.ConfigureLLMGateway(ClientApp(ClaudeDesktop), claudeDesktopApplyCfg())
+	require.Error(t, err, "setup must fail when the config document cannot be written")
+
+	// Cleanup must NOT delete the shim an earlier successful setup created
+	// (only a shim minted in the same failed call is removed).
+	assert.FileExists(t, shimPath, "cleanup must preserve a pre-existing shim on failure")
+}
+
+func TestManagedProfileExistsUnder(t *testing.T) {
+	t.Parallel()
+	const domain = "com.anthropic.claudefordesktop.plist"
+
+	t.Run("absent", func(t *testing.T) {
+		t.Parallel()
+		assert.False(t, managedProfileExistsUnder(t.TempDir(), domain))
+	})
+	t.Run("direct path", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		require.NoError(t, os.WriteFile(filepath.Join(root, domain), []byte("x"), 0o600))
+		assert.True(t, managedProfileExistsUnder(root, domain))
+	})
+	t.Run("per-user subdir", func(t *testing.T) {
+		t.Parallel()
+		root := t.TempDir()
+		userDir := filepath.Join(root, "alice")
+		require.NoError(t, os.MkdirAll(userDir, 0o700))
+		require.NoError(t, os.WriteFile(filepath.Join(userDir, domain), []byte("x"), 0o600))
+		assert.True(t, managedProfileExistsUnder(root, domain))
+	})
 }

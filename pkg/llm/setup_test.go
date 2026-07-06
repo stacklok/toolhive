@@ -385,3 +385,41 @@ func TestProbeAnthropicPrefix_Returns_Empty_For_EmptyGatewayURL(t *testing.T) {
 	prefix := probeAnthropicPrefix(context.Background(), "", false)
 	assert.Empty(t, prefix)
 }
+
+// managedGatewayManager is a stub whose IsManaged is configurable per client,
+// for exercising warnCredentialHelperTools' managed-profile warning branch.
+type managedGatewayManager struct{ managed map[string]bool }
+
+func (*managedGatewayManager) DetectedLLMGatewayClients() []string { return nil }
+func (*managedGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
+	return "", nil
+}
+func (*managedGatewayManager) LLMGatewayModeFor(_ string) string { return "credential-helper" }
+func (g *managedGatewayManager) IsManaged(c string) bool         { return g.managed[c] }
+func (*managedGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
+	return "", nil
+}
+func (*managedGatewayManager) RevertEnvFile(_, _ string) error    { return nil }
+func (*managedGatewayManager) RevertLLMGateway(_, _ string) error { return nil }
+
+func TestWarnCredentialHelperTools(t *testing.T) {
+	t.Parallel()
+	gm := &managedGatewayManager{managed: map[string]bool{"claude-desktop": true}}
+	var out, errOut bytes.Buffer
+
+	warnCredentialHelperTools(&out, &errOut, gm, []ToolConfig{
+		{Tool: "claude-desktop", Mode: "credential-helper"},
+		{Tool: "other-desktop", Mode: "credential-helper"},
+		{Tool: "claude-code", Mode: "direct"},
+	})
+
+	// The relaunch note prints on stdout for every credential-helper tool, and
+	// not for non-credential-helper tools.
+	assert.Contains(t, out.String(), "claude-desktop reads its configuration only at launch")
+	assert.Contains(t, out.String(), "other-desktop reads its configuration only at launch")
+	assert.NotContains(t, out.String(), "claude-code")
+
+	// The MDM warning prints on stderr only for the managed tool.
+	assert.Contains(t, errOut.String(), "managed-preferences profile for claude-desktop")
+	assert.NotContains(t, errOut.String(), "profile for other-desktop")
+}

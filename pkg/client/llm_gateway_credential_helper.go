@@ -6,9 +6,11 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/google/uuid"
 
@@ -23,6 +25,12 @@ import (
 // writer here rather than going through the LLMGatewayKeys machinery.
 
 const (
+	// credentialHelperMode is the LLMGatewayMode value for clients configured via
+	// the document + selector credential-helper model (Claude Desktop). It is the
+	// single source of truth dispatched on in both pkg/client and pkg/llm.
+	// #nosec G101 -- this is an LLM gateway mode identifier, not a credential.
+	credentialHelperMode = "credential-helper"
+
 	// claudeDesktopManagedEntryName is the stable display name of the config
 	// entry ToolHive owns in _meta.json. Reusing a fixed name (rather than a
 	// fresh UUID per run) keeps setup idempotent — repeated "thv llm setup"
@@ -72,26 +80,39 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 		return "", fmt.Errorf("creating %s: %w", dir, err)
 	}
 
-	// Track whether the shim already existed so failure cleanup does not delete a
-	// shim an earlier successful setup still depends on (setup is idempotent).
-	shimExisted := fileExistsAt(cm.credentialHelperShimPath())
-	shimPath, err := cm.writeCredentialHelperShim(cfg.TokenHelperCommand)
-	if err != nil {
-		return "", err
-	}
+	// Reuse the shared AnthropicBaseURL resolution (falls back to GatewayURL) so
+	// this stays in sync with direct-mode clients if the rule ever changes.
+	baseURL, _ := resolveApplyConfigField("AnthropicBaseURL", cfg)
 
-	baseURL := cfg.AnthropicBaseURL
-	if baseURL == "" {
-		baseURL = cfg.GatewayURL
-	}
-
+	// Write the shim, config document, and _meta.json selector all inside the
+	// lock so concurrent setup/teardown runs cannot interleave — e.g. one run's
+	// failure-cleanup deleting a shim another run's committed config depends on.
+	// _meta.json is written last, so a mid-write failure never leaves Claude
+	// Desktop pointing at our config; best-effort cleanup then removes the
+	// unreferenced files it created.
 	var configPath string
-	err = fileutils.WithFileLock(metaPath, func() error {
-		meta, err := readClaudeDesktopMeta(metaPath)
+	err := fileutils.WithFileLock(metaPath, func() error {
+		// Track whether the shim already existed so failure cleanup does not
+		// delete a shim an earlier successful setup still depends on.
+		shimExisted := fileExistsAt(cm.credentialHelperShimPath())
+		shimPath, err := cm.writeCredentialHelperShim(cfg.TokenHelperCommand)
 		if err != nil {
 			return err
 		}
+		cleanup := func(cp string) {
+			if !shimExisted {
+				_ = os.Remove(shimPath)
+			}
+			if cp != "" {
+				_ = os.Remove(cp)
+			}
+		}
 
+		meta, err := readClaudeDesktopMeta(metaPath)
+		if err != nil {
+			cleanup("")
+			return err
+		}
 		id := metaEntryID(meta, claudeDesktopManagedEntryName)
 		if id == "" {
 			id = uuid.NewString()
@@ -114,26 +135,22 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 		}
 		docBytes, err := json.MarshalIndent(doc, "", "  ")
 		if err != nil {
+			cleanup("")
 			return fmt.Errorf("encoding Claude Desktop config: %w", err)
 		}
-		configPath = filepath.Join(dir, id+".json")
-		if err := fileutils.AtomicWriteFile(configPath, docBytes, 0o600); err != nil {
-			return fmt.Errorf("writing %s: %w", configPath, err)
+		cp := filepath.Join(dir, id+".json")
+		if err := fileutils.AtomicWriteFile(cp, docBytes, 0o600); err != nil {
+			cleanup(cp)
+			return fmt.Errorf("writing %s: %w", cp, err)
 		}
-
-		return writeClaudeDesktopMeta(metaPath, meta)
+		if err := writeClaudeDesktopMeta(metaPath, meta); err != nil {
+			cleanup(cp)
+			return err
+		}
+		configPath = cp
+		return nil
 	})
 	if err != nil {
-		// Best-effort cleanup so a failed setup does not leave partial state.
-		// _meta.json is written last inside the lock, so on failure Claude Desktop
-		// is never left pointing at our config — only unreferenced files remain.
-		// Only remove the shim if we created it this call.
-		if !shimExisted {
-			_ = os.Remove(shimPath)
-		}
-		if configPath != "" {
-			_ = os.Remove(configPath)
-		}
 		return "", err
 	}
 	return configPath, nil
@@ -155,15 +172,22 @@ func (cm *ClientManager) revertCredentialHelper(appCfg *clientAppConfig, configP
 	if configPath == "" {
 		return nil
 	}
+	dir := filepath.Dir(configPath)
+	if !fileExistsAt(dir) {
+		// Config directory already gone — nothing to revert.
+		return nil
+	}
 
 	id := metaIDFromConfigPath(configPath)
-	metaPath := filepath.Join(filepath.Dir(configPath), appCfg.LLMSettingsFile)
+	metaPath := filepath.Join(dir, appCfg.LLMSettingsFile)
+	shimPath := cm.credentialHelperShimPath()
 
-	// Step 1: de-reference our config in _meta.json and delete the config
-	// document, under the file lock. After this, Claude Desktop no longer points
-	// at our config regardless of what happens to the shim.
-	if _, err := os.Stat(metaPath); err == nil {
-		if lockErr := fileutils.WithFileLock(metaPath, func() error {
+	// All steps run under the metaPath lock so a concurrent setup/teardown cannot
+	// interleave. Ordering: de-reference _meta.json, delete the config document,
+	// then remove the shim last — so a mid-revert failure never leaves Claude
+	// Desktop pointing at a config whose helper is gone.
+	return fileutils.WithFileLock(metaPath, func() error {
+		if fileExistsAt(metaPath) {
 			meta, err := readClaudeDesktopMeta(metaPath)
 			if err != nil {
 				return err
@@ -171,31 +195,26 @@ func (cm *ClientManager) revertCredentialHelper(appCfg *clientAppConfig, configP
 			meta["entries"] = removeMetaEntry(metaEntries(meta), id)
 			// Only clear appliedId if it still points at our config; leave a
 			// user's own active config selection alone.
-			if applied, _ := meta["appliedId"].(string); applied == id {
+			applied, ok := meta["appliedId"].(string)
+			if !ok && meta["appliedId"] != nil {
+				slog.Warn("Claude Desktop _meta.json has a non-string appliedId; leaving it unchanged",
+					"path", metaPath)
+			}
+			if applied == id {
 				meta["appliedId"] = ""
 			}
 			if err := writeClaudeDesktopMeta(metaPath, meta); err != nil {
 				return err
 			}
-			return removeIfExists(configPath)
-		}); lockErr != nil {
-			return lockErr
 		}
-	} else if os.IsNotExist(err) {
-		// Selector already gone; still make sure the config document is removed.
-		if rmErr := removeIfExists(configPath); rmErr != nil {
-			return rmErr
+		if err := removeIfExists(configPath); err != nil {
+			return err
 		}
-	} else {
-		return fmt.Errorf("checking %s: %w", metaPath, err)
-	}
-
-	// Step 2: remove the shim, now that nothing references it.
-	shimPath := cm.credentialHelperShimPath()
-	if err := os.Remove(shimPath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing credential helper shim %s: %w", shimPath, err)
-	}
-	return nil
+		if err := os.Remove(shimPath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing credential helper shim %s: %w", shimPath, err)
+		}
+		return nil
+	})
 }
 
 // credentialHelperShimPath is the fixed location of the generated shim.
@@ -243,11 +262,21 @@ func managedProfilePresent(domain string) bool {
 	if domain == "" || runtime.GOOS != "darwin" {
 		return false
 	}
-	if _, err := os.Stat(filepath.Join("/Library/Managed Preferences", domain)); err == nil {
+	return managedProfileExistsUnder(managedPreferencesRoot, domain)
+}
+
+// managedPreferencesRoot is the macOS managed-preferences directory. A package
+// variable (not a const) so tests can point it at a temp directory.
+var managedPreferencesRoot = "/Library/Managed Preferences"
+
+// managedProfileExistsUnder reports whether a managed-preferences plist for
+// domain exists directly under root or under a per-user subdirectory
+// (root/<user>/domain). Platform-independent so it is unit-testable.
+func managedProfileExistsUnder(root, domain string) bool {
+	if _, err := os.Stat(filepath.Join(root, domain)); err == nil {
 		return true
 	}
-	// Per-user managed prefs live under /Library/Managed Preferences/<user>/.
-	matches, _ := filepath.Glob(filepath.Join("/Library/Managed Preferences", "*", domain))
+	matches, _ := filepath.Glob(filepath.Join(root, "*", domain))
 	return len(matches) > 0
 }
 
@@ -295,6 +324,10 @@ func metaEntries(meta map[string]any) []any {
 }
 
 // metaEntryID returns the id of the entry with the given name, or "" if absent.
+// _meta.json lives in a directory Claude Desktop and users also write to, so the
+// stored id is untrusted: an unsafe value is treated as absent so the caller
+// mints a fresh, safe UUID rather than joining a path-traversing id into the
+// configLibrary path. See isSafeConfigID.
 func metaEntryID(meta map[string]any, name string) string {
 	for _, e := range metaEntries(meta) {
 		entry, ok := e.(map[string]any)
@@ -303,10 +336,20 @@ func metaEntryID(meta map[string]any, name string) string {
 		}
 		if n, _ := entry["name"].(string); n == name {
 			id, _ := entry["id"].(string)
+			if !isSafeConfigID(id) {
+				return ""
+			}
 			return id
 		}
 	}
 	return ""
+}
+
+// isSafeConfigID reports whether id is a bare filename safe to join into the
+// configLibrary path — non-empty, no path separators, and no "..". Guards
+// against a corrupted or hand-edited _meta.json entry escaping configLibrary.
+func isSafeConfigID(id string) bool {
+	return id != "" && filepath.Base(id) == id && !strings.Contains(id, "..")
 }
 
 // removeMetaEntry returns entries with the entry matching id removed.

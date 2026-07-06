@@ -285,11 +285,6 @@ type clientAppConfig struct {
 	// LLMSettingsRelPath / LLMSettingsPlatformPrefix.
 	LLMDetectRelPath        []string
 	LLMDetectPlatformPrefix map[Platform][]string
-	// LLMCredentialHelper marks clients configured via the credential-helper
-	// document model (Claude Desktop's configLibrary) rather than JSON-key
-	// patching. When true, ConfigureLLMGateway / RevertLLMGateway dispatch to the
-	// dedicated credential-helper writer and LLMGatewayKeys are ignored.
-	LLMCredentialHelper bool
 	// LLMManagedProfileDomain is the macOS managed-preferences plist domain
 	// (e.g. "com.anthropic.claudefordesktop.plist") that, when present, overrides
 	// the client's local config. Setup warns when detected. Empty when the client
@@ -1089,14 +1084,13 @@ var supportedClientIntegrations = []clientAppConfig{
 		// settings file), Desktop uses a configLibrary directory: one config
 		// document per saved config plus a _meta.json selector naming the active
 		// one. That document model does not fit JSON-key patching, so this entry
-		// sets LLMCredentialHelper and carries no LLMGatewayKeys — the dedicated
-		// credential-helper writer handles it. LLM-gateway-only (MCP not wired).
-		// Cast LLMClientApp → ClientApp for internal storage (see LLMClientApp).
-		ClientType:          ClientApp(ClaudeDesktop),
-		Description:         "Claude Desktop",
-		LLMGatewayOnly:      true,
-		LLMGatewayMode:      "credential-helper",
-		LLMCredentialHelper: true,
+		// uses LLMGatewayMode "credential-helper" and carries no LLMGatewayKeys —
+		// the dedicated credential-helper writer handles it. LLM-gateway-only (MCP
+		// not wired). Cast LLMClientApp → ClientApp for internal storage.
+		ClientType:     ClientApp(ClaudeDesktop),
+		Description:    "Claude Desktop",
+		LLMGatewayOnly: true,
+		LLMGatewayMode: "credential-helper",
 		// Settings file is the _meta.json selector; the writer derives the
 		// containing configLibrary directory from it.
 		LLMSettingsFile:    "_meta.json",

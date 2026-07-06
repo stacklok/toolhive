@@ -1420,6 +1420,7 @@ type storedPendingAuthorization struct {
 	ResolvedUserName     string   `json:"resolved_user_name,omitempty"`
 	ResolvedUserEmail    string   `json:"resolved_user_email,omitempty"`
 	SingleLeg            bool     `json:"single_leg,omitempty"`
+	ChainUpstreams       []string `json:"chain_upstreams,omitempty"`
 	CreatedAt            int64    `json:"created_at"`
 }
 
@@ -1450,6 +1451,7 @@ func (s *RedisStorage) StorePendingAuthorization(ctx context.Context, state stri
 		ResolvedUserName:     pending.ResolvedUserName,
 		ResolvedUserEmail:    pending.ResolvedUserEmail,
 		SingleLeg:            pending.SingleLeg,
+		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
 		CreatedAt:            pending.CreatedAt.Unix(),
 	}
 
@@ -1501,6 +1503,7 @@ func (s *RedisStorage) LoadPendingAuthorization(ctx context.Context, state strin
 		ResolvedUserName:     stored.ResolvedUserName,
 		ResolvedUserEmail:    stored.ResolvedUserEmail,
 		SingleLeg:            stored.SingleLeg,
+		ChainUpstreams:       slices.Clone(stored.ChainUpstreams),
 		CreatedAt:            createdAt,
 	}, nil
 }

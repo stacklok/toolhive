@@ -496,6 +496,7 @@ func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, 
 			Subject: userInfo.Subject,
 			Name:    userInfo.Name,
 			Email:   userInfo.Email,
+			Claims:  userInfo.Claims,
 		}, nil
 	}
 

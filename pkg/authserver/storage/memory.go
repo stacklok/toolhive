@@ -965,6 +965,7 @@ func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state strin
 		ResolvedUserName:     pending.ResolvedUserName,
 		ResolvedUserEmail:    pending.ResolvedUserEmail,
 		SingleLeg:            pending.SingleLeg,
+		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
 		CreatedAt:            pending.CreatedAt,
 	}
 
@@ -1015,6 +1016,7 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 		ResolvedUserName:     pending.ResolvedUserName,
 		ResolvedUserEmail:    pending.ResolvedUserEmail,
 		SingleLeg:            pending.SingleLeg,
+		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
 		CreatedAt:            pending.CreatedAt,
 	}, nil
 }

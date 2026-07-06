@@ -291,3 +291,44 @@ func TestManagedProfileExistsUnder(t *testing.T) {
 		assert.True(t, managedProfileExistsUnder(root, domain))
 	})
 }
+
+func TestConfigureCredentialHelper_RejectsNonArrayEntries(t *testing.T) {
+	t.Parallel()
+	cm, metaPath := newClaudeDesktopManager(t)
+
+	// Valid JSON but wrong shape: entries is an object, not an array. Setup must
+	// bail rather than silently drop it (which would overwrite user data).
+	require.NoError(t, os.MkdirAll(filepath.Dir(metaPath), 0o700))
+	require.NoError(t, os.WriteFile(metaPath, []byte(`{"appliedId":"","entries":{"oops":true}}`), 0o600))
+
+	_, err := cm.ConfigureLLMGateway(ClientApp(ClaudeDesktop), claudeDesktopApplyCfg())
+	require.Error(t, err, "setup must fail when _meta.json entries is not an array")
+	assert.Contains(t, err.Error(), "entries")
+}
+
+func TestConfigureCredentialHelper_NonStringIDDoesNotDuplicate(t *testing.T) {
+	t.Parallel()
+	cm, metaPath := newClaudeDesktopManager(t)
+
+	// A name-matching entry with a non-string id must be corrected in place, not
+	// left alongside a freshly minted duplicate "ToolHive Gateway" entry.
+	require.NoError(t, os.MkdirAll(filepath.Dir(metaPath), 0o700))
+	seed := map[string]any{
+		"appliedId": "",
+		"entries": []any{
+			map[string]any{"id": 123, "name": claudeDesktopManagedEntryName},
+		},
+	}
+	seedBytes, err := json.Marshal(seed)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(metaPath, seedBytes, 0o600))
+
+	configPath, err := cm.ConfigureLLMGateway(ClientApp(ClaudeDesktop), claudeDesktopApplyCfg())
+	require.NoError(t, err)
+
+	meta := readMeta(t, metaPath)
+	assert.Len(t, metaEntries(meta), 1, "malformed same-name entry must be corrected in place, not duplicated")
+	id := strings.TrimSuffix(filepath.Base(configPath), ".json")
+	assert.Equal(t, id, meta["appliedId"])
+	assert.Equal(t, id, metaEntryID(meta, claudeDesktopManagedEntryName))
+}

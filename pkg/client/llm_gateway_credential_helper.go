@@ -116,11 +116,11 @@ func (cm *ClientManager) configureCredentialHelper(appCfg *clientAppConfig, cfg 
 		id := metaEntryID(meta, claudeDesktopManagedEntryName)
 		if id == "" {
 			id = uuid.NewString()
-			meta["entries"] = append(metaEntries(meta), map[string]any{
-				"id":   id,
-				"name": claudeDesktopManagedEntryName,
-			})
 		}
+		// Upsert by name so an existing (possibly malformed) "ToolHive Gateway"
+		// entry is corrected in place rather than leaving a duplicate — preserving
+		// the idempotency the stable name is there to provide.
+		meta["entries"] = upsertMetaEntry(metaEntries(meta), id, claudeDesktopManagedEntryName)
 		meta["appliedId"] = id
 
 		doc := claudeDesktopConfig{
@@ -302,6 +302,14 @@ func readClaudeDesktopMeta(path string) (map[string]any, error) {
 	if meta == nil {
 		meta = map[string]any{}
 	}
+	// Guard the "valid JSON, wrong shape" case: if entries is present but not a
+	// JSON array, bail rather than silently dropping it — metaEntries would treat
+	// it as empty and a subsequent append would overwrite the user's data.
+	if e, ok := meta["entries"]; ok && e != nil {
+		if _, isArray := e.([]any); !isArray {
+			return nil, fmt.Errorf("parsing %s: %q must be a JSON array", path, "entries")
+		}
+	}
 	return meta, nil
 }
 
@@ -350,6 +358,23 @@ func metaEntryID(meta map[string]any, name string) string {
 // against a corrupted or hand-edited _meta.json entry escaping configLibrary.
 func isSafeConfigID(id string) bool {
 	return id != "" && filepath.Base(id) == id && !strings.Contains(id, "..")
+}
+
+// upsertMetaEntry sets the id of the entry with the given name if one exists
+// (correcting a malformed or stale same-name entry in place), or appends a new
+// entry otherwise. Prevents duplicate ToolHive-owned entries.
+func upsertMetaEntry(entries []any, id, name string) []any {
+	for _, e := range entries {
+		entry, ok := e.(map[string]any)
+		if !ok {
+			continue
+		}
+		if n, _ := entry["name"].(string); n == name {
+			entry["id"] = id
+			return entries
+		}
+	}
+	return append(entries, map[string]any{"id": id, "name": name})
 }
 
 // removeMetaEntry returns entries with the entry matching id removed.

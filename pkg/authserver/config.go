@@ -605,7 +605,10 @@ type Config struct {
 
 	// UpstreamFilter, when set, narrows the upstream authorization chain after the
 	// first leg resolves (see handlers.WithUpstreamFilter). When nil, all
-	// configured upstreams are walked — the current behavior.
+	// configured upstreams are walked — the current behavior. Pass nil itself,
+	// not a nil-valued concrete pointer implementing UpstreamFilter — a typed-nil
+	// interface value is non-nil and will still be wired in. Has no effect with
+	// fewer than 2 configured upstreams; Validate rejects that combination.
 	UpstreamFilter handlers.UpstreamFilter
 
 	// ScopesSupported lists the OAuth 2.0 scope values advertised in discovery documents.
@@ -679,6 +682,10 @@ func (c *Config) Validate() error {
 	}
 
 	if err := c.validateUpstreams(); err != nil {
+		return err
+	}
+
+	if err := c.validateUpstreamFilter(); err != nil {
 		return err
 	}
 
@@ -846,6 +853,18 @@ func (c *Config) validateUpstreams() error {
 		}
 	}
 
+	return nil
+}
+
+// validateUpstreamFilter rejects an UpstreamFilter configured with fewer than
+// 2 upstreams. handlers.computeChain consults the filter only when there is a
+// non-first upstream to narrow, so with a single upstream the filter would
+// silently never be invoked; this fails loudly instead of letting it no-op
+// without any indication to the caller.
+func (c *Config) validateUpstreamFilter() error {
+	if c.UpstreamFilter != nil && len(c.Upstreams) < 2 {
+		return fmt.Errorf("upstream_filter is configured but has no effect with fewer than 2 upstreams")
+	}
 	return nil
 }
 

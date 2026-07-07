@@ -962,6 +962,113 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 			})
 		})
 
+		Describe("claude-desktop (credential-helper) setup and teardown", func() {
+			// Claude Desktop uses a configLibrary document + _meta.json selector and
+			// a credential-helper shim, not single-file JSON-pointer patching — so it
+			// gets its own assertions rather than the allClientTestCases matrix.
+			claudeDesktopPaths := func(root string) (appDir, configLib, shim string) {
+				if runtime.GOOS == osDarwin {
+					base := filepath.Join(root, "Library", "Application Support")
+					return filepath.Join(base, "Claude"),
+						filepath.Join(base, "Claude-3p", "configLibrary"),
+						filepath.Join(root, ".toolhive", "llm", "claude-desktop-helper.sh")
+				}
+				return filepath.Join(root, "Claude"),
+					filepath.Join(root, "Claude-3p", "configLibrary"),
+					filepath.Join(root, ".toolhive", "llm", "claude-desktop-helper.sh")
+			}
+
+			// readAppliedConfigDoc resolves _meta.json's appliedId to its config doc.
+			readAppliedConfigDoc := func(configLib string) (map[string]any, map[string]any) {
+				metaData, err := os.ReadFile(filepath.Join(configLib, "_meta.json"))
+				Expect(err).ToNot(HaveOccurred(), "_meta.json should exist after setup")
+				var meta map[string]any
+				Expect(json.Unmarshal(metaData, &meta)).To(Succeed())
+
+				appliedID, _ := meta["appliedId"].(string)
+				Expect(appliedID).ToNot(BeEmpty(), "appliedId should be set after setup")
+				docData, err := os.ReadFile(filepath.Join(configLib, appliedID+".json"))
+				Expect(err).ToNot(HaveOccurred(), "applied config document should exist")
+				var doc map[string]any
+				Expect(json.Unmarshal(docData, &doc)).To(Succeed())
+				return meta, doc
+			}
+
+			It("writes the config document, selector, and shim, then reverts them", func() {
+				issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+				appDir, configLib, shim := claudeDesktopPaths(tempDir)
+
+				By("creating the Claude Desktop app directory so detection succeeds")
+				Expect(os.MkdirAll(appDir, 0750)).To(Succeed())
+
+				By("running thv llm setup --client claude-desktop")
+				// Pin the Anthropic prefix so setup skips the network probe (fast,
+				// deterministic base URL).
+				stdout, stderr, err := runSetupWithOIDCCompletion(
+					thvCmd, oidcServer,
+					"--client", "claude-desktop",
+					"--gateway-url", gatewayURL,
+					"--issuer", issuerURL,
+					"--client-id", clientID,
+					"--anthropic-path-prefix", "/anthropic",
+					"--models", "claude-opus-4-8,claude-sonnet-4-6",
+				)
+				Expect(err).ToNot(HaveOccurred(),
+					"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
+				Expect(stdout).To(ContainSubstring("quit"),
+					"setup should tell the user to relaunch Claude Desktop")
+
+				By("verifying the config document contents")
+				_, doc := readAppliedConfigDoc(configLib)
+				Expect(doc["inferenceProvider"]).To(Equal("gateway"))
+				Expect(doc["inferenceCredentialKind"]).To(Equal("helper-script"))
+				Expect(doc["inferenceGatewayAuthScheme"]).To(Equal("bearer"))
+				Expect(doc["inferenceGatewayBaseUrl"]).To(Equal(gatewayURL + "/anthropic"))
+				Expect(doc["inferenceCredentialHelper"]).To(Equal(shim))
+				Expect(doc["inferenceModels"]).To(ConsistOf("claude-opus-4-8", "claude-sonnet-4-6"))
+
+				By("verifying the credential-helper shim is executable and calls thv llm token")
+				info, statErr := os.Stat(shim)
+				Expect(statErr).ToNot(HaveOccurred(), "shim should exist after setup")
+				Expect(info.Mode().Perm()&0100).ToNot(BeZero(), "shim should be executable")
+				shimData, readErr := os.ReadFile(shim)
+				Expect(readErr).ToNot(HaveOccurred())
+				Expect(string(shimData)).To(ContainSubstring("llm token"))
+
+				By("verifying config show lists claude-desktop in credential-helper mode")
+				showOut, _ := thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				var cfg llm.Config
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				var found bool
+				for _, toolCfg := range cfg.ConfiguredTools {
+					if string(toolCfg.Tool) == "claude-desktop" {
+						found = true
+						Expect(toolCfg.Mode).To(Equal("credential-helper"))
+					}
+				}
+				Expect(found).To(BeTrue(), "claude-desktop should appear in ConfiguredTools")
+
+				By("running thv llm teardown claude-desktop")
+				thvCmd("llm", "teardown", "claude-desktop").ExpectSuccess()
+
+				By("verifying the config document and shim are removed and the selector cleared")
+				metaData, err := os.ReadFile(filepath.Join(configLib, "_meta.json"))
+				Expect(err).ToNot(HaveOccurred(), "_meta.json should still exist after teardown")
+				var meta map[string]any
+				Expect(json.Unmarshal(metaData, &meta)).To(Succeed())
+				Expect(meta["appliedId"]).To(Equal(""), "appliedId should be cleared after teardown")
+				Expect(meta["entries"]).To(BeEmpty(), "ToolHive entry should be removed after teardown")
+				_, shimStatErr := os.Stat(shim)
+				Expect(os.IsNotExist(shimStatErr)).To(BeTrue(), "shim should be deleted after teardown")
+
+				showOut, _ = thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				cfg = llm.Config{}
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				Expect(cfg.ConfiguredTools).To(BeEmpty(),
+					"ConfiguredTools should be empty after teardown")
+			})
+		})
+
 		Describe("thv llm token with an expired cached access token", func() {
 			It("does not return the expired token", func() {
 				claudeDir := filepath.Join(tempDir, ".claude")

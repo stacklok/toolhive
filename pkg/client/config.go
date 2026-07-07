@@ -20,6 +20,7 @@ import (
 	"github.com/tailscale/hujson"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -100,6 +101,12 @@ const (
 	// It is declared as LLMClientApp (not ClientApp) so that code generators
 	// such as swag do not include "xcode" in the MCP API ClientApp enum.
 	Xcode LLMClientApp = "xcode"
+
+	// ClaudeDesktop represents the Claude Desktop app configured for LLM gateway
+	// routing via its "third-party inference" surface. Only LLM-gateway support is
+	// wired here (not MCP), so it is declared as LLMClientApp — same rationale as
+	// Xcode above.
+	ClaudeDesktop LLMClientApp = "claude-desktop"
 )
 
 // Extension is extension of the client config file.
@@ -270,6 +277,20 @@ type clientAppConfig struct {
 	// LLMEnvFileKeys lists the key=value entries to write to the .env file when
 	// setting up (or reverting) LLM gateway access.
 	LLMEnvFileKeys []LLMEnvFileKeySpec
+	// LLMDetectRelPath and LLMDetectPlatformPrefix locate a directory whose
+	// existence indicates the tool is installed. Used for GUI apps that are not
+	// on $PATH (LLMBinaryName is empty) and whose LLM settings directory does not
+	// exist until first configured — so the settings dir cannot be the detection
+	// signal. When set, DetectedLLMGatewayClients checks this directory instead of
+	// the settings directory. Resolved with the same semantics as
+	// LLMSettingsRelPath / LLMSettingsPlatformPrefix.
+	LLMDetectRelPath        []string
+	LLMDetectPlatformPrefix map[Platform][]string
+	// LLMManagedProfileDomain is the macOS managed-preferences plist domain
+	// (e.g. "com.anthropic.claudefordesktop.plist") that, when present, overrides
+	// the client's local config. Setup warns when detected. Empty when the client
+	// has no managed-profile surface.
+	LLMManagedProfileDomain string
 }
 
 // extractServersKeyFromConfig extracts the servers key from MCPServersPathPrefix
@@ -972,6 +993,37 @@ var supportedClientIntegrations = []clientAppConfig{
 			{JSONPointer: "/openAIBaseURL", ValueField: "ProxyBaseURL"},
 			{JSONPointer: "/apiKey", ValueField: "PlaceholderAPIKey"},
 		},
+	},
+	{
+		// Claude Desktop routes LLM traffic through the gateway via its
+		// "third-party inference" surface. Unlike Claude Code (a single JSON
+		// settings file), Desktop uses a configLibrary directory: one config
+		// document per saved config plus a _meta.json selector naming the active
+		// one. That document model does not fit JSON-key patching, so this entry
+		// uses LLMGatewayMode "credential-helper" and carries no LLMGatewayKeys —
+		// the dedicated credential-helper writer handles it. LLM-gateway-only (MCP
+		// not wired). Cast LLMClientApp → ClientApp for internal storage.
+		ClientType:     ClientApp(ClaudeDesktop),
+		Description:    "Claude Desktop",
+		LLMGatewayOnly: true,
+		LLMGatewayMode: llmgateway.ModeCredentialHelper,
+		// Settings file is the _meta.json selector; the writer derives the
+		// containing configLibrary directory from it.
+		LLMSettingsFile:    "_meta.json",
+		LLMSettingsRelPath: []string{"Claude-3p", "configLibrary"},
+		LLMSettingsPlatformPrefix: map[Platform][]string{
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Local"},
+		},
+		// Detect via the app's user-data directory, which exists once Claude
+		// Desktop has run — the configLibrary directory above does not exist
+		// until first configured, so it cannot be the detection signal.
+		LLMDetectRelPath: []string{"Claude"},
+		LLMDetectPlatformPrefix: map[Platform][]string{
+			PlatformDarwin:  {"Library", "Application Support"},
+			PlatformWindows: {"AppData", "Roaming"},
+		},
+		LLMManagedProfileDomain: "com.anthropic.claudefordesktop.plist",
 	},
 }
 

@@ -34,7 +34,11 @@ func (s *service) installWithExtraction(
 	}
 
 	if isExtractionNoOp(existing, storeErr, opts, clientTypes) {
-		return &skills.InstallResult{Skill: existing}, nil
+		result := &skills.InstallResult{Skill: existing}
+		if err := enrichInstallResult(result, opts); err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
 
 	digestMatches := storeErr == nil && existing.Digest == opts.Digest
@@ -73,7 +77,11 @@ func (s *service) installExtractionSameDigestNewClients(
 ) (*skills.InstallResult, error) {
 	toWrite := missingClients(existing.Clients, clientTypes)
 	if len(toWrite) == 0 {
-		return &skills.InstallResult{Skill: existing}, nil
+		result := &skills.InstallResult{Skill: existing}
+		if err := enrichInstallResult(result, opts); err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
 	// Deduplicate and skip directories already owned by existing clients.
 	dirsToWrite := uniqueDirClients(toWrite, clientDirs, existingClientDirs(existing.Clients, clientDirs))
@@ -83,7 +91,11 @@ func (s *service) installExtractionSameDigestNewClients(
 		if err := s.store.Update(ctx, sk); err != nil {
 			return nil, err
 		}
-		return &skills.InstallResult{Skill: sk}, nil
+		result := &skills.InstallResult{Skill: sk}
+		if err := enrichInstallResult(result, opts); err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
 	var written []string
 	for _, ct := range dirsToWrite {
@@ -106,7 +118,11 @@ func (s *service) installExtractionSameDigestNewClients(
 		removeSkillDirs(s.installer, clientDirs, written)
 		return nil, err
 	}
-	return &skills.InstallResult{Skill: sk}, nil
+	result := &skills.InstallResult{Skill: sk}
+	if err := enrichInstallResult(result, opts); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func removeSkillDirs(inst skills.Installer, clientDirs map[string]string, clients []string) {
@@ -144,7 +160,11 @@ func (s *service) installExtractionUpgradeDigest(
 		removeSkillDirs(s.installer, allDirs, dirsToWrite)
 		return nil, err
 	}
-	return &skills.InstallResult{Skill: sk}, nil
+	result := &skills.InstallResult{Skill: sk}
+	if err := enrichInstallResult(result, opts); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 func (s *service) installExtractionFresh(
@@ -180,7 +200,11 @@ func (s *service) installExtractionFresh(
 		removeSkillDirs(s.installer, clientDirs, dirsToWrite)
 		return nil, err
 	}
-	return &skills.InstallResult{Skill: sk}, nil
+	result := &skills.InstallResult{Skill: sk}
+	if err := enrichInstallResult(result, opts); err != nil {
+		return nil, err
+	}
+	return result, nil
 }
 
 // buildInstalledSkill constructs an InstalledSkill from install options.
@@ -206,5 +230,23 @@ func buildInstalledSkill(
 		Status:      skills.InstallStatusInstalled,
 		InstalledAt: time.Now().UTC(),
 		Clients:     clients,
+		Managed:     opts.Managed,
 	}
+}
+
+func enrichInstallResult(result *skills.InstallResult, opts skills.InstallOptions) error {
+	if len(opts.LayerData) == 0 {
+		return nil
+	}
+	requires, err := requiresFromLayerData(opts.LayerData)
+	if err != nil {
+		return err
+	}
+	result.Requires = requires
+	digest, err := contentDigestFromLayerData(opts.LayerData)
+	if err != nil {
+		return err
+	}
+	result.ContentDigest = digest
+	return nil
 }

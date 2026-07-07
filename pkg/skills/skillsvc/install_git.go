@@ -82,7 +82,7 @@ func (s *service) installFromGit(
 		return nil, err
 	}
 
-	return s.applyGitInstall(ctx, opts, scope, clientTypes, clientDirs, resolved.Files)
+	return s.applyGitInstall(ctx, opts, scope, clientTypes, clientDirs, resolved.Files, resolved.SkillConfig)
 }
 
 // applyGitInstall handles the create/upgrade/no-op logic for a git-based skill
@@ -95,6 +95,7 @@ func (s *service) applyGitInstall(
 	clientTypes []string,
 	clientDirs map[string]string,
 	files []gitresolver.FileEntry,
+	parsed *skills.ParseResult,
 ) (*skills.InstallResult, error) {
 	existing, storeErr := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)
 	isNotFound := errors.Is(storeErr, storage.ErrNotFound)
@@ -102,9 +103,9 @@ func (s *service) applyGitInstall(
 		return nil, fmt.Errorf("checking existing skill: %w", storeErr)
 	}
 	if !isNotFound {
-		return s.applyGitInstallExisting(ctx, opts, scope, existing, clientTypes, clientDirs, files)
+		return s.applyGitInstallExisting(ctx, opts, scope, existing, clientTypes, clientDirs, files, parsed)
 	}
-	return s.applyGitInstallFresh(ctx, opts, scope, clientTypes, clientDirs, files)
+	return s.applyGitInstallFresh(ctx, opts, scope, clientTypes, clientDirs, files, parsed)
 }
 
 func (s *service) applyGitInstallExisting(
@@ -115,6 +116,7 @@ func (s *service) applyGitInstallExisting(
 	clientTypes []string,
 	clientDirs map[string]string,
 	files []gitresolver.FileEntry,
+	parsed *skills.ParseResult,
 ) (*skills.InstallResult, error) {
 	if existing.Digest != opts.Digest {
 		allClients, allDirs, err := s.expandToExistingClients(
@@ -125,22 +127,30 @@ func (s *service) applyGitInstallExisting(
 		// Deduplicate so clients sharing the same directory don't conflict.
 		dirsToWrite := uniqueDirClients(allClients, allDirs, nil)
 		return s.gitWriteMultiAndPersist(ctx, opts, scope, allClients, allDirs, files,
-			dirsToWrite, nil, true, true)
+			dirsToWrite, nil, true, true, parsed)
 	}
 	clientsExplicit := len(opts.Clients) > 0
 	if clientsContainAll(existing.Clients, clientTypes) ||
 		(len(existing.Clients) == 0 && len(clientTypes) <= 1 && !clientsExplicit) {
-		return &skills.InstallResult{Skill: existing}, nil
+		result := &skills.InstallResult{Skill: existing}
+		if err := enrichGitInstallResult(result, parsed, files); err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
 	toWrite := missingClients(existing.Clients, clientTypes)
 	if len(toWrite) == 0 {
-		return &skills.InstallResult{Skill: existing}, nil
+		result := &skills.InstallResult{Skill: existing}
+		if err := enrichGitInstallResult(result, parsed, files); err != nil {
+			return nil, err
+		}
+		return result, nil
 	}
 	// Deduplicate and skip directories already owned by existing clients.
 	dirsToWrite := uniqueDirClients(toWrite, clientDirs, existingClientDirs(existing.Clients, clientDirs))
 	if len(dirsToWrite) == 0 {
 		return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
-			nil, existing.Clients, true, false)
+			nil, existing.Clients, true, false, parsed)
 	}
 	for _, ct := range dirsToWrite {
 		dir := filepath.Clean(clientDirs[ct])
@@ -152,7 +162,7 @@ func (s *service) applyGitInstallExisting(
 		}
 	}
 	return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
-		dirsToWrite, existing.Clients, true, false)
+		dirsToWrite, existing.Clients, true, false, parsed)
 }
 
 func (s *service) applyGitInstallFresh(
@@ -162,6 +172,7 @@ func (s *service) applyGitInstallFresh(
 	clientTypes []string,
 	clientDirs map[string]string,
 	files []gitresolver.FileEntry,
+	parsed *skills.ParseResult,
 ) (*skills.InstallResult, error) {
 	// Deduplicate so clients sharing the same directory don't conflict.
 	dirsToCheck := uniqueDirClients(clientTypes, clientDirs, nil)
@@ -175,7 +186,7 @@ func (s *service) applyGitInstallFresh(
 		}
 	}
 	return s.gitWriteMultiAndPersist(ctx, opts, scope, clientTypes, clientDirs, files,
-		dirsToCheck, nil, false, false)
+		dirsToCheck, nil, false, false, parsed)
 }
 
 // gitWriteMultiAndPersist writes git files to the given client directories,
@@ -191,6 +202,7 @@ func (s *service) gitWriteMultiAndPersist(
 	dirsToWrite []string,
 	existingClients []string,
 	isUpgrade, writeAggressive bool,
+	parsed *skills.ParseResult,
 ) (*skills.InstallResult, error) {
 	var written []string
 	for _, ct := range dirsToWrite {
@@ -231,5 +243,24 @@ func (s *service) gitWriteMultiAndPersist(
 			return nil, err
 		}
 	}
-	return &skills.InstallResult{Skill: sk}, nil
+	result := &skills.InstallResult{Skill: sk}
+	if err := enrichGitInstallResult(result, parsed, files); err != nil {
+		for _, wct := range written {
+			_ = s.installer.Remove(filepath.Clean(clientDirs[wct]))
+		}
+		return nil, err
+	}
+	return result, nil
+}
+
+func enrichGitInstallResult(result *skills.InstallResult, parsed *skills.ParseResult, files []gitresolver.FileEntry) error {
+	if parsed != nil {
+		result.Requires = parsed.Requires
+	}
+	digest, err := contentDigestFromGitFiles(files)
+	if err != nil {
+		return err
+	}
+	result.ContentDigest = digest
+	return nil
 }

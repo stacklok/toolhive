@@ -14,7 +14,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
-	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
 // Install installs a skill. When the Name field contains an OCI reference
@@ -29,35 +28,50 @@ import (
 // recorded as the entry's Source exactly as given here (before any internal
 // resolution), so "thv skill upgrade" can re-resolve it later.
 func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*skills.InstallResult, error) {
-	source := opts.Name
+	source := opts.LockSource
+	if source == "" {
+		source = opts.Name
+	}
+	if opts.Scope == skills.ScopeProject || opts.ProjectRoot != "" {
+		opts.Managed = true
+	}
+	if opts.RequiredByParent == "" {
+		opts.ExplicitLock = true
+	}
+
 	result, err := s.installInternal(ctx, opts)
 	if err != nil {
 		return nil, err
 	}
-	recordLockEntry(source, result.Skill)
-	return result, nil
-}
 
-// recordLockEntry upserts a project-scope lock file entry after a successful
-// install. It is a no-op for user-scoped installs. Lock-file errors are
-// logged but never fail the install — the skill's files and DB record are
-// already correct at this point, so surfacing an error here would be
-// misleading (and a subsequent sync/upgrade can repair the lock file).
-func recordLockEntry(source string, sk skills.InstalledSkill) {
-	if sk.Scope != skills.ScopeProject || sk.ProjectRoot == "" {
-		return
+	if !opts.SkipDependencies && len(result.Requires) > 0 {
+		state := newDepInstallState()
+		state.visited[result.Skill.Metadata.Name] = struct{}{}
+		if matErr := s.materializeDependencies(
+			ctx, opts, result.Skill.Scope, result.Skill.Metadata.Name, result.Requires, state,
+		); matErr != nil {
+			return nil, matErr
+		}
+		result.Skill.Dependencies = result.Requires
+		if storeErr := s.store.Update(ctx, result.Skill); storeErr != nil {
+			return nil, fmt.Errorf("updating skill dependencies: %w", storeErr)
+		}
 	}
-	entry := lockfile.Entry{
-		Name:              sk.Metadata.Name,
-		Version:           sk.Metadata.Version,
-		Source:            source,
-		ResolvedReference: sk.Reference,
-		Digest:            sk.Digest,
+
+	contentDigest := result.ContentDigest
+	if contentDigest == "" {
+		var cdErr error
+		contentDigest, cdErr = s.contentDigestForSkill(ctx, opts, result.Skill)
+		if cdErr != nil {
+			return nil, cdErr
+		}
 	}
-	if err := lockfile.UpsertEntry(sk.ProjectRoot, entry); err != nil {
-		slog.Warn("failed to update skills lock file",
-			"skill", sk.Metadata.Name, "project_root", sk.ProjectRoot, "error", err)
+
+	if lockErr := recordLockEntry(opts, source, result.Skill, contentDigest); lockErr != nil {
+		return nil, httperr.WithCode(lockErr, http.StatusInternalServerError)
 	}
+
+	return result, nil
 }
 
 // installInternal performs the actual install dispatch without touching the

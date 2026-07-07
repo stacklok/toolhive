@@ -16,17 +16,26 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/storage"
 )
 
 // Uninstall removes an installed skill and cleans up files for all clients.
+// For project scope, it updates the lock file and cascade-uninstalls orphaned deps.
 func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) error {
+	_, err := s.uninstallInternal(ctx, opts, true)
+	return err
+}
+
+func (s *service) uninstallInternal(
+	ctx context.Context, opts skills.UninstallOptions, allowCascade bool,
+) ([]string, error) {
 	if err := skills.ValidateSkillName(opts.Name); err != nil {
-		return httperr.WithCode(err, http.StatusBadRequest)
+		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
 
 	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	scope = defaultScope(scope)
 	opts.ProjectRoot = projectRoot
@@ -34,65 +43,94 @@ func (s *service) Uninstall(ctx context.Context, opts skills.UninstallOptions) e
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
 	defer unlock()
 
-	// Look up the existing record to find which clients have files.
 	existing, err := s.store.Get(ctx, opts.Name, scope, opts.ProjectRoot)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// Determine the boundary directory for empty-parent cleanup.
-	stopDir := opts.ProjectRoot
-	if scope == skills.ScopeUser {
-		if homeDir, err := os.UserHomeDir(); err == nil {
-			stopDir = homeDir
-		}
-	}
-
-	// Remove files for each client — best-effort: collect errors but don't
-	// abort on the first failure so we clean up as much as possible.
-	var cleanupErrs []error
-	if s.pathResolver != nil {
-		for _, clientType := range existing.Clients {
-			skillPath, pathErr := s.pathResolver.GetSkillPath(clientType, opts.Name, scope, opts.ProjectRoot)
-			if pathErr != nil {
-				cleanupErrs = append(cleanupErrs, fmt.Errorf("resolving path for client %q: %w", clientType, pathErr))
-				continue
-			}
-			if rmErr := s.installer.Remove(skillPath); rmErr != nil {
-				cleanupErrs = append(cleanupErrs, fmt.Errorf("removing files for client %q: %w", clientType, rmErr))
-				continue
-			}
-			if stopDir != "" {
-				skills.RemoveEmptyParents(filepath.Dir(skillPath), stopDir)
-			}
-		}
-	}
+	cleanupErrs := s.cleanupSkillFiles(existing, opts.Name, scope, opts.ProjectRoot)
 
 	if err := s.store.Delete(ctx, opts.Name, scope, opts.ProjectRoot); err != nil {
-		return err
+		return nil, err
 	}
 
-	removeLockEntry(scope, opts.ProjectRoot, opts.Name)
+	cascaded, lockErrs := s.uninstallLockAndCascade(ctx, scope, projectRoot, opts.Name, allowCascade)
+	cleanupErrs = append(cleanupErrs, lockErrs...)
 
-	// Remove the skill from all groups — best-effort, same pattern as file cleanup.
 	if s.groupManager != nil {
 		if groupErr := groups.RemoveSkillFromAllGroups(ctx, s.groupManager, opts.Name); groupErr != nil {
 			cleanupErrs = append(cleanupErrs, fmt.Errorf("removing skill from groups: %w", groupErr))
 		}
 	}
 
-	return errors.Join(cleanupErrs...)
+	return cascaded, errors.Join(cleanupErrs...)
 }
 
-// removeLockEntry removes a project's lock file entry, if any — best-effort,
-// same pattern as file cleanup. A no-op for user scope or for skills that
-// predate the lock file.
-func removeLockEntry(scope skills.Scope, projectRoot, name string) {
+func (s *service) cleanupSkillFiles(
+	existing skills.InstalledSkill, name string, scope skills.Scope, projectRoot string,
+) []error {
+	if s.pathResolver == nil {
+		return nil
+	}
+	stopDir := projectRoot
+	if scope == skills.ScopeUser {
+		if homeDir, err := os.UserHomeDir(); err == nil {
+			stopDir = homeDir
+		}
+	}
+	var cleanupErrs []error
+	for _, clientType := range existing.Clients {
+		skillPath, pathErr := s.pathResolver.GetSkillPath(clientType, name, scope, projectRoot)
+		if pathErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("resolving path for client %q: %w", clientType, pathErr))
+			continue
+		}
+		if rmErr := s.installer.Remove(skillPath); rmErr != nil {
+			cleanupErrs = append(cleanupErrs, fmt.Errorf("removing files for client %q: %w", clientType, rmErr))
+			continue
+		}
+		if stopDir != "" {
+			skills.RemoveEmptyParents(filepath.Dir(skillPath), stopDir)
+		}
+	}
+	return cleanupErrs
+}
+
+func (s *service) uninstallLockAndCascade(
+	ctx context.Context, scope skills.Scope, projectRoot, name string, allowCascade bool,
+) ([]string, []error) {
 	if scope != skills.ScopeProject || projectRoot == "" {
-		return
+		return nil, nil
 	}
-	if err := lockfile.RemoveEntry(projectRoot, name); err != nil {
-		slog.Warn("failed to update skills lock file",
-			"skill", name, "project_root", projectRoot, "error", err)
+	candidates, err := updateLockAfterUninstall(projectRoot, name)
+	if err != nil {
+		return nil, []error{err}
 	}
+	if !allowCascade {
+		return nil, nil
+	}
+	var cascaded []string
+	var cleanupErrs []error
+	for _, depName := range candidates {
+		more, cascadeErr := s.uninstallInternal(ctx, skills.UninstallOptions{
+			Name: depName, Scope: skills.ScopeProject, ProjectRoot: projectRoot,
+		}, true)
+		if cascadeErr != nil && !errors.Is(cascadeErr, storage.ErrNotFound) {
+			slog.Warn("cascade uninstall failed", "skill", depName, "error", cascadeErr)
+			continue
+		}
+		cascaded = append(cascaded, depName)
+		cascaded = append(cascaded, more...)
+	}
+	return cascaded, cleanupErrs
+}
+
+func updateLockAfterUninstall(projectRoot, name string) ([]string, error) {
+	var candidates []string
+	err := lockfile.UpdateEntry(projectRoot, func(lf *lockfile.Lockfile) error {
+		lf.Remove(name)
+		candidates = lf.RemoveParentFromRequiredBy(name)
+		return nil
+	})
+	return candidates, err
 }

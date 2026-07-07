@@ -41,7 +41,7 @@ func TestInstallRecordsProjectScopeLockEntry(t *testing.T) {
 	result, err := svc.Install(t.Context(), skills.InstallOptions{
 		Name:        "my-skill",
 		LayerData:   layerData,
-		Digest:      "sha256:abc",
+		Digest:      "sha256:abcdef0123456789",
 		Reference:   "ghcr.io/org/my-skill:v1",
 		Version:     "1.0.0",
 		Scope:       skills.ScopeProject,
@@ -60,7 +60,7 @@ func TestInstallRecordsProjectScopeLockEntry(t *testing.T) {
 	// upgrade" later re-resolves — not the OCI reference it happened to install.
 	assert.Equal(t, "my-skill", entry.Source)
 	assert.Equal(t, "ghcr.io/org/my-skill:v1", entry.ResolvedReference)
-	assert.Equal(t, "sha256:abc", entry.Digest)
+	assert.Equal(t, "sha256:abcdef0123456789", entry.Digest)
 }
 
 func TestInstallUserScopeDoesNotWriteLockFile(t *testing.T) {
@@ -83,7 +83,7 @@ func TestInstallUserScopeDoesNotWriteLockFile(t *testing.T) {
 	_, err := svc.Install(t.Context(), skills.InstallOptions{
 		Name:      "my-skill",
 		LayerData: layerData,
-		Digest:    "sha256:abc",
+		Digest:    "sha256:abcdef0123456789",
 	})
 	require.NoError(t, err)
 
@@ -98,12 +98,12 @@ func TestUninstallRemovesProjectScopeLockEntry(t *testing.T) {
 	require.NoError(t, lockfile.UpsertEntry(projectRoot, lockfile.Entry{
 		Name:   "my-skill",
 		Source: "my-skill",
-		Digest: "sha256:abc",
+		Digest: "sha256:abcdef0123456789",
 	}))
 	require.NoError(t, lockfile.UpsertEntry(projectRoot, lockfile.Entry{
 		Name:   "other-skill",
 		Source: "other-skill",
-		Digest: "sha256:def",
+		Digest: "sha256:1234567890abcdef",
 	}))
 
 	ctrl := gomock.NewController(t)
@@ -152,7 +152,7 @@ func TestInstallInternalDoesNotTouchLockFile(t *testing.T) {
 	_, err := svc.installInternal(context.Background(), skills.InstallOptions{
 		Name:        "my-skill",
 		LayerData:   layerData,
-		Digest:      "sha256:abc",
+		Digest:      "sha256:abcdef0123456789",
 		Scope:       skills.ScopeProject,
 		ProjectRoot: projectRoot,
 	})

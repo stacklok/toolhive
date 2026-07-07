@@ -29,8 +29,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
@@ -86,6 +88,13 @@ type testServerOptions struct {
 	// miniredis return value is valid (e.g., for non-Redis alternative
 	// backends).
 	storageFactory func(t *testing.T) (storage.Storage, *miniredis.Miniredis)
+	// upstreamFilter, when set, is passed through to Config.UpstreamFilter.
+	// Read by every setup helper below that builds its own Config
+	// (setupTestServer, setupTestServerWithOIDCProvider,
+	// setupTestServerWithTwoUpstreams) and by setupTestServerWithMockOIDC,
+	// which delegates to setupTestServer. setupTestServerWithRTProxy does not
+	// accept testServerOption at all, so this field does not apply to it.
+	upstreamFilter handlers.UpstreamFilter
 }
 
 // testServerOption is a functional option for test server setup.
@@ -109,6 +118,15 @@ func withScopes(scopes []string) testServerOption {
 func withAccessTokenLifespan(d time.Duration) testServerOption {
 	return func(opts *testServerOptions) {
 		opts.accessTokenLifespan = d
+	}
+}
+
+// withUpstreamFilter configures Config.UpstreamFilter, exercising the
+// authserver.New -> handlers.NewHandler wiring end-to-end rather than the
+// handler-level WithUpstreamFilter option directly.
+func withUpstreamFilter(f handlers.UpstreamFilter) testServerOption {
+	return func(opts *testServerOptions) {
+		opts.upstreamFilter = f
 	}
 }
 
@@ -235,6 +253,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		RefreshTokenLifespan: 24 * time.Hour,
 		AuthCodeLifespan:     10 * time.Minute,
 		Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg}},
+		UpstreamFilter:       options.upstreamFilter,
 		AllowedAudiences:     []string{"https://mcp.example.com"},
 	}
 
@@ -906,9 +925,10 @@ func TestIntegration_FullPKCEFlow_DefaultAudience(t *testing.T) {
 //   - defaultUpstreamFactory dispatching to NewOIDCProvider
 //   - OIDCProviderImpl with OIDC discovery, ID token validation, and nonce support
 //
-// Variadic opts allow swapping the storage backend (e.g. withRedisBackedStorage);
-// the upstream is fixed because this helper exists specifically to exercise the
-// real OIDC factory path. Other testServerOptions are silently ignored.
+// Variadic opts allow swapping the storage backend (e.g. withRedisBackedStorage)
+// and setting Config.UpstreamFilter (withUpstreamFilter); the upstream itself is
+// fixed because this helper exists specifically to exercise the real OIDC
+// factory path. Other testServerOptions are silently ignored.
 func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ...testServerOption) *testServerWithUpstream {
 	t.Helper()
 	ctx := context.Background()
@@ -975,6 +995,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 			},
 		}},
 		AllowedAudiences: []string{testAudience},
+		UpstreamFilter:   options.upstreamFilter,
 	}
 
 	// 6. Create server using newServer WITHOUT overriding the upstream factory.
@@ -1820,6 +1841,7 @@ func setupTestServerWithTwoUpstreams(t *testing.T, m1, m2 *mockoidc.MockOIDC, op
 			{Name: "provider-2", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg2},
 		},
 		AllowedAudiences: []string{testAudience},
+		UpstreamFilter:   options.upstreamFilter,
 	}
 
 	// 8. Create server using newServer with a factory that returns the correct provider per name
@@ -1952,6 +1974,95 @@ func TestIntegration_MultiUpstreamSequentialChain(t *testing.T) {
 		"provider-2 UpstreamSubject should come from m2's queued user")
 	assert.NotEqual(t, tokens1.UpstreamSubject, tokens2.UpstreamSubject,
 		"upstream subjects should differ (different IDPs)")
+}
+
+// stubChainFilter is a minimal handlers.UpstreamFilter test double that always
+// keeps the given set of upstream names, regardless of the principal or
+// configured list it is passed. The lower-level filter-narrowing behavior
+// (computeChain) is already covered directly in
+// pkg/authserver/server/handlers/handler_chain_test.go; this double exists only
+// to drive the Config.UpstreamFilter -> authserver.New -> handlers.NewHandler
+// wiring end-to-end.
+type stubChainFilter struct {
+	keep []string
+}
+
+func (f *stubChainFilter) FilterUpstreams(
+	_ context.Context,
+	_ auth.PrincipalInfo,
+	_ []string,
+) ([]string, error) {
+	return f.keep, nil
+}
+
+// TestIntegration_MultiUpstreamChain_ConfigUpstreamFilter proves that a
+// Config.UpstreamFilter set through the public authserver.New facade reaches
+// the handler and narrows the authorization chain. Before Config gained this
+// field, WithUpstreamFilter was only reachable via the low-level
+// handlers.NewHandler constructor, so a caller using authserver.New had no way
+// to install a filter at all.
+//
+// The filter here drops provider-2 entirely, so after the provider-1 callback
+// the chain must be satisfied and the handler must redirect straight to the
+// client (303) instead of on to provider-2 (302). The status-code assertion
+// below is the only signal this test relies on: it fails immediately on a
+// mismatch, before ever following a redirect that would reach provider-2.
+func TestIntegration_MultiUpstreamChain_ConfigUpstreamFilter(t *testing.T) {
+	t.Parallel()
+
+	m1, err := mockoidc.Run()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, m1.Shutdown()) })
+
+	m2, err := mockoidc.Run()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, m2.Shutdown()) })
+
+	m1.QueueUser(&mockoidc.MockUser{
+		Subject: "user-from-provider-1",
+		Email:   "user1@provider1.example.com",
+	})
+
+	filter := &stubChainFilter{keep: nil}
+	ts := setupTestServerWithTwoUpstreams(t, m1, m2, withUpstreamFilter(filter))
+
+	verifier := servercrypto.GeneratePKCEVerifier()
+	challenge := servercrypto.ComputePKCEChallenge(verifier)
+	clientState := "upstream-filter-client-state"
+
+	resp := runFirstLeg(t, ts.Server.URL, challenge, clientState)
+	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
+		"expected 303 straight to client: the Config-supplied filter should have dropped provider-2 from the chain")
+	clientLocation, err := resp.Location()
+	require.NoError(t, err)
+	resp.Body.Close()
+
+	require.Equal(t, clientState, clientLocation.Query().Get("state"))
+	authCode := clientLocation.Query().Get("code")
+	require.NotEmpty(t, authCode)
+
+	tokenData := exchangeCodeForTokens(t, ts.Server.URL, authCode, verifier, testAudience)
+	accessToken, ok := tokenData["access_token"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, accessToken)
+
+	parsedToken, err := jwt.ParseSigned(accessToken, []jose.SignatureAlgorithm{jose.RS256})
+	require.NoError(t, err)
+	var claims map[string]interface{}
+	require.NoError(t, parsedToken.Claims(ts.PrivateKey.Public(), &claims))
+	tsid, ok := claims["tsid"].(string)
+	require.True(t, ok)
+	require.NotEmpty(t, tsid)
+
+	ctx := context.Background()
+
+	tokens1, err := ts.storage.GetUpstreamTokens(ctx, tsid, "provider-1")
+	require.NoError(t, err, "provider-1 tokens should be stored")
+	require.NotNil(t, tokens1)
+
+	_, err = ts.storage.GetUpstreamTokens(ctx, tsid, "provider-2")
+	require.Error(t, err, "provider-2 should have been dropped from the chain by the filter")
+	assert.ErrorIs(t, err, storage.ErrNotFound)
 }
 
 // ============================================================================
@@ -2128,19 +2239,19 @@ func TestIntegration_FullFlow_NonExpiringUpstreamToken(t *testing.T) {
 // the hand-crafted flow in TestIntegration_MultiUpstreamSequentialChain but
 // is reused by the mixed-expiry orderings test. The PKCE verifier is the
 // caller's responsibility — it's only needed at the final /token exchange.
-func runChainFlow(
-	t *testing.T,
-	serverURL string,
-	challenge string,
-	clientState string,
-) string {
+// runFirstLeg drives the leg-1 flow shared by every multi-upstream chain
+// test: client -> /oauth/authorize -> first upstream -> our /oauth/callback.
+// It returns the callback response unread and unclosed so callers can assert
+// on its status code — 302 on to the next upstream (chain continues) vs. 303
+// straight to the client (chain already satisfied) — before deciding how to
+// continue. Callers are responsible for closing the returned response's body.
+func runFirstLeg(t *testing.T, serverURL, challenge, clientState string) *http.Response {
 	t.Helper()
 	client := noRedirectClient()
 
 	parsedServerURL, err := url.Parse(serverURL)
 	require.NoError(t, err)
 
-	// Leg 1: client -> /authorize -> first upstream
 	authorizeURL := serverURL + "/oauth/authorize?" + url.Values{
 		"client_id":             {testClientID},
 		"redirect_uri":          {testRedirectURI},
@@ -2169,6 +2280,22 @@ func runChainFlow(
 
 	resp, err = client.Get(firstCallback.String())
 	require.NoError(t, err)
+	return resp
+}
+
+func runChainFlow(
+	t *testing.T,
+	serverURL string,
+	challenge string,
+	clientState string,
+) string {
+	t.Helper()
+
+	parsedServerURL, err := url.Parse(serverURL)
+	require.NoError(t, err)
+
+	// Leg 1: client -> /authorize -> first upstream -> callback
+	resp := runFirstLeg(t, serverURL, challenge, clientState)
 	require.Equal(t, http.StatusFound, resp.StatusCode,
 		"expected redirect to second upstream, not 303 to client")
 	secondUpstreamLocation, err := resp.Location()
@@ -2176,6 +2303,7 @@ func runChainFlow(
 	resp.Body.Close()
 
 	// Leg 2: second upstream -> callback -> client
+	client := noRedirectClient()
 	resp, err = client.Get(secondUpstreamLocation.String())
 	require.NoError(t, err)
 	require.Equal(t, http.StatusFound, resp.StatusCode)

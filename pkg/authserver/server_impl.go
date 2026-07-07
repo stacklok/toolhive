@@ -207,7 +207,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	// ensuring both paths share one singleflight.Group.
 	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
-		handlers.WithUpstreamRefresher(refresher))
+		buildHandlerOptions(refresher, cfg.UpstreamFilter)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -226,6 +226,18 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 		upstreams:         upstreams,
 		upstreamRefresher: refresher,
 	}, nil
+}
+
+// buildHandlerOptions assembles the handlers.Option list for NewHandler: the
+// refresher is always wired, and the filter is added only when the caller's
+// Config sets one so a nil Config.UpstreamFilter preserves the pre-filter
+// behavior of walking every configured upstream.
+func buildHandlerOptions(refresher storage.UpstreamTokenRefresher, filter handlers.UpstreamFilter) []handlers.Option {
+	opts := []handlers.Option{handlers.WithUpstreamRefresher(refresher)}
+	if filter != nil {
+		opts = append(opts, handlers.WithUpstreamFilter(filter))
+	}
+	return opts
 }
 
 // Handler returns the HTTP handler that serves all OAuth/OIDC endpoints.

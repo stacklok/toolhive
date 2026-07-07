@@ -107,16 +107,14 @@ type storedSession struct {
 
 // NewRedisStorage creates Redis-backed storage. Connection-mode topology,
 // timeouts, TLS, and credentials are configured through cfg; keyPrefix is the
-// per-tenant key prefix (e.g. "thv:auth:{ns}:{name}:"). The auth server
-// requires ACL authentication, so cfg.Password and keyPrefix must be non-empty.
+// per-tenant key prefix (e.g. "thv:auth:{ns}:{name}:") and must be non-empty.
 //
 // Connection-mode validation, timeout defaults, client construction (standalone,
 // cluster, or sentinel), TLS plumbing, and connectivity verification are
-// delegated to the shared toolhive-core redis package.
+// delegated to the shared toolhive-core redis package. cfg.Password may be
+// empty when the Redis server does not require authentication (the auth server
+// does not mandate ACL auth); the keyPrefix is storage-specific and required.
 func NewRedisStorage(ctx context.Context, cfg tcredis.Config, keyPrefix string) (*RedisStorage, error) {
-	if cfg.Password == "" {
-		return nil, errors.New("invalid redis configuration: ACL password is required")
-	}
 	if keyPrefix == "" {
 		return nil, errors.New("invalid redis configuration: key prefix is required")
 	}

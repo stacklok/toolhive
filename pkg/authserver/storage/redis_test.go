@@ -99,12 +99,13 @@ func requireRedisNotFoundError(t *testing.T, err error) {
 
 // TestNewRedisStorage_Validation covers the auth-server-specific invariants
 // enforced by NewRedisStorage. Connection-mode topology (Addr XOR Sentinel,
-// cluster requires Addr, sentinel master name and addresses) is validated by
-// the shared toolhive-core redis package and exercised in its own tests.
+// cluster requires Addr, sentinel master name and addresses) and credentials
+// are validated by the shared toolhive-core redis package and exercised in its
+// own tests; NewRedisStorage does not mandate a password.
 func TestNewRedisStorage_Validation(t *testing.T) {
 	t.Parallel()
 
-	validACL := func() tcredis.Config {
+	validCfg := func() tcredis.Config {
 		return tcredis.Config{Addr: "localhost:6379", Username: "user", Password: "pass"}
 	}
 
@@ -115,14 +116,8 @@ func TestNewRedisStorage_Validation(t *testing.T) {
 		wantErr   string
 	}{
 		{
-			name:      "missing ACL password",
-			cfg:       tcredis.Config{Addr: "localhost:6379", Username: "user"},
-			keyPrefix: "test:",
-			wantErr:   "ACL password is required",
-		},
-		{
 			name:      "missing key prefix",
-			cfg:       validACL(),
+			cfg:       validCfg(),
 			keyPrefix: "",
 			wantErr:   "key prefix is required",
 		},
@@ -205,6 +200,24 @@ func TestNewRedisStorage_Standalone_WithMiniredis(t *testing.T) {
 		Username: "testuser",
 		Password: "testpass",
 	}
+
+	ctx := context.Background()
+	s, err := NewRedisStorage(ctx, cfg, "test:")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = s.Close() })
+
+	require.NoError(t, s.Health(ctx))
+}
+
+// TestNewRedisStorage_Standalone_Passwordless verifies that an auth-disabled
+// Redis (no ACL) is accepted, matching toolhive-core's Config contract where
+// Password "may be empty when the server does not require authentication".
+func TestNewRedisStorage_Standalone_Passwordless(t *testing.T) {
+	t.Parallel()
+
+	mr := miniredis.RunT(t) // no RequireUserAuth → auth disabled
+
+	cfg := tcredis.Config{Addr: mr.Addr()}
 
 	ctx := context.Background()
 	s, err := NewRedisStorage(ctx, cfg, "test:")

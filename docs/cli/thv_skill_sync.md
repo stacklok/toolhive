@@ -16,12 +16,17 @@ Install skills exactly as pinned in the project's lock file
 ### Synopsis
 
 Sync installs every skill pinned in toolhive.lock.yaml at its exact
-recorded digest, restoring skills that are missing or have drifted from the
-pinned state. Project-scoped skills installed outside of the lock file are
-reported as unmanaged, or removed with --prune.
+recorded digest and verifies contentDigest integrity. Project-scoped skills
+installed outside of the lock file are reported as never-managed or
+removed-from-lock; use --prune to uninstall the latter.
+
+Use --check to verify on-disk content without installing. Use --adopt to write
+lock entries for existing unmanaged installs.
 
 The project root is auto-detected from the current directory (nearest
 enclosing git repository) unless --project-root is given.
+
+Pin history: git log -p -- toolhive.lock.yaml
 
 ```
 thv skill sync [flags]
@@ -30,11 +35,14 @@ thv skill sync [flags]
 ### Options
 
 ```
+      --adopt                 Write lock entries for existing unmanaged project-scope installs
+      --check                 Verify on-disk content matches the lock file without installing
       --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
       --format string         Output format (json, text) (default "text")
   -h, --help                  help for sync
       --project-root string   Project root path (auto-detected from the current directory if omitted)
-      --prune                 Uninstall project-scoped skills that are not present in the lock file
+      --prune                 Uninstall previously lock-managed skills that are no longer in the lock file
+      --yes                   Skip the pre-install confirmation prompt
 ```
 
 ### Options inherited from parent commands

@@ -1615,6 +1615,28 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_skills.FailureReason": {
+                "description": "Reason is a typed failure reason when Status is UpgradeStatusFailed.",
+                "enum": [
+                    "registry-unreachable",
+                    "digest-missing",
+                    "validation-rejected",
+                    "lock-write-failed",
+                    "ref-change-blocked",
+                    "content-mismatch",
+                    "unknown"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "FailureReasonRegistryUnreachable",
+                    "FailureReasonDigestMissing",
+                    "FailureReasonValidationRejected",
+                    "FailureReasonLockWriteFailed",
+                    "FailureReasonRefChangeBlocked",
+                    "FailureReasonContentMismatch",
+                    "FailureReasonUnknown"
+                ]
+            },
             "github_com_stacklok_toolhive_pkg_skills.InstallStatus": {
                 "description": "Status is the current installation status.",
                 "enum": [
@@ -1655,6 +1677,10 @@ const docTemplate = `{
                     "installed_at": {
                         "description": "InstalledAt is the timestamp when the skill was installed.",
                         "type": "string"
+                    },
+                    "managed": {
+                        "description": "Managed is true when the install was created by a lock-managed project-scope\ninstall (sync/install with lock write).",
+                        "type": "boolean"
                     },
                     "metadata": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata"
@@ -1813,12 +1839,23 @@ const docTemplate = `{
                     "name": {
                         "description": "Name is the skill name that failed.",
                         "type": "string"
+                    },
+                    "reason": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.FailureReason"
                     }
                 },
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_skills.SyncResult": {
                 "properties": {
+                    "drifted": {
+                        "description": "Drifted lists skills whose on-disk contentDigest differed before reinstall.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "failed": {
                         "description": "Failed lists skills that could not be synced, with the reason for each.",
                         "items": {
@@ -1835,8 +1872,24 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "never_managed": {
+                        "description": "NeverManaged lists project-scoped skills never recorded as lock-managed.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "pruned": {
-                        "description": "Pruned lists unmanaged skills that were uninstalled because Prune was set.",
+                        "description": "Pruned lists removed-from-lock skills that were uninstalled because Prune was set.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "removed_from_lock": {
+                        "description": "RemovedFromLock lists previously managed skills absent from the lock file.",
                         "items": {
                             "type": "string"
                         },
@@ -1844,7 +1897,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "unmanaged": {
-                        "description": "Unmanaged lists project-scoped skills present on disk but absent from the lock file.",
+                        "description": "Unmanaged is deprecated; use NeverManaged and RemovedFromLock.",
                         "items": {
                             "type": "string"
                         },
@@ -1852,7 +1905,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "up_to_date": {
-                        "description": "UpToDate lists skills that already matched the lock file's pinned digest.",
+                        "description": "UpToDate lists skills that already matched the lock file.",
                         "items": {
                             "type": "string"
                         },
@@ -1876,9 +1929,16 @@ const docTemplate = `{
                         "description": "NewDigest is the digest the source currently resolves to. Equal to\nOldDigest when Status is UpgradeStatusUpToDate.",
                         "type": "string"
                     },
+                    "new_resolved_reference": {
+                        "description": "NewResolvedReference is the new resolvedReference when it changed.",
+                        "type": "string"
+                    },
                     "old_digest": {
                         "description": "OldDigest is the digest pinned in the lock file before this operation.",
                         "type": "string"
+                    },
+                    "reason": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.FailureReason"
                     },
                     "status": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeStatus"
@@ -1905,6 +1965,7 @@ const docTemplate = `{
                     "upgraded",
                     "up-to-date",
                     "not-upgradable",
+                    "ref-change-blocked",
                     "failed"
                 ],
                 "type": "string",
@@ -1912,6 +1973,7 @@ const docTemplate = `{
                     "UpgradeStatusUpgraded",
                     "UpgradeStatusUpToDate",
                     "UpgradeStatusNotUpgradable",
+                    "UpgradeStatusRefChangeBlocked",
                     "UpgradeStatusFailed"
                 ]
             },
@@ -3511,6 +3573,14 @@ const docTemplate = `{
             "pkg_api_v1.syncSkillsRequest": {
                 "description": "Request to sync a project's installed skills to match its lock file",
                 "properties": {
+                    "adopt": {
+                        "description": "Adopt writes lock entries for existing unmanaged project-scope installs",
+                        "type": "boolean"
+                    },
+                    "check": {
+                        "description": "Check verifies on-disk content against contentDigest without installing",
+                        "type": "boolean"
+                    },
                     "clients": {
                         "description": "Clients lists target client identifiers, or omit for every detected client",
                         "items": {
@@ -3733,6 +3803,10 @@ const docTemplate = `{
             "pkg_api_v1.upgradeSkillsRequest": {
                 "description": "Request to check for and install newer content for locked skills",
                 "properties": {
+                    "allow_ref_change": {
+                        "description": "AllowRefChange permits resolvedReference changes during upgrade",
+                        "type": "boolean"
+                    },
                     "clients": {
                         "description": "Clients lists target client identifiers, or omit for every detected client",
                         "items": {
@@ -3742,7 +3816,11 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "dry_run": {
-                        "description": "DryRun reports what would change without installing anything",
+                        "description": "DryRun is deprecated; use Preview",
+                        "type": "boolean"
+                    },
+                    "fail_on_changes": {
+                        "description": "FailOnChanges exits non-zero when any mutable source would upgrade",
                         "type": "boolean"
                     },
                     "names": {
@@ -3752,6 +3830,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "preview": {
+                        "description": "Preview reports what would change without installing (still fetches artifacts)",
+                        "type": "boolean"
                     },
                     "project_root": {
                         "description": "ProjectRoot is the project root path whose lock file should be upgraded",

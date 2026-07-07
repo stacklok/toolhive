@@ -265,7 +265,9 @@ Removes the skill files from the filesystem, deletes the database record, and re
 
 ## Project Lock File
 
-Every `--scope project` install writes an entry to a `toolhive.lock.yaml` file at the project root, alongside `.git`. The lock file pins the exact **name**, **version**, **source**, **resolved reference**, and **digest** of each project-scoped skill so a team can commit it to version control, restore an identical set of skills on another machine, and later check for newer content — the same role `package-lock.json` or `go.sum` play for other package managers. User-scope installs never touch the lock file.
+Every `--scope project` install writes an entry to a `toolhive.lock.yaml` file at the project root, alongside `.git`. The lock file pins the exact **name**, **version**, **source**, **resolved reference**, **digest**, and **contentDigest** of each project-scoped skill (including transitively materialized `toolhive.requires` dependencies) so a team can commit it to version control, restore an identical set of skills on another machine, and later check for newer content — the same role `package-lock.json` or `go.sum` play for other package managers. User-scope installs never touch the lock file.
+
+In v1, a committed lock entry is an **assertion** verified against itself at install/sync time; PR review of the lock diff is the trust root until external attestation lands in a follow-on milestone.
 
 ```yaml
 version: 1
@@ -275,30 +277,47 @@ skills:
     source: code-review                          # what the user/registry resolver originally typed
     resolvedReference: ghcr.io/org/code-review:1.0.0
     digest: sha256:9f2b1e...
+    contentDigest: sha256:a1b2c3d4...            # deterministic dirhash of materialized files
+  - name: testing-conventions
+    source: ghcr.io/org/testing-conventions:1.0.0
+    resolvedReference: ghcr.io/org/testing-conventions:1.0.0
+    digest: sha256:...
+    contentDigest: sha256:...
+    requiredBy: [code-review]                    # transitive dependency provenance
+    explicit: true                               # user-requested install; exempt from cascade removal
 ```
+
+`contentDigest` is a deterministic SHA-256 dirhash of the materialized skill file set (the integrity primitive for `sync --check`). Transitive dependencies declared via `toolhive.requires` are materialized at install time for all scopes; project-scope installs record them in the lock with `requiredBy`.
 
 The lock file is **client-agnostic**: it pins skill content, not which client applications installed it. `thv skill sync` installs pinned skills for whichever clients are targeted (all detected clients by default, or `--clients`), independent of what was targeted at install time.
 
 ### Sync
 
 ```bash
-thv skill sync              # restore every pinned skill at its exact digest
-thv skill sync --prune      # also uninstall project-scoped skills absent from the lock file
+thv skill sync              # restore every pinned skill; interactive [y/N] gate on TTY
+thv skill sync --yes        # skip confirmation (CI/scripts)
+thv skill sync --check      # verify on-disk contentDigest without installing
+thv skill sync --adopt      # write lock entries for existing unmanaged installs
+thv skill sync --prune      # uninstall previously lock-managed skills absent from the lock file
 ```
 
-For each lock entry, `Sync` compares the currently installed digest (if any) against the pinned digest. A mismatch or missing install triggers a fresh install pinned to `resolvedReference@digest` — an OCI digest reference, or a git reference pinned to the exact commit hash — so the installed content is byte-for-byte reproducible regardless of what a mutable tag or branch currently points to. Project-scoped skills installed outside the lock file are reported as unmanaged, or removed when `--prune` is set. A sync never rewrites the lock file itself: it only makes the filesystem and database match what is already pinned.
+For each lock entry, `Sync` compares on-disk `contentDigest` and the store digest against the lock. Drift or missing installs trigger a fresh install pinned to `resolvedReference@digest`. Unmanaged skills are split into `never-managed` (out-of-band installs) vs `removed-from-lock` (previously lock-managed); `--prune` removes only the latter. Skills still listed in another entry's `requiredBy` are never pruned. A sync never rewrites the lock file itself.
+
+**Exit codes:** `0` clean; `2` check/drift failure; `3` partial failure; `4` policy rejection (e.g. cancelled confirmation).
 
 ### Upgrade
 
 ```bash
-thv skill upgrade                    # check every locked skill for newer content
-thv skill upgrade code-review        # check specific skills only
-thv skill upgrade --dry-run          # report without installing or writing the lock file
+thv skill upgrade                         # check every locked skill; interactive [y/N] gate
+thv skill upgrade --yes                   # skip confirmation
+thv skill upgrade --preview               # report without installing (still fetches artifacts)
+thv skill upgrade --fail-on-changes       # CI freshness gate: exit non-zero if upgrades available
+thv skill upgrade --allow-ref-change      # permit resolvedReference changes
 ```
 
-`Upgrade` re-resolves each entry's original `source` exactly as a fresh `thv skill install <source>` would (registry name -> catalog lookup, git branch/tag -> current head, OCI tag -> current digest) and compares the result against the pinned digest. A different digest installs the new content and rewrites the entry's `resolvedReference`, `digest`, and `version` — `source` never changes, so future upgrades keep re-resolving the same catalog name or ref. Entries already pinned to an immutable reference (an OCI `@sha256:...` digest or a full 40-character git commit hash) are reported as `not-upgradable` without contacting the network, since re-resolving them can never surface different content.
+`Upgrade` re-resolves each entry's original `source` and compares digest/reference against the lock. Immutable pins (`@sha256:...`, full git commit hashes) are `not-upgradable`. Reference changes are blocked unless `--allow-ref-change` is set.
 
-**Implementation:** `pkg/skills/lockfile/` (schema, file-locked read/write/upsert/remove), `pkg/skills/skillsvc/sync.go` (Sync), `pkg/skills/skillsvc/upgrade.go` (Upgrade), `pkg/skills/skillsvc/pin.go` (digest-pinning and immutability helpers)
+**Implementation:** `pkg/skills/lockfile/` (schema, contentDigest, validation, file-locked ops), `pkg/skills/lock_service.go` (`SkillLockService`), `pkg/skills/skillsvc/sync.go` (Sync), `pkg/skills/skillsvc/upgrade.go` (Upgrade), `pkg/skills/skillsvc/pin.go` (digest-pinning and immutability helpers), `pkg/skills/skillsvc/lock.go` (install hooks, dependency materialization)
 
 ## Git-Based Skill Resolution
 

@@ -20,8 +20,10 @@ name, OCI reference, or git reference) and installs any newer content it
 finds, updating toolhive.lock.yaml. Entries pinned to an immutable reference
 (an OCI digest or a full git commit hash) are reported as not upgradable.
 
-With no arguments, every entry in the lock file is checked. Use --dry-run to
-see what would change without installing anything.
+Use --preview to see what would change. Preview still fetches artifacts into
+the local cache but does not install or rewrite the lock file.
+
+With no arguments, every entry in the lock file is checked.
 
 The project root is auto-detected from the current directory (nearest
 enclosing git repository) unless --project-root is given.
@@ -33,11 +35,14 @@ thv skill upgrade [skill-name...] [flags]
 ### Options
 
 ```
+      --allow-ref-change      Allow resolvedReference changes during upgrade
       --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
-      --dry-run               Report what would change without installing anything
+      --fail-on-changes       Exit non-zero when preview finds any upgradable skill
       --format string         Output format (json, text) (default "text")
   -h, --help                  help for upgrade
+      --preview               Report what would change without installing (still fetches artifacts)
       --project-root string   Project root path (auto-detected from the current directory if omitted)
+      --yes                   Skip the pre-upgrade confirmation prompt
 ```
 
 ### Options inherited from parent commands

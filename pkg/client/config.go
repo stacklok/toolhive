@@ -62,14 +62,6 @@ const (
 	WindsurfJetBrains ClientApp = "windsurf-jetbrains"
 	// AmpCli represents the Sourcegraph Amp CLI.
 	AmpCli ClientApp = "amp-cli"
-	// AmpVSCode represents the Sourcegraph Amp extension for VS Code.
-	AmpVSCode ClientApp = "amp-vscode"
-	// AmpCursor represents the Sourcegraph Amp extension for Cursor.
-	AmpCursor ClientApp = "amp-cursor"
-	// AmpVSCodeInsider represents the Sourcegraph Amp extension for VS Code Insiders.
-	AmpVSCodeInsider ClientApp = "amp-vscode-insider"
-	// AmpWindsurf represents the Sourcegraph Amp extension for Windsurf.
-	AmpWindsurf ClientApp = "amp-windsurf"
 	// LMStudio represents the LM Studio application.
 	LMStudio ClientApp = "lm-studio"
 	// Goose represents the Goose AI agent.
@@ -604,102 +596,6 @@ var supportedClientIntegrations = []clientAppConfig{
 		SupportsSkills:    true,
 		SkillsGlobalPath:  []string{".agents", skillsDirName},
 		SkillsProjectPath: []string{".agents", skillsDirName},
-	},
-	{
-		ClientType:           AmpVSCode,
-		Description:          "VS Code Sourcegraph Amp extension",
-		SettingsFile:         "settings.json",
-		MCPServersPathPrefix: "/amp.mcpServers",
-		RelPath:              []string{"Code", "User"},
-		PlatformPrefix: map[Platform][]string{
-			PlatformLinux:   {".config"},
-			PlatformDarwin:  {"Library", "Application Support"},
-			PlatformWindows: {"AppData", "Roaming"},
-		},
-		Extension: JSON,
-		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          httpTransportLabel,
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: httpTransportLabel,
-		},
-		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabelMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          defaultURLFieldName,
-			types.TransportTypeSSE:            defaultURLFieldName,
-			types.TransportTypeStreamableHTTP: defaultURLFieldName,
-		},
-	},
-	{
-		ClientType:           AmpVSCodeInsider,
-		Description:          "VS Code Insiders Sourcegraph Amp extension",
-		SettingsFile:         "settings.json",
-		MCPServersPathPrefix: "/amp.mcpServers",
-		RelPath:              []string{"Code - Insiders", "User"},
-		PlatformPrefix: map[Platform][]string{
-			PlatformLinux:   {".config"},
-			PlatformDarwin:  {"Library", "Application Support"},
-			PlatformWindows: {"AppData", "Roaming"},
-		},
-		Extension: JSON,
-		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          httpTransportLabel,
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: httpTransportLabel,
-		},
-		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabelMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          defaultURLFieldName,
-			types.TransportTypeSSE:            defaultURLFieldName,
-			types.TransportTypeStreamableHTTP: defaultURLFieldName,
-		},
-	},
-	{
-		ClientType:           AmpCursor,
-		Description:          "Cursor Sourcegraph Amp extension",
-		SettingsFile:         "settings.json",
-		MCPServersPathPrefix: "/amp.mcpServers",
-		RelPath:              []string{"Cursor", "User"},
-		PlatformPrefix: map[Platform][]string{
-			PlatformLinux:   {".config"},
-			PlatformDarwin:  {"Library", "Application Support"},
-			PlatformWindows: {"AppData", "Roaming"},
-		},
-		Extension: JSON,
-		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          httpTransportLabel,
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: httpTransportLabel,
-		},
-		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabelMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          defaultURLFieldName,
-			types.TransportTypeSSE:            defaultURLFieldName,
-			types.TransportTypeStreamableHTTP: defaultURLFieldName,
-		},
-	},
-	{
-		ClientType:           AmpWindsurf,
-		Description:          "Windsurf Sourcegraph Amp extension",
-		SettingsFile:         "settings.json",
-		MCPServersPathPrefix: "/amp.mcpServers",
-		RelPath:              []string{"Windsurf", "User"},
-		PlatformPrefix: map[Platform][]string{
-			PlatformLinux:   {".config"},
-			PlatformDarwin:  {"Library", "Application Support"},
-			PlatformWindows: {"AppData", "Roaming"},
-		},
-		Extension: JSON,
-		SupportedTransportTypesMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          httpTransportLabel,
-			types.TransportTypeSSE:            "sse",
-			types.TransportTypeStreamableHTTP: httpTransportLabel,
-		},
-		IsTransportTypeFieldSupported: true,
-		MCPServersUrlLabelMap: map[types.TransportType]string{
-			types.TransportTypeStdio:          defaultURLFieldName,
-			types.TransportTypeSSE:            defaultURLFieldName,
-			types.TransportTypeStreamableHTTP: defaultURLFieldName,
-		},
 	},
 	{
 		ClientType:           LMStudio,

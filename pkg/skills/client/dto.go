@@ -46,11 +46,16 @@ type syncRequest struct {
 	ProjectRoot string   `json:"project_root"`
 	Clients     []string `json:"clients,omitempty"`
 	Prune       bool     `json:"prune,omitempty"`
+	Check       bool     `json:"check,omitempty"`
+	Adopt       bool     `json:"adopt,omitempty"`
 }
 
 type upgradeRequest struct {
-	ProjectRoot string   `json:"project_root"`
-	Names       []string `json:"names,omitempty"`
-	DryRun      bool     `json:"dry_run,omitempty"`
-	Clients     []string `json:"clients,omitempty"`
+	ProjectRoot    string   `json:"project_root"`
+	Names          []string `json:"names,omitempty"`
+	Preview        bool     `json:"preview,omitempty"`
+	DryRun         bool     `json:"dry_run,omitempty"`
+	FailOnChanges  bool     `json:"fail_on_changes,omitempty"`
+	AllowRefChange bool     `json:"allow_ref_change,omitempty"`
+	Clients        []string `json:"clients,omitempty"`
 }

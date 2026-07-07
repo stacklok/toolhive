@@ -18,12 +18,14 @@ import (
 // SkillsRoutes defines the routes for skill management.
 type SkillsRoutes struct {
 	skillService skills.SkillService
+	lockService  skills.SkillLockService
 }
 
 // SkillsRouter creates a new router for skill management endpoints.
-func SkillsRouter(skillService skills.SkillService) http.Handler {
+func SkillsRouter(skillService skills.SkillService, lockService skills.SkillLockService) http.Handler {
 	routes := SkillsRoutes{
 		skillService: skillService,
+		lockService:  lockService,
 	}
 
 	r := chi.NewRouter()
@@ -390,10 +392,12 @@ func (s *SkillsRoutes) syncSkills(w http.ResponseWriter, r *http.Request) error 
 		)
 	}
 
-	result, err := s.skillService.Sync(r.Context(), skills.SyncOptions{
+	result, err := s.lockService.Sync(r.Context(), skills.SyncOptions{
 		ProjectRoot: req.ProjectRoot,
 		Clients:     req.Clients,
 		Prune:       req.Prune,
+		Check:       req.Check,
+		Adopt:       req.Adopt,
 	})
 	if err != nil {
 		return err
@@ -426,11 +430,14 @@ func (s *SkillsRoutes) upgradeSkills(w http.ResponseWriter, r *http.Request) err
 		)
 	}
 
-	result, err := s.skillService.Upgrade(r.Context(), skills.UpgradeOptions{
-		ProjectRoot: req.ProjectRoot,
-		Names:       req.Names,
-		DryRun:      req.DryRun,
-		Clients:     req.Clients,
+	result, err := s.lockService.Upgrade(r.Context(), skills.UpgradeOptions{
+		ProjectRoot:    req.ProjectRoot,
+		Names:          req.Names,
+		Preview:        req.Preview || req.DryRun,
+		DryRun:         req.DryRun,
+		FailOnChanges:  req.FailOnChanges,
+		AllowRefChange: req.AllowRefChange,
+		Clients:        req.Clients,
 	})
 	if err != nil {
 		return err

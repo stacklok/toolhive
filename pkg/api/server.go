@@ -92,6 +92,7 @@ type ServerBuilder struct {
 	workloadManager  workloads.Manager
 	groupManager     groups.Manager
 	skillManager     skills.SkillService
+	skillLockManager skills.SkillLockService
 	skillStoreCloser io.Closer
 }
 
@@ -321,6 +322,7 @@ func (b *ServerBuilder) createDefaultManagers(ctx context.Context) error {
 		)
 
 		b.skillManager = skillsvc.New(store, skillOpts...)
+		b.skillLockManager = b.skillManager.(skills.SkillLockService)
 	}
 
 	return nil
@@ -347,7 +349,7 @@ func (b *ServerBuilder) setupDefaultRoutes(r *chi.Mux) {
 		"/api/v1beta/clients":   v1.ClientRouter(b.clientManager, b.workloadManager, b.groupManager),
 		"/api/v1beta/secrets":   v1.SecretsRouter(),
 		"/api/v1beta/groups":    v1.GroupsRouter(b.groupManager, b.workloadManager, b.clientManager),
-		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager),
+		"/api/v1beta/skills":    v1.SkillsRouter(b.skillManager, b.skillLockManager),
 		"/registry":             v1.RegistryV01Router(),
 	}
 	for prefix, router := range standardRouters {

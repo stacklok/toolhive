@@ -87,6 +87,10 @@ type syncSkillsRequest struct {
 	Clients []string `json:"clients,omitempty"`
 	// Prune removes project-scoped skills that are installed but not present in the lock file
 	Prune bool `json:"prune,omitempty"`
+	// Check verifies on-disk content against contentDigest without installing
+	Check bool `json:"check,omitempty"`
+	// Adopt writes lock entries for existing unmanaged project-scope installs
+	Adopt bool `json:"adopt,omitempty"`
 }
 
 // upgradeSkillsRequest represents the request to upgrade a project's locked skills.
@@ -97,8 +101,14 @@ type upgradeSkillsRequest struct {
 	ProjectRoot string `json:"project_root"`
 	// Names restricts the upgrade to specific skill names, or omit for every locked skill
 	Names []string `json:"names,omitempty"`
-	// DryRun reports what would change without installing anything
+	// Preview reports what would change without installing (still fetches artifacts)
+	Preview bool `json:"preview,omitempty"`
+	// DryRun is deprecated; use Preview
 	DryRun bool `json:"dry_run,omitempty"`
+	// FailOnChanges exits non-zero when any mutable source would upgrade
+	FailOnChanges bool `json:"fail_on_changes,omitempty"`
+	// AllowRefChange permits resolvedReference changes during upgrade
+	AllowRefChange bool `json:"allow_ref_change,omitempty"`
 	// Clients lists target client identifiers, or omit for every detected client
 	Clients []string `json:"clients,omitempty"`
 }

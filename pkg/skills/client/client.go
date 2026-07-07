@@ -37,8 +37,9 @@ const (
 // running.
 var ErrServerUnreachable = errors.New("could not reach ToolHive API server — is 'thv serve' running?")
 
-// Compile-time interface check.
+// Compile-time interface checks.
 var _ skills.SkillService = (*Client)(nil)
+var _ skills.SkillLockService = (*Client)(nil)
 
 // Client is an HTTP client for the ToolHive Skills API.
 type Client struct {
@@ -274,6 +275,8 @@ func (c *Client) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.Syn
 		ProjectRoot: opts.ProjectRoot,
 		Clients:     opts.Clients,
 		Prune:       opts.Prune,
+		Check:       opts.Check,
+		Adopt:       opts.Adopt,
 	}
 
 	var result skills.SyncResult
@@ -287,10 +290,13 @@ func (c *Client) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.Syn
 // any newer content it finds.
 func (c *Client) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*skills.UpgradeResult, error) {
 	body := upgradeRequest{
-		ProjectRoot: opts.ProjectRoot,
-		Names:       opts.Names,
-		DryRun:      opts.DryRun,
-		Clients:     opts.Clients,
+		ProjectRoot:    opts.ProjectRoot,
+		Names:          opts.Names,
+		Preview:        opts.Preview || opts.DryRun,
+		DryRun:         opts.DryRun,
+		FailOnChanges:  opts.FailOnChanges,
+		AllowRefChange: opts.AllowRefChange,
+		Clients:        opts.Clients,
 	}
 
 	var result skills.UpgradeResult

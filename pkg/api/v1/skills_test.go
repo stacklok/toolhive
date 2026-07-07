@@ -41,7 +41,7 @@ func TestSkillsRouter(t *testing.T) {
 		method         string
 		path           string
 		body           string
-		setupMock      func(*skillsmocks.MockSkillService, string)
+		setupMock      func(*skillsmocks.MockSkillService, *skillsmocks.MockSkillLockService, string)
 		expectedStatus int
 		expectedBody   string
 	}{
@@ -50,7 +50,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list skills success empty",
 			method: "GET",
 			path:   "/",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().List(gomock.Any(), skills.ListOptions{}).
 					Return([]skills.InstalledSkill{}, nil)
 			},
@@ -61,7 +61,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list skills success with results",
 			method: "GET",
 			path:   "/",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().List(gomock.Any(), skills.ListOptions{}).
 					Return([]skills.InstalledSkill{
 						{
@@ -79,7 +79,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list skills project scope missing project root",
 			method: "GET",
 			path:   "/?scope=project",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().List(gomock.Any(), skills.ListOptions{
 					Scope: skills.ScopeProject,
 				}).Return(nil, httperr.WithCode(
@@ -94,7 +94,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list skills with project root filter",
 			method: "GET",
 			path:   "/?scope=project&project_root={{project_root}}",
-			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, projectRoot string) {
 				svc.EXPECT().List(gomock.Any(), skills.ListOptions{
 					Scope:       skills.ScopeProject,
 					ProjectRoot: projectRoot,
@@ -107,7 +107,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list skills with client filter",
 			method: "GET",
 			path:   "/?client=claude-code",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().List(gomock.Any(), skills.ListOptions{ClientApp: "claude-code"}).
 					Return([]skills.InstalledSkill{}, nil)
 			},
@@ -118,7 +118,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list skills error",
 			method: "GET",
 			path:   "/",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().List(gomock.Any(), gomock.Any()).
 					Return(nil, fmt.Errorf("database error"))
 			},
@@ -131,7 +131,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"my-skill"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{Name: "my-skill"}).
 					Return(&skills.InstallResult{
 						Skill: skills.InstalledSkill{
@@ -150,7 +150,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":""}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{Name: ""}).
 					Return(nil, httperr.WithCode(fmt.Errorf("invalid skill name: must not be empty"), http.StatusBadRequest))
 			},
@@ -162,7 +162,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{Name: ""}).
 					Return(nil, httperr.WithCode(fmt.Errorf("invalid skill name: must not be empty"), http.StatusBadRequest))
 			},
@@ -174,7 +174,7 @@ func TestSkillsRouter(t *testing.T) {
 			method:         "POST",
 			path:           "/",
 			body:           `{invalid`,
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid request body",
 		},
@@ -183,7 +183,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"my-skill"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), gomock.Any()).
 					Return(nil, storage.ErrAlreadyExists)
 			},
@@ -195,7 +195,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"A"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), gomock.Any()).
 					Return(nil, httperr.WithCode(fmt.Errorf("invalid skill name"), http.StatusBadRequest))
 			},
@@ -207,7 +207,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "uninstall skill success",
 			method: "DELETE",
 			path:   "/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Uninstall(gomock.Any(), skills.UninstallOptions{Name: "my-skill"}).
 					Return(nil)
 			},
@@ -217,7 +217,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:           "uninstall skill invalid name",
 			method:         "DELETE",
 			path:           "/A",
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid skill name",
 		},
@@ -225,7 +225,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "uninstall skill invalid scope",
 			method: "DELETE",
 			path:   "/my-skill?scope=invalid",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Uninstall(gomock.Any(), skills.UninstallOptions{
 					Name:  "my-skill",
 					Scope: skills.Scope("invalid"),
@@ -241,7 +241,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "uninstall skill not found",
 			method: "DELETE",
 			path:   "/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Uninstall(gomock.Any(), gomock.Any()).
 					Return(storage.ErrNotFound)
 			},
@@ -253,7 +253,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "get skill info found",
 			method: "GET",
 			path:   "/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Info(gomock.Any(), skills.InfoOptions{Name: "my-skill"}).
 					Return(&skills.SkillInfo{
 						Metadata: skills.SkillMetadata{Name: "my-skill"},
@@ -271,7 +271,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "get skill info not found",
 			method: "GET",
 			path:   "/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Info(gomock.Any(), skills.InfoOptions{Name: "my-skill"}).
 					Return(nil, storage.ErrNotFound)
 			},
@@ -282,7 +282,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:           "get skill info invalid name",
 			method:         "GET",
 			path:           "/A",
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid skill name",
 		},
@@ -291,7 +291,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "get skill info service error",
 			method: "GET",
 			path:   "/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Info(gomock.Any(), skills.InfoOptions{Name: "my-skill"}).
 					Return(nil, fmt.Errorf("database error"))
 			},
@@ -303,7 +303,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"my-skill","clients":["claude-code","opencode"]}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{
 					Name:    "my-skill",
 					Clients: []string{"claude-code", "opencode"},
@@ -324,7 +324,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"my-skill","version":"1.2.0","scope":"project","project_root":"{{project_root}}"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, projectRoot string) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{
 					Name:        "my-skill",
 					Version:     "1.2.0",
@@ -346,7 +346,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"my-skill","scope":"project"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{
 					Name:        "my-skill",
 					Scope:       skills.ScopeProject,
@@ -364,7 +364,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/",
 			body:   `{"name":"my-skill","scope":"project","project_root":"{{non_git_project_root}}"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, projectRoot string) {
 				svc.EXPECT().Install(gomock.Any(), skills.InstallOptions{
 					Name:        "my-skill",
 					Scope:       skills.ScopeProject,
@@ -382,7 +382,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "uninstall skill with scope",
 			method: "DELETE",
 			path:   "/my-skill?scope=project&project_root={{project_root}}",
-			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, projectRoot string) {
 				svc.EXPECT().Uninstall(gomock.Any(), skills.UninstallOptions{
 					Name:        "my-skill",
 					Scope:       skills.ScopeProject,
@@ -395,7 +395,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "uninstall skill project scope missing project root",
 			method: "DELETE",
 			path:   "/my-skill?scope=project",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Uninstall(gomock.Any(), skills.UninstallOptions{
 					Name:        "my-skill",
 					Scope:       skills.ScopeProject,
@@ -414,7 +414,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/validate",
 			body:   `{"path":"/tmp/skill"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Validate(gomock.Any(), "/tmp/skill").
 					Return(&skills.ValidationResult{Valid: true}, nil)
 			},
@@ -426,7 +426,7 @@ func TestSkillsRouter(t *testing.T) {
 			method:         "POST",
 			path:           "/validate",
 			body:           `{invalid`,
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid request body",
 		},
@@ -435,7 +435,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/validate",
 			body:   `{"path":"/tmp/skill"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Validate(gomock.Any(), "/tmp/skill").
 					Return(nil, fmt.Errorf("validation failed"))
 			},
@@ -448,7 +448,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/build",
 			body:   `{"path":"/tmp/skill","tag":"v1.0.0"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Build(gomock.Any(), skills.BuildOptions{Path: "/tmp/skill", Tag: "v1.0.0"}).
 					Return(&skills.BuildResult{Reference: "v1.0.0"}, nil)
 			},
@@ -460,7 +460,7 @@ func TestSkillsRouter(t *testing.T) {
 			method:         "POST",
 			path:           "/build",
 			body:           `{invalid`,
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid request body",
 		},
@@ -469,7 +469,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/build",
 			body:   `{"path":"/tmp/skill"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Build(gomock.Any(), skills.BuildOptions{Path: "/tmp/skill"}).
 					Return(nil, httperr.WithCode(fmt.Errorf("path is required"), http.StatusBadRequest))
 			},
@@ -482,7 +482,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/push",
 			body:   `{"reference":"ghcr.io/test/skill:v1"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Push(gomock.Any(), skills.PushOptions{Reference: "ghcr.io/test/skill:v1"}).
 					Return(nil)
 			},
@@ -493,7 +493,7 @@ func TestSkillsRouter(t *testing.T) {
 			method:         "POST",
 			path:           "/push",
 			body:           `{invalid`,
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid request body",
 		},
@@ -502,7 +502,7 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/push",
 			body:   `{"reference":"ghcr.io/test/skill:v1"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().Push(gomock.Any(), skills.PushOptions{Reference: "ghcr.io/test/skill:v1"}).
 					Return(fmt.Errorf("push failed"))
 			},
@@ -514,7 +514,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list builds success empty",
 			method: "GET",
 			path:   "/builds",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().ListBuilds(gomock.Any()).
 					Return([]skills.LocalBuild{}, nil)
 			},
@@ -525,7 +525,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list builds success with results",
 			method: "GET",
 			path:   "/builds",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().ListBuilds(gomock.Any()).
 					Return([]skills.LocalBuild{
 						{Tag: "my-skill", Digest: "sha256:abc123", Name: "my-skill", Version: "1.0.0"},
@@ -538,7 +538,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "list builds service error",
 			method: "GET",
 			path:   "/builds",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().ListBuilds(gomock.Any()).
 					Return(nil, httperr.WithCode(fmt.Errorf("oci store not configured"), http.StatusInternalServerError))
 			},
@@ -549,7 +549,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "delete build success",
 			method: "DELETE",
 			path:   "/builds/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().DeleteBuild(gomock.Any(), "my-skill").Return(nil)
 			},
 			expectedStatus: http.StatusNoContent,
@@ -558,7 +558,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "delete build not found",
 			method: "DELETE",
 			path:   "/builds/missing",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().DeleteBuild(gomock.Any(), "missing").
 					Return(httperr.WithCode(fmt.Errorf("tag not found"), http.StatusNotFound))
 			},
@@ -568,7 +568,7 @@ func TestSkillsRouter(t *testing.T) {
 			name:   "delete build service error",
 			method: "DELETE",
 			path:   "/builds/my-skill",
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
+			setupMock: func(svc *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {
 				svc.EXPECT().DeleteBuild(gomock.Any(), "my-skill").
 					Return(httperr.WithCode(fmt.Errorf("oci store not configured"), http.StatusInternalServerError))
 			},
@@ -581,8 +581,8 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/sync",
 			body:   `{"project_root":"{{project_root}}"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
-				svc.EXPECT().Sync(gomock.Any(), skills.SyncOptions{ProjectRoot: projectRoot}).
+			setupMock: func(_ *skillsmocks.MockSkillService, lock *skillsmocks.MockSkillLockService, projectRoot string) {
+				lock.EXPECT().Sync(gomock.Any(), skills.SyncOptions{ProjectRoot: projectRoot}).
 					Return(&skills.SyncResult{Installed: []string{"my-skill"}}, nil)
 			},
 			expectedStatus: http.StatusOK,
@@ -593,8 +593,8 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/sync",
 			body:   `{"project_root":"{{project_root}}","clients":["claude-code"],"prune":true}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
-				svc.EXPECT().Sync(gomock.Any(), skills.SyncOptions{
+			setupMock: func(_ *skillsmocks.MockSkillService, lock *skillsmocks.MockSkillLockService, projectRoot string) {
+				lock.EXPECT().Sync(gomock.Any(), skills.SyncOptions{
 					ProjectRoot: projectRoot,
 					Clients:     []string{"claude-code"},
 					Prune:       true,
@@ -608,7 +608,7 @@ func TestSkillsRouter(t *testing.T) {
 			method:         "POST",
 			path:           "/sync",
 			body:           `{invalid`,
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid request body",
 		},
@@ -617,8 +617,8 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/sync",
 			body:   `{"project_root":"/not/a/repo"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, _ string) {
-				svc.EXPECT().Sync(gomock.Any(), skills.SyncOptions{ProjectRoot: "/not/a/repo"}).
+			setupMock: func(_ *skillsmocks.MockSkillService, lock *skillsmocks.MockSkillLockService, _ string) {
+				lock.EXPECT().Sync(gomock.Any(), skills.SyncOptions{ProjectRoot: "/not/a/repo"}).
 					Return(nil, httperr.WithCode(fmt.Errorf("project_root must be a git repository"), http.StatusBadRequest))
 			},
 			expectedStatus: http.StatusBadRequest,
@@ -630,8 +630,8 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/upgrade",
 			body:   `{"project_root":"{{project_root}}"}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
-				svc.EXPECT().Upgrade(gomock.Any(), skills.UpgradeOptions{ProjectRoot: projectRoot}).
+			setupMock: func(_ *skillsmocks.MockSkillService, lock *skillsmocks.MockSkillLockService, projectRoot string) {
+				lock.EXPECT().Upgrade(gomock.Any(), skills.UpgradeOptions{ProjectRoot: projectRoot}).
 					Return(&skills.UpgradeResult{
 						Outcomes: []skills.UpgradeOutcome{
 							{Name: "my-skill", Status: skills.UpgradeStatusUpgraded, OldDigest: "sha256:old", NewDigest: "sha256:new"},
@@ -646,10 +646,11 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/upgrade",
 			body:   `{"project_root":"{{project_root}}","names":["my-skill"],"dry_run":true,"clients":["claude-code"]}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
-				svc.EXPECT().Upgrade(gomock.Any(), skills.UpgradeOptions{
+			setupMock: func(_ *skillsmocks.MockSkillService, lock *skillsmocks.MockSkillLockService, projectRoot string) {
+				lock.EXPECT().Upgrade(gomock.Any(), skills.UpgradeOptions{
 					ProjectRoot: projectRoot,
 					Names:       []string{"my-skill"},
+					Preview:     true,
 					DryRun:      true,
 					Clients:     []string{"claude-code"},
 				}).Return(&skills.UpgradeResult{
@@ -666,7 +667,7 @@ func TestSkillsRouter(t *testing.T) {
 			method:         "POST",
 			path:           "/upgrade",
 			body:           `{invalid`,
-			setupMock:      func(_ *skillsmocks.MockSkillService, _ string) {},
+			setupMock:      func(_ *skillsmocks.MockSkillService, _ *skillsmocks.MockSkillLockService, _ string) {},
 			expectedStatus: http.StatusBadRequest,
 			expectedBody:   "invalid request body",
 		},
@@ -675,8 +676,8 @@ func TestSkillsRouter(t *testing.T) {
 			method: "POST",
 			path:   "/upgrade",
 			body:   `{"project_root":"{{project_root}}","names":["missing-skill"]}`,
-			setupMock: func(svc *skillsmocks.MockSkillService, projectRoot string) {
-				svc.EXPECT().Upgrade(gomock.Any(), skills.UpgradeOptions{
+			setupMock: func(_ *skillsmocks.MockSkillService, lock *skillsmocks.MockSkillLockService, projectRoot string) {
+				lock.EXPECT().Upgrade(gomock.Any(), skills.UpgradeOptions{
 					ProjectRoot: projectRoot,
 					Names:       []string{"missing-skill"},
 				}).Return(nil, httperr.WithCode(fmt.Errorf(`skill "missing-skill" is not present in the lock file`), http.StatusNotFound))
@@ -706,10 +707,11 @@ func TestSkillsRouter(t *testing.T) {
 
 			ctrl := gomock.NewController(t)
 			mockSvc := skillsmocks.NewMockSkillService(ctrl)
-			tt.setupMock(mockSvc, projectRoot)
+			mockLock := skillsmocks.NewMockSkillLockService(ctrl)
+			tt.setupMock(mockSvc, mockLock, projectRoot)
 
 			router := chi.NewRouter()
-			router.Mount("/", SkillsRouter(mockSvc))
+			router.Mount("/", SkillsRouter(mockSvc, mockLock))
 
 			req := httptest.NewRequest(tt.method, path, strings.NewReader(body))
 			req.Header.Set("Content-Type", "application/json")
@@ -730,6 +732,7 @@ func TestListSkillsResponseFormat(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	mockSvc := skillsmocks.NewMockSkillService(ctrl)
+	mockLock := skillsmocks.NewMockSkillLockService(ctrl)
 
 	mockSvc.EXPECT().List(gomock.Any(), gomock.Any()).
 		Return([]skills.InstalledSkill{
@@ -742,7 +745,7 @@ func TestListSkillsResponseFormat(t *testing.T) {
 		}, nil)
 
 	router := chi.NewRouter()
-	router.Mount("/", SkillsRouter(mockSvc))
+	router.Mount("/", SkillsRouter(mockSvc, mockLock))
 
 	req := httptest.NewRequest("GET", "/", nil)
 	rec := httptest.NewRecorder()

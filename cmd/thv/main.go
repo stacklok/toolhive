@@ -81,6 +81,9 @@ func main() {
 	if err := cmd.ExecuteContext(ctx); err != nil {
 		// Clean up any remaining lock files on error exit
 		lockfile.CleanupAllLocks()
+		if code, ok := app.ExitCodeFromError(err); ok {
+			os.Exit(code)
+		}
 		os.Exit(1)
 	}
 

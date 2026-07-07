@@ -37,12 +37,29 @@ type InstallOptions struct {
 	Reference string `json:"-"`
 	// Digest is the OCI digest for upgrade detection.
 	Digest string `json:"-"`
+	// LockSource overrides the source recorded in the lock file. When empty,
+	// the Name field at the start of Install is used.
+	LockSource string `json:"-"`
+	// ExplicitLock marks the lock entry as explicitly user-requested (exempt
+	// from cascade removal).
+	ExplicitLock bool `json:"-"`
+	// Managed marks the SQLite record as lock-managed.
+	Managed bool `json:"-"`
+	// RequiredByParent, when set, records this install as a transitive dep of
+	// the named parent in the lock file.
+	RequiredByParent string `json:"-"`
+	// SkipDependencies skips materializing toolhive.requires (used internally).
+	SkipDependencies bool `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.
 type InstallResult struct {
 	// Skill is the installed skill.
 	Skill InstalledSkill `json:"skill"`
+	// Requires lists parsed toolhive.requires from the installed artifact.
+	Requires []Dependency `json:"-"`
+	// ContentDigest is the computed dirhash of the installed file set.
+	ContentDigest string `json:"-"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation.
@@ -143,12 +160,32 @@ type SyncOptions struct {
 	// Prune removes project-scoped skills that are installed but not present
 	// in the lock file. When false, such skills are only reported.
 	Prune bool `json:"prune,omitempty"`
+	// Check verifies on-disk content against contentDigest without installing.
+	Check bool `json:"check,omitempty"`
+	// Adopt writes lock entries for existing unmanaged project-scope installs.
+	Adopt bool `json:"adopt,omitempty"`
 }
+
+// FailureReason is a typed failure reason for sync/upgrade operations.
+type FailureReason string
+
+// Typed failure reasons for sync/upgrade operations.
+const (
+	FailureReasonRegistryUnreachable FailureReason = "registry-unreachable"
+	FailureReasonDigestMissing       FailureReason = "digest-missing"
+	FailureReasonValidationRejected  FailureReason = "validation-rejected"
+	FailureReasonLockWriteFailed     FailureReason = "lock-write-failed"
+	FailureReasonRefChangeBlocked    FailureReason = "ref-change-blocked"
+	FailureReasonContentMismatch     FailureReason = "content-mismatch"
+	FailureReasonUnknown             FailureReason = "unknown"
+)
 
 // SyncFailure describes a single skill that failed to sync.
 type SyncFailure struct {
 	// Name is the skill name that failed.
 	Name string `json:"name"`
+	// Reason is a typed failure reason for CI and automation.
+	Reason FailureReason `json:"reason,omitempty"`
 	// Error is a human-readable description of the failure.
 	Error string `json:"error"`
 }
@@ -157,11 +194,17 @@ type SyncFailure struct {
 type SyncResult struct {
 	// Installed lists skills that were installed or reinstalled to match the lock file.
 	Installed []string `json:"installed,omitempty"`
-	// UpToDate lists skills that already matched the lock file's pinned digest.
+	// Drifted lists skills whose on-disk contentDigest differed before reinstall.
+	Drifted []string `json:"drifted,omitempty"`
+	// UpToDate lists skills that already matched the lock file.
 	UpToDate []string `json:"up_to_date,omitempty"`
-	// Unmanaged lists project-scoped skills present on disk but absent from the lock file.
+	// NeverManaged lists project-scoped skills never recorded as lock-managed.
+	NeverManaged []string `json:"never_managed,omitempty"`
+	// RemovedFromLock lists previously managed skills absent from the lock file.
+	RemovedFromLock []string `json:"removed_from_lock,omitempty"`
+	// Unmanaged is deprecated; use NeverManaged and RemovedFromLock.
 	Unmanaged []string `json:"unmanaged,omitempty"`
-	// Pruned lists unmanaged skills that were uninstalled because Prune was set.
+	// Pruned lists removed-from-lock skills that were uninstalled because Prune was set.
 	Pruned []string `json:"pruned,omitempty"`
 	// Failed lists skills that could not be synced, with the reason for each.
 	Failed []SyncFailure `json:"failed,omitempty"`
@@ -174,8 +217,14 @@ type UpgradeOptions struct {
 	// Names restricts the upgrade to specific skill names. Empty means every
 	// entry in the lock file.
 	Names []string `json:"names,omitempty"`
-	// DryRun reports what would change without installing anything.
+	// Preview reports what would change without installing (still fetches artifacts).
+	Preview bool `json:"preview,omitempty"`
+	// DryRun is deprecated; use Preview.
 	DryRun bool `json:"dry_run,omitempty"`
+	// FailOnChanges exits with an error when any mutable source would upgrade.
+	FailOnChanges bool `json:"fail_on_changes,omitempty"`
+	// AllowRefChange permits resolvedReference changes during upgrade.
+	AllowRefChange bool `json:"allow_ref_change,omitempty"`
 	// Clients lists target clients (e.g., "claude-code"). Empty means every
 	// skill-supporting client detected on this host.
 	Clients []string `json:"clients,omitempty"`
@@ -192,6 +241,8 @@ const (
 	// UpgradeStatusNotUpgradable indicates the entry is pinned to an immutable
 	// reference (an OCI digest or a full git commit hash) and cannot be upgraded.
 	UpgradeStatusNotUpgradable UpgradeStatus = "not-upgradable"
+	// UpgradeStatusRefChangeBlocked indicates re-resolution changed resolvedReference.
+	UpgradeStatusRefChangeBlocked UpgradeStatus = "ref-change-blocked"
 	// UpgradeStatusFailed indicates the upgrade attempt failed.
 	UpgradeStatusFailed UpgradeStatus = "failed"
 )
@@ -207,6 +258,10 @@ type UpgradeOutcome struct {
 	// NewDigest is the digest the source currently resolves to. Equal to
 	// OldDigest when Status is UpgradeStatusUpToDate.
 	NewDigest string `json:"new_digest,omitempty"`
+	// NewResolvedReference is the new resolvedReference when it changed.
+	NewResolvedReference string `json:"new_resolved_reference,omitempty"`
+	// Reason is a typed failure reason when Status is UpgradeStatusFailed.
+	Reason FailureReason `json:"reason,omitempty"`
 	// Error is a human-readable description of the failure, set only when Status is UpgradeStatusFailed.
 	Error string `json:"error,omitempty"`
 }

@@ -30,13 +30,4 @@ type SkillService interface {
 	// GetContent retrieves the SKILL.md body and file listing from an OCI artifact
 	// without installing it. Works for both remote registry references and local build tags.
 	GetContent(ctx context.Context, opts ContentOptions) (*SkillContent, error)
-	// Sync installs the exact name/digest pinned in the project's lock file
-	// for every entry, restoring drifted or missing skills. Skills installed
-	// at project scope but absent from the lock file are reported as
-	// unmanaged, or removed when opts.Prune is set.
-	Sync(ctx context.Context, opts SyncOptions) (*SyncResult, error)
-	// Upgrade re-resolves each lock file entry's original source and, when the
-	// resolved digest differs from the pinned one, installs the new content
-	// and updates the lock file entry.
-	Upgrade(ctx context.Context, opts UpgradeOptions) (*UpgradeResult, error)
 }

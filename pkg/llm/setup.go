@@ -494,7 +494,7 @@ func buildTokenHelperCommand() (string, error) {
 // URL (gateway + /anthropic prefix): direct mode via ANTHROPIC_BASE_URL, and
 // credential-helper mode (Claude Desktop) via inferenceGatewayBaseUrl.
 func usesAnthropicBaseURL(mode string) bool {
-	return mode == "direct" || mode == "credential-helper"
+	return mode == llmgateway.ModeDirect || mode == llmgateway.ModeCredentialHelper
 }
 
 // hasDirectModeClient reports whether any client in the detected list uses a
@@ -515,7 +515,7 @@ func hasDirectModeClient(gm GatewayManager, detected []string) bool {
 // the local config setup just wrote.
 func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configured []ToolConfig) {
 	for _, tc := range configured {
-		if tc.Mode != "credential-helper" {
+		if tc.Mode != llmgateway.ModeCredentialHelper {
 			continue
 		}
 		_, _ = fmt.Fprintf(out,

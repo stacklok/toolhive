@@ -25,12 +25,6 @@ import (
 // writer here rather than going through the LLMGatewayKeys machinery.
 
 const (
-	// credentialHelperMode is the LLMGatewayMode value for clients configured via
-	// the document + selector credential-helper model (Claude Desktop). It is the
-	// single source of truth dispatched on in both pkg/client and pkg/llm.
-	// #nosec G101 -- this is an LLM gateway mode identifier, not a credential.
-	credentialHelperMode = "credential-helper"
-
 	// claudeDesktopManagedEntryName is the stable display name of the config
 	// entry ToolHive owns in _meta.json. Reusing a fixed name (rather than a
 	// fresh UUID per run) keeps setup idempotent — repeated "thv llm setup"
@@ -172,14 +166,30 @@ func (cm *ClientManager) revertCredentialHelper(appCfg *clientAppConfig, configP
 	if configPath == "" {
 		return nil
 	}
-	dir := filepath.Dir(configPath)
+	// Derive the configLibrary dir from appCfg (not from configPath) so a
+	// tampered stored configPath cannot redirect teardown at an arbitrary
+	// directory. The config document must live inside this dir.
+	metaPath := cm.buildLLMSettingsPath(appCfg)
+	dir := filepath.Dir(metaPath)
 	if !fileExistsAt(dir) {
 		// Config directory already gone — nothing to revert.
 		return nil
 	}
 
 	id := metaIDFromConfigPath(configPath)
-	metaPath := filepath.Join(dir, appCfg.LLMSettingsFile)
+	if !isSafeConfigID(id) {
+		// Symmetric with configureCredentialHelper: a corrupted or hand-edited
+		// stored configPath whose id is not a bare filename is treated as
+		// already-reverted rather than risk unlinking through it.
+		return nil
+	}
+	// Reconstruct the expected path and require the stored configPath to match
+	// it. os.Remove follows symlinks, so a stored path outside configLibrary
+	// (or a symlink inside it) must not let teardown unlink an arbitrary file.
+	expectedPath := filepath.Join(dir, id+".json")
+	if configPath != expectedPath {
+		return nil
+	}
 	shimPath := cm.credentialHelperShimPath()
 
 	// All steps run under the metaPath lock so a concurrent setup/teardown cannot
@@ -236,6 +246,12 @@ func (cm *ClientManager) writeCredentialHelperShim(tokenHelperCommand string) (s
 	if tokenHelperCommand == "" {
 		return "", fmt.Errorf("no token-helper command available for credential helper shim")
 	}
+	if !isSafeTokenHelperCommand(tokenHelperCommand) {
+		// Defence in depth: the producer (buildTokenHelperCommand) is shell-safe
+		// today, but the writer must not silently emit an injectable 0700 script
+		// if a future caller constructs tokenHelperCommand differently.
+		return "", fmt.Errorf("refusing to write credential helper shim: token-helper command is not shell-safe")
+	}
 	shimPath := cm.credentialHelperShimPath()
 	if err := os.MkdirAll(filepath.Dir(shimPath), 0o700); err != nil {
 		return "", fmt.Errorf("creating credential helper directory: %w", err)
@@ -251,6 +267,39 @@ func (cm *ClientManager) writeCredentialHelperShim(tokenHelperCommand string) (s
 		return "", fmt.Errorf("writing credential helper shim %s: %w", shimPath, err)
 	}
 	return shimPath, nil
+}
+
+// isSafeTokenHelperCommand reports whether tokenHelperCommand matches the shape
+// produced by buildTokenHelperCommand: a double-quoted path followed by the
+// literal args "llm token", with no shell metacharacters that could break out
+// of the exec line the shim concatenates. The shim is a 0700 /bin/sh script
+// built by string concatenation, so a caller-supplied command containing ";",
+// "&", "|", "`", "$", "#", or newlines would be stored command injection.
+//
+// buildTokenHelperCommand (pkg/llm/setup.go) is shell-safe today — it rejects
+// paths containing those characters before formatting — but TokenHelperCommand
+// is exposed as a general ApplyConfig field consumed by multiple writers. This
+// check makes the shim writer fail closed on any command it cannot prove safe,
+// rather than trusting every future caller to uphold the contract.
+func isSafeTokenHelperCommand(tokenHelperCommand string) bool {
+	if tokenHelperCommand == "" {
+		return false
+	}
+	for _, r := range tokenHelperCommand {
+		switch r {
+		case ';', '&', '|', '`', '$', '#', '\n', '\r':
+			return false
+		}
+	}
+	// Must be a double-quoted path followed by exactly " llm token".
+	if len(tokenHelperCommand) < 2 || tokenHelperCommand[0] != '"' {
+		return false
+	}
+	closeQuote := strings.IndexByte(tokenHelperCommand[1:], '"')
+	if closeQuote == -1 {
+		return false
+	}
+	return tokenHelperCommand[2+closeQuote:] == " llm token"
 }
 
 // managedProfilePresent reports whether an MDM/managed-preferences profile for

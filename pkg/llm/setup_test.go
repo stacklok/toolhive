@@ -394,8 +394,10 @@ func (*managedGatewayManager) DetectedLLMGatewayClients() []string { return nil 
 func (*managedGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
-func (*managedGatewayManager) LLMGatewayModeFor(_ string) string { return "credential-helper" }
-func (g *managedGatewayManager) IsManaged(c string) bool         { return g.managed[c] }
+func (*managedGatewayManager) LLMGatewayModeFor(_ string) string {
+	return llmgateway.ModeCredentialHelper
+}
+func (g *managedGatewayManager) IsManaged(c string) bool { return g.managed[c] }
 func (*managedGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
 	return "", nil
 }
@@ -408,8 +410,8 @@ func TestWarnCredentialHelperTools(t *testing.T) {
 	var out, errOut bytes.Buffer
 
 	warnCredentialHelperTools(&out, &errOut, gm, []ToolConfig{
-		{Tool: "claude-desktop", Mode: "credential-helper"},
-		{Tool: "other-desktop", Mode: "credential-helper"},
+		{Tool: "claude-desktop", Mode: llmgateway.ModeCredentialHelper},
+		{Tool: "other-desktop", Mode: llmgateway.ModeCredentialHelper},
 		{Tool: "claude-code", Mode: "direct"},
 	})
 

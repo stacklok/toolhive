@@ -1905,7 +1905,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "up_to_date": {
-                        "description": "UpToDate lists skills that already matched the lock file.",
+                        "description": "AlreadyCurrent lists skills that already matched the lock file.",
                         "items": {
                             "type": "string"
                         },

@@ -135,7 +135,7 @@ func syncExitCode(result *skills.SyncResult) int {
 func printSyncPreflight(result *skills.SyncResult, prune bool) {
 	fmt.Println("Pre-flight summary:")
 	printSkillNameList("  To install/reinstall", append(append([]string{}, result.Drifted...), diffInstalled(result)...))
-	printSkillNameList("  Up to date", result.UpToDate)
+	printSkillNameList("  Up to date", result.AlreadyCurrent)
 	printSkillNameList("  Never managed", result.NeverManaged)
 	printSkillNameList("  Removed from lock", result.RemovedFromLock)
 	if prune {
@@ -158,7 +158,7 @@ func diffInstalled(result *skills.SyncResult) []string {
 func printSyncResultText(result *skills.SyncResult) {
 	printSkillNameList("Installed", result.Installed)
 	printSkillNameList("Drifted (reinstalled)", result.Drifted)
-	printSkillNameList("Up to date", result.UpToDate)
+	printSkillNameList("Up to date", result.AlreadyCurrent)
 	printSkillNameList("Never managed", result.NeverManaged)
 	printSkillNameList("Removed from lock", result.RemovedFromLock)
 	printSkillNameList("Unmanaged (deprecated)", result.Unmanaged)
@@ -173,7 +173,7 @@ func printSyncResultText(result *skills.SyncResult) {
 			}
 		}
 	}
-	if len(result.Installed) == 0 && len(result.UpToDate) == 0 && len(result.NeverManaged) == 0 &&
+	if len(result.Installed) == 0 && len(result.AlreadyCurrent) == 0 && len(result.NeverManaged) == 0 &&
 		len(result.RemovedFromLock) == 0 && len(result.Pruned) == 0 && len(result.Failed) == 0 {
 		fmt.Println("Nothing to sync: lock file is empty")
 	}

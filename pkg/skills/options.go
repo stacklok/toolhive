@@ -196,8 +196,8 @@ type SyncResult struct {
 	Installed []string `json:"installed,omitempty"`
 	// Drifted lists skills whose on-disk contentDigest differed before reinstall.
 	Drifted []string `json:"drifted,omitempty"`
-	// UpToDate lists skills that already matched the lock file.
-	UpToDate []string `json:"up_to_date,omitempty"`
+	// AlreadyCurrent lists skills that already matched the lock file.
+	AlreadyCurrent []string `json:"up_to_date,omitempty"`
 	// NeverManaged lists project-scoped skills never recorded as lock-managed.
 	NeverManaged []string `json:"never_managed,omitempty"`
 	// RemovedFromLock lists previously managed skills absent from the lock file.

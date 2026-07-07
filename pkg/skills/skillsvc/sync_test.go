@@ -23,7 +23,7 @@ import (
 	storemocks "github.com/stacklok/toolhive/pkg/storage/mocks"
 )
 
-func TestSyncInstallsDriftedReportsUpToDateAndUnmanaged(t *testing.T) {
+func TestSyncInstallsDriftedReportsAlreadyCurrentAndUnmanaged(t *testing.T) {
 	t.Parallel()
 	projectRoot := makeProjectRoot(t)
 
@@ -82,7 +82,7 @@ func TestSyncInstallsDriftedReportsUpToDateAndUnmanaged(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-skill"}, result.Installed)
-	assert.Equal(t, []string{"already-current"}, result.UpToDate)
+	assert.Equal(t, []string{"already-current"}, result.AlreadyCurrent)
 	assert.Equal(t, []string{"extra-skill"}, result.NeverManaged)
 	assert.Empty(t, result.Pruned)
 	assert.Empty(t, result.Failed)

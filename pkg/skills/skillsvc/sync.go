@@ -71,8 +71,8 @@ func (s *service) syncEntry(
 
 	if opts.Check {
 		switch status {
-		case syncStatusUpToDate:
-			result.UpToDate = append(result.UpToDate, entry.Name)
+		case syncStatusAlreadyCurrent:
+			result.AlreadyCurrent = append(result.AlreadyCurrent, entry.Name)
 		case syncStatusDrifted, syncStatusMissing:
 			result.Failed = append(result.Failed, skills.SyncFailure{
 				Name: entry.Name, Reason: skills.FailureReasonContentMismatch,
@@ -83,8 +83,8 @@ func (s *service) syncEntry(
 	}
 
 	switch status {
-	case syncStatusUpToDate:
-		result.UpToDate = append(result.UpToDate, entry.Name)
+	case syncStatusAlreadyCurrent:
+		result.AlreadyCurrent = append(result.AlreadyCurrent, entry.Name)
 		return
 	case syncStatusDrifted:
 		result.Drifted = append(result.Drifted, entry.Name)
@@ -121,7 +121,7 @@ func (s *service) syncEntry(
 type syncEntryStatus int
 
 const (
-	syncStatusUpToDate syncEntryStatus = iota
+	syncStatusAlreadyCurrent syncEntryStatus = iota
 	syncStatusDrifted
 	syncStatusMissing
 )
@@ -139,7 +139,7 @@ func (s *service) verifyLockEntry(
 
 	if entry.ContentDigest == "" {
 		if existing.Digest == entry.Digest {
-			return syncStatusUpToDate, nil
+			return syncStatusAlreadyCurrent, nil
 		}
 		return syncStatusDrifted, nil
 	}
@@ -169,7 +169,7 @@ func (s *service) verifyLockEntry(
 	if existing.Digest != entry.Digest {
 		return syncStatusDrifted, nil
 	}
-	return syncStatusUpToDate, nil
+	return syncStatusAlreadyCurrent, nil
 }
 
 func (s *service) contentDigestsForClients(

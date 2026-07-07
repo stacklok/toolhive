@@ -49,7 +49,7 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 		Version:           "1.0.0",
 		Source:            "code-review",
 		ResolvedReference: "ghcr.io/org/code-review:1.0.0",
-		Digest:            "sha256:abc123",
+		Digest:            "sha256:abcdef0123456789",
 	}
 	lf.Upsert(entry)
 	require.NoError(t, lf.Save(dir))
@@ -68,8 +68,8 @@ func TestLockfileGetUpsertRemove(t *testing.T) {
 	_, ok := lf.Get("missing")
 	assert.False(t, ok)
 
-	a := Entry{Name: "b-skill", Digest: "sha256:1"}
-	c := Entry{Name: "a-skill", Digest: "sha256:2"}
+	a := Entry{Name: "b-skill", Source: "b-skill", Digest: "sha256:abcdef0123456789"}
+	c := Entry{Name: "a-skill", Source: "a-skill", Digest: "sha256:1234567890abcdef"}
 	lf.Upsert(a)
 	lf.Upsert(c)
 
@@ -80,15 +80,15 @@ func TestLockfileGetUpsertRemove(t *testing.T) {
 
 	got, ok := lf.Get("b-skill")
 	require.True(t, ok)
-	assert.Equal(t, "sha256:1", got.Digest)
+	assert.Equal(t, "sha256:abcdef0123456789", got.Digest)
 
 	// Upsert replaces an existing entry rather than duplicating it.
-	updated := Entry{Name: "b-skill", Digest: "sha256:new"}
+	updated := Entry{Name: "b-skill", Source: "b-skill", Digest: "sha256:fedcba0987654321"}
 	lf.Upsert(updated)
 	require.Len(t, lf.Skills, 2)
 	got, ok = lf.Get("b-skill")
 	require.True(t, ok)
-	assert.Equal(t, "sha256:new", got.Digest)
+	assert.Equal(t, "sha256:fedcba0987654321", got.Digest)
 
 	removed := lf.Remove("b-skill")
 	assert.True(t, removed)
@@ -102,7 +102,7 @@ func TestUpsertEntryAndRemoveEntry(t *testing.T) {
 	t.Parallel()
 	dir := resolvedTempDir(t)
 
-	entry := Entry{Name: "my-skill", Digest: "sha256:abc"}
+	entry := Entry{Name: "my-skill", Source: "my-skill", Digest: "sha256:abcdef0123456789"}
 	require.NoError(t, UpsertEntry(dir, entry))
 
 	lf, err := Load(dir)
@@ -111,7 +111,7 @@ func TestUpsertEntryAndRemoveEntry(t *testing.T) {
 	assert.Equal(t, "my-skill", lf.Skills[0].Name)
 
 	// Upserting a second entry preserves the first.
-	require.NoError(t, UpsertEntry(dir, Entry{Name: "other-skill", Digest: "sha256:def"}))
+	require.NoError(t, UpsertEntry(dir, Entry{Name: "other-skill", Source: "other-skill", Digest: "sha256:1234567890abcdef"}))
 	lf, err = Load(dir)
 	require.NoError(t, err)
 	assert.Len(t, lf.Skills, 2)

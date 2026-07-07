@@ -43,6 +43,14 @@ type Entry struct {
 	// Digest pins the exact content installed: an OCI "sha256:..." digest or
 	// a git commit hash.
 	Digest string `yaml:"digest"`
+	// ContentDigest is a deterministic SHA-256 dirhash of the materialized
+	// skill file set, used for on-disk integrity verification.
+	ContentDigest string `yaml:"contentDigest,omitempty"`
+	// RequiredBy lists parent skill names for transitively materialized deps.
+	RequiredBy []string `yaml:"requiredBy,omitempty"`
+	// Explicit is true when the user directly installed this skill (exempt from
+	// cascade removal when requiredBy becomes empty).
+	Explicit bool `yaml:"explicit,omitempty"`
 }
 
 // Lockfile is the parsed contents of a project's toolhive.lock.yaml.
@@ -77,6 +85,9 @@ func Load(projectRoot string) (*Lockfile, error) {
 		lf.Version = CurrentVersion
 	}
 	sortEntries(lf.Skills)
+	if err := validateLockfile(&lf); err != nil {
+		return nil, err
+	}
 	return &lf, nil
 }
 
@@ -169,6 +180,55 @@ func RemoveEntry(projectRoot string, name string) error {
 		}
 		return lf.Save(projectRoot)
 	})
+}
+
+// UpdateEntry loads the lock file, applies fn to it, and saves under a file lock.
+func UpdateEntry(projectRoot string, fn func(*Lockfile) error) error {
+	return fileutils.WithFileLock(Path(projectRoot), func() error {
+		lf, err := Load(projectRoot)
+		if err != nil {
+			return err
+		}
+		if err := fn(lf); err != nil {
+			return err
+		}
+		return lf.Save(projectRoot)
+	})
+}
+
+// RemoveParentFromRequiredBy removes parent from each entry's requiredBy list.
+// Returns names of entries that lost their last requiredBy parent and are not explicit.
+func (l *Lockfile) RemoveParentFromRequiredBy(parent string) (cascadeCandidates []string) {
+	for i := range l.Skills {
+		hadParent := containsString(l.Skills[i].RequiredBy, parent)
+		l.Skills[i].RequiredBy = removeString(l.Skills[i].RequiredBy, parent)
+		if hadParent && len(l.Skills[i].RequiredBy) == 0 && !l.Skills[i].Explicit {
+			cascadeCandidates = append(cascadeCandidates, l.Skills[i].Name)
+		}
+	}
+	return cascadeCandidates
+}
+
+func containsString(slice []string, target string) bool {
+	for _, s := range slice {
+		if s == target {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(slice []string, target string) []string {
+	out := slice[:0]
+	for _, s := range slice {
+		if s != target {
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func sortEntries(entries []Entry) {

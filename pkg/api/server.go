@@ -32,6 +32,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/opencontainers/go-digest"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -47,6 +48,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/server/discovery"
@@ -638,13 +640,66 @@ func createListener(address string, isUnixSocket bool) (net.Listener, string, er
 }
 
 // newOCIRegistryClient creates an OCI registry client. In dev mode
-// (TOOLHIVE_DEV=true), plain HTTP is enabled for local test registries.
+// (TOOLHIVE_DEV=true), plain HTTP is used for loopback registries only (e.g.
+// a local test registry started by e2e tests) via devModeOCIRegistryClient.
+//
+// Plain HTTP must NOT be applied to real registries such as ghcr.io: those
+// registries redirect an initial plain-HTTP request to HTTPS, and oras-go
+// refuses to complete the WWW-Authenticate/token-fetch handshake across that
+// redirect (a guard against leaking credentials across origins on redirect,
+// see GHSA-vh4v-2xq2-g5cg). The pull then fails with a bare 401 instead of
+// retrying with a fetched (possibly anonymous) bearer token.
 func newOCIRegistryClient() (ociskills.RegistryClient, error) {
-	var opts []ociskills.RegistryOption
-	if os.Getenv("TOOLHIVE_DEV") == "true" {
-		opts = append(opts, ociskills.WithPlainHTTP(true))
+	secure, err := ociskills.NewRegistry()
+	if err != nil {
+		return nil, err
 	}
-	return ociskills.NewRegistry(opts...)
+	if os.Getenv("TOOLHIVE_DEV") != "true" {
+		return secure, nil
+	}
+	plain, err := ociskills.NewRegistry(ociskills.WithPlainHTTP(true))
+	if err != nil {
+		return nil, err
+	}
+	return &devModeOCIRegistryClient{secure: secure, plain: plain}, nil
+}
+
+// devModeOCIRegistryClient dispatches each Pull/Push to a plain-HTTP client
+// when the target reference's host is loopback (a local test registry), and
+// to a normal TLS client otherwise. This keeps TOOLHIVE_DEV=true's
+// local-test-registry support (see gitresolver.isDevMode for the analogous
+// SSRF relaxation) without silently disabling TLS for real registries.
+type devModeOCIRegistryClient struct {
+	secure ociskills.RegistryClient
+	plain  ociskills.RegistryClient
+}
+
+func (c *devModeOCIRegistryClient) Pull(
+	ctx context.Context, store *ociskills.Store, ref string,
+) (digest.Digest, error) {
+	return c.clientFor(ref).Pull(ctx, store, ref)
+}
+
+func (c *devModeOCIRegistryClient) Push(
+	ctx context.Context, store *ociskills.Store, manifestDigest digest.Digest, ref string,
+) error {
+	return c.clientFor(ref).Push(ctx, store, manifestDigest, ref)
+}
+
+func (c *devModeOCIRegistryClient) clientFor(ref string) ociskills.RegistryClient {
+	if networking.IsLocalhost(ociRefHost(ref)) {
+		return c.plain
+	}
+	return c.secure
+}
+
+// ociRefHost extracts the "host[:port]" portion of an OCI reference such as
+// "ghcr.io/org/repo:tag" or "localhost:5000/repo@sha256:...".
+func ociRefHost(ref string) string {
+	if idx := strings.IndexByte(ref, '/'); idx >= 0 {
+		return ref[:idx]
+	}
+	return ref
 }
 
 // lazySkillLookup implements skillsvc.SkillLookup by resolving the registry

@@ -6,6 +6,7 @@ package skillsvc
 import (
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -44,7 +45,7 @@ func TestSyncInstallsDriftedReportsUpToDateAndUnmanaged(t *testing.T) {
 		Name:              "already-current",
 		Source:            "already-current",
 		ResolvedReference: "ghcr.io/org/already-current:v1",
-		Digest:            "sha256:matches",
+		Digest:            "sha256:" + strings.Repeat("d", 64),
 	}))
 
 	ctrl := gomock.NewController(t)
@@ -59,7 +60,7 @@ func TestSyncInstallsDriftedReportsUpToDateAndUnmanaged(t *testing.T) {
 	store.EXPECT().Get(gomock.Any(), "already-current", skills.ScopeProject, projectRoot).
 		Return(skills.InstalledSkill{
 			Metadata: skills.SkillMetadata{Name: "already-current"},
-			Digest:   "sha256:matches",
+			Digest:   "sha256:" + strings.Repeat("d", 64),
 		}, nil)
 	store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 	store.EXPECT().List(gomock.Any(), storage.ListFilter{Scope: skills.ScopeProject, ProjectRoot: projectRoot}).
@@ -74,14 +75,15 @@ func TestSyncInstallsDriftedReportsUpToDateAndUnmanaged(t *testing.T) {
 	pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeProject, projectRoot).Return(targetDir, nil)
 
 	svc := New(store, WithPathResolver(pr), WithRegistryClient(reg), WithOCIStore(ociStore))
-	result, err := svc.Sync(t.Context(), skills.SyncOptions{
+	lockSvc := svc.(skills.SkillLockService)
+	result, err := lockSvc.Sync(t.Context(), skills.SyncOptions{
 		ProjectRoot: projectRoot,
 		Clients:     []string{"claude-code"},
 	})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"my-skill"}, result.Installed)
 	assert.Equal(t, []string{"already-current"}, result.UpToDate)
-	assert.Equal(t, []string{"extra-skill"}, result.Unmanaged)
+	assert.Equal(t, []string{"extra-skill"}, result.NeverManaged)
 	assert.Empty(t, result.Pruned)
 	assert.Empty(t, result.Failed)
 
@@ -101,7 +103,7 @@ func TestSyncPrunesUnmanagedSkills(t *testing.T) {
 	store := storemocks.NewMockSkillStore(ctrl)
 	store.EXPECT().List(gomock.Any(), storage.ListFilter{Scope: skills.ScopeProject, ProjectRoot: projectRoot}).
 		Return([]skills.InstalledSkill{
-			{Metadata: skills.SkillMetadata{Name: "extra-skill"}, Scope: skills.ScopeProject, ProjectRoot: projectRoot},
+			{Metadata: skills.SkillMetadata{Name: "extra-skill"}, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Managed: true},
 		}, nil)
 	store.EXPECT().Get(gomock.Any(), "extra-skill", skills.ScopeProject, projectRoot).
 		Return(skills.InstalledSkill{
@@ -112,10 +114,12 @@ func TestSyncPrunesUnmanagedSkills(t *testing.T) {
 	store.EXPECT().Delete(gomock.Any(), "extra-skill", skills.ScopeProject, projectRoot).Return(nil)
 
 	svc := New(store)
-	result, err := svc.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot, Prune: true})
+	lockSvc := svc.(skills.SkillLockService)
+	result, err := lockSvc.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot, Prune: true})
 	require.NoError(t, err)
 	assert.Equal(t, []string{"extra-skill"}, result.Pruned)
-	assert.Empty(t, result.Unmanaged)
+	assert.Empty(t, result.NeverManaged)
+	assert.Equal(t, []string{"extra-skill"}, result.RemovedFromLock)
 }
 
 func TestSyncRejectsInvalidProjectRoot(t *testing.T) {
@@ -124,7 +128,8 @@ func TestSyncRejectsInvalidProjectRoot(t *testing.T) {
 	store := storemocks.NewMockSkillStore(ctrl)
 
 	svc := New(store)
-	_, err := svc.Sync(t.Context(), skills.SyncOptions{ProjectRoot: "relative/path"})
+	lockSvc := svc.(skills.SkillLockService)
+	_, err := lockSvc.Sync(t.Context(), skills.SyncOptions{ProjectRoot: "relative/path"})
 	require.Error(t, err)
 	assert.Equal(t, http.StatusBadRequest, httperr.Code(err))
 }

@@ -35,7 +35,7 @@ func TestUpgradeInstallsNewDigestAndRewritesLockEntry(t *testing.T) {
 		Version:           "1.0.0",
 		Source:            "ghcr.io/org/my-skill:v1",
 		ResolvedReference: "ghcr.io/org/my-skill:v1",
-		Digest:            "sha256:old",
+		Digest:            "sha256:" + strings.Repeat("a", 64),
 	}))
 
 	ctrl := gomock.NewController(t)
@@ -47,7 +47,7 @@ func TestUpgradeInstallsNewDigestAndRewritesLockEntry(t *testing.T) {
 		Metadata:    skills.SkillMetadata{Name: "my-skill", Version: "1.0.0"},
 		Scope:       skills.ScopeProject,
 		ProjectRoot: projectRoot,
-		Digest:      "sha256:old",
+		Digest:      "sha256:" + strings.Repeat("a", 64),
 		Clients:     []string{"claude-code"},
 	}
 	store.EXPECT().Get(gomock.Any(), "my-skill", skills.ScopeProject, projectRoot).Return(existing, nil)
@@ -58,7 +58,8 @@ func TestUpgradeInstallsNewDigestAndRewritesLockEntry(t *testing.T) {
 	pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeProject, projectRoot).Return(targetDir, nil)
 
 	svc := New(store, WithPathResolver(pr), WithRegistryClient(reg), WithOCIStore(ociStore))
-	result, err := svc.Upgrade(t.Context(), skills.UpgradeOptions{
+	lockSvc := svc.(skills.SkillLockService)
+	result, err := lockSvc.Upgrade(t.Context(), skills.UpgradeOptions{
 		ProjectRoot: projectRoot,
 		Clients:     []string{"claude-code"},
 	})
@@ -66,7 +67,7 @@ func TestUpgradeInstallsNewDigestAndRewritesLockEntry(t *testing.T) {
 	require.Len(t, result.Outcomes, 1)
 	outcome := result.Outcomes[0]
 	assert.Equal(t, skills.UpgradeStatusUpgraded, outcome.Status)
-	assert.Equal(t, "sha256:old", outcome.OldDigest)
+	assert.Equal(t, "sha256:"+strings.Repeat("a", 64), outcome.OldDigest)
 	assert.Equal(t, newDigest.String(), outcome.NewDigest)
 
 	lf, err := lockfile.Load(projectRoot)
@@ -88,9 +89,10 @@ func TestUpgradeDryRunReportsWithoutInstallingOrRewritingLock(t *testing.T) {
 	newDigest := buildTestArtifact(t, ociStore, "my-skill", "2.0.0")
 
 	require.NoError(t, lockfile.UpsertEntry(projectRoot, lockfile.Entry{
-		Name:   "my-skill",
-		Source: "ghcr.io/org/my-skill:v1",
-		Digest: "sha256:old",
+		Name:              "my-skill",
+		Source:            "ghcr.io/org/my-skill:v1",
+		ResolvedReference: "ghcr.io/org/my-skill:v1",
+		Digest:            "sha256:" + strings.Repeat("a", 64),
 	}))
 
 	ctrl := gomock.NewController(t)
@@ -102,7 +104,8 @@ func TestUpgradeDryRunReportsWithoutInstallingOrRewritingLock(t *testing.T) {
 	store := storemocks.NewMockSkillStore(ctrl)
 
 	svc := New(store, WithRegistryClient(reg), WithOCIStore(ociStore))
-	result, err := svc.Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot, DryRun: true})
+	lockSvc := svc.(skills.SkillLockService)
+	result, err := lockSvc.Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot, DryRun: true})
 	require.NoError(t, err)
 	require.Len(t, result.Outcomes, 1)
 	assert.Equal(t, skills.UpgradeStatusUpgraded, result.Outcomes[0].Status)
@@ -111,7 +114,7 @@ func TestUpgradeDryRunReportsWithoutInstallingOrRewritingLock(t *testing.T) {
 	lf, err := lockfile.Load(projectRoot)
 	require.NoError(t, err)
 	require.Len(t, lf.Skills, 1)
-	assert.Equal(t, "sha256:old", lf.Skills[0].Digest)
+	assert.Equal(t, "sha256:"+strings.Repeat("a", 64), lf.Skills[0].Digest)
 }
 
 func TestUpgradeImmutableSourceReportsNotUpgradable(t *testing.T) {
@@ -135,16 +138,17 @@ func TestUpgradeImmutableSourceReportsNotUpgradable(t *testing.T) {
 			require.NoError(t, lockfile.UpsertEntry(projectRoot, lockfile.Entry{
 				Name:   "my-skill",
 				Source: tt.source,
-				Digest: "sha256:pinned",
+				Digest: "sha256:" + strings.Repeat("c", 64),
 			}))
 
 			store := storemocks.NewMockSkillStore(gomock.NewController(t))
 			svc := New(store)
-			result, err := svc.Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot})
+			lockSvc := svc.(skills.SkillLockService)
+			result, err := lockSvc.Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot})
 			require.NoError(t, err)
 			require.Len(t, result.Outcomes, 1)
 			assert.Equal(t, skills.UpgradeStatusNotUpgradable, result.Outcomes[0].Status)
-			assert.Equal(t, "sha256:pinned", result.Outcomes[0].OldDigest)
+			assert.Equal(t, "sha256:"+strings.Repeat("c", 64), result.Outcomes[0].OldDigest)
 		})
 	}
 }
@@ -155,7 +159,8 @@ func TestUpgradeUnknownNameReturns404(t *testing.T) {
 
 	store := storemocks.NewMockSkillStore(gomock.NewController(t))
 	svc := New(store)
-	_, err := svc.Upgrade(t.Context(), skills.UpgradeOptions{
+	lockSvc := svc.(skills.SkillLockService)
+	_, err := lockSvc.Upgrade(t.Context(), skills.UpgradeOptions{
 		ProjectRoot: projectRoot,
 		Names:       []string{"missing-skill"},
 	})

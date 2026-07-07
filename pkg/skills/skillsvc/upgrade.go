@@ -19,13 +19,14 @@ import (
 
 // Upgrade re-resolves each lock file entry's original source and, when the
 // resolved digest differs from the pinned one, installs the new content and
-// updates the lock file entry. Entries pinned to an immutable reference (an
-// OCI digest or a full git commit hash) are reported as not upgradable.
+// updates the lock file entry.
 func (s *service) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*skills.UpgradeResult, error) {
 	projectRoot, err := skills.ValidateProjectRoot(opts.ProjectRoot)
 	if err != nil {
 		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
+
+	preview := opts.Preview || opts.DryRun
 
 	lf, err := lockfile.Load(projectRoot)
 	if err != nil {
@@ -39,14 +40,26 @@ func (s *service) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*ski
 
 	result := &skills.UpgradeResult{}
 	for _, entry := range targets {
-		result.Outcomes = append(result.Outcomes, s.upgradeEntry(ctx, projectRoot, entry, opts))
+		outcome := s.upgradeEntry(ctx, projectRoot, entry, opts, preview)
+		result.Outcomes = append(result.Outcomes, outcome)
 	}
+
+	if opts.FailOnChanges {
+		for _, o := range result.Outcomes {
+			if o.Status == skills.UpgradeStatusUpgraded {
+				return result, httperr.WithCode(
+					errors.New("upgrade preview found changes"),
+					http.StatusConflict,
+				)
+			}
+		}
+	}
+
 	return result, nil
 }
 
 // selectUpgradeTargets returns the subset of entries named in names, in the
-// order requested, or all entries when names is empty. Requesting a name
-// absent from the lock file is a 404, not a silent skip.
+// order requested, or all entries when names is empty.
 func selectUpgradeTargets(entries []lockfile.Entry, names []string) ([]lockfile.Entry, error) {
 	if len(names) == 0 {
 		return entries, nil
@@ -69,36 +82,61 @@ func selectUpgradeTargets(entries []lockfile.Entry, names []string) ([]lockfile.
 
 // upgradeEntry attempts to upgrade a single lock entry.
 func (s *service) upgradeEntry(
-	ctx context.Context, projectRoot string, entry lockfile.Entry, opts skills.UpgradeOptions,
+	ctx context.Context, projectRoot string, entry lockfile.Entry, opts skills.UpgradeOptions, preview bool,
 ) skills.UpgradeOutcome {
 	if isImmutableSource(entry.Source) {
 		return skills.UpgradeOutcome{Name: entry.Name, Status: skills.UpgradeStatusNotUpgradable, OldDigest: entry.Digest}
 	}
 
-	if opts.DryRun {
-		return s.upgradeEntryDryRun(ctx, entry)
+	if preview {
+		return s.upgradeEntryPreview(ctx, entry)
 	}
 
-	// installInternal (not Install) is used deliberately: re-installing from
-	// entry.Source must not change the lock entry's Source field, and this
-	// function decides for itself whether and how to rewrite the entry below.
-	result, err := s.installInternal(ctx, skills.InstallOptions{
-		Name:        entry.Source,
-		Scope:       skills.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     opts.Clients,
-		Force:       true,
-	})
+	installOpts := skills.InstallOptions{
+		Name:         entry.Source,
+		LockSource:   entry.Source,
+		Scope:        skills.ScopeProject,
+		ProjectRoot:  projectRoot,
+		Clients:      opts.Clients,
+		Force:        true,
+		Managed:      true,
+		ExplicitLock: entry.Explicit,
+	}
+	result, err := s.installInternal(ctx, installOpts)
 	if err != nil {
 		return skills.UpgradeOutcome{
-			Name: entry.Name, Status: skills.UpgradeStatusFailed, OldDigest: entry.Digest, Error: err.Error(),
+			Name: entry.Name, Status: skills.UpgradeStatusFailed, OldDigest: entry.Digest,
+			Reason: classifyUpgradeError(err), Error: err.Error(),
 		}
 	}
 
-	if result.Skill.Digest == entry.Digest {
+	if result.Skill.Digest == entry.Digest && result.Skill.Reference == entry.ResolvedReference {
 		return skills.UpgradeOutcome{
-			Name: entry.Name, Status: skills.UpgradeStatusUpToDate, OldDigest: entry.Digest, NewDigest: result.Skill.Digest,
+			Name: entry.Name, Status: skills.UpgradeStatusUpToDate,
+			OldDigest: entry.Digest, NewDigest: result.Skill.Digest,
 		}
+	}
+
+	if result.Skill.Reference != entry.ResolvedReference && !opts.AllowRefChange {
+		return skills.UpgradeOutcome{
+			Name: entry.Name, Status: skills.UpgradeStatusRefChangeBlocked,
+			OldDigest: entry.Digest, NewDigest: result.Skill.Digest,
+			NewResolvedReference: result.Skill.Reference,
+			Error: fmt.Sprintf("resolvedReference would change from %q to %q; pass --allow-ref-change to proceed",
+				entry.ResolvedReference, result.Skill.Reference),
+		}
+	}
+
+	contentDigest := result.ContentDigest
+	if contentDigest == "" {
+		cd, cdErr := s.contentDigestForSkill(ctx, installOpts, result.Skill)
+		if cdErr != nil {
+			return skills.UpgradeOutcome{
+				Name: entry.Name, Status: skills.UpgradeStatusFailed, OldDigest: entry.Digest,
+				Reason: skills.FailureReasonDigestMissing, Error: cdErr.Error(),
+			}
+		}
+		contentDigest = cd
 	}
 
 	newEntry := lockfile.Entry{
@@ -107,25 +145,43 @@ func (s *service) upgradeEntry(
 		Source:            entry.Source,
 		ResolvedReference: result.Skill.Reference,
 		Digest:            result.Skill.Digest,
+		ContentDigest:     contentDigest,
+		RequiredBy:        entry.RequiredBy,
+		Explicit:          entry.Explicit,
 	}
 	if lockErr := lockfile.UpsertEntry(projectRoot, newEntry); lockErr != nil {
 		return skills.UpgradeOutcome{
 			Name: entry.Name, Status: skills.UpgradeStatusFailed, OldDigest: entry.Digest, NewDigest: result.Skill.Digest,
-			Error: fmt.Sprintf("skill upgraded but failed to update lock file: %v", lockErr),
+			Reason: skills.FailureReasonLockWriteFailed,
+			Error:  fmt.Sprintf("skill upgraded but failed to update lock file: %v", lockErr),
 		}
 	}
+
+	status := skills.UpgradeStatusUpgraded
+	if result.Skill.Digest == entry.Digest {
+		status = skills.UpgradeStatusUpToDate
+	}
 	return skills.UpgradeOutcome{
-		Name: entry.Name, Status: skills.UpgradeStatusUpgraded, OldDigest: entry.Digest, NewDigest: result.Skill.Digest,
+		Name: entry.Name, Status: status,
+		OldDigest: entry.Digest, NewDigest: result.Skill.Digest,
+		NewResolvedReference: result.Skill.Reference,
 	}
 }
 
-// upgradeEntryDryRun reports what an upgrade would do without installing
-// anything or modifying the lock file.
-func (s *service) upgradeEntryDryRun(ctx context.Context, entry lockfile.Entry) skills.UpgradeOutcome {
-	newDigest, err := s.resolveLatestDigest(ctx, entry.Source)
+func (s *service) upgradeEntryPreview(ctx context.Context, entry lockfile.Entry) skills.UpgradeOutcome {
+	newDigest, newRef, err := s.resolveLatestDigestAndRef(ctx, entry.Source)
 	if err != nil {
 		return skills.UpgradeOutcome{
-			Name: entry.Name, Status: skills.UpgradeStatusFailed, OldDigest: entry.Digest, Error: err.Error(),
+			Name: entry.Name, Status: skills.UpgradeStatusFailed, OldDigest: entry.Digest,
+			Reason: classifyUpgradeError(err), Error: err.Error(),
+		}
+	}
+	if newRef != entry.ResolvedReference {
+		return skills.UpgradeOutcome{
+			Name: entry.Name, Status: skills.UpgradeStatusRefChangeBlocked,
+			OldDigest: entry.Digest, NewDigest: newDigest,
+			NewResolvedReference: newRef,
+			Error:                fmt.Sprintf("resolvedReference would change from %q to %q", entry.ResolvedReference, newRef),
 		}
 	}
 	if newDigest == entry.Digest {
@@ -138,39 +194,48 @@ func (s *service) upgradeEntryDryRun(ctx context.Context, entry lockfile.Entry) 
 	}
 }
 
-// resolveLatestDigest resolves source to the digest or commit hash it
-// currently points to, without installing it or writing any files or DB
-// records. Used for --dry-run upgrade checks.
-//
-// There is no lightweight "peek" API for either backend, so this still pulls
-// the OCI artifact into the local cache, or clones the git repository — but
-// it performs none of the extraction, filesystem, or database writes that a
-// real install does.
-func (s *service) resolveLatestDigest(ctx context.Context, source string) (string, error) {
+func (s *service) resolveLatestDigestAndRef(ctx context.Context, source string) (string, string, error) {
 	if gitresolver.IsGitReference(source) {
-		return s.resolveGitDigest(ctx, source)
+		if s.gitResolver == nil {
+			return "", "", httperr.WithCode(errors.New("git resolver is not configured"), http.StatusInternalServerError)
+		}
+		gitRef, err := gitresolver.ParseGitReference(source)
+		if err != nil {
+			return "", "", httperr.WithCode(fmt.Errorf("invalid git reference: %w", err), http.StatusBadRequest)
+		}
+		resolved, err := s.gitResolver.Resolve(ctx, gitRef)
+		if err != nil {
+			return "", "", httperr.WithCode(fmt.Errorf("resolving git skill: %w", err), http.StatusBadGateway)
+		}
+		return resolved.CommitHash, source, nil
 	}
 
 	ref, isOCI, err := parseOCIReference(source)
 	if err != nil {
-		return "", httperr.WithCode(fmt.Errorf("invalid OCI reference %q: %w", source, err), http.StatusBadRequest)
+		return "", "", httperr.WithCode(fmt.Errorf("invalid OCI reference %q: %w", source, err), http.StatusBadRequest)
 	}
 	if isOCI {
-		return s.resolveOCIDigest(ctx, ref)
+		d, err := s.resolveOCIDigest(ctx, ref)
+		return d, qualifiedOCIRef(ref), err
 	}
 
-	// Plain registry name — resolve through the catalog to find the current package.
 	resolved, err := s.resolveFromRegistry(source)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	if resolved == nil {
-		return "", httperr.WithCode(fmt.Errorf("skill %q not found in registry", source), http.StatusNotFound)
+		return "", "", httperr.WithCode(fmt.Errorf("skill %q not found in registry", source), http.StatusNotFound)
 	}
 	if resolved.OCIRef != nil {
-		return s.resolveOCIDigest(ctx, resolved.OCIRef)
+		d, err := s.resolveOCIDigest(ctx, resolved.OCIRef)
+		return d, qualifiedOCIRef(resolved.OCIRef), err
 	}
-	return s.resolveGitDigest(ctx, resolved.GitURL)
+	d, err := s.resolveGitDigest(ctx, resolved.GitURL)
+	return d, resolved.GitURL, err
+}
+
+func classifyUpgradeError(err error) skills.FailureReason {
+	return classifySyncError(err)
 }
 
 func (s *service) resolveGitDigest(ctx context.Context, gitURL string) (string, error) {

@@ -167,6 +167,9 @@ type InstalledSkill struct {
 	Clients []string `json:"clients,omitempty"`
 	// Dependencies is the list of external skill dependencies.
 	Dependencies []Dependency `json:"dependencies,omitempty"`
+	// Managed is true when the install was created by a lock-managed project-scope
+	// install (sync/install with lock write).
+	Managed bool `json:"managed,omitempty"`
 }
 
 // SkillIndexEntry represents a single skill entry in a remote skill index.

@@ -1597,11 +1597,15 @@ func (r *VirtualMCPServerReconciler) ensureService(
 		// - Preserve Spec.ClusterIP: Immutable field, cannot be changed
 		// - Preserve Spec.HealthCheckNodePort: Set by cloud provider for LoadBalancer
 		// - Preserve ResourceVersion, UID: Required for optimistic concurrency control
+		// - Merge (not replace) Labels/Annotations: preserve keys written by external
+		//   controllers (e.g. GKE NEG's cloud.google.com/* annotations) while applying
+		//   the operator-owned values; a wholesale replace would strip them and race the
+		//   concurrent writer.
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.Type = newService.Spec.Type
 		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
-		service.Labels = newService.Labels
-		service.Annotations = newService.Annotations
+		service.Labels = ctrlutil.MergeLabels(newService.Labels, service.Labels)
+		service.Annotations = ctrlutil.MergeAnnotations(newService.Annotations, service.Annotations)
 
 		ctxLogger.Info("Updating Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
 		if err := r.Update(ctx, service); err != nil {
@@ -1878,17 +1882,21 @@ func (*VirtualMCPServerReconciler) serviceNeedsUpdate(
 		return true
 	}
 
-	// Check if service metadata has changed
+	// Check if service metadata has changed. Use a subset check rather than exact
+	// equality: the Service is co-owned by external controllers (e.g. GKE NEG/Gateway
+	// writes cloud.google.com/* annotations), so only the operator-owned keys must
+	// match. Comparing with maps.Equal would treat those external annotations as drift
+	// and hot-loop Update against the concurrent writer.
 	expectedLabels := labelsForVirtualMCPServer(vmcp.Name)
 	expectedAnnotations := make(map[string]string)
 
 	// TODO: Add support for ResourceOverrides if needed in the future
 
-	if !maps.Equal(service.Labels, expectedLabels) {
+	if !ctrlutil.MapIsSubset(expectedLabels, service.Labels) {
 		return true
 	}
 
-	if !maps.Equal(service.Annotations, expectedAnnotations) {
+	if !ctrlutil.MapIsSubset(expectedAnnotations, service.Annotations) {
 		return true
 	}
 

@@ -89,6 +89,11 @@ type testServerOptions struct {
 	// backends).
 	storageFactory func(t *testing.T) (storage.Storage, *miniredis.Miniredis)
 	// upstreamFilter, when set, is passed through to Config.UpstreamFilter.
+	// Read by every setup helper below that builds its own Config
+	// (setupTestServer, setupTestServerWithOIDCProvider,
+	// setupTestServerWithTwoUpstreams) and by setupTestServerWithMockOIDC,
+	// which delegates to setupTestServer. setupTestServerWithRTProxy does not
+	// accept testServerOption at all, so this field does not apply to it.
 	upstreamFilter handlers.UpstreamFilter
 }
 
@@ -248,6 +253,7 @@ func setupTestServer(t *testing.T, opts ...testServerOption) *testServer {
 		RefreshTokenLifespan: 24 * time.Hour,
 		AuthCodeLifespan:     10 * time.Minute,
 		Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: upstreamCfg}},
+		UpstreamFilter:       options.upstreamFilter,
 		AllowedAudiences:     []string{"https://mcp.example.com"},
 	}
 
@@ -919,9 +925,10 @@ func TestIntegration_FullPKCEFlow_DefaultAudience(t *testing.T) {
 //   - defaultUpstreamFactory dispatching to NewOIDCProvider
 //   - OIDCProviderImpl with OIDC discovery, ID token validation, and nonce support
 //
-// Variadic opts allow swapping the storage backend (e.g. withRedisBackedStorage);
-// the upstream is fixed because this helper exists specifically to exercise the
-// real OIDC factory path. Other testServerOptions are silently ignored.
+// Variadic opts allow swapping the storage backend (e.g. withRedisBackedStorage)
+// and setting Config.UpstreamFilter (withUpstreamFilter); the upstream itself is
+// fixed because this helper exists specifically to exercise the real OIDC
+// factory path. Other testServerOptions are silently ignored.
 func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ...testServerOption) *testServerWithUpstream {
 	t.Helper()
 	ctx := context.Background()
@@ -988,6 +995,7 @@ func setupTestServerWithOIDCProvider(t *testing.T, m *mockoidc.MockOIDC, opts ..
 			},
 		}},
 		AllowedAudiences: []string{testAudience},
+		UpstreamFilter:   options.upstreamFilter,
 	}
 
 	// 6. Create server using newServer WITHOUT overriding the upstream factory.
@@ -1996,10 +2004,9 @@ func (f *stubChainFilter) FilterUpstreams(
 //
 // The filter here drops provider-2 entirely, so after the provider-1 callback
 // the chain must be satisfied and the handler must redirect straight to the
-// client (303) instead of on to provider-2 (302). No user is queued on m2, so
-// if the filter failed to reach the handler and provider-2 were still
-// consulted, mockoidc would error — a second failure signal backing up the
-// status-code assertion.
+// client (303) instead of on to provider-2 (302). The status-code assertion
+// below is the only signal this test relies on: it fails immediately on a
+// mismatch, before ever following a redirect that would reach provider-2.
 func TestIntegration_MultiUpstreamChain_ConfigUpstreamFilter(t *testing.T) {
 	t.Parallel()
 
@@ -2022,39 +2029,8 @@ func TestIntegration_MultiUpstreamChain_ConfigUpstreamFilter(t *testing.T) {
 	verifier := servercrypto.GeneratePKCEVerifier()
 	challenge := servercrypto.ComputePKCEChallenge(verifier)
 	clientState := "upstream-filter-client-state"
-	client := noRedirectClient()
 
-	parsedServerURL, err := url.Parse(ts.Server.URL)
-	require.NoError(t, err)
-
-	authorizeURL := ts.Server.URL + "/oauth/authorize?" + url.Values{
-		"client_id":             {testClientID},
-		"redirect_uri":          {testRedirectURI},
-		"state":                 {clientState},
-		"code_challenge":        {challenge},
-		"code_challenge_method": {"S256"},
-		"response_type":         {"code"},
-		"scope":                 {"openid profile"},
-	}.Encode()
-
-	resp, err := client.Get(authorizeURL)
-	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode)
-	firstUpstreamLocation, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-
-	resp, err = client.Get(firstUpstreamLocation.String())
-	require.NoError(t, err)
-	require.Equal(t, http.StatusFound, resp.StatusCode)
-	firstCallback, err := resp.Location()
-	require.NoError(t, err)
-	resp.Body.Close()
-	firstCallback.Scheme = parsedServerURL.Scheme
-	firstCallback.Host = parsedServerURL.Host
-
-	resp, err = client.Get(firstCallback.String())
-	require.NoError(t, err)
+	resp := runFirstLeg(t, ts.Server.URL, challenge, clientState)
 	require.Equal(t, http.StatusSeeOther, resp.StatusCode,
 		"expected 303 straight to client: the Config-supplied filter should have dropped provider-2 from the chain")
 	clientLocation, err := resp.Location()
@@ -2263,19 +2239,19 @@ func TestIntegration_FullFlow_NonExpiringUpstreamToken(t *testing.T) {
 // the hand-crafted flow in TestIntegration_MultiUpstreamSequentialChain but
 // is reused by the mixed-expiry orderings test. The PKCE verifier is the
 // caller's responsibility — it's only needed at the final /token exchange.
-func runChainFlow(
-	t *testing.T,
-	serverURL string,
-	challenge string,
-	clientState string,
-) string {
+// runFirstLeg drives the leg-1 flow shared by every multi-upstream chain
+// test: client -> /oauth/authorize -> first upstream -> our /oauth/callback.
+// It returns the callback response unread and unclosed so callers can assert
+// on its status code — 302 on to the next upstream (chain continues) vs. 303
+// straight to the client (chain already satisfied) — before deciding how to
+// continue. Callers are responsible for closing the returned response's body.
+func runFirstLeg(t *testing.T, serverURL, challenge, clientState string) *http.Response {
 	t.Helper()
 	client := noRedirectClient()
 
 	parsedServerURL, err := url.Parse(serverURL)
 	require.NoError(t, err)
 
-	// Leg 1: client -> /authorize -> first upstream
 	authorizeURL := serverURL + "/oauth/authorize?" + url.Values{
 		"client_id":             {testClientID},
 		"redirect_uri":          {testRedirectURI},
@@ -2304,6 +2280,22 @@ func runChainFlow(
 
 	resp, err = client.Get(firstCallback.String())
 	require.NoError(t, err)
+	return resp
+}
+
+func runChainFlow(
+	t *testing.T,
+	serverURL string,
+	challenge string,
+	clientState string,
+) string {
+	t.Helper()
+
+	parsedServerURL, err := url.Parse(serverURL)
+	require.NoError(t, err)
+
+	// Leg 1: client -> /authorize -> first upstream -> callback
+	resp := runFirstLeg(t, serverURL, challenge, clientState)
 	require.Equal(t, http.StatusFound, resp.StatusCode,
 		"expected redirect to second upstream, not 303 to client")
 	secondUpstreamLocation, err := resp.Location()
@@ -2311,6 +2303,7 @@ func runChainFlow(
 	resp.Body.Close()
 
 	// Leg 2: second upstream -> callback -> client
+	client := noRedirectClient()
 	resp, err = client.Get(secondUpstreamLocation.String())
 	require.NoError(t, err)
 	require.Equal(t, http.StatusFound, resp.StatusCode)

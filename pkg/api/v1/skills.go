@@ -107,13 +107,14 @@ func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) erro
 	}
 
 	result, err := s.skillService.Install(r.Context(), skills.InstallOptions{
-		Name:        req.Name,
-		Version:     req.Version,
-		Scope:       req.Scope,
-		ProjectRoot: req.ProjectRoot,
-		Clients:     req.Clients,
-		Force:       req.Force,
-		Group:       req.Group,
+		Name:          req.Name,
+		Version:       req.Version,
+		Scope:         req.Scope,
+		ProjectRoot:   req.ProjectRoot,
+		Clients:       req.Clients,
+		Force:         req.Force,
+		Group:         req.Group,
+		AllowUnsigned: req.AllowUnsigned,
 	})
 	if err != nil {
 		return err
@@ -282,7 +283,9 @@ func (s *SkillsRoutes) pushSkill(w http.ResponseWriter, r *http.Request) error {
 	}
 
 	if err := s.skillService.Push(r.Context(), skills.PushOptions{
-		Reference: req.Reference,
+		Reference:   req.Reference,
+		Key:         req.Key,
+		SkipSigning: req.SkipSigning,
 	}); err != nil {
 		return err
 	}
@@ -431,13 +434,14 @@ func (s *SkillsRoutes) upgradeSkills(w http.ResponseWriter, r *http.Request) err
 	}
 
 	result, err := s.lockService.Upgrade(r.Context(), skills.UpgradeOptions{
-		ProjectRoot:    req.ProjectRoot,
-		Names:          req.Names,
-		Preview:        req.Preview || req.DryRun,
-		DryRun:         req.DryRun,
-		FailOnChanges:  req.FailOnChanges,
-		AllowRefChange: req.AllowRefChange,
-		Clients:        req.Clients,
+		ProjectRoot:       req.ProjectRoot,
+		Names:             req.Names,
+		Preview:           req.Preview || req.DryRun,
+		DryRun:            req.DryRun,
+		FailOnChanges:     req.FailOnChanges,
+		AllowRefChange:    req.AllowRefChange,
+		AllowSignerChange: req.AllowSignerChange,
+		Clients:           req.Clients,
 	})
 	if err != nil {
 		return err

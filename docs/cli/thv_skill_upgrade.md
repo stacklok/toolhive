@@ -36,6 +36,7 @@ thv skill upgrade [skill-name...] [flags]
 
 ```
       --allow-ref-change      Allow resolvedReference changes during upgrade
+      --allow-signer-change   Allow signer identity changes during upgrade
       --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
       --fail-on-changes       Exit non-zero when preview finds any upgradable skill
       --format string         Output format (json, text) (default "text")

@@ -8,13 +8,14 @@ import "github.com/stacklok/toolhive/pkg/skills"
 // --- request/response dto (mirror pkg/api/v1/skills_types.go) ---
 
 type installRequest struct {
-	Name        string       `json:"name"`
-	Version     string       `json:"version,omitempty"`
-	Scope       skills.Scope `json:"scope,omitempty"`
-	ProjectRoot string       `json:"project_root,omitempty"`
-	Clients     []string     `json:"clients,omitempty"`
-	Force       bool         `json:"force,omitempty"`
-	Group       string       `json:"group,omitempty"`
+	Name          string       `json:"name"`
+	Version       string       `json:"version,omitempty"`
+	Scope         skills.Scope `json:"scope,omitempty"`
+	ProjectRoot   string       `json:"project_root,omitempty"`
+	Clients       []string     `json:"clients,omitempty"`
+	Force         bool         `json:"force,omitempty"`
+	Group         string       `json:"group,omitempty"`
+	AllowUnsigned bool         `json:"allow_unsigned,omitempty"`
 }
 
 type validateRequest struct {
@@ -27,7 +28,9 @@ type buildRequest struct {
 }
 
 type pushRequest struct {
-	Reference string `json:"reference"`
+	Reference   string `json:"reference"`
+	Key         string `json:"key,omitempty"`
+	SkipSigning bool   `json:"skip_signing,omitempty"`
 }
 
 type listResponse struct {
@@ -51,11 +54,12 @@ type syncRequest struct {
 }
 
 type upgradeRequest struct {
-	ProjectRoot    string   `json:"project_root"`
-	Names          []string `json:"names,omitempty"`
-	Preview        bool     `json:"preview,omitempty"`
-	DryRun         bool     `json:"dry_run,omitempty"`
-	FailOnChanges  bool     `json:"fail_on_changes,omitempty"`
-	AllowRefChange bool     `json:"allow_ref_change,omitempty"`
-	Clients        []string `json:"clients,omitempty"`
+	ProjectRoot       string   `json:"project_root"`
+	Names             []string `json:"names,omitempty"`
+	Preview           bool     `json:"preview,omitempty"`
+	DryRun            bool     `json:"dry_run,omitempty"`
+	FailOnChanges     bool     `json:"fail_on_changes,omitempty"`
+	AllowRefChange    bool     `json:"allow_ref_change,omitempty"`
+	AllowSignerChange bool     `json:"allow_signer_change,omitempty"`
+	Clients           []string `json:"clients,omitempty"`
 }

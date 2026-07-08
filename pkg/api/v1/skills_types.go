@@ -33,6 +33,8 @@ type installSkillRequest struct {
 	Force bool `json:"force,omitempty"`
 	// Group is the group name to add the skill to after installation
 	Group string `json:"group,omitempty"`
+	// AllowUnsigned permits installing unsigned artifacts for project scope.
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
 }
 
 // installSkillResponse represents the response after installing a skill.
@@ -67,6 +69,10 @@ type buildSkillRequest struct {
 type pushSkillRequest struct {
 	// OCI reference to push
 	Reference string `json:"reference"`
+	// Key is the path to a cosign private key for signing.
+	Key string `json:"key,omitempty"`
+	// SkipSigning skips post-push Sigstore signing.
+	SkipSigning bool `json:"skip_signing,omitempty"`
 }
 
 // buildListResponse represents the response for listing locally-built OCI skill artifacts.
@@ -109,6 +115,8 @@ type upgradeSkillsRequest struct {
 	FailOnChanges bool `json:"fail_on_changes,omitempty"`
 	// AllowRefChange permits resolvedReference changes during upgrade
 	AllowRefChange bool `json:"allow_ref_change,omitempty"`
+	// AllowSignerChange permits signer identity changes during upgrade
+	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
 	// Clients lists target client identifiers, or omit for every detected client
 	Clients []string `json:"clients,omitempty"`
 }

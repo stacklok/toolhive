@@ -24,7 +24,9 @@ thv skill push [reference] [flags]
 ### Options
 
 ```
-  -h, --help   help for push
+  -h, --help         help for push
+      --key string   Path to cosign private key for signing
+      --no-sign      Skip post-push Sigstore signing
 ```
 
 ### Options inherited from parent commands

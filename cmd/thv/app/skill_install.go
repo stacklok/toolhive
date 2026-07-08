@@ -12,11 +12,12 @@ import (
 )
 
 var (
-	skillInstallScope       string
-	skillInstallClientsRaw  string
-	skillInstallForce       bool
-	skillInstallProjectRoot string
-	skillInstallGroup       string
+	skillInstallScope         string
+	skillInstallClientsRaw    string
+	skillInstallForce         bool
+	skillInstallProjectRoot   string
+	skillInstallGroup         string
+	skillInstallAllowUnsigned bool
 )
 
 var skillInstallCmd = &cobra.Command{
@@ -42,18 +43,21 @@ func init() {
 	skillInstallCmd.Flags().BoolVar(&skillInstallForce, "force", false, "Overwrite existing skill directory")
 	skillInstallCmd.Flags().StringVar(&skillInstallProjectRoot, "project-root", "", "Project root path for project-scoped installs")
 	skillInstallCmd.Flags().StringVar(&skillInstallGroup, "group", "", "Group to add the skill to after installation")
+	skillInstallCmd.Flags().BoolVar(&skillInstallAllowUnsigned, "allow-unsigned", false,
+		"Permit unsigned artifacts for project scope (recorded in lock as unsigned: true)")
 }
 
 func skillInstallCmdFunc(cmd *cobra.Command, args []string) error {
 	c := newSkillClient(cmd.Context())
 
 	_, err := c.Install(cmd.Context(), skills.InstallOptions{
-		Name:        args[0],
-		Scope:       skills.Scope(skillInstallScope),
-		Clients:     parseSkillInstallClients(skillInstallClientsRaw),
-		Force:       skillInstallForce,
-		ProjectRoot: skillInstallProjectRoot,
-		Group:       skillInstallGroup,
+		Name:          args[0],
+		Scope:         skills.Scope(skillInstallScope),
+		Clients:       parseSkillInstallClients(skillInstallClientsRaw),
+		Force:         skillInstallForce,
+		ProjectRoot:   skillInstallProjectRoot,
+		Group:         skillInstallGroup,
+		AllowUnsigned: skillInstallAllowUnsigned,
 	})
 	if err != nil {
 		return formatSkillError("install skill", err)

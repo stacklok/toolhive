@@ -1624,6 +1624,9 @@ const docTemplate = `{
                     "lock-write-failed",
                     "ref-change-blocked",
                     "content-mismatch",
+                    "signature-invalid",
+                    "signer-mismatch",
+                    "unsigned-rejected",
                     "unknown"
                 ],
                 "type": "string",
@@ -1634,6 +1637,9 @@ const docTemplate = `{
                     "FailureReasonLockWriteFailed",
                     "FailureReasonRefChangeBlocked",
                     "FailureReasonContentMismatch",
+                    "FailureReasonSignatureInvalid",
+                    "FailureReasonSignerMismatch",
+                    "FailureReasonUnsignedRejected",
                     "FailureReasonUnknown"
                 ]
             },
@@ -1966,6 +1972,7 @@ const docTemplate = `{
                     "up-to-date",
                     "not-upgradable",
                     "ref-change-blocked",
+                    "signer-change-blocked",
                     "failed"
                 ],
                 "type": "string",
@@ -1974,6 +1981,7 @@ const docTemplate = `{
                     "UpgradeStatusUpToDate",
                     "UpgradeStatusNotUpgradable",
                     "UpgradeStatusRefChangeBlocked",
+                    "UpgradeStatusSignerChangeBlocked",
                     "UpgradeStatusFailed"
                 ]
             },
@@ -3182,6 +3190,10 @@ const docTemplate = `{
             "pkg_api_v1.installSkillRequest": {
                 "description": "Request to install a skill",
                 "properties": {
+                    "allow_unsigned": {
+                        "description": "AllowUnsigned permits installing unsigned artifacts for project scope.",
+                        "type": "boolean"
+                    },
                     "clients": {
                         "description": "Clients lists target client identifiers (e.g., \"claude-code\"),\nor [\"all\"] to target every skill-supporting client.\nOmitting this field installs to all available clients.",
                         "items": {
@@ -3346,9 +3358,17 @@ const docTemplate = `{
             "pkg_api_v1.pushSkillRequest": {
                 "description": "Request to push a built skill artifact",
                 "properties": {
+                    "key": {
+                        "description": "Key is the path to a cosign private key for signing.",
+                        "type": "string"
+                    },
                     "reference": {
                         "description": "OCI reference to push",
                         "type": "string"
+                    },
+                    "skip_signing": {
+                        "description": "SkipSigning skips post-push Sigstore signing.",
+                        "type": "boolean"
                     }
                 },
                 "type": "object"
@@ -3805,6 +3825,10 @@ const docTemplate = `{
                 "properties": {
                     "allow_ref_change": {
                         "description": "AllowRefChange permits resolvedReference changes during upgrade",
+                        "type": "boolean"
+                    },
+                    "allow_signer_change": {
+                        "description": "AllowSignerChange permits signer identity changes during upgrade",
                         "type": "boolean"
                     },
                     "clients": {

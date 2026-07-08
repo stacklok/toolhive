@@ -15,13 +15,14 @@ import (
 )
 
 var (
-	skillUpgradeProjectRoot    string
-	skillUpgradeClientsRaw     string
-	skillUpgradePreview        bool
-	skillUpgradeFailOnChanges  bool
-	skillUpgradeAllowRefChange bool
-	skillUpgradeYes            bool
-	skillUpgradeFormat         string
+	skillUpgradeProjectRoot       string
+	skillUpgradeClientsRaw        string
+	skillUpgradePreview           bool
+	skillUpgradeFailOnChanges     bool
+	skillUpgradeAllowRefChange    bool
+	skillUpgradeAllowSignerChange bool
+	skillUpgradeYes               bool
+	skillUpgradeFormat            string
 )
 
 var skillUpgradeCmd = &cobra.Command{
@@ -54,6 +55,8 @@ func init() {
 		"Exit non-zero when preview finds any upgradable skill")
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeAllowRefChange, "allow-ref-change", false,
 		"Allow resolvedReference changes during upgrade")
+	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeAllowSignerChange, "allow-signer-change", false,
+		"Allow signer identity changes during upgrade")
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeYes, "yes", false,
 		"Skip the pre-upgrade confirmation prompt")
 	skillUpgradeCmd.Flags().StringVar(&skillUpgradeProjectRoot, "project-root", "",
@@ -69,12 +72,13 @@ func skillUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 
 	c := newSkillClient(cmd.Context())
 	opts := skills.UpgradeOptions{
-		ProjectRoot:    projectRoot,
-		Names:          args,
-		Preview:        skillUpgradePreview,
-		FailOnChanges:  skillUpgradeFailOnChanges,
-		AllowRefChange: skillUpgradeAllowRefChange,
-		Clients:        parseSkillInstallClients(skillUpgradeClientsRaw),
+		ProjectRoot:       projectRoot,
+		Names:             args,
+		Preview:           skillUpgradePreview,
+		FailOnChanges:     skillUpgradeFailOnChanges,
+		AllowRefChange:    skillUpgradeAllowRefChange,
+		AllowSignerChange: skillUpgradeAllowSignerChange,
+		Clients:           parseSkillInstallClients(skillUpgradeClientsRaw),
 	}
 
 	if skillUpgradePreview {
@@ -128,7 +132,7 @@ func upgradeExitCode(result *skills.UpgradeResult) int {
 		switch o.Status {
 		case skills.UpgradeStatusFailed:
 			return ExitCodePartialFailure
-		case skills.UpgradeStatusRefChangeBlocked:
+		case skills.UpgradeStatusRefChangeBlocked, skills.UpgradeStatusSignerChangeBlocked:
 			return ExitCodePolicyRejection
 		case skills.UpgradeStatusUpgraded, skills.UpgradeStatusUpToDate, skills.UpgradeStatusNotUpgradable:
 			// continue

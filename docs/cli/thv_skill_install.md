@@ -25,6 +25,7 @@ thv skill install [skill-name] [flags]
 ### Options
 
 ```
+      --allow-unsigned        Permit unsigned artifacts for project scope (recorded in lock as unsigned: true)
       --clients string        Comma-separated target client apps (e.g. claude-code,opencode), or "all" for every available client
       --force                 Overwrite existing skill directory
       --group string          Group to add the skill to after installation

@@ -46,6 +46,8 @@ require (
 	github.com/prometheus/client_golang v1.23.2
 	github.com/redis/go-redis/v9 v9.21.0
 	github.com/shirou/gopsutil/v4 v4.26.5
+	github.com/sigstore/sigstore v1.10.8
+	github.com/sigstore/sigstore-go v1.2.2
 	github.com/spf13/viper v1.21.0
 	github.com/stacklok/toolhive-catalog v0.20260706.0
 	github.com/stacklok/toolhive-core v0.0.27
@@ -88,9 +90,12 @@ require go.starlark.net v0.0.0-20260630144053-529d8e869a14
 require (
 	github.com/aws/aws-sdk-go-v2/internal/v4a v1.4.31 // indirect
 	github.com/go-openapi/runtime/server-middleware v0.30.0 // indirect
+	github.com/jedisct1/go-minisign v0.0.0-20230811132847-661be99b8267 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect
 	github.com/oklog/ulid/v2 v2.1.1 // indirect
 	github.com/santhosh-tekuri/jsonschema/v6 v6.0.2 // indirect
+	github.com/sassoftware/relic v7.2.1+incompatible // indirect
+	github.com/theupdateframework/go-tuf v0.7.0 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect
 )
 
@@ -246,11 +251,9 @@ require (
 	github.com/sergi/go-diff v1.4.0 // indirect
 	github.com/sethvargo/go-retry v0.3.0 // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
-	github.com/sigstore/protobuf-specs v0.5.1 // indirect
+	github.com/sigstore/protobuf-specs v0.5.1
 	github.com/sigstore/rekor v1.5.3 // indirect
 	github.com/sigstore/rekor-tiles/v2 v2.3.0 // indirect
-	github.com/sigstore/sigstore v1.10.8 // indirect
-	github.com/sigstore/sigstore-go v1.2.2 // indirect
 	github.com/sigstore/timestamp-authority/v2 v2.1.2 // indirect
 	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/skeema/knownhosts v1.3.1 // indirect

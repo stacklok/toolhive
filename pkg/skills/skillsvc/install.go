@@ -86,6 +86,7 @@ func (s *service) installInternal(ctx context.Context, opts skills.InstallOption
 	scope = defaultScope(scope)
 	// Canonicalize the project root so that equivalent paths produce
 	// the same lock key and DB record.
+	opts.Scope = scope
 	opts.ProjectRoot = projectRoot
 
 	// Git references (git://host/owner/repo[@ref][#path]) are dispatched first;

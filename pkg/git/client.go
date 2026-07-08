@@ -40,6 +40,9 @@ type Client interface {
 	// HeadCommitHash returns the commit hash of the HEAD reference.
 	HeadCommitHash(repoInfo *RepositoryInfo) (string, error)
 
+	// HeadCommitSignature returns the OpenPGP/gitsign signature on HEAD, if any.
+	HeadCommitSignature(repoInfo *RepositoryInfo) (string, error)
+
 	// Cleanup removes local repository directory
 	Cleanup(ctx context.Context, repoInfo *RepositoryInfo) error
 }
@@ -263,4 +266,20 @@ func (*DefaultGitClient) HeadCommitHash(repoInfo *RepositoryInfo) (string, error
 	}
 
 	return ref.Hash().String(), nil
+}
+
+// HeadCommitSignature returns the commit signature attached to HEAD, if present.
+func (*DefaultGitClient) HeadCommitSignature(repoInfo *RepositoryInfo) (string, error) {
+	if repoInfo == nil || repoInfo.Repository == nil {
+		return "", ErrNilRepository
+	}
+	ref, err := repoInfo.Repository.Head()
+	if err != nil {
+		return "", fmt.Errorf("failed to get HEAD reference: %w", err)
+	}
+	commit, err := repoInfo.Repository.CommitObject(ref.Hash())
+	if err != nil {
+		return "", fmt.Errorf("failed to read HEAD commit: %w", err)
+	}
+	return string(commit.PGPSignature), nil
 }

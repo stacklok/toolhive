@@ -45,6 +45,8 @@ type ResolveResult struct {
 	Files []FileEntry
 	// CommitHash is the git commit hash (for digest/upgrade detection)
 	CommitHash string
+	// CommitSignature is the gitsign/OpenPGP signature on the commit, if any.
+	CommitSignature string
 }
 
 // FileEntry represents a single file from the cloned repository.
@@ -141,6 +143,7 @@ func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*Reso
 	if err != nil {
 		return nil, fmt.Errorf("getting commit hash: %w", err)
 	}
+	commitSignature, _ := client.HeadCommitSignature(repoInfo)
 
 	// Read SKILL.md from the skill path
 	skillMDPath := path.Join(ref.Path, "SKILL.md")
@@ -173,9 +176,10 @@ func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*Reso
 	}
 
 	return &ResolveResult{
-		SkillConfig: parsed,
-		Files:       files,
-		CommitHash:  commitHash,
+		SkillConfig:     parsed,
+		Files:           files,
+		CommitHash:      commitHash,
+		CommitSignature: commitSignature,
 	}, nil
 }
 

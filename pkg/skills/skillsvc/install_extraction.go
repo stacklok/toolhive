@@ -223,18 +223,21 @@ func buildInstalledSkill(
 			Name:    opts.Name,
 			Version: opts.Version,
 		},
-		Scope:       scope,
-		ProjectRoot: opts.ProjectRoot,
-		Reference:   opts.Reference,
-		Digest:      opts.Digest,
-		Status:      skills.InstallStatusInstalled,
-		InstalledAt: time.Now().UTC(),
-		Clients:     clients,
-		Managed:     opts.Managed,
+		Scope:          scope,
+		ProjectRoot:    opts.ProjectRoot,
+		Reference:      opts.Reference,
+		Digest:         opts.Digest,
+		Status:         skills.InstallStatusInstalled,
+		InstalledAt:    time.Now().UTC(),
+		Clients:        clients,
+		Managed:        opts.Managed,
+		SigstoreBundle: opts.SigstoreBundle,
 	}
 }
 
 func enrichInstallResult(result *skills.InstallResult, opts skills.InstallOptions) error {
+	result.Provenance = opts.Provenance
+	result.Unsigned = opts.Unsigned
 	if len(opts.LayerData) == 0 {
 		return nil
 	}

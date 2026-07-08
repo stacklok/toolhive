@@ -397,6 +397,10 @@ func (*blockingCloneClient) HeadCommitHash(_ *git.RepositoryInfo) (string, error
 	return "", fmt.Errorf("not implemented")
 }
 
+func (*blockingCloneClient) HeadCommitSignature(_ *git.RepositoryInfo) (string, error) {
+	return "", nil
+}
+
 func (*blockingCloneClient) Cleanup(_ context.Context, _ *git.RepositoryInfo) error {
 	return nil
 }

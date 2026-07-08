@@ -66,6 +66,16 @@ func (s *service) installFromGit(
 		)
 	}
 
+	if scope == skills.ScopeProject && opts.ProjectRoot != "" {
+		decision, verifyErr := s.verifyGitInstall(
+			ctx, opts, resolved.SkillConfig.Name, resolved.CommitHash, resolved.CommitSignature,
+		)
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		applyDecisionToOpts(&opts, decision)
+	}
+
 	// Hydrate install options from the git result.
 	opts.Name = resolved.SkillConfig.Name
 	opts.Reference = gitURL

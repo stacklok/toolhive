@@ -99,6 +99,14 @@ func (s *service) installFromOCI(
 		)
 	}
 
+	if scope == skills.ScopeProject && opts.ProjectRoot != "" {
+		decision, verifyErr := s.verifyOCIInstall(ctx, opts, skillConfig.Name, ociRef, pulledDigest.String())
+		if verifyErr != nil {
+			return nil, verifyErr
+		}
+		applyDecisionToOpts(&opts, decision)
+	}
+
 	// Hydrate install options from the pulled artifact.
 	opts.Name = skillConfig.Name
 	opts.LayerData = layerData
@@ -180,6 +188,14 @@ func (s *service) tryDirectLocalTag(
 	// with the requested version can win.
 	if opts.Version != "" && skillConfig.Version != opts.Version {
 		return false, nil
+	}
+
+	if opts.Scope == skills.ScopeProject && opts.ProjectRoot != "" {
+		decision, verifyErr := verifyLocalInstall(*opts, skillConfig.Name)
+		if verifyErr != nil {
+			return false, verifyErr
+		}
+		applyDecisionToOpts(opts, decision)
 	}
 
 	hydrateOptsFromLocalBuild(opts, layerData, d, skillConfig, opts.Name)

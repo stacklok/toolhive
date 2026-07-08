@@ -30,6 +30,8 @@ func recordLockEntry(opts skills.InstallOptions, source string, sk skills.Instal
 		Digest:            sk.Digest,
 		ContentDigest:     contentDigest,
 		Explicit:          opts.ExplicitLock,
+		Provenance:        provenanceInfoToLock(opts.Provenance),
+		Unsigned:          opts.Unsigned,
 	}
 
 	if opts.RequiredByParent != "" {
@@ -46,7 +48,12 @@ func recordLockEntry(opts skills.InstallOptions, source string, sk skills.Instal
 }
 
 // recordDepLockEntry merges a transitive dependency into the lock file.
-func recordDepLockEntry(projectRoot, parent string, source string, sk skills.InstalledSkill, contentDigest string) error {
+func recordDepLockEntry(
+	projectRoot, parent, source string,
+	sk skills.InstalledSkill,
+	contentDigest string,
+	opts skills.InstallOptions,
+) error {
 	return lockfile.UpdateEntry(projectRoot, func(lf *lockfile.Lockfile) error {
 		existing, ok := lf.Get(sk.Metadata.Name)
 		if ok {
@@ -69,6 +76,8 @@ func recordDepLockEntry(projectRoot, parent string, source string, sk skills.Ins
 			Digest:            sk.Digest,
 			ContentDigest:     contentDigest,
 			RequiredBy:        []string{parent},
+			Provenance:        provenanceInfoToLock(opts.Provenance),
+			Unsigned:          opts.Unsigned,
 		})
 		return nil
 	})
@@ -163,7 +172,7 @@ func (s *service) materializeOneDependency(
 	if cdErr != nil {
 		return cdErr
 	}
-	return recordDepLockEntry(baseOpts.ProjectRoot, parentName, depRef, result.Skill, contentDigest)
+	return recordDepLockEntry(baseOpts.ProjectRoot, parentName, depRef, result.Skill, contentDigest, depOpts)
 }
 
 func (s *service) contentDigestForSkill(

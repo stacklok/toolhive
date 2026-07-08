@@ -3,6 +3,14 @@
 
 package skills
 
+// ProvenanceInfo pins verified Sigstore publisher identity for lock-managed installs.
+type ProvenanceInfo struct {
+	SignerIdentity string `json:"-"`
+	CertIssuer     string `json:"-"`
+	RepositoryURI  string `json:"-"`
+	SigstoreURL    string `json:"-"`
+}
+
 // ListOptions configures the behavior of the List operation.
 type ListOptions struct {
 	// Scope filters results by installation scope.
@@ -50,6 +58,14 @@ type InstallOptions struct {
 	RequiredByParent string `json:"-"`
 	// SkipDependencies skips materializing toolhive.requires (used internally).
 	SkipDependencies bool `json:"-"`
+	// AllowUnsigned permits installing unsigned artifacts for project scope (recorded in lock).
+	AllowUnsigned bool `json:"allow_unsigned,omitempty"`
+	// SigstoreBundle stores the verified bundle after install (internal).
+	SigstoreBundle []byte `json:"-"`
+	// Provenance records verified publisher identity for lock writes (internal).
+	Provenance *ProvenanceInfo `json:"-"`
+	// Unsigned records that install used --allow-unsigned (internal).
+	Unsigned bool `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.
@@ -60,6 +76,10 @@ type InstallResult struct {
 	Requires []Dependency `json:"-"`
 	// ContentDigest is the computed dirhash of the installed file set.
 	ContentDigest string `json:"-"`
+	// Provenance records verified publisher identity from install verification.
+	Provenance *ProvenanceInfo `json:"-"`
+	// Unsigned is true when install recorded an unsigned exception.
+	Unsigned bool `json:"-"`
 }
 
 // UninstallOptions configures the behavior of the Uninstall operation.
@@ -148,6 +168,10 @@ type BuildResult struct {
 type PushOptions struct {
 	// Reference is the OCI reference to push.
 	Reference string `json:"reference"`
+	// Key is the path to a cosign private key for signing. Empty attempts keyless when supported.
+	Key string `json:"key,omitempty"`
+	// SkipSigning skips post-push Sigstore signing.
+	SkipSigning bool `json:"skip_signing,omitempty"`
 }
 
 // SyncOptions configures the behavior of the Sync operation.
@@ -177,6 +201,9 @@ const (
 	FailureReasonLockWriteFailed     FailureReason = "lock-write-failed"
 	FailureReasonRefChangeBlocked    FailureReason = "ref-change-blocked"
 	FailureReasonContentMismatch     FailureReason = "content-mismatch"
+	FailureReasonSignatureInvalid    FailureReason = "signature-invalid"
+	FailureReasonSignerMismatch      FailureReason = "signer-mismatch"
+	FailureReasonUnsignedRejected    FailureReason = "unsigned-rejected"
 	FailureReasonUnknown             FailureReason = "unknown"
 )
 
@@ -225,6 +252,8 @@ type UpgradeOptions struct {
 	FailOnChanges bool `json:"fail_on_changes,omitempty"`
 	// AllowRefChange permits resolvedReference changes during upgrade.
 	AllowRefChange bool `json:"allow_ref_change,omitempty"`
+	// AllowSignerChange permits signer identity changes during upgrade.
+	AllowSignerChange bool `json:"allow_signer_change,omitempty"`
 	// Clients lists target clients (e.g., "claude-code"). Empty means every
 	// skill-supporting client detected on this host.
 	Clients []string `json:"clients,omitempty"`
@@ -243,6 +272,8 @@ const (
 	UpgradeStatusNotUpgradable UpgradeStatus = "not-upgradable"
 	// UpgradeStatusRefChangeBlocked indicates re-resolution changed resolvedReference.
 	UpgradeStatusRefChangeBlocked UpgradeStatus = "ref-change-blocked"
+	// UpgradeStatusSignerChangeBlocked indicates the signer identity would change.
+	UpgradeStatusSignerChangeBlocked UpgradeStatus = "signer-change-blocked"
 	// UpgradeStatusFailed indicates the upgrade attempt failed.
 	UpgradeStatusFailed UpgradeStatus = "failed"
 )

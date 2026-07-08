@@ -12,6 +12,8 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
+	"github.com/stacklok/toolhive/pkg/skills/signer"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
 	"github.com/stacklok/toolhive/pkg/storage"
 )
 
@@ -80,6 +82,20 @@ func WithGitResolver(gr gitresolver.Resolver) Option {
 	}
 }
 
+// WithSigVerifier sets the Sigstore verifier for skill artifacts.
+func WithSigVerifier(v verifier.Verifier) Option {
+	return func(s *service) {
+		s.sigVerifier = v
+	}
+}
+
+// WithSigSigner sets the Sigstore signer for skill push.
+func WithSigSigner(sg signer.Signer) Option {
+	return func(s *service) {
+		s.sigSigner = sg
+	}
+}
+
 // skillLock provides per-skill mutual exclusion keyed by scope/name/projectRoot.
 // Entries are never evicted. This is acceptable because the number of distinct
 // skills on a single machine is expected to remain small (< 1000).
@@ -118,6 +134,8 @@ type service struct {
 	registry     ociskills.RegistryClient
 	skillLookup  SkillLookup
 	gitResolver  gitresolver.Resolver
+	sigVerifier  verifier.Verifier
+	sigSigner    signer.Signer
 }
 
 // New creates a new SkillService backed by the given store.

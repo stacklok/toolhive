@@ -59,6 +59,24 @@ func validateEntry(entry Entry) error {
 			return fmt.Errorf("entry %q: contentDigest: %w", entry.Name, err)
 		}
 	}
+	if entry.Unsigned && entry.Provenance != nil {
+		return fmt.Errorf("entry %q: cannot set both unsigned and provenance", entry.Name)
+	}
+	if entry.Provenance != nil {
+		if err := validateProvenance(entry.Name, entry.Provenance); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateProvenance(entryName string, p *Provenance) error {
+	if p.SignerIdentity == "" {
+		return fmt.Errorf("entry %q: provenance.signerIdentity is required", entryName)
+	}
+	if p.CertIssuer == "" {
+		return fmt.Errorf("entry %q: provenance.certIssuer is required", entryName)
+	}
 	return nil
 }
 

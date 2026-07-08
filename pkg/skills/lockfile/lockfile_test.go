@@ -125,3 +125,68 @@ func TestUpsertEntryAndRemoveEntry(t *testing.T) {
 	// Removing a name that isn't present is a no-op, not an error.
 	require.NoError(t, RemoveEntry(dir, "does-not-exist"))
 }
+
+func TestLoadRejectsProvenanceAndUnsignedTogether(t *testing.T) {
+	t.Parallel()
+	dir := resolvedTempDir(t)
+	data := `version: 1
+skills:
+  - name: my-skill
+    source: ghcr.io/org/skill:1.0.0
+    digest: sha256:abcdef0123456789
+    unsigned: true
+    provenance:
+      signerIdentity: "https://github.com/org/repo/.github/workflows/release.yaml@refs/heads/main"
+      certIssuer: "https://token.actions.githubusercontent.com"
+`
+	require.NoError(t, os.WriteFile(Path(dir), []byte(data), 0o644))
+
+	_, err := Load(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot set both unsigned and provenance")
+}
+
+func TestLoadRejectsIncompleteProvenance(t *testing.T) {
+	t.Parallel()
+	dir := resolvedTempDir(t)
+	data := `version: 1
+skills:
+  - name: my-skill
+    source: ghcr.io/org/skill:1.0.0
+    digest: sha256:abcdef0123456789
+    provenance:
+      signerIdentity: "https://github.com/org/repo/.github/workflows/release.yaml@refs/heads/main"
+`
+	require.NoError(t, os.WriteFile(Path(dir), []byte(data), 0o644))
+
+	_, err := Load(dir)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "provenance.certIssuer is required")
+}
+
+func TestSaveAndLoadRoundTripWithProvenance(t *testing.T) {
+	t.Parallel()
+	dir := resolvedTempDir(t)
+
+	lf := &Lockfile{Version: CurrentVersion}
+	entry := Entry{
+		Name:              "code-review",
+		Version:           "1.0.0",
+		Source:            "code-review",
+		ResolvedReference: "ghcr.io/org/code-review:1.0.0",
+		Digest:            "sha256:abcdef0123456789",
+		Provenance: &Provenance{
+			SignerIdentity: "https://github.com/org/repo/.github/workflows/release.yaml@refs/heads/main",
+			CertIssuer:     "https://token.actions.githubusercontent.com",
+			RepositoryURI:  "https://github.com/org/repo",
+			SigstoreURL:    "https://rekor.sigstore.dev",
+		},
+	}
+	lf.Upsert(entry)
+	require.NoError(t, lf.Save(dir))
+
+	loaded, err := Load(dir)
+	require.NoError(t, err)
+	require.Len(t, loaded.Skills, 1)
+	assert.Equal(t, entry, loaded.Skills[0])
+}

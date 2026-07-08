@@ -27,6 +27,18 @@ const FileName = "toolhive.lock.yaml"
 // CurrentVersion is the schema version written to new lock files.
 const CurrentVersion = 1
 
+// Provenance pins the Sigstore publisher identity observed at install time.
+type Provenance struct {
+	// SignerIdentity is the Fulcio certificate identity (e.g. GitHub Actions workflow URI).
+	SignerIdentity string `yaml:"signerIdentity"`
+	// CertIssuer is the Fulcio certificate issuer (e.g. https://token.actions.githubusercontent.com).
+	CertIssuer string `yaml:"certIssuer"`
+	// RepositoryURI is the source repository URI from the certificate, if present.
+	RepositoryURI string `yaml:"repositoryUri,omitempty"`
+	// SigstoreURL is the Rekor instance URL used for verification, if known.
+	SigstoreURL string `yaml:"sigstoreUrl,omitempty"`
+}
+
 // Entry represents a single pinned skill installation in the lock file.
 type Entry struct {
 	// Name is the skill's unique name.
@@ -51,6 +63,10 @@ type Entry struct {
 	// Explicit is true when the user directly installed this skill (exempt from
 	// cascade removal when requiredBy becomes empty).
 	Explicit bool `yaml:"explicit,omitempty"`
+	// Provenance pins the verified Sigstore publisher identity for this skill.
+	Provenance *Provenance `yaml:"provenance,omitempty"`
+	// Unsigned is true when install used --allow-unsigned (visible in lock diffs).
+	Unsigned bool `yaml:"unsigned,omitempty"`
 }
 
 // Lockfile is the parsed contents of a project's toolhive.lock.yaml.

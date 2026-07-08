@@ -63,6 +63,12 @@ func (*stubVMCP) LookupResource(context.Context, *auth.Identity, string) (*vmcp.
 func (*stubVMCP) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Prompt, error) {
 	return nil, nil
 }
+func (*stubVMCP) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
+	return nil, nil
+}
+func (*stubVMCP) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.Backend, error) {
+	return nil, nil
+}
 func (s *stubVMCP) Close() error                 { s.closed = true; return nil }
 func (*stubVMCP) BackendHealth() health.Reporter { return nil }
 

@@ -45,7 +45,9 @@ import (
 //   - Decorators may only SUBTRACT reachability: filter list output or refuse a
 //     call before delegating to inner. They hold only an inner VMCP and have no
 //     path to backends except through it, so they cannot widen access. This
-//     mirrors the list-filter/call-deny pairing in pkg/authz/tool_filter.go.
+//     mirrors the list-filter/call-deny pairing in pkg/authz/tool_filter.go, and
+//     applies to backends too: a decorator may drop entries from ListBackends
+//     output or refuse a LookupBackend, but never surface a backend inner withheld.
 //   - args/meta maps are treated as read-only; the core copies before mutating
 //     (go-style: copy before mutating caller input).
 //   - ReadResource results: Meta may be nil — the mcp-go resources/read handler
@@ -103,6 +105,41 @@ type VMCP interface {
 	// BackendID) WITHOUT retrieving it. Returns an error for an unknown or
 	// unadvertised name. Applies the same admission filter as ListPrompts.
 	LookupPrompt(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Prompt, error)
+
+	// ListBackends returns the backends visible to identity, scoped to the gateway's
+	// group (groupRef always applies; the BackendRegistry is the group-scoped source).
+	//
+	// filterUnauthorized selects the view:
+	//
+	//   - true (user-discovery): returns only backends the identity is authorized to
+	//     use — a backend appears iff the identity is admitted (the same seam
+	//     ListTools/CallTool enforce) to AT LEAST ONE of that backend's discovered
+	//     capabilities. There is no backend-level authorization entity, so this is a
+	//     derived rule: aggregate the group's backends, run admission, and group the
+	//     surviving capabilities by BackendID. A backend with zero admitted
+	//     capabilities (tool-less, or all-denied) does not appear. A nil identity is
+	//     anonymous (see the interface contract), yielding the anonymous-visible set.
+	//
+	//   - false (admin): returns ALL group-scoped backends with no per-identity
+	//     authorization filtering. identity is unused and may be nil. Authorizing the
+	//     caller for this view is the transport/API layer's responsibility (an
+	//     admin-gated endpoint), not the core's.
+	//
+	// Health is a status, not a visibility filter: ListBackends does NOT apply the
+	// health filter ListTools uses. A degraded/unhealthy backend still appears (admin
+	// mode) — carrying its HealthStatus so a UI can badge it — and appears in the
+	// authorized mode whenever it still has an admitted capability. Unreachable
+	// backends contribute no capabilities to the authorized derivation, so they are
+	// naturally absent there, but that is a consequence of live aggregation, not a
+	// health filter. The returned slice is fresh and non-nil; callers may mutate it.
+	ListBackends(ctx context.Context, identity *auth.Identity, filterUnauthorized bool) ([]vmcp.Backend, error)
+
+	// LookupBackend resolves a single backend id in the AUTHORIZED view: it returns
+	// the backend only when it is in ListBackends(ctx, identity, true), and
+	// vmcp.ErrNotFound for an unknown, out-of-group, or unauthorized id. This mirrors
+	// LookupTool/LookupResource/LookupPrompt — a lookup never resolves what the
+	// corresponding authorized list would not show.
+	LookupBackend(ctx context.Context, identity *auth.Identity, backendID string) (*vmcp.Backend, error)
 
 	// BackendHealth returns the backend health reporter the core owns, or nil when health
 	// monitoring is disabled. The core builds, starts, and (via Close) stops the monitor and

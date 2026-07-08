@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/toolhive-core/httperr"
 	ociskills "github.com/stacklok/toolhive-core/oci/skills"
 	"github.com/stacklok/toolhive/pkg/skills"
+	"github.com/stacklok/toolhive/pkg/skills/signer"
 )
 
 // Validate checks whether a skill definition is valid.
@@ -123,6 +124,14 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 
 	if err := s.registry.Push(ctx, s.ociStore, d, opts.Reference); err != nil {
 		return fmt.Errorf("pushing to registry: %w", err)
+	}
+
+	if !opts.SkipSigning {
+		if _, signErr := s.artifactSigner().SignOCI(ctx, opts.Reference, d.String(), signer.Options{
+			Key: opts.Key, SkipSigning: opts.SkipSigning,
+		}); signErr != nil && !errors.Is(signErr, signer.ErrSkipSigning) {
+			return fmt.Errorf("signing pushed artifact: %w", signErr)
+		}
 	}
 
 	return nil

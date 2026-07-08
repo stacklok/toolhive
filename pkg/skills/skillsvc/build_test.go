@@ -393,7 +393,7 @@ func TestPush(t *testing.T) {
 		},
 		{
 			name: "successful push",
-			opts: skills.PushOptions{Reference: "my-tag"},
+			opts: skills.PushOptions{Reference: "my-tag", SkipSigning: true},
 			setup: func(ctrl *gomock.Controller) (ociskills.RegistryClient, *ociskills.Store) {
 				ociStore, err := ociskills.NewStore(t.TempDir())
 				require.NoError(t, err)

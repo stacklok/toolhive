@@ -201,7 +201,9 @@ func buildAndInstallSkill(server *e2e.Server, skillName, description string) {
 }
 
 func pushSkill(server *e2e.Server, reference string) *http.Response {
-	reqBody := pushSkillRequest{Reference: reference}
+	// Skip signing: CI runners have no cosign key or keyless OIDC configured,
+	// and these E2E tests exercise push/install plumbing, not signing.
+	reqBody := pushSkillRequest{Reference: reference, SkipSigning: true}
 	jsonData, err := json.Marshal(reqBody)
 	ExpectWithOffset(1, err).ToNot(HaveOccurred())
 
@@ -215,7 +217,8 @@ func pushSkill(server *e2e.Server, reference string) *http.Response {
 }
 
 type pushSkillRequest struct {
-	Reference string `json:"reference"`
+	Reference   string `json:"reference"`
+	SkipSigning bool   `json:"skip_signing,omitempty"`
 }
 
 // createUpstreamRegistryWithSkill creates a JSON file in the upstream registry

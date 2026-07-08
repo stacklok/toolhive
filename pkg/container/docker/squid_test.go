@@ -301,6 +301,7 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 		permissions        *permissions.NetworkPermissions
 		allowDockerGateway bool
 		expectDenyRule     bool
+		expectAllowRule    bool
 		expectAllowAll     bool
 		expectContains     []string // additional substrings that must appear
 	}{
@@ -321,7 +322,7 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 			expectAllowAll: true,
 		},
 		{
-			name: "allow-docker-gateway opt-in removes deny rules",
+			name: "allow-docker-gateway opt-in emits allow rules instead of deny",
 			permissions: &permissions.NetworkPermissions{
 				Outbound: &permissions.OutboundNetworkPermissions{
 					InsecureAllowAll: true,
@@ -329,6 +330,7 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 			},
 			allowDockerGateway: true,
 			expectDenyRule:     false,
+			expectAllowRule:    true,
 			expectAllowAll:     true,
 		},
 		{
@@ -342,7 +344,7 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 			expectAllowAll: false,
 		},
 		{
-			name: "ACL-based outbound with allow-docker-gateway omits deny rules but keeps ACL allow",
+			name: "ACL-based outbound with allow-docker-gateway emits gateway allow rules and keeps ACL allow",
 			permissions: &permissions.NetworkPermissions{
 				Outbound: &permissions.OutboundNetworkPermissions{
 					AllowHost: []string{"example.com"},
@@ -351,10 +353,51 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 			},
 			allowDockerGateway: true,
 			expectDenyRule:     false,
+			expectAllowRule:    true,
 			expectAllowAll:     false,
 			expectContains: []string{
 				"acl allowed_ports port 443",
 				"acl allowed_dsts dstdomain example.com",
+				"http_access allow allowed_ports allowed_dsts",
+			},
+		},
+		{
+			// Listing host.docker.internal in allow_host is NOT sufficient on its
+			// own: without the opt-in the gateway deny is still written, and
+			// because Squid is first-match-wins the deny (asserted to precede the
+			// allow below) blocks the request before the allowed_dsts allow is
+			// reached. Reaching the gateway requires BOTH the flag and the host.
+			name: "host.docker.internal in allow_host without opt-in is still blocked",
+			permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"host.docker.internal"},
+					AllowPort: []int{8080},
+				},
+			},
+			allowDockerGateway: false,
+			expectDenyRule:     true,
+			expectAllowAll:     false,
+			expectContains: []string{
+				"acl allowed_dsts dstdomain host.docker.internal",
+				"http_access allow allowed_ports allowed_dsts",
+			},
+		},
+		{
+			// With the opt-in the deny is dropped and the standalone gateway
+			// allow rules grant access — no manual allowlist entry required.
+			name: "host.docker.internal with opt-in is allowed via standalone gateway rules",
+			permissions: &permissions.NetworkPermissions{
+				Outbound: &permissions.OutboundNetworkPermissions{
+					AllowHost: []string{"host.docker.internal"},
+					AllowPort: []int{8080},
+				},
+			},
+			allowDockerGateway: true,
+			expectDenyRule:     false,
+			expectAllowRule:    true,
+			expectAllowAll:     false,
+			expectContains: []string{
+				"acl allowed_dsts dstdomain host.docker.internal",
 				"http_access allow allowed_ports allowed_dsts",
 			},
 		},
@@ -372,7 +415,13 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 			require.NoError(t, err)
 			s := string(b)
 
-			if tt.expectDenyRule {
+			// A given config either blocks the gateway (deny rules) or grants it
+			// (allow rules), never both.
+			assert.False(t, tt.expectDenyRule && tt.expectAllowRule,
+				"a config cannot both deny and allow the docker gateway")
+
+			switch {
+			case tt.expectDenyRule:
 				assert.Contains(t, s, "acl docker_gateway_hosts dstdomain host.docker.internal gateway.docker.internal")
 				assert.Contains(t, s, "acl docker_gateway_ip dst 172.17.0.1")
 				assert.Contains(t, s, "http_access deny docker_gateway_hosts")
@@ -385,7 +434,22 @@ func TestCreateTempEgressSquidConf_DockerGatewayBlocking(t *testing.T) {
 					assert.Less(t, denyIdx, firstAllowIdx,
 						"docker gateway deny must appear before any http_access allow")
 				}
-			} else {
+			case tt.expectAllowRule:
+				assert.Contains(t, s, "acl docker_gateway_hosts dstdomain host.docker.internal gateway.docker.internal")
+				assert.Contains(t, s, "acl docker_gateway_ip dst 172.17.0.1")
+				assert.Contains(t, s, "http_access allow docker_gateway_hosts")
+				assert.Contains(t, s, "http_access allow docker_gateway_ip")
+				// The gateway must never be denied when the opt-in is set.
+				assert.NotContains(t, s, "http_access deny docker_gateway_hosts")
+				assert.NotContains(t, s, "http_access deny docker_gateway_ip")
+
+				// The gateway allow must precede the final catch-all deny —
+				// Squid is first-match-wins.
+				assert.Less(t,
+					strings.Index(s, "http_access allow docker_gateway_hosts"),
+					strings.LastIndex(s, "http_access deny all"),
+					"docker gateway allow must appear before the catch-all deny")
+			default:
 				assert.NotContains(t, s, "docker_gateway_hosts")
 				assert.NotContains(t, s, "docker_gateway_ip")
 			}

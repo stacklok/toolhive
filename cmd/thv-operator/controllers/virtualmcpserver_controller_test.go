@@ -864,6 +864,33 @@ func TestVirtualMCPServerServiceNeedsUpdate(t *testing.T) {
 			}(),
 			needsUpdate: false,
 		},
+		{
+			// Regression for #5730: a Service co-owned by GKE NEG/Gateway gets
+			// cloud.google.com/* annotations written by the cloud controller. These are
+			// not operator-owned and must not be treated as drift, or the operator
+			// hot-loops Update and races the concurrent writer.
+			name: "external cloud annotations ignored",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Annotations = map[string]string{
+					"cloud.google.com/neg":        `{"ingress":true}`,
+					"cloud.google.com/neg-status": `{"network_endpoint_groups":{"8080":"k8s1-abc"}}`,
+				}
+				return s
+			}(),
+			vmcp:        baseVmcp.DeepCopy(),
+			needsUpdate: false,
+		},
+		{
+			name: "external label ignored",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Labels["external.example.com/managed"] = "true"
+				return s
+			}(),
+			vmcp:        baseVmcp.DeepCopy(),
+			needsUpdate: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -2597,6 +2624,61 @@ func TestVirtualMCPServerEnsureService_UpdateService(t *testing.T) {
 	assert.Equal(t, corev1.ServiceTypeLoadBalancer, service.Spec.Type)
 }
 
+// TestVirtualMCPServerEnsureService_PreservesExternalAnnotations is a regression test
+// for #5730: when a genuine operator-owned change triggers a Service update, annotations
+// written by an external controller (e.g. GKE NEG) must be preserved, not stripped.
+func TestVirtualMCPServerEnsureService_PreservesExternalAnnotations(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef(testGroupName),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Spec.ServiceType = "LoadBalancer"
+		}),
+	)
+
+	// Existing service with wrong type (triggers update) plus a cloud-owned annotation.
+	oldService := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpServiceName(vmcp.Name),
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(vmcp.Name),
+			Annotations: map[string]string{
+				"cloud.google.com/neg-status": `{"network_endpoint_groups":{"8080":"k8s1-abc"}}`,
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     corev1.ServiceTypeClusterIP,
+			Selector: labelsForVirtualMCPServer(vmcp.Name),
+			Ports:    []corev1.ServicePort{{Port: 4483, TargetPort: intstr.FromInt(4483)}},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, oldService).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{Client: k8sClient, Scheme: scheme}
+
+	_, err := reconciler.ensureService(context.Background(), vmcp)
+	assert.NoError(t, err)
+
+	service := &corev1.Service{}
+	err = k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      vmcpServiceName(vmcp.Name),
+		Namespace: vmcp.Namespace,
+	}, service)
+	assert.NoError(t, err)
+	// Operator-owned field applied...
+	assert.Equal(t, corev1.ServiceTypeLoadBalancer, service.Spec.Type)
+	// ...and the external annotation preserved.
+	assert.Equal(t, `{"network_endpoint_groups":{"8080":"k8s1-abc"}}`,
+		service.Annotations["cloud.google.com/neg-status"])
+}
+
 func TestVirtualMCPServerEnsureService_NoUpdateNeeded(t *testing.T) {
 	t.Parallel()
 
@@ -3847,4 +3929,104 @@ func TestVirtualMCPServerReconciler_IdentitySynthesizedTransitionsOnValidationFa
 	assert.Equal(t, mcpv1beta1.ConditionReasonIdentitySynthesizedInactive, cond.Reason)
 	assert.NotContains(t, cond.Message, "atlassian",
 		"stale message naming the now-removed upstream must not survive the broken edit")
+}
+
+// TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP exercises the
+// admission-time check that rejects http:// issuers for non-localhost hosts
+// unless insecureAllowHTTP is explicitly set.
+func TestVirtualMCPServerValidateAuthServerConfig_InsecureAllowHTTP(t *testing.T) {
+	t.Parallel()
+
+	validUpstreams := []mcpv1beta1.UpstreamProviderConfig{
+		{
+			Name: "dex",
+			Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+			OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+				IssuerURL: "https://dex.example.com",
+				ClientID:  "test-client",
+			},
+		},
+	}
+
+	tests := []struct {
+		name              string
+		issuer            string
+		insecureAllowHTTP bool
+		wantErr           bool
+		wantCondition     metav1.ConditionStatus
+	}{
+		{
+			name:          "https issuer: always valid",
+			issuer:        "https://authserver.example.com",
+			wantCondition: metav1.ConditionTrue,
+		},
+		{
+			name:          "http localhost issuer: valid without flag",
+			issuer:        "http://localhost:4483",
+			wantCondition: metav1.ConditionTrue,
+		},
+		{
+			name:          "http in-cluster issuer without flag: rejected",
+			issuer:        "http://vmcp-test.default.svc.cluster.local:4483",
+			wantErr:       true,
+			wantCondition: metav1.ConditionFalse,
+		},
+		{
+			name:              "http in-cluster issuer with flag: accepted",
+			issuer:            "http://vmcp-test.default.svc.cluster.local:4483",
+			insecureAllowHTTP: true,
+			wantCondition:     metav1.ConditionTrue,
+		},
+		{
+			name:          "http non-localhost issuer without flag: rejected",
+			issuer:        "http://authserver.example.com",
+			wantErr:       true,
+			wantCondition: metav1.ConditionFalse,
+		},
+		{
+			name:              "http non-localhost issuer with flag: accepted",
+			issuer:            "http://authserver.example.com",
+			insecureAllowHTTP: true,
+			wantCondition:     metav1.ConditionTrue,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer:            tt.issuer,
+					InsecureAllowHTTP: tt.insecureAllowHTTP,
+					UpstreamProviders: validUpstreams,
+				}),
+				v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+					v.Generation = 1
+				}),
+			)
+
+			r := &VirtualMCPServerReconciler{}
+			statusManager := virtualmcpserverstatus.NewStatusManager(vmcp)
+			err := r.validateAuthServerConfig(vmcp, statusManager)
+			statusManager.UpdateStatus(t.Context(), &vmcp.Status)
+
+			if tt.wantErr {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+
+			cond := findCondition(vmcp.Status.Conditions, mcpv1beta1.ConditionTypeAuthServerConfigValidated)
+			require.NotNil(t, cond, "AuthServerConfigValidated condition must be set")
+			assert.Equal(t, tt.wantCondition, cond.Status)
+
+			if tt.wantErr {
+				assert.Equal(t, mcpv1beta1.ConditionReasonAuthServerConfigInvalid, cond.Reason)
+				assert.Contains(t, cond.Message, "insecureAllowHTTP",
+					"rejection message must guide the user to the fix")
+			}
+		})
+	}
 }

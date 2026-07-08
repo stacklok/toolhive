@@ -154,9 +154,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		}
 	}
 
-	// Auto-populate SubjectProviderName on any token_exchange strategy that
+	// Auto-populate SubjectProviderName on backend auth strategies that
 	// omitted it when an embedded auth server is active.
-	config.InjectSubjectProviderNames(vmcpCfg, authServerRC)
+	if err := config.InjectSubjectProviderNames(vmcpCfg, authServerRC); err != nil {
+		return fmt.Errorf("failed to default outgoing auth subject provider names: %w", err)
+	}
 
 	// Construct embedded authorization server if configured.
 	var embeddedAuthServer *authserverrunner.EmbeddedAuthServer
@@ -350,8 +352,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// aggregation (agg feeds it via Config.Aggregator below).
 	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry)
 
-	// When the optimizer is enabled, its meta-tools must pass through the authz
-	// response filter so they appear in tools/list.
+	// When the optimizer is enabled, its meta-tools are pass-through tools.
+	// Authz uses this for optimizer-aware authorization/filtering.
 	var passThroughTools map[string]struct{}
 	if optCfg != nil {
 		passThroughTools = map[string]struct{}{
@@ -389,19 +391,19 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	slog.Info(fmt.Sprintf("Incoming authentication configured: %s", vmcpCfg.IncomingAuth.Type))
 
 	namespace := vmcpNamespace()
-	rateLimitMiddleware, rateLimitCleanup, err := ratelimitfactory.NewMiddleware(ctx, ratelimitfactory.Config{
+	rateLimiter, rateLimitCleanup, err := ratelimitfactory.NewLimiter(ctx, ratelimitfactory.Config{
 		Namespace:      namespace,
 		ServerName:     vmcpCfg.Name,
 		RateLimiting:   vmcpCfg.RateLimiting,
 		SessionStorage: vmcpCfg.SessionStorage,
 	})
 	if err != nil {
-		return fmt.Errorf("failed to create rate limit middleware: %w", err)
+		return fmt.Errorf("failed to create rate limiter: %w", err)
 	}
 	if rateLimitCleanup != nil {
 		defer func() {
 			if closeErr := rateLimitCleanup(context.Background()); closeErr != nil {
-				slog.Error(fmt.Sprintf("failed to close rate limit middleware: %v", closeErr))
+				slog.Error(fmt.Sprintf("failed to close rate limiter: %v", closeErr))
 			}
 		}()
 	}
@@ -422,7 +424,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,
 		PassthroughHeaders:      vmcpCfg.PassthroughHeaders,
-		RateLimitMiddleware:     rateLimitMiddleware,
+		RateLimiter:             rateLimiter,
 		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       telemetryProvider,
 		AuditConfig:             vmcpCfg.Audit,

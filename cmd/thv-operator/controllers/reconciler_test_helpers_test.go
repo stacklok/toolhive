@@ -170,10 +170,10 @@ func withAuthzConfigRefIndexes(b *fake.ClientBuilder) *fake.ClientBuilder {
 }
 
 // withToolConfigRefIndex registers the field index that
-// ToolConfigReconciler.findReferencingWorkloads / findReferencingMCPServers rely
-// on, so fake-client MatchingFields lookups (which the real cache populates via
-// SetupWithManager) work in unit tests. Without it, the fake client returns "no
-// index with name spec.toolConfigRef has been registered".
+// ToolConfigReconciler.findReferencingWorkloads relies on, so fake-client
+// MatchingFields lookups (which the real cache populates via SetupWithManager)
+// work in unit tests. Without it, the fake client returns "no index with name
+// spec.toolConfigRef has been registered".
 func withToolConfigRefIndex(b *fake.ClientBuilder) *fake.ClientBuilder {
 	return b.WithIndex(&mcpv1beta1.MCPServer{}, toolConfigRefIndexKey, indexMCPServerByToolConfigRef)
 }

@@ -613,6 +613,7 @@ type PermissionProfileRef struct {
 }
 
 // PermissionProfileSpec defines the permissions for an MCP server
+// +gendoc
 type PermissionProfileSpec struct {
 	// Read is a list of paths that the MCP server can read from
 	// +listType=atomic

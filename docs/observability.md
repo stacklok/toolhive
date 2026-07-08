@@ -13,6 +13,10 @@ setting up and using these features, see the ToolHive documentation:
 - [CLI guide](https://docs.stacklok.com/toolhive/guides-cli/telemetry-and-metrics),
   including how to enable and configure telemetry and send to common backends
 
+To run a complete local observability stack (Prometheus, Grafana, and the
+OpenTelemetry Collector) for testing this instrumentation, see the
+[OpenTelemetry example stack](../examples/otel/README.md).
+
 For migrating from legacy attribute names to the new OTEL MCP semantic
 conventions, see the [Telemetry Migration Guide](./telemetry-migration-guide.md).
 
@@ -30,7 +34,7 @@ operations through:
 4. **Protocol-aware instrumentation**: MCP-specific insights beyond generic HTTP
    metrics
 
-See [the original design document](./proposals/otel-integration-proposal.md) for
+See [the original design document](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0001-otel-integration-proposal.md) for
 more details on the design and goals of this observability architecture.
 
 ## Architecture
@@ -159,7 +163,7 @@ spec:
     serviceName: my-server    # unique per server
 ```
 
-See [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](./examples/operator/mcp-servers/mcpserver_fetch_otel.yaml)
+See [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](../examples/operator/mcp-servers/mcpserver_fetch_otel.yaml)
 for a complete example.
 
 **Inline (deprecated)**: The inline `spec.telemetry` (MCPServer, MCPRemoteProxy)

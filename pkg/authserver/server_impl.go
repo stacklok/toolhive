@@ -32,12 +32,13 @@ type server struct {
 	// (newServer) so DCRStore() is a field read rather than re-asserting on
 	// every call, and a backend that does not implement DCRCredentialStore
 	// is rejected at boot rather than at first DCR resolve.
-	dcrStore  storage.DCRCredentialStore
-	upstreams []handlers.NamedUpstream
-	// refreshTokenLifespan mirrors the validated Config.RefreshTokenLifespan.
-	// It is threaded into upstreamTokenRefresher so the refresh path can
-	// re-anchor SessionExpiresAt for legacy storage rows missing that field.
-	refreshTokenLifespan time.Duration
+	dcrStore storage.DCRCredentialStore
+	// upstreamRefresher is the single shared refresher instance constructed in
+	// newServer. Storing the interface type (not *upstreamTokenRefresher) keeps
+	// the nil-return contract: newUpstreamTokenRefresher returns a true nil
+	// interface when there are no upstreams, so callers can check == nil safely.
+	upstreamRefresher storage.UpstreamTokenRefresher
+	upstreams         []handlers.NamedUpstream
 }
 
 // upstreamProviderFactory creates an upstream OAuth2Provider from configuration.
@@ -201,10 +202,12 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 
 	// Give the handler a refresher so the authorization chain can transparently
 	// refresh an expired upstream leg during login instead of skipping it and
-	// failing later at MCP-request token-swap time.
+	// failing later at MCP-request token-swap time. The same instance is stored
+	// on the server so UpstreamTokenRefresher() returns the identical object,
+	// ensuring both paths share one singleflight.Group.
 	refresher := newUpstreamTokenRefresher(upstreams, stor, cfg.RefreshTokenLifespan)
 	handlerInstance, err := handlers.NewHandler(fositeProvider, authServerConfig, stor, upstreams,
-		handlers.WithUpstreamRefresher(refresher))
+		buildHandlerOptions(refresher, cfg.UpstreamFilter)...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create handler: %w", err)
 	}
@@ -217,12 +220,24 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 	)
 
 	return &server{
-		handler:              router,
-		storage:              stor,
-		dcrStore:             dcrStore,
-		upstreams:            upstreams,
-		refreshTokenLifespan: cfg.RefreshTokenLifespan,
+		handler:           router,
+		storage:           stor,
+		dcrStore:          dcrStore,
+		upstreams:         upstreams,
+		upstreamRefresher: refresher,
 	}, nil
+}
+
+// buildHandlerOptions assembles the handlers.Option list for NewHandler: the
+// refresher is always wired, and the filter is added only when the caller's
+// Config sets one so a nil Config.UpstreamFilter preserves the pre-filter
+// behavior of walking every configured upstream.
+func buildHandlerOptions(refresher storage.UpstreamTokenRefresher, filter handlers.UpstreamFilter) []handlers.Option {
+	opts := []handlers.Option{handlers.WithUpstreamRefresher(refresher)}
+	if filter != nil {
+		opts = append(opts, handlers.WithUpstreamFilter(filter))
+	}
+	return opts
 }
 
 // Handler returns the HTTP handler that serves all OAuth/OIDC endpoints.
@@ -241,17 +256,17 @@ func (s *server) DCRStore() storage.DCRCredentialStore {
 	return s.dcrStore
 }
 
-// UpstreamTokenRefresher returns a refresher that wraps the upstream providers
-// and storage to transparently refresh expired upstream tokens. The refresher
-// dispatches to the correct provider based on each token's ProviderID.
+// UpstreamTokenRefresher returns the single shared refresher constructed in
+// newServer. Both the handler's chain-walk path and the runtime token-swap
+// path use this instance, ensuring concurrent refreshes for the same
+// (session, provider) pair are deduplicated by a single singleflight.Group.
 func (s *server) UpstreamTokenRefresher() storage.UpstreamTokenRefresher {
-	return newUpstreamTokenRefresher(s.upstreams, s.storage, s.refreshTokenLifespan)
+	return s.upstreamRefresher
 }
 
 // newUpstreamTokenRefresher builds a refresher over the given upstreams, or nil
-// when there are none. Shared by the Handler (chain-evaluation refresh) and the
-// server's UpstreamTokenRefresher() accessor so both observe identical provider
-// wiring.
+// when there are none. Called once during newServer so the returned instance
+// can be shared between the handler and the UpstreamTokenRefresher() accessor.
 func newUpstreamTokenRefresher(
 	upstreams []handlers.NamedUpstream,
 	stor storage.UpstreamTokenStorage,

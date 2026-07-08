@@ -141,6 +141,12 @@ type RunFlags struct {
 	RemoteForwardHeaders       []string
 	RemoteForwardHeadersSecret []string
 
+	// AllowedOrigins is the HTTP Origin-header allowlist for DNS-rebinding protection
+	// (MCP 2025-11-25 §"Security Warning"). Empty with a loopback host auto-derives
+	// loopback-only defaults; empty with a non-loopback host disables the check
+	// (operator must supply explicit origins for public bind).
+	AllowedOrigins []string
+
 	// Runtime configuration
 	RuntimeImage       string
 	RuntimeAddPackages []string
@@ -160,6 +166,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (default to auto-generated from image)")
 	cmd.Flags().StringVar(&config.Group, "group", "default", "Name of the group this workload should belong to")
 	cmd.Flags().StringVar(&config.Host, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
+	cmd.Flags().StringArrayVar(&config.AllowedOrigins, "allowed-origins", nil,
+		"Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; "+
+			"loopback binds derive a default allowlist automatically, non-loopback binds log a warning when "+
+			"no value is supplied. Example: https://my-mcp.example.com")
 	cmd.Flags().IntVar(&config.ProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
 	cmd.Flags().IntVar(&config.TargetPort, "target-port", 0,
 		"Port for the container to expose (only applicable to SSE or Streamable HTTP transport)")
@@ -261,7 +271,9 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Isolate the container network from the host. Use --isolate-network=false to opt out.")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
 		"Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). "+
-			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled.")
+			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled. "+
+			"Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the "+
+			"gateway is reachable on any port.")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) "+
 			"(default false)")
@@ -685,6 +697,7 @@ func buildRunnerConfig(
 			PrintOverlays: runFlags.PrintOverlays,
 		}),
 		runner.WithPublish(runFlags.Publish),
+		runner.WithAllowedOrigins(runFlags.AllowedOrigins),
 	}
 	opts = append(opts, extraOpts...)
 

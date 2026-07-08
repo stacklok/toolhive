@@ -1,0 +1,91 @@
+# Example: VirtualMCPServer optimizer using an OpenAI-compatible embedding API
+#
+# Instead of a managed TEI EmbeddingServer, this points the optimizer at an
+# external service that speaks the OpenAI /embeddings API — OpenAI, Azure
+# OpenAI, or another OpenAI-compatible gateway. There is no EmbeddingServer
+# or embeddingServerRef: the endpoint is reached directly via embeddingService.
+#
+# The API key is read from the OPENAI_API_KEY environment variable so it never
+# lands in the CRD spec or the generated ConfigMap. Inject it into the vmcp
+# container from a Secret via podTemplateSpec (omit it for keyless gateways).
+#
+# Note: unlike the TEI backend, the OpenAI API does not silently truncate
+# over-long inputs; a tool description exceeding the model's context window
+# returns an error rather than being truncated.
+#
+# Usage:
+#   kubectl apply -f vmcp_optimizer_openai.yaml
+
+---
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPGroup
+metadata:
+  name: optimizer-services
+  namespace: default
+spec:
+  description: Backend services for an OpenAI-embedding optimizer
+
+---
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef:
+    name: optimizer-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+
+---
+# Secret holding the embedding API key. Omit for keyless in-cluster gateways.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: embedding-api-key
+  namespace: default
+type: Opaque
+stringData:
+  apiKey: "sk-replace-me"
+
+---
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: VirtualMCPServer
+metadata:
+  name: optimizer-vmcp
+  namespace: default
+spec:
+  groupRef:
+    name: optimizer-services
+  config:
+    optimizer:
+      # Speak the OpenAI /embeddings API instead of TEI.
+      embeddingProvider: openai
+      # Base URL of the OpenAI-compatible service; "/embeddings" is appended.
+      embeddingService: http://llm-gateway.default.svc.cluster.local:8080/v1
+      # Model requested from the service (required for the openai provider).
+      embeddingModel: text-embedding-3-small
+      embeddingServiceTimeout: 15s
+      # Optional extra headers sent with every embedding request (e.g. a
+      # gateway cache-scoping key). Plain text — never put secrets here.
+      embeddingHeaders:
+        x-cache-key: toolhive-optimizer
+
+  incomingAuth:
+    type: anonymous
+  outgoingAuth:
+    source: discovered
+
+  # Inject the API key into the vmcp container as OPENAI_API_KEY.
+  podTemplateSpec:
+    spec:
+      containers:
+        - name: vmcp
+          env:
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: embedding-api-key
+                  key: apiKey

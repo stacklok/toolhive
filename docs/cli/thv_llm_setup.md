@@ -15,11 +15,17 @@ Configure detected AI tools to use the LLM gateway
 
 ### Synopsis
 
-Detect installed AI coding tools (Claude Code, Gemini CLI, Cursor, VS Code,
-Xcode) and patch each tool's configuration to route through the LLM gateway.
+Detect installed AI tools (Claude Code, Gemini CLI, Cursor, VS Code, Xcode,
+Claude Desktop) and patch each tool's configuration to route through the LLM
+gateway.
 
 Token-helper tools (Claude Code, Gemini CLI) are configured to call
 "thv llm token" to obtain a fresh OIDC token on demand.
+
+Claude Desktop is configured via its third-party inference credential helper,
+which also calls "thv llm token". It reads its configuration only at launch, so
+fully quit and relaunch it after setup. Pass --models to list the models it
+should offer until the gateway serves model discovery itself.
 
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
@@ -49,6 +55,7 @@ thv llm setup [flags]
   -h, --help                           help for setup
       --issuer string                  OIDC issuer URL
       --lazy                           Skip the interactive OIDC login and defer it until the first time a configured tool accesses the gateway. Tool config and persisted settings are written normally. Useful for unattended provisioning (e.g. an MDM profile).
+      --models strings                 Explicit model IDs to expose to credential-helper clients (Claude Desktop's inferenceModels). Repeat or comma-separate. Omit to rely on the gateway's own model discovery once it is available.
       --proxy-port int                 Localhost proxy listen port (omit to keep current; default: 14000)
       --skip-browser                   Print the OIDC authorization URL instead of opening a browser, then wait for the callback. Use in headless/SSH/CI environments where no system browser is available.
       --tls-skip-verify                Skip TLS certificate verification for the upstream gateway (local dev only). For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, disabling TLS for ALL of that tool's outbound connections. For proxy-mode tools only the proxy-to-gateway connection is affected.

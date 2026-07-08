@@ -43,7 +43,6 @@ func populatedLegacyConfig() *Config {
 		AuthzMiddleware:         passthrough,
 		AuthInfoHandler:         http.NewServeMux(),
 		PassthroughHeaders:      []string{"X-Tenant-Id"},
-		RateLimitMiddleware:     passthrough,
 		AuthServer:              &asrunner.EmbeddedAuthServer{},
 		TelemetryProvider:       &telemetry.Provider{},
 		AuditConfig:             &audit.Config{},
@@ -75,7 +74,6 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 
 	// Func/handler/pointer fields projected by reference.
 	assert.NotNil(t, got.AuthMiddleware)
-	assert.NotNil(t, got.RateLimitMiddleware)
 	assert.Same(t, cfg.AuthInfoHandler, got.AuthInfoHandler)
 	assert.Equal(t, cfg.PassthroughHeaders, got.PassthroughHeaders)
 	assert.Same(t, cfg.AuthServer, got.AuthServer)

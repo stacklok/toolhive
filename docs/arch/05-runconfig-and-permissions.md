@@ -747,3 +747,4 @@ Custom permission profiles can be defined in JSON files for reusable security po
 - [Deployment Modes](01-deployment-modes.md) - RunConfig portability
 - [Transport Architecture](03-transport-architecture.md) - Transport configuration
 - [Operator Architecture](09-operator-architecture.md) - K8s-specific configuration
+- [Registry System](06-registry-system.md) - Registry metadata that seeds RunConfig for a server

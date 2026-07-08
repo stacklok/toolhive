@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"sync"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -352,6 +353,10 @@ func (a *defaultAggregator) MergeCapabilities(
 			routingTable.Tools[resolvedTool.ResolvedName] = target
 		}
 	}
+
+	sort.Slice(tools, func(i, j int) bool {
+		return tools[i].Name < tools[j].Name
+	})
 
 	// Add resources to routing table
 	for _, resource := range resolved.Resources {

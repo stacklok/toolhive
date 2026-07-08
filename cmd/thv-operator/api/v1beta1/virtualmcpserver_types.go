@@ -19,6 +19,7 @@ import (
 // +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="config.rateLimiting requires sessionStorage with provider 'redis'"
 // +kubebuilder:validation:XValidation:rule="!(has(self.config) && has(self.config.rateLimiting) && has(self.config.rateLimiting.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="config.rateLimiting.perUser requires incomingAuth.type oidc"
 // +kubebuilder:validation:XValidation:rule="!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools) || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth) && self.incomingAuth.type == 'oidc')",message="per-tool perUser rate limiting requires incomingAuth.type oidc"
+// +kubebuilder:validation:XValidation:rule="!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer) && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider == 'openai')",message="embeddingServerRef provisions a managed TEI server and cannot be combined with optimizer.embeddingProvider 'openai'; openai mode uses embeddingService directly"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type VirtualMCPServerSpec struct {
@@ -251,6 +252,7 @@ const (
 
 // DiscoveredBackend is an alias to the canonical definition in pkg/vmcp/types.go
 // This provides a local name for use in the CRD status.
+// +gendoc
 type DiscoveredBackend = vmcptypes.DiscoveredBackend
 
 // VirtualMCPServerStatus defines the observed state of VirtualMCPServer

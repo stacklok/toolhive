@@ -1135,6 +1135,19 @@ func TestMCPServerServiceNeedsUpdate(t *testing.T) {
 			}(),
 			needsUpdate: false,
 		},
+		{
+			// Regression for #5730: external controllers (e.g. GKE NEG/Gateway) write
+			// cloud.google.com/* annotations on the Service. These are not operator-owned
+			// and must not be treated as drift, or the operator hot-loops Update.
+			name: "external cloud annotations ignored",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Annotations["cloud.google.com/neg-status"] = `{"network_endpoint_groups":{"8080":"k8s1-abc"}}`
+				return s
+			}(),
+			mcpServer:   baseMCPServer.DeepCopy(),
+			needsUpdate: false,
+		},
 	}
 
 	for _, tt := range tests {

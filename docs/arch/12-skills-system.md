@@ -462,3 +462,4 @@ ToolHive owns the installation lifecycle, scoping model, CLI/API interfaces, and
 - [Registry System](06-registry-system.md) - Registry architecture shared by skills and servers
 - [Groups](07-groups.md) - Group concept used to organize skills and workloads
 - [Architecture Overview](00-overview.md) - Platform overview
+- [Plugins System](14-plugins-system.md) - Sibling distribution system (OCI artifacts, multi-client install)

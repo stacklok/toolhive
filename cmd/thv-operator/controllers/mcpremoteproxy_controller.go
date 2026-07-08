@@ -124,6 +124,9 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Validate the GroupRef if specified
 	r.validateGroupRef(ctx, proxy)
 
+	// Validate the OIDC CA bundle reference if specified
+	r.validateCABundleRef(ctx, proxy)
+
 	// Surface advisory condition when primaryUpstreamProvider is set but ignored
 	r.validateAuthzPrimaryUpstreamProviderIgnored(proxy)
 
@@ -373,8 +376,11 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 		}
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
-		service.Labels = newService.Labels
-		service.Annotations = newService.Annotations
+		// Merge (not replace) Labels/Annotations so keys written by external controllers
+		// (e.g. GKE NEG's cloud.google.com/* annotations) are preserved while the
+		// operator-owned values are applied.
+		service.Labels = ctrlutil.MergeLabels(newService.Labels, service.Labels)
+		service.Annotations = ctrlutil.MergeAnnotations(newService.Annotations, service.Annotations)
 
 		ctxLogger.Info("Updating Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
 		if err := r.Update(ctx, service); err != nil {
@@ -1077,6 +1083,132 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 	}
 }
 
+// validateCABundleRef validates the OIDC CA bundle ConfigMap reference if specified.
+// The CA bundle is sourced from the referenced MCPOIDCConfig's inline configuration.
+// It mirrors MCPServer.validateCABundleRef so the proxy surfaces the same
+// CABundleRefValidated condition (see the Status Condition Parity rule).
+//
+// Writes go through MutateAndPatchStatus (per the operator.md Status Writes rule),
+// which diffs and skips the wire call when nothing changed, so a steady-state
+// reconcile is a no-op (idempotency) and only the condition is patched rather than
+// the whole status PUT.
+//
+// This validator runs before handleOIDCConfig, which is the authoritative validator
+// for the OIDCConfigRef itself. So when the MCPOIDCConfig cannot be resolved (e.g. a
+// transient apiserver/cache error), it leaves the existing condition untouched and
+// lets handleOIDCConfig's requeue drive recovery — clearing the condition only when
+// the config resolves and genuinely has no CA bundle.
+func (r *MCPRemoteProxyReconciler) validateCABundleRef(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) {
+	condType := mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated
+
+	caBundleRef, resolved := r.resolveOIDCCABundleRef(ctx, proxy)
+	if !resolved {
+		// Could not resolve the MCPOIDCConfig; leave any existing condition in place.
+		return
+	}
+	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
+		// Config resolved and has no CA bundle: clear any stale condition.
+		r.patchCABundleStatus(ctx, proxy, func(p *mcpv1beta1.MCPRemoteProxy) {
+			meta.RemoveStatusCondition(&p.Status.Conditions, condType)
+		})
+		return
+	}
+
+	status, reason, message := r.evaluateCABundleRef(ctx, proxy, caBundleRef)
+	r.patchCABundleStatus(ctx, proxy, func(p *mcpv1beta1.MCPRemoteProxy) {
+		setRemoteProxyCABundleRefCondition(p, status, reason, message)
+	})
+}
+
+// evaluateCABundleRef checks the referenced CA bundle ConfigMap and returns the
+// resulting CABundleRefValidated condition status, reason, and message. It performs
+// no status mutation or persistence. Mirrors MCPServer.validateCABundleRef's checks.
+func (r *MCPRemoteProxyReconciler) evaluateCABundleRef(
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, caBundleRef *mcpv1beta1.CABundleSource,
+) (metav1.ConditionStatus, string, string) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Validate the CABundleRef configuration
+	if err := validation.ValidateCABundleSource(caBundleRef); err != nil {
+		ctxLogger.Error(err, "Invalid CABundleRef configuration")
+		return metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid, err.Error()
+	}
+
+	// Check if the referenced ConfigMap exists
+	cmName := caBundleRef.ConfigMapRef.Name
+	configMap := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: proxy.Namespace, Name: cmName}, configMap); err != nil {
+		ctxLogger.Error(err, "Failed to find CA bundle ConfigMap", "configMap", cmName)
+		return metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefNotFound,
+			fmt.Sprintf("CA bundle ConfigMap '%s' not found in namespace '%s'", cmName, proxy.Namespace)
+	}
+
+	// Verify the key exists in the ConfigMap. A missing key is a configuration state
+	// surfaced through the condition, not a Go error, so it logs at Info (the two
+	// branches above carry a real error and log at Error).
+	key := caBundleRef.ConfigMapRef.Key
+	if key == "" {
+		key = validation.OIDCCABundleDefaultKey
+	}
+	if _, exists := configMap.Data[key]; !exists {
+		ctxLogger.Info("CA bundle key not found in ConfigMap", "configMap", cmName, "key", key)
+		return metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid,
+			fmt.Sprintf("Key '%s' not found in ConfigMap '%s'", key, cmName)
+	}
+
+	return metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefValid,
+		fmt.Sprintf("CA bundle ConfigMap '%s' is valid (key: %s)", cmName, key)
+}
+
+// resolveOIDCCABundleRef returns the CA bundle reference from the proxy's referenced
+// MCPOIDCConfig inline configuration. The bool reports whether the OIDC config was
+// successfully resolved: (nil, true) means "resolved, no CA bundle" and (nil, false)
+// means "could not resolve" (no ref, or a transient fetch error). The caller must not
+// clear the condition when resolved is false, to avoid flapping it on a transient
+// apiserver/cache error — handleOIDCConfig is the authoritative validator for the ref.
+func (r *MCPRemoteProxyReconciler) resolveOIDCCABundleRef(
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
+) (ref *mcpv1beta1.CABundleSource, resolved bool) {
+	if proxy.Spec.OIDCConfigRef == nil {
+		// No OIDC reference at all: there is nothing to resolve and no CA bundle, so
+		// the condition should be cleared. Treat as resolved with no CA bundle.
+		return nil, true
+	}
+	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
+	if err != nil || oidcCfg == nil {
+		return nil, false
+	}
+	if oidcCfg.Spec.Type != mcpv1beta1.MCPOIDCConfigTypeInline || oidcCfg.Spec.Inline == nil {
+		return nil, true
+	}
+	return oidcCfg.Spec.Inline.CABundleRef, true
+}
+
+// setRemoteProxyCABundleRefCondition sets the CA bundle ref validation condition on the proxy.
+func setRemoteProxyCABundleRefCondition(
+	proxy *mcpv1beta1.MCPRemoteProxy, status metav1.ConditionStatus, reason, message string,
+) {
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: proxy.Generation,
+	})
+}
+
+// patchCABundleStatus applies the CA bundle condition mutation via MutateAndPatchStatus
+// (diff-only merge patch, skipped when nothing changed). The error is logged and
+// swallowed: the CABundleRefValidated condition is advisory, and a failed write is
+// healed on the next reconcile rather than blocking the reconcile's objective.
+func (r *MCPRemoteProxyReconciler) patchCABundleStatus(
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, mutate func(*mcpv1beta1.MCPRemoteProxy),
+) {
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, proxy, mutate); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to update MCPRemoteProxy status after CABundleRef validation")
+	}
+}
+
 // validateAuthzPrimaryUpstreamProviderIgnored surfaces an advisory condition
 // when spec.authzConfig.inline.primaryUpstreamProvider is set on an
 // MCPRemoteProxy. The proxy has no embedded auth server, so the field has no
@@ -1513,11 +1645,15 @@ func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, pro
 		}
 	}
 
-	if !maps.Equal(service.Labels, expectedLabels) {
+	// Subset check rather than exact equality: the Service is co-owned by external
+	// controllers (e.g. GKE NEG/Gateway writes cloud.google.com/* annotations), so only
+	// the operator-owned keys must match. maps.Equal would treat those external
+	// annotations as drift and hot-loop Update against the concurrent writer.
+	if !ctrlutil.MapIsSubset(expectedLabels, service.Labels) {
 		return true
 	}
 
-	if !maps.Equal(service.Annotations, expectedAnnotations) {
+	if !ctrlutil.MapIsSubset(expectedAnnotations, service.Annotations) {
 		return true
 	}
 

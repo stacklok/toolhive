@@ -77,7 +77,6 @@ func deriveServerConfig(
 		EndpointPath:            cfg.EndpointPath,
 		SessionTTL:              cfg.SessionTTL,
 		AuthMiddleware:          cfg.AuthMiddleware,
-		RateLimitMiddleware:     cfg.RateLimitMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
 		PassthroughHeaders:      cfg.PassthroughHeaders,
 		AuthServer:              cfg.AuthServer,

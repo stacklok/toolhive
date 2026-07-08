@@ -312,6 +312,40 @@ func TestDeployWorkload_AllowDockerGateway_ForwardedToEgress(t *testing.T) {
 	assert.True(t, fops.egressAllowDockerGW, "AllowDockerGateway must be forwarded to createEgressSquidContainer")
 }
 
+// TestDeployWorkload_AllowDockerGateway_DefaultsToNotForwarded guards against a
+// default flip: when the caller does not opt in, the egress proxy must keep its
+// Docker-gateway deny rules. It also confirms the DNS container is spawned on the
+// isolation path (the MCP server's resolver).
+func TestDeployWorkload_AllowDockerGateway_DefaultsToNotForwarded(t *testing.T) {
+	t.Parallel()
+
+	fops := &fakeDeployOps{dnsIP: "172.18.0.10"}
+	c := newClientWithOps(fops)
+
+	opts := runtime.NewDeployWorkloadOptions()
+	opts.AttachStdio = true
+	// AllowDockerGateway intentionally left at its zero value (false).
+
+	_, err := c.DeployWorkload(
+		t.Context(),
+		"ghcr.io/example/mcp:latest",
+		"app",
+		[]string{"serve"},
+		map[string]string{},
+		map[string]string{},
+		&permissions.Profile{},
+		"stdio",
+		opts,
+		true, // isolateNetwork required for egress container to be created
+	)
+	require.NoError(t, err)
+
+	require.True(t, fops.egressCalled, "egress container must be created when isolateNetwork=true")
+	assert.False(t, fops.egressAllowDockerGW,
+		"AllowDockerGateway must default to false so the gateway deny rules stay in place")
+	assert.True(t, fops.dnsCalled, "DNS container must be created on the isolation path")
+}
+
 func TestDeployWorkload_UnsupportedTransport_PropagatesError(t *testing.T) {
 	t.Parallel()
 

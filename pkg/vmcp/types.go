@@ -241,6 +241,7 @@ const (
 
 // DiscoveredBackend represents a backend server discovered by vMCP runtime.
 // This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
+// +gendoc
 type DiscoveredBackend struct {
 	// Name is the name of the backend MCPServer
 	Name string `json:"name"`
@@ -610,6 +611,7 @@ type RoutingTable struct {
 
 // ConflictResolutionStrategy defines how to handle capability name conflicts.
 // Placed in vmcp root package to be shared by config and aggregator packages.
+// +gendoc
 type ConflictResolutionStrategy string
 
 const (

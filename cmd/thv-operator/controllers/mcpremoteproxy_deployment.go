@@ -32,6 +32,13 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	r.addTelemetryCABundleVolumes(ctx, proxy, &volumes, &volumeMounts)
+	if err := r.addOIDCCABundleVolumes(ctx, proxy, &volumes, &volumeMounts); err != nil {
+		// Returning nil aborts the build so ensureDeployment requeues with backoff and
+		// leaves the existing Deployment untouched, rather than building a CA-less pod
+		// that would crash-loop and flip the RunConfig checksum (restart flap).
+		log.FromContext(ctx).Error(err, "Failed to add OIDC CA bundle volumes")
+		return nil
+	}
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 
 	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
@@ -173,6 +180,38 @@ func (r *MCPRemoteProxyReconciler) addTelemetryCABundleVolumes(
 		*volumes = append(*volumes, caVolumes...)
 		*volumeMounts = append(*volumeMounts, caMounts...)
 	}
+}
+
+// addOIDCCABundleVolumes appends the CA bundle volume and mount for the referenced
+// MCPOIDCConfig's inline CA bundle, so the runner pod can read the CA file at the
+// path the RunConfig points it at (resolved.ThvCABundlePath). Mirrors MCPServer's
+// OIDC CA bundle mount.
+//
+// A fetch error is returned (not swallowed) so the caller can abort the build: a
+// transient failure must not produce a CA-less Deployment, which would flip the
+// RunConfig checksum and crash-loop the pod (restart flap). The CA bundle reference
+// content is validated separately in validateCABundleRef.
+//
+// Must be called from deploymentForMCPRemoteProxy where the client is available.
+func (r *MCPRemoteProxyReconciler) addOIDCCABundleVolumes(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	volumes *[]corev1.Volume,
+	volumeMounts *[]corev1.VolumeMount,
+) error {
+	if proxy.Spec.OIDCConfigRef == nil {
+		return nil
+	}
+	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
+	if err != nil {
+		return fmt.Errorf("failed to fetch MCPOIDCConfig for CA bundle volume: %w", err)
+	}
+	if oidcCfg != nil {
+		caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
+		*volumes = append(*volumes, caVolumes...)
+		*volumeMounts = append(*volumeMounts, caMounts...)
+	}
+	return nil
 }
 
 // buildEnvVarsForProxy builds environment variables for the proxy container

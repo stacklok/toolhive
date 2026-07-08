@@ -267,25 +267,35 @@ Removes the skill files from the filesystem, deletes the database record, and re
 
 Every `--scope project` install writes an entry to a `toolhive.lock.yaml` file at the project root, alongside `.git`. The lock file pins the exact **name**, **version**, **source**, **resolved reference**, **digest**, and **contentDigest** of each project-scoped skill (including transitively materialized `toolhive.requires` dependencies) so a team can commit it to version control, restore an identical set of skills on another machine, and later check for newer content — the same role `package-lock.json` or `go.sum` play for other package managers. User-scope installs never touch the lock file.
 
-In v1, a committed lock entry is an **assertion** verified against itself at install/sync time; PR review of the lock diff is the trust root until external attestation lands in a follow-on milestone.
+In v1, project-scope installs verify Sigstore signatures (OCI referrers / cosign tags for registry skills, gitsign commit signatures for git skills) and pin publisher identity in the lock file. Trust uses three layers:
+
+1. **Cryptographic verification** — Fulcio certificate chain + Rekor transparency log (online at install/upgrade; offline bundle re-verification in `sync --check`).
+2. **Publisher identity (TOFU)** — first verified install records `provenance.signerIdentity` + `provenance.certIssuer`; later installs enforce the same identity (`signer-mismatch` on divergence). Catalog-supplied expected identity is reserved for a future toolhive-core seam.
+3. **Human review** — PR review of `toolhive.lock.yaml` diffs remains the organizational trust root; `unsigned: true` is an explicit, reviewed exception.
 
 ```yaml
 version: 1
 skills:
   - name: code-review
     version: 1.0.0
-    source: code-review                          # what the user/registry resolver originally typed
+    source: code-review
     resolvedReference: ghcr.io/org/code-review:1.0.0
     digest: sha256:9f2b1e...
-    contentDigest: sha256:a1b2c3d4...            # deterministic dirhash of materialized files
-  - name: testing-conventions
-    source: ghcr.io/org/testing-conventions:1.0.0
-    resolvedReference: ghcr.io/org/testing-conventions:1.0.0
+    contentDigest: sha256:a1b2c3d4...
+    provenance:
+      signerIdentity: https://github.com/org/repo/.github/workflows/release.yml@refs/heads/main
+      certIssuer: https://token.actions.githubusercontent.com
+      repositoryURI: https://github.com/org/repo
+      sigstoreURL: https://rekor.sigstore.dev
+  - name: local-build
+    source: local-build
+    resolvedReference: local-build
     digest: sha256:...
     contentDigest: sha256:...
-    requiredBy: [code-review]                    # transitive dependency provenance
-    explicit: true                               # user-requested install; exempt from cascade removal
+    unsigned: true
 ```
+
+Use `--allow-unsigned` on install to record `unsigned: true` for artifacts without signatures (local builds, staging). `thv skill push` signs pushed OCI artifacts by default (`--key` for cosign static keys; `--no-sign` to skip). Upgrade refuses signer changes unless `--allow-signer-change` is set.
 
 `contentDigest` is a deterministic SHA-256 dirhash of the materialized skill file set (the integrity primitive for `sync --check`). Transitive dependencies declared via `toolhive.requires` are materialized at install time for all scopes; project-scope installs record them in the lock with `requiredBy`.
 
@@ -315,7 +325,7 @@ thv skill upgrade --fail-on-changes       # CI freshness gate: exit non-zero if 
 thv skill upgrade --allow-ref-change      # permit resolvedReference changes
 ```
 
-`Upgrade` re-resolves each entry's original `source` and compares digest/reference against the lock. Immutable pins (`@sha256:...`, full git commit hashes) are `not-upgradable`. Reference changes are blocked unless `--allow-ref-change` is set.
+`Upgrade` re-resolves each entry's original `source` and compares digest/reference against the lock. Immutable pins (`@sha256:...`, full git commit hashes) are `not-upgradable`. Reference changes are blocked unless `--allow-ref-change` is set. Signer identity changes are blocked unless `--allow-signer-change` is set.
 
 **Implementation:** `pkg/skills/lockfile/` (schema, contentDigest, validation, file-locked ops), `pkg/skills/lock_service.go` (`SkillLockService`), `pkg/skills/skillsvc/sync.go` (Sync), `pkg/skills/skillsvc/upgrade.go` (Upgrade), `pkg/skills/skillsvc/pin.go` (digest-pinning and immutability helpers), `pkg/skills/skillsvc/lock.go` (install hooks, dependency materialization)
 

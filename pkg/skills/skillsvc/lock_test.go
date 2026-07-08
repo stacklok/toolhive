@@ -37,15 +37,16 @@ func TestInstallRecordsProjectScopeLockEntry(t *testing.T) {
 		Return(skills.InstalledSkill{}, storage.ErrNotFound)
 	store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 
-	svc := New(store, WithPathResolver(pr))
+	svc := New(store, withTestVerifier(), WithPathResolver(pr))
 	result, err := svc.Install(t.Context(), skills.InstallOptions{
-		Name:        "my-skill",
-		LayerData:   layerData,
-		Digest:      "sha256:abcdef0123456789",
-		Reference:   "ghcr.io/org/my-skill:v1",
-		Version:     "1.0.0",
-		Scope:       skills.ScopeProject,
-		ProjectRoot: projectRoot,
+		Name:          "my-skill",
+		LayerData:     layerData,
+		Digest:        "sha256:abcdef0123456789",
+		Reference:     "ghcr.io/org/my-skill:v1",
+		Version:       "1.0.0",
+		Scope:         skills.ScopeProject,
+		ProjectRoot:   projectRoot,
+		AllowUnsigned: true,
 	})
 	require.NoError(t, err)
 	assert.Equal(t, "my-skill", result.Skill.Metadata.Name)
@@ -148,13 +149,14 @@ func TestInstallInternalDoesNotTouchLockFile(t *testing.T) {
 		Return(skills.InstalledSkill{}, storage.ErrNotFound)
 	store.EXPECT().Create(gomock.Any(), gomock.Any()).Return(nil)
 
-	svc := New(store, WithPathResolver(pr)).(*service)
+	svc := New(store, withTestVerifier(), WithPathResolver(pr)).(*service)
 	_, err := svc.installInternal(context.Background(), skills.InstallOptions{
-		Name:        "my-skill",
-		LayerData:   layerData,
-		Digest:      "sha256:abcdef0123456789",
-		Scope:       skills.ScopeProject,
-		ProjectRoot: projectRoot,
+		Name:          "my-skill",
+		LayerData:     layerData,
+		Digest:        "sha256:abcdef0123456789",
+		Scope:         skills.ScopeProject,
+		ProjectRoot:   projectRoot,
+		AllowUnsigned: true,
 	})
 	require.NoError(t, err)
 

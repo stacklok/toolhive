@@ -655,3 +655,4 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 - [Deployment Modes](01-deployment-modes.md) - How transports work in each mode
 - [RunConfig and Permissions](05-runconfig-and-permissions.md) - Transport configuration
 - [Core Concepts](02-core-concepts.md) - Transport concepts and terminology
+- [Operator Architecture](09-operator-architecture.md) - How the operator and proxy-runner set up transports in Kubernetes

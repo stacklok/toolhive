@@ -519,3 +519,5 @@ This allows the same codebase to behave appropriately in different environments.
 - [Transport Architecture](03-transport-architecture.md) - How proxying works
 - [RunConfig and Permissions](05-runconfig-and-permissions.md) - Configuration format
 - [Operator Architecture](09-operator-architecture.md) - Kubernetes operator details
+- [Groups](07-groups.md) - Logical grouping of servers across deployment modes
+- [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - Aggregating backends as a deployment pattern

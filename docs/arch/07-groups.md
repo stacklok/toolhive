@@ -141,3 +141,4 @@ Groups may serve as the foundation for additional features:
 - [Workloads Lifecycle](08-workloads-lifecycle.md) - Group operations
 - [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - Group-based aggregation
 - [Skills System](12-skills-system.md) - Skills organized in groups
+- [Deployment Modes](01-deployment-modes.md) - How groups apply per deployment mode

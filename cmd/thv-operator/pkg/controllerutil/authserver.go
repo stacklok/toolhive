@@ -823,7 +823,7 @@ func buildUpstreamRunConfig(
 			config.OAuth2Config = oauth2
 		}
 	case mcpv1beta1.UpstreamProviderTypeOIDCTrust:
-		// oidc-trust reuses the OIDC config but only needs issuer, clientID, and optional CA bundle.
+		// oidc-trust reuses the OIDC config but only needs issuer and optional CA bundle.
 		// No client secret, redirect URI, or scopes are required.
 		if provider.OIDCConfig != nil {
 			var caBundlePath string
@@ -835,12 +835,15 @@ func buildUpstreamRunConfig(
 				}
 				caBundlePath = fmt.Sprintf("%s/%s/%s", UpstreamCABundleMountBasePath, provider.Name, key)
 			}
-			config.OIDCConfig = &authserver.OIDCUpstreamRunConfig{
-				IssuerURL:       provider.OIDCConfig.IssuerURL,
-				ClientID:        provider.OIDCConfig.ClientID,
-				CABundlePath:    caBundlePath,
-				AllowPrivateIPs: provider.OIDCConfig.AllowPrivateIP,
+			oidcRC := &authserver.OIDCUpstreamRunConfig{
+				IssuerURL:        provider.OIDCConfig.IssuerURL,
+				ClientID:         provider.OIDCConfig.ClientID,
+				CABundlePath:     caBundlePath,
+				AllowPrivateIPs:  provider.OIDCConfig.AllowPrivateIP,
+				JWKSUri:          provider.OIDCConfig.JWKSUri,
+				AllowedClientIDs: provider.OIDCConfig.AllowedClientIDs,
 			}
+			config.OIDCConfig = oidcRC
 		}
 	}
 

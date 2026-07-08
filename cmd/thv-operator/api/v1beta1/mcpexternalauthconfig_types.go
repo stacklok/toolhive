@@ -566,7 +566,8 @@ const (
 // rule fails admission instead of silently demanding the OAuth2 shape. When
 // adding a new type, extend both this rule and validateUpstreamProvider.
 //
-// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? (has(self.oidcConfig) && !has(self.oauth2Config)) : self.type == 'oauth2' ? (has(self.oauth2Config) && !has(self.oidcConfig)) : false",message="type must be 'oidc' or 'oauth2'; oidcConfig must be set when type is 'oidc' and oauth2Config must be set when type is 'oauth2' (and the other must not be set)"
+// +kubebuilder:validation:XValidation:rule="self.type == 'oidc' ? (has(self.oidcConfig) && !has(self.oauth2Config)) : self.type == 'oauth2' ? (has(self.oauth2Config) && !has(self.oidcConfig)) : self.type == 'oidc-trust' ? (has(self.oidcConfig) && !has(self.oauth2Config)) : false",message="type must be 'oidc', 'oauth2', or 'oidc-trust'; oidcConfig must be set for 'oidc' and 'oidc-trust', oauth2Config must be set for 'oauth2' (and the other must not be set)"
+// +kubebuilder:validation:XValidation:rule="self.type != 'oidc' || (has(self.oidcConfig) && self.oidcConfig.clientId != ”)",message="clientId is required when type is 'oidc'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type UpstreamProviderConfig struct {
@@ -605,8 +606,9 @@ type OIDCUpstreamConfig struct {
 	IssuerURL string `json:"issuerUrl"`
 
 	// ClientID is the OAuth 2.0 client identifier registered with the upstream IdP.
-	// +kubebuilder:validation:Required
-	ClientID string `json:"clientId"`
+	// Required when type is 'oidc'; not used by 'oidc-trust' providers.
+	// +optional
+	ClientID string `json:"clientId,omitempty"`
 
 	// ClientSecretRef references a Kubernetes Secret containing the OAuth 2.0 client secret.
 	// Optional for public clients using PKCE instead of client secret.
@@ -692,6 +694,18 @@ type OIDCUpstreamConfig struct {
 	// where service DNS resolves to cluster-internal IPs. Default: false.
 	// +optional
 	AllowPrivateIP bool `json:"allowPrivateIP,omitempty"`
+
+	// JWKSUri bypasses OIDC discovery when set. Must be HTTPS.
+	// +optional
+	// +kubebuilder:validation:Pattern=`^https://.*$`
+	JWKSUri string `json:"jwksUri,omitempty"`
+
+	// AllowedClientIDs restricts which client_id values in inbound assertions
+	// are accepted from this issuer. When empty, any client_id is accepted.
+	// No-op on the RFC 8693 token exchange path.
+	// +optional
+	// +listType=atomic
+	AllowedClientIDs []string `json:"allowedClientIDs,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.

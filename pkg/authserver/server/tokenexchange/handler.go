@@ -108,7 +108,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 	validatedClaims, err := h.validator.Validate(ctx, params.subjectToken)
 	if err != nil {
 		slog.Debug("Subject token validation failed", "error", err)
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The subject token is invalid or could not be verified.").WithWrap(err))
 	}
 
@@ -219,7 +219,7 @@ func (h *Handler) resolveActorIdentity(
 		actorClaims, err := h.selfValidator.Validate(ctx, params.actorToken)
 		if err != nil {
 			slog.Debug("Actor token validation failed", "error", err)
-			return "", errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+			return "", errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 				"The actor token is invalid or could not be verified.").WithWrap(err))
 		}
 		// Binding check: actor_token.sub MUST match the authenticated client ID.

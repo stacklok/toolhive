@@ -22,6 +22,7 @@ type OIDCTrustProvider struct {
 	expectedAudience string
 	caBundlePath     string
 	allowPrivateIP   bool
+	jwksURL          string
 }
 
 // NewOIDCTrustProvider creates a new OIDC trust-only provider.
@@ -31,12 +32,16 @@ type OIDCTrustProvider struct {
 // The caBundlePath is optional; when set, it is used to verify the issuer's TLS cert.
 // When allowPrivateIP is true, the HTTP client used for OIDC discovery and JWKS
 // fetching will permit connections to private IP addresses.
-func NewOIDCTrustProvider(issuerURL, expectedAudience, caBundlePath string, allowPrivateIP bool) *OIDCTrustProvider {
+// The jwksURL, when non-empty, bypasses OIDC discovery and fetches keys directly.
+func NewOIDCTrustProvider(
+	issuerURL, expectedAudience, caBundlePath string, allowPrivateIP bool, jwksURL string,
+) *OIDCTrustProvider {
 	return &OIDCTrustProvider{
 		issuerURL:        issuerURL,
 		expectedAudience: expectedAudience,
 		caBundlePath:     caBundlePath,
 		allowPrivateIP:   allowPrivateIP,
+		jwksURL:          jwksURL,
 	}
 }
 
@@ -63,6 +68,12 @@ func (p *OIDCTrustProvider) CABundlePath() string {
 // AllowPrivateIP returns whether the HTTP client should permit private IP addresses.
 func (p *OIDCTrustProvider) AllowPrivateIP() bool {
 	return p.allowPrivateIP
+}
+
+// JWKSUrl returns the explicit JWKS URL for this trust provider.
+// When empty, the caller should resolve JWKS via OIDC discovery.
+func (p *OIDCTrustProvider) JWKSUrl() string {
+	return p.jwksURL
 }
 
 // AuthorizationURL is not supported. oidc-trust providers only contribute

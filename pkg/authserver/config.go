@@ -334,6 +334,15 @@ type OIDCUpstreamRunConfig struct {
 	// the OIDC issuer's TLS certificate. Used by oidc-trust providers when the issuer
 	// uses a non-public CA. When empty, the system trust store is used.
 	CABundlePath string `json:"ca_bundle_path,omitempty" yaml:"ca_bundle_path,omitempty"`
+
+	// JWKSUri bypasses OIDC discovery and fetches signing keys from this URL directly.
+	// When empty, keys are resolved via {Issuer}/.well-known/openid-configuration.
+	JWKSUri string `json:"jwks_uri,omitempty" yaml:"jwks_uri,omitempty"`
+
+	// AllowedClientIDs restricts which client_id values in validated jwt-bearer
+	// assertions are accepted from this issuer. When empty, any client_id is accepted.
+	// No-op on the RFC 8693 token exchange path.
+	AllowedClientIDs []string `json:"allowed_client_ids,omitempty" yaml:"allowed_client_ids,omitempty"`
 }
 
 // OAuth2UpstreamRunConfig contains configuration for pure OAuth 2.0 providers.

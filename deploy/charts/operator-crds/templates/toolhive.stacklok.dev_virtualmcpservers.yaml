@@ -828,6 +828,15 @@ spec:
                                 private IP addresses. Required for in-cluster OIDC issuers (e.g., Keycloak)
                                 where service DNS resolves to cluster-internal IPs. Default: false.
                               type: boolean
+                            allowedClientIDs:
+                              description: |-
+                                AllowedClientIDs restricts which client_id values in inbound assertions
+                                are accepted from this issuer. When empty, any client_id is accepted.
+                                No-op on the RFC 8693 token exchange path.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
                             caBundleConfigMapRef:
                               description: |-
                                 CABundleConfigMapRef references a ConfigMap containing the CA certificate
@@ -862,8 +871,9 @@ spec:
                                   x-kubernetes-map-type: atomic
                               type: object
                             clientId:
-                              description: ClientID is the OAuth 2.0 client identifier
-                                registered with the upstream IdP.
+                              description: |-
+                                ClientID is the OAuth 2.0 client identifier registered with the upstream IdP.
+                                Required when type is 'oidc'; not used by 'oidc-trust' providers.
                               type: string
                             clientSecretRef:
                               description: |-
@@ -884,6 +894,11 @@ spec:
                               description: |-
                                 IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
                                 Must be a valid HTTPS URL.
+                              pattern: ^https://.*$
+                              type: string
+                            jwksUri:
+                              description: JWKSUri bypasses OIDC discovery when set.
+                                Must be HTTPS.
                               pattern: ^https://.*$
                               type: string
                             redirectUri:
@@ -1000,7 +1015,6 @@ spec:
                               - endpointUrl
                               type: object
                           required:
-                          - clientId
                           - issuerUrl
                           type: object
                         type:
@@ -1016,12 +1030,16 @@ spec:
                       - type
                       type: object
                       x-kubernetes-validations:
-                      - message: type must be 'oidc' or 'oauth2'; oidcConfig must
-                          be set when type is 'oidc' and oauth2Config must be set
-                          when type is 'oauth2' (and the other must not be set)
+                      - message: type must be 'oidc', 'oauth2', or 'oidc-trust'; oidcConfig
+                          must be set for 'oidc' and 'oidc-trust', oauth2Config must
+                          be set for 'oauth2' (and the other must not be set)
                         rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) && !has(self.oauth2Config))
                           : self.type == ''oauth2'' ? (has(self.oauth2Config) && !has(self.oidcConfig))
-                          : false'
+                          : self.type == ''oidc-trust'' ? (has(self.oidcConfig) &&
+                          !has(self.oauth2Config)) : false'
+                      - message: clientId is required when type is 'oidc'
+                        rule: self.type != 'oidc' || (has(self.oidcConfig) && self.oidcConfig.clientId
+                          != '')
                     minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:
@@ -4274,6 +4292,15 @@ spec:
                                 private IP addresses. Required for in-cluster OIDC issuers (e.g., Keycloak)
                                 where service DNS resolves to cluster-internal IPs. Default: false.
                               type: boolean
+                            allowedClientIDs:
+                              description: |-
+                                AllowedClientIDs restricts which client_id values in inbound assertions
+                                are accepted from this issuer. When empty, any client_id is accepted.
+                                No-op on the RFC 8693 token exchange path.
+                              items:
+                                type: string
+                              type: array
+                              x-kubernetes-list-type: atomic
                             caBundleConfigMapRef:
                               description: |-
                                 CABundleConfigMapRef references a ConfigMap containing the CA certificate
@@ -4308,8 +4335,9 @@ spec:
                                   x-kubernetes-map-type: atomic
                               type: object
                             clientId:
-                              description: ClientID is the OAuth 2.0 client identifier
-                                registered with the upstream IdP.
+                              description: |-
+                                ClientID is the OAuth 2.0 client identifier registered with the upstream IdP.
+                                Required when type is 'oidc'; not used by 'oidc-trust' providers.
                               type: string
                             clientSecretRef:
                               description: |-
@@ -4330,6 +4358,11 @@ spec:
                               description: |-
                                 IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
                                 Must be a valid HTTPS URL.
+                              pattern: ^https://.*$
+                              type: string
+                            jwksUri:
+                              description: JWKSUri bypasses OIDC discovery when set.
+                                Must be HTTPS.
                               pattern: ^https://.*$
                               type: string
                             redirectUri:
@@ -4446,7 +4479,6 @@ spec:
                               - endpointUrl
                               type: object
                           required:
-                          - clientId
                           - issuerUrl
                           type: object
                         type:
@@ -4462,12 +4494,16 @@ spec:
                       - type
                       type: object
                       x-kubernetes-validations:
-                      - message: type must be 'oidc' or 'oauth2'; oidcConfig must
-                          be set when type is 'oidc' and oauth2Config must be set
-                          when type is 'oauth2' (and the other must not be set)
+                      - message: type must be 'oidc', 'oauth2', or 'oidc-trust'; oidcConfig
+                          must be set for 'oidc' and 'oidc-trust', oauth2Config must
+                          be set for 'oauth2' (and the other must not be set)
                         rule: 'self.type == ''oidc'' ? (has(self.oidcConfig) && !has(self.oauth2Config))
                           : self.type == ''oauth2'' ? (has(self.oauth2Config) && !has(self.oidcConfig))
-                          : false'
+                          : self.type == ''oidc-trust'' ? (has(self.oidcConfig) &&
+                          !has(self.oauth2Config)) : false'
+                      - message: clientId is required when type is 'oidc'
+                        rule: self.type != 'oidc' || (has(self.oidcConfig) && self.oidcConfig.clientId
+                          != '')
                     minItems: 1
                     type: array
                     x-kubernetes-list-map-keys:

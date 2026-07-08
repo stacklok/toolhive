@@ -43,7 +43,8 @@ type TrustedIssuer struct {
 	// IssuerURL is the expected "iss" claim value (exact match).
 	IssuerURL string
 	// ExpectedAudience is the expected "aud" claim value that must appear
-	// in the token's audience list.
+	// in the token's audience list. Required; NewMultiIssuerTokenValidator
+	// rejects any TrustedIssuer with an empty ExpectedAudience.
 	ExpectedAudience string
 	// JWKSURL is the URL to fetch the issuer's JSON Web Key Set from.
 	// If empty, it is resolved via OIDC discovery at {IssuerURL}/.well-known/openid-configuration.
@@ -83,12 +84,19 @@ type externalIssuerConfig struct {
 // authorization server itself and from the provided list of trusted external issuers.
 // The httpClient parameter is used for OIDC discovery and JWKS fetching. When nil,
 // http.DefaultClient is used (which won't trust custom CAs like SPIFFE).
+// Returns an error if any TrustedIssuer has an empty ExpectedAudience.
 func NewMultiIssuerTokenValidator(
 	selfValidator *SelfIssuedTokenValidator,
 	selfIssuer string,
 	trustedIssuers []TrustedIssuer,
 	httpClient *http.Client,
-) *MultiIssuerTokenValidator {
+) (*MultiIssuerTokenValidator, error) {
+	for _, issuer := range trustedIssuers {
+		if issuer.ExpectedAudience == "" {
+			return nil, fmt.Errorf("trusted issuer %q: ExpectedAudience is required", issuer.IssuerURL)
+		}
+	}
+
 	issuers := make(map[string]*externalIssuerConfig, len(trustedIssuers))
 	for _, ti := range trustedIssuers {
 		issuers[ti.IssuerURL] = &externalIssuerConfig{
@@ -108,7 +116,7 @@ func NewMultiIssuerTokenValidator(
 		selfValidator: selfValidator,
 		issuers:       issuers,
 		httpClient:    httpClient,
-	}
+	}, nil
 }
 
 // Validate parses the raw JWT to extract the issuer claim, then routes validation
@@ -286,6 +294,7 @@ func (v *MultiIssuerTokenValidator) discoverJWKSURL(ctx context.Context, issuerU
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return "", fmt.Errorf("discovery endpoint returned status %d", resp.StatusCode)
 	}
 
@@ -347,6 +356,7 @@ func (v *MultiIssuerTokenValidator) fetchJWKS(ctx context.Context, jwksURL strin
 	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
 		return nil, fmt.Errorf("JWKS endpoint returned status %d", resp.StatusCode)
 	}
 

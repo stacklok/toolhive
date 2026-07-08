@@ -43,7 +43,14 @@ func Factory(cfg FactoryConfig) server.Factory {
 		// configured, otherwise self-issued only (backward compatible).
 		var validator SubjectTokenValidator
 		if len(cfg.TrustedIssuers) > 0 {
-			validator = NewMultiIssuerTokenValidator(selfValidator, config.GetAccessTokenIssuer(), cfg.TrustedIssuers, cfg.HTTPClient)
+			multiValidator, validatorErr := NewMultiIssuerTokenValidator(
+				selfValidator, config.GetAccessTokenIssuer(), cfg.TrustedIssuers, cfg.HTTPClient,
+			)
+			if validatorErr != nil {
+				// This is a programming error — TrustedIssuers must have ExpectedAudience set.
+				panic(fmt.Sprintf("tokenexchange: failed to create multi-issuer validator: %v", validatorErr))
+			}
+			validator = multiValidator
 		} else {
 			validator = selfValidator
 		}

@@ -69,7 +69,7 @@ func defaultUpstreamFactory(ctx context.Context, cfg *UpstreamConfig) (upstream.
 			return nil, fmt.Errorf("oidc_config is required for oidc-trust upstream")
 		}
 		return upstream.NewOIDCTrustProvider(
-			cfg.OIDCConfig.Issuer, cfg.OIDCConfig.ClientID, cfg.OIDCConfig.CABundlePath, cfg.OIDCConfig.AllowPrivateIPs,
+			cfg.OIDCConfig.Issuer, cfg.OIDCConfig.ClientID, cfg.OIDCConfig.CABundlePath, cfg.OIDCConfig.AllowPrivateIPs, "",
 		), nil
 	default:
 		return nil, fmt.Errorf("unsupported upstream type: %s", cfg.Type)
@@ -189,6 +189,7 @@ func newServer(ctx context.Context, cfg Config, stor storage.Storage, opts ...se
 			trustedIssuers = append(trustedIssuers, tokenexchange.TrustedIssuer{
 				IssuerURL:        tp.IssuerURL(),
 				ExpectedAudience: tp.ExpectedAudience(),
+				JWKSURL:          tp.JWKSUrl(),
 			})
 			if caBundlePath == "" && tp.CABundlePath() != "" {
 				caBundlePath = tp.CABundlePath()

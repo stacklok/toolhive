@@ -188,6 +188,14 @@ func (*fakeCore) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Pr
 	return nil, vmcp.ErrNotFound
 }
 
+func (*fakeCore) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
+	return nil, nil
+}
+
+func (*fakeCore) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.Backend, error) {
+	return nil, vmcp.ErrNotFound
+}
+
 func (*fakeCore) Close() error { return nil }
 
 func (*fakeCore) BackendHealth() health.Reporter { return nil }

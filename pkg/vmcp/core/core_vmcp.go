@@ -351,6 +351,50 @@ func (c *coreVMCP) LookupPrompt(ctx context.Context, identity *auth.Identity, na
 	return nil, fmt.Errorf("%w: prompt %q", vmcp.ErrNotFound, name)
 }
 
+// ListBackends returns the backends visible to identity. In admin mode
+// (filterUnauthorized=false) it returns the full group registry as-is — no
+// aggregation, no admission, no health filter. In authorized mode it returns only
+// the backends the identity is admitted at least one capability on. See the [VMCP]
+// interface contract for the full semantics.
+func (c *coreVMCP) ListBackends(
+	ctx context.Context, identity *auth.Identity, filterUnauthorized bool,
+) ([]vmcp.Backend, error) {
+	all := c.backendRegistry.List(ctx)
+	if !filterUnauthorized {
+		return all, nil
+	}
+	// An empty group has nothing to authorize: return an empty (non-nil) set rather
+	// than aggregating, which would surface the aggregator's "no backends returned
+	// capabilities" sentinel as an error and make the authorized view disagree with
+	// the admin view for the same empty group. A non-empty group whose backends are
+	// all unreachable still errors (consistent with ListTools) — that is a live
+	// failure, not an empty answer.
+	if len(all) == 0 {
+		return []vmcp.Backend{}, nil
+	}
+	return c.authorizedBackends(ctx, identity, all)
+}
+
+// LookupBackend resolves a single backend id in the authorized view, mirroring
+// LookupTool: it delegates to ListBackends(ctx, identity, true) and returns
+// vmcp.ErrNotFound for an id that view does not contain (unknown, out-of-group, or
+// unauthorized).
+func (c *coreVMCP) LookupBackend(
+	ctx context.Context, identity *auth.Identity, backendID string,
+) (*vmcp.Backend, error) {
+	backends, err := c.ListBackends(ctx, identity, true)
+	if err != nil {
+		return nil, err
+	}
+	for i := range backends {
+		if backends[i].ID == backendID {
+			backend := backends[i]
+			return &backend, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, backendID)
+}
+
 // Close stops the workflow state store's cleanup goroutine. It is idempotent:
 // the underlying Stop closes a channel that cannot be closed twice, so the work
 // is guarded by sync.Once and subsequent calls return nil.
@@ -372,12 +416,72 @@ func (c *coreVMCP) Close() error {
 // lookup-then-call flow aggregates twice. This is intentional — caching is the
 // Serve layer's responsibility, not the core's (vmcp anti-patterns #8/#9).
 func (c *coreVMCP) aggregatedView(ctx context.Context) (*aggregator.AggregatedCapabilities, error) {
-	backends := filterHealthyBackends(c.backendRegistry.List(ctx), c.health)
+	return c.aggregateBackends(ctx, filterHealthyBackends(c.backendRegistry.List(ctx), c.health))
+}
+
+// aggregateBackends aggregates capabilities across the given backends. The caller
+// decides the backend set: aggregatedView passes the health-filtered subset (the
+// data path), while authorizedBackends passes the full registry (backend
+// visibility, per #5741: health is a status, not a visibility filter). It exists so
+// both share one aggregation error-wrap. Unreachable backends fail their live
+// capability query and simply contribute nothing.
+func (c *coreVMCP) aggregateBackends(
+	ctx context.Context, backends []vmcp.Backend,
+) (*aggregator.AggregatedCapabilities, error) {
 	agg, err := c.aggregator.AggregateCapabilities(ctx, backends)
 	if err != nil {
 		return nil, fmt.Errorf("capability aggregation failed: %w", err)
 	}
 	return agg, nil
+}
+
+// authorizedBackends returns the subset of all on which identity is admitted at
+// least one capability. It aggregates over the full set (no health filter — #5741),
+// runs the same admission seam List{Tools,Resources,Prompts} use, and unions the
+// surviving capabilities' BackendIDs. Composite tools are excluded (agg.Tools, not
+// advertisedTools): they are workflows with no single backend, so they cannot make
+// a backend visible. Callers guard the empty-group case before calling this (see
+// ListBackends) so an empty group never reaches the aggregator's "no backends"
+// sentinel here.
+func (c *coreVMCP) authorizedBackends(
+	ctx context.Context, identity *auth.Identity, all []vmcp.Backend,
+) ([]vmcp.Backend, error) {
+	agg, err := c.aggregateBackends(ctx, all)
+	if err != nil {
+		return nil, err
+	}
+
+	tools, err := c.admission.FilterTools(ctx, identity, agg.Tools)
+	if err != nil {
+		return nil, err
+	}
+	resources, err := c.admission.FilterResources(ctx, identity, agg.Resources)
+	if err != nil {
+		return nil, err
+	}
+	prompts, err := c.admission.FilterPrompts(ctx, identity, agg.Prompts)
+	if err != nil {
+		return nil, err
+	}
+
+	allowed := make(map[string]struct{})
+	for i := range tools {
+		allowed[tools[i].BackendID] = struct{}{}
+	}
+	for i := range resources {
+		allowed[resources[i].BackendID] = struct{}{}
+	}
+	for i := range prompts {
+		allowed[prompts[i].BackendID] = struct{}{}
+	}
+
+	out := make([]vmcp.Backend, 0, len(allowed))
+	for i := range all {
+		if _, ok := allowed[all[i].ID]; ok {
+			out = append(out, all[i])
+		}
+	}
+	return out, nil
 }
 
 // advertisedTools returns the aggregated backend tools followed by the composite

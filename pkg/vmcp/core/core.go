@@ -116,9 +116,13 @@ type VMCP interface {
 	//     ListTools/CallTool enforce) to AT LEAST ONE of that backend's discovered
 	//     capabilities. There is no backend-level authorization entity, so this is a
 	//     derived rule: aggregate the group's backends, run admission, and group the
-	//     surviving capabilities by BackendID. A backend with zero admitted
-	//     capabilities (tool-less, or all-denied) does not appear. A nil identity is
-	//     anonymous (see the interface contract), yielding the anonymous-visible set.
+	//     surviving capabilities by BackendID. A backend with zero discovered
+	//     capabilities (tool-less) is absent for EVERY identity — this is NOT an
+	//     authorization-denial signal; a backend that has capabilities but all are
+	//     denied to this identity is also absent, for the unrelated reason of policy.
+	//     Callers must not conflate "absent from this list" with "identity is denied
+	//     this specific backend." A nil identity is anonymous (see the interface
+	//     contract), yielding the anonymous-visible set.
 	//
 	//   - false (admin): returns ALL group-scoped backends with no per-identity
 	//     authorization filtering. identity is unused and may be nil. Authorizing the

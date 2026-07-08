@@ -183,6 +183,83 @@ func TestListBackends_Authorized_ZeroCapabilityBackendHiddenButAdminShowsIt(t *t
 		"the same zero-capability backend still appears in the admin view")
 }
 
+// TestListBackends_EmptyGroupReturnsEmpty proves that an empty group (no backends
+// in the registry) returns a non-nil empty slice in BOTH modes without aggregating.
+// The authorized path must short-circuit before the aggregator, whose "no backends
+// returned capabilities" sentinel would otherwise turn an empty group into a hard
+// error and make the two views disagree. The absence of an AggregateCapabilities
+// expectation asserts no aggregation happens.
+func TestListBackends_EmptyGroupReturnsEmpty(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	m.reg.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{}).Times(2)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	admin, err := c.ListBackends(context.Background(), nil, false)
+	require.NoError(t, err)
+	assert.NotNil(t, admin)
+	assert.Empty(t, admin)
+
+	authorized, err := c.ListBackends(context.Background(), cedarIdentity(), true)
+	require.NoError(t, err, "an empty group must be an empty answer, not an aggregation error")
+	assert.NotNil(t, authorized)
+	assert.Empty(t, authorized)
+}
+
+// TestListBackends_Authorized_NilIdentityIsAnonymous pins the shipped semantic that
+// a nil identity in authorized mode is anonymous (consistent with ListTools et al.),
+// NOT an error — even though issue #5741's prose calls identity "required". Under the
+// default allow-all admission the anonymous-visible set is every backend with a
+// capability.
+func TestListBackends_Authorized_NilIdentityIsAnonymous(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	m.reg.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{{ID: "b1"}})
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(
+		&aggregator.AggregatedCapabilities{Tools: []vmcp.Tool{toolOn("tool_b1", "b1")}}, nil)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	got, err := c.ListBackends(context.Background(), nil, true)
+	require.NoError(t, err, "nil identity is anonymous, not an error")
+	assert.Equal(t, []string{"b1"}, backendIDs(got))
+}
+
+// TestListBackends_Authorized_BackendlessToolDoesNotAddVisibility pins the decision
+// to union over agg.Tools (real backend capabilities) rather than advertisedTools:
+// a tool with no backing backend id — the shape a composite/workflow tool takes,
+// since it routes to no single backend — must not make any backend visible.
+func TestListBackends_Authorized_BackendlessToolDoesNotAddVisibility(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	all := []vmcp.Backend{{ID: "b1"}, {ID: "b2"}}
+	m.reg.EXPECT().List(gomock.Any()).Return(all)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(
+		&aggregator.AggregatedCapabilities{
+			Tools: []vmcp.Tool{
+				toolOn("tool_b1", "b1"),      // real backend tool
+				{Name: "composite_workflow"}, // no BackendID (composite-shaped)
+			},
+		}, nil)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	got, err := c.ListBackends(context.Background(), cedarIdentity(), true)
+	require.NoError(t, err)
+	assert.Equal(t, []string{"b1"}, backendIDs(got),
+		"a backendless (composite) tool must not surface b2 or a phantom empty-id backend")
+}
+
 // TestListBackends_Authorized_EmptyIsNonNil proves the authorized path returns a
 // non-nil empty slice (not nil) when the identity is admitted nothing.
 func TestListBackends_Authorized_EmptyIsNonNil(t *testing.T) {

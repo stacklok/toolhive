@@ -363,54 +363,16 @@ func (c *coreVMCP) ListBackends(
 	if !filterUnauthorized {
 		return all, nil
 	}
+	// An empty group has nothing to authorize: return an empty (non-nil) set rather
+	// than aggregating, which would surface the aggregator's "no backends returned
+	// capabilities" sentinel as an error and make the authorized view disagree with
+	// the admin view for the same empty group. A non-empty group whose backends are
+	// all unreachable still errors (consistent with ListTools) — that is a live
+	// failure, not an empty answer.
+	if len(all) == 0 {
+		return []vmcp.Backend{}, nil
+	}
 	return c.authorizedBackends(ctx, identity, all)
-}
-
-// authorizedBackends returns the subset of all on which identity is admitted at
-// least one capability. It aggregates over the full set (no health filter — #5741),
-// runs the same admission seam List{Tools,Resources,Prompts} use, and unions the
-// surviving capabilities' BackendIDs. Composite tools are excluded (agg.Tools, not
-// advertisedTools): they are workflows with no single backend, so they cannot make
-// a backend visible.
-func (c *coreVMCP) authorizedBackends(
-	ctx context.Context, identity *auth.Identity, all []vmcp.Backend,
-) ([]vmcp.Backend, error) {
-	agg, err := c.aggregateOverAll(ctx, all)
-	if err != nil {
-		return nil, err
-	}
-
-	tools, err := c.admission.FilterTools(ctx, identity, agg.Tools)
-	if err != nil {
-		return nil, err
-	}
-	resources, err := c.admission.FilterResources(ctx, identity, agg.Resources)
-	if err != nil {
-		return nil, err
-	}
-	prompts, err := c.admission.FilterPrompts(ctx, identity, agg.Prompts)
-	if err != nil {
-		return nil, err
-	}
-
-	allowed := make(map[string]struct{})
-	for i := range tools {
-		allowed[tools[i].BackendID] = struct{}{}
-	}
-	for i := range resources {
-		allowed[resources[i].BackendID] = struct{}{}
-	}
-	for i := range prompts {
-		allowed[prompts[i].BackendID] = struct{}{}
-	}
-
-	out := make([]vmcp.Backend, 0, len(allowed))
-	for i := range all {
-		if _, ok := allowed[all[i].ID]; ok {
-			out = append(out, all[i])
-		}
-	}
-	return out, nil
 }
 
 // LookupBackend resolves a single backend id in the authorized view, mirroring
@@ -454,16 +416,16 @@ func (c *coreVMCP) Close() error {
 // lookup-then-call flow aggregates twice. This is intentional — caching is the
 // Serve layer's responsibility, not the core's (vmcp anti-patterns #8/#9).
 func (c *coreVMCP) aggregatedView(ctx context.Context) (*aggregator.AggregatedCapabilities, error) {
-	return c.aggregateOverAll(ctx, filterHealthyBackends(c.backendRegistry.List(ctx), c.health))
+	return c.aggregateBackends(ctx, filterHealthyBackends(c.backendRegistry.List(ctx), c.health))
 }
 
-// aggregateOverAll aggregates capabilities across the given backends. Unlike
-// aggregatedView it does NOT health-filter first — the caller decides the backend
-// set. It exists so the data path (aggregatedView, health-filtered) and the
-// backend-visibility derivation (ListBackends, full registry per #5741: health is a
-// status, not a visibility filter) share one aggregation error-wrap. Unreachable
-// backends fail their live capability query and simply contribute nothing.
-func (c *coreVMCP) aggregateOverAll(
+// aggregateBackends aggregates capabilities across the given backends. The caller
+// decides the backend set: aggregatedView passes the health-filtered subset (the
+// data path), while authorizedBackends passes the full registry (backend
+// visibility, per #5741: health is a status, not a visibility filter). It exists so
+// both share one aggregation error-wrap. Unreachable backends fail their live
+// capability query and simply contribute nothing.
+func (c *coreVMCP) aggregateBackends(
 	ctx context.Context, backends []vmcp.Backend,
 ) (*aggregator.AggregatedCapabilities, error) {
 	agg, err := c.aggregator.AggregateCapabilities(ctx, backends)
@@ -471,6 +433,55 @@ func (c *coreVMCP) aggregateOverAll(
 		return nil, fmt.Errorf("capability aggregation failed: %w", err)
 	}
 	return agg, nil
+}
+
+// authorizedBackends returns the subset of all on which identity is admitted at
+// least one capability. It aggregates over the full set (no health filter — #5741),
+// runs the same admission seam List{Tools,Resources,Prompts} use, and unions the
+// surviving capabilities' BackendIDs. Composite tools are excluded (agg.Tools, not
+// advertisedTools): they are workflows with no single backend, so they cannot make
+// a backend visible. Callers guard the empty-group case before calling this (see
+// ListBackends) so an empty group never reaches the aggregator's "no backends"
+// sentinel here.
+func (c *coreVMCP) authorizedBackends(
+	ctx context.Context, identity *auth.Identity, all []vmcp.Backend,
+) ([]vmcp.Backend, error) {
+	agg, err := c.aggregateBackends(ctx, all)
+	if err != nil {
+		return nil, err
+	}
+
+	tools, err := c.admission.FilterTools(ctx, identity, agg.Tools)
+	if err != nil {
+		return nil, err
+	}
+	resources, err := c.admission.FilterResources(ctx, identity, agg.Resources)
+	if err != nil {
+		return nil, err
+	}
+	prompts, err := c.admission.FilterPrompts(ctx, identity, agg.Prompts)
+	if err != nil {
+		return nil, err
+	}
+
+	allowed := make(map[string]struct{})
+	for i := range tools {
+		allowed[tools[i].BackendID] = struct{}{}
+	}
+	for i := range resources {
+		allowed[resources[i].BackendID] = struct{}{}
+	}
+	for i := range prompts {
+		allowed[prompts[i].BackendID] = struct{}{}
+	}
+
+	out := make([]vmcp.Backend, 0, len(allowed))
+	for i := range all {
+		if _, ok := allowed[all[i].ID]; ok {
+			out = append(out, all[i])
+		}
+	}
+	return out, nil
 }
 
 // advertisedTools returns the aggregated backend tools followed by the composite

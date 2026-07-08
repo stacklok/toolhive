@@ -270,3 +270,10 @@ The OCI plugin layer (`ociplugins.Store`, `PluginPackager`, `RegistryClient`,
 | `pkg/storage/sqlite/plugin_store.go` | SQLite store |
 | `pkg/groups/plugins.go` | group membership |
 | `pkg/client/plugins.go` | client metadata + path resolution |
+
+## Related Documentation
+
+- [Skills System](12-skills-system.md) - Sibling distribution system (OCI artifacts, multi-client install, build/publish/install lifecycle)
+- [Registry System](06-registry-system.md) - Registry-name resolution in the install dispatch chain
+- [Groups](07-groups.md) - Plugin group membership (`pkg/groups/plugins.go`)
+- [Core Concepts](02-core-concepts.md) - Platform terminology

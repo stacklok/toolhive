@@ -85,3 +85,7 @@ This is a one-time operation. After patching, future upgrades will work as long 
 | crds.install | bool | `true` | Whether to install the CRDs in this chart |
 | crds.keep | bool | `true` | Whether to add the "helm.sh/resource-policy: keep" annotation to CRDs When true, CRDs will not be deleted when the Helm release is uninstalled |
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this chart.
+

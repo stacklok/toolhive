@@ -13,6 +13,10 @@ setting up and using these features, see the ToolHive documentation:
 - [CLI guide](https://docs.stacklok.com/toolhive/guides-cli/telemetry-and-metrics),
   including how to enable and configure telemetry and send to common backends
 
+To run a complete local observability stack (Prometheus, Grafana, and the
+OpenTelemetry Collector) for testing this instrumentation, see the
+[OpenTelemetry example stack](../examples/otel/README.md).
+
 For migrating from legacy attribute names to the new OTEL MCP semantic
 conventions, see the [Telemetry Migration Guide](./telemetry-migration-guide.md).
 

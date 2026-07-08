@@ -28,6 +28,7 @@ For information on the ToolHive Operator, see the
 
 ### Development Guidelines
 
+- **[CLI Command Reference](cli/thv.md)** - Generated reference for every `thv` command and subcommand
 - **[CLI Best Practices](cli-best-practices.md)** - Guidelines for adding and maintaining CLI commands with focus on usability and consistency
 - **[Logging Practices](logging.md)** - Logging levels, when to use them, and how to structure log messages
 - **[Error Handling](error-handling.md)** - Error construction, wrapping, and handling patterns for CLI and API
@@ -37,6 +38,7 @@ For information on the ToolHive Operator, see the
 - **[Runtime Implementation Guide](runtime-implementation-guide.md)** - Guide for implementing new container runtime support
 - **[Runtime Version Customization](runtime-version-customization.md)** - Customizing base images and packages for protocol-scheme builds
 - **[Remote MCP Authentication](remote-mcp-authentication.md)** - How ToolHive authenticates to remote MCP servers
+- **[Server API Documentation](server/README.md)** - How the OpenAPI docs for the `thv serve` REST API are generated and served
 
 ### Operator Documentation
 
@@ -111,6 +113,9 @@ ToolHive also includes comprehensive end-to-end tests that can be run using:
 task test-e2e
 ```
 
+See the [end-to-end test guide](../test/e2e/README.md) for the test structure,
+Ginkgo labels, and how to run specific suites.
+
 ### Other development tasks
 
 To see a list of all available development tasks, run:
@@ -118,6 +123,9 @@ To see a list of all available development tasks, run:
 ```bash
 task --list
 ```
+
+To spin up a local Keycloak instance for testing authentication flows, see the
+[Keycloak development setup](../deploy/keycloak/README.md).
 
 ## Note on EXPERIMENTAL features
 

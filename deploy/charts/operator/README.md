@@ -99,3 +99,7 @@ The command removes all the Kubernetes components associated with the chart and 
 | registryAPI | object | `{"image":"ghcr.io/stacklok/thv-registry-api:v1.3.0"}` | All values for the registry API deployment and associated resources |
 | registryAPI.image | string | `"ghcr.io/stacklok/thv-registry-api:v1.3.0"` | Container image for the registry API |
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this chart.
+

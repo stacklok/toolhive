@@ -40,6 +40,7 @@ func TestSyncInstallsDriftedReportsAlreadyCurrentAndUnmanaged(t *testing.T) {
 		Source:            "my-skill",
 		ResolvedReference: "ghcr.io/org/my-skill:v1",
 		Digest:            indexDigest.String(),
+		Unsigned:          true,
 	}))
 	require.NoError(t, lockfile.UpsertEntry(projectRoot, lockfile.Entry{
 		Name:              "already-current",
@@ -74,7 +75,7 @@ func TestSyncInstallsDriftedReportsAlreadyCurrentAndUnmanaged(t *testing.T) {
 	targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
 	pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeProject, projectRoot).Return(targetDir, nil)
 
-	svc := New(store, WithPathResolver(pr), WithRegistryClient(reg), WithOCIStore(ociStore))
+	svc := New(store, withTestVerifier(), WithPathResolver(pr), WithRegistryClient(reg), WithOCIStore(ociStore))
 	lockSvc := svc.(skills.SkillLockService)
 	result, err := lockSvc.Sync(t.Context(), skills.SyncOptions{
 		ProjectRoot: projectRoot,

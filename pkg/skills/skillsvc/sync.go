@@ -101,13 +101,14 @@ func (s *service) syncEntry(
 	}
 
 	installOpts := skills.InstallOptions{
-		Name:        pinnedRef,
-		LockSource:  entry.Source,
-		Scope:       skills.ScopeProject,
-		ProjectRoot: projectRoot,
-		Clients:     opts.Clients,
-		Force:       true,
-		Managed:     true,
+		Name:          pinnedRef,
+		LockSource:    entry.Source,
+		Scope:         skills.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       opts.Clients,
+		Force:         true,
+		Managed:       true,
+		AllowUnsigned: entry.Unsigned,
 	}
 	if _, err := s.installInternal(ctx, installOpts); err != nil {
 		result.Failed = append(result.Failed, skills.SyncFailure{
@@ -169,7 +170,24 @@ func (s *service) verifyLockEntry(
 	if existing.Digest != entry.Digest {
 		return syncStatusDrifted, nil
 	}
+
+	if err := s.verifyStoredSignature(existing, entry); err != nil {
+		return syncStatusDrifted, err
+	}
 	return syncStatusAlreadyCurrent, nil
+}
+
+func (s *service) verifyStoredSignature(existing skills.InstalledSkill, entry lockfile.Entry) error {
+	if entry.Unsigned {
+		return nil
+	}
+	if entry.Provenance == nil {
+		return nil
+	}
+	if len(existing.SigstoreBundle) == 0 {
+		return fmt.Errorf("missing stored sigstore bundle for %q", entry.Name)
+	}
+	return s.artifactVerifier().VerifyBundleOffline(existing.SigstoreBundle, entry.Digest, entry.Provenance)
 }
 
 func (s *service) contentDigestsForClients(
@@ -307,6 +325,15 @@ func (s *service) syncAdopt(
 			Digest:            sk.Digest,
 			ContentDigest:     first,
 		}
+		if len(sk.SigstoreBundle) > 0 && sk.Digest != "" {
+			if result, bundleErr := s.artifactVerifier().ResultFromBundle(sk.SigstoreBundle, sk.Digest); bundleErr == nil {
+				entry.Provenance = result.ToLockProvenance()
+			} else {
+				entry.Unsigned = true
+			}
+		} else {
+			entry.Unsigned = true
+		}
 		if lockErr := lockfile.UpsertEntry(projectRoot, entry); lockErr != nil {
 			result.Failed = append(result.Failed, skills.SyncFailure{
 				Name: name, Reason: skills.FailureReasonLockWriteFailed, Error: lockErr.Error(),
@@ -336,6 +363,10 @@ func classifySyncError(err error) skills.FailureReason {
 	switch {
 	case strings.Contains(msg, "lock NOT updated"), strings.Contains(msg, "lock file"):
 		return skills.FailureReasonLockWriteFailed
+	case strings.Contains(msg, "signer identity"), strings.Contains(msg, "signer-mismatch"):
+		return skills.FailureReasonSignerMismatch
+	case strings.Contains(msg, "signature"), strings.Contains(msg, "unsigned"):
+		return skills.FailureReasonSignatureInvalid
 	case strings.Contains(msg, "unauthorized"), strings.Contains(msg, "registry"), strings.Contains(msg, "pulling"):
 		return skills.FailureReasonRegistryUnreachable
 	case strings.Contains(msg, "digest"), strings.Contains(msg, "content"):

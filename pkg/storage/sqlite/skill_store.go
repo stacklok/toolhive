@@ -39,7 +39,7 @@ var _ storage.SkillStore = (*SkillStore)(nil)
 // skillColumns is the SELECT column list shared by Get and List queries.
 const skillColumns = `is_.id, e.name, is_.scope, is_.project_root, is_.reference, is_.tag,
 			is_.digest, is_.version, is_.description, is_.author, json(is_.tags),
-			json(is_.client_apps), is_.status, is_.installed_at, is_.managed`
+			json(is_.client_apps), is_.status, is_.installed_at, is_.managed, is_.sigstore_bundle`
 
 // Create stores a new installed skill.
 func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) error {
@@ -85,8 +85,8 @@ func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) er
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO installed_skills (
 			entry_id, scope, project_root, reference, tag, digest,
-			version, description, author, tags, client_apps, status, managed
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?, ?)`,
+			version, description, author, tags, client_apps, status, managed, sigstore_bundle
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?, ?, ?)`,
 		entryID,
 		string(skill.Scope),
 		skill.ProjectRoot,
@@ -100,6 +100,7 @@ func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) er
 		clientsJSON,
 		string(skill.Status),
 		boolToInt(skill.Managed),
+		skill.SigstoreBundle,
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -267,7 +268,8 @@ func (s *SkillStore) Update(ctx context.Context, skill skills.InstalledSkill) er
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE installed_skills SET
 			reference = ?, tag = ?, digest = ?, version = ?, description = ?,
-			author = ?, tags = jsonb(?), client_apps = jsonb(?), status = ?, managed = ?
+			author = ?, tags = jsonb(?), client_apps = jsonb(?), status = ?, managed = ?,
+			sigstore_bundle = ?
 		WHERE id = ?`,
 		skill.Reference,
 		skill.Tag,
@@ -279,6 +281,7 @@ func (s *SkillStore) Update(ctx context.Context, skill skills.InstalledSkill) er
 		clientsJSON,
 		string(skill.Status),
 		boolToInt(skill.Managed),
+		skill.SigstoreBundle,
 		installedSkillID,
 	); err != nil {
 		return fmt.Errorf("updating installed skill: %w", err)
@@ -373,12 +376,13 @@ func scanSkillFields(sc scanner) (skills.InstalledSkill, int64, error) {
 		status           string
 		installedAtStr   string
 		managed          int
+		sigstoreBundle   []byte
 	)
 
 	err := sc.Scan(
 		&installedSkillID, &name, &scope, &projectRoot, &reference, &tag,
 		&digest, &version, &description, &author, &tagsBlob,
-		&clientsBlob, &status, &installedAtStr, &managed,
+		&clientsBlob, &status, &installedAtStr, &managed, &sigstoreBundle,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -407,15 +411,16 @@ func scanSkillFields(sc scanner) (skills.InstalledSkill, int64, error) {
 			Author:      author,
 			Tags:        tags,
 		},
-		Scope:       skills.Scope(scope),
-		ProjectRoot: projectRoot,
-		Reference:   reference,
-		Tag:         tag,
-		Digest:      digest,
-		Status:      skills.InstallStatus(status),
-		InstalledAt: installedAt,
-		Clients:     clients,
-		Managed:     managed != 0,
+		Scope:          skills.Scope(scope),
+		ProjectRoot:    projectRoot,
+		Reference:      reference,
+		Tag:            tag,
+		Digest:         digest,
+		Status:         skills.InstallStatus(status),
+		InstalledAt:    installedAt,
+		Clients:        clients,
+		Managed:        managed != 0,
+		SigstoreBundle: sigstoreBundle,
 	}
 
 	return sk, installedSkillID, nil

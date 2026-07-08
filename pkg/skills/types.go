@@ -170,6 +170,8 @@ type InstalledSkill struct {
 	// Managed is true when the install was created by a lock-managed project-scope
 	// install (sync/install with lock write).
 	Managed bool `json:"managed,omitempty"`
+	// SigstoreBundle stores the verified Sigstore bundle for offline re-verification.
+	SigstoreBundle []byte `json:"-"`
 }
 
 // SkillIndexEntry represents a single skill entry in a remote skill index.

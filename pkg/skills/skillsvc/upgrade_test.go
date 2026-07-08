@@ -36,6 +36,7 @@ func TestUpgradeInstallsNewDigestAndRewritesLockEntry(t *testing.T) {
 		Source:            "ghcr.io/org/my-skill:v1",
 		ResolvedReference: "ghcr.io/org/my-skill:v1",
 		Digest:            "sha256:" + strings.Repeat("a", 64),
+		Unsigned:          true,
 	}))
 
 	ctrl := gomock.NewController(t)
@@ -57,7 +58,7 @@ func TestUpgradeInstallsNewDigestAndRewritesLockEntry(t *testing.T) {
 	targetDir := filepath.Join(tempDir(t), "installed", "my-skill")
 	pr.EXPECT().GetSkillPath("claude-code", "my-skill", skills.ScopeProject, projectRoot).Return(targetDir, nil)
 
-	svc := New(store, WithPathResolver(pr), WithRegistryClient(reg), WithOCIStore(ociStore))
+	svc := New(store, withTestVerifier(), WithPathResolver(pr), WithRegistryClient(reg), WithOCIStore(ociStore))
 	lockSvc := svc.(skills.SkillLockService)
 	result, err := lockSvc.Upgrade(t.Context(), skills.UpgradeOptions{
 		ProjectRoot: projectRoot,
@@ -103,7 +104,7 @@ func TestUpgradeDryRunReportsWithoutInstallingOrRewritingLock(t *testing.T) {
 	// installed state.
 	store := storemocks.NewMockSkillStore(ctrl)
 
-	svc := New(store, WithRegistryClient(reg), WithOCIStore(ociStore))
+	svc := New(store, withTestVerifier(), WithRegistryClient(reg), WithOCIStore(ociStore))
 	lockSvc := svc.(skills.SkillLockService)
 	result, err := lockSvc.Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot, DryRun: true})
 	require.NoError(t, err)

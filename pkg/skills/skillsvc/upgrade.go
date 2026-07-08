@@ -15,6 +15,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
 	"github.com/stacklok/toolhive/pkg/skills/lockfile"
+	"github.com/stacklok/toolhive/pkg/skills/verifier"
 )
 
 // Upgrade re-resolves each lock file entry's original source and, when the
@@ -93,14 +94,15 @@ func (s *service) upgradeEntry(
 	}
 
 	installOpts := skills.InstallOptions{
-		Name:         entry.Source,
-		LockSource:   entry.Source,
-		Scope:        skills.ScopeProject,
-		ProjectRoot:  projectRoot,
-		Clients:      opts.Clients,
-		Force:        true,
-		Managed:      true,
-		ExplicitLock: entry.Explicit,
+		Name:          entry.Source,
+		LockSource:    entry.Source,
+		Scope:         skills.ScopeProject,
+		ProjectRoot:   projectRoot,
+		Clients:       opts.Clients,
+		Force:         true,
+		Managed:       true,
+		ExplicitLock:  entry.Explicit,
+		AllowUnsigned: entry.Unsigned,
 	}
 	result, err := s.installInternal(ctx, installOpts)
 	if err != nil {
@@ -127,6 +129,10 @@ func (s *service) upgradeEntry(
 		}
 	}
 
+	if blocked := upgradeSignerGuard(entry, result, opts.AllowSignerChange); blocked != nil {
+		return *blocked
+	}
+
 	contentDigest := result.ContentDigest
 	if contentDigest == "" {
 		cd, cdErr := s.contentDigestForSkill(ctx, installOpts, result.Skill)
@@ -148,6 +154,8 @@ func (s *service) upgradeEntry(
 		ContentDigest:     contentDigest,
 		RequiredBy:        entry.RequiredBy,
 		Explicit:          entry.Explicit,
+		Provenance:        provenanceInfoToLock(result.Provenance),
+		Unsigned:          result.Unsigned,
 	}
 	if lockErr := lockfile.UpsertEntry(projectRoot, newEntry); lockErr != nil {
 		return skills.UpgradeOutcome{
@@ -166,6 +174,32 @@ func (s *service) upgradeEntry(
 		OldDigest: entry.Digest, NewDigest: result.Skill.Digest,
 		NewResolvedReference: result.Skill.Reference,
 	}
+}
+
+func upgradeSignerGuard(
+	entry lockfile.Entry, result *skills.InstallResult, allowSignerChange bool,
+) *skills.UpgradeOutcome {
+	if entry.Provenance == nil || entry.Unsigned {
+		return nil
+	}
+	if result.Unsigned {
+		return &skills.UpgradeOutcome{
+			Name: entry.Name, Status: skills.UpgradeStatusSignerChangeBlocked,
+			OldDigest: entry.Digest, NewDigest: result.Skill.Digest,
+			Error: fmt.Sprintf("new artifact for %q is unsigned; locked identity requires a signed publisher", entry.Name),
+		}
+	}
+	if result.Provenance != nil && !allowSignerChange &&
+		(result.Provenance.SignerIdentity != entry.Provenance.SignerIdentity ||
+			result.Provenance.CertIssuer != entry.Provenance.CertIssuer) {
+		return &skills.UpgradeOutcome{
+			Name: entry.Name, Status: skills.UpgradeStatusSignerChangeBlocked,
+			OldDigest: entry.Digest, NewDigest: result.Skill.Digest,
+			Error: fmt.Sprintf("signer identity would change from %q to %q; pass --allow-signer-change to proceed",
+				entry.Provenance.SignerIdentity, result.Provenance.SignerIdentity),
+		}
+	}
+	return nil
 }
 
 func (s *service) upgradeEntryPreview(ctx context.Context, entry lockfile.Entry) skills.UpgradeOutcome {
@@ -189,9 +223,46 @@ func (s *service) upgradeEntryPreview(ctx context.Context, entry lockfile.Entry)
 			Name: entry.Name, Status: skills.UpgradeStatusUpToDate, OldDigest: entry.Digest, NewDigest: newDigest,
 		}
 	}
+	if entry.Provenance != nil && !entry.Unsigned {
+		if blocked := s.previewSignerMismatch(ctx, entry, newDigest, newRef); blocked != nil {
+			return *blocked
+		}
+	}
 	return skills.UpgradeOutcome{
 		Name: entry.Name, Status: skills.UpgradeStatusUpgraded, OldDigest: entry.Digest, NewDigest: newDigest,
 	}
+}
+
+func (s *service) previewSignerMismatch(
+	ctx context.Context, entry lockfile.Entry, newDigest, newRef string,
+) *skills.UpgradeOutcome {
+	if gitresolver.IsGitReference(entry.Source) {
+		return nil
+	}
+	ref := newRef
+	if ref == "" {
+		ref = entry.ResolvedReference
+	}
+	result, err := s.artifactVerifier().VerifyOCI(ctx, ref, newDigest)
+	if err != nil {
+		if errors.Is(err, verifier.ErrUnsigned) {
+			return &skills.UpgradeOutcome{
+				Name: entry.Name, Status: skills.UpgradeStatusSignerChangeBlocked,
+				OldDigest: entry.Digest, NewDigest: newDigest,
+				Error: fmt.Sprintf("upgrade candidate for %q is unsigned; locked identity requires a signed publisher", entry.Name),
+			}
+		}
+		return nil
+	}
+	if result.SignerIdentity != entry.Provenance.SignerIdentity || result.CertIssuer != entry.Provenance.CertIssuer {
+		return &skills.UpgradeOutcome{
+			Name: entry.Name, Status: skills.UpgradeStatusSignerChangeBlocked,
+			OldDigest: entry.Digest, NewDigest: newDigest,
+			Error: fmt.Sprintf("signer identity would change from %q to %q; pass --allow-signer-change to proceed",
+				entry.Provenance.SignerIdentity, result.SignerIdentity),
+		}
+	}
+	return nil
 }
 
 func (s *service) resolveLatestDigestAndRef(ctx context.Context, source string) (string, string, error) {

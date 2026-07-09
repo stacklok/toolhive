@@ -174,6 +174,66 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			expectErr: false,
 		},
 		{
+			name: "embeddedAuthServer with onDemand loginPolicy on non-first provider - valid",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-embedded-ondemand",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:        "okta",
+								Type:        UpstreamProviderTypeOIDC,
+								LoginPolicy: UpstreamLoginPolicyRequired,
+								OIDCConfig:  &OIDCUpstreamConfig{IssuerURL: "https://okta.example.com", ClientID: "id1"},
+							},
+							{
+								Name:        "github",
+								Type:        UpstreamProviderTypeOIDC,
+								LoginPolicy: UpstreamLoginPolicyOnDemand,
+								OIDCConfig:  &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "id2"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "invalid embeddedAuthServer with onDemand loginPolicy on first provider",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-embedded-ondemand-first",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeEmbeddedAuthServer,
+					EmbeddedAuthServer: &EmbeddedAuthServerConfig{
+						Issuer: "https://auth.example.com",
+						UpstreamProviders: []UpstreamProviderConfig{
+							{
+								Name:        "okta",
+								Type:        UpstreamProviderTypeOIDC,
+								LoginPolicy: UpstreamLoginPolicyOnDemand,
+								OIDCConfig:  &OIDCUpstreamConfig{IssuerURL: "https://okta.example.com", ClientID: "id1"},
+							},
+							{
+								Name:       "github",
+								Type:       UpstreamProviderTypeOIDC,
+								OIDCConfig: &OIDCUpstreamConfig{IssuerURL: "https://github.com", ClientID: "id2"},
+							},
+						},
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "loginPolicy \"onDemand\" is not allowed on the first provider",
+		},
+		{
 			name: "invalid embeddedAuthServer with no providers",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{

@@ -123,7 +123,43 @@ func (c *RunConfig) Validate() error {
 			return fmt.Errorf("cimd: %w", err)
 		}
 	}
+	if err := ValidateUpstreamLoginPolicies(c.Upstreams); err != nil {
+		return err
+	}
 	return c.validateBaselineClientScopes()
+}
+
+// ValidateUpstreamLoginPolicies rejects unknown LoginPolicy values and an
+// "onDemand" policy on the first upstream. The first upstream anchors the
+// authorization chain and resolves the user's identity — handlers.computeChain
+// never passes it to the filter — so marking it onDemand could only ever be a
+// misconfiguration that would otherwise no-op silently.
+//
+// Exported so reconcile-time validators (e.g. the VirtualMCPServer
+// controller's auth server integration check) can reject the same
+// misconfiguration as a status condition instead of a pod startup crash;
+// RunConfig.Validate re-checks it in the pod as the runtime backstop.
+func ValidateUpstreamLoginPolicies(upstreams []UpstreamRunConfig) error {
+	for i := range upstreams {
+		switch upstreams[i].LoginPolicy {
+		case "", UpstreamLoginPolicyRequired:
+			// Default behavior: walked on every login.
+		case UpstreamLoginPolicyOnDemand:
+			if i == 0 {
+				return fmt.Errorf(
+					"upstreams[0] (%s): login_policy %q is not allowed on the first upstream; "+
+						"the first upstream anchors the authorization chain and cannot be filtered out",
+					ResolveUpstreamName(upstreams[i].Name), UpstreamLoginPolicyOnDemand,
+				)
+			}
+		default:
+			return fmt.Errorf("upstreams[%d] (%s): invalid login_policy %q (must be %q or %q)",
+				i, ResolveUpstreamName(upstreams[i].Name), upstreams[i].LoginPolicy,
+				UpstreamLoginPolicyRequired, UpstreamLoginPolicyOnDemand,
+			)
+		}
+	}
+	return nil
 }
 
 // validateBaselineClientScopes ensures every entry in BaselineClientScopes is
@@ -225,6 +261,24 @@ const (
 	UpstreamProviderTypeOAuth2 UpstreamProviderType = "oauth2"
 )
 
+// UpstreamLoginPolicy controls whether an upstream provider participates in
+// every login authorization chain or is narrowed out of it.
+type UpstreamLoginPolicy string
+
+const (
+	// UpstreamLoginPolicyRequired walks the upstream on every authorization
+	// chain (the default, and the behavior before this field existed).
+	UpstreamLoginPolicyRequired UpstreamLoginPolicy = "required"
+
+	// UpstreamLoginPolicyOnDemand excludes the upstream from the login
+	// authorization chain via the static upstream filter. Tokens previously
+	// stored for the provider are still injected (and refreshed) at MCP-request
+	// time; only login-time acquisition is skipped. The first configured
+	// upstream must not use this policy — it anchors the chain and resolves the
+	// user's identity, so it can never be filtered out.
+	UpstreamLoginPolicyOnDemand UpstreamLoginPolicy = "onDemand"
+)
+
 // DefaultUpstreamName is the name assigned to a single unnamed upstream.
 const DefaultUpstreamName = "default"
 
@@ -269,6 +323,13 @@ type UpstreamRunConfig struct {
 	// OAuth2Config contains OAuth 2.0-specific configuration.
 	// Required when Type is "oauth2", must be nil when Type is "oidc".
 	OAuth2Config *OAuth2UpstreamRunConfig `json:"oauth2_config,omitempty" yaml:"oauth2_config,omitempty"`
+
+	// LoginPolicy controls whether this upstream participates in every login
+	// authorization chain ("required", the default when empty) or is excluded
+	// from it ("onDemand"). When any upstream is "onDemand", the runner
+	// installs a static upstream filter that narrows the chain to the
+	// "required" upstreams. Must be empty or "required" on the first upstream.
+	LoginPolicy UpstreamLoginPolicy `json:"login_policy,omitempty" yaml:"login_policy,omitempty"`
 }
 
 // OIDCUpstreamRunConfig contains OIDC provider configuration.

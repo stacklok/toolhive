@@ -1083,6 +1083,56 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 			errMsg:  "issuer is required",
 		},
 		{
+			name: "login_policy_ondemand_on_first_upstream_rejected",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+				},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "http://localhost:9090",
+				Upstreams: []authserver.UpstreamRunConfig{
+					{
+						Name:        "okta",
+						Type:        authserver.UpstreamProviderTypeOIDC,
+						LoginPolicy: authserver.UpstreamLoginPolicyOnDemand,
+					},
+					{Name: "github", Type: authserver.UpstreamProviderTypeOAuth2},
+				},
+				AllowedAudiences: []string{"https://my-vmcp"},
+			},
+			wantErr: true,
+			errMsg:  "not allowed on the first upstream",
+		},
+		{
+			name: "login_policy_ondemand_on_non_first_upstream_passes",
+			cfg: &Config{
+				IncomingAuth: &IncomingAuthConfig{
+					Type: IncomingAuthTypeOIDC,
+					OIDC: &OIDCConfig{
+						Issuer:   "http://localhost:9090",
+						Audience: "https://my-vmcp",
+					},
+				},
+				OutgoingAuth: &OutgoingAuthConfig{
+					Source: "inline",
+				},
+			},
+			rc: &authserver.RunConfig{
+				Issuer: "http://localhost:9090",
+				Upstreams: []authserver.UpstreamRunConfig{
+					{Name: "okta", Type: authserver.UpstreamProviderTypeOIDC},
+					{
+						Name:        "github",
+						Type:        authserver.UpstreamProviderTypeOAuth2,
+						LoginPolicy: authserver.UpstreamLoginPolicyOnDemand,
+					},
+				},
+				AllowedAudiences: []string{"https://my-vmcp"},
+			},
+			wantErr: false,
+		},
+		{
 			name: "v05_no_upstreams",
 			cfg: &Config{
 				OutgoingAuth: &OutgoingAuthConfig{

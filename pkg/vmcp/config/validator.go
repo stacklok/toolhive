@@ -602,7 +602,11 @@ func validateAuthServerRunConfig(rc *authserver.RunConfig) error {
 	if len(rc.AllowedAudiences) == 0 {
 		return fmt.Errorf("auth server requires at least one allowed audience (MCP clients must send RFC 8707 resource parameter)")
 	}
-	return nil
+	// Reject invalid upstream login policies (unknown values, onDemand on the
+	// first upstream) at reconcile time so a misconfigured VirtualMCPServer
+	// surfaces as AuthServerConfigValidated=False rather than a pod startup
+	// crash. RunConfig.Validate re-checks this in the pod.
+	return authserver.ValidateUpstreamLoginPolicies(rc.Upstreams)
 }
 
 // validateUpstreamInjectProviders checks that every upstream_inject strategy

@@ -26,6 +26,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
@@ -2120,4 +2121,114 @@ func TestResolveCIMDConfig(t *testing.T) {
 		assert.Equal(t, 128, size)
 		assert.Equal(t, 10*time.Minute, ttl)
 	})
+}
+
+func TestBuildUpstreamFilter(t *testing.T) {
+	t.Parallel()
+
+	upstream := func(name string, policy authserver.UpstreamLoginPolicy) authserver.UpstreamRunConfig {
+		return authserver.UpstreamRunConfig{Name: name, LoginPolicy: policy}
+	}
+
+	tests := []struct {
+		name      string
+		upstreams []authserver.UpstreamRunConfig
+		// wantKeep is the expected FilterUpstreams result when a filter is
+		// expected; wantNil asserts no filter is installed at all.
+		wantNil  bool
+		wantKeep []string
+	}{
+		{
+			name:    "no upstreams yields no filter",
+			wantNil: true,
+		},
+		{
+			name:      "single upstream yields no filter",
+			upstreams: []authserver.UpstreamRunConfig{upstream("idp", "")},
+			wantNil:   true,
+		},
+		{
+			name: "no onDemand upstream yields no filter",
+			upstreams: []authserver.UpstreamRunConfig{
+				upstream("idp", ""),
+				upstream("github", authserver.UpstreamLoginPolicyRequired),
+			},
+			wantNil: true,
+		},
+		{
+			name: "onDemand upstream is excluded from the keep set",
+			upstreams: []authserver.UpstreamRunConfig{
+				upstream("idp", ""),
+				upstream("github", authserver.UpstreamLoginPolicyOnDemand),
+				upstream("internal", ""),
+			},
+			wantKeep: []string{"internal"},
+		},
+		{
+			name: "all non-first onDemand keeps only the first upstream",
+			upstreams: []authserver.UpstreamRunConfig{
+				upstream("idp", authserver.UpstreamLoginPolicyRequired),
+				upstream("github", authserver.UpstreamLoginPolicyOnDemand),
+				upstream("slack", authserver.UpstreamLoginPolicyOnDemand),
+			},
+			wantKeep: []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			filter := buildUpstreamFilter(tt.upstreams)
+			if tt.wantNil {
+				assert.Nil(t, filter)
+				return
+			}
+			require.NotNil(t, filter)
+
+			keep, err := filter.FilterUpstreams(context.Background(), auth.PrincipalInfo{}, nil)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantKeep, keep)
+		})
+	}
+}
+
+func TestNewEmbeddedAuthServerWithStorage_LoginPolicy(t *testing.T) {
+	t.Parallel()
+
+	// A RunConfig whose first upstream is onDemand must be rejected by the
+	// fail-loud validation gate before any server construction happens.
+	cfg := &authserver.RunConfig{
+		SchemaVersion: authserver.CurrentSchemaVersion,
+		Issuer:        "http://localhost:8080",
+		Upstreams: []authserver.UpstreamRunConfig{
+			{
+				Name:        "idp",
+				Type:        authserver.UpstreamProviderTypeOAuth2,
+				LoginPolicy: authserver.UpstreamLoginPolicyOnDemand,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					AuthorizationEndpoint: "https://example.com/authorize",
+					TokenEndpoint:         "https://example.com/token",
+					ClientID:              "test-client-id",
+					RedirectURI:           "http://localhost:8080/oauth/callback",
+				},
+			},
+			{
+				Name: "saas",
+				Type: authserver.UpstreamProviderTypeOAuth2,
+				OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+					AuthorizationEndpoint: "https://saas.example.com/authorize",
+					TokenEndpoint:         "https://saas.example.com/token",
+					ClientID:              "saas-client-id",
+					RedirectURI:           "http://localhost:8080/oauth/callback",
+				},
+			},
+		},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}
+
+	server, err := NewEmbeddedAuthServer(context.Background(), cfg)
+	require.Error(t, err)
+	assert.Nil(t, server)
+	assert.Contains(t, err.Error(), "not allowed on the first upstream")
 }

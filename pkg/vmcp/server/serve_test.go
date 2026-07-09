@@ -339,6 +339,7 @@ func TestBuildServeConfigMapsSharedFields(t *testing.T) {
 		Port:                    1,
 		EndpointPath:            "/e",
 		SessionTTL:              time.Second,
+		HeartbeatInterval:       time.Second,
 		AuthMiddleware:          func(h http.Handler) http.Handler { return h },
 		AuthInfoHandler:         http.NewServeMux(),
 		PassthroughHeaders:      []string{"x-test"},

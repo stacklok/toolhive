@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	pluginsmocks "github.com/stacklok/toolhive/pkg/plugins/mocks"
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 )
 
@@ -155,11 +156,13 @@ func TestServerBuilderExtensionPoints(t *testing.T) {
 func TestNewServer_ReadTimeoutConfigured(t *testing.T) {
 	t.Parallel()
 
-	// Inject a skill manager so Build() skips creating the default SQLite skill
-	// store, which is shared on disk and races under parallel tests (SQLITE_BUSY).
+	// Inject mock skill and plugin managers so Build() skips creating the default
+	// SQLite stores, which share a DB file on disk and race under parallel tests
+	// (SQLITE_BUSY).
 	ctrl := gomock.NewController(t)
 	b := NewServerBuilder().WithAddress("127.0.0.1:0")
 	b.skillManager = skillsmocks.NewMockSkillService(ctrl)
+	b.pluginManager = pluginsmocks.NewMockPluginService(ctrl)
 
 	s, err := NewServer(context.Background(), b)
 	require.NoError(t, err)

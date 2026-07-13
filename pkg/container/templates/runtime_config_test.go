@@ -330,3 +330,130 @@ func TestRuntimeConfigValidate_DefaultConfigsAreValid(t *testing.T) {
 		})
 	}
 }
+
+func TestRuntimeConfigValidate_ValidRuntimeEnv(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		key   string
+		value string
+	}{
+		{key: "PYTHON_KEYRING_BACKEND", value: "keyrings.alt.file.PlaintextKeyring"},
+		{key: "NODE_ENV", value: "production"},
+		{key: "FOO_BAR_123", value: "some-value"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.key, func(t *testing.T) {
+			t.Parallel()
+
+			rc := &RuntimeConfig{
+				RuntimeEnv: map[string]string{tt.key: tt.value},
+			}
+			assert.NoError(t, rc.Validate())
+		})
+	}
+}
+
+func TestRuntimeConfigValidate_InvalidRuntimeEnvKeys(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		key  string
+	}{
+		{name: "lowercase key", key: "path_backend"},
+		{name: "starts with digit", key: "1FOO"},
+		{name: "contains hyphen", key: "FOO-BAR"},
+		{name: "empty key", key: ""},
+		{name: "contains space", key: "FOO BAR"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rc := &RuntimeConfig{
+				RuntimeEnv: map[string]string{tt.key: "some-value"},
+			}
+			err := rc.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "invalid runtime env key")
+		})
+	}
+}
+
+func TestRuntimeConfigValidate_ReservedRuntimeEnvKeys(t *testing.T) {
+	t.Parallel()
+
+	reservedKeys := []string{"PATH", "HOME", "LD_PRELOAD"}
+
+	for _, key := range reservedKeys {
+		t.Run(key, func(t *testing.T) {
+			t.Parallel()
+
+			rc := &RuntimeConfig{
+				RuntimeEnv: map[string]string{key: "some-value"},
+			}
+			err := rc.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "is reserved and cannot be overridden")
+		})
+	}
+}
+
+func TestRuntimeConfigValidate_InvalidRuntimeEnvValues(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+	}{
+		{name: "backtick command substitution", value: "`id`"},
+		{name: "dollar-paren command substitution", value: "$(curl evil)"},
+		{name: "dollar-brace expansion", value: "${HOME}"},
+		{name: "trailing backslash", value: `value\`},
+		{name: "embedded newline", value: "value\nRUN evil"},
+		{name: "embedded carriage return", value: "value\rRUN evil"},
+		{name: "embedded double quote breaks out of ENV quoting", value: `value" && RUN evil`},
+		{name: "semicolon separator", value: "value;rm -rf /"},
+		{name: "command chaining with &&", value: "value && evil"},
+		{name: "command chaining with ||", value: "value || evil"},
+		{name: "pipe operator", value: "value|cat"},
+		{name: "redirect operator >", value: "value>file"},
+		{name: "redirect operator <", value: "value<file"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rc := &RuntimeConfig{
+				RuntimeEnv: map[string]string{"FOO": tt.value},
+			}
+			err := rc.Validate()
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "contains potentially dangerous characters")
+		})
+	}
+}
+
+func TestRuntimeConfigValidate_MultipleErrorsWithRuntimeEnv(t *testing.T) {
+	t.Parallel()
+
+	rc := &RuntimeConfig{
+		BuilderImage:       "alpine\nRUN evil",
+		AdditionalPackages: []string{"git", "pkg;ls"},
+		RuntimeEnv: map[string]string{
+			"PATH": "/custom/path",
+			"FOO":  "$(evil)",
+		},
+	}
+	err := rc.Validate()
+	require.Error(t, err)
+	// Should report the builder image, package, and RuntimeEnv errors together.
+	assert.Contains(t, err.Error(), "builder_image")
+	assert.Contains(t, err.Error(), "pkg;ls")
+	assert.Contains(t, err.Error(), "is reserved and cannot be overridden")
+	assert.Contains(t, err.Error(), "contains potentially dangerous characters")
+}

@@ -144,21 +144,21 @@ func TestBridge_ToolsListChanged_TriggersReSync(t *testing.T) {
 	// touch the real process stdin and can be unblocked at teardown by closing
 	// the write end. Leave os.Stdout real; the assertions don't read it.
 	origIn := os.Stdin
-	rIn, wIn, err := os.Pipe()
+	pipeR, pipeW, err := os.Pipe()
 	require.NoError(t, err)
 	t.Cleanup(func() {
 		os.Stdin = origIn
-		_ = rIn.Close()
-		_ = wIn.Close()
+		_ = pipeR.Close()
+		_ = pipeW.Close()
 	})
-	os.Stdin = rIn
+	os.Stdin = pipeR
 
 	bridge.Start(ctx)
 	t.Cleanup(func() {
 		// Close the stdin write end so the go-sdk stdio reader hits EOF and
 		// ServeStdio returns, letting run() exit and the WaitGroup drain. Then
 		// Shutdown closes the upstream client and waits for run() to finish.
-		_ = wIn.Close()
+		_ = pipeW.Close()
 		bridge.Shutdown()
 	})
 
@@ -196,7 +196,7 @@ func TestBridge_ToolsListChanged_TriggersReSync(t *testing.T) {
 	// b.wg.Wait(), which synchronizes with run()'s defer b.wg.Done() (which is
 	// happens-after every field write run() made), so bridge.srv is safe to read
 	// here without a data race.
-	_ = wIn.Close() // unblock ServeStdio (stdin EOF)
+	_ = pipeW.Close() // unblock ServeStdio (stdin EOF)
 	bridge.Shutdown()
 
 	names := toolNamesOnServer(t, bridge.srv)

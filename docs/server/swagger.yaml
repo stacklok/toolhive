@@ -498,6 +498,13 @@ components:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig'
         identity_from_token:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig'
+        insecure_allow_http:
+          description: |-
+            InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+            for this upstream. Only for in-cluster development environments (e.g. an
+            OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+            available. Never set this in production.
+          type: boolean
         redirect_uri:
           description: |-
             RedirectURI is the callback URL where the upstream IDP will redirect after authentication.

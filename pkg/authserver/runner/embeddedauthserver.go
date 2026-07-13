@@ -619,7 +619,7 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP b
 		TokenEndpoint:         oauth2.TokenEndpoint,
 		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
 		AllowPrivateIPs:       oauth2.AllowPrivateIPs,
-		InsecureAllowHTTP:     insecureAllowHTTP,
+		InsecureAllowHTTP:     insecureAllowHTTP || oauth2.InsecureAllowHTTP,
 	}
 
 	if oauth2.TokenResponseMapping != nil {

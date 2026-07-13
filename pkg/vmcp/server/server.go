@@ -95,6 +95,15 @@ const (
 	capabilityCacheTTL = 30 * time.Second
 )
 
+// heartbeatInterval returns the configured heartbeat interval, or the default
+// when the configured value is zero (unset).
+func heartbeatInterval(d time.Duration) time.Duration {
+	if d <= 0 {
+		return defaultHeartbeatInterval
+	}
+	return d
+}
+
 //go:generate mockgen -destination=mocks/mock_watcher.go -package=mocks -source=server.go Watcher
 
 // Watcher is the interface for Kubernetes backend watcher integration.
@@ -130,6 +139,11 @@ type Config struct {
 	// SessionTTL is the session time-to-live duration (default: 30 minutes)
 	// Sessions inactive for this duration will be automatically cleaned up
 	SessionTTL time.Duration
+
+	// HeartbeatInterval configures the SSE keep-alive ping interval on GET
+	// connections. When zero, the Handler defaults to defaultHeartbeatInterval (30s).
+	// Prevents proxies/load balancers from closing idle SSE connections.
+	HeartbeatInterval time.Duration
 
 	// AuthMiddleware is the optional authentication middleware to apply to MCP routes.
 	// If nil, no authentication is required.
@@ -501,7 +515,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		s.mcpServer,
 		server.WithEndpointPath(s.config.EndpointPath),
 		server.WithSessionIdManager(s.vmcpSessionMgr),
-		server.WithHeartbeatInterval(defaultHeartbeatInterval),
+		server.WithHeartbeatInterval(heartbeatInterval(s.config.HeartbeatInterval)),
 	)
 
 	// Create HTTP mux with separated authenticated and unauthenticated routes

@@ -104,6 +104,18 @@ func (b *StdioBridge) run(ctx context.Context) {
 			params = map[string]any{}
 		}
 
+		// On a *_list_changed notification, re-fetch the upstream capability set
+		// before forwarding the notification. forwardAll is additive (AddTool/
+		// AddResource/AddPrompt upsert by name/URI), so re-running it matches the
+		// startup behavior and keeps the local server's advertised set in sync with
+		// the upstream's post-change state.
+		switch n.Method {
+		case "notifications/tools/list_changed",
+			"notifications/resources/list_changed",
+			"notifications/prompts/list_changed":
+			b.forwardAll(context.Background())
+		}
+
 		b.srv.SendNotificationToAllClients(n.Method, params)
 	})
 

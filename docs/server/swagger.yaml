@@ -498,6 +498,13 @@ components:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig'
         identity_from_token:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig'
+        insecure_allow_http:
+          description: |-
+            InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+            for this upstream. Only for in-cluster development environments (e.g. an
+            OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+            available. Never set this in production.
+          type: boolean
         redirect_uri:
           description: |-
             RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -552,6 +559,13 @@ components:
             ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
             Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
           type: string
+        insecure_allow_http:
+          description: |-
+            InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery
+            endpoints for this upstream. Only for in-cluster development environments
+            (e.g. Dex served over HTTP in a kind cluster) where TLS is not available.
+            Never set this in production.
+          type: boolean
         issuer_url:
           description: |-
             IssuerURL is the OIDC issuer URL for automatic endpoint discovery.

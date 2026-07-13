@@ -448,6 +448,10 @@ const docTemplate = `{
                     "identity_from_token": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig"
                     },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs\nfor this upstream. Only for in-cluster development environments (e.g. an\nOAuth2 provider served over HTTP in a kind cluster) where TLS is not\navailable. Never set this in production.",
+                        "type": "boolean"
+                    },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nWhen not specified, defaults to ` + "`" + `{issuer}/oauth/callback` + "`" + `.",
                         "type": "string"
@@ -498,6 +502,10 @@ const docTemplate = `{
                     "client_secret_file": {
                         "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
                         "type": "string"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery\nendpoints for this upstream. Only for in-cluster development environments\n(e.g. Dex served over HTTP in a kind cluster) where TLS is not available.\nNever set this in production.",
+                        "type": "boolean"
                     },
                     "issuer_url": {
                         "description": "IssuerURL is the OIDC issuer URL for automatic endpoint discovery.\nMust be a valid HTTPS URL.",

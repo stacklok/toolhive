@@ -1,0 +1,109 @@
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package client
+
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"github.com/stacklok/toolhive/pkg/fileutils"
+	"github.com/stacklok/toolhive/pkg/llmgateway"
+)
+
+// Codex's LLM gateway config lives in the same config.toml its MCP-server
+// registration already uses (~/.codex/config.toml). Unlike the JSON-Pointer
+// LLMGatewayKeys clients, Codex authenticates via a command-backed bearer
+// token ([model_providers.<id>.auth]), so it gets a dedicated TOML writer
+// here rather than going through the hujson JSON-Pointer machinery, which
+// cannot write TOML at all.
+
+// codexProviderID is the stable table name ToolHive owns under
+// [model_providers.<id>]. Reusing a fixed id (rather than minting one per
+// run) keeps repeated "thv llm setup" calls idempotent and avoids orphaned
+// tables, mirroring the fixed-name approach configureCredentialHelper uses
+// for Claude Desktop's _meta.json entry.
+const codexProviderID = "toolhive-gateway"
+
+// configureCodexAuth writes (or updates) ToolHive's model_provider entry in
+// Codex's config.toml: a custom provider pointed at the LLM gateway,
+// authenticated via a command that invokes "thv llm token". Any other
+// model_providers entries and the mcp_servers table (used by the unrelated
+// MCP-client feature) are left untouched. Returns the config file path, which
+// RevertLLMGateway later passes back to revertCodexAuth.
+func (cm *ClientManager) configureCodexAuth(appCfg *clientAppConfig, cfg llmgateway.ApplyConfig) (string, error) {
+	path := cm.buildLLMSettingsPath(appCfg)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
+	}
+
+	err := fileutils.WithFileLock(path, func() error {
+		config, err := readTOMLConfig(path)
+		if err != nil {
+			return err
+		}
+
+		config["model_provider"] = codexProviderID
+
+		providers, _ := config["model_providers"].(map[string]any)
+		if providers == nil {
+			providers = map[string]any{}
+		}
+		providers[codexProviderID] = map[string]any{
+			"name": "ToolHive Gateway",
+			// Codex's Responses-API client appends "/responses" directly to
+			// base_url (the same convention OpenAI's own base_url="…/v1" uses),
+			// so the gateway's "/v1" prefix must be baked in here rather than
+			// left to the caller like AnthropicBaseURL's optional prefix.
+			"base_url": strings.TrimSuffix(cfg.GatewayURL, "/") + "/v1",
+			"wire_api": "responses",
+			"auth": map[string]any{
+				"command": cfg.TokenHelperPath,
+				"args":    cfg.TokenHelperArgs,
+			},
+		}
+		config["model_providers"] = providers
+
+		return writeTOMLConfig(path, config)
+	})
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// revertCodexAuth undoes configureCodexAuth: it removes ToolHive's
+// model_providers.<id> table (leaving any other providers untouched) and
+// clears model_provider only if it still points at ToolHive's entry — a value
+// changed since setup (by the user or another tool) is left alone, mirroring
+// revertCredentialHelper's appliedId check for Claude Desktop. A missing file
+// is treated as already-reverted.
+func (*ClientManager) revertCodexAuth(_ *clientAppConfig, configPath string) error {
+	if configPath == "" || !fileExistsAt(configPath) {
+		return nil
+	}
+
+	return fileutils.WithFileLock(configPath, func() error {
+		config, err := readTOMLConfig(configPath)
+		if err != nil {
+			return err
+		}
+
+		if providers, ok := config["model_providers"].(map[string]any); ok {
+			delete(providers, codexProviderID)
+			if len(providers) == 0 {
+				delete(config, "model_providers")
+			} else {
+				config["model_providers"] = providers
+			}
+		}
+
+		if provider, ok := config["model_provider"].(string); ok && provider == codexProviderID {
+			delete(config, "model_provider")
+		}
+
+		return writeTOMLConfig(configPath, config)
+	})
+}

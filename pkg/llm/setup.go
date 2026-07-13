@@ -91,6 +91,10 @@ func Setup(
 	if err != nil {
 		return err
 	}
+	tokenHelperPath, tokenHelperArgs, err := buildTokenHelperArgv()
+	if err != nil {
+		return err
+	}
 
 	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
 
@@ -134,7 +138,7 @@ func Setup(
 
 	configured, err := configureDetectedTools(
 		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand,
-		llmCfg.TLSSkipVerify, anthropicPrefix, models,
+		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, models,
 	)
 	if err != nil {
 		return err
@@ -315,6 +319,11 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 					"Warning: %s uses proxy mode — TLS certificate verification is disabled for the "+
 						"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
 			}
+		case llmgateway.ModeCodexAuth:
+			_, _ = fmt.Fprintf(errOut,
+				"Note: --tls-skip-verify is not supported for Codex "+
+					"(its config.toml has no documented TLS-skip option). "+
+					"Ensure your gateway certificate is trusted by the system store instead.\n")
 		}
 	}
 }
@@ -342,6 +351,7 @@ func configureDetectedTools(
 	gm GatewayManager,
 	detected []string,
 	gatewayURL, proxyBaseURL, tokenHelperCommand string,
+	tokenHelperPath string, tokenHelperArgs []string,
 	tlsSkipVerify bool,
 	anthropicPathPrefix string,
 	models []string,
@@ -368,6 +378,8 @@ func configureDetectedTools(
 			AnthropicBaseURL:   anthropicBaseURL,
 			ProxyBaseURL:       proxyBaseURL,
 			TokenHelperCommand: tokenHelperCommand,
+			TokenHelperPath:    tokenHelperPath,
+			TokenHelperArgs:    tokenHelperArgs,
 			TLSSkipVerify:      tlsSkipVerify,
 			Models:             models,
 		}
@@ -488,6 +500,20 @@ func buildTokenHelperCommand() (string, error) {
 				"(Windows paths are not supported by thv llm setup)", self)
 	}
 	return fmt.Sprintf(`"%s" llm token`, self), nil
+}
+
+// buildTokenHelperArgv returns the argv-form of the token helper, for config
+// formats that invoke an executable directly (no shell) — e.g. Codex's
+// [model_providers.<id>.auth] command/args table. Since args are passed as a
+// TOML array rather than interpolated into a shell string, no shell-metacharacter
+// validation is needed. --skip-browser is always included since Codex has no
+// interactive-context signal like Claude Desktop's credential-helper shim.
+func buildTokenHelperArgv() (string, []string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", nil, fmt.Errorf("resolving thv executable path: %w", err)
+	}
+	return self, []string{"llm", "token", "--skip-browser"}, nil
 }
 
 // usesAnthropicBaseURL reports whether a client mode consumes the Anthropic base

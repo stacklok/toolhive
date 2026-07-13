@@ -297,6 +297,7 @@ func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
 		&out, &errOut, gm,
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "/anthropic", nil,
 	)
 	require.NoError(t, err)
@@ -317,6 +318,7 @@ func TestConfigureDetectedTools_NoPrefixWhenEmpty(t *testing.T) {
 		&out, &errOut, gm,
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "", nil, // no prefix
 	)
 	require.NoError(t, err)
@@ -336,6 +338,7 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 		&out, &errOut, gm,
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "/anthropic", nil,
 	)
 	require.NoError(t, err)
@@ -343,6 +346,23 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 
 	// Proxy-mode tools must never receive an AnthropicBaseURL.
 	assert.Empty(t, gm.applied[0].AnthropicBaseURL)
+}
+
+func TestBuildTokenHelperArgv(t *testing.T) {
+	t.Parallel()
+
+	path, args, err := buildTokenHelperArgv()
+	require.NoError(t, err)
+	assert.NotEmpty(t, path)
+	assert.Equal(t, []string{"llm", "token", "--skip-browser"}, args)
+}
+
+func TestWarnTLSSkipVerify_CodexNote(t *testing.T) {
+	t.Parallel()
+
+	var errOut bytes.Buffer
+	warnTLSSkipVerify(&errOut, true, []ToolConfig{{Tool: "codex", Mode: llmgateway.ModeCodexAuth}})
+	assert.Contains(t, errOut.String(), "not supported for Codex")
 }
 
 // ── probeAnthropicPrefix ──────────────────────────────────────────────────────

@@ -52,6 +52,12 @@ const (
 	// ModeCredentialHelper routes traffic through a document + selector +
 	// helper-script model (Claude Desktop's third-party inference surface).
 	ModeCredentialHelper = "credential-helper" //nolint:gosec // G101: mode identifier, not a credential
+	// ModeCodexAuth routes traffic through a custom model_provider written into
+	// Codex's TOML config, using Codex's command-backed bearer-token auth
+	// ([model_providers.<id>.auth]) to invoke the token helper directly (no
+	// shell), rather than the JSON-Pointer LLMGatewayKeys mechanism the other
+	// modes share.
+	ModeCodexAuth = "codex-auth" //nolint:gosec // G101: mode identifier, not a credential
 )
 
 // ProxyOriginOf returns rawURL with its path, query, fragment, and userinfo
@@ -85,7 +91,12 @@ type ApplyConfig struct {
 	AnthropicBaseURL   string // direct-mode: effective ANTHROPIC_BASE_URL (gateway + optional path prefix)
 	ProxyBaseURL       string // proxy-mode: URL of the localhost reverse proxy
 	TokenHelperCommand string // direct-mode: shell command that prints a fresh token
-	TLSSkipVerify      bool   // when true, instruct the tool to skip TLS verification
+	// TokenHelperPath and TokenHelperArgs are the argv-form of the token helper,
+	// for config formats where auth invokes an executable directly (no shell) —
+	// e.g. Codex's [model_providers.<id>.auth] command/args table.
+	TokenHelperPath string
+	TokenHelperArgs []string
+	TLSSkipVerify   bool // when true, instruct the tool to skip TLS verification
 	// Models is the optional explicit model list written to clients that support
 	// a model override (e.g. Claude Desktop's inferenceModels). Empty means the
 	// client falls back to gateway-side model auto-discovery.

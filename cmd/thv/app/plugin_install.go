@@ -4,8 +4,6 @@
 package app
 
 import (
-	"strings"
-
 	"github.com/spf13/cobra"
 
 	"github.com/stacklok/toolhive/pkg/plugins"
@@ -52,7 +50,7 @@ func pluginInstallCmdFunc(cmd *cobra.Command, args []string) error {
 	_, err := c.Install(cmd.Context(), plugins.InstallOptions{
 		Name:        args[0],
 		Scope:       plugins.Scope(pluginInstallScope),
-		Clients:     parsePluginInstallClients(pluginInstallClientsRaw),
+		Clients:     parseSkillInstallClients(pluginInstallClientsRaw),
 		Force:       pluginInstallForce,
 		ProjectRoot: pluginInstallProjectRoot,
 		Group:       pluginInstallGroup,
@@ -62,24 +60,4 @@ func pluginInstallCmdFunc(cmd *cobra.Command, args []string) error {
 	}
 
 	return nil
-}
-
-// parsePluginInstallClients splits a comma-separated --clients flag value.
-// Empty input yields nil so the server applies its default client.
-func parsePluginInstallClients(raw string) []string {
-	raw = strings.TrimSpace(raw)
-	if raw == "" {
-		return nil
-	}
-	parts := strings.Split(raw, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }

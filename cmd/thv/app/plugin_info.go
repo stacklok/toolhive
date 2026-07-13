@@ -6,7 +6,9 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"text/tabwriter"
@@ -90,14 +92,14 @@ func printPluginInfoText(info *plugins.PluginInfo) {
 				_, _ = fmt.Fprintf(w, "Components:\t%s\n", formatComponentInventory(managed))
 			}
 			if len(declared) > 0 {
-				_, _ = fmt.Fprintf(w, "Declared (NOT managed):\t%s\n", formatComponentInventory(declared))
+				_, _ = fmt.Fprintf(w, "Declared (NOT managed by ToolHive):\t%s\n", formatComponentInventory(declared))
 			}
 		}
 	}
 
 	if len(info.UnmaterializedComponents) > 0 {
 		_, _ = fmt.Fprintln(w, "\nUnmaterialized Components:")
-		for _, clientType := range sortedKeys(info.UnmaterializedComponents) {
+		for _, clientType := range slices.Sorted(maps.Keys(info.UnmaterializedComponents)) {
 			types := info.UnmaterializedComponents[clientType]
 			labels := make([]string, 0, len(types))
 			for _, t := range types {
@@ -118,7 +120,7 @@ func printPluginInfoText(info *plugins.PluginInfo) {
 // formatComponentInventory renders a ComponentInventory (map[string]int) as a
 // sorted, space-separated "key=count" sequence for deterministic output.
 func formatComponentInventory(inv plugins.ComponentInventory) string {
-	keys := sortedKeys(inv)
+	keys := slices.Sorted(maps.Keys(inv))
 	parts := make([]string, 0, len(keys))
 	for _, k := range keys {
 		parts = append(parts, fmt.Sprintf("%s=%d", k, inv[k]))
@@ -142,14 +144,4 @@ func splitComponentInventory(inv plugins.ComponentInventory) (managed, declared 
 		}
 	}
 	return managed, declared
-}
-
-// sortedKeys returns the keys of m sorted lexicographically.
-func sortedKeys[T any](m map[string]T) []string {
-	keys := make([]string, 0, len(m))
-	for k := range m {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }

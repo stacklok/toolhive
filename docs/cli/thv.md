@@ -45,6 +45,7 @@ thv [flags]
 * [thv llm](thv_llm.md)	 - Manage LLM gateway authentication
 * [thv logs](thv_logs.md)	 - Output the logs of an MCP server or manage log files
 * [thv mcp](thv_mcp.md)	 - Interact with MCP servers for debugging
+* [thv plugin](thv_plugin.md)	 - Manage plugins
 * [thv proxy](thv_proxy.md)	 - Create a transparent proxy for an MCP server with authentication support
 * [thv registry](thv_registry.md)	 - Manage MCP server registry
 * [thv rm](thv_rm.md)	 - Remove one or more MCP servers

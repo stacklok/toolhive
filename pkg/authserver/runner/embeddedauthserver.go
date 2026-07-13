@@ -583,7 +583,7 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (
 		Issuer:            oidc.IssuerURL,
 		SubjectClaim:      oidc.SubjectClaim,
 		AllowPrivateIPs:   oidc.AllowPrivateIPs,
-		InsecureAllowHTTP: insecureAllowHTTP,
+		InsecureAllowHTTP: insecureAllowHTTP || oidc.InsecureAllowHTTP,
 	}, nil
 }
 

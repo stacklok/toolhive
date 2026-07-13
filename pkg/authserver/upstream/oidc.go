@@ -211,7 +211,7 @@ func NewOIDCProvider(
 	}
 
 	// Security validation - go-oidc doesn't check endpoint origins
-	if err := validateDiscoveryDocument(endpoints, config.Issuer); err != nil {
+	if err := validateDiscoveryDocument(endpoints, config.Issuer, config.InsecureAllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid discovery document: %w", err)
 	}
 
@@ -539,7 +539,7 @@ func (p *OIDCProviderImpl) RefreshTokens(ctx context.Context, refreshToken, expe
 //
 // Note: Issuer match validation (exact match per OIDC spec) is performed by go-oidc's
 // NewProvider() before this function is called.
-func validateDiscoveryDocument(doc *oauthproto.OIDCDiscoveryDocument, expectedIssuer string) error {
+func validateDiscoveryDocument(doc *oauthproto.OIDCDiscoveryDocument, expectedIssuer string, insecureAllowHTTP bool) error {
 	// Validate required OIDC fields per spec
 	if err := doc.Validate(true); err != nil {
 		return err
@@ -547,23 +547,23 @@ func validateDiscoveryDocument(doc *oauthproto.OIDCDiscoveryDocument, expectedIs
 
 	// Security: validate that discovered endpoints use secure schemes.
 	// This prevents a malicious discovery document from redirecting requests to attacker-controlled servers.
-	if err := validateEndpointOrigin(doc.AuthorizationEndpoint, expectedIssuer); err != nil {
+	if err := validateEndpointOrigin(doc.AuthorizationEndpoint, expectedIssuer, insecureAllowHTTP); err != nil {
 		return fmt.Errorf("authorization_endpoint origin mismatch: %w", err)
 	}
 
-	if err := validateEndpointOrigin(doc.TokenEndpoint, expectedIssuer); err != nil {
+	if err := validateEndpointOrigin(doc.TokenEndpoint, expectedIssuer, insecureAllowHTTP); err != nil {
 		return fmt.Errorf("token_endpoint origin mismatch: %w", err)
 	}
 
 	// Optional endpoints - only validate if present
 	if doc.UserinfoEndpoint != "" {
-		if err := validateEndpointOrigin(doc.UserinfoEndpoint, expectedIssuer); err != nil {
+		if err := validateEndpointOrigin(doc.UserinfoEndpoint, expectedIssuer, insecureAllowHTTP); err != nil {
 			return fmt.Errorf("userinfo_endpoint origin mismatch: %w", err)
 		}
 	}
 
 	if doc.JWKSURI != "" {
-		if err := validateEndpointOrigin(doc.JWKSURI, expectedIssuer); err != nil {
+		if err := validateEndpointOrigin(doc.JWKSURI, expectedIssuer, insecureAllowHTTP); err != nil {
 			return fmt.Errorf("jwks_uri origin mismatch: %w", err)
 		}
 	}
@@ -589,7 +589,12 @@ func validateDiscoveryDocument(doc *oauthproto.OIDCDiscoveryDocument, expectedIs
 // If an attacker could compromise the HTTPS connection to the issuer or the issuer itself,
 // host validation would provide no additional protection since the attacker controls the
 // discovery document contents.
-func validateEndpointOrigin(endpoint, issuer string) error {
+//
+// When insecureAllowHTTP is true, HTTP endpoints are permitted for non-localhost issuers.
+// This is intended for in-cluster development environments (e.g. a Dex instance in a
+// kind cluster) where both issuer and endpoints are served over plain HTTP. Never set
+// this in production.
+func validateEndpointOrigin(endpoint, issuer string, insecureAllowHTTP bool) error {
 	endpointURL, err := url.Parse(endpoint)
 	if err != nil {
 		return fmt.Errorf("invalid endpoint URL: %w", err)
@@ -607,6 +612,11 @@ func validateEndpointOrigin(endpoint, issuer string) error {
 			return fmt.Errorf("host mismatch: issuer is localhost but endpoint host is %q", endpointURL.Host)
 		}
 		// For localhost, we allow both HTTP and HTTPS, no further validation needed
+		return nil
+	}
+
+	// insecureAllowHTTP permits HTTP for trusted in-cluster deployments (e.g. Dex in kind).
+	if insecureAllowHTTP {
 		return nil
 	}
 

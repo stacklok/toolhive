@@ -494,15 +494,26 @@ func TestValidateDiscoveryDocument(t *testing.T) {
 	// Note: issuer mismatch is validated by go-oidc's NewProvider() before
 	// validateDiscoveryDocument is called, so we don't test it here.
 	tests := []struct {
-		name    string
-		modify  func(*oauthproto.OIDCDiscoveryDocument)
-		wantErr string
+		name              string
+		insecureAllowHTTP bool
+		modify            func(*oauthproto.OIDCDiscoveryDocument)
+		wantErr           string
 	}{
-		{"valid document", nil, ""},
-		{"missing authorization endpoint", func(d *oauthproto.OIDCDiscoveryDocument) { d.AuthorizationEndpoint = "" }, "missing authorization_endpoint"},
-		{"missing token endpoint", func(d *oauthproto.OIDCDiscoveryDocument) { d.TokenEndpoint = "" }, "missing token_endpoint"},
-		{"missing jwks_uri", func(d *oauthproto.OIDCDiscoveryDocument) { d.JWKSURI = "" }, "missing jwks_uri"},
-		{"missing response_types_supported", func(d *oauthproto.OIDCDiscoveryDocument) { d.ResponseTypesSupported = nil }, "missing response_types_supported"},
+		{"valid document", false, nil, ""},
+		{"missing authorization endpoint", false, func(d *oauthproto.OIDCDiscoveryDocument) { d.AuthorizationEndpoint = "" }, "missing authorization_endpoint"},
+		{"missing token endpoint", false, func(d *oauthproto.OIDCDiscoveryDocument) { d.TokenEndpoint = "" }, "missing token_endpoint"},
+		{"missing jwks_uri", false, func(d *oauthproto.OIDCDiscoveryDocument) { d.JWKSURI = "" }, "missing jwks_uri"},
+		{"missing response_types_supported", false, func(d *oauthproto.OIDCDiscoveryDocument) { d.ResponseTypesSupported = nil }, "missing response_types_supported"},
+		{"HTTP endpoints rejected without insecure flag", false, func(d *oauthproto.OIDCDiscoveryDocument) {
+			d.AuthorizationEndpoint = "http://dex.my-ns.svc.cluster.local:5556/auth"
+			d.TokenEndpoint = "http://dex.my-ns.svc.cluster.local:5556/token"
+			d.JWKSURI = "http://dex.my-ns.svc.cluster.local:5556/keys"
+		}, "scheme mismatch"},
+		{"HTTP endpoints allowed with insecure flag", true, func(d *oauthproto.OIDCDiscoveryDocument) {
+			d.AuthorizationEndpoint = "http://dex.my-ns.svc.cluster.local:5556/auth"
+			d.TokenEndpoint = "http://dex.my-ns.svc.cluster.local:5556/token"
+			d.JWKSURI = "http://dex.my-ns.svc.cluster.local:5556/keys"
+		}, ""},
 	}
 
 	for _, tt := range tests {
@@ -519,7 +530,7 @@ func TestValidateDiscoveryDocument(t *testing.T) {
 			if tt.modify != nil {
 				tt.modify(doc)
 			}
-			err := validateDiscoveryDocument(doc, testIssuer)
+			err := validateDiscoveryDocument(doc, testIssuer, tt.insecureAllowHTTP)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 			} else {
@@ -534,23 +545,27 @@ func TestValidateEndpointOrigin(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		endpoint string
-		issuer   string
-		wantErr  string
+		name              string
+		endpoint          string
+		issuer            string
+		insecureAllowHTTP bool
+		wantErr           string
 	}{
-		{"HTTPS endpoint with same host", "https://example.com/token", "https://example.com", ""},
-		{"HTTPS endpoint with different host", "https://oauth.example.com/token", "https://example.com", ""}, // allowed per OIDC spec
-		{"HTTP endpoint for non-localhost issuer", "http://example.com/token", "https://example.com", "scheme mismatch"},
-		{"localhost allows HTTP", "http://localhost:8080/token", "http://localhost:8080", ""},
-		{"localhost issuer requires localhost endpoint", "http://example.com/token", "http://localhost:8080", "host mismatch"},
-		{"127.0.0.1 treated as localhost", "http://127.0.0.1:8080/token", "http://127.0.0.1:8080", ""},
+		{"HTTPS endpoint with same host", "https://example.com/token", "https://example.com", false, ""},
+		{"HTTPS endpoint with different host", "https://oauth.example.com/token", "https://example.com", false, ""}, // allowed per OIDC spec
+		{"HTTP endpoint for non-localhost issuer", "http://example.com/token", "https://example.com", false, "scheme mismatch"},
+		{"localhost allows HTTP", "http://localhost:8080/token", "http://localhost:8080", false, ""},
+		{"localhost issuer requires localhost endpoint", "http://example.com/token", "http://localhost:8080", false, "host mismatch"},
+		{"127.0.0.1 treated as localhost", "http://127.0.0.1:8080/token", "http://127.0.0.1:8080", false, ""},
+		{"HTTP endpoint allowed with insecure flag", "http://dex.my-ns.svc.cluster.local:5556/token", "http://dex.my-ns.svc.cluster.local:5556", true, ""},
+		{"HTTP endpoint with insecure flag, different host", "http://other.svc.cluster.local/token", "http://dex.my-ns.svc.cluster.local:5556", true, ""},
+		{"HTTPS still valid with insecure flag", "https://example.com/token", "https://example.com", true, ""},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateEndpointOrigin(tt.endpoint, tt.issuer)
+			err := validateEndpointOrigin(tt.endpoint, tt.issuer, tt.insecureAllowHTTP)
 			if tt.wantErr == "" {
 				require.NoError(t, err)
 			} else {

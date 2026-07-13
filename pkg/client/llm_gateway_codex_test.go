@@ -158,6 +158,36 @@ func TestRevertCodexAuth_LeavesForeignModelProviderIntact(t *testing.T) {
 	assert.Equal(t, "my-bedrock", config["model_provider"], "a changed selection must not be clobbered by revert")
 }
 
+func TestConfigureCodexAuth_RejectsMissingTokenHelper(t *testing.T) {
+	t.Parallel()
+	cm, _ := newCodexManager(t)
+
+	_, err := cm.ConfigureLLMGateway(ClientApp(Codex), llmgateway.ApplyConfig{
+		GatewayURL: "https://gw.example.com",
+	})
+	require.Error(t, err)
+}
+
+func TestCodexBaseURL(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name       string
+		gatewayURL string
+		want       string
+	}{
+		{"appends v1", "https://gw.example.com", "https://gw.example.com/v1"},
+		{"trims trailing slash before appending", "https://gw.example.com/", "https://gw.example.com/v1"},
+		{"does not double-append existing v1 suffix", "https://gw.example.com/v1", "https://gw.example.com/v1"},
+		{"does not double-append with trailing slash", "https://gw.example.com/v1/", "https://gw.example.com/v1"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, codexBaseURL(tt.gatewayURL))
+		})
+	}
+}
+
 func TestRevertCodexAuth_MissingFileIsNoOp(t *testing.T) {
 	t.Parallel()
 	cm, configPath := newCodexManager(t)

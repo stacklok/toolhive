@@ -27,6 +27,17 @@ import (
 // for Claude Desktop's _meta.json entry.
 const codexProviderID = "toolhive-gateway"
 
+// codexBaseURL returns gatewayURL with a "/v1" suffix, avoiding a double
+// "/v1/v1" if the configured gateway URL already ends in one (e.g. a gateway
+// mounted behind its own "/v1" path prefix).
+func codexBaseURL(gatewayURL string) string {
+	base := strings.TrimSuffix(gatewayURL, "/")
+	if strings.HasSuffix(base, "/v1") {
+		return base
+	}
+	return base + "/v1"
+}
+
 // configureCodexAuth writes (or updates) ToolHive's model_provider entry in
 // Codex's config.toml: a custom provider pointed at the LLM gateway,
 // authenticated via a command that invokes "thv llm token". Any other
@@ -34,6 +45,10 @@ const codexProviderID = "toolhive-gateway"
 // MCP-client feature) are left untouched. Returns the config file path, which
 // RevertLLMGateway later passes back to revertCodexAuth.
 func (cm *ClientManager) configureCodexAuth(appCfg *clientAppConfig, cfg llmgateway.ApplyConfig) (string, error) {
+	if cfg.TokenHelperPath == "" || len(cfg.TokenHelperArgs) == 0 {
+		return "", fmt.Errorf("codex-auth requires TokenHelperPath and TokenHelperArgs to be set")
+	}
+
 	path := cm.buildLLMSettingsPath(appCfg)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return "", fmt.Errorf("creating %s: %w", filepath.Dir(path), err)
@@ -57,7 +72,7 @@ func (cm *ClientManager) configureCodexAuth(appCfg *clientAppConfig, cfg llmgate
 			// base_url (the same convention OpenAI's own base_url="…/v1" uses),
 			// so the gateway's "/v1" prefix must be baked in here rather than
 			// left to the caller like AnthropicBaseURL's optional prefix.
-			"base_url": strings.TrimSuffix(cfg.GatewayURL, "/") + "/v1",
+			"base_url": codexBaseURL(cfg.GatewayURL),
 			"wire_api": "responses",
 			"auth": map[string]any{
 				"command": cfg.TokenHelperPath,

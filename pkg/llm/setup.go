@@ -87,15 +87,6 @@ func Setup(
 		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
 	}
 
-	tokenHelperCommand, err := buildTokenHelperCommand()
-	if err != nil {
-		return err
-	}
-	tokenHelperPath, tokenHelperArgs, err := buildTokenHelperArgv()
-	if err != nil {
-		return err
-	}
-
 	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
 
 	// Detect tools before login so we skip the interactive browser flow when
@@ -109,6 +100,21 @@ func Setup(
 	if len(detected) == 0 {
 		_, _ = fmt.Fprintln(out, "No supported AI tools detected.")
 		return nil
+	}
+
+	// Only build the shell-string token helper if a detected tool actually
+	// consumes it — its shell-safety check on the thv executable path would
+	// otherwise fail setup for e.g. a Codex-only run, which never uses it.
+	var tokenHelperCommand string
+	if tokenHelperCommandNeeded(gm, detected) {
+		tokenHelperCommand, err = buildTokenHelperCommand()
+		if err != nil {
+			return err
+		}
+	}
+	tokenHelperPath, tokenHelperArgs, err := buildTokenHelperArgv()
+	if err != nil {
+		return err
 	}
 
 	// In lazy mode the interactive login is deferred until a configured tool
@@ -473,6 +479,20 @@ func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify 
 		return "/anthropic"
 	}
 	return ""
+}
+
+// tokenHelperCommandNeeded reports whether any detected client's mode consumes
+// the shell-string token helper (TokenHelperCommand) — direct-mode's
+// apiKeyHelper-style JSON-Pointer clients and Claude Desktop's credential
+// helper. Proxy-mode tools and Codex (argv-based auth) never use it.
+func tokenHelperCommandNeeded(gm GatewayManager, detected []string) bool {
+	for _, clientType := range detected {
+		switch gm.LLMGatewayModeFor(clientType) {
+		case llmgateway.ModeDirect, llmgateway.ModeCredentialHelper:
+			return true
+		}
+	}
+	return false
 }
 
 // buildTokenHelperCommand returns the shell command string used as the

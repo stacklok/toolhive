@@ -348,6 +348,73 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 	assert.Empty(t, gm.applied[0].AnthropicBaseURL)
 }
 
+func TestTokenHelperCommandNeeded(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		modes    map[string]string
+		detected []string
+		want     bool
+	}{
+		{
+			name:     "codex-only run never needs the shell-string helper",
+			modes:    map[string]string{"codex": llmgateway.ModeCodexAuth},
+			detected: []string{"codex"},
+			want:     false,
+		},
+		{
+			name:     "proxy-only run never needs the shell-string helper",
+			modes:    map[string]string{"cursor": llmgateway.ModeProxy},
+			detected: []string{"cursor"},
+			want:     false,
+		},
+		{
+			name:     "direct mode needs it",
+			modes:    map[string]string{"claude-code": llmgateway.ModeDirect},
+			detected: []string{"claude-code"},
+			want:     true,
+		},
+		{
+			name:     "credential-helper mode needs it",
+			modes:    map[string]string{"claude-desktop": llmgateway.ModeCredentialHelper},
+			detected: []string{"claude-desktop"},
+			want:     true,
+		},
+		{
+			name: "any detected tool needing it is enough",
+			modes: map[string]string{
+				"codex":       llmgateway.ModeCodexAuth,
+				"claude-code": llmgateway.ModeDirect,
+			},
+			detected: []string{"codex", "claude-code"},
+			want:     true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &modeLookupGatewayManager{modes: tt.modes}
+			assert.Equal(t, tt.want, tokenHelperCommandNeeded(gm, tt.detected))
+		})
+	}
+}
+
+// modeLookupGatewayManager is a minimal GatewayManager whose LLMGatewayModeFor
+// returns a per-client mode from a fixed map, for tokenHelperCommandNeeded tests.
+type modeLookupGatewayManager struct{ modes map[string]string }
+
+func (*modeLookupGatewayManager) DetectedLLMGatewayClients() []string { return nil }
+func (*modeLookupGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
+	return "", nil
+}
+func (g *modeLookupGatewayManager) LLMGatewayModeFor(c string) string { return g.modes[c] }
+func (*modeLookupGatewayManager) IsManaged(_ string) bool             { return false }
+func (*modeLookupGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
+	return "", nil
+}
+func (*modeLookupGatewayManager) RevertEnvFile(_, _ string) error    { return nil }
+func (*modeLookupGatewayManager) RevertLLMGateway(_, _ string) error { return nil }
+
 func TestBuildTokenHelperArgv(t *testing.T) {
 	t.Parallel()
 

@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 const (
@@ -27,15 +28,6 @@ const (
 	testCAConfigMap   = "test-ca-bundle"
 	testEntryGroupRef = "test-group"
 )
-
-// newEntryScheme creates a runtime scheme with the CRD and core types registered.
-func newEntryScheme(t *testing.T) *runtime.Scheme {
-	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-	return scheme
-}
 
 // newEntryFakeClient builds a fake client with all required indexes and status subresources.
 func newEntryFakeClient(t *testing.T, scheme *runtime.Scheme, objs ...client.Object) client.Client {
@@ -484,7 +476,7 @@ func TestMCPServerEntryReconciler_Reconcile(t *testing.T) {
 			t.Parallel()
 
 			ctx := t.Context()
-			scheme := newEntryScheme(t)
+			scheme := testutil.NewScheme(t)
 
 			objs := append([]client.Object{}, tt.objects...)
 			if tt.entry != nil {
@@ -548,7 +540,7 @@ func TestMCPGroupReconciler_MCPServerEntryIntegration(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := newEntryScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	group := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
@@ -626,7 +618,7 @@ func TestMCPGroupReconciler_EntryDeletionHandler(t *testing.T) {
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := newEntryScheme(t)
+	scheme := testutil.NewScheme(t)
 
 	entry1 := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{Name: "entry1", Namespace: testEntryNS},

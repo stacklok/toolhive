@@ -48,6 +48,32 @@ type StatusProvider interface {
 	QueryBackendStatus(backendID string) (vmcp.BackendHealthStatus, bool)
 }
 
+// Reporter is the read-and-sync surface a running Monitor exposes to the transport/status
+// layer. The core owns the Monitor (builds it, starts it, stops it in Close, and filters
+// capabilities with it); callers that only report on or sync backend health depend on this
+// interface rather than the concrete *Monitor. *Monitor implements it.
+type Reporter interface {
+	StatusProvider
+
+	// GetBackendStatus returns the current health status for a backend, or an error if the
+	// backend is not monitored.
+	GetBackendStatus(backendID string) (vmcp.BackendHealthStatus, error)
+	// GetBackendState returns the full health state of a backend, or an error if unmonitored.
+	GetBackendState(backendID string) (*State, error)
+	// GetAllBackendStates returns the health states of all monitored backends.
+	GetAllBackendStates() map[string]*State
+	// GetHealthSummary returns an aggregate summary across all monitored backends.
+	GetHealthSummary() Summary
+	// WaitForInitialHealthChecks blocks until every backend has completed its first check.
+	WaitForInitialHealthChecks()
+	// UpdateBackends reconciles the monitored set with newBackends (dynamic registries).
+	UpdateBackends(newBackends []vmcp.Backend)
+	// BuildStatus assembles the aggregate vMCP status from current backend health.
+	BuildStatus() *vmcp.Status
+}
+
+var _ Reporter = (*Monitor)(nil)
+
 // backendCheck manages the health check goroutine lifecycle for a single backend.
 // It owns the backend snapshot and the cancel function for its goroutine, keeping
 // per-backend lifecycle mechanics out of the Monitor's coordination logic.

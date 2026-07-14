@@ -25,8 +25,10 @@ type Config struct {
 	// ClientID is the OAuth client identifier at the target AS. When both ClientID
 	// and ClientSecret are set, the request is authenticated with HTTP Basic per
 	// RFC 6749 Section 2.3.1. Public-client identification via a body client_id
-	// parameter (RFC 6749 Section 3.2.1) is not supported — XAA / ID-JAG §8.1
-	// requires confidential clients, and that is the only intended consumer.
+	// parameter (RFC 6749 Section 3.2.1) is not supported — the ID-JAG draft
+	// (§9.1, Security Considerations) RECOMMENDS (SHOULD) confidential clients,
+	// which is the only intended consumer here, and this engine only supports
+	// client_secret/HTTP Basic client authentication.
 	ClientID string
 
 	// ClientSecret is the OAuth client secret at the target AS.
@@ -35,17 +37,54 @@ type Config struct {
 	// Scopes are the requested scopes for the access token.
 	Scopes []string
 
-	// AssertionProvider returns the JWT assertion (e.g., the ID-JAG from Step A).
+	// AssertionProvider returns the JWT assertion (e.g., the ID-JAG from XAA's IdP exchange).
 	// Called on each Token() invocation; must not be nil. The returned JWT must
-	// satisfy RFC 7523 Section 3 (iss/sub/aud/exp); aud should typically be the
-	// target AS's token endpoint (TokenURL). The provider must be safe for
-	// concurrent use — Token() may be called from multiple goroutines (e.g.,
-	// when wrapped in oauth2.ReuseTokenSource).
+	// satisfy RFC 7523 Section 3 (iss/sub/aud/exp). For an ID-JAG the aud is the
+	// Resource AS issuer identifier (per draft-ietf-oauth-identity-assertion-authz-grant),
+	// not the token endpoint URL. The provider must be safe for concurrent use —
+	// Token() may be called from multiple goroutines (e.g., when wrapped in
+	// oauth2.ReuseTokenSource).
 	AssertionProvider func() (string, error)
 
 	// HTTPClient is the HTTP client to use. If nil, oauthproto.DefaultHTTPClient()
 	// is used.
 	HTTPClient *http.Client
+
+	// InsecureAllowHTTP allows plain HTTP for the TokenURL. Only set this for
+	// in-cluster HTTP endpoints (e.g., development or testing environments).
+	InsecureAllowHTTP bool
+}
+
+// ValidateTokenURL checks that a token endpoint URL is syntactically valid: an
+// http or https scheme, a host, no fragment, and no embedded credentials. The
+// http(s)-only scheme check is enforced unconditionally, even when
+// insecureAllowHTTP is true — insecureAllowHTTP only relaxes the HTTPS
+// requirement (permitting plain HTTP on any host, not just localhost), it does
+// not permit other schemes such as ftp://. label prefixes every error message
+// (e.g. "TokenURL", "IDPTokenURL") so call sites can identify which field
+// failed. Shared by jwtbearer.Config.Validate and the vMCP XAA strategy
+// (pkg/vmcp/auth/strategies), which both validate OAuth token endpoints.
+func ValidateTokenURL(label, endpoint string, insecureAllowHTTP bool) error {
+	if err := networking.ValidateEndpointURLWithInsecure(endpoint, insecureAllowHTTP); err != nil {
+		return fmt.Errorf("%s: %w", label, err)
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("%s is not a valid URL: %w", label, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return fmt.Errorf("%s must use http or https scheme", label)
+	}
+	if u.Host == "" {
+		return fmt.Errorf("%s must include a host", label)
+	}
+	if u.Fragment != "" {
+		return fmt.Errorf("%s must not contain a fragment", label)
+	}
+	if u.User != nil {
+		return fmt.Errorf("%s must not contain embedded credentials", label)
+	}
+	return nil
 }
 
 // Validate checks that the Config contains all required fields.
@@ -58,27 +97,7 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("AssertionProvider is required")
 	}
 
-	// Validate TokenURL: must be https (or http on localhost) per RFC 6749 Section 3.2
-	// and RFC 7523 Section 7. Reuses the repo-wide endpoint validator for scheme,
-	// and adds host and fragment checks that it does not perform.
-	if err := networking.ValidateEndpointURL(c.TokenURL); err != nil {
-		return fmt.Errorf("TokenURL: %w", err)
-	}
-	u, err := url.Parse(c.TokenURL)
-	if err != nil {
-		return fmt.Errorf("TokenURL is not a valid URL: %w", err)
-	}
-	if u.Host == "" {
-		return fmt.Errorf("TokenURL must include a host")
-	}
-	if u.Fragment != "" {
-		return fmt.Errorf("TokenURL must not contain a fragment")
-	}
-	if u.User != nil {
-		return fmt.Errorf("TokenURL must not contain embedded credentials")
-	}
-
-	return nil
+	return ValidateTokenURL("TokenURL", c.TokenURL, c.InsecureAllowHTTP)
 }
 
 // String implements fmt.Stringer for Config, redacting sensitive fields.

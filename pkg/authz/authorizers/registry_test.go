@@ -18,6 +18,10 @@ type mockFactory struct {
 	authorizer  Authorizer
 }
 
+func (*mockFactory) ConfigKey() string {
+	return "mock"
+}
+
 func (f *mockFactory) ValidateConfig(_ json.RawMessage) error {
 	return f.validateErr
 }
@@ -27,6 +31,18 @@ func (f *mockFactory) CreateAuthorizer(_ json.RawMessage, _ string) (Authorizer,
 		return nil, f.createErr
 	}
 	return f.authorizer, nil
+}
+
+// reservedKeyFactory is a test factory whose ConfigKey() returns a caller-
+// supplied value. It exists to exercise the reserved-key guard in Register().
+type reservedKeyFactory struct {
+	configKey string
+}
+
+func (f *reservedKeyFactory) ConfigKey() string                    { return f.configKey }
+func (*reservedKeyFactory) ValidateConfig(_ json.RawMessage) error { return nil }
+func (*reservedKeyFactory) CreateAuthorizer(_ json.RawMessage, _ string) (Authorizer, error) {
+	return nil, nil
 }
 
 // mockAuthorizer is a test implementation of Authorizer
@@ -99,6 +115,30 @@ func TestRegisterNewType(t *testing.T) {
 		}
 	}
 	assert.True(t, found, "Expected %s to be in registered types", testType)
+}
+
+//nolint:paralleltest // This test modifies global registry state and cannot be parallelized
+func TestRegisterPanicsOnReservedConfigKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		configKey string
+	}{
+		{name: "empty config key", configKey: ""},
+		{name: "version reserved", configKey: "version"},
+		{name: "type reserved", configKey: "type"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			factory := &reservedKeyFactory{configKey: tt.configKey}
+			// Use a unique configType per case so we panic on the reserved-key
+			// check, not on duplicate registration.
+			configType := "test-reserved-" + tt.name
+			assert.Panics(t, func() {
+				Register(configType, factory)
+			}, "Expected panic when factory ConfigKey() is reserved (%q)", tt.configKey)
+		})
+	}
 }
 
 //nolint:paralleltest // This test modifies global registry state and cannot be parallelized

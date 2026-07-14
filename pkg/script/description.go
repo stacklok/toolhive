@@ -30,7 +30,9 @@ func GenerateToolDescription(tools []Tool) string {
 	}
 	b.WriteString("\nUse call_tool(\"name\", ...) to call any tool by its original name.\n\n")
 	b.WriteString("Built-in: parallel([fn1, fn2, ...]) executes zero-arg callables concurrently ")
-	b.WriteString("and returns results in order. Use with lambda to fan out tool calls.\n\n")
+	b.WriteString("and returns results in order. Use with lambda to fan out tool calls. ")
+	b.WriteString("If a callable errors, the whole script fails, but sibling callables still ")
+	b.WriteString("run to completion first (no early cancellation).\n\n")
 	b.WriteString("Named data arguments passed in the 'data' parameter are available as top-level variables.")
 	return b.String()
 }

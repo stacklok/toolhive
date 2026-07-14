@@ -113,6 +113,13 @@ Welcome to the ToolHive architecture documentation. This directory contains comp
     - Compatibility guarantees and semver-aligned deprecation policy
     - Guidance for downstream embedders on pinning and upgrading
 
+14. **[Plugins System](14-plugins-system.md)**
+    - Plugin manifest format (`.claude-plugin/plugin.json`) and OCI artifact layout
+    - Install dispatch (git → OCI → registry name) and the per-plugin lock
+    - `MaterializationAdapter` seam: Claude Code (pure FS) vs Codex (FS + TOML)
+    - Component inventory and per-client dropped-component warnings
+    - Name/repo consistency check, extraction safety, TOML mutation under file lock
+
 ### Existing Documentation
 
 For middleware architecture, see: **[docs/middleware.md](../middleware.md)**
@@ -160,6 +167,7 @@ graph TB
 
     subgraph "Agent Skills"
         Skills[12: Skills System<br/>Build, publish, install]
+        Plugins[14: Plugins System<br/>MaterializationAdapter]
     end
 
     %% Navigation paths
@@ -184,8 +192,10 @@ graph TB
     Groups --> Workloads
     Groups --> vMCP
     Groups --> Skills
+    Groups --> Plugins
 
     Registry --> Skills
+    Registry --> Plugins
 
     Workloads --> Operator
     vMCP --> Operator
@@ -337,7 +347,7 @@ RunConfig is part of ToolHive's API contract because:
 - Portable across deployments
 - Reproducible configurations
 
-**Reference**: [Architecture Overview](00-overview.md#runconfig)
+**Reference**: [RunConfig and Permissions](05-runconfig-and-permissions.md)
 
 ## Implementation Patterns
 

@@ -37,7 +37,7 @@ const (
 	ExternalAuthTypeAWSSts ExternalAuthType = "awsSts"
 
 	// ExternalAuthTypeUpstreamInject is the type for upstream token injection
-	// This injects an upstream IDP access token as the Authorization: Bearer header
+	// This injects an upstream IdP access token as the Authorization: Bearer header
 	ExternalAuthTypeUpstreamInject ExternalAuthType = "upstreamInject"
 
 	// ExternalAuthTypeOBO is the type for on-behalf-of (OBO) flows.
@@ -46,6 +46,12 @@ const (
 	// status.conditions[Valid] = False with Reason: EnterpriseRequired
 	// when an obo-typed MCPExternalAuthConfig is applied.
 	ExternalAuthTypeOBO ExternalAuthType = "obo"
+
+	// ExternalAuthTypeXAA is the type for XAA (Cross-Application Access) auth.
+	// XAA performs a two-step token exchange to obtain access tokens for target services:
+	//   - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+	//   - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+	ExternalAuthTypeXAA ExternalAuthType = "xaa"
 )
 
 // ExternalAuthType represents the type of external authentication
@@ -62,7 +68,8 @@ type ExternalAuthType string
 // +kubebuilder:validation:XValidation:rule="self.type == 'awsSts' ? has(self.awsSts) : !has(self.awsSts)",message="awsSts configuration must be set if and only if type is 'awsSts'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'upstreamInject' ? has(self.upstreamInject) : !has(self.upstreamInject)",message="upstreamInject configuration must be set if and only if type is 'upstreamInject'"
 // +kubebuilder:validation:XValidation:rule="self.type == 'obo' ? has(self.obo) : !has(self.obo)",message="obo configuration must be set if and only if type is 'obo'"
-// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo)) : true",message="no configuration must be set when type is 'unauthenticated'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'xaa' ? has(self.xaa) : !has(self.xaa)",message="xaa configuration must be set if and only if type is 'xaa'"
+// +kubebuilder:validation:XValidation:rule="self.type == 'unauthenticated' ? (!has(self.tokenExchange) && !has(self.headerInjection) && !has(self.bearerToken) && !has(self.embeddedAuthServer) && !has(self.awsSts) && !has(self.upstreamInject) && !has(self.obo) && !has(self.xaa)) : true",message="no configuration must be set when type is 'unauthenticated'"
 //
 //nolint:lll // CEL validation rules exceed line length limit
 type MCPExternalAuthConfigSpec struct {
@@ -71,7 +78,7 @@ type MCPExternalAuthConfigSpec struct {
 	// OBO handler via controllerutil.RegisterOBOHandler; upstream-only builds
 	// surface status.conditions[Valid] = False with Reason: EnterpriseRequired
 	// for obo-typed configs.
-	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject;obo
+	// +kubebuilder:validation:Enum=tokenExchange;headerInjection;bearerToken;unauthenticated;embeddedAuthServer;awsSts;upstreamInject;obo;xaa
 	// +kubebuilder:validation:Required
 	Type ExternalAuthType `json:"type"`
 
@@ -106,22 +113,163 @@ type MCPExternalAuthConfigSpec struct {
 	UpstreamInject *UpstreamInjectSpec `json:"upstreamInject,omitempty"`
 
 	// OBO configures On-Behalf-Of (OBO) authentication.
-	// Only used when Type is "obo". The inner schema is intentionally empty in
-	// this revision; sub-fields land in a follow-up. Setting this field on an
-	// upstream-only build will cause the MCPExternalAuthConfig to transition to
-	// status.conditions[Valid] = False with Reason: EnterpriseRequired.
+	// Only used when Type is "obo". Setting this field on an upstream-only build
+	// causes the MCPExternalAuthConfig to transition to
+	// status.conditions[Valid] = False with Reason: EnterpriseRequired, because
+	// no OBO handler is registered. See OBOConfig for the field-to-runtime
+	// contract mapping.
 	// +optional
 	OBO *OBOConfig `json:"obo,omitempty"`
+
+	// XAA configures XAA (Cross-Application Access) auth for backend requests.
+	// Only used when Type is "xaa".
+	// +optional
+	XAA *XAASpec `json:"xaa,omitempty"`
 }
 
-// OBOConfig is a placeholder for On-Behalf-Of (OBO) external auth configuration.
-// The inner schema is intentionally empty in this revision; sub-fields land in a
-// follow-up RFC. The struct exists so OBO *OBOConfig compiles and the CRD
-// schema admits `spec.obo: {}` — the CEL rule "obo configuration must be set
-// if and only if type is 'obo'" requires has(self.obo), which evaluates true
-// for an empty object. Stored objects with `obo: {}` will round-trip cleanly
-// when sub-fields land, because Go zero values fill in.
-type OBOConfig struct{}
+// OBOConfig holds configuration for the On-Behalf-Of (OBO) external auth type.
+// Only used when Type is "obo".
+//
+// This is the user-facing CRD surface for the Microsoft Entra OBO flow. It is
+// structurally valid in upstream (OSS) builds but inert: an upstream-only build
+// returns obo.ErrEnterpriseRequired at reconcile (Valid=False, Reason:
+// EnterpriseRequired) because no OBO handler is registered via
+// controllerutil.RegisterOBOHandler. A build with the enterprise OBO handler
+// translates these fields into the runtime wire contract obo.MiddlewareParameters,
+// so the field names and semantics here track that contract rather than the
+// upstream TokenExchangeConfig (which uses different names, e.g.
+// subjectProviderName / externalTokenHeaderName). In particular there is no
+// externalTokenHeaderName: the OBO subject is sourced from the authenticated
+// Identity, never from an inbound request header.
+//
+// Field-to-contract mapping performed by the operator's OBO handler:
+//   - tenantId (+ optional authority) → tokenUrl
+//     (https://login.microsoftonline.com/<tenantId>/oauth2/v2.0/token, or the
+//     configured authority base joined with the tenant for sovereign clouds)
+//   - clientSecretRef → resolved into a pod env var; only the env var name
+//     travels in the contract, as clientSecretEnvVar
+//   - audience / scopes → collapsed to a single exchange target by
+//     obo.MiddlewareParameters.ExchangeTarget() (space-joined scopes win,
+//     otherwise audience)
+//   - cacheSkew → the contract's integer-seconds cacheSkewSeconds
+//
+// Every field is optional at the CRD level, and the schema deliberately carries
+// no required field and no cross-field CEL rule. spec.obo shipped as an empty
+// placeholder ({}) in earlier releases, so adding a required field or an
+// admission rule that rejects {} would be a backward-incompatible narrowing of
+// an already-stored, round-trippable object. Presence and combination
+// requirements — a tenant, a client-auth credential, and at least one of
+// audience/scopes — are therefore enforced by the registered OBO handler at
+// reconcile, which reports a violation as Valid=False / Reason=InvalidConfig.
+// The per-field patterns below still apply, but only to a value that is present.
+//
+//nolint:lll // the tenantId GUID/domain pattern exceeds the line length limit
+type OBOConfig struct {
+	// TenantID is the Microsoft Entra (Azure AD) directory (tenant) identifier.
+	// Optional at the CRD level (see the type doc); the operator enforces its
+	// presence, since an OBO confidential-client exchange must target a specific
+	// tenant. When set, it must be one of the two forms the Entra v2.0 token
+	// endpoint addresses: a directory GUID, or a verified domain name (e.g.
+	// contoso.onmicrosoft.com). Well-known aliases such as "common",
+	// "organizations", and "consumers" are NOT accepted. The operator
+	// interpolates it into the token endpoint
+	// (<authority>/<tenantId>/oauth2/v2.0/token), so the value is constrained to
+	// the GUID/domain shape (no path metacharacters); the pattern and 253-char
+	// cap mirror the enterprise exchanger's validateTenant, so any tenantId
+	// admitted here is one the runtime can consume.
+	// +kubebuilder:validation:MaxLength=253
+	// +kubebuilder:validation:Pattern=`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}|([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]{2,})$`
+	// +optional
+	TenantID string `json:"tenantId,omitempty"`
+
+	// Authority overrides the default Entra login host
+	// (https://login.microsoftonline.com) for sovereign or national clouds, e.g.
+	// https://login.microsoftonline.us (US Gov) or
+	// https://login.partner.microsoftonline.cn (China). When set, the operator
+	// builds the token endpoint by joining <authority>, <tenantId>, and the
+	// v2.0 token path. Must be an HTTPS URL with no userinfo, query, fragment,
+	// or trailing slash; a path IS permitted and is prefixed before the tenant
+	// segment, as some sovereign / B2C / CIAM endpoints require. The OBO exchange
+	// POSTs the client secret and the end-user assertion to this host, so it is a
+	// credential trust boundary: HTTPS is required and userinfo (user@host) is
+	// rejected to prevent host confusion (per RFC 3986 the real host follows the
+	// "@", so https://login.microsoftonline.com@attacker.example targets
+	// attacker.example). This is intentionally stricter than the downstream
+	// exchanger's validateHTTPSURL, which also accepts http for loopback hosts
+	// and tolerates a trailing slash — rejecting those at admission is the safe
+	// direction.
+	// +kubebuilder:validation:Pattern=`^https://[^\s?#@]+[^/\s?#@]$`
+	// +optional
+	Authority string `json:"authority,omitempty"`
+
+	// ClientID is the confidential client's application (client) ID registered
+	// in Entra. Emitted verbatim as the runtime contract's clientId.
+	// Optional at the CRD level so future client-authentication methods (e.g.
+	// certificate or workload-identity credentials, planned fast-follows) can be
+	// added without a breaking schema change. The operator enforces that clientId
+	// and clientSecretRef are both present for the v1 shared-secret flow.
+	// +optional
+	ClientID string `json:"clientId,omitempty"`
+
+	// ClientSecretRef references a Kubernetes Secret containing the confidential
+	// client's secret. v1 supports a shared client secret only. The operator
+	// injects the resolved value into the proxyrunner pod as an environment
+	// variable and emits only that variable's name in the runtime contract, as
+	// clientSecretEnvVar — the secret value never travels in the contract.
+	// Optional at the CRD level for the same forward-compatibility reason as
+	// clientId (a certificate/workload-identity flow needs no client secret);
+	// the operator enforces presence for the v1 shared-secret flow.
+	// +optional
+	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
+
+	// Audience is the backend target identifier requested in the exchanged
+	// token. Used as the exchange target when Scopes is empty. At least one of
+	// audience or scopes must be set; the operator enforces that at reconcile
+	// (it is not an admission-time rule — see the type doc).
+	// +optional
+	Audience string `json:"audience,omitempty"`
+
+	// Scopes are the delegated scopes to request for the exchanged token, e.g.
+	// ["api://<backend>/.default"]. When non-empty they take precedence over
+	// Audience. At least one of audience or scopes must be set; the operator
+	// enforces that at reconcile. The MaxItems and per-item length caps are
+	// defensive bounds on an otherwise unbounded list.
+	// +kubebuilder:validation:MaxItems=20
+	// +kubebuilder:validation:items:MinLength=1
+	// +kubebuilder:validation:items:MaxLength=256
+	// +listType=atomic
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
+
+	// SubjectTokenProviderName selects the source of the OBO subject (assertion)
+	// token from the request's authenticated Identity:
+	//   - Omitted: use the inbound end-user token the client presented
+	//     (Identity.Token) — the deployment with no embedded auth server, where
+	//     the client holds an Entra token directly.
+	//   - Set: use the named upstream provider's token
+	//     (Identity.UpstreamTokens[<name>]) — the embedded-auth-server
+	//     deployment, where the inbound token is the proxy's own session token.
+	//     The value must match a configured upstream provider name.
+	// The subject is always sourced from the authenticated Identity, never from
+	// an inbound request header, so the upstream auth middleware must run first.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([a-z0-9-]*[a-z0-9])?$`
+	// +optional
+	SubjectTokenProviderName string `json:"subjectTokenProviderName,omitempty"`
+
+	// CacheSkew overrides the OBO token cache's default expiry skew (the margin
+	// by which a cached token is treated as expired before its real expiry),
+	// e.g. "30s". The operator converts it to the runtime contract's
+	// integer-seconds cacheSkewSeconds. Should not be negative, but the schema
+	// does not enforce that — metav1.Duration carries no numeric minimum — and
+	// upstream builds do not reject it. A negative value is rejected only by an
+	// enterprise build's OBO handler once that handler validates the converted
+	// parameters; it is not enforced at admission or in upstream-only builds.
+	// When omitted, the cache default applies.
+	// +optional
+	CacheSkew *metav1.Duration `json:"cacheSkew,omitempty"`
+}
 
 // TokenExchangeConfig holds configuration for RFC-8693 OAuth 2.0 Token Exchange.
 // This configuration is used to exchange incoming authentication tokens for tokens
@@ -205,7 +353,8 @@ type BearerTokenConfig struct {
 type EmbeddedAuthServerConfig struct {
 	// Issuer is the issuer identifier for this authorization server.
 	// This will be included in the "iss" claim of issued tokens.
-	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
+	// Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts when
+	// insecureAllowHTTP is true) without query, fragment, or trailing slash (per RFC 8414).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
 	Issuer string `json:"issuer"`
@@ -216,7 +365,8 @@ type EmbeddedAuthServerConfig struct {
 	// All other endpoints (token, registration, JWKS) remain derived from the issuer.
 	// This is useful when the browser-facing authorization endpoint needs to be on a
 	// different host than the issuer used for backend-to-backend calls.
-	// Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+	// Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts
+	// when insecureAllowHTTP is true) without query, fragment, or trailing slash.
 	// +kubebuilder:validation:Pattern=`^https?://[^\s?#]+[^/\s?#]$`
 	// +optional
 	AuthorizationEndpointBaseURL string `json:"authorizationEndpointBaseUrl,omitempty"`
@@ -279,6 +429,37 @@ type EmbeddedAuthServerConfig struct {
 	// +optional
 	Storage *AuthServerStorageConfig `json:"storage,omitempty"`
 
+	// DisableUpstreamTokenInjection prevents the embedded auth server from injecting
+	// upstream IdP tokens into requests forwarded to the backend MCP server.
+	// When true, the embedded auth server still handles OAuth flows for clients,
+	// but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS
+	// the client's credential headers (Authorization, Cookie, Proxy-Authorization)
+	// after validating the JWT — the backend receives an unauthenticated request.
+	// Use headerForward to attach static credentials (e.g. an API key) if the
+	// backend needs them. Cannot be combined with token exchange or AWS STS,
+	// which would re-add credentials after the strip.
+	// This is useful when the backend MCP server does not require authentication
+	// (e.g., public documentation servers) but you still want client authentication.
+	// +kubebuilder:default=false
+	// +optional
+	DisableUpstreamTokenInjection bool `json:"disableUpstreamTokenInjection,omitempty"`
+
+	// InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+	// Only set this for in-cluster Kubernetes deployments where traffic between
+	// pods traverses a trusted network (e.g. the in-cluster service mesh).
+	// Production deployments reachable outside the cluster MUST use https://.
+	//
+	// On VirtualMCPServer: when false (the default), http:// issuers for non-localhost
+	// hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.
+	//
+	// On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is
+	// structurally present but enforcement is deferred to pod startup via Config.Validate();
+	// a misconfigured issuer will cause the pod to crash at startup rather than surface
+	// as an operator condition.
+	// +kubebuilder:default=false
+	// +optional
+	InsecureAllowHTTP bool `json:"insecureAllowHTTP,omitempty"`
+
 	// BaselineClientScopes is a baseline set of OAuth 2.0 scopes guaranteed to be
 	// included in every client registration. The embedded auth server unions these
 	// scopes into the registered set returned by RFC 7591 Dynamic Client
@@ -293,12 +474,19 @@ type EmbeddedAuthServerConfig struct {
 	// "openid" and "offline_access"). Adding a privileged scope here — e.g.
 	// "admin:read" — would grant it to every DCR-registered client, including
 	// public clients like Claude Code, Cursor, and VS Code.
+	// When cimd.enabled is true, every dynamically resolved CIMD client will
+	// also gain the ability to request these scopes, including third-party
+	// clients resolved from arbitrary HTTPS URLs.
 	// +kubebuilder:validation:MaxItems=10
 	// +kubebuilder:validation:items:MinLength=1
 	// +kubebuilder:validation:items:Pattern=`^[\x21\x23-\x5B\x5D-\x7E]+$`
 	// +listType=atomic
 	// +optional
 	BaselineClientScopes []string `json:"baselineClientScopes,omitempty"`
+
+	// CIMD configures Client ID Metadata Document support. When omitted, CIMD is disabled.
+	// +optional
+	CIMD *EmbeddedAuthServerCIMDConfig `json:"cimd,omitempty"`
 }
 
 // TokenLifespanConfig holds configuration for token lifetimes.
@@ -323,6 +511,31 @@ type TokenLifespanConfig struct {
 	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 	// +optional
 	AuthCodeLifespan string `json:"authCodeLifespan,omitempty"`
+}
+
+// EmbeddedAuthServerCIMDConfig configures Client ID Metadata Document (CIMD) support
+// on the embedded authorization server. When enabled, the AS accepts HTTPS URLs as
+// client_id values and resolves them via the CIMD protocol, allowing clients such as
+// VS Code to authenticate without prior Dynamic Client Registration.
+type EmbeddedAuthServerCIMDConfig struct {
+	// Enabled activates CIMD client lookup. When false (the default), the AS only
+	// accepts client_id values that were registered via DCR.
+	// +kubebuilder:default=false
+	Enabled bool `json:"enabled"`
+
+	// CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+	// Defaults to 256 when Enabled is true and this field is omitted.
+	// +kubebuilder:validation:Minimum=1
+	// +optional
+	CacheMaxSize int `json:"cacheMaxSize,omitempty"`
+
+	// CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+	// Cache-Control header parsing is not yet implemented; all entries use this value.
+	// Format: Go duration string (e.g. "5m", "10m", "1h").
+	// Defaults to 5 minutes when Enabled is true and this field is omitted.
+	// +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
+	// +optional
+	CacheFallbackTTL string `json:"cacheFallbackTtl,omitempty"`
 }
 
 // UpstreamProviderType identifies the type of upstream Identity Provider.
@@ -387,7 +600,7 @@ type OIDCUpstreamConfig struct {
 	// +kubebuilder:validation:Pattern=`^https://.*$`
 	IssuerURL string `json:"issuerUrl"`
 
-	// ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
+	// ClientID is the OAuth 2.0 client identifier registered with the upstream IdP.
 	// +kubebuilder:validation:Required
 	ClientID string `json:"clientId"`
 
@@ -396,13 +609,13 @@ type OIDCUpstreamConfig struct {
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
-	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+	// RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
 	// When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
 	// URL associated with the resource (e.g., MCPServer or vMCP) using this config.
 	// +optional
 	RedirectURI string `json:"redirectUri,omitempty"`
 
-	// Scopes are the OAuth scopes to request from the upstream IDP.
+	// Scopes are the OAuth scopes to request from the upstream IdP.
 	// If not specified, defaults to ["openid", "offline_access"].
 	// When using additionalAuthorizationParams with provider-specific refresh token
 	// mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
@@ -429,6 +642,39 @@ type OIDCUpstreamConfig struct {
 	// +kubebuilder:validation:MaxProperties=16
 	// +optional
 	AdditionalAuthorizationParams map[string]string `json:"additionalAuthorizationParams,omitempty"`
+
+	// SubjectClaim names the validated ID-token claim to use as the upstream
+	// subject. Defaults to "sub" when empty. Set it for IdPs where "sub" isn't
+	// stable per user — e.g. Entra/Azure AD, whose "sub" rotates per application
+	// and whose stable identifier is "oid".
+	//
+	// The value is looked up verbatim as a top-level claim name, so it is
+	// constrained to a claim-name shape: it must start with a letter or
+	// underscore and contain only letters, digits, and underscores. This rejects
+	// dotted, colon-namespaced, or whitespace-containing values at admission
+	// rather than letting a typo silently miss the claim at login, and keeps the
+	// field aligned with the directory service's per-issuer bindingClaim.
+	//
+	// Changing this on a live deployment re-keys existing users (the value
+	// resolves to the internal user ID), so treat it as immutable once users
+	// exist.
+	//
+	// Per-IdP notes:
+	//   - Entra/Azure AD: use "oid"; it is only emitted when the upstream scopes
+	//     include "profile". "oid" is unique within a single tenant — multi-tenant
+	//     apps need oid+tid, which this single-claim field cannot express.
+	//   - Okta: the org auth server already puts the stable id in "sub" (default
+	//     works). A custom auth server's "sub" is the mutable login/email and the
+	//     stable "uid" lives only in the access token, not the ID token — map a
+	//     custom ID-token claim and point subjectClaim at it.
+	// The pattern matches the claim-name shape and allows empty (defaults to
+	// "sub"). Using Pattern rather than a CEL XValidation rule keeps this off the
+	// CRD's CEL cost budget — a single-field format check via CEL is rejected by
+	// the apiserver as too expensive once multiplied across the upstreams list.
+	// +optional
+	// +kubebuilder:validation:MaxLength=128
+	// +kubebuilder:validation:Pattern=`^([a-zA-Z_][a-zA-Z0-9_]*)?$`
+	SubjectClaim string `json:"subjectClaim,omitempty"`
 }
 
 // OAuth2UpstreamConfig contains configuration for pure OAuth 2.0 providers.
@@ -492,13 +738,13 @@ type OAuth2UpstreamConfig struct {
 	// +optional
 	ClientSecretRef *SecretKeyRef `json:"clientSecretRef,omitempty"`
 
-	// RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+	// RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
 	// When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
 	// URL associated with the resource (e.g., MCPServer or vMCP) using this config.
 	// +optional
 	RedirectURI string `json:"redirectUri,omitempty"`
 
-	// Scopes are the OAuth scopes to request from the upstream IDP.
+	// Scopes are the OAuth scopes to request from the upstream IdP.
 	// +listType=atomic
 	// +optional
 	Scopes []string `json:"scopes,omitempty"`
@@ -837,7 +1083,7 @@ type RedisStorageConfig struct {
 	// +optional
 	WriteTimeout string `json:"writeTimeout,omitempty"`
 
-	// TLS configures TLS for connections to the Redis/Valkey master.
+	// TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
 	// Presence of this field enables TLS. Omit to use plaintext.
 	// +optional
 	TLS *RedisTLSConfig `json:"tls,omitempty"`
@@ -1032,10 +1278,10 @@ type RoleMapping struct {
 }
 
 // UpstreamInjectSpec holds configuration for upstream token injection.
-// This strategy injects an upstream IDP access token obtained by the embedded
+// This strategy injects an upstream IdP access token obtained by the embedded
 // authorization server into backend requests as the Authorization: Bearer header.
 type UpstreamInjectSpec struct {
-	// ProviderName is the name of the upstream IDP provider whose access token
+	// ProviderName is the name of the upstream IdP provider whose access token
 	// should be injected as the Authorization: Bearer header.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
@@ -1085,6 +1331,81 @@ const (
 	ConditionReasonInvalidConfig = "InvalidConfig"
 )
 
+// XAASpec holds configuration for the XAA (Cross-Application Access) auth strategy.
+// XAA implements draft-ietf-oauth-identity-assertion-authz-grant (ID-JAG) — a
+// two-step token exchange to obtain access tokens for target services:
+//   - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+//   - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+type XAASpec struct {
+	// IDPTokenURL is the IdP token endpoint for IdP exchange (RFC 8693).
+	// Must be a valid HTTPS URL.
+	// +kubebuilder:validation:Required
+	// +kubebuilder:validation:Pattern=`^https://.*$`
+	IDPTokenURL string `json:"idpTokenUrl"`
+
+	// IDPClientID is the OAuth client ID at the IdP for IdP exchange.
+	// +optional
+	IDPClientID string `json:"idpClientId,omitempty"`
+
+	// IDPClientSecretRef references a Kubernetes Secret containing the IdP client secret.
+	// +optional
+	IDPClientSecretRef *SecretKeyRef `json:"idpClientSecretRef,omitempty"`
+
+	// TargetTokenURL is the target AS token endpoint for target grant (RFC 7523).
+	// +kubebuilder:validation:Required
+	TargetTokenURL string `json:"targetTokenUrl"`
+
+	// InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+	// WARNING: this is insecure and must only be set for in-cluster or
+	// development/testing endpoints — never in production.
+	// +optional
+	InsecureTargetTokenURL bool `json:"insecureTargetTokenUrl,omitempty"`
+
+	// TargetClientID is the OAuth client ID at the target AS for target grant.
+	// ID-JAG draft §9.1 RECOMMENDS confidential clients for target grant; most
+	// conformant target authorization servers will reject an unauthenticated
+	// JWT-bearer grant per the §4.4.1 client_id continuity requirement.
+	// +optional
+	TargetClientID string `json:"targetClientId,omitempty"`
+
+	// TargetClientSecretRef references a Kubernetes Secret for the target AS client secret.
+	// +optional
+	TargetClientSecretRef *SecretKeyRef `json:"targetClientSecretRef,omitempty"`
+
+	// TargetAudience is the resource AS URL for the ID-JAG audience claim.
+	// +kubebuilder:validation:Required
+	TargetAudience string `json:"targetAudience"`
+
+	// TargetResource is the RFC 8707 resource indicator sent as the `resource`
+	// parameter in IdP exchange (RFC 8693, draft §4.3, OPTIONAL). It
+	// identifies the target resource server — not the access-token audience, which
+	// is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+	// Some authorization servers (e.g. Okta's early ID-JAG implementation) require
+	// this parameter in practice despite the draft marking it optional — set it
+	// when your IdP needs it.
+	// +optional
+	TargetResource string `json:"targetResource,omitempty"`
+
+	// Scopes are the requested scopes for the XAA exchange (IdP exchange and target grant).
+	// +listType=atomic
+	// +optional
+	Scopes []string `json:"scopes,omitempty"`
+
+	// SubjectProviderName selects which upstream provider's ID token to use.
+	// When left empty and an embedded authorization server is configured,
+	// the controller automatically populates this field with the first configured
+	// upstream provider name.
+	// +optional
+	SubjectProviderName string `json:"subjectProviderName,omitempty"`
+
+	// SubjectTokenType is the token-type URN of the upstream subject token
+	// used in IdP exchange. Defaults to "urn:ietf:params:oauth:token-type:id_token"
+	// when empty.
+	// +kubebuilder:validation:Enum="urn:ietf:params:oauth:token-type:id_token"
+	// +optional
+	SubjectTokenType string `json:"subjectTokenType,omitempty"`
+}
+
 // MCPExternalAuthConfigStatus defines the observed state of MCPExternalAuthConfig
 type MCPExternalAuthConfigStatus struct {
 	// Conditions represent the latest available observations of the MCPExternalAuthConfig's state
@@ -1107,8 +1428,12 @@ type MCPExternalAuthConfigStatus struct {
 	ReferenceCount int32 `json:"referenceCount,omitempty"`
 
 	// ReferencingWorkloads is a list of workload resources that reference this MCPExternalAuthConfig.
-	// Each entry identifies the workload by kind and name.
+	// Each entry identifies the workload by kind and name. The map key is the
+	// (kind, name) pair so two workloads of different kinds that share a name
+	// (e.g., an MCPServer "foo" and a VirtualMCPServer "foo") are distinct
+	// entries rather than colliding under merge-patch semantics.
 	// +listType=map
+	// +listMapKey=kind
 	// +listMapKey=name
 	// +optional
 	ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
@@ -1117,6 +1442,7 @@ type MCPExternalAuthConfigStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:storageversion
 // +kubebuilder:subresource:status
+// +kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 // +kubebuilder:resource:shortName=extauth;mcpextauth,categories=toolhive
 // +kubebuilder:printcolumn:name="Type",type=string,JSONPath=`.spec.type`
 // +kubebuilder:printcolumn:name="Valid",type=string,JSONPath=`.status.conditions[?(@.type=='Valid')].status`
@@ -1168,6 +1494,11 @@ func (r *MCPExternalAuthConfig) Validate() error {
 			return fmt.Errorf("upstreamInject requires a non-empty providerName")
 		}
 		return nil
+	case ExternalAuthTypeXAA:
+		if r.Spec.XAA == nil {
+			return fmt.Errorf("xaa requires configuration")
+		}
+		return nil
 	case ExternalAuthTypeTokenExchange,
 		ExternalAuthTypeHeaderInjection,
 		ExternalAuthTypeBearerToken,
@@ -1179,16 +1510,23 @@ func (r *MCPExternalAuthConfig) Validate() error {
 		// has already run via r.validateTypeConfigConsistency() at the top
 		// of this method, so this arm is reached only when the structural
 		// invariant holds — and the matching CEL rule on the spec catches
-		// it at admission time. The remaining semantic validation
-		// (e.g., whether the cluster has an OBO handler registered) runs
-		// at reconcile time via the controllerutil.OBOValidate
-		// function-pointer hook: upstream-only builds return
-		// obo.ErrEnterpriseRequired, which the reconciler maps to
-		// status.conditions[Valid] = False / Reason: EnterpriseRequired.
-		// Out-of-tree builds that register a handler via
+		// it at admission time. OBOConfig carries no required field and no
+		// cross-field CEL rule: spec.obo shipped as an empty placeholder in an
+		// earlier release, so a required field or a rule rejecting {} would be a
+		// backward-incompatible narrowing. The kubebuilder markers check only
+		// per-field shape (tenantId GUID/domain, authority URL,
+		// subjectTokenProviderName, scopes/cacheSkew bounds) at admission, and
+		// only for values that are present. All presence and combination
+		// requirements (a tenant, a client-auth credential, at least one of
+		// audience/scopes) and protocol-level checks are owned by the registered
+		// handler, not the upstream type. That handler runs at reconcile
+		// time via the controllerutil.OBOValidate function-pointer hook:
+		// upstream-only builds return obo.ErrEnterpriseRequired, which the
+		// reconciler maps to status.conditions[Valid] = False / Reason:
+		// EnterpriseRequired. Out-of-tree builds that register a handler via
 		// controllerutil.RegisterOBOHandler short-circuit the sentinel and
-		// run their own protocol-level checks. Splitting the tiers this
-		// way keeps the upstream CRD schema stable across builds.
+		// run their own protocol-level checks. Splitting the tiers this way
+		// keeps the upstream CRD schema stable across builds.
 		return nil
 	default:
 		// Unknown type - should be caught by enum validation, but handle defensively
@@ -1196,44 +1534,43 @@ func (r *MCPExternalAuthConfig) Validate() error {
 	}
 }
 
+// typeConfigEntry maps an ExternalAuthType to its corresponding config field presence check.
+type typeConfigEntry struct {
+	authType  ExternalAuthType
+	fieldName string
+	isSet     bool
+}
+
 // validateTypeConfigConsistency validates that the correct config is set for the selected type.
 // This mirrors the CEL validation rules but provides defense-in-depth for stored objects.
-// The per-type `if` shape is intentional: each row reads one-to-one against
-// the corresponding CEL XValidation rule on the spec, so a reviewer can
-// audit the structural-validation contract by skimming this function.
 //
-// The gocyclo suppression is a confirmed false positive: every new
-// ExternalAuthType adds one biconditional row and one disjunct to the
-// unauthenticated guard, which the analyzer counts as branches even though
-// the rows are syntactically uniform. Collapsing the rows into a
-// table-driven loop would reduce the score but obscure the one-to-one
-// correspondence with the CEL rules on MCPExternalAuthConfigSpec, which is
-// the property reviewers rely on to audit the structural-validation
-// contract. See issue #5329 for the broader discussion.
-//
-//nolint:gocyclo // one if per ExternalAuthType mirrors CEL rules; collapsing would obscure parity — see doc comment
+// Each ExternalAuthType with a config sub-field is one row in the typeConfigEntry
+// table, checked by a uniform biconditional in the loop below ("config set iff
+// type matches"). OBO is checked separately because its handler is registered
+// out-of-tree; the unauthenticated guard then asserts no config is set for the
+// unauthenticated type. Each row still maps one-to-one onto the corresponding
+// CEL XValidation rule on MCPExternalAuthConfigSpec, so a reviewer can audit the
+// structural-validation contract by comparing the table against the markers.
+// See issue #5329 for the broader discussion.
 func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
-	// Check that each type has its corresponding config
-	if (r.Spec.TokenExchange == nil) == (r.Spec.Type == ExternalAuthTypeTokenExchange) {
-		return fmt.Errorf("tokenExchange configuration must be set if and only if type is 'tokenExchange'")
-	}
-	if (r.Spec.HeaderInjection == nil) == (r.Spec.Type == ExternalAuthTypeHeaderInjection) {
-		return fmt.Errorf("headerInjection configuration must be set if and only if type is 'headerInjection'")
-	}
-	if (r.Spec.BearerToken == nil) == (r.Spec.Type == ExternalAuthTypeBearerToken) {
-		return fmt.Errorf("bearerToken configuration must be set if and only if type is 'bearerToken'")
-	}
-	if (r.Spec.EmbeddedAuthServer == nil) == (r.Spec.Type == ExternalAuthTypeEmbeddedAuthServer) {
-		return fmt.Errorf("embeddedAuthServer configuration must be set if and only if type is 'embeddedAuthServer'")
-	}
-	if (r.Spec.AWSSts == nil) == (r.Spec.Type == ExternalAuthTypeAWSSts) {
-		return fmt.Errorf("awsSts configuration must be set if and only if type is 'awsSts'")
-	}
-	if (r.Spec.UpstreamInject == nil) == (r.Spec.Type == ExternalAuthTypeUpstreamInject) {
-		return fmt.Errorf("upstreamInject configuration must be set if and only if type is 'upstreamInject'")
+	entries := []typeConfigEntry{
+		{ExternalAuthTypeTokenExchange, "tokenExchange", r.Spec.TokenExchange != nil},
+		{ExternalAuthTypeHeaderInjection, "headerInjection", r.Spec.HeaderInjection != nil},
+		{ExternalAuthTypeBearerToken, "bearerToken", r.Spec.BearerToken != nil},
+		{ExternalAuthTypeEmbeddedAuthServer, "embeddedAuthServer", r.Spec.EmbeddedAuthServer != nil},
+		{ExternalAuthTypeAWSSts, "awsSts", r.Spec.AWSSts != nil},
+		{ExternalAuthTypeUpstreamInject, "upstreamInject", r.Spec.UpstreamInject != nil},
+		{ExternalAuthTypeXAA, "xaa", r.Spec.XAA != nil},
 	}
 	if (r.Spec.OBO == nil) == (r.Spec.Type == ExternalAuthTypeOBO) {
 		return fmt.Errorf("obo configuration must be set if and only if type is 'obo'")
+	}
+
+	for _, e := range entries {
+		wantSet := r.Spec.Type == e.authType
+		if e.isSet != wantSet {
+			return fmt.Errorf("%s configuration must be set if and only if type is '%s'", e.fieldName, e.authType)
+		}
 	}
 
 	// Redundant with the per-type biconditionals above — each fires first for
@@ -1241,14 +1578,13 @@ func (r *MCPExternalAuthConfig) validateTypeConfigConsistency() error {
 	// readable invariant so a contributor adding a new ExternalAuthType extends
 	// the "no configuration must be set" check here too.
 	if r.Spec.Type == ExternalAuthTypeUnauthenticated {
-		if r.Spec.TokenExchange != nil ||
-			r.Spec.HeaderInjection != nil ||
-			r.Spec.BearerToken != nil ||
-			r.Spec.EmbeddedAuthServer != nil ||
-			r.Spec.AWSSts != nil ||
-			r.Spec.UpstreamInject != nil ||
-			r.Spec.OBO != nil {
+		if r.Spec.OBO != nil {
 			return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
+		}
+		for _, e := range entries {
+			if e.isSet {
+				return fmt.Errorf("no configuration must be set when type is 'unauthenticated'")
+			}
 		}
 	}
 

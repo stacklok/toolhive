@@ -331,6 +331,18 @@ func WithAllowDockerGateway(allow bool) RunConfigBuilderOption {
 	}
 }
 
+// WithAllowedOrigins sets the HTTP Origin-header allowlist used for
+// DNS-rebinding protection (MCP 2025-11-25 §"Security Warning").
+// An empty slice defers the choice to middleware wiring, which derives a
+// loopback-only default when the bind host is loopback and otherwise leaves
+// the middleware disabled.
+func WithAllowedOrigins(origins []string) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		b.config.AllowedOrigins = origins
+		return nil
+	}
+}
+
 // WithTrustProxyHeaders sets whether to trust X-Forwarded-* headers from reverse proxies
 func WithTrustProxyHeaders(trust bool) RunConfigBuilderOption {
 	return func(b *runConfigBuilder) error {
@@ -673,6 +685,48 @@ func WithMiddlewareFromFlags(
 
 		// Set the populated middleware configs
 		b.config.MiddlewareConfigs = middlewareConfigs
+		return nil
+	}
+}
+
+// WithAdditionalMiddlewareConfigs appends pre-built middleware configs to the
+// RunConfig's AdditionalMiddlewareConfigs slice.
+//
+// Unlike the typed-field middleware (auth, token exchange, AWS STS, ...) that
+// PopulateMiddlewareConfigs derives from RunConfig fields, these configs are
+// supplied already-built by external-auth handlers reached via
+// *[]RunConfigBuilderOption. PopulateMiddlewareConfigs splices them into the
+// backend-egress group — after auth and before recovery — so they survive
+// population and reach the serialized RunConfig the proxyrunner reads.
+//
+// The carrier is generic: upstream moves these configs verbatim and never
+// interprets their parameters; the middleware type identity is supplied by the
+// caller via the config's Type. Multiple calls and multiple arguments are
+// additive; nil entries are skipped.
+//
+// NOTE: the injected configs are consumed only by PopulateMiddlewareConfigs (the
+// operator build path). The CLI flag path (WithMiddlewareFromFlags) builds
+// MiddlewareConfigs directly and never reads AdditionalMiddlewareConfigs, so
+// combining this option with that path would silently drop the injected config.
+//
+// SECURITY: a config's Parameters are serialized verbatim into the RunConfig the
+// operator writes to a ConfigMap — plaintext, not a Secret — readable by anyone
+// with ConfigMap read access in the workload namespace. Injected parameters must
+// therefore NEVER embed raw credentials (client secrets, refresh tokens,
+// service-account keys, …). Reference such secrets by environment-variable name
+// and resolve them at runtime instead, mirroring the typed token-exchange
+// middleware, which leaves its serialized client_secret empty and reads
+// TOOLHIVE_TOKEN_EXCHANGE_CLIENT_SECRET at startup. Because the seam carries
+// parameters opaquely it cannot enforce this — it is a contract the injecting
+// handler must uphold.
+func WithAdditionalMiddlewareConfigs(configs ...*types.MiddlewareConfig) RunConfigBuilderOption {
+	return func(b *runConfigBuilder) error {
+		for _, c := range configs {
+			if c == nil {
+				continue
+			}
+			b.config.AdditionalMiddlewareConfigs = append(b.config.AdditionalMiddlewareConfigs, *c)
+		}
 		return nil
 	}
 }

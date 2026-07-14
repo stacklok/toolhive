@@ -18,6 +18,7 @@ import (
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 )
 
@@ -26,12 +27,18 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, runConfigChecksum string,
 ) *appsv1.Deployment {
 	ls := labelsForMCPRemoteProxy(proxy.Name)
-	replicas := int32(1)
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	r.addTelemetryCABundleVolumes(ctx, proxy, &volumes, &volumeMounts)
+	if err := r.addOIDCCABundleVolumes(ctx, proxy, &volumes, &volumeMounts); err != nil {
+		// Returning nil aborts the build so ensureDeployment requeues with backoff and
+		// leaves the existing Deployment untouched, rather than building a CA-less pod
+		// that would crash-loop and flip the RunConfig checksum (restart flap).
+		log.FromContext(ctx).Error(err, "Failed to add OIDC CA bundle volumes")
+		return nil
+	}
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 
 	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
@@ -62,7 +69,10 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 			Annotations: deploymentAnnotations,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			// nil leaves the replica count to the apiserver default (1) on create
+			// and to an HPA or other external controller thereafter; non-nil is
+			// operator-owned and reconciled by deploymentNeedsUpdate.
+			Replicas: proxy.Spec.Replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: ls,
 			},
@@ -137,7 +147,9 @@ func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
 		},
 	})
 
-	// Add authz config volume if needed
+	// Add authz config volume if needed (inline spec.authzConfig only).
+	// A referenced MCPAuthzConfig (spec.authzConfigRef) is not mounted: it is
+	// enforced via the authz config embedded in the RunConfig, not a file mount.
 	authzVolumeMount, authzVolume := ctrlutil.GenerateAuthzVolumeConfig(proxy.Spec.AuthzConfig, proxy.Name)
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
@@ -168,6 +180,38 @@ func (r *MCPRemoteProxyReconciler) addTelemetryCABundleVolumes(
 		*volumes = append(*volumes, caVolumes...)
 		*volumeMounts = append(*volumeMounts, caMounts...)
 	}
+}
+
+// addOIDCCABundleVolumes appends the CA bundle volume and mount for the referenced
+// MCPOIDCConfig's inline CA bundle, so the runner pod can read the CA file at the
+// path the RunConfig points it at (resolved.ThvCABundlePath). Mirrors MCPServer's
+// OIDC CA bundle mount.
+//
+// A fetch error is returned (not swallowed) so the caller can abort the build: a
+// transient failure must not produce a CA-less Deployment, which would flip the
+// RunConfig checksum and crash-loop the pod (restart flap). The CA bundle reference
+// content is validated separately in validateCABundleRef.
+//
+// Must be called from deploymentForMCPRemoteProxy where the client is available.
+func (r *MCPRemoteProxyReconciler) addOIDCCABundleVolumes(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	volumes *[]corev1.Volume,
+	volumeMounts *[]corev1.VolumeMount,
+) error {
+	if proxy.Spec.OIDCConfigRef == nil {
+		return nil
+	}
+	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
+	if err != nil {
+		return fmt.Errorf("failed to fetch MCPOIDCConfig for CA bundle volume: %w", err)
+	}
+	if oidcCfg != nil {
+		caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
+		*volumes = append(*volumes, caVolumes...)
+		*volumeMounts = append(*volumeMounts, caMounts...)
+	}
+	return nil
 }
 
 // buildEnvVarsForProxy builds environment variables for the proxy container
@@ -208,6 +252,22 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		} else {
 			env = append(env, bearerTokenEnvVars...)
 		}
+
+		// Add OBO secret environment variables. Dispatched through the
+		// registered OBO handler; inert (no env vars) in builds without one.
+		// This function feeds both the deployment builder and containerNeedsUpdate,
+		// so builder/drift symmetry is automatic.
+		oboEnvVars, err := ctrlutil.AddOBOSecretEnvVars(
+			ctx,
+			r.Client,
+			proxy.Namespace,
+			proxy.Spec.ExternalAuthConfigRef,
+		)
+		if err != nil {
+			logOBOSecretEnvVarError(ctx, err)
+		} else {
+			env = append(env, oboEnvVars...)
+		}
 	}
 
 	// Add header forward secret environment variables
@@ -234,7 +294,36 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		}
 	}
 
+	// Add THV_SESSION_REDIS_PASSWORD when sessionStorage uses a passwordRef.
+	// The non-sensitive parts (address/db/keyPrefix) are populated into the
+	// runconfig by populateScalingConfigForRemoteProxy; the password is
+	// injected separately so it never lands in the ConfigMap.
+	env = append(env, buildRedisPasswordEnvVarForRemoteProxy(proxy)...)
+
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+}
+
+// buildRedisPasswordEnvVarForRemoteProxy returns the THV_SESSION_REDIS_PASSWORD
+// env var sourced from spec.sessionStorage.passwordRef when sessionStorage uses
+// the redis provider; returns nil otherwise. Mirrors VirtualMCPServer's
+// buildRedisPasswordEnvVar in virtualmcpserver_deployment.go.
+func buildRedisPasswordEnvVarForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.EnvVar {
+	if proxy.Spec.SessionStorage == nil ||
+		proxy.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis ||
+		proxy.Spec.SessionStorage.PasswordRef == nil {
+		return nil
+	}
+	return []corev1.EnvVar{{
+		Name: session.RedisPasswordEnvVar,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: proxy.Spec.SessionStorage.PasswordRef.Name,
+				},
+				Key: proxy.Spec.SessionStorage.PasswordRef.Key,
+			},
+		},
+	}}
 }
 
 // buildOIDCClientSecretEnvVars returns OIDC client secret env vars when the proxy

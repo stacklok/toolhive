@@ -9,27 +9,24 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/composer/mocks"
+	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 )
 
 func TestWorkflowEngine_ExecuteElicitationStep_Accept(t *testing.T) {
 	t.Parallel()
 
 	te := newTestEngine(t)
-	mockSDK := mocks.NewMockSDKElicitationRequester(te.Ctrl)
+	mockSDK := mocks.NewMockElicitationRequester(te.Ctrl)
 
 	// Mock SDK to return accept response
-	mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{
-			Action:  mcp.ElicitationResponseActionAccept,
-			Content: map[string]any{"environment": "production"},
-		},
+	mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&vmcp.ElicitationResult{
+		Action:  "accept",
+		Content: map[string]any{"environment": "production"},
 	}, nil)
 
 	handler := NewDefaultElicitationHandler(mockSDK)
@@ -140,13 +137,11 @@ func TestWorkflowEngine_ExecuteElicitationStep_Decline(t *testing.T) {
 			t.Parallel()
 
 			te := newTestEngine(t)
-			mockSDK := mocks.NewMockSDKElicitationRequester(te.Ctrl)
+			mockSDK := mocks.NewMockElicitationRequester(te.Ctrl)
 
 			// Mock SDK to return decline response
-			mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&mcp.ElicitationResult{
-				ElicitationResponse: mcp.ElicitationResponse{
-					Action: mcp.ElicitationResponseActionDecline,
-				},
+			mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&vmcp.ElicitationResult{
+				Action: "decline",
 			}, nil)
 
 			handler := NewDefaultElicitationHandler(mockSDK)
@@ -217,13 +212,11 @@ func TestWorkflowEngine_ExecuteElicitationStep_Cancel(t *testing.T) {
 			t.Parallel()
 
 			te := newTestEngine(t)
-			mockSDK := mocks.NewMockSDKElicitationRequester(te.Ctrl)
+			mockSDK := mocks.NewMockElicitationRequester(te.Ctrl)
 
 			// Mock SDK to return cancel response
-			mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&mcp.ElicitationResult{
-				ElicitationResponse: mcp.ElicitationResponse{
-					Action: mcp.ElicitationResponseActionCancel,
-				},
+			mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&vmcp.ElicitationResult{
+				Action: "cancel",
 			}, nil)
 
 			handler := NewDefaultElicitationHandler(mockSDK)
@@ -268,7 +261,7 @@ func TestWorkflowEngine_ExecuteElicitationStep_Timeout(t *testing.T) {
 	t.Parallel()
 
 	te := newTestEngine(t)
-	mockSDK := mocks.NewMockSDKElicitationRequester(te.Ctrl)
+	mockSDK := mocks.NewMockElicitationRequester(te.Ctrl)
 
 	// Mock SDK to return timeout error
 	mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(nil, context.DeadlineExceeded)
@@ -336,14 +329,12 @@ func TestWorkflowEngine_MultiStepWithElicitation(t *testing.T) {
 	t.Parallel()
 
 	te := newTestEngine(t)
-	mockSDK := mocks.NewMockSDKElicitationRequester(te.Ctrl)
+	mockSDK := mocks.NewMockElicitationRequester(te.Ctrl)
 
 	// Mock SDK to return accept with proceed=true
-	mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&mcp.ElicitationResult{
-		ElicitationResponse: mcp.ElicitationResponse{
-			Action:  mcp.ElicitationResponseActionAccept,
-			Content: map[string]any{"proceed": true},
-		},
+	mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(&vmcp.ElicitationResult{
+		Action:  "accept",
+		Content: map[string]any{"proceed": true},
 	}, nil)
 
 	handler := NewDefaultElicitationHandler(mockSDK)
@@ -503,7 +494,7 @@ func TestDefaultElicitationHandler_SDKErrorHandling(t *testing.T) {
 			t.Parallel()
 
 			ctrl := gomock.NewController(t)
-			mockSDK := mocks.NewMockSDKElicitationRequester(ctrl)
+			mockSDK := mocks.NewMockElicitationRequester(ctrl)
 
 			mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).Return(nil, tt.sdkError)
 
@@ -556,17 +547,15 @@ func TestWorkflowEngine_ElicitationMessageTemplateExpansion(t *testing.T) {
 			t.Parallel()
 
 			te := newTestEngine(t)
-			mockSDK := mocks.NewMockSDKElicitationRequester(te.Ctrl)
+			mockSDK := mocks.NewMockElicitationRequester(te.Ctrl)
 
-			var capturedReq mcp.ElicitationRequest
+			var capturedReq vmcp.ElicitationRequest
 			mockSDK.EXPECT().RequestElicitation(gomock.Any(), gomock.Any()).DoAndReturn(
-				func(_ context.Context, req mcp.ElicitationRequest) (*mcp.ElicitationResult, error) {
+				func(_ context.Context, req vmcp.ElicitationRequest) (*vmcp.ElicitationResult, error) {
 					capturedReq = req
-					return &mcp.ElicitationResult{
-						ElicitationResponse: mcp.ElicitationResponse{
-							Action:  mcp.ElicitationResponseActionAccept,
-							Content: map[string]any{"confirmed": true},
-						},
+					return &vmcp.ElicitationResult{
+						Action:  "accept",
+						Content: map[string]any{"confirmed": true},
 					}, nil
 				},
 			)
@@ -598,7 +587,7 @@ func TestWorkflowEngine_ElicitationMessageTemplateExpansion(t *testing.T) {
 			result, err := engine.ExecuteWorkflow(context.Background(), workflow, tt.params)
 			require.NoError(t, err)
 			assert.Equal(t, WorkflowStatusCompleted, result.Status)
-			assert.Equal(t, tt.expectedMessage, capturedReq.Params.Message)
+			assert.Equal(t, tt.expectedMessage, capturedReq.Message)
 			assert.Equal(t, tt.message, workflow.Steps[0].Elicitation.Message)
 		})
 	}

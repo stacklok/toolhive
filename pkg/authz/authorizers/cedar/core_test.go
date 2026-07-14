@@ -146,7 +146,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 	// Test cases
 	testCases := []struct {
 		name             string
-		policy           string
+		policies         []string
 		claims           jwt.MapClaims
 		feature          authorizers.MCPFeature
 		operation        authorizers.MCPOperation
@@ -156,7 +156,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 	}{
 		{
 			name: "User with correct name can call weather tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -165,7 +165,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_name == "John Doe"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":   "user123",
 				"name":  "John Doe",
@@ -179,7 +179,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with incorrect name cannot call weather tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -188,7 +188,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_name == "John Doe"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":   "user123",
 				"name":  "Jane Smith",
@@ -202,7 +202,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Admin user can call any tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -211,7 +211,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_role == "admin"
 			};
-			`,
+			`},
 			claims: map[string]interface{}{
 				"sub":  "admin123",
 				"name": "Admin User",
@@ -225,7 +225,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with specific argument value can call tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -234,7 +234,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.arg_operation == "add" && context.arg_value1 == 5
 			};
-			`,
+			`},
 			claims: map[string]interface{}{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -251,7 +251,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with specific role in array can access resource",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -260,7 +260,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_groups.contains("editor")
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":    "user123",
 				"name":   "John Doe",
@@ -274,7 +274,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Resource entity exposes name attribute for Cedar schema",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -283,7 +283,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				resource.name == "sensitive_data"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub": "user123",
 			},
@@ -295,7 +295,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Resource entity retains uri attribute for backward compat",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -304,7 +304,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				resource.uri == "sensitive_data"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub": "user123",
 			},
@@ -316,7 +316,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Resource name and uri attributes carry the same value",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -325,7 +325,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				resource.name == resource.uri
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub": "user123",
 			},
@@ -337,13 +337,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can get prompt",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"get_prompt",
 				resource == Prompt::"greeting"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -357,13 +357,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list tools",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_tools",
 				resource == FeatureType::"tool"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -377,13 +377,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list prompts",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_prompts",
 				resource == FeatureType::"prompt"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -397,13 +397,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list resources",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_resources",
 				resource == FeatureType::"resource"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -414,6 +414,115 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			resourceID:       "",
 			arguments:        nil,
 			expectAuthorized: true,
+		},
+		{
+			name: "Delegated access permitted when act claim matches SPIFFE ID pattern",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context.claim_sub == "user@example.com" &&
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Delegated access denied when act claim has wrong SPIFFE ID",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context.claim_sub == "user@example.com" &&
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://evil.example.com/ns/agents/sa/attacker",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: false,
+		},
+		{
+			name: "Forbid delegated access to admin tools when act claim present",
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource);`,
+				`forbid(principal, action == Action::"call_tool", resource == Tool::"admin_reset")
+				when { context has claim_act };`,
+			},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "admin_reset",
+			arguments:        nil,
+			expectAuthorized: false,
+		},
+		{
+			name: "Direct access to admin tools allowed when no act claim",
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource);`,
+				`forbid(principal, action == Action::"call_tool", resource == Tool::"admin_reset")
+				when { context has claim_act };`,
+			},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "admin_reset",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Policy with has operator does not match when act claim absent",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: false,
 		},
 	}
 
@@ -426,7 +535,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 
 			// Create a Cedar authorizer
 			authorizer, err := NewCedarAuthorizer(ConfigOptions{
-				Policies:     []string{tc.policy},
+				Policies:     tc.policies,
 				EntitiesJSON: `[]`,
 			}, "")
 			require.NoError(t, err, "Failed to create Cedar authorizer")
@@ -1296,7 +1405,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 			errContains: "upstream token for provider",
 		},
 		{
-			name: "upstream_token_opaque_not_parseable",
+			name: "upstream_token_opaque_falls_back_to_request_claims_denied",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "thv-user",
@@ -1304,6 +1413,45 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				},
 				UpstreamTokens: map[string]string{
 					providerName: "opaque-token-cannot-be-parsed",
+				},
+			},
+			// Opaque upstream tokens (Google's ya29.*, GitHub's gho_*, etc.)
+			// trigger the fallback to identity.Claims. Here the request-token
+			// sub does not match the policy, so authorization is correctly
+			// denied based on policy evaluation rather than a parse-time error.
+			wantAuthorize: false,
+		},
+		{
+			name: "upstream_token_opaque_falls_back_to_request_claims_permitted",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: "opaque-token-cannot-be-parsed",
+				},
+			},
+			// When the upstream token is not a JWT, Cedar evaluates against
+			// the request-token claims. The embedded auth server already
+			// mirrors the upstream OIDC sub/email/name into its issued token,
+			// so a policy referencing claim_sub still matches the user.
+			wantAuthorize: true,
+		},
+		{
+			name: "upstream_token_jwt_shaped_but_malformed_still_errors",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{
+					// Three-segment shape (looks like a JWT) but the segments are
+					// not valid base64-encoded JSON — i.e. a tampered or
+					// corrupted JWT. The fallback path MUST NOT trigger here:
+					// silently degrading a tampered upstream JWT to fallback
+					// claims would be a security regression.
+					providerName: "not-base64.not-base64.not-base64",
 				},
 			},
 			wantErr:     true,
@@ -3130,4 +3278,23 @@ func TestStaleTHVGroupWarning(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestFactory_ConfigKeyMatchesStructTag locks in the contract between
+// Factory.ConfigKey() and the Config struct's json tag. A future rename of
+// either string without updating the other would silently produce JSON the
+// backend's own Unmarshal could not parse. Building an envelope around
+// ConfigKey() and asserting it deserialises into Config.Options is the
+// cheapest way to make that drift impossible.
+func TestFactory_ConfigKeyMatchesStructTag(t *testing.T) {
+	t.Parallel()
+
+	envelope := []byte(`{"version":"1.0","type":"cedarv1","` + (&Factory{}).ConfigKey() +
+		`":{"policies":["permit(principal, action, resource);"],"entities_json":"[]"}}`)
+
+	var cfg Config
+	require.NoError(t, json.Unmarshal(envelope, &cfg),
+		"envelope built around Factory.ConfigKey() must parse into Config")
+	require.NotNil(t, cfg.Options,
+		"Config.Options must be set after Unmarshal — if nil, Factory.ConfigKey() and the Options struct tag have drifted apart")
 }

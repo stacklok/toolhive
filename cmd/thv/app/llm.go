@@ -22,6 +22,11 @@ import (
 	pkgsecrets "github.com/stacklok/toolhive/pkg/secrets"
 )
 
+// skipBrowserFlagUsage is the shared help text for the --skip-browser flag on
+// the login-capable llm subcommands (setup, token, proxy start).
+const skipBrowserFlagUsage = "Print the OIDC authorization URL instead of opening a browser, then wait for the " +
+	"callback. Use in headless/SSH/CI environments where no system browser is available."
+
 func newLLMCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "llm",
@@ -164,7 +169,7 @@ tokens from the secrets provider.`,
 // runLLMToken prints a fresh LLM gateway access token to stdout.
 // All diagnostic output goes to stderr so the caller can capture the token
 // cleanly (e.g. apiKeyHelper or auth.command in Claude Code / Cursor).
-func runLLMToken(ctx context.Context) error {
+func runLLMToken(ctx context.Context, skipBrowser bool) error {
 	provider := config.NewDefaultProvider()
 	llmCfg := provider.GetConfig().LLM
 
@@ -172,7 +177,11 @@ func runLLMToken(ctx context.Context) error {
 		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
 	}
 
-	ts, err := buildLLMTokenSource(&llmCfg, false /* non-interactive */)
+	// Interactive: on a genuine cache miss (no cached or refreshable token) this
+	// launches the OIDC browser flow — the same flow "thv llm setup" runs — so a
+	// prior "thv llm setup --lazy" signs the user in transparently on first use.
+	// A cached or refreshable token is served without any browser prompt.
+	ts, err := buildLLMTokenSource(&llmCfg, true /* interactive */, skipBrowser)
 	if err != nil {
 		return err
 	}
@@ -189,7 +198,7 @@ func runLLMToken(ctx context.Context) error {
 // system secrets provider → ScopeLLM scoped provider → config-persisting updater.
 // This is the single place that wires ScopeLLM and the refresh-token persistence
 // logic; runLLMToken, runLLMProxyForeground, and future callers all use it.
-func buildLLMTokenSource(cfg *llm.Config, interactive bool) (*llm.TokenSource, error) {
+func buildLLMTokenSource(cfg *llm.Config, interactive, skipBrowser bool) (*llm.TokenSource, error) {
 	secretsProvider, err := secrets.GetSystemSecretsProvider()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get secrets provider: %w", err)
@@ -206,7 +215,7 @@ func buildLLMTokenSource(cfg *llm.Config, interactive bool) (*llm.TokenSource, e
 		}
 	}
 
-	return llm.NewTokenSource(cfg, scoped, interactive, updater), nil
+	return llm.NewTokenSource(cfg, scoped, interactive, skipBrowser, updater), nil
 }
 
 // ── setup / teardown ─────────────────────────────────────────────────────────
@@ -217,16 +226,29 @@ func newLLMSetupCommand() *cobra.Command {
 		tlsSkipVerify       bool
 		targetClient        string
 		anthropicPathPrefix string
+		lazy                bool
+		skipBrowser         bool
+		models              []string
 	)
 
 	cmd := &cobra.Command{
 		Use:   "setup",
 		Short: "Configure detected AI tools to use the LLM gateway",
-		Long: `Detect installed AI coding tools (Claude Code, Gemini CLI, Cursor, VS Code,
-Xcode) and patch each tool's configuration to route through the LLM gateway.
+		Long: `Detect installed AI tools (Claude Code, Gemini CLI, Cursor, VS Code, Xcode,
+Claude Desktop, Codex) and patch each tool's configuration to route through the
+LLM gateway.
 
 Token-helper tools (Claude Code, Gemini CLI) are configured to call
 "thv llm token" to obtain a fresh OIDC token on demand.
+
+Claude Desktop is configured via its third-party inference credential helper,
+which also calls "thv llm token". It reads its configuration only at launch, so
+fully quit and relaunch it after setup. Pass --models to list the models it
+should offer until the gateway serves model discovery itself.
+
+Codex is configured with a custom model_provider in ~/.codex/config.toml whose
+auth command invokes "thv llm token" directly (no shell), keeping the existing
+model_providers and mcp_servers entries in that file untouched.
 
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
@@ -248,10 +270,13 @@ Run "thv llm teardown" to revert all changes.`,
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
 			}
+			login := func(ctx context.Context, cfg *llm.Config) error {
+				return oidcLogin(ctx, cfg, skipBrowser)
+			}
 			return runLLMSetup(
 				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
-				cm, config.NewDefaultProvider(), oidcLogin, opts,
-				anthropicPathPrefix, cmd.Flags().Changed("anthropic-path-prefix"), targetClient,
+				cm, config.NewDefaultProvider(), login, opts,
+				anthropicPathPrefix, cmd.Flags().Changed("anthropic-path-prefix"), targetClient, lazy, models,
 			)
 		},
 	}
@@ -272,12 +297,20 @@ Run "thv llm teardown" to revert all changes.`,
 			"(e.g. /anthropic). When omitted, the gateway is probed automatically.")
 	cmd.Flags().StringVar(&targetClient, "client", "",
 		"Configure only this AI tool by name (e.g. claude-code, cursor). Omit to configure all detected tools.")
+	cmd.Flags().BoolVar(&lazy, "lazy", false,
+		"Skip the interactive OIDC login and defer it until the first time a configured tool "+
+			"accesses the gateway. Tool config and persisted settings are written normally. "+
+			"Useful for unattended provisioning (e.g. an MDM profile).")
+	cmd.Flags().BoolVar(&skipBrowser, "skip-browser", false, skipBrowserFlagUsage)
+	cmd.Flags().StringSliceVar(&models, "models", nil,
+		"Explicit model IDs to expose to credential-helper clients (Claude Desktop's inferenceModels). "+
+			"Repeat or comma-separate. Omit to rely on the gateway's own model discovery once it is available.")
 
 	return cmd
 }
 
-func oidcLogin(ctx context.Context, cfg *llm.Config) error {
-	ts, err := buildLLMTokenSource(cfg, true /* interactive */)
+func oidcLogin(ctx context.Context, cfg *llm.Config, skipBrowser bool) error {
+	ts, err := buildLLMTokenSource(cfg, true /* interactive */, skipBrowser)
 	if err != nil {
 		return fmt.Errorf("building token source: %w", err)
 	}
@@ -291,11 +324,12 @@ func runLLMSetup(
 	ctx context.Context, out, errOut io.Writer,
 	cm *client.ClientManager, provider config.Provider, login llm.LoginFunc,
 	inlineOpts llm.SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
+	lazy bool, models []string,
 ) error {
 	return llm.Setup(
 		ctx, out, errOut,
 		&clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login,
-		inlineOpts, anthropicPathPrefix, anthropicPathPrefixSet, targetClient,
+		inlineOpts, anthropicPathPrefix, anthropicPathPrefixSet, targetClient, lazy, models,
 	)
 }
 
@@ -383,6 +417,10 @@ func (a *clientManagerAdapter) LLMGatewayModeFor(clientType string) string {
 	return a.cm.LLMGatewayModeFor(client.ClientApp(clientType))
 }
 
+func (a *clientManagerAdapter) IsManaged(clientType string) bool {
+	return a.cm.IsManaged(client.ClientApp(clientType))
+}
+
 func (a *clientManagerAdapter) ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error) {
 	return a.cm.ConfigureEnvFile(client.ClientApp(clientType), cfg)
 }
@@ -420,7 +458,10 @@ func newLLMProxyCommand() *cobra.Command {
 }
 
 func newLLMProxyStartCommand() *cobra.Command {
-	var tlsSkipVerify bool
+	var (
+		tlsSkipVerify bool
+		skipBrowser   bool
+	)
 
 	cmd := &cobra.Command{
 		Use:   "start",
@@ -450,19 +491,20 @@ To run it in the background, use your shell or a process manager:
 				llmCfg.TLSSkipVerify = tlsSkipVerify
 			}
 
-			return runLLMProxyForeground(cmd.Context(), &llmCfg)
+			return runLLMProxyForeground(cmd.Context(), &llmCfg, skipBrowser)
 		},
 	}
 
 	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
 		"Skip TLS certificate verification for the upstream gateway (overrides stored config; local dev only)")
+	cmd.Flags().BoolVar(&skipBrowser, "skip-browser", false, skipBrowserFlagUsage)
 
 	return cmd
 }
 
 // runLLMProxyForeground builds a TokenSource and starts the proxy in this process.
-func runLLMProxyForeground(ctx context.Context, llmCfg *llm.Config) error {
-	ts, err := buildLLMTokenSource(llmCfg, true /* interactive: proxy is foreground, browser flow is acceptable */)
+func runLLMProxyForeground(ctx context.Context, llmCfg *llm.Config, skipBrowser bool) error {
+	ts, err := buildLLMTokenSource(llmCfg, true /* interactive: proxy is foreground, browser flow is acceptable */, skipBrowser)
 	if err != nil {
 		return err
 	}
@@ -478,17 +520,24 @@ func runLLMProxyForeground(ctx context.Context, llmCfg *llm.Config) error {
 // ── token helper ──────────────────────────────────────────────────────────────
 
 func newLLMTokenCommand() *cobra.Command {
+	var skipBrowser bool
+
 	cmd := &cobra.Command{
 		Use:   "token",
 		Short: "Print a fresh LLM gateway access token to stdout",
 		Long: `Print a fresh OIDC access token to stdout (all other output on stderr).
 Intended for use as apiKeyHelper or auth.command in OIDC-capable AI tools.
-Runs non-interactively — will not launch a browser flow.`,
+
+A cached or refreshable token is printed without prompting. If none exists
+(for example after "thv llm setup --lazy"), the OIDC browser login flow is
+launched automatically and the resulting token is printed once login completes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runLLMToken(cmd.Context())
+			return runLLMToken(cmd.Context(), skipBrowser)
 		},
 	}
+
+	cmd.Flags().BoolVar(&skipBrowser, "skip-browser", false, skipBrowserFlagUsage)
 
 	return cmd
 }

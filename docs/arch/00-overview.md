@@ -87,7 +87,7 @@ thv run go://package-name
 
 Manages MCP servers in Kubernetes clusters using custom resources.
 
-The operator watches for `MCPServer`, `MCPRegistry`, `MCPToolConfig`, `MCPExternalAuthConfig`, `MCPGroup`, and `VirtualMCPServer` CRDs, reconciling them into Kubernetes resources (Deployments, StatefulSets, Services).
+The operator watches a layered set of CRDs (Core: `MCPServer`, `MCPRemoteProxy`, `MCPServerEntry`; Organization: `MCPGroup`; Aggregation: `VirtualMCPServer`, `VirtualMCPCompositeToolDefinition`; Discovery: `MCPRegistry`; Configuration: `MCPToolConfig`, `MCPExternalAuthConfig`, `MCPOIDCConfig`, `MCPTelemetryConfig`, `MCPWebhookConfig`; Auxiliary: `EmbeddingServer`) and reconciles them into Kubernetes resources (proxy-runner Deployments and Services; ConfigMaps; the MCP server itself is created as a StatefulSet by the proxy-runner, while `EmbeddingServer`'s StatefulSet is created by the operator directly). See [Operator Architecture](09-operator-architecture.md) for the full taxonomy.
 
 **For details**, see:
 - [`cmd/thv-operator/README.md`](../../cmd/thv-operator/README.md) - Operator overview and usage
@@ -173,7 +173,7 @@ Via [ToolHive Studio](https://github.com/stacklok/toolhive-studio):
 
 Everything is driven by `thv-operator`:
 - Listens for Kubernetes custom resources
-- Creates Kubernetes-native resources (Deployments, StatefulSets, Services)
+- Creates Kubernetes-native resources (Deployments, Services, ConfigMaps for the proxy-runner; StatefulSets are created by the proxy-runner for MCP server pods)
 - Uses `thv-proxyrunner` binary (not `thv`)
 - Provides cluster-scale management
 

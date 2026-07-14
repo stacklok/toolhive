@@ -103,6 +103,14 @@ type RunConfig struct {
 	// TargetHost is the host to forward traffic to (only applicable to SSE transport)
 	TargetHost string `json:"target_host,omitempty" yaml:"target_host,omitempty"`
 
+	// AllowedOrigins is the allowlist of values accepted on the HTTP Origin header,
+	// used for DNS-rebinding protection per MCP 2025-11-25 §"Security Warning".
+	// When empty and Host is loopback (127.0.0.1 / localhost / [::1]), a default
+	// loopback-only allowlist is derived at middleware-wiring time.
+	// When empty and Host is non-loopback, the middleware is disabled — operators
+	// exposing the proxy publicly must configure an explicit allowlist.
+	AllowedOrigins []string `json:"allowed_origins,omitempty" yaml:"allowed_origins,omitempty"`
+
 	// Publish lists ports to publish to the host in format "hostPort:containerPort"
 	Publish []string `json:"publish,omitempty" yaml:"publish,omitempty"`
 
@@ -192,6 +200,8 @@ type RunConfig struct {
 	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
 	// blocked by default in the egress proxy even when InsecureAllowAll is set.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateway access is port-independent: it ignores the permission profile's
+	// allowed ports, so once enabled the gateway is reachable on any port.
 	AllowDockerGateway bool `json:"allow_docker_gateway,omitempty" yaml:"allow_docker_gateway,omitempty"`
 
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
@@ -242,6 +252,22 @@ type RunConfig struct {
 	// MiddlewareConfigs contains the list of middleware to apply to the transport
 	// and the configuration for each middleware.
 	MiddlewareConfigs []types.MiddlewareConfig `json:"middleware_configs,omitempty" yaml:"middleware_configs,omitempty"`
+
+	// AdditionalMiddlewareConfigs carries pre-built middleware configs injected by
+	// external-auth handlers (reached via *[]RunConfigBuilderOption) rather than
+	// derived from typed RunConfig fields. PopulateMiddlewareConfigs splices these
+	// into the chain in the backend-egress group — after auth and before recovery —
+	// instead of discarding them. Upstream carries these configs verbatim and never
+	// inspects their parameters; the middleware type identity (e.g. an enterprise
+	// auth type) is supplied by the caller via types.MiddlewareConfig.Type.
+	//
+	// Each entry's Type is expected to be a NEW egress middleware type (e.g. OBO),
+	// not one already produced from a typed RunConfig field (auth, authz, audit,
+	// tokenExchange, awssts, …). Dispatch in the proxyrunner is purely by Type
+	// string, so an injected Type that shadows a typed-field type would add a
+	// second instance of that middleware to the chain; the seam does not validate
+	// against this.
+	AdditionalMiddlewareConfigs []types.MiddlewareConfig `json:"additional_middleware_configs,omitempty" yaml:"additional_middleware_configs,omitempty"` //nolint:lll
 
 	// ValidatingWebhooks contains the configuration for validating webhook middleware.
 	ValidatingWebhooks []webhook.Config `json:"validating_webhooks,omitempty" yaml:"validating_webhooks,omitempty"`
@@ -521,14 +547,20 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	}
 	c.Port = selectedPort
 
-	// Select a target port for the container if using SSE or Streamable HTTP transport
+	// Select a target port for the container if using SSE or Streamable HTTP transport.
+	// Target ports are container-internal; do not validate them against host availability.
 	if c.Transport == types.TransportTypeSSE || c.Transport == types.TransportTypeStreamableHTTP {
-		selectedTargetPort, err := networking.FindOrUsePort(targetPort)
-		if err != nil {
-			return c, fmt.Errorf("target port error: %w", err)
+		if targetPort != 0 {
+			slog.Debug("using target port", "port", targetPort)
+			c.TargetPort = targetPort
+		} else {
+			selectedTargetPort, err := networking.FindOrUsePort(0)
+			if err != nil {
+				return c, fmt.Errorf("target port error: %w", err)
+			}
+			slog.Debug("using target port", "port", selectedTargetPort)
+			c.TargetPort = selectedTargetPort
 		}
-		slog.Debug("using target port", "port", selectedTargetPort)
-		c.TargetPort = selectedTargetPort
 	}
 
 	return c, nil

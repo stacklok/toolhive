@@ -40,7 +40,8 @@ thv list [flags]
 ### Options
 
 ```
-  -a, --all                 Show all workloads (default shows just running)
+  -a, --all                 Show all workloads (default shows running and auth_retrying)
+      --check-upgrades      Check each workload for available upgrades against its source registry (performs a registry lookup)
       --format string       Output format (json, text, mcpservers) (default "text")
       --group string        Filter by group
   -h, --help                help for list

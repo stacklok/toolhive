@@ -1,0 +1,123 @@
+# Example: VirtualMCPServer with Code Mode enabled
+#
+# Code mode adds a single virtual tool, execute_tool_script, to the aggregated
+# tool list. Instead of issuing one tools/call per backend tool (with model
+# inference between each), an agent submits a Starlark script that calls multiple
+# tools server-side — with loops, conditionals, and parallel() fan-out — and
+# receives a single aggregated result. This collapses multi-tool workflows into
+# one round-trip and cuts token usage.
+#
+# Security: a script can only call tools the caller is already permitted to use.
+# Each inner tool call is authorized individually through the same admission path
+# as a normal tools/call, so code mode never widens reachability — it only changes
+# how many round-trips a workflow takes.
+#
+# Code mode composes with the optimizer: when both are enabled, execute_tool_script
+# is indexed alongside the backend tools and can be discovered via find_tool and
+# invoked via call_tool. This example keeps it simple (no optimizer).
+#
+# Example script an agent might submit to execute_tool_script:
+#
+#   results = parallel([
+#     lambda: osv_query_vulnerability(package="lodash", version="4.17.20"),
+#     lambda: osv_query_vulnerability(package="express", version="4.17.1"),
+#   ])
+#   vulnerable = [r for r in results if r.get("vulns")]
+#   return {"checked": len(results), "vulnerable": vulnerable}
+#
+# Usage:
+#   kubectl apply -f vmcp_codemode.yaml
+
+---
+# Step 1: Create MCPGroup
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPGroup
+metadata:
+  name: codemode-services
+  namespace: default
+spec:
+  description: Backend services for a code-mode-enabled VirtualMCPServer
+
+---
+# Step 2a: MCPServer backend - fetch (URL content fetching)
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: fetch
+  namespace: default
+spec:
+  groupRef:
+    name: codemode-services
+  image: ghcr.io/stackloklabs/gofetch/server
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 2b: MCPServer backend - osv (OSV vulnerability database)
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: MCPServer
+metadata:
+  name: osv
+  namespace: default
+spec:
+  groupRef:
+    name: codemode-services
+  image: ghcr.io/stackloklabs/osv-mcp/server:0.0.7
+  transport: streamable-http
+  proxyPort: 8080
+  mcpPort: 8080
+  resources:
+    limits:
+      cpu: "100m"
+      memory: "128Mi"
+    requests:
+      cpu: "50m"
+      memory: "64Mi"
+
+---
+# Step 3: Create VirtualMCPServer with code mode enabled
+apiVersion: toolhive.stacklok.dev/v1beta1
+kind: VirtualMCPServer
+metadata:
+  name: codemode-vmcp
+  namespace: default
+spec:
+  groupRef:
+    name: codemode-services
+  config:
+    # Aggregation: prefix strategy prevents tool name conflicts. The prefixed
+    # names (e.g. osv_query_vulnerability) are exactly what scripts call.
+    aggregation:
+      conflictResolution: prefix
+      conflictResolutionConfig:
+        prefixFormat: "{workload}_"
+
+    # Code mode: opt in and tune the execution limits. All fields below are
+    # optional and shown with their defaults.
+    codeMode:
+      enabled: true
+      stepLimit: 100000          # max Starlark execution steps per script
+      parallelMaxConcurrency: 10 # max goroutines parallel() may run at once
+      toolCallTimeout: 30s       # per-inner-tool-call deadline
+
+  # Incoming authentication (client -> vMCP). Anonymous for easy local testing.
+  incomingAuth:
+    type: anonymous
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+
+  # Outgoing authentication (vMCP -> backends). Discovered mode auto-discovers
+  # auth from the backend MCPServers.
+  outgoingAuth:
+    source: discovered

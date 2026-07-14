@@ -69,7 +69,7 @@ func TestPreemptiveTokenSource_ShiftsExpiry(t *testing.T) {
 	realExpiry := time.Now().Add(2 * time.Minute)
 	inner := &staticTokenSource{tok: &oauth2.Token{AccessToken: "access", Expiry: realExpiry}}
 
-	pts := &preemptiveTokenSource{inner: inner}
+	pts := &preemptiveTokenSource{inner: inner, window: preemptiveRefreshWindow}
 	tok, err := pts.Token()
 	require.NoError(t, err)
 
@@ -81,7 +81,7 @@ func TestPreemptiveTokenSource_ZeroExpiry_Unchanged(t *testing.T) {
 	t.Parallel()
 
 	inner := &staticTokenSource{tok: &oauth2.Token{AccessToken: "access", Expiry: time.Time{}}}
-	pts := &preemptiveTokenSource{inner: inner}
+	pts := &preemptiveTokenSource{inner: inner, window: preemptiveRefreshWindow}
 	tok, err := pts.Token()
 	require.NoError(t, err)
 	assert.True(t, tok.Expiry.IsZero())
@@ -99,7 +99,82 @@ func TestPreemptiveTokenSource_PropagatesError(t *testing.T) {
 func TestPreemptiveRefreshWindow_Is30s(t *testing.T) {
 	t.Parallel()
 	assert.Equal(t, 30*time.Second, preemptiveRefreshWindow,
-		"preemptiveRefreshWindow must be 30 s — token helpers and proxy workers depend on this value")
+		"30 s is the default window for callers that don't override it (e.g. registry auth); "+
+			"the LLM gateway path widens it via Options.PreemptiveRefreshWindow")
+}
+
+// TestRefreshWindow_DefaultAndOverride verifies that the per-source window
+// resolves to the package default when Options.PreemptiveRefreshWindow is unset
+// and to the configured value when it is set. This is what lets the LLM gateway
+// path refresh well before expiry while registry auth keeps the 30 s default.
+func TestRefreshWindow_DefaultAndOverride(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name       string
+		configured time.Duration
+		want       time.Duration
+	}{
+		{name: "unset_uses_default", configured: 0, want: preemptiveRefreshWindow},
+		{name: "override_honored", configured: 10 * time.Minute, want: 10 * time.Minute},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			ts := New(Options{
+				KeyProvider:             func() string { return "key" },
+				PreemptiveRefreshWindow: tc.configured,
+			})
+			assert.Equal(t, tc.want, ts.refreshWindow())
+		})
+	}
+}
+
+// TestRefreshWindow_OverrideShiftsExpiry confirms the configured window actually
+// drives how far before expiry a token is treated as expired: a 10-minute window
+// forces a refresh on a token with 5 minutes of real life left, whereas the 30 s
+// default would still serve it.
+func TestRefreshWindow_OverrideShiftsExpiry(t *testing.T) {
+	t.Parallel()
+
+	const window = 10 * time.Minute
+	fake := &countingTokenSource{
+		tokenFn: func(call int) *oauth2.Token {
+			if call == 1 {
+				// 5 min of real life: outside the 30 s default, inside the 10 min window.
+				return &oauth2.Token{AccessToken: "near-expiry", Expiry: time.Now().Add(5 * time.Minute)}
+			}
+			return &oauth2.Token{AccessToken: "fresh", Expiry: time.Now().Add(time.Hour)}
+		},
+	}
+
+	src := withPreemptiveRefresh(fake, window)
+
+	// First call returns the near-expiry token (the seed), second call must trigger
+	// a refresh because the 10 min window already covers the 5 min of remaining life.
+	tok, err := src.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "near-expiry", tok.AccessToken)
+
+	tok, err = src.Token()
+	require.NoError(t, err)
+	assert.Equal(t, "fresh", tok.AccessToken,
+		"a 10 min window must refresh a token with only 5 min of life left")
+	assert.Equal(t, 2, fake.calls)
+}
+
+// TestNew_NegativePreemptiveWindowPanics verifies the constructor fails loudly
+// on an invalid (negative) window rather than silently producing surprising
+// expiry math.
+func TestNew_NegativePreemptiveWindowPanics(t *testing.T) {
+	t.Parallel()
+	assert.Panics(t, func() {
+		New(Options{
+			KeyProvider:             func() string { return "key" },
+			PreemptiveRefreshWindow: -1 * time.Second,
+		})
+	})
 }
 
 // ── withPreemptiveRefresh ─────────────────────────────────────────────────────
@@ -127,7 +202,7 @@ func TestWithPreemptiveRefresh_ExactlyOneRefreshPerWindow(t *testing.T) {
 		},
 	}
 
-	src := withPreemptiveRefresh(fake)
+	src := withPreemptiveRefresh(fake, preemptiveRefreshWindow)
 
 	tok, err := src.Token()
 	require.NoError(t, err)
@@ -168,7 +243,7 @@ func TestWithPreemptiveRefresh_NonCachingRefresher_NoResource(t *testing.T) {
 		Endpoint: oauth2.Endpoint{TokenURL: srv.URL, AuthStyle: oauth2.AuthStyleInParams},
 	}
 	ncr := oauth.NewNonCachingRefresher(cfg, "refresh-token", "")
-	src := withPreemptiveRefresh(ncr)
+	src := withPreemptiveRefresh(ncr, preemptiveRefreshWindow)
 
 	tok, err := src.Token()
 	require.NoError(t, err)
@@ -196,7 +271,7 @@ func TestWithPreemptiveRefresh_CachingInnerSource_Thrashes(t *testing.T) {
 		},
 	}
 
-	src := withPreemptiveRefresh(cachingInner)
+	src := withPreemptiveRefresh(cachingInner, preemptiveRefreshWindow)
 
 	const iterations = 10
 	for range iterations {
@@ -219,7 +294,7 @@ func TestWithPreemptiveRefreshFrom_PreSeededToken(t *testing.T) {
 	}
 	initial := &oauth2.Token{AccessToken: "initial", Expiry: time.Now().Add(2 * time.Minute)}
 
-	src := withPreemptiveRefreshFrom(initial, fake)
+	src := withPreemptiveRefreshFrom(initial, fake, preemptiveRefreshWindow)
 
 	for i := range 5 {
 		tok, err := src.Token()
@@ -242,7 +317,7 @@ func TestWithPreemptiveRefreshFrom_ShortLivedInitial_NoSeed(t *testing.T) {
 		Expiry:      time.Now().Add(preemptiveRefreshWindow / 2),
 	}
 
-	src := withPreemptiveRefreshFrom(initial, fake)
+	src := withPreemptiveRefreshFrom(initial, fake, preemptiveRefreshWindow)
 
 	tok, err := src.Token()
 	require.NoError(t, err)
@@ -259,7 +334,7 @@ func TestWithPreemptiveRefreshFrom_NilInitial(t *testing.T) {
 		},
 	}
 
-	src := withPreemptiveRefreshFrom(nil, fake)
+	src := withPreemptiveRefreshFrom(nil, fake, preemptiveRefreshWindow)
 
 	tok, err := src.Token()
 	require.NoError(t, err)

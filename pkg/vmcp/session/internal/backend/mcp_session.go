@@ -318,7 +318,15 @@ func createMCPClient(
 	// refreshed identity placed on the request context by
 	// auth.TokenValidator.Middleware (see issue #5323).
 	base = &identityRoundTripper{base: base, fallbackIdentity: identity}
-	base, err = headerforward.BuildHeaderForwardTripper(ctx, base, target.HeaderForward, provider, target.WorkloadID)
+	// Forwarded headers ride the request context (set by headerforward.CaptureMiddleware
+	// at the vMCP server's incoming edge) and are merged into the per-session backend
+	// header-forward config here. The session is created once per request, so the
+	// captured headers are stable for the session's lifetime.
+	mergedHeaderForward, err := mergeForwardedHeaders(target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("backend %s: %w", target.WorkloadID, err)
+	}
+	base, err = headerforward.BuildHeaderForwardTripper(ctx, base, mergedHeaderForward, provider, target.WorkloadID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build header-forward transport for backend %s: %w", target.WorkloadID, err)
 	}
@@ -510,4 +518,14 @@ func initAndQueryCapabilities(
 	)
 
 	return caps, nil
+}
+
+// mergeForwardedHeaders returns a HeaderForwardConfig that combines the static
+// backend configuration (base) with any per-request forwarded headers captured
+// from the caller's request (see headerforward.CaptureMiddleware).
+// Delegates to headerforward.MergeForwardedHeaders, which is the shared
+// implementation used by both this connector and the shared backend client
+// (pkg/vmcp/client).
+func mergeForwardedHeaders(base *vmcp.HeaderForwardConfig, forwarded map[string]string) (*vmcp.HeaderForwardConfig, error) {
+	return headerforward.MergeForwardedHeaders(base, forwarded)
 }

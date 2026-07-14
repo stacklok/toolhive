@@ -9,16 +9,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	k8smeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestToolConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -141,18 +141,10 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 					},
 				},
 			},
-			existingMCPServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-						Name: "test-config",
-					},
-				},
-			},
+			existingMCPServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithToolConfigRef("test-config"),
+			),
 			expectFinalizer: true,
 			expectHash:      true,
 		},
@@ -164,17 +156,14 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			// Create fake client with objects
 			objs := []client.Object{tt.toolConfig}
 			if tt.existingMCPServer != nil {
 				objs = append(objs, tt.existingMCPServer)
 			}
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
+			fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 				WithObjects(objs...).
 				WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 				Build()
@@ -241,8 +230,7 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 func TestToolConfigReconciler_findReferencingWorkloads(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -254,45 +242,22 @@ func TestToolConfigReconciler_findReferencingWorkloads(t *testing.T) {
 		},
 	}
 
-	mcpServer1 := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server1",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-				Name: "test-config",
-			},
-		},
-	}
+	mcpServer1 := v1beta1test.NewMCPServer("server1", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithToolConfigRef("test-config"),
+	)
 
-	mcpServer2 := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server2",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-				Name: "test-config",
-			},
-		},
-	}
+	mcpServer2 := v1beta1test.NewMCPServer("server2", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithToolConfigRef("test-config"),
+	)
 
-	mcpServer3 := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server3",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			// No ToolConfigRef
-		},
-	}
+	mcpServer3 := v1beta1test.NewMCPServer("server3", "default",
+		v1beta1test.WithImage("test-image"),
+		// No ToolConfigRef
+	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig, mcpServer1, mcpServer2, mcpServer3).
 		Build()
 
@@ -316,9 +281,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *te
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -330,8 +293,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *te
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig).
 		WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 		Build()
@@ -370,18 +332,10 @@ func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *te
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 
 	// Add an MCPServer that references this config (without changing the config spec)
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "new-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-				Name: "test-config",
-			},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("new-server", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithToolConfigRef("test-config"),
+	)
 	require.NoError(t, fakeClient.Create(ctx, mcpServer))
 
 	// Reconcile again - hash hasn't changed, but referencing servers should be updated
@@ -401,9 +355,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *tes
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -415,21 +367,12 @@ func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *tes
 		},
 	}
 
-	mcpServer := &mcpv1beta1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server-to-delete",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPServerSpec{
-			Image: "test-image",
-			ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-				Name: "test-config",
-			},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("server-to-delete", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithToolConfigRef("test-config"),
+	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig, mcpServer).
 		WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 		Build()
@@ -481,9 +424,7 @@ func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -496,8 +437,7 @@ func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig).
 		WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 		Build()
@@ -556,4 +496,58 @@ func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 	assert.Equal(t, int64(2), cond.ObservedGeneration,
 		"ObservedGeneration should be updated to match new Generation")
+}
+
+// TestMCPToolConfigReconciler_watchHandlers verifies that the MCPServer watch map
+// function enqueues exactly the config the server currently references (or nothing
+// when the server has no ref). The previously-referenced config is enqueued by
+// EnqueueRequestsFromMapFunc, which runs the map function on both the old and new
+// object on update — no manual stale-reference scan in the handler.
+func TestMCPToolConfigReconciler_watchHandlers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		obj      client.Object
+		expected map[string]struct{}
+	}{
+		{
+			name: "MCPServer with ref enqueues the current config",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithToolConfigRef("current-config"),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "MCPServer without ref enqueues nothing",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+			),
+			expected: map[string]struct{}{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			scheme := testutil.NewScheme(t)
+			fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
+				WithObjects(tt.obj).
+				WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
+				Build()
+			r := &ToolConfigReconciler{Client: fakeClient, Scheme: scheme}
+
+			requests := r.mapMCPServerToToolConfig(ctx, tt.obj)
+
+			got := make(map[string]struct{}, len(requests))
+			for _, req := range requests {
+				assert.Equal(t, "default", req.Namespace)
+				got[req.Name] = struct{}{}
+			}
+			assert.Equal(t, tt.expected, got)
+		})
+	}
 }

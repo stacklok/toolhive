@@ -202,17 +202,31 @@ const (
 	ConditionReasonRegistryNotReady = "NotReady"
 )
 
-//+kubebuilder:object:root=true
-//+kubebuilder:storageversion
-//+kubebuilder:subresource:status
-//+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
-//+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
-//+kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
-//+kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
-//+kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
-//+kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
+// Developer note: the MCPRegistry deprecation is expressed as prose in the type
+// doc comment below, NOT via the Go "Deprecated:" convention. The operator still
+// reconciles this type, so the staticcheck SA1019 analyzer must not flag the
+// operator's own internal uses. The kubectl-visible deprecation comes from the
+// +kubebuilder:deprecatedversion:warning marker below.
 
-// MCPRegistry is the Schema for the mcpregistries API
+// MCPRegistry is the Schema for the mcpregistries API.
+//
+// The MCPRegistry CRD is deprecated and will be removed in a future release.
+// Install the ToolHive registry server via the toolhive-registry-server Helm chart
+// instead: https://github.com/stacklok/toolhive-registry-server
+//
+// +kubebuilder:object:root=true
+// +kubebuilder:storageversion
+// +kubebuilder:deprecatedversion:warning="MCPRegistry is deprecated and will be removed in a future release; install the ToolHive registry server via the toolhive-registry-server Helm chart (https://github.com/stacklok/toolhive-registry-server) instead"
+// +kubebuilder:subresource:status
+// +kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
+// +kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="Replicas",type="integer",JSONPath=".status.readyReplicas"
+// +kubebuilder:printcolumn:name="URL",type="string",JSONPath=".status.url"
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp"
+// +kubebuilder:resource:shortName=mcpreg;registry,scope=Namespaced,categories=toolhive
+//
+//nolint:lll // kubebuilder deprecatedversion marker cannot be line-wrapped
 type MCPRegistry struct {
 	metav1.TypeMeta   `json:",inline"` // nolint:revive
 	metav1.ObjectMeta `json:"metadata,omitempty"`

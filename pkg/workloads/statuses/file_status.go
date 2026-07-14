@@ -306,8 +306,14 @@ func (f *fileStatusManager) ListWorkloads(ctx context.Context, listAll bool, lab
 	// Convert map to slice and apply filters
 	var workloads []core.Workload
 	for _, workload := range workloadMap {
-		// Apply listAll filter
-		if !listAll && workload.Status != rt.WorkloadStatusRunning {
+		// Apply listAll filter. AuthRetrying is intentionally surfaced
+		// alongside Running because the workload is still self-recovering
+		// without user intervention on a longer cadence — every other
+		// non-Running status is terminal until external intervention,
+		// and is hidden.
+		if !listAll &&
+			workload.Status != rt.WorkloadStatusRunning &&
+			workload.Status != rt.WorkloadStatusAuthRetrying {
 			continue
 		}
 

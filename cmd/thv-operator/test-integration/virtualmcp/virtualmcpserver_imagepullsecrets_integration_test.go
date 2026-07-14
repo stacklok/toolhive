@@ -18,6 +18,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -69,18 +70,17 @@ var _ = Describe("VirtualMCPServer ImagePullSecrets Integration Tests",
 				}
 				Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
-				virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						GroupRef:     &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-						Config:       vmcpconfig.Config{Group: mcpGroupName},
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
-						ImagePullSecrets: []corev1.LocalObjectReference{
+				virtualMCPServer = v1beta1test.NewVirtualMCPServer(virtualMCPName, defaultNamespace,
+					v1beta1test.WithVMCPGroupRef(mcpGroupName),
+					v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: mcpGroupName}),
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+					v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+						v.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
 							{Name: "registry-creds-1"},
 							{Name: "registry-creds-2"},
-						},
-					},
-				}
+						}
+					}),
+				)
 				Expect(k8sClient.Create(ctx, virtualMCPServer)).Should(Succeed())
 			})
 
@@ -143,17 +143,16 @@ var _ = Describe("VirtualMCPServer ImagePullSecrets Integration Tests",
 				}
 				Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
-				virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						GroupRef:     &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-						Config:       vmcpconfig.Config{Group: mcpGroupName},
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
-						ImagePullSecrets: []corev1.LocalObjectReference{
+				virtualMCPServer = v1beta1test.NewVirtualMCPServer(virtualMCPName, defaultNamespace,
+					v1beta1test.WithVMCPGroupRef(mcpGroupName),
+					v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: mcpGroupName}),
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+					v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+						v.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
 							{Name: "secret-a"},
-						},
-					},
-				}
+						}
+					}),
+				)
 				Expect(k8sClient.Create(ctx, virtualMCPServer)).Should(Succeed())
 			})
 
@@ -235,24 +234,23 @@ var _ = Describe("VirtualMCPServer ImagePullSecrets Integration Tests",
 				}
 				Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
-				virtualMCPServer = &mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: virtualMCPName, Namespace: defaultNamespace},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						GroupRef:     &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-						Config:       vmcpconfig.Config{Group: mcpGroupName},
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
-						// "shared" appears in both sources to exercise overlap;
-						// "explicit-only" is unique to spec.imagePullSecrets;
-						// "podtemplate-only" is unique to PodTemplateSpec.
-						ImagePullSecrets: []corev1.LocalObjectReference{
+				virtualMCPServer = v1beta1test.NewVirtualMCPServer(virtualMCPName, defaultNamespace,
+					v1beta1test.WithVMCPGroupRef(mcpGroupName),
+					v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: mcpGroupName}),
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+					// "shared" appears in both sources to exercise overlap;
+					// "explicit-only" is unique to spec.imagePullSecrets;
+					// "podtemplate-only" is unique to PodTemplateSpec.
+					v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+						v.Spec.ImagePullSecrets = []corev1.LocalObjectReference{
 							{Name: "shared"},
 							{Name: "explicit-only"},
-						},
-						PodTemplateSpec: &runtime.RawExtension{
-							Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"shared"},{"name":"podtemplate-only"}]}}`),
-						},
-					},
-				}
+						}
+					}),
+					v1beta1test.WithVMCPPodTemplateSpec(&runtime.RawExtension{
+						Raw: []byte(`{"spec":{"imagePullSecrets":[{"name":"shared"},{"name":"podtemplate-only"}]}}`),
+					}),
+				)
 				Expect(k8sClient.Create(ctx, virtualMCPServer)).Should(Succeed())
 			})
 

@@ -68,6 +68,8 @@ spec:
             value: "true"
           - name: ENABLE_EXPERIMENTAL_FEATURES
             value: {{ .Values.operator.features.experimental | quote }}
+          - name: TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR
+            value: {{ .Values.operator.features.storageVersionMigrator | quote }}
           {{- if eq .Values.operator.rbac.scope "namespace" }}
           - name: WATCH_NAMESPACE
             value: "{{ .Values.operator.rbac.allowedNamespaces | join "," }}"
@@ -106,6 +108,32 @@ spec:
           {{- end }}
           - name: TOOLHIVE_DEFAULT_IMAGE_PULL_SECRETS
             value: {{ join "," $names | quote }}
+          {{- end }}
+          {{- /*
+            Global Redis defaults — injected only when an address is configured.
+            operator.defaultRedis.addr takes precedence over global.redis.host:port.
+            The password is sourced from a Secret via secretKeyRef so it never
+            appears in the operator process env in plaintext.
+          */}}
+          {{- $rdAddr := .Values.operator.defaultRedis.addr }}
+          {{- if not $rdAddr }}
+            {{- $gh := (((.Values.global).redis).host) }}
+            {{- if $gh }}
+              {{- $gp := (((.Values.global).redis).port | default 6379) }}
+              {{- $rdAddr = printf "%s:%v" $gh $gp }}
+            {{- end }}
+          {{- end }}
+          {{- if $rdAddr }}
+          - name: TOOLHIVE_DEFAULT_REDIS_ADDR
+            value: {{ $rdAddr | quote }}
+          {{- $rdSecret := .Values.operator.defaultRedis.existingSecret | default (((.Values.global).redis).existingSecret) }}
+          {{- if $rdSecret }}
+          {{- $rdKey := .Values.operator.defaultRedis.existingSecretKey | default ((((.Values.global).redis).existingSecretKey) | default "redis-password") }}
+          - name: TOOLHIVE_DEFAULT_REDIS_SECRET_NAME
+            value: {{ $rdSecret | quote }}
+          - name: TOOLHIVE_DEFAULT_REDIS_SECRET_KEY
+            value: {{ $rdKey | quote }}
+          {{- end }}
           {{- end }}
           livenessProbe:
             {{- toYaml .Values.operator.livenessProbe | nindent 12 }}

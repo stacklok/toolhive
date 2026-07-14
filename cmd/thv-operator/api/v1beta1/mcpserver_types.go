@@ -58,6 +58,9 @@ const (
 const (
 	// ConditionOIDCConfigRefValidated indicates whether the OIDCConfigRef is valid
 	ConditionOIDCConfigRefValidated = "OIDCConfigRefValidated"
+
+	// ConditionAuthzConfigRefValidated indicates whether the AuthzConfigRef is valid
+	ConditionAuthzConfigRefValidated = "AuthzConfigRefValidated"
 )
 
 const (
@@ -72,6 +75,20 @@ const (
 
 	// ConditionReasonOIDCConfigRefError indicates an error occurred validating the OIDCConfigRef
 	ConditionReasonOIDCConfigRefError = "OIDCConfigRefError"
+)
+
+const (
+	// ConditionReasonAuthzConfigRefValid indicates the referenced MCPAuthzConfig is valid and ready
+	ConditionReasonAuthzConfigRefValid = "AuthzConfigRefValid"
+
+	// ConditionReasonAuthzConfigRefNotFound indicates the referenced MCPAuthzConfig was not found
+	ConditionReasonAuthzConfigRefNotFound = "AuthzConfigRefNotFound"
+
+	// ConditionReasonAuthzConfigRefNotValid indicates the referenced MCPAuthzConfig is not valid
+	ConditionReasonAuthzConfigRefNotValid = "AuthzConfigRefNotValid"
+
+	// ConditionReasonAuthzConfigRefError indicates an error occurred validating the AuthzConfigRef
+	ConditionReasonAuthzConfigRefError = "AuthzConfigRefError"
 )
 
 const (
@@ -200,6 +217,7 @@ const SessionStorageProviderRedis = "redis"
 
 // MCPServerSpec defines the desired state of MCPServer
 //
+// +kubebuilder:validation:XValidation:rule="!(has(self.authzConfig) && has(self.authzConfigRef))",message="authzConfig and authzConfigRef are mutually exclusive; use authzConfigRef to reference a shared MCPAuthzConfig"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || (has(self.sessionStorage) && self.sessionStorage.provider == 'redis')",message="rateLimiting requires sessionStorage with provider 'redis'"
 // +kubebuilder:validation:XValidation:rule="!(has(self.rateLimiting) && has(self.rateLimiting.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="rateLimiting.perUser requires authentication (oidcConfigRef or externalAuthConfigRef)"
 // +kubebuilder:validation:XValidation:rule="!has(self.rateLimiting) || !has(self.rateLimiting.tools) || self.rateLimiting.tools.all(t, !has(t.perUser)) || has(self.oidcConfigRef) || has(self.externalAuthConfigRef)",message="per-tool perUser rate limiting requires authentication (oidcConfigRef or externalAuthConfigRef)"
@@ -290,12 +308,24 @@ type MCPServerSpec struct {
 	// The referenced MCPOIDCConfig must exist in the same namespace as this MCPServer.
 	// Per-server overrides (audience, scopes) are specified here; shared provider config
 	// lives in the MCPOIDCConfig resource.
+	//
+	// SECURITY: if this field is omitted and no other authentication source is configured,
+	// the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and
+	// forwards it to the MCP server under a synthetic local-user identity, with no token or
+	// credential check. Set this field to enforce identity-based access control per request.
 	// +optional
 	OIDCConfigRef *MCPOIDCConfigReference `json:"oidcConfigRef,omitempty"`
 
-	// AuthzConfig defines authorization policy configuration for the MCP server
+	// AuthzConfig defines authorization policy configuration for the MCP server.
+	// AuthzConfig and AuthzConfigRef are mutually exclusive.
 	// +optional
 	AuthzConfig *AuthzConfigRef `json:"authzConfig,omitempty"`
+
+	// AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+	// The referenced MCPAuthzConfig must exist in the same namespace as this MCPServer.
+	// Mutually exclusive with authzConfig.
+	// +optional
+	AuthzConfigRef *MCPAuthzConfigReference `json:"authzConfigRef,omitempty"`
 
 	// Audit defines audit logging configuration for the MCP server
 	// +optional
@@ -583,6 +613,7 @@ type PermissionProfileRef struct {
 }
 
 // PermissionProfileSpec defines the permissions for an MCP server
+// +gendoc
 type PermissionProfileSpec struct {
 	// Read is a list of paths that the MCP server can read from
 	// +listType=atomic
@@ -876,6 +907,10 @@ type MCPServerStatus struct {
 	// +optional
 	AuthServerConfigHash string `json:"authServerConfigHash,omitempty"`
 
+	// AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection
+	// +optional
+	AuthzConfigHash string `json:"authzConfigHash,omitempty"`
+
 	// OIDCConfigHash is the hash of the referenced MCPOIDCConfig spec for change detection
 	// +optional
 	OIDCConfigHash string `json:"oidcConfigHash,omitempty"`
@@ -929,6 +964,7 @@ const (
 //+kubebuilder:object:root=true
 //+kubebuilder:storageversion
 //+kubebuilder:subresource:status
+//+kubebuilder:metadata:labels=toolhive.stacklok.dev/auto-migrate-storage-version=true
 //+kubebuilder:resource:shortName=mcpserver;mcpservers,categories=toolhive
 //+kubebuilder:printcolumn:name="Status",type="string",JSONPath=".status.phase"
 //+kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"

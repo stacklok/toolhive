@@ -38,68 +38,6 @@ func CalculateConfigHash[T any](spec T) string {
 	return fmt.Sprintf("%x", hasher.Sum32())
 }
 
-// FindReferencingMCPServers finds MCPServers in the given namespace that reference a config resource.
-// The refExtractor function should return the config name from an MCPServer if it references the config,
-// or nil if it doesn't reference any config of this type.
-//
-// Example usage for ToolConfig:
-//
-//	servers, err := FindReferencingMCPServers(ctx, client, namespace, configName,
-//	    func(server *mcpv1beta1.MCPServer) *string {
-//	        if server.Spec.ToolConfigRef != nil {
-//	            return &server.Spec.ToolConfigRef.Name
-//	        }
-//	        return nil
-//	    })
-func FindReferencingMCPServers(
-	ctx context.Context,
-	c client.Client,
-	namespace string,
-	configName string,
-	refExtractor func(*mcpv1beta1.MCPServer) *string,
-) ([]mcpv1beta1.MCPServer, error) {
-	// List all MCPServers in the same namespace
-	mcpServerList := &mcpv1beta1.MCPServerList{}
-	if err := c.List(ctx, mcpServerList, client.InNamespace(namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list MCPServers: %w", err)
-	}
-
-	// Filter MCPServers that reference this config
-	var referencingServers []mcpv1beta1.MCPServer
-	for _, server := range mcpServerList.Items {
-		if refName := refExtractor(&server); refName != nil && *refName == configName {
-			referencingServers = append(referencingServers, server)
-		}
-	}
-
-	return referencingServers, nil
-}
-
-// FindReferencingMCPRemoteProxies finds MCPRemoteProxies in the given namespace that reference a config resource.
-// The refExtractor function should return the config name from an MCPRemoteProxy if it references the config,
-// or nil if it doesn't reference any config of this type.
-func FindReferencingMCPRemoteProxies(
-	ctx context.Context,
-	c client.Client,
-	namespace string,
-	configName string,
-	refExtractor func(*mcpv1beta1.MCPRemoteProxy) *string,
-) ([]mcpv1beta1.MCPRemoteProxy, error) {
-	proxyList := &mcpv1beta1.MCPRemoteProxyList{}
-	if err := c.List(ctx, proxyList, client.InNamespace(namespace)); err != nil {
-		return nil, fmt.Errorf("failed to list MCPRemoteProxies: %w", err)
-	}
-
-	var referencingProxies []mcpv1beta1.MCPRemoteProxy
-	for _, proxy := range proxyList.Items {
-		if refName := refExtractor(&proxy); refName != nil && *refName == configName {
-			referencingProxies = append(referencingProxies, proxy)
-		}
-	}
-
-	return referencingProxies, nil
-}
-
 // CompareWorkloadRefs compares two WorkloadReference values by Kind then Name.
 // Suitable for use with slices.SortFunc.
 func CompareWorkloadRefs(a, b mcpv1beta1.WorkloadReference) int {
@@ -122,28 +60,6 @@ func WorkloadRefsEqual(a, b []mcpv1beta1.WorkloadReference) bool {
 	return slices.EqualFunc(a, b, func(x, y mcpv1beta1.WorkloadReference) bool {
 		return x.Kind == y.Kind && x.Name == y.Name
 	})
-}
-
-// FindWorkloadRefsFromMCPServers returns a sorted list of WorkloadReference for MCPServers
-// in the given namespace that reference a config identified by configName.
-// The refExtractor determines which spec field contains the config reference name.
-func FindWorkloadRefsFromMCPServers(
-	ctx context.Context,
-	c client.Client,
-	namespace string,
-	configName string,
-	refExtractor func(*mcpv1beta1.MCPServer) *string,
-) ([]mcpv1beta1.WorkloadReference, error) {
-	servers, err := FindReferencingMCPServers(ctx, c, namespace, configName, refExtractor)
-	if err != nil {
-		return nil, err
-	}
-	refs := make([]mcpv1beta1.WorkloadReference, 0, len(servers))
-	for _, server := range servers {
-		refs = append(refs, mcpv1beta1.WorkloadReference{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: server.Name})
-	}
-	SortWorkloadRefs(refs)
-	return refs, nil
 }
 
 // GetToolConfigForMCPRemoteProxy fetches MCPToolConfig referenced by MCPRemoteProxy

@@ -21,10 +21,10 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	checksum "github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
@@ -33,9 +33,7 @@ import (
 func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -103,9 +101,7 @@ func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthLegacyEnvStable(t *testing.T
 func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -165,9 +161,7 @@ func TestMCPServerDeploymentNeedsUpdate_EmbeddedAuthAuthServerRefEnvStable(t *te
 func TestMCPServerDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, corev1.AddToScheme(scheme))
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -219,9 +213,15 @@ func TestMCPServerDeploymentNeedsUpdate_TokenExchangeDoesNotDrift(t *testing.T) 
 func TestResourceOverrides(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
+	// Note: expectedPodTemplateAnns entries below carry
+	// "toolhive.stacklok.dev/mcpserver-generation": "0" because the controller
+	// stamps strconv.FormatInt(m.Generation, 10) and the fake client does not
+	// auto-increment metadata.generation on Create (the real API server starts
+	// at 1). Envtest coverage in
+	// cmd/thv-operator/test-integration/mcp-server/mcpserver_generation_freeze_integration_test.go
+	// exercises the realistic generation-tracking behavior.
 	tests := []struct {
 		name                     string
 		mcpServer                *mcpv1beta1.MCPServer
@@ -252,7 +252,8 @@ func TestResourceOverrides(t *testing.T) {
 			},
 			expectedDeploymentAnns: map[string]string{},
 			expectedPodTemplateAnns: map[string]string{
-				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+				"toolhive.stacklok.dev/runconfig-checksum":   "test-checksum",
+				"toolhive.stacklok.dev/mcpserver-generation": "0",
 			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
@@ -315,7 +316,8 @@ func TestResourceOverrides(t *testing.T) {
 				"monitoring/scrape": "true",
 			},
 			expectedPodTemplateAnns: map[string]string{
-				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+				"toolhive.stacklok.dev/runconfig-checksum":   "test-checksum",
+				"toolhive.stacklok.dev/mcpserver-generation": "0",
 			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
@@ -376,7 +378,8 @@ func TestResourceOverrides(t *testing.T) {
 			},
 			expectedDeploymentAnns: map[string]string{},
 			expectedPodTemplateAnns: map[string]string{
-				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+				"toolhive.stacklok.dev/runconfig-checksum":   "test-checksum",
+				"toolhive.stacklok.dev/mcpserver-generation": "0",
 			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
@@ -415,7 +418,8 @@ func TestResourceOverrides(t *testing.T) {
 			},
 			expectedDeploymentAnns: map[string]string{},
 			expectedPodTemplateAnns: map[string]string{
-				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+				"toolhive.stacklok.dev/runconfig-checksum":   "test-checksum",
+				"toolhive.stacklok.dev/mcpserver-generation": "0",
 			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
@@ -481,7 +485,8 @@ func TestResourceOverrides(t *testing.T) {
 				"version":            "v1.2.3",
 			},
 			expectedPodTemplateAnns: map[string]string{
-				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+				"toolhive.stacklok.dev/runconfig-checksum":   "test-checksum",
+				"toolhive.stacklok.dev/mcpserver-generation": "0",
 			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
@@ -525,9 +530,10 @@ func TestResourceOverrides(t *testing.T) {
 			},
 			expectedDeploymentAnns: map[string]string{},
 			expectedPodTemplateAnns: map[string]string{
-				"vault.hashicorp.com/agent-inject":         "true",
-				"vault.hashicorp.com/role":                 "toolhive-mcp-workloads",
-				"toolhive.stacklok.dev/runconfig-checksum": "test-checksum",
+				"vault.hashicorp.com/agent-inject":           "true",
+				"vault.hashicorp.com/role":                   "toolhive-mcp-workloads",
+				"toolhive.stacklok.dev/runconfig-checksum":   "test-checksum",
+				"toolhive.stacklok.dev/mcpserver-generation": "0",
 			},
 			expectedServiceLabels: map[string]string{
 				"app":                        "mcpserver",
@@ -582,30 +588,33 @@ func TestResourceOverrides(t *testing.T) {
 				switch tt.name {
 				case "with proxy environment variables":
 					expectedEnvVars = map[string]string{
-						"HTTP_PROXY":        "http://proxy.example.com:8080",
-						"NO_PROXY":          "localhost,127.0.0.1",
-						"CUSTOM_ENV":        "custom-value",
-						"XDG_CONFIG_HOME":   "/tmp",
-						"HOME":              "/tmp",
-						"TOOLHIVE_RUNTIME":  "kubernetes",
-						"UNSTRUCTURED_LOGS": "false",
+						"HTTP_PROXY":               "http://proxy.example.com:8080",
+						"NO_PROXY":                 "localhost,127.0.0.1",
+						"CUSTOM_ENV":               "custom-value",
+						"THV_MCPSERVER_GENERATION": "", // downward API; Value is empty, ValueFrom set
+						"XDG_CONFIG_HOME":          "/tmp",
+						"HOME":                     "/tmp",
+						"TOOLHIVE_RUNTIME":         "kubernetes",
+						"UNSTRUCTURED_LOGS":        "false",
 					}
 				case "with debug logging via TOOLHIVE_DEBUG env var":
 					expectedEnvVars = map[string]string{
-						"TOOLHIVE_DEBUG":    "true",
-						"XDG_CONFIG_HOME":   "/tmp",
-						"HOME":              "/tmp",
-						"TOOLHIVE_RUNTIME":  "kubernetes",
-						"UNSTRUCTURED_LOGS": "false",
+						"TOOLHIVE_DEBUG":           "true",
+						"THV_MCPSERVER_GENERATION": "", // downward API; Value is empty, ValueFrom set
+						"XDG_CONFIG_HOME":          "/tmp",
+						"HOME":                     "/tmp",
+						"TOOLHIVE_RUNTIME":         "kubernetes",
+						"UNSTRUCTURED_LOGS":        "false",
 					}
 				default:
 					expectedEnvVars = map[string]string{
-						"LOG_LEVEL":         "debug",
-						"METRICS_ENABLED":   "true",
-						"XDG_CONFIG_HOME":   "/tmp",
-						"HOME":              "/tmp",
-						"TOOLHIVE_RUNTIME":  "kubernetes",
-						"UNSTRUCTURED_LOGS": "false",
+						"LOG_LEVEL":                "debug",
+						"METRICS_ENABLED":          "true",
+						"THV_MCPSERVER_GENERATION": "", // downward API; Value is empty, ValueFrom set
+						"XDG_CONFIG_HOME":          "/tmp",
+						"HOME":                     "/tmp",
+						"TOOLHIVE_RUNTIME":         "kubernetes",
+						"UNSTRUCTURED_LOGS":        "false",
 					}
 				}
 
@@ -624,9 +633,7 @@ func TestResourceOverrides(t *testing.T) {
 func TestDeploymentForMCPServer_PodTemplateOverridesPreserveRunConfigChecksum(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
@@ -657,16 +664,17 @@ func TestDeploymentForMCPServer_PodTemplateOverridesPreserveRunConfigChecksum(t 
 	assert.Equal(t, "value",
 		deployment.Spec.Template.Annotations["user.example.com/some-key"],
 		"user override must survive")
-	assert.Len(t, deployment.Spec.Template.Annotations, 2,
+	assert.Contains(t, deployment.Spec.Template.Annotations,
+		kubernetes.RunConfigMCPServerGenerationAnnotation,
+		"mcpserver-generation must be stamped for the downward-API env var (#5360)")
+	assert.Len(t, deployment.Spec.Template.Annotations, 3,
 		"no extra keys should leak into the pod template")
 }
 
 func TestDeploymentNeedsUpdate_StableAfterBuildWithPodTemplateOverrides(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
@@ -748,8 +756,7 @@ func TestMergeStringMaps(t *testing.T) {
 func TestDeploymentNeedsUpdateProxyEnv(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	client := fake.NewClientBuilder().WithScheme(scheme).Build()
 	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
@@ -989,8 +996,7 @@ func TestMCPServerDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 			r := newTestMCPServerReconciler(fakeClient, scheme, kubernetes.PlatformKubernetes)
@@ -1032,8 +1038,7 @@ func TestMCPServerDeploymentNeedsUpdate_ImagePullSecretsDrift(t *testing.T) {
 func TestMCPServerSessionAffinityNone(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	mcpServer := &mcpv1beta1.MCPServer{
 		ObjectMeta: metav1.ObjectMeta{
@@ -1130,6 +1135,19 @@ func TestMCPServerServiceNeedsUpdate(t *testing.T) {
 			}(),
 			needsUpdate: false,
 		},
+		{
+			// Regression for #5730: external controllers (e.g. GKE NEG/Gateway) write
+			// cloud.google.com/* annotations on the Service. These are not operator-owned
+			// and must not be treated as drift, or the operator hot-loops Update.
+			name: "external cloud annotations ignored",
+			service: func() *corev1.Service {
+				s := baseService.DeepCopy()
+				s.Annotations["cloud.google.com/neg-status"] = `{"network_endpoint_groups":{"8080":"k8s1-abc"}}`
+				return s
+			}(),
+			mcpServer:   baseMCPServer.DeepCopy(),
+			needsUpdate: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1139,4 +1157,63 @@ func TestMCPServerServiceNeedsUpdate(t *testing.T) {
 			assert.Equal(t, tt.needsUpdate, result)
 		})
 	}
+}
+
+// TestDeploymentForMCPServer_MCPServerGenerationDownwardAPI verifies that the
+// proxy Deployment stamps the MCPServer generation as a pod-template annotation
+// AND projects that annotation into the proxyrunner container as the
+// THV_MCPSERVER_GENERATION env var via the downward API. This is the
+// frozen-per-pod path that closes the race described in #5360 — the env var's
+// value is bound to the pod's own annotations at creation time, so a restarted
+// old-RS pod cannot acquire the new generation by re-reading the live-mounted
+// RunConfig ConfigMap.
+func TestDeploymentForMCPServer_MCPServerGenerationDownwardAPI(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+	r := newTestMCPServerReconciler(client, scheme, kubernetes.PlatformKubernetes)
+
+	mcpServer := &mcpv1beta1.MCPServer{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "test-server",
+			Namespace:  "default",
+			Generation: 7,
+		},
+		Spec: mcpv1beta1.MCPServerSpec{
+			Image:     "test-image",
+			ProxyPort: 8080,
+		},
+	}
+
+	deployment, err := r.deploymentForMCPServer(t.Context(), mcpServer, "test-checksum")
+	require.NoError(t, err)
+	require.NotNil(t, deployment)
+
+	assert.Equal(t, "7",
+		deployment.Spec.Template.Annotations[kubernetes.RunConfigMCPServerGenerationAnnotation],
+		"pod template must stamp the MCPServer generation so the downward-API env var resolves")
+
+	require.Len(t, deployment.Spec.Template.Spec.Containers, 1)
+	var got *corev1.EnvVar
+	for i := range deployment.Spec.Template.Spec.Containers[0].Env {
+		if deployment.Spec.Template.Spec.Containers[0].Env[i].Name == kubernetes.EnvVarMCPServerGeneration {
+			got = &deployment.Spec.Template.Spec.Containers[0].Env[i]
+			break
+		}
+	}
+	require.NotNil(t, got, "container must declare the %s env var", kubernetes.EnvVarMCPServerGeneration)
+	require.NotNil(t, got.ValueFrom, "env var must use ValueFrom (downward API), not a literal Value")
+	require.NotNil(t, got.ValueFrom.FieldRef)
+	assert.Equal(t,
+		"metadata.annotations['"+kubernetes.RunConfigMCPServerGenerationAnnotation+"']",
+		got.ValueFrom.FieldRef.FieldPath,
+		"FieldRef must point at the mcpserver-generation pod annotation")
+	// APIVersion must be set explicitly so the drift comparator at
+	// deploymentNeedsUpdate matches the API-server-defaulted value. An empty
+	// APIVersion here results in equality.Semantic.DeepEqual returning false on
+	// every reconcile, causing perpetual Deployment rewrites. See #5360.
+	assert.Equal(t, "v1", got.ValueFrom.FieldRef.APIVersion,
+		"FieldRef.APIVersion must match the API server default of v1 to avoid false drift")
 }

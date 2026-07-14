@@ -33,8 +33,10 @@ func newParallel(ctx context.Context, stepLimit uint64, maxConcurrency int) *sta
 		}
 
 		// Divide step budget evenly across children to prevent amplification.
-		// With N children, each gets stepLimit/N steps.
-		childStepLimit := stepLimit / uint64(n) //nolint:gosec // n is from starlark.List.Len(), always non-negative
+		// With N children, each gets stepLimit/N steps. Floor at 1: when n > stepLimit
+		// the division truncates to 0, which would skip SetMaxExecutionSteps and leave
+		// child threads unbounded — the opposite of the intended cap.
+		childStepLimit := max(1, stepLimit/uint64(n)) //nolint:gosec // n is from starlark.List.Len(), always non-negative
 
 		childLogs := make([][]string, n)
 

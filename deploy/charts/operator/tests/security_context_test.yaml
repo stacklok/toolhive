@@ -1,0 +1,21 @@
+suite: security context defaults
+# The operator ships hardened security defaults. A regression that drops any of
+# these silently weakens the deployment's posture and is exactly the kind of
+# thing that only surfaces in an audit, so pin them.
+templates:
+  - deployment.yaml
+tests:
+  - it: runs the pod as non-root
+    template: deployment.yaml
+    asserts:
+      - equal: { path: spec.template.spec.securityContext.runAsNonRoot, value: true }
+
+  - it: hardens the manager container security context
+    template: deployment.yaml
+    asserts:
+      - equal: { path: 'spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation', value: false }
+      - equal: { path: 'spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem', value: true }
+      - equal: { path: 'spec.template.spec.containers[0].securityContext.runAsNonRoot', value: true }
+      - equal: { path: 'spec.template.spec.containers[0].securityContext.runAsUser', value: 1000 }
+      - contains: { path: 'spec.template.spec.containers[0].securityContext.capabilities.drop', content: ALL }
+      - equal: { path: 'spec.template.spec.containers[0].securityContext.seccompProfile.type', value: RuntimeDefault }

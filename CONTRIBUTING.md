@@ -33,7 +33,7 @@ report unacceptable behavior to
 If you think you have found a security vulnerability in ToolHive please DO NOT
 disclose it publicly until we've had a chance to fix it. Please don't report
 security vulnerabilities using GitHub issues; instead, please follow this
-[process](https://github.com/stacklok/toolhive/blob/main/SECURITY.MD)
+[process](https://github.com/stacklok/toolhive/blob/main/SECURITY.md)
 
 ## How to contribute
 
@@ -49,9 +49,24 @@ sample project that reproduces the problem.
 
 ### Not sure how to start contributing?
 
-PRs to resolve existing issues are greatly appreciated, and issues labeled as
-["good first issue"](https://github.com/stacklok/toolhive/issues?q=is%3Aopen+is%3Aissue+label%3A%22good+first+issue%22)
-are a great place to start!
+PRs to resolve existing issues are greatly appreciated! We use labels to help
+you find issues that match your experience level:
+
+**New to ToolHive?** Issues labeled
+[`good-first-issue`](https://github.com/stacklok/toolhive/issues?q=is%3Aopen+is%3Aissue+label%3A%22good-first-issue%22)
+are a great place to start. These are self-contained tasks with clear scope and
+limited surface area — perfect for getting familiar with the codebase and the
+contribution workflow without needing deep knowledge of the overall architecture.
+
+**Ready for a bigger challenge?** Issues labeled
+[`good-tenth-issue`](https://github.com/stacklok/toolhive/issues?q=is%3Aopen+is%3Aissue+label%3A%22good-tenth-issue%22)
+are for contributors who have already found their footing in the codebase. These
+tasks require deeper knowledge of ToolHive's architecture, involve more design
+thinking, and may span multiple components or subsystems. This label also covers
+features we are more than happy to accept community PRs for, even if they are
+not currently on our roadmap — if you have an idea that fits, open an issue to
+discuss it first. Either way, we recommend picking up a few `good-first-issue`
+items first to build context.
 
 ### Claiming an issue
 
@@ -73,7 +88,7 @@ with active contributors first.
 
 ### Pull request process
 
-- -All commits must include a Signed-off-by trailer at the end of each commit
+- All commits must include a Signed-off-by trailer at the end of each commit
   message to indicate that the contributor agrees to the Developer Certificate
   of Origin. For additional details, check out the [DCO instructions](dco.md).
 - Create an issue outlining the fix or feature.

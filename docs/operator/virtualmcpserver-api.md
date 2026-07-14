@@ -193,6 +193,30 @@ spec:
   - `externalAuthConfigRef`: Reference an MCPExternalAuthConfig resource
 - `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=externalAuthConfigRef)
 
+### `.spec.passthroughHeaders` (optional)
+
+Allowlist of incoming client request headers forwarded verbatim to every
+backend. The value is captured at the auth boundary and injected into the
+session's outgoing backend requests. **Type**: `[]string`. Names are matched
+case-insensitively; restricted headers (`Host`, `Authorization`,
+`X-Forwarded-*`, hop-by-hop) are rejected at startup. Takes precedence over
+`spec.config.passthroughHeaders`.
+
+```yaml
+spec:
+  passthroughHeaders:
+    - x-litellm-api-key   # forwarded to all backends; absent on a request → not forwarded
+```
+
+> **Security:** forwarded headers are caller-controlled. Use only behind a
+> trusted upstream (gateway/mesh) that sets or strips them; pair with
+> `incomingAuth: anonymous` only in that case.
+>
+> **Horizontal scaling:** forwarded headers are not persisted across replicas
+> (only the `(issuer, subject)` identity tuple is). A session restored on
+> another replica re-captures them from the next request — keep clients pinned
+> with `sessionAffinity: ClientIP`.
+
 ### `.spec.config.aggregation` (optional)
 
 Defines tool aggregation and conflict resolution strategies.
@@ -629,10 +653,10 @@ The VirtualMCPServer CRD includes comprehensive validation:
 
 ## Related Resources
 
-- [MCPGroup](./mcpgroup-api.md): Defines groups of MCPServers
-- [MCPServer](./mcpserver-api.md): Individual MCP server instances
+- [MCPGroup](./crd-api.md#apiv1beta1mcpgroup): Defines groups of MCPServers
+- [MCPServer](./crd-api.md#apiv1beta1mcpserver): Individual MCP server instances
 - [MCPOIDCConfig](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml): Shared OIDC provider configuration (referenced via `oidcConfigRef`)
-- [MCPExternalAuthConfig](./mcpexternalauthconfig-api.md): External authentication configuration
-- [MCPToolConfig](./toolconfig-api.md): Tool filtering and renaming configuration
+- [MCPExternalAuthConfig](./crd-api.md#apiv1beta1mcpexternalauthconfig): External authentication configuration
+- [MCPToolConfig](./crd-api.md#apiv1beta1mcptoolconfig): Tool filtering and renaming configuration
 - [Virtual MCP Server Observability](./virtualmcpserver-observability.md): Telemetry and metrics documentation
-- [Virtual MCP Proposal](../proposals/THV-2106-virtual-mcp-server.md): Complete design proposal
+- [Virtual MCP Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0008-virtual-mcp-server.md): Complete design proposal

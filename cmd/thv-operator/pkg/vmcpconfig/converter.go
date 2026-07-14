@@ -28,6 +28,11 @@ import (
 const (
 	// authzLabelValueInline is the string value for inline authz configuration
 	authzLabelValueInline = "inline"
+	// AuthzConfigTypeCedarV1 is the MCPAuthzConfig.spec.type value for the Cedar
+	// authorizer. vMCP's incoming-auth middleware is hard-coded to Cedar, so both
+	// the converter and the VirtualMCPServer controller only resolve shared-config
+	// references of this type; any other type fails fast.
+	AuthzConfigTypeCedarV1 = "cedarv1"
 	// conflictResolutionPrefix is the string value for prefix conflict resolution strategy
 	conflictResolutionPrefix = "prefix"
 	// vmcpOIDCClientSecretEnvVar is the environment variable name for the OIDC client secret.
@@ -84,6 +89,11 @@ func (c *Converter) Convert(
 	// This ensures new fields added to config.Config are automatically included
 	// without requiring explicit mapping in this converter.
 	config := vmcp.Spec.Config.DeepCopy()
+
+	// Promoted top-level field takes precedence over spec.config.passthroughHeaders.
+	if len(vmcp.Spec.PassthroughHeaders) > 0 {
+		config.PassthroughHeaders = vmcp.Spec.PassthroughHeaders
+	}
 
 	// Override name with the CR name (authoritative source)
 	config.Name = vmcp.Name
@@ -172,9 +182,24 @@ func (c *Converter) convertIncomingAuth(
 		OIDC: oidcConfig,
 	}
 
-	// Convert authorization configuration
-	if vmcp.Spec.IncomingAuth.AuthzConfig != nil {
+	// Convert authorization configuration. The inline/configMap authzConfig and
+	// the shared authzConfigRef are mutually exclusive (enforced by CRD
+	// XValidation). Guard here too so enforcement never depends solely on
+	// apiserver CEL: if both are set, fail loud rather than silently letting one
+	// override the other.
+	if vmcp.Spec.IncomingAuth.AuthzConfig != nil && vmcp.Spec.IncomingAuth.AuthzConfigRef != nil {
+		return nil, fmt.Errorf("authzConfig and authzConfigRef are mutually exclusive")
+	}
+
+	switch {
+	case vmcp.Spec.IncomingAuth.AuthzConfig != nil:
 		authz, err := c.convertAuthzConfig(ctx, vmcp)
+		if err != nil {
+			return nil, err
+		}
+		incoming.Authz = authz
+	case vmcp.Spec.IncomingAuth.AuthzConfigRef != nil:
+		authz, err := c.resolveAuthzConfigRef(ctx, vmcp)
 		if err != nil {
 			return nil, err
 		}
@@ -182,6 +207,68 @@ func (c *Converter) convertIncomingAuth(
 	}
 
 	return incoming, nil
+}
+
+// resolveAuthzConfigRef resolves a referenced MCPAuthzConfig
+// (spec.incomingAuth.authzConfigRef) into a vmcpconfig.AuthzConfig.
+//
+// Only cedarv1 is supported today: vMCP's incoming-auth middleware hard-codes
+// the Cedar authorizer (pkg/vmcp/auth/factory/incoming.go), so a non-Cedar
+// reference fails fast here with a clear error rather than being carried through
+// as inert config that would fail later with an opaque message. Generalising the
+// vMCP runtime to other backends is tracked as a separate follow-up.
+//
+// The referenced config must exist and be Valid; otherwise an error is returned
+// and the caller stops the conversion (and, in the controller, the reconcile).
+func (c *Converter) resolveAuthzConfigRef(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) (*vmcpconfig.AuthzConfig, error) {
+	ref := vmcp.Spec.IncomingAuth.AuthzConfigRef
+
+	authzConfig, err := controllerutil.GetAuthzConfigForWorkload(ctx, c.k8sClient, vmcp.Namespace, ref)
+	if err != nil {
+		return nil, err
+	}
+	if err := controllerutil.ValidateAuthzConfigReady(authzConfig); err != nil {
+		return nil, err
+	}
+
+	if authzConfig.Spec.Type != AuthzConfigTypeCedarV1 {
+		return nil, fmt.Errorf(
+			"MCPAuthzConfig type %q is not yet supported for VirtualMCPServer; only %s is supported",
+			authzConfig.Spec.Type, AuthzConfigTypeCedarV1)
+	}
+
+	cfg, err := controllerutil.BuildAuthzConfigFromRef(authzConfig)
+	if err != nil {
+		return nil, err
+	}
+	opts, err := controllerutil.ExtractCedarAuthzOptions(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("MCPAuthzConfig %s/%s is not a Cedar config: %w",
+			authzConfig.Namespace, authzConfig.Name, err)
+	}
+
+	authz := &vmcpconfig.AuthzConfig{
+		Type:            "cedar",
+		Policies:        opts.Policies,
+		EntitiesJSON:    opts.EntitiesJSON,
+		GroupClaimName:  opts.GroupClaimName,
+		RoleClaimName:   opts.RoleClaimName,
+		GroupEntityType: opts.GroupEntityType,
+	}
+
+	// PrimaryUpstreamProvider is an auth-server (control-plane) property resolved
+	// from spec.authServerConfig, not from the shared MCPAuthzConfig payload —
+	// identical to the inline/configMap path (convertAuthzConfig), which also does
+	// not copy opts.PrimaryUpstreamProvider. resolvePrimaryUpstreamProvider is the
+	// sole authority so a data-plane config author cannot pick the trusted upstream.
+	if err := c.resolvePrimaryUpstreamProvider(vmcp, authz); err != nil {
+		return nil, err
+	}
+
+	return authz, nil
 }
 
 // convertAuthzConfig resolves the AuthzConfig from either the inline spec or a
@@ -411,8 +498,7 @@ func (*Converter) normalizeTelemetry(
 }
 
 // convertSessionStorage populates SessionStorage from the VirtualMCPServer spec.
-// spec.sessionStorage is the authoritative source; always overwrite whatever
-// the DeepCopy brought in from spec.config.sessionStorage.
+// Falls back to TOOLHIVE_DEFAULT_REDIS_ADDR when spec.sessionStorage is nil.
 // PasswordRef is K8s-specific and is resolved separately; the password is injected
 // as the THV_SESSION_REDIS_PASSWORD environment variable by the deployment builder.
 func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.SessionStorageConfig {
@@ -423,6 +509,13 @@ func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.Sessio
 			Address:   vmcp.Spec.SessionStorage.Address,
 			DB:        vmcp.Spec.SessionStorage.DB,
 			KeyPrefix: vmcp.Spec.SessionStorage.KeyPrefix,
+		}
+	}
+
+	if def := controllerutil.ReadDefaultRedisConfig(); def != nil {
+		return &vmcpconfig.SessionStorageConfig{
+			Provider: mcpv1beta1.SessionStorageProviderRedis,
+			Address:  def.Addr,
 		}
 	}
 	return nil

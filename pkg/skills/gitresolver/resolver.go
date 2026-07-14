@@ -20,8 +20,10 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
-// cloneTimeout is the maximum time allowed for cloning a git repository.
-const cloneTimeout = 2 * time.Minute
+// CloneTimeout is the maximum time allowed for cloning a git repository.
+// Exported so callers (e.g. pluginsvc.installFromGit) can reuse the same
+// timeout without duplicating the constant.
+const CloneTimeout = 2 * time.Minute
 
 // semverLike matches refs that look like semantic version tags (v1.0, v1.2.3, v1.2.3-rc1, etc.).
 // Requires at least one dot-separated numeric segment after the major version to avoid matching
@@ -78,12 +80,14 @@ type defaultResolver struct {
 	fixedClient git.Client
 }
 
-// clientForURL returns a git client appropriate for the given clone URL.
-// If a fixed client was provided (testing), it is returned as-is.
-// Otherwise, a new client is created with host-scoped auth from the environment.
-func (r *defaultResolver) clientForURL(cloneURL string) git.Client {
-	if r.fixedClient != nil {
-		return r.fixedClient
+// ClientForURL returns a git client for the given clone URL. When fixedClient
+// is non-nil it is returned as-is (testing); otherwise a new client is created
+// with host-scoped auth from the environment. Exported so
+// pluginsvc.installFromGit can reuse the same auth-resolution path without
+// duplicating clientForURL.
+func ClientForURL(cloneURL string, fixedClient git.Client) git.Client {
+	if fixedClient != nil {
+		return fixedClient
 	}
 	auth := ResolveAuth(cloneURL)
 	var opts []git.ClientOption
@@ -93,31 +97,38 @@ func (r *defaultResolver) clientForURL(cloneURL string) git.Client {
 	return git.NewDefaultGitClient(opts...)
 }
 
-// Resolve clones a git repository and extracts skill files from it.
-func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*ResolveResult, error) {
-	// Enforce a clone timeout to prevent indefinite hangs from slow/malicious servers.
-	ctx, cancel := context.WithTimeout(ctx, cloneTimeout)
-	defer cancel()
-
-	// Build clone config from the git reference
-	cloneConfig := &git.CloneConfig{
-		URL: ref.URL,
-	}
+// CloneConfigForRef classifies ref as commit/tag/branch and returns the
+// matching git.CloneConfig (with URL set from ref.URL). Exported so
+// pluginsvc.installFromGit can reuse the same ref-classification logic
+// without duplicating semverLike/isHex.
+func CloneConfigForRef(ref *GitReference) *git.CloneConfig {
+	cfg := &git.CloneConfig{URL: ref.URL}
 	if ref.Ref != "" {
 		switch {
 		case len(ref.Ref) == 40 && isHex(ref.Ref):
 			// Full commit hash → checkout specific commit
-			cloneConfig.Commit = ref.Ref
+			cfg.Commit = ref.Ref
 		case semverLike.MatchString(ref.Ref):
 			// Semver-like pattern (v1.0.0) → clone as tag
-			cloneConfig.Tag = ref.Ref
+			cfg.Tag = ref.Ref
 		default:
 			// Everything else → treat as branch
-			cloneConfig.Branch = ref.Ref
+			cfg.Branch = ref.Ref
 		}
 	}
+	return cfg
+}
 
-	client := r.clientForURL(ref.URL)
+// Resolve clones a git repository and extracts skill files from it.
+func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*ResolveResult, error) {
+	// Enforce a clone timeout to prevent indefinite hangs from slow/malicious servers.
+	ctx, cancel := context.WithTimeout(ctx, CloneTimeout)
+	defer cancel()
+
+	// Build clone config from the git reference
+	cloneConfig := CloneConfigForRef(ref)
+
+	client := ClientForURL(ref.URL, r.fixedClient)
 
 	repoInfo, err := client.Clone(ctx, cloneConfig)
 	if err != nil {

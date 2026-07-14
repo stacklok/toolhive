@@ -41,7 +41,7 @@ func TestMakeSession_PersistsBackendSessionIDs(t *testing.T) {
 			{ID: "backend-a"},
 			{ID: "backend-b"},
 		}
-		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, true, backends)
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, backends)
 		require.NoError(t, err)
 
 		meta := sess.GetMetadata()
@@ -56,7 +56,7 @@ func TestMakeSession_PersistsBackendSessionIDs(t *testing.T) {
 		t.Parallel()
 
 		factory := newSessionFactoryWithConnector(nilBackendConnector())
-		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, true, nil)
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, nil)
 		require.NoError(t, err)
 
 		meta := sess.GetMetadata()
@@ -85,7 +85,7 @@ func TestMakeSession_PersistsBackendSessionIDs(t *testing.T) {
 			{ID: "backend-ok"},
 			{ID: "backend-fail"},
 		}
-		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, true, backends)
+		sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, backends)
 		require.NoError(t, err)
 
 		meta := sess.GetMetadata()
@@ -123,7 +123,7 @@ func TestRestoreSession_FreshlyPopulatesMetadataKeyBackendIDs(t *testing.T) {
 	sessionID := "restore-test-session"
 
 	// Create the initial session so we have a real token hash in metadata.
-	original, err := factory.MakeSessionWithID(t.Context(), sessionID, nil, true, backends)
+	original, err := factory.MakeSessionWithID(t.Context(), sessionID, nil, backends)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = original.Close() })
 
@@ -195,7 +195,7 @@ func TestRestoreSession_PassesStoredSessionHintToConnector(t *testing.T) {
 	}
 
 	// Create the original session — connector receives empty hints.
-	original, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, true, backends)
+	original, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, backends)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = original.Close() })
 
@@ -241,7 +241,7 @@ func TestMakeSession_PassesEmptySessionHintToConnector(t *testing.T) {
 	}
 
 	factory := newSessionFactoryWithConnector(connector)
-	sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, true, []*vmcp.Backend{{ID: "backend-a"}})
+	sess, err := factory.MakeSessionWithID(t.Context(), uuid.New().String(), nil, []*vmcp.Backend{{ID: "backend-a"}})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sess.Close() })
 

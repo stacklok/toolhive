@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -149,41 +150,37 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 
 	It("should configure circuit breaker from VirtualMCPServer spec", func() {
 		By("Creating VirtualMCPServer with circuit breaker enabled")
-		vmcpServer := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered",
+			}),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Name:  vmcpServerName,
+				Group: mcpGroupName,
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
 				},
-				OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-					Source: "discovered",
-				},
-				ServiceType: "NodePort",
-				Config: vmcpconfig.Config{
-					Name:  vmcpServerName,
-					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-					},
-					Operational: &vmcpconfig.OperationalConfig{
-						FailureHandling: &vmcpconfig.FailureHandlingConfig{
-							HealthCheckInterval: vmcpconfig.Duration(cbHealthCheckInterval),
-							HealthCheckTimeout:  vmcpconfig.Duration(cbHealthCheckTimeout),
-							UnhealthyThreshold:  cbUnhealthyThreshold,
-							CircuitBreaker: &vmcpconfig.CircuitBreakerConfig{
-								Enabled:          true,
-								FailureThreshold: cbFailureThreshold,
-								Timeout:          vmcpconfig.Duration(cbTimeout),
-							},
+				Operational: &vmcpconfig.OperationalConfig{
+					FailureHandling: &vmcpconfig.FailureHandlingConfig{
+						HealthCheckInterval: vmcpconfig.Duration(cbHealthCheckInterval),
+						HealthCheckTimeout:  vmcpconfig.Duration(cbHealthCheckTimeout),
+						UnhealthyThreshold:  cbUnhealthyThreshold,
+						CircuitBreaker: &vmcpconfig.CircuitBreakerConfig{
+							Enabled:          true,
+							FailureThreshold: cbFailureThreshold,
+							Timeout:          vmcpconfig.Duration(cbTimeout),
 						},
 					},
 				},
-			},
-		}
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Verifying circuit breaker configuration in ConfigMap")
@@ -343,25 +340,25 @@ var _ = Describe("VirtualMCPServer Circuit Breaker Lifecycle", Ordered, func() {
 			return nil
 		}, timeout, pollingInterval).Should(Succeed())
 
-		By("Note: Tools from unhealthy backends excluded by discovery middleware")
+		By("Note: Tools from unhealthy backends excluded during core capability aggregation")
 		// NOTE: This e2e test verifies the circuit breaker state changes (above assertions).
-		// The capability filtering itself is thoroughly unit tested in the discovery middleware.
+		// The capability filtering itself is thoroughly unit tested in the vMCP core.
 		//
 		// Full end-to-end verification of tools/list filtering would require:
 		// 1. Making an HTTP request to the vMCP server
 		// 2. Implementing MCP protocol initialize handshake
 		// 3. Calling tools/list and parsing the response
 		//
-		// The filtering logic is implemented in pkg/vmcp/discovery/middleware.go:filterHealthyBackends()
-		// and covered by unit tests in middleware_test.go (TestFilterHealthyBackends,
-		// TestFilterHealthyBackends_WithHealthMonitor).
+		// The filtering logic is implemented in pkg/vmcp/core/core_vmcp.go:filterHealthyBackends()
+		// and covered by unit tests in core_vmcp_test.go (TestFilterHealthyBackends,
+		// TestFilterHealthyBackends_Empty).
 		//
 		// How it works:
 		// - When backend circuit breaker opens → health monitor marks backend unhealthy
-		// - Discovery middleware queries health monitor via StatusProvider interface
-		// - handleInitializeRequest filters unhealthy backends before aggregation
+		// - The core queries the health monitor via the StatusProvider interface
+		// - filterHealthyBackends excludes unhealthy backends before capability aggregation
 		// - Only healthy/degraded backends' tools appear in tools/list response
-		GinkgoWriter.Printf("ℹ️  Backend health filtering is unit tested in pkg/vmcp/discovery/middleware_test.go\n")
+		GinkgoWriter.Printf("ℹ️  Backend health filtering is unit tested in pkg/vmcp/core/core_vmcp_test.go\n")
 		GinkgoWriter.Printf("   Circuit breaker state verified above; capability filtering covered by unit tests\n")
 	})
 

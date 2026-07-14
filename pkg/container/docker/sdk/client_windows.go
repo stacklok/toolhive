@@ -15,7 +15,7 @@ import (
 	"time"
 
 	"github.com/Microsoft/go-winio"
-	"github.com/docker/docker/client"
+	mobyclient "github.com/moby/moby/client"
 
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 )
@@ -35,7 +35,7 @@ const (
 const pipeConnectionTimeout = 2 * time.Second
 
 // newPlatformClient creates a Docker client using Windows named pipes
-func newPlatformClient(pipePath string) (*http.Client, []client.Opt) {
+func newPlatformClient(pipePath string) (*http.Client, []mobyclient.Opt) {
 	// Create a custom HTTP client that uses Windows named pipes
 	httpClient := &http.Client{
 		Transport: &http.Transport{
@@ -48,11 +48,12 @@ func newPlatformClient(pipePath string) (*http.Client, []client.Opt) {
 		},
 	}
 
-	// Create Docker client options
-	opts := []client.Opt{
-		client.WithAPIVersionNegotiation(),
-		client.WithHTTPClient(httpClient),
-		client.WithHost("npipe://" + pipePath),
+	// Create Docker client options. API-version negotiation is enabled by
+	// default in the new client, so it no longer needs to be requested
+	// explicitly.
+	opts := []mobyclient.Opt{
+		mobyclient.WithHTTPClient(httpClient),
+		mobyclient.WithHost("npipe://" + pipePath),
 	}
 
 	return httpClient, opts

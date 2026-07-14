@@ -346,6 +346,13 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 	return nil
 }
 
+// RenewClientTTL is a no-op for the in-memory backend: clients are held for the
+// process lifetime with no TTL, so there is nothing to renew. The behavior that
+// matters for distributed deployments lives in RedisStorage.RenewClientTTL.
+func (*MemoryStorage) RenewClientTTL(_ context.Context, _ fosite.Client) error {
+	return nil
+}
+
 // -----------------------
 // fosite.ClientManager
 // -----------------------
@@ -853,6 +860,23 @@ func (s *MemoryStorage) DeleteUpstreamTokens(_ context.Context, sessionID string
 	return nil
 }
 
+// DeleteUpstreamTokensForProvider removes tokens for a single (sessionID, providerName),
+// leaving sibling providers' rows intact. Absent row returns nil (not ErrNotFound).
+func (s *MemoryStorage) DeleteUpstreamTokensForProvider(_ context.Context, sessionID, providerName string) error {
+	if sessionID == "" {
+		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.upstreamTokens, upstreamKey{sessionID, providerName})
+	return nil
+}
+
 // compareExpiry orders ExpiresAt values for the GetLatestUpstreamTokensForUser
 // tie-breaker. Non-expiring rows (zero ExpiresAt — "alive forever") rank latest;
 // among finite expiries, later ranks latest. Mirrors time.Compare but with the
@@ -940,6 +964,8 @@ func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state strin
 		ResolvedUserID:       pending.ResolvedUserID,
 		ResolvedUserName:     pending.ResolvedUserName,
 		ResolvedUserEmail:    pending.ResolvedUserEmail,
+		SingleLeg:            pending.SingleLeg,
+		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
 		CreatedAt:            pending.CreatedAt,
 	}
 
@@ -989,6 +1015,8 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 		ResolvedUserID:       pending.ResolvedUserID,
 		ResolvedUserName:     pending.ResolvedUserName,
 		ResolvedUserEmail:    pending.ResolvedUserEmail,
+		SingleLeg:            pending.SingleLeg,
+		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
 		CreatedAt:            pending.CreatedAt,
 	}, nil
 }

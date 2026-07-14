@@ -607,7 +607,7 @@ func rollbackConfiguredTools(errOut io.Writer, gm GatewayManager, configured []T
 // hasProxyMode reports whether any of the given tool configs uses proxy mode.
 func hasProxyMode(cfgs []ToolConfig) bool {
 	for _, t := range cfgs {
-		if t.Mode == "proxy" {
+		if t.Mode == llmgateway.ModeProxy {
 			return true
 		}
 	}

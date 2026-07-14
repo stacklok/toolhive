@@ -414,7 +414,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsGlobalPath:  []string{".copilot", skillsDirName},
 		SkillsProjectPath: []string{".github", skillsDirName},
 		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
-		LLMGatewayMode:     "proxy",
+		LLMGatewayMode:     llmgateway.ModeProxy,
 		LLMBinaryName:      "code-insiders",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Code - Insiders", "User"},
@@ -457,7 +457,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsGlobalPath:  []string{".copilot", skillsDirName},
 		SkillsProjectPath: []string{".github", skillsDirName},
 		// LLM gateway: patches settings.json (same dir as mcp.json, different file)
-		LLMGatewayMode:     "proxy",
+		LLMGatewayMode:     llmgateway.ModeProxy,
 		LLMBinaryName:      "code",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Code", "User"},
@@ -495,7 +495,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		SkillsGlobalPath:  []string{".cursor", skillsDirName},
 		SkillsProjectPath: []string{".cursor", skillsDirName},
 		// LLM gateway: patches the editor settings.json (different from the MCP mcp.json)
-		LLMGatewayMode:     "proxy",
+		LLMGatewayMode:     llmgateway.ModeProxy,
 		LLMBinaryName:      "cursor",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{"Cursor", "User"},
@@ -534,7 +534,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		PluginsGlobalPath:  []string{".claude", "plugins"},
 		PluginsProjectPath: []string{".claude", "plugins"},
 		// LLM gateway: patches ~/.claude/settings.json (different from the MCP .claude.json)
-		LLMGatewayMode:     "direct",
+		LLMGatewayMode:     llmgateway.ModeDirect,
 		LLMBinaryName:      "claude",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{".claude"},
@@ -834,7 +834,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		// TLS handshake on that leg. Setting the env var would globally disable
 		// TLS verification for all other HTTPS requests the Gemini CLI process
 		// makes, which is an unacceptable side-effect.
-		LLMGatewayMode:     "proxy",
+		LLMGatewayMode:     llmgateway.ModeProxy,
 		LLMBinaryName:      "gemini",
 		LLMSettingsFile:    "settings.json",
 		LLMSettingsRelPath: []string{".gemini"},
@@ -990,7 +990,7 @@ var supportedClientIntegrations = []clientAppConfig{
 		ClientType:     ClientApp(Xcode),
 		Description:    "GitHub Copilot for Xcode",
 		LLMGatewayOnly: true,
-		LLMGatewayMode: "proxy",
+		LLMGatewayMode: llmgateway.ModeProxy,
 		// Full path is macOS-specific; on Linux/Windows this directory will not
 		// exist, so DetectedLLMGatewayClients() naturally returns false there.
 		LLMSettingsFile:    "editorSettings.json",

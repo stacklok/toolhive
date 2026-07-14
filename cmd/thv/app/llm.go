@@ -235,8 +235,8 @@ func newLLMSetupCommand() *cobra.Command {
 		Use:   "setup",
 		Short: "Configure detected AI tools to use the LLM gateway",
 		Long: `Detect installed AI tools (Claude Code, Gemini CLI, Cursor, VS Code, Xcode,
-Claude Desktop) and patch each tool's configuration to route through the LLM
-gateway.
+Claude Desktop, Codex) and patch each tool's configuration to route through the
+LLM gateway.
 
 Token-helper tools (Claude Code, Gemini CLI) are configured to call
 "thv llm token" to obtain a fresh OIDC token on demand.
@@ -245,6 +245,10 @@ Claude Desktop is configured via its third-party inference credential helper,
 which also calls "thv llm token". It reads its configuration only at launch, so
 fully quit and relaunch it after setup. Pass --models to list the models it
 should offer until the gateway serves model discovery itself.
+
+Codex is configured with a custom model_provider in ~/.codex/config.toml whose
+auth command invokes "thv llm token" directly (no shell), keeping the existing
+model_providers and mcp_servers entries in that file untouched.
 
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".

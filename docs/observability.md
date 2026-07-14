@@ -252,6 +252,48 @@ Number of currently active MCP connections.
 | `transport` | string | Backend transport type |
 | `connection_type` | string | `"sse"` (only present for SSE connections) |
 
+### Rate Limit Metrics
+
+These metrics are emitted for Redis-backed rate limit checks used by MCPServer
+and VirtualMCPServer. Prometheus appends `_total` to counter names. The latency
+histogram is exported with the `_seconds` unit suffix and the standard
+`_bucket`, `_sum`, and `_count` series suffixes.
+
+#### `toolhive_rate_limit_decisions` (Counter)
+
+Total number of rate limit bucket decisions. An allowed request increments once
+for every applicable bucket. A rejected request increments only for the first
+bucket rejected by the atomic Redis check. Requests with no applicable bucket
+do not increment this counter.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `namespace` | string | Kubernetes namespace associated with the server |
+| `server` | string | MCPServer or VirtualMCPServer name |
+| `decision` | string | `"allowed"` or `"rejected"` |
+| `scope` | string | `"shared"` or `"per_user"` |
+| `operation_type` | string | `"server"` or `"tool"` |
+
+#### `toolhive_rate_limit_redis_errors` (Counter)
+
+Total number of Redis errors encountered while checking rate limits.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `namespace` | string | Kubernetes namespace associated with the server |
+| `server` | string | MCPServer or VirtualMCPServer name |
+| `error_type` | string | `"timeout"`, `"connection"`, `"auth"`, or `"other"` |
+
+#### `toolhive_rate_limit_check_latency` (Histogram, seconds)
+
+Duration of each attempted atomic Redis Lua rate limit check, including failed
+checks.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `namespace` | string | Kubernetes namespace associated with the server |
+| `server` | string | MCPServer or VirtualMCPServer name |
+
 ## Span Attributes
 
 ### HTTP Attributes

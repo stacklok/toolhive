@@ -16,6 +16,7 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	"github.com/pelletier/go-toml/v2"
 
 	"github.com/stacklok/toolhive/pkg/auth/tokensource"
 	"github.com/stacklok/toolhive/pkg/llm"
@@ -1060,6 +1061,90 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				Expect(meta["entries"]).To(BeEmpty(), "ToolHive entry should be removed after teardown")
 				_, shimStatErr := os.Stat(shim)
 				Expect(os.IsNotExist(shimStatErr)).To(BeTrue(), "shim should be deleted after teardown")
+
+				showOut, _ = thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				cfg = llm.Config{}
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				Expect(cfg.ConfiguredTools).To(BeEmpty(),
+					"ConfiguredTools should be empty after teardown")
+			})
+		})
+
+		Describe("codex (codex-auth) setup and teardown", func() {
+			// Codex's LLM gateway config lives in ~/.codex/config.toml, patched via a
+			// dedicated TOML writer (auth is a command/args table, not a JSON pointer
+			// key), so it gets its own assertions rather than the allClientTestCases
+			// matrix, which only understands JSON.
+			readCodexConfig := func(configPath string) map[string]any {
+				data, err := os.ReadFile(configPath)
+				Expect(err).ToNot(HaveOccurred(), "config.toml should exist")
+				var config map[string]any
+				Expect(toml.Unmarshal(data, &config)).To(Succeed())
+				return config
+			}
+
+			It("writes the model_provider and auth command, then reverts them", func() {
+				issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+				codexDir := filepath.Join(tempDir, ".codex")
+				configPath := filepath.Join(codexDir, "config.toml")
+
+				By("creating the .codex directory and codex binary so detection succeeds")
+				Expect(os.MkdirAll(codexDir, 0750)).To(Succeed())
+				Expect(createFakeBinary(binDir, "codex")).To(Succeed())
+
+				By("running thv llm setup --client codex")
+				stdout, stderr, err := runSetupWithOIDCCompletion(
+					thvCmd, oidcServer,
+					"--client", "codex",
+					"--gateway-url", gatewayURL,
+					"--issuer", issuerURL,
+					"--client-id", clientID,
+				)
+				Expect(err).ToNot(HaveOccurred(),
+					"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
+
+				By("verifying config.toml contains the toolhive-gateway provider")
+				config := readCodexConfig(configPath)
+				Expect(config["model_provider"]).To(Equal("toolhive-gateway"))
+				providers, ok := config["model_providers"].(map[string]any)
+				Expect(ok).To(BeTrue(), "model_providers table should exist")
+				provider, ok := providers["toolhive-gateway"].(map[string]any)
+				Expect(ok).To(BeTrue(), "model_providers.toolhive-gateway table should exist")
+				Expect(provider["name"]).To(Equal("ToolHive Gateway"))
+				Expect(provider["base_url"]).To(Equal(gatewayURL + "/v1"))
+				Expect(provider["wire_api"]).To(Equal("responses"))
+
+				auth, ok := provider["auth"].(map[string]any)
+				Expect(ok).To(BeTrue(), "model_providers.toolhive-gateway.auth table should exist")
+				Expect(auth["command"]).ToNot(BeEmpty(), "auth.command should point at the thv executable")
+				args, ok := auth["args"].([]any)
+				Expect(ok).To(BeTrue(), "auth.args should be an array")
+				Expect(args).To(Equal([]any{"llm", "token", "--skip-browser"}))
+
+				By("verifying config show lists codex in codex-auth mode")
+				showOut, _ := thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				var cfg llm.Config
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				var found bool
+				for _, toolCfg := range cfg.ConfiguredTools {
+					if string(toolCfg.Tool) == "codex" {
+						found = true
+						Expect(toolCfg.Mode).To(Equal("codex-auth"))
+					}
+				}
+				Expect(found).To(BeTrue(), "codex should appear in ConfiguredTools")
+
+				By("running thv llm teardown codex")
+				thvCmd("llm", "teardown", "codex").ExpectSuccess()
+
+				By("verifying model_provider and the toolhive-gateway table were removed")
+				config = readCodexConfig(configPath)
+				_, hasModelProvider := config["model_provider"]
+				Expect(hasModelProvider).To(BeFalse(), "model_provider should be cleared after teardown")
+				if providers, ok := config["model_providers"].(map[string]any); ok {
+					_, stillPresent := providers["toolhive-gateway"]
+					Expect(stillPresent).To(BeFalse(), "toolhive-gateway provider should be removed after teardown")
+				}
 
 				showOut, _ = thvCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
 				cfg = llm.Config{}

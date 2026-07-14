@@ -321,6 +321,13 @@ type OIDCUpstreamRunConfig struct {
 	// HTTP-scheme restrictions are unchanged — HTTPS is still required for
 	// non-localhost hosts. Defaults to false.
 	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
+
+	// InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery
+	// endpoints for this upstream. Only for in-cluster development environments
+	// (e.g. Dex served over HTTP in a kind cluster) where TLS is not available.
+	// Never set this in production.
+	//nolint:lll // field tags require full JSON+YAML names
+	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 }
 
 // OAuth2UpstreamRunConfig contains configuration for pure OAuth 2.0 providers.
@@ -392,6 +399,13 @@ type OAuth2UpstreamRunConfig struct {
 	// restrictions are unchanged — HTTPS is still required for non-localhost hosts.
 	// Defaults to false.
 	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
+
+	// InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+	// for this upstream. Only for in-cluster development environments (e.g. an
+	// OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+	// available. Never set this in production.
+	//nolint:lll // field tags require full JSON+YAML names
+	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
 }
 
 // DCRUpstreamConfig configures RFC 7591 Dynamic Client Registration for an

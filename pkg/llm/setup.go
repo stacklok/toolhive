@@ -87,11 +87,6 @@ func Setup(
 		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
 	}
 
-	tokenHelperCommand, err := buildTokenHelperCommand()
-	if err != nil {
-		return err
-	}
-
 	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
 
 	// Detect tools before login so we skip the interactive browser flow when
@@ -105,6 +100,21 @@ func Setup(
 	if len(detected) == 0 {
 		_, _ = fmt.Fprintln(out, "No supported AI tools detected.")
 		return nil
+	}
+
+	// Only build the shell-string token helper if a detected tool actually
+	// consumes it — its shell-safety check on the thv executable path would
+	// otherwise fail setup for e.g. a Codex-only run, which never uses it.
+	var tokenHelperCommand string
+	if tokenHelperCommandNeeded(gm, detected) {
+		tokenHelperCommand, err = buildTokenHelperCommand()
+		if err != nil {
+			return err
+		}
+	}
+	tokenHelperPath, tokenHelperArgs, err := buildTokenHelperArgv()
+	if err != nil {
+		return err
 	}
 
 	// In lazy mode the interactive login is deferred until a configured tool
@@ -134,7 +144,7 @@ func Setup(
 
 	configured, err := configureDetectedTools(
 		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand,
-		llmCfg.TLSSkipVerify, anthropicPrefix, models,
+		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, models,
 	)
 	if err != nil {
 		return err
@@ -298,13 +308,13 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 	}
 	for _, tc := range configured {
 		switch tc.Mode {
-		case "direct":
+		case llmgateway.ModeDirect:
 			_, _ = fmt.Fprintf(errOut,
 				"Warning: %s uses direct mode — NODE_TLS_REJECT_UNAUTHORIZED=0 has been written to its "+
 					"settings, disabling TLS certificate verification for ALL of %s's outbound connections "+
 					"(LLM provider APIs, MCP registry, etc.), not just the LLM gateway. "+
 					"Use only in isolated local environments.\n", tc.Tool, tc.Tool)
-		case "proxy":
+		case llmgateway.ModeProxy:
 			if tc.Tool == "gemini-cli" {
 				_, _ = fmt.Fprintf(errOut,
 					"Note: --tls-skip-verify is not supported for Gemini CLI "+
@@ -315,6 +325,11 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 					"Warning: %s uses proxy mode — TLS certificate verification is disabled for the "+
 						"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
 			}
+		case llmgateway.ModeCodexAuth:
+			_, _ = fmt.Fprintf(errOut,
+				"Warning: --tls-skip-verify was NOT applied to %s — its config.toml has no "+
+					"TLS-skip option. Codex will fail against a self-signed gateway until you "+
+					"trust the certificate in the system store.\n", tc.Tool)
 		}
 	}
 }
@@ -342,6 +357,7 @@ func configureDetectedTools(
 	gm GatewayManager,
 	detected []string,
 	gatewayURL, proxyBaseURL, tokenHelperCommand string,
+	tokenHelperPath string, tokenHelperArgs []string,
 	tlsSkipVerify bool,
 	anthropicPathPrefix string,
 	models []string,
@@ -368,6 +384,8 @@ func configureDetectedTools(
 			AnthropicBaseURL:   anthropicBaseURL,
 			ProxyBaseURL:       proxyBaseURL,
 			TokenHelperCommand: tokenHelperCommand,
+			TokenHelperPath:    tokenHelperPath,
+			TokenHelperArgs:    tokenHelperArgs,
 			TLSSkipVerify:      tlsSkipVerify,
 			Models:             models,
 		}
@@ -463,6 +481,20 @@ func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify 
 	return ""
 }
 
+// tokenHelperCommandNeeded reports whether any detected client's mode consumes
+// the shell-string token helper (TokenHelperCommand) — direct-mode's
+// apiKeyHelper-style JSON-Pointer clients and Claude Desktop's credential
+// helper. Proxy-mode tools and Codex (argv-based auth) never use it.
+func tokenHelperCommandNeeded(gm GatewayManager, detected []string) bool {
+	for _, clientType := range detected {
+		switch gm.LLMGatewayModeFor(clientType) {
+		case llmgateway.ModeDirect, llmgateway.ModeCredentialHelper:
+			return true
+		}
+	}
+	return false
+}
+
 // buildTokenHelperCommand returns the shell command string used as the
 // token-helper for direct-mode tools. It rejects executable paths that contain
 // shell metacharacters, since the command is written verbatim into long-lived
@@ -488,6 +520,20 @@ func buildTokenHelperCommand() (string, error) {
 				"(Windows paths are not supported by thv llm setup)", self)
 	}
 	return fmt.Sprintf(`"%s" llm token`, self), nil
+}
+
+// buildTokenHelperArgv returns the argv-form of the token helper, for config
+// formats that invoke an executable directly (no shell) — e.g. Codex's
+// [model_providers.<id>.auth] command/args table. Since args are passed as a
+// TOML array rather than interpolated into a shell string, no shell-metacharacter
+// validation is needed. --skip-browser is always included since Codex has no
+// interactive-context signal like Claude Desktop's credential-helper shim.
+func buildTokenHelperArgv() (string, []string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", nil, fmt.Errorf("resolving thv executable path: %w", err)
+	}
+	return self, []string{"llm", "token", "--skip-browser"}, nil
 }
 
 // usesAnthropicBaseURL reports whether a client mode consumes the Anthropic base
@@ -561,7 +607,7 @@ func rollbackConfiguredTools(errOut io.Writer, gm GatewayManager, configured []T
 // hasProxyMode reports whether any of the given tool configs uses proxy mode.
 func hasProxyMode(cfgs []ToolConfig) bool {
 	for _, t := range cfgs {
-		if t.Mode == "proxy" {
+		if t.Mode == llmgateway.ModeProxy {
 			return true
 		}
 	}

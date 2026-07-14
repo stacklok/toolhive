@@ -4,7 +4,6 @@
 package controllers
 
 import (
-	"encoding/json"
 	stderrors "errors"
 	"testing"
 
@@ -19,13 +18,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
 func rawPodTemplateSpecJSON(t *testing.T, raw string) *runtime.RawExtension {
 	t.Helper()
-	var obj map[string]any
-	require.NoError(t, json.Unmarshal([]byte(raw), &obj))
 	return &runtime.RawExtension{Raw: []byte(raw)}
 }
 
@@ -75,7 +73,7 @@ func TestMCPRemoteProxyPodTemplateSpecValidation(t *testing.T) {
 					PodTemplateSpec: tt.podTemplateSpec,
 				},
 			}
-			scheme := createRunConfigTestScheme()
+			scheme := testutil.NewScheme(t)
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(scheme).
 				WithRuntimeObjects(proxy).
@@ -156,7 +154,7 @@ func TestMCPRemoteProxyPodTemplateSpecMerge(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	reconciler := &MCPRemoteProxyReconciler{
 		Scheme:           scheme,
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
@@ -196,7 +194,7 @@ func TestMCPRemoteProxyPodTemplateSpecMergeAppliesFieldsOutsideBuilderEmptinessC
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	reconciler := &MCPRemoteProxyReconciler{
 		Scheme:           scheme,
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),
@@ -222,7 +220,7 @@ func TestMCPRemoteProxyPodTemplateSpecDriftDetection(t *testing.T) {
 		},
 	}
 
-	scheme := createRunConfigTestScheme()
+	scheme := testutil.NewScheme(t)
 	reconciler := &MCPRemoteProxyReconciler{
 		Scheme:           scheme,
 		PlatformDetector: ctrlutil.NewSharedPlatformDetector(),

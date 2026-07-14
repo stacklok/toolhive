@@ -109,26 +109,8 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 
-	// Validate the spec
-	if err := r.validateSpec(ctx, proxy); err != nil {
-		ctxLogger.Error(err, "MCPRemoteProxy spec validation failed")
-		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-		proxy.Status.Message = fmt.Sprintf("Validation failed: %v", err)
-		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:    mcpv1beta1.ConditionTypeAuthConfigured,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1beta1.ConditionReasonAuthInvalid,
-			Message: err.Error(),
-		})
-		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after validation error")
-		}
+	if err := r.validateSpecAndPodTemplate(ctx, proxy); err != nil {
 		return err
-	}
-
-	// Validate PodTemplateSpec early - before creating or updating resources.
-	if !r.validateAndUpdatePodTemplateStatus(ctx, proxy) {
-		return errInvalidMCPRemoteProxyPodTemplateSpec
 	}
 
 	// Validate the GroupRef if specified
@@ -201,6 +183,35 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPAuthzConfig error")
 		}
 		return err
+	}
+
+	return nil
+}
+
+func (r *MCPRemoteProxyReconciler) validateSpecAndPodTemplate(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	if err := r.validateSpec(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "MCPRemoteProxy spec validation failed")
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Message = fmt.Sprintf("Validation failed: %v", err)
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:    mcpv1beta1.ConditionTypeAuthConfigured,
+			Status:  metav1.ConditionFalse,
+			Reason:  mcpv1beta1.ConditionReasonAuthInvalid,
+			Message: err.Error(),
+		})
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after validation error")
+		}
+		return err
+	}
+
+	if !r.validateAndUpdatePodTemplateStatus(ctx, proxy) {
+		return errInvalidMCPRemoteProxyPodTemplateSpec
 	}
 
 	return nil
@@ -399,7 +410,7 @@ func (r *MCPRemoteProxyReconciler) ensureDeployment(
 
 		if proxy.Spec.PodTemplateSpec == nil || len(proxy.Spec.PodTemplateSpec.Raw) == 0 {
 			delete(deployment.Annotations, podTemplateSpecHashAnnotation)
-    }
+		}
 
 		if newDeployment.Spec.Replicas != nil {
 			deployment.Spec.Replicas = newDeployment.Spec.Replicas

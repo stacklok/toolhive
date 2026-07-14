@@ -297,6 +297,7 @@ func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
 		&out, &errOut, gm,
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "/anthropic", nil,
 	)
 	require.NoError(t, err)
@@ -317,6 +318,7 @@ func TestConfigureDetectedTools_NoPrefixWhenEmpty(t *testing.T) {
 		&out, &errOut, gm,
 		[]string{"claude-code"},
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "", nil, // no prefix
 	)
 	require.NoError(t, err)
@@ -336,6 +338,7 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 		&out, &errOut, gm,
 		[]string{"cursor"},
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "/anthropic", nil,
 	)
 	require.NoError(t, err)
@@ -343,6 +346,92 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 
 	// Proxy-mode tools must never receive an AnthropicBaseURL.
 	assert.Empty(t, gm.applied[0].AnthropicBaseURL)
+}
+
+func TestTokenHelperCommandNeeded(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name     string
+		modes    map[string]string
+		detected []string
+		want     bool
+	}{
+		{
+			name:     "codex-only run never needs the shell-string helper",
+			modes:    map[string]string{"codex": llmgateway.ModeCodexAuth},
+			detected: []string{"codex"},
+			want:     false,
+		},
+		{
+			name:     "proxy-only run never needs the shell-string helper",
+			modes:    map[string]string{"cursor": llmgateway.ModeProxy},
+			detected: []string{"cursor"},
+			want:     false,
+		},
+		{
+			name:     "direct mode needs it",
+			modes:    map[string]string{"claude-code": llmgateway.ModeDirect},
+			detected: []string{"claude-code"},
+			want:     true,
+		},
+		{
+			name:     "credential-helper mode needs it",
+			modes:    map[string]string{"claude-desktop": llmgateway.ModeCredentialHelper},
+			detected: []string{"claude-desktop"},
+			want:     true,
+		},
+		{
+			name: "any detected tool needing it is enough",
+			modes: map[string]string{
+				"codex":       llmgateway.ModeCodexAuth,
+				"claude-code": llmgateway.ModeDirect,
+			},
+			detected: []string{"codex", "claude-code"},
+			want:     true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			gm := &modeLookupGatewayManager{modes: tt.modes}
+			assert.Equal(t, tt.want, tokenHelperCommandNeeded(gm, tt.detected))
+		})
+	}
+}
+
+// modeLookupGatewayManager is a minimal GatewayManager whose LLMGatewayModeFor
+// returns a per-client mode from a fixed map, for tokenHelperCommandNeeded tests.
+type modeLookupGatewayManager struct{ modes map[string]string }
+
+func (*modeLookupGatewayManager) DetectedLLMGatewayClients() []string { return nil }
+func (*modeLookupGatewayManager) ConfigureLLMGateway(_ string, _ llmgateway.ApplyConfig) (string, error) {
+	return "", nil
+}
+func (g *modeLookupGatewayManager) LLMGatewayModeFor(c string) string { return g.modes[c] }
+func (*modeLookupGatewayManager) IsManaged(_ string) bool             { return false }
+func (*modeLookupGatewayManager) ConfigureEnvFile(_ string, _ llmgateway.ApplyConfig) (string, error) {
+	return "", nil
+}
+func (*modeLookupGatewayManager) RevertEnvFile(_, _ string) error    { return nil }
+func (*modeLookupGatewayManager) RevertLLMGateway(_, _ string) error { return nil }
+
+func TestBuildTokenHelperArgv(t *testing.T) {
+	t.Parallel()
+
+	path, args, err := buildTokenHelperArgv()
+	require.NoError(t, err)
+	assert.NotEmpty(t, path)
+	assert.Equal(t, []string{"llm", "token", "--skip-browser"}, args)
+}
+
+func TestWarnTLSSkipVerify_CodexWarning(t *testing.T) {
+	t.Parallel()
+
+	var errOut bytes.Buffer
+	warnTLSSkipVerify(&errOut, true, []ToolConfig{{Tool: "codex", Mode: llmgateway.ModeCodexAuth}})
+	out := errOut.String()
+	assert.Contains(t, out, "Warning:")
+	assert.Contains(t, out, "was NOT applied to codex")
 }
 
 // ── probeAnthropicPrefix ──────────────────────────────────────────────────────

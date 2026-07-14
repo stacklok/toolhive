@@ -917,6 +917,12 @@ var supportedClientIntegrations = []clientAppConfig{
 		// reference it with a relative "./toolhive/<name>" source.
 		PluginsGlobalPath:  []string{".agents", "plugins", "toolhive"},
 		PluginsProjectPath: []string{".agents", "plugins", "toolhive"},
+		// LLM gateway: patches the same config.toml its MCP config uses, via a
+		// dedicated TOML writer (llm_gateway_codex.go) rather than LLMGatewayKeys.
+		LLMGatewayMode:     llmgateway.ModeCodexAuth,
+		LLMBinaryName:      "codex",
+		LLMSettingsFile:    "config.toml",
+		LLMSettingsRelPath: []string{".codex"},
 	},
 	{
 		ClientType:           KimiCli,

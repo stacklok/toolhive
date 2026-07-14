@@ -46,6 +46,11 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 	if appCfg.LLMGatewayMode == llmgateway.ModeCredentialHelper {
 		return cm.configureCredentialHelper(appCfg, cfg)
 	}
+	// Codex's config is TOML, not JSON, and authenticates via a command-backed
+	// bearer token rather than JSON-Pointer keys; dispatch to its writer.
+	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
+		return cm.configureCodexAuth(appCfg, cfg)
+	}
 
 	path := cm.buildLLMSettingsPath(appCfg)
 
@@ -178,7 +183,18 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 	if appCfg.LLMGatewayMode == llmgateway.ModeCredentialHelper {
 		return cm.revertCredentialHelper(appCfg, configPath)
 	}
+	// Codex reverts via its dedicated TOML writer.
+	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
+		return cm.revertCodexAuth(appCfg, configPath)
+	}
 
+	return revertJSONPointerGateway(appCfg, configPath)
+}
+
+// revertJSONPointerGateway removes appCfg.LLMGatewayKeys from configPath, the
+// JSON-Pointer-based revert path shared by every LLM-gateway mode except
+// ModeCredentialHelper and ModeCodexAuth (which use dedicated writers).
+func revertJSONPointerGateway(appCfg *clientAppConfig, configPath string) error {
 	// Guard against a missing file (or deleted parent directory) before trying
 	// to acquire the lock — WithFileLock creates configPath+".lock", which
 	// fails when the directory no longer exists.

@@ -13,6 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -102,22 +103,16 @@ var _ = Describe("VirtualMCPServer ExternalAuthConfig Watch Integration Tests", 
 			Expect(k8sClient.Create(ctx, mcpServer)).Should(Succeed())
 
 			// Create VirtualMCPServer with discovered mode
-			vmcp = &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-					Config:   vmcpconfig.Config{Group: mcpGroupName},
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type: "anonymous",
-					},
-					OutgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
-						Source: "discovered", // Use discovered mode
-					},
-				},
-			}
+			vmcp = v1beta1test.NewVirtualMCPServer(vmcpName, namespace,
+				v1beta1test.WithVMCPGroupRef(mcpGroupName),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: mcpGroupName}),
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type: "anonymous",
+				}),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Source: "discovered", // Use discovered mode
+				}),
+			)
 			Expect(k8sClient.Create(ctx, vmcp)).Should(Succeed())
 
 			// Wait for initial VirtualMCPServer reconciliation

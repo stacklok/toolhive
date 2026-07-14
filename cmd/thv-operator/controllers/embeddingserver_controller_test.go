@@ -21,6 +21,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
@@ -333,17 +334,13 @@ func TestEmbeddingServer_ModelCacheConfig(t *testing.T) {
 // Test helpers
 
 func createTestEmbeddingServer(name, namespace, image, model string) *mcpv1beta1.EmbeddingServer {
-	return &mcpv1beta1.EmbeddingServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       name,
-			Namespace:  namespace,
-			Generation: 1,
-		},
-		Spec: mcpv1beta1.EmbeddingServerSpec{
-			Image: image,
-			Model: model,
-		},
-	}
+	return v1beta1test.NewEmbeddingServer(name, namespace,
+		v1beta1test.WithEmbeddingImage(image),
+		v1beta1test.WithEmbeddingModel(model),
+		v1beta1test.MutateEmbedding(func(e *mcpv1beta1.EmbeddingServer) {
+			e.Generation = 1
+		}),
+	)
 }
 
 // TestReconcile_NotFound tests reconciliation when resource is not found
@@ -479,14 +476,14 @@ func TestStatefulSetNeedsUpdate(t *testing.T) {
 		},
 		{
 			name: "update needed - port changed",
-			embedding: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: testNamespaceDefault, Generation: 1},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Image: "image:v1",
-					Model: "model1",
-					Port:  9090,
-				},
-			},
+			embedding: v1beta1test.NewEmbeddingServer("test", testNamespaceDefault,
+				v1beta1test.WithEmbeddingImage("image:v1"),
+				v1beta1test.WithEmbeddingModel("model1"),
+				v1beta1test.WithEmbeddingPort(9090),
+				v1beta1test.MutateEmbedding(func(e *mcpv1beta1.EmbeddingServer) {
+					e.Generation = 1
+				}),
+			),
 			existingSts:    generateSts(createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1")),
 			expectedUpdate: true,
 			updateReason:   "port changed",
@@ -517,35 +514,24 @@ func TestHandleDeletion(t *testing.T) {
 	}{
 		{
 			name: "not being deleted",
-			embedding: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       "test",
-					Namespace:  testNamespaceDefault,
-					Finalizers: []string{embeddingFinalizerName},
-				},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Image: "test:latest",
-					Model: "test-model",
-				},
-			},
+			embedding: v1beta1test.NewEmbeddingServer("test", testNamespaceDefault,
+				v1beta1test.WithEmbeddingImage("test:latest"),
+				v1beta1test.WithEmbeddingModel("test-model"),
+				v1beta1test.MutateEmbedding(func(e *mcpv1beta1.EmbeddingServer) {
+					e.Finalizers = []string{embeddingFinalizerName}
+				}),
+			),
 			expectDone:      false,
 			expectError:     false,
 			expectFinalizer: true,
 		},
 		{
 			name: "being deleted with finalizer",
-			embedding: &mcpv1beta1.EmbeddingServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:              "test",
-					Namespace:         testNamespaceDefault,
-					Finalizers:        []string{embeddingFinalizerName},
-					DeletionTimestamp: &metav1.Time{Time: time.Now()},
-				},
-				Spec: mcpv1beta1.EmbeddingServerSpec{
-					Image: "test:latest",
-					Model: "test-model",
-				},
-			},
+			embedding: v1beta1test.NewEmbeddingServer("test", testNamespaceDefault,
+				v1beta1test.WithEmbeddingImage("test:latest"),
+				v1beta1test.WithEmbeddingModel("test-model"),
+				v1beta1test.WithEmbeddingDeletionTimestamp(metav1.Time{Time: time.Now()}, embeddingFinalizerName),
+			),
 			expectDone:      true,
 			expectError:     false,
 			expectFinalizer: false,
@@ -625,12 +611,14 @@ func TestEnsureStatefulSet(t *testing.T) {
 		},
 		{
 			name: "update replicas",
-			embedding: func() *mcpv1beta1.EmbeddingServer {
-				e := createTestEmbeddingServer("test", testNamespaceDefault, "image:v1", "model1")
-				replicas := int32(3)
-				e.Spec.Replicas = &replicas
-				return e
-			}(),
+			embedding: v1beta1test.NewEmbeddingServer("test", testNamespaceDefault,
+				v1beta1test.WithEmbeddingImage("image:v1"),
+				v1beta1test.WithEmbeddingModel("model1"),
+				v1beta1test.WithEmbeddingReplicas(3),
+				v1beta1test.MutateEmbedding(func(e *mcpv1beta1.EmbeddingServer) {
+					e.Generation = 1
+				}),
+			),
 			existingSts: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test",
@@ -1172,4 +1160,80 @@ func TestEmbeddingServer_PodTemplateSpec_EmptyObjectIsNoOp(t *testing.T) {
 	assert.Equal(t, "http", c.Ports[0].Name)
 	assert.Contains(t, c.Args, "--model-id")
 	assert.Contains(t, c.Args, "test-model")
+}
+
+// TestEmbeddingServerServiceNeedsUpdate_ExternalAnnotationsIgnored is a regression test
+// for #5730: external controllers (e.g. GKE NEG/Gateway) write cloud.google.com/*
+// annotations on the Service; these are not operator-owned and must not be treated as
+// drift. A genuine operator-owned change (port) must still be detected.
+func TestEmbeddingServerServiceNeedsUpdate_ExternalAnnotationsIgnored(t *testing.T) {
+	t.Parallel()
+
+	embedding := v1beta1test.NewEmbeddingServer("embed", testNamespaceDefault,
+		v1beta1test.WithEmbeddingPort(9000))
+	r := &EmbeddingServerReconciler{}
+
+	svc := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				"cloud.google.com/neg-status": `{"network_endpoint_groups":{"9000":"k8s1-abc"}}`,
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{{Name: "http", Port: 9000}},
+		},
+	}
+	assert.False(t, r.serviceNeedsUpdate(svc, embedding),
+		"external annotation must not be treated as drift")
+
+	svc.Spec.Ports[0].Port = 1234
+	assert.True(t, r.serviceNeedsUpdate(svc, embedding),
+		"operator-owned port drift must still be detected")
+}
+
+// TestEmbeddingServerEnsureService_PreservesExternalAnnotations is a regression test for
+// #5730: when a genuine operator-owned change triggers a Service update, annotations
+// written by an external controller (e.g. GKE NEG) must be merged, not stripped.
+func TestEmbeddingServerEnsureService_PreservesExternalAnnotations(t *testing.T) {
+	t.Parallel()
+
+	embedding := v1beta1test.NewEmbeddingServer("embed-ext", testNamespaceDefault,
+		v1beta1test.WithEmbeddingPort(9000))
+
+	// Existing Service co-owned by GKE (external annotation) with a drifted operator-owned
+	// field (wrong port) so serviceNeedsUpdate fires.
+	existing := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      embedding.Name,
+			Namespace: embedding.Namespace,
+			Annotations: map[string]string{
+				"cloud.google.com/neg-status": `{"network_endpoint_groups":{"9000":"k8s1-abc"}}`,
+			},
+		},
+		Spec: corev1.ServiceSpec{
+			Ports: []corev1.ServicePort{{Name: "http", Port: 1234}},
+		},
+	}
+
+	scheme := testutil.NewScheme(t)
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(embedding, existing).
+		Build()
+	r := &EmbeddingServerReconciler{Client: fakeClient, Scheme: scheme}
+
+	_, err := r.ensureService(context.TODO(), embedding)
+	require.NoError(t, err)
+
+	updated := &corev1.Service{}
+	require.NoError(t, fakeClient.Get(context.TODO(), types.NamespacedName{
+		Name:      embedding.Name,
+		Namespace: embedding.Namespace,
+	}, updated))
+	// External annotation preserved...
+	assert.Equal(t, `{"network_endpoint_groups":{"9000":"k8s1-abc"}}`,
+		updated.Annotations["cloud.google.com/neg-status"])
+	// ...and the operator-owned port corrected.
+	require.Len(t, updated.Spec.Ports, 1)
+	assert.Equal(t, int32(9000), updated.Spec.Ports[0].Port)
 }

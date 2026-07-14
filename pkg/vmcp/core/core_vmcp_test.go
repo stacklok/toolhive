@@ -9,6 +9,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -19,6 +20,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	aggmocks "github.com/stacklok/toolhive/pkg/vmcp/aggregator/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	vmcpmocks "github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	routermocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
 )
@@ -307,11 +309,6 @@ func TestListTools_HealthFiltersBeforeAggregating(t *testing.T) {
 		{ID: "unhealthy", HealthStatus: vmcp.BackendHealthy}, // overridden by provider below
 		{ID: "unknown", HealthStatus: vmcp.BackendHealthy},   // overridden by provider below
 	}
-	cfg.HealthStatusProvider = fakeStatusProvider{
-		"unhealthy": vmcp.BackendUnhealthy,
-		"unknown":   vmcp.BackendUnknown,
-	}
-
 	m.reg.EXPECT().List(gomock.Any()).Return(backends)
 	var got []vmcp.Backend
 	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).DoAndReturn(
@@ -323,6 +320,13 @@ func TestListTools_HealthFiltersBeforeAggregating(t *testing.T) {
 	c, err := New(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })
+
+	// The core builds its own monitor from HealthMonitorConfig in production; inject a stub
+	// health view directly (internal test) to exercise filtering without a running monitor.
+	c.(*coreVMCP).health = fakeStatusProvider{
+		"unhealthy": vmcp.BackendUnhealthy,
+		"unknown":   vmcp.BackendUnknown,
+	}
 
 	_, err = c.ListTools(context.Background(), nil)
 	require.NoError(t, err)
@@ -449,7 +453,6 @@ func TestIdentityNotLogged(t *testing.T) {
 	// An excluded backend makes filterHealthyBackends emit a DEBUG log on every
 	// aggregatedView, guaranteeing the buffer is non-empty so the assertion below
 	// is not vacuous (it would otherwise pass if every path short-circuited).
-	cfg.HealthStatusProvider = fakeStatusProvider{"bad": vmcp.BackendUnhealthy}
 	m.reg.EXPECT().List(gomock.Any()).Return([]vmcp.Backend{
 		{ID: "ok", HealthStatus: vmcp.BackendHealthy},
 		{ID: "bad", HealthStatus: vmcp.BackendHealthy},
@@ -461,6 +464,9 @@ func TestIdentityNotLogged(t *testing.T) {
 	c, err := New(cfg)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = c.Close() })
+	// Inject a stub health view (internal test) so filterHealthyBackends excludes "bad" and
+	// emits its DEBUG log (see comment above).
+	c.(*coreVMCP).health = fakeStatusProvider{"bad": vmcp.BackendUnhealthy}
 
 	var buf bytes.Buffer
 	prev := slog.Default()
@@ -485,4 +491,54 @@ func TestIdentityNotLogged(t *testing.T) {
 	logs := buf.String()
 	require.NotEmpty(t, logs, "expected the driven methods to emit logs, else the assertion is vacuous")
 	assert.NotContains(t, logs, secret, "identity token must never be logged")
+}
+
+// TestNew_HealthMonitorOwnedByCore verifies the core owns the backend health monitor
+// (#5443 reversal): New builds and starts it from HealthMonitorConfig, exposes it via
+// BackendHealth, drives initial checks, and Close stops it idempotently while leaving the
+// reporter queryable.
+func TestNew_HealthMonitorOwnedByCore(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	backends := []vmcp.Backend{{ID: testBackendID, Name: "be1", BaseURL: "http://be1:8080", TransportType: "sse"}}
+	// The monitor lists backends from the registry and health-checks them via the client.
+	m.reg.EXPECT().List(gomock.Any()).Return(backends).AnyTimes()
+	m.client.EXPECT().ListCapabilities(gomock.Any(), gomock.Any()).
+		Return(&vmcp.CapabilityList{}, nil).AnyTimes()
+	cfg.HealthMonitorConfig = &health.MonitorConfig{
+		CheckInterval:      50 * time.Millisecond,
+		UnhealthyThreshold: 1,
+		Timeout:            time.Second,
+	}
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+
+	reporter := c.BackendHealth()
+	require.NotNil(t, reporter, "the core must expose the health monitor it built and started")
+
+	require.Eventually(t, func() bool {
+		status, ok := reporter.QueryBackendStatus(testBackendID)
+		return ok && status == vmcp.BackendHealthy
+	}, 2*time.Second, 10*time.Millisecond, "the core-started monitor should report the backend healthy")
+
+	// Close stops the monitor and is idempotent; the reporter stays valid (stopped, not nil).
+	require.NoError(t, c.Close())
+	require.NoError(t, c.Close())
+	assert.NotNil(t, c.BackendHealth())
+}
+
+// TestNew_HealthMonitorDisabledWhenNil verifies a nil HealthMonitorConfig leaves health
+// monitoring disabled: the core builds no monitor and BackendHealth reports none.
+func TestNew_HealthMonitorDisabledWhenNil(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).AnyTimes()
+
+	c, err := New(cfg) // HealthMonitorConfig is nil
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	assert.Nil(t, c.BackendHealth(), "nil HealthMonitorConfig must leave health monitoring disabled")
 }

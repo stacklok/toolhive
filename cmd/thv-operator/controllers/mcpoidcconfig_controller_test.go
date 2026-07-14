@@ -125,8 +125,6 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := testutil.NewScheme(t)
-
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
@@ -142,16 +140,7 @@ func TestMCPOIDCConfigReconciler_SteadyStateNoOp(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -192,8 +181,6 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := testutil.NewScheme(t)
-
 	// Start with invalid config: type=inline but no inline config
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -208,16 +195,7 @@ func TestMCPOIDCConfigReconciler_ValidationRecovery(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -313,8 +291,7 @@ func TestMCPOIDCConfigReconciler_handleDeletion(t *testing.T) {
 
 			objs := []client.Object{tt.oidcConfig}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
+			fakeClient := withOIDCConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 				WithObjects(objs...).
 				Build()
 
@@ -341,8 +318,6 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := testutil.NewScheme(t)
-
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
@@ -358,16 +333,7 @@ func TestMCPOIDCConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -417,8 +383,6 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := testutil.NewScheme(t)
-
 	// Invalid config: type is inline but no inline config set
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -433,16 +397,7 @@ func TestMCPOIDCConfigReconciler_ValidationFailureSetsCondition(t *testing.T) {
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-
-	r := &MCPOIDCConfigReconciler{
-		Client: fakeClient,
-		Scheme: scheme,
-	}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 
 	req := reconcile.Request{
 		NamespacedName: types.NamespacedName{
@@ -566,7 +521,6 @@ func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := testutil.NewScheme(t)
 
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{
@@ -587,12 +541,7 @@ func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T
 		v1beta1test.WithOIDCConfigRef("test-config", ""),
 	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig, mcpServer).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-	reconciler := &MCPOIDCConfigReconciler{Client: fakeClient, Scheme: scheme}
+	reconciler, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig, mcpServer)
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: oidcConfig.Name, Namespace: oidcConfig.Namespace}}
 
 	result, err := reconciler.Reconcile(ctx, req)
@@ -639,7 +588,6 @@ func TestMCPOIDCConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testi
 	t.Parallel()
 
 	ctx := t.Context()
-	scheme := testutil.NewScheme(t)
 
 	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-config", Namespace: "default", Generation: 1},
@@ -663,12 +611,7 @@ func TestMCPOIDCConfigReconciler_ReconcileKeepsExistingForeignCondition(t *testi
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(oidcConfig).
-		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
-		Build()
-	r := &MCPOIDCConfigReconciler{Client: fakeClient, Scheme: scheme}
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
 	req := reconcile.Request{NamespacedName: types.NamespacedName{Name: oidcConfig.Name, Namespace: oidcConfig.Namespace}}
 
 	// First reconcile adds the finalizer; second runs the success path and
@@ -762,8 +705,7 @@ func TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch(t 
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withOIDCConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(oidcConfig).
 		WithStatusSubresource(&mcpv1beta1.MCPOIDCConfig{}).
 		WithInterceptorFuncs(inject).
@@ -805,4 +747,83 @@ func TestMCPOIDCConfigReconciler_ConcurrentForeignConditionSurvivesMergePatch(t 
 	require.NotNil(t, own, "controller-owned Valid condition must remain")
 	assert.Equal(t, metav1.ConditionTrue, own.Status)
 	assert.EqualValues(t, 1, after.Status.ReferenceCount, "reference refresh must have been applied")
+}
+
+// TestMCPOIDCConfigReconciler_watchHandlers verifies that the workload watch map
+// functions enqueue exactly the config the workload currently references (or nothing
+// when the workload has no ref). The previously-referenced config is enqueued by
+// EnqueueRequestsFromMapFunc, which runs the map function on both the old and new
+// object on update — no manual stale-reference scan in the handler.
+func TestMCPOIDCConfigReconciler_watchHandlers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		obj      client.Object
+		expected map[string]struct{}
+	}{
+		{
+			name: "MCPServer with ref enqueues the current config",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithOIDCConfigRef("current-config", "aud"),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "VirtualMCPServer with ref enqueues the current config",
+			obj: v1beta1test.NewVirtualMCPServer("vmcp", "default",
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type:          "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "current-config"},
+				}),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "MCPRemoteProxy with ref enqueues the current config",
+			obj: v1beta1test.NewMCPRemoteProxy("proxy", "default",
+				v1beta1test.WithRemoteProxyURL("https://example.com"),
+				v1beta1test.WithRemoteProxyOIDCConfigRef("current-config", "aud"),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "MCPServer without ref enqueues nothing",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+			),
+			expected: map[string]struct{}{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			r, _ := newTestMCPOIDCConfigReconciler(t, tt.obj)
+
+			requests := func() []reconcile.Request {
+				switch tt.obj.(type) {
+				case *mcpv1beta1.MCPServer:
+					return r.mapMCPServerToOIDCConfig(ctx, tt.obj)
+				case *mcpv1beta1.VirtualMCPServer:
+					return r.mapVirtualMCPServerToOIDCConfig(ctx, tt.obj)
+				case *mcpv1beta1.MCPRemoteProxy:
+					return r.mapMCPRemoteProxyToOIDCConfig(ctx, tt.obj)
+				default:
+					t.Fatalf("unexpected object type %T", tt.obj)
+					return nil
+				}
+			}()
+
+			got := make(map[string]struct{}, len(requests))
+			for _, req := range requests {
+				assert.Equal(t, "default", req.Namespace)
+				got[req.Name] = struct{}{}
+			}
+			assert.Equal(t, tt.expected, got)
+		})
+	}
 }

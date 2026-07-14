@@ -46,8 +46,17 @@ const (
 
 	// StrategyTypeOBO identifies the on-behalf-of (OBO) authentication strategy.
 	// The default upstream implementation returns ErrEnterpriseRequired from
-	// every method; an out-of-tree build registers a real converter.
+	// every method; an out-of-tree build registers a real OBO strategy executor
+	// via auth.RegisterOBOStrategy.
 	StrategyTypeOBO = "obo"
+
+	// StrategyTypeXAA identifies the XAA (Cross-Application Access) strategy.
+	// This strategy implements cross-application access using the Identity
+	// Assertion JWT Authorization Grant (draft-ietf-oauth-identity-assertion-authz-grant,
+	// also known as ID-JAG). It performs a two-step token exchange:
+	// (A) exchange an ID token for an ID-JAG at the IdP, then
+	// (B) exchange the ID-JAG for an access token at the target AS.
+	StrategyTypeXAA = "xaa"
 )
 
 // BackendAuthStrategy defines how to authenticate to a specific backend.
@@ -57,7 +66,7 @@ const (
 // +kubebuilder:object:generate=true
 // +gendoc
 type BackendAuthStrategy struct {
-	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts", "obo"
+	// Type is the auth strategy: "unauthenticated", "header_injection", "token_exchange", "upstream_inject", "aws_sts", "obo", "xaa"
 	Type string `json:"type" yaml:"type"`
 
 	// HeaderInjection contains configuration for header injection auth strategy.
@@ -75,6 +84,15 @@ type BackendAuthStrategy struct {
 	// AwsSts contains configuration for AWS STS auth strategy.
 	// Used when Type = "aws_sts".
 	AwsSts *AwsStsConfig `json:"awsSts,omitempty" yaml:"awsSts,omitempty"`
+
+	// OBO contains configuration for on-behalf-of (OBO) auth strategy.
+	// Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
+	// an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+	OBO *OBOConfig `json:"obo,omitempty" yaml:"obo,omitempty"`
+
+	// XAA contains configuration for XAA (Cross-Application Access) auth strategy.
+	// Used when Type = "xaa".
+	XAA *XAAConfig `json:"xaa,omitempty" yaml:"xaa,omitempty"`
 }
 
 // HeaderInjectionConfig configures the header injection auth strategy.
@@ -118,6 +136,7 @@ type TokenExchangeConfig struct {
 	Audience string `json:"audience,omitempty" yaml:"audience,omitempty"`
 
 	// Scopes are the requested scopes for the exchanged token.
+	// +listType=atomic
 	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
 
 	// SubjectTokenType is the token type of the incoming subject token.
@@ -165,6 +184,52 @@ type RoleMapping struct {
 	Priority *int `json:"priority,omitempty" yaml:"priority,omitempty"`
 }
 
+// OBOConfig configures the on-behalf-of (OBO) authentication strategy.
+// This strategy uses the Entra jwt-bearer / on_behalf_of grant to exchange
+// the incoming user token for a backend-scoped token on behalf of the user.
+//
+// Field names follow the OBO runtime contract (the enterprise obo.MiddlewareParameters),
+// not the RFC-8693 TokenExchangeConfig, because OBO uses a distinct Entra-specific grant.
+// +kubebuilder:object:generate=true
+// +gendoc
+type OBOConfig struct {
+	// TokenURL is the Entra token endpoint URL for the OBO exchange.
+	// +kubebuilder:validation:Required
+	TokenURL string `json:"tokenUrl" yaml:"tokenUrl"`
+
+	// ClientID is the OAuth client ID for the OBO request.
+	ClientID string `json:"clientId,omitempty" yaml:"clientId,omitempty"`
+
+	// ClientSecret is the OAuth client secret (use ClientSecretEnv for security).
+	//nolint:gosec // G117: field legitimately holds sensitive data
+	ClientSecret string `json:"clientSecret,omitempty" yaml:"clientSecret,omitempty"`
+
+	// ClientSecretEnv is the environment variable name containing the client secret.
+	// The value will be resolved at runtime from this environment variable.
+	ClientSecretEnv string `json:"clientSecretEnv,omitempty" yaml:"clientSecretEnv,omitempty"`
+
+	// Audience is the target audience (resource URI) for the exchanged token.
+	Audience string `json:"audience,omitempty" yaml:"audience,omitempty"`
+
+	// Scopes are the requested scopes for the exchanged token.
+	// +listType=atomic
+	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+
+	// SubjectTokenProviderName selects which upstream provider's token to use as the
+	// subject (assertion) token for the OBO exchange. When set, the token is looked
+	// up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
+	// inbound end-user token (Identity.Token) is used directly.
+	// Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
+	// converter maps both to the runtime contract without renaming.
+	SubjectTokenProviderName string `json:"subjectTokenProviderName,omitempty" yaml:"subjectTokenProviderName,omitempty"`
+
+	// CacheSkewSeconds is the number of seconds to subtract from a cached token's
+	// expiry when deciding whether to refresh it. Defaults to zero (no skew).
+	// The operator CRD stores this as CacheSkew *metav1.Duration and converts it
+	// to an integer-seconds value for the vMCP runtime contract.
+	CacheSkewSeconds *int32 `json:"cacheSkewSeconds,omitempty" yaml:"cacheSkewSeconds,omitempty"`
+}
+
 // AwsStsConfig configures AWS STS authentication with SigV4 request signing.
 // This strategy exchanges incoming tokens for AWS STS temporary credentials.
 // +kubebuilder:object:generate=true
@@ -197,4 +262,68 @@ type AwsStsConfig struct {
 	// looked up from Identity.UpstreamTokens instead of the request's
 	// Authorization header.
 	SubjectProviderName string `json:"subjectProviderName,omitempty" yaml:"subjectProviderName,omitempty"`
+}
+
+// XAAConfig configures the XAA (Cross-Application Access) auth strategy.
+// XAA implements draft-ietf-oauth-identity-assertion-authz-grant (ID-JAG) as a
+// two-step flow:
+//   - IdP exchange (RFC 8693): Exchange the user's ID token at their IdP for an ID-JAG JWT
+//   - Target grant (RFC 7523): Exchange the ID-JAG at the target app's AS for an access token
+//
+// +kubebuilder:object:generate=true
+// +gendoc
+type XAAConfig struct {
+	// IDPTokenURL is the IdP token endpoint for IdP exchange (RFC 8693 exchange).
+	IDPTokenURL string `json:"idpTokenUrl" yaml:"idpTokenUrl"`
+
+	// IDPClientID is the OAuth client ID at the IdP for IdP exchange.
+	IDPClientID string `json:"idpClientId,omitempty" yaml:"idpClientId,omitempty"`
+
+	// IDPClientSecret is the client secret at the IdP for IdP exchange.
+	//nolint:gosec // G101: field legitimately holds sensitive data
+	IDPClientSecret string `json:"idpClientSecret,omitempty" yaml:"idpClientSecret,omitempty"`
+
+	// IDPClientSecretEnv is the env var containing the IdP client secret.
+	IDPClientSecretEnv string `json:"idpClientSecretEnv,omitempty" yaml:"idpClientSecretEnv,omitempty"`
+
+	// TargetTokenURL is the target AS token endpoint for target grant (JWT Bearer grant).
+	TargetTokenURL string `json:"targetTokenUrl" yaml:"targetTokenUrl"`
+
+	// InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+	// WARNING: this is insecure and must only be set for in-cluster or
+	// development/testing endpoints — never in production.
+	InsecureTargetTokenURL bool `json:"insecureTargetTokenUrl,omitempty" yaml:"insecureTargetTokenUrl,omitempty"`
+
+	// TargetClientID is the OAuth client ID at the target AS for target grant.
+	TargetClientID string `json:"targetClientId,omitempty" yaml:"targetClientId,omitempty"`
+
+	// TargetClientSecret is the client secret at the target AS for target grant.
+	//nolint:gosec // G101: field legitimately holds sensitive data
+	TargetClientSecret string `json:"targetClientSecret,omitempty" yaml:"targetClientSecret,omitempty"`
+
+	// TargetClientSecretEnv is the env var containing the target AS client secret.
+	TargetClientSecretEnv string `json:"targetClientSecretEnv,omitempty" yaml:"targetClientSecretEnv,omitempty"`
+
+	// TargetAudience is the resource AS URL for the ID-JAG audience claim (required).
+	TargetAudience string `json:"targetAudience" yaml:"targetAudience"`
+
+	// TargetResource is the RFC 8707 resource indicator sent as the `resource`
+	// parameter in IdP exchange's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+	// identifies the target resource server — not the access-token audience, which
+	// is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+	TargetResource string `json:"targetResource,omitempty" yaml:"targetResource,omitempty"`
+
+	// Scopes are the requested scopes for IdP exchange and target grant.
+	// +listType=atomic
+	Scopes []string `json:"scopes,omitempty" yaml:"scopes,omitempty"`
+
+	// SubjectProviderName selects which upstream provider's ID token to use.
+	// Auto-populated when embedded AS is active.
+	SubjectProviderName string `json:"subjectProviderName,omitempty" yaml:"subjectProviderName,omitempty"`
+
+	// SubjectTokenType is the token-type URN of the upstream subject token
+	// used in IdP exchange. Defaults to TokenTypeIDToken when empty. Currently only
+	// urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
+	// to allow future expansion to SAML upstreams without an API break.
+	SubjectTokenType string `json:"subjectTokenType,omitempty" yaml:"subjectTokenType,omitempty"`
 }

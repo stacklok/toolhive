@@ -42,7 +42,8 @@ type ProxyConfig struct {
 type ToolConfig struct {
 	// Tool is the canonical tool identifier (e.g. "claude-code", "cursor").
 	Tool string `yaml:"tool" json:"tool"`
-	// Mode is the authentication mode: "direct" or "proxy".
+	// Mode is the authentication mode: one of the llmgateway.Mode* values
+	// ("direct", "proxy", "credential-helper", "codex-auth").
 	Mode string `yaml:"mode" json:"mode"`
 	// ConfigPath is the absolute path to the tool's config file that was patched.
 	ConfigPath string `yaml:"config_path" json:"config_path"`

@@ -4,12 +4,36 @@
 package networking
 
 import (
+	"context"
 	"net"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestTargetIsPrivate(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{name: "private IPv4 literal", url: "https://10.0.0.5/path", want: true},
+		{name: "link-local IMDS literal", url: "http://169.254.169.254/latest", want: true},
+		{name: "loopback IPv4 literal", url: "http://127.0.0.1:8080", want: true},
+		{name: "localhost hostname", url: "http://localhost:9000", want: true},
+		{name: "public IPv4 literal", url: "https://8.8.8.8", want: false},
+		{name: "unparsable", url: "://nope", want: false},
+		{name: "empty host", url: "/just/a/path", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, TargetIsPrivate(context.Background(), tt.url))
+		})
+	}
+}
 
 func TestIsURL(t *testing.T) {
 	t.Parallel()

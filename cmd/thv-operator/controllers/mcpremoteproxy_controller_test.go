@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
@@ -49,30 +50,14 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 		errContains string
 	}{
 		{
-			name: "valid spec",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "valid-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.salesforce.com",
-					ProxyPort: 8080,
-				},
-			},
+			name:        "valid spec",
+			proxy:       v1beta1test.NewMCPRemoteProxy("valid-proxy", "default", v1beta1test.WithRemoteProxyURL("https://mcp.salesforce.com")),
 			expectError: false,
 		},
 		{
 			name: "missing remote URL",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "no-url-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					ProxyPort: 8080,
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("no-url-proxy", "default",
+				v1beta1test.WithRemoteProxyURL("")),
 			expectError: true,
 			errContains: "remote URL must not be empty",
 		},
@@ -80,19 +65,8 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 		// with kubebuilder:validation:Required, so the API server prevents resources without it
 		{
 			name: "with valid external auth config",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "external-auth-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ProxyPort: 8080,
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "exchange-config",
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("external-auth-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("exchange-config")),
 			expectError: true,
 			errContains: "failed to validate external auth config",
 		},
@@ -131,16 +105,8 @@ func TestMCPRemoteProxyValidateSpec(t *testing.T) {
 func TestMCPRemoteProxyReconcile_CreateResources(t *testing.T) {
 	t.Parallel()
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: "test-ns",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://mcp.salesforce.com",
-			ProxyPort: 8080,
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "test-ns",
+		v1beta1test.WithRemoteProxyURL("https://mcp.salesforce.com"))
 
 	scheme := testutil.NewScheme(t)
 	// Add RBAC types to scheme
@@ -264,33 +230,15 @@ func TestHandleToolConfig(t *testing.T) {
 		expectedCondReason string
 	}{
 		{
-			name: "no tool config reference",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "no-tools-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-				},
-			},
+			name:            "no tool config reference",
+			proxy:           v1beta1test.NewMCPRemoteProxy("no-tools-proxy", "default"),
 			expectError:     false,
 			expectCondition: false, // Condition should be removed when no reference
 		},
 		{
 			name: "valid tool config reference",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "tools-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-						Name: "tool-config",
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("tools-proxy", "default",
+				v1beta1test.WithRemoteProxyToolConfigRef("tool-config")),
 			toolConfig: &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "tool-config",
@@ -310,21 +258,11 @@ func TestHandleToolConfig(t *testing.T) {
 		},
 		{
 			name: "tool config hash update",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "tools-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-						Name: "tool-config",
-					},
-				},
-				Status: mcpv1beta1.MCPRemoteProxyStatus{
+			proxy: v1beta1test.NewMCPRemoteProxy("tools-proxy", "default",
+				v1beta1test.WithRemoteProxyToolConfigRef("tool-config"),
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 					ToolConfigHash: "old-hash",
-				},
-			},
+				})),
 			toolConfig: &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "tool-config",
@@ -344,35 +282,17 @@ func TestHandleToolConfig(t *testing.T) {
 		},
 		{
 			name: "tool config reference removed",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "tools-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-				},
-				Status: mcpv1beta1.MCPRemoteProxyStatus{
+			proxy: v1beta1test.NewMCPRemoteProxy("tools-proxy", "default",
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 					ToolConfigHash: "old-hash",
-				},
-			},
+				})),
 			expectError:     false,
 			expectCondition: false, // Condition should be removed when reference is removed
 		},
 		{
 			name: "tool config not found",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "broken-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-						Name: "non-existent",
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("broken-proxy", "default",
+				v1beta1test.WithRemoteProxyToolConfigRef("non-existent")),
 			expectError:        true,
 			errContains:        "not found in namespace",
 			expectCondition:    true,
@@ -381,18 +301,8 @@ func TestHandleToolConfig(t *testing.T) {
 		},
 		{
 			name: "tool config fetch error",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "error-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-						Name: "tool-config",
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("error-proxy", "default",
+				v1beta1test.WithRemoteProxyToolConfigRef("tool-config")),
 			interceptorFuncs: &interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if _, ok := obj.(*mcpv1beta1.MCPToolConfig); ok {
@@ -512,33 +422,15 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 		expectedCondMessage string // when set, asserts the condition's Message verbatim
 	}{
 		{
-			name: "no external auth reference",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "no-auth-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-				},
-			},
+			name:            "no external auth reference",
+			proxy:           v1beta1test.NewMCPRemoteProxy("no-auth-proxy", "default"),
 			expectError:     false,
 			expectCondition: false, // Condition should be removed when no reference
 		},
 		{
 			name: "valid external auth reference",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "auth-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "auth-config",
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("auth-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("auth-config")),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "auth-config",
@@ -567,21 +459,11 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			name: "external auth config hash update",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "auth-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "auth-config",
-					},
-				},
-				Status: mcpv1beta1.MCPRemoteProxyStatus{
+			proxy: v1beta1test.NewMCPRemoteProxy("auth-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("auth-config"),
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 					ExternalAuthConfigHash: "old-hash",
-				},
-			},
+				})),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "auth-config",
@@ -610,35 +492,17 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			name: "external auth config reference removed",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "auth-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-				},
-				Status: mcpv1beta1.MCPRemoteProxyStatus{
+			proxy: v1beta1test.NewMCPRemoteProxy("auth-proxy", "default",
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 					ExternalAuthConfigHash: "old-hash",
-				},
-			},
+				})),
 			expectError:     false,
 			expectCondition: false, // Condition should be removed when reference is removed
 		},
 		{
 			name: "external auth config not found",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "broken-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "non-existent",
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("broken-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("non-existent")),
 			expectError:        true,
 			errContains:        "not found in namespace",
 			expectCondition:    true,
@@ -647,18 +511,8 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			name: "external auth config fetch error",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "error-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "auth-config",
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("error-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("auth-config")),
 			interceptorFuncs: &interceptor.Funcs{
 				Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
 					if _, ok := obj.(*mcpv1beta1.MCPExternalAuthConfig); ok {
@@ -681,19 +535,11 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 			// parallel ExternalAuthConfigValidated=False with the same reason
 			// and message.
 			name: "referenced config Valid=False is mirrored onto the proxy",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:       "obo-mirror-proxy",
-					Namespace:  "default",
-					Generation: 7,
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "obo-config",
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("obo-mirror-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("obo-config"),
+				v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+					p.Generation = 7
+				})),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "obo-config",
@@ -721,18 +567,8 @@ func TestHandleExternalAuthConfig(t *testing.T) {
 		},
 		{
 			name: "embedded auth server with multiple upstreams rejected",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "multi-upstream-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-						Name: "multi-upstream-config",
-					},
-				},
-			},
+			proxy: v1beta1test.NewMCPRemoteProxy("multi-upstream-proxy", "default",
+				v1beta1test.WithRemoteProxyExternalAuthConfigRef("multi-upstream-config")),
 			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "multi-upstream-config",
@@ -908,16 +744,7 @@ func TestServiceNameGeneration(t *testing.T) {
 func TestEnsureRBACResources(t *testing.T) {
 	t.Parallel()
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "rbac-proxy",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://mcp.example.com",
-			ProxyPort: 8080,
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("rbac-proxy", "default")
 
 	scheme := testutil.NewScheme(t)
 	// Add RBAC types to scheme
@@ -967,17 +794,10 @@ func TestEnsureRBACResources(t *testing.T) {
 func TestMCPRemoteProxyEnsureRBACResources_Update(t *testing.T) {
 	t.Parallel()
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "update-proxy",
-			Namespace: "default",
-			UID:       "test-uid",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://mcp.example.com",
-			ProxyPort: 8080,
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("update-proxy", "default",
+		v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+			p.UID = "test-uid"
+		}))
 
 	scheme := testutil.NewScheme(t)
 	_ = rbacv1.AddToScheme(scheme)
@@ -1050,16 +870,7 @@ func TestMCPRemoteProxyEnsureRBACResources_Update(t *testing.T) {
 func TestMCPRemoteProxyEnsureRBACResources_Idempotency(t *testing.T) {
 	t.Parallel()
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "idempotent-proxy",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://mcp.example.com",
-			ProxyPort: 8080,
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("idempotent-proxy", "default")
 
 	scheme := testutil.NewScheme(t)
 	_ = rbacv1.AddToScheme(scheme)
@@ -1111,18 +922,8 @@ func TestMCPRemoteProxyEnsureRBACResources_Idempotency(t *testing.T) {
 func TestMCPRemoteProxyEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 	t.Parallel()
 
-	customSA := "custom-proxy-sa"
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "custom-sa-proxy",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL:      "https://mcp.example.com",
-			ProxyPort:      8080,
-			ServiceAccount: &customSA,
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("custom-sa-proxy", "default",
+		v1beta1test.WithRemoteProxyServiceAccount("custom-proxy-sa"))
 
 	scheme := testutil.NewScheme(t)
 	_ = rbacv1.AddToScheme(scheme)
@@ -1172,23 +973,16 @@ func TestMCPRemoteProxyEnsureRBACResources_CustomServiceAccount(t *testing.T) {
 func TestMCPRemoteProxyEnsureRBACResources_ImagePullSecrets(t *testing.T) {
 	t.Parallel()
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pull-secrets-proxy",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://mcp.example.com",
-			ProxyPort: 8080,
-			ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+	proxy := v1beta1test.NewMCPRemoteProxy("pull-secrets-proxy", "default",
+		v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+			p.Spec.ResourceOverrides = &mcpv1beta1.ResourceOverrides{
 				ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
 					ImagePullSecrets: []corev1.LocalObjectReference{
 						{Name: "my-registry-secret"},
 					},
 				},
-			},
-		},
-	}
+			}
+		}))
 
 	scheme := testutil.NewScheme(t)
 	_ = rbacv1.AddToScheme(scheme)
@@ -1239,16 +1033,8 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 		expectedPhase mcpv1beta1.MCPRemoteProxyPhase
 	}{
 		{
-			name: "running pod",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "running-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-				},
-			},
+			name:  "running pod",
+			proxy: v1beta1test.NewMCPRemoteProxy("running-proxy", "default"),
 			pods: []corev1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1264,16 +1050,8 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 			expectedPhase: mcpv1beta1.MCPRemoteProxyPhaseReady,
 		},
 		{
-			name: "pending pod",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "pending-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-				},
-			},
+			name:  "pending pod",
+			proxy: v1beta1test.NewMCPRemoteProxy("pending-proxy", "default"),
 			pods: []corev1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1289,16 +1067,8 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 			expectedPhase: mcpv1beta1.MCPRemoteProxyPhasePending,
 		},
 		{
-			name: "failed pod",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "failed-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-				},
-			},
+			name:  "failed pod",
+			proxy: v1beta1test.NewMCPRemoteProxy("failed-proxy", "default"),
 			pods: []corev1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{
@@ -1314,16 +1084,8 @@ func TestUpdateMCPRemoteProxyStatus(t *testing.T) {
 			expectedPhase: mcpv1beta1.MCPRemoteProxyPhaseFailed,
 		},
 		{
-			name: "no pods",
-			proxy: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "no-pods-proxy",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://mcp.example.com",
-				},
-			},
+			name:          "no pods",
+			proxy:         v1beta1test.NewMCPRemoteProxy("no-pods-proxy", "default"),
 			pods:          []corev1.Pod{},
 			expectedPhase: mcpv1beta1.MCPRemoteProxyPhasePending,
 		},
@@ -1379,17 +1141,10 @@ func TestGetToolConfigForMCPRemoteProxy(t *testing.T) {
 		},
 	}
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-				Name: "test-tools",
-			},
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyToolConfigRef("test-tools"))
 
 	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().
@@ -1417,17 +1172,10 @@ func TestGetExternalAuthConfigForMCPRemoteProxy(t *testing.T) {
 		},
 	}
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: "test-auth",
-			},
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef("test-auth"))
 
 	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().

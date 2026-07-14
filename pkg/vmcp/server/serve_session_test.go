@@ -24,10 +24,12 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/ratelimit"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
+	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessionfactorymocks "github.com/stacklok/toolhive/pkg/vmcp/session/mocks"
@@ -186,7 +188,17 @@ func (*fakeCore) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Pr
 	return nil, vmcp.ErrNotFound
 }
 
+func (*fakeCore) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
+	return nil, nil
+}
+
+func (*fakeCore) LookupBackend(context.Context, *auth.Identity, string) (*vmcp.Backend, error) {
+	return nil, vmcp.ErrNotFound
+}
+
 func (*fakeCore) Close() error { return nil }
+
+func (*fakeCore) BackendHealth() health.Reporter { return nil }
 
 // TestServeRegistersSessionHooks verifies that Serve registers the OnRegisterSession
 // hook and wires two-phase session creation: an MCP initialize triggers the hook,
@@ -335,11 +347,11 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
 	require.NotEmpty(t, sessionID)
 
-	// Wait until the session is fully registered with adapted tools in the manager.
+	// Wait until the session is fully registered in the manager.
 	require.Eventually(t, func() bool {
-		tools, gErr := srv.vmcpSessionMgr.GetAdaptedTools(sessionID)
-		return gErr == nil && len(tools) > 0
-	}, 2*time.Second, 10*time.Millisecond, "session should be registered with adapted tools")
+		_, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID)
+		return ok
+	}, 2*time.Second, 10*time.Millisecond, "session should be registered")
 
 	// Empty-store (cross-pod) branch: a fresh SDK session with no tools gets them injected.
 	rehydrated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{}}
@@ -347,7 +359,7 @@ func TestServeLazyInjectsToolsForRehydratedSession(t *testing.T) {
 	assert.Contains(t, rehydrated.tools, testTool.Name,
 		"an empty per-session store should be re-injected from the vMCP session manager")
 
-	// No-op branch: a populated store is left untouched (early return before GetAdaptedTools).
+	// No-op branch: a populated store is left untouched (early return before re-derivation).
 	populated := &fakeSDKSession{id: sessionID, tools: map[string]server.ServerTool{
 		"preexisting": {Tool: mcp.Tool{Name: "preexisting"}},
 	}}
@@ -558,15 +570,15 @@ func TestServeEnforcesSessionBinding(t *testing.T) {
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
 	require.NotEmpty(t, sessionID)
 
-	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return ok },
+	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return ok },
 		2*time.Second, 10*time.Millisecond, "session should be registered")
 
 	// Anonymous caller (no token) matches the anonymous binding — allowed.
-	require.NoError(t, srv.enforceSessionBinding(sessionID, nil),
+	require.NoError(t, srv.enforceSessionBinding(context.Background(), sessionID, nil),
 		"anonymous caller must be permitted on an anonymous session")
 
 	// A caller presenting a token on an anonymous session is a session-upgrade attack.
-	err = srv.enforceSessionBinding(sessionID, &auth.Identity{Token: "attacker-token"})
+	err = srv.enforceSessionBinding(context.Background(), sessionID, &auth.Identity{Token: "attacker-token"})
 	require.Error(t, err)
 	assert.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller,
 		"a token presented to an anonymous session must be rejected by the session-layer binding check")
@@ -621,7 +633,7 @@ func registerServeSessionWithRegistry(
 	require.Equal(t, http.StatusOK, initResp.StatusCode)
 	sessionID := initResp.Header.Get("Mcp-Session-Id")
 	require.NotEmpty(t, sessionID)
-	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return ok },
+	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return ok },
 		2*time.Second, 10*time.Millisecond, "session should be registered")
 	return srv, sessionID, ts.URL
 }
@@ -682,6 +694,31 @@ func TestServeCoreToolHandler(t *testing.T) {
 	}
 }
 
+func TestServeCoreToolHandlerCodedErrorReturnsStructuredToolResult(t *testing.T) {
+	t.Parallel()
+
+	fc := &fakeCore{
+		tools:   []vmcp.Tool{{Name: "t"}},
+		callErr: &ratelimit.RateLimitedError{RetryAfter: time.Second},
+	}
+	srv, sessionID, _ := registerServeSession(t, fc)
+
+	req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: "t", Arguments: map[string]any{}}}
+	res, err := srv.coreToolHandler(sessionID, "t", "")(context.Background(), req)
+
+	require.NoError(t, err)
+	require.NotNil(t, res)
+	assert.True(t, res.IsError)
+	sc, ok := res.StructuredContent.(map[string]any)
+	require.True(t, ok, "coded errors should carry structured content")
+	assert.EqualValues(t, ratelimit.CodeRateLimited, sc["code"])
+	assert.Equal(t, ratelimit.MessageRateLimited, sc["message"])
+	data, ok := sc["data"].(map[string]any)
+	require.True(t, ok, "coded errors should carry structured data")
+	assert.EqualValues(t, 1, data["retryAfterSeconds"])
+	assert.Equal(t, int32(1), fc.callToolCalls.Load())
+}
+
 // TestServeToolCallTerminatesOnBindingFailure proves the documented fail-closed side
 // effect: a binding rejection on the Serve call path terminates the session and never
 // reaches the core. The session is anonymous, so a caller presenting a token is a
@@ -702,7 +739,7 @@ func TestServeToolCallTerminatesOnBindingFailure(t *testing.T) {
 	assert.Contains(t, string(body), "Unauthorized")
 	assert.Equal(t, int32(0), fc.callToolCalls.Load(), "core.CallTool must not be reached on a binding failure")
 
-	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(sessionID); return !ok },
+	require.Eventually(t, func() bool { _, ok := srv.vmcpSessionMgr.GetMultiSession(context.Background(), sessionID); return !ok },
 		2*time.Second, 10*time.Millisecond, "a binding failure must terminate the session (fail-closed)")
 }
 

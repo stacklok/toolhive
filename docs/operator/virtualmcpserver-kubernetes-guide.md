@@ -341,8 +341,8 @@ The preferred approach is to create a shared `MCPOIDCConfig` resource and refere
 See example configurations:
 
 - [mcpserver_with_oidcconfig_ref.yaml](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml) — Shared MCPOIDCConfig (preferred)
-- [mcpserver_with_inline_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_inline_oidc.yaml) — Inline OIDC (deprecated)
-- [mcpserver_with_kubernetes_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_kubernetes_oidc.yaml) — Kubernetes SA OIDC (deprecated inline variant)
+
+Inline OIDC and Kubernetes SA OIDC variants were deprecated and removed; use `MCPOIDCConfig` references instead.
 
 #### Scenario 3: Grouped Servers (CLI) → VirtualMCPServer (K8s)
 

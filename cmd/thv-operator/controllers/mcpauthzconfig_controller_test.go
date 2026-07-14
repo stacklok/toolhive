@@ -15,12 +15,10 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
-	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	// Import authorizer backends so they register with the factory registry.
 	_ "github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -43,16 +41,7 @@ func validHTTPPDPConfig() runtime.RawExtension {
 
 func newAuthzTestReconciler(t *testing.T, objs ...client.Object) (*MCPAuthzConfigReconciler, client.Client) {
 	t.Helper()
-
-	scheme := testutil.NewScheme(t)
-
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
-		WithObjects(objs...).
-		WithStatusSubresource(&mcpv1beta1.MCPAuthzConfig{}).
-		Build()
-
-	return &MCPAuthzConfigReconciler{Client: fakeClient, Scheme: scheme}, fakeClient
+	return newTestMCPAuthzConfigReconciler(t, objs...)
 }
 
 func TestCanonicalizeSpecForHash(t *testing.T) {
@@ -306,15 +295,12 @@ func TestMCPAuthzConfigReconciler_handleDeletion(t *testing.T) {
 			name:        "referencing VirtualMCPServer blocks deletion",
 			authzConfig: deletingConfig(),
 			existingWorkloads: []client.Object{
-				&mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "referencing-vmcp", Namespace: "default"},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-							Type:           "anonymous",
-							AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
-						},
-					},
-				},
+				v1beta1test.NewVirtualMCPServer("referencing-vmcp", "default",
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+						Type:           "anonymous",
+						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
+					}),
+				),
 			},
 			expectRequeue: true,
 		},
@@ -322,13 +308,10 @@ func TestMCPAuthzConfigReconciler_handleDeletion(t *testing.T) {
 			name:        "referencing MCPRemoteProxy blocks deletion",
 			authzConfig: deletingConfig(),
 			existingWorkloads: []client.Object{
-				&mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "referencing-proxy", Namespace: "default"},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						RemoteURL:      "https://example.com",
-						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "test-config"},
-					},
-				},
+				v1beta1test.NewMCPRemoteProxy("referencing-proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://example.com"),
+					v1beta1test.WithRemoteProxyAuthzConfigRef("test-config"),
+				),
 			},
 			expectRequeue: true,
 		},
@@ -664,22 +647,16 @@ func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
 					v1beta1test.WithImage("example/mcp:latest"),
 					v1beta1test.WithAuthzConfigRef("shared-config"),
 				),
-				&mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "my-vmcp", Namespace: "default"},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-							Type:           "anonymous",
-							AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "shared-config"},
-						},
-					},
-				},
-				&mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "my-proxy", Namespace: "default"},
-					Spec: mcpv1beta1.MCPRemoteProxySpec{
-						RemoteURL:      "https://example.com",
+				v1beta1test.NewVirtualMCPServer("my-vmcp", "default",
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+						Type:           "anonymous",
 						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "shared-config"},
-					},
-				},
+					}),
+				),
+				v1beta1test.NewMCPRemoteProxy("my-proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://example.com"),
+					v1beta1test.WithRemoteProxyAuthzConfigRef("shared-config"),
+				),
 			},
 			expectedRefs: []mcpv1beta1.WorkloadReference{
 				{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: "my-proxy"},
@@ -695,16 +672,12 @@ func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
 					v1beta1test.WithImage("example/mcp:latest"),
 					v1beta1test.WithAuthzConfigRef("other-config"),
 				),
-				&mcpv1beta1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{Name: "unrelated-vmcp", Namespace: "default"},
-					Spec: mcpv1beta1.VirtualMCPServerSpec{
-						IncomingAuth: &mcpv1beta1.IncomingAuthConfig{Type: "anonymous"},
-					},
-				},
-				&mcpv1beta1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "unrelated-proxy", Namespace: "default"},
-					Spec:       mcpv1beta1.MCPRemoteProxySpec{RemoteURL: "https://example.com"},
-				},
+				v1beta1test.NewVirtualMCPServer("unrelated-vmcp", "default",
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{Type: "anonymous"}),
+				),
+				v1beta1test.NewMCPRemoteProxy("unrelated-proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://example.com"),
+				),
 			},
 			expectEmpty: true,
 		},
@@ -734,68 +707,50 @@ func TestMCPAuthzConfigReconciler_findReferencingWorkloads(t *testing.T) {
 }
 
 // TestMCPAuthzConfigReconciler_watchHandlers verifies that the workload watch map
-// functions enqueue both the currently-referenced config and any config that still
-// lists the workload in its ReferencingWorkloads status (stale-ref cleanup).
+// functions enqueue exactly the config the workload currently references (or nothing
+// when the workload has no ref). The previously-referenced config is enqueued by
+// EnqueueRequestsFromMapFunc, which runs the map function on both the old and new
+// object on update — no manual stale-reference scan in the handler.
 func TestMCPAuthzConfigReconciler_watchHandlers(t *testing.T) {
 	t.Parallel()
-
-	// A config that still lists workloads it no longer should, to verify stale-ref enqueue.
-	staleConfig := &mcpv1beta1.MCPAuthzConfig{
-		ObjectMeta: metav1.ObjectMeta{Name: "stale-config", Namespace: "default"},
-		Spec:       mcpv1beta1.MCPAuthzConfigSpec{Type: "cedarv1", Config: validCedarConfig()},
-		Status: mcpv1beta1.MCPAuthzConfigStatus{
-			ReferencingWorkloads: []mcpv1beta1.WorkloadReference{
-				{Kind: mcpv1beta1.WorkloadKindMCPServer, Name: "srv"},
-				{Kind: mcpv1beta1.WorkloadKindVirtualMCPServer, Name: "vmcp"},
-				{Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy, Name: "proxy"},
-			},
-		},
-	}
 
 	tests := []struct {
 		name     string
 		obj      client.Object
-		mapFunc  func(*MCPAuthzConfigReconciler) func(t *testing.T) []reconcile.Request
 		expected map[string]struct{}
 	}{
 		{
-			name: "MCPServer with ref enqueues current and stale configs",
+			name: "MCPServer with ref enqueues the current config",
 			obj: v1beta1test.NewMCPServer("srv", "default",
 				v1beta1test.WithImage("example/mcp:latest"),
 				v1beta1test.WithAuthzConfigRef("current-config"),
 			),
-			expected: map[string]struct{}{"current-config": {}, "stale-config": {}},
+			expected: map[string]struct{}{"current-config": {}},
 		},
 		{
-			name: "VirtualMCPServer with ref enqueues current and stale configs",
-			obj: &mcpv1beta1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "vmcp", Namespace: "default"},
-				Spec: mcpv1beta1.VirtualMCPServerSpec{
-					IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-						Type:           "anonymous",
-						AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "current-config"},
-					},
-				},
-			},
-			expected: map[string]struct{}{"current-config": {}, "stale-config": {}},
-		},
-		{
-			name: "MCPRemoteProxy with ref enqueues current and stale configs",
-			obj: &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL:      "https://example.com",
+			name: "VirtualMCPServer with ref enqueues the current config",
+			obj: v1beta1test.NewVirtualMCPServer("vmcp", "default",
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type:           "anonymous",
 					AuthzConfigRef: &mcpv1beta1.MCPAuthzConfigReference{Name: "current-config"},
-				},
-			},
-			expected: map[string]struct{}{"current-config": {}, "stale-config": {}},
+				}),
+			),
+			expected: map[string]struct{}{"current-config": {}},
 		},
 		{
-			name: "MCPServer without ref only enqueues stale config",
+			name: "MCPRemoteProxy with ref enqueues the current config",
+			obj: v1beta1test.NewMCPRemoteProxy("proxy", "default",
+				v1beta1test.WithRemoteProxyURL("https://example.com"),
+				v1beta1test.WithRemoteProxyAuthzConfigRef("current-config"),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "MCPServer without ref enqueues nothing",
 			obj: v1beta1test.NewMCPServer("srv", "default",
 				v1beta1test.WithImage("example/mcp:latest"),
 			),
-			expected: map[string]struct{}{"stale-config": {}},
+			expected: map[string]struct{}{},
 		},
 	}
 
@@ -804,11 +759,7 @@ func TestMCPAuthzConfigReconciler_watchHandlers(t *testing.T) {
 			t.Parallel()
 
 			ctx := t.Context()
-			// DeepCopy the shared fixture: newAuthzTestReconciler builds a fake
-			// client whose versionedTracker.Add mutates ObjectMeta.ResourceVersion
-			// in place. Passing the same staleConfig pointer into parallel subtests
-			// would race on that write (#5502); each subtest gets its own copy.
-			r, _ := newAuthzTestReconciler(t, staleConfig.DeepCopy(), tt.obj)
+			r, _ := newAuthzTestReconciler(t, tt.obj)
 
 			requests := func() []reconcile.Request {
 				switch tt.obj.(type) {

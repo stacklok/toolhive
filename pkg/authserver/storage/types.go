@@ -86,9 +86,11 @@ type UpstreamTokens struct {
 	// In multi-IDP scenarios, the same UserID may have tokens from multiple providers.
 	UserID string
 
-	// UpstreamSubject is the "sub" claim from the upstream IDP's ID token.
-	// This enables validation that tokens match the expected upstream identity
-	// and supports audit logging of which upstream identity was used.
+	// UpstreamSubject is the resolved subject of the upstream IDP's ID token:
+	// the "sub" claim by default, or the provider's configured SubjectClaim
+	// (e.g. Entra's "oid"). This enables validation that tokens match the
+	// expected upstream identity and supports audit logging of which upstream
+	// identity was used.
 	UpstreamSubject string
 
 	// ClientID is the OAuth client that initiated the authorization.
@@ -448,6 +450,24 @@ type PendingAuthorization struct {
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserEmail string
 
+	// SingleLeg scopes this authorization to exactly one upstream. When true, the
+	// callback issues the authorization code as soon as this leg completes instead
+	// of consulting nextMissingUpstream to continue the chain. This lets a caller
+	// connect a single specific provider without other configured-but-tokenless
+	// upstreams hijacking the flow into a full chain walk. Defaults to false, which
+	// preserves the multi-upstream chaining behavior.
+	SingleLeg bool
+
+	// ChainUpstreams is the ordered, effective set of upstream provider names this
+	// authorization must walk, always led by the required first upstream. It is
+	// computed once when the first leg resolves — narrowed by the optional upstream
+	// filter when one is configured — and carried forward across subsequent legs so
+	// the filter is not re-run per leg. Empty on the first leg's inbound pending;
+	// populated on every subsequent leg. A subsequent leg that arrives with this
+	// unset (e.g. a pending written before this field existed) is rejected rather
+	// than recomputed, so the filter is never re-run against a later leg's context.
+	ChainUpstreams []string
+
 	// CreatedAt is when the pending authorization was created.
 	CreatedAt time.Time
 }
@@ -522,6 +542,11 @@ type UpstreamTokenStorage interface {
 	// DeleteUpstreamTokens removes all upstream IDP tokens for a session (all providers).
 	// Returns ErrNotFound if the session does not exist.
 	DeleteUpstreamTokens(ctx context.Context, sessionID string) error
+
+	// DeleteUpstreamTokensForProvider removes tokens for a single (sessionID, providerName),
+	// leaving sibling providers' rows intact. Deleting an absent row is NOT an error (nil).
+	// Used as best-effort cleanup of a refresh token rotated at the IdP but not persisted.
+	DeleteUpstreamTokensForProvider(ctx context.Context, sessionID, providerName string) error
 
 	// GetLatestUpstreamTokensForUser returns the most recently stored upstream tokens
 	// for (userID, providerID) across any session. The "latest" winner is determined

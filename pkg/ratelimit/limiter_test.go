@@ -4,6 +4,7 @@
 package ratelimit
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 func newTestClient(t *testing.T) (*redis.Client, *miniredis.Miniredis) {
@@ -36,6 +38,67 @@ func TestNewLimiter_NilCRDReturnsNoop(t *testing.T) {
 	d, err := l.Allow(t.Context(), "anything", "user-a")
 	require.NoError(t, err)
 	assert.True(t, d.Allowed)
+}
+
+func TestAllowNilLimiterAllows(t *testing.T) {
+	t.Parallel()
+
+	err := Allow(t.Context(), nil, &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}}, "echo")
+
+	require.NoError(t, err)
+}
+
+func TestAllowPassesIdentitySubject(t *testing.T) {
+	t.Parallel()
+
+	limiter := &recordingLimiter{}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}}
+
+	err := Allow(t.Context(), limiter, identity, "echo")
+
+	require.NoError(t, err)
+	assert.Equal(t, "echo", limiter.toolName)
+	assert.Equal(t, "alice", limiter.userID)
+}
+
+func TestAllowNilIdentityUsesEmptyUserID(t *testing.T) {
+	t.Parallel()
+
+	limiter := &recordingLimiter{}
+
+	err := Allow(t.Context(), limiter, nil, "echo")
+
+	require.NoError(t, err)
+	assert.Equal(t, "echo", limiter.toolName)
+	assert.Empty(t, limiter.userID)
+}
+
+func TestAllowRateLimitedReturnsTypedError(t *testing.T) {
+	t.Parallel()
+
+	limiter := &dummyLimiter{
+		decision: &Decision{
+			Allowed:    false,
+			RetryAfter: 3 * time.Second,
+		},
+	}
+
+	err := Allow(t.Context(), limiter, nil, "echo")
+
+	var limited *RateLimitedError
+	require.ErrorAs(t, err, &limited)
+	assert.Equal(t, 3*time.Second, limited.RetryAfter)
+}
+
+func TestAllowPropagatesLimiterError(t *testing.T) {
+	t.Parallel()
+
+	expected := errors.New("redis unavailable")
+	limiter := &dummyLimiter{err: expected}
+
+	err := Allow(t.Context(), limiter, nil, "echo")
+
+	require.ErrorIs(t, err, expected)
 }
 
 func TestNewLimiter_ZeroMaxTokens(t *testing.T) {

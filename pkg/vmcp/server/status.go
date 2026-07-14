@@ -79,12 +79,8 @@ func (s *Server) buildStatusResponse(ctx context.Context) StatusResponse {
 	// /status reflects the same runtime health as /api/backends/health.
 	// Skip the call — and the map allocation — entirely when monitoring is
 	// disabled. Reading from a nil map is safe in Go and returns zero values.
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
-
 	var liveHealthStates map[string]*health.State
-	if healthMon != nil {
+	if healthMon := s.backendHealth(); healthMon != nil {
 		liveHealthStates = healthMon.GetAllBackendStates()
 	}
 

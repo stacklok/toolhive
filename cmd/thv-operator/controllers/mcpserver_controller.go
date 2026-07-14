@@ -526,8 +526,11 @@ func (r *MCPServerReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		newService := r.serviceForMCPServer(ctx, mcpServer)
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
-		service.Labels = newService.Labels
-		service.Annotations = newService.Annotations
+		// Merge (not replace) Labels/Annotations so keys written by external controllers
+		// (e.g. GKE NEG's cloud.google.com/* annotations) are preserved while the
+		// operator-owned values are applied.
+		service.Labels = ctrlutil.MergeLabels(newService.Labels, service.Labels)
+		service.Annotations = ctrlutil.MergeAnnotations(newService.Annotations, service.Annotations)
 		err = r.Update(ctx, service)
 		if err != nil {
 			ctxLogger.Error(err, "Failed to update Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
@@ -1851,6 +1854,11 @@ func (r *MCPServerReconciler) deploymentNeedsUpdate(
 			}
 		}
 
+		// Mount Redis password secret when session storage provider is Redis.
+		// Must mirror deploymentForMCPServer exactly (same call, same position)
+		// so a correctly-configured resource does not look perpetually drifted.
+		expectedProxyEnv = append(expectedProxyEnv, r.buildRedisPasswordEnvVar(mcpServer)...)
+
 		// Project the MCPServer generation pod-template annotation into the
 		// proxyrunner container via the downward API. Position must come
 		// before the embedded-auth env vars below so the slice order matches
@@ -2057,11 +2065,15 @@ func serviceNeedsUpdate(service *corev1.Service, mcpServer *mcpv1beta1.MCPServer
 		}
 	}
 
-	if !maps.Equal(service.Labels, expectedLabels) {
+	// Subset check rather than exact equality: the Service is co-owned by external
+	// controllers (e.g. GKE NEG/Gateway writes cloud.google.com/* annotations), so only
+	// the operator-owned keys must match. maps.Equal would treat those external
+	// annotations as drift and hot-loop Update against the concurrent writer.
+	if !ctrlutil.MapIsSubset(expectedLabels, service.Labels) {
 		return true
 	}
 
-	if !maps.Equal(service.Annotations, expectedAnnotations) {
+	if !ctrlutil.MapIsSubset(expectedAnnotations, service.Annotations) {
 		return true
 	}
 
@@ -2826,6 +2838,37 @@ func (r *MCPServerReconciler) mapWebhookConfigToServers(
 	return requests
 }
 
+// mapToolConfigToServers maps MCPToolConfig changes to MCPServer reconciliation requests.
+func (r *MCPServerReconciler) mapToolConfigToServers(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	toolConfig, ok := obj.(*mcpv1beta1.MCPToolConfig)
+	if !ok {
+		return nil
+	}
+
+	mcpServerList := &mcpv1beta1.MCPServerList{}
+	if err := r.List(ctx, mcpServerList, client.InNamespace(toolConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPServers for MCPToolConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, server := range mcpServerList.Items {
+		if server.Spec.ToolConfigRef != nil &&
+			server.Spec.ToolConfigRef.Name == toolConfig.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      server.Name,
+					Namespace: server.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Create a handler that maps MCPExternalAuthConfig changes to MCPServer reconciliation requests
@@ -2899,6 +2942,7 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
 	telemetryConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToServers)
 	webhookConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapWebhookConfigToServers)
+	toolConfigHandler := handler.EnqueueRequestsFromMapFunc(r.mapToolConfigToServers)
 
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&mcpv1beta1.MCPServer{}).
@@ -2909,5 +2953,6 @@ func (r *MCPServerReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(&mcpv1beta1.MCPAuthzConfig{}, authzConfigHandler).
 		Watches(&mcpv1beta1.MCPTelemetryConfig{}, telemetryConfigHandler).
 		Watches(&mcpv1alpha1.MCPWebhookConfig{}, webhookConfigHandler).
+		Watches(&mcpv1beta1.MCPToolConfig{}, toolConfigHandler).
 		Complete(r)
 }

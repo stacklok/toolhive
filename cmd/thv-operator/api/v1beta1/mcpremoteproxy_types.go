@@ -306,6 +306,9 @@ const (
 	// ConditionTypeMCPRemoteProxyPodTemplateValid indicates whether the PodTemplateSpec is valid
 	ConditionTypeMCPRemoteProxyPodTemplateValid = "PodTemplateValid"
 
+	// ConditionTypeMCPRemoteProxyCABundleRefValidated indicates whether the OIDC CA bundle reference is valid
+	ConditionTypeMCPRemoteProxyCABundleRefValidated = "CABundleRefValidated"
+
 	// ConditionTypeConfigurationValid indicates whether the proxy spec has passed all pre-deployment validation checks
 	ConditionTypeConfigurationValid = "ConfigurationValid"
 )
@@ -399,6 +402,15 @@ const (
 
 	// ConditionReasonMCPRemoteProxyPodTemplateInvalid indicates PodTemplateSpec validation failed
 	ConditionReasonMCPRemoteProxyPodTemplateInvalid = "InvalidPodTemplateSpec"
+
+	// ConditionReasonMCPRemoteProxyCABundleRefValid indicates the CA bundle ref is valid and the ConfigMap exists
+	ConditionReasonMCPRemoteProxyCABundleRefValid = "CABundleRefValid"
+
+	// ConditionReasonMCPRemoteProxyCABundleRefNotFound indicates the referenced CA bundle ConfigMap was not found
+	ConditionReasonMCPRemoteProxyCABundleRefNotFound = "CABundleRefNotFound"
+
+	// ConditionReasonMCPRemoteProxyCABundleRefInvalid indicates the CA bundle ref configuration is invalid
+	ConditionReasonMCPRemoteProxyCABundleRefInvalid = "CABundleRefInvalid"
 
 	// ConditionReasonConfigurationValid indicates all configuration validations passed
 	ConditionReasonConfigurationValid = "ConfigurationValid"

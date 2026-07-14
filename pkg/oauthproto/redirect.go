@@ -30,6 +30,11 @@ const (
 	// This is appropriate for pre-registered/static clients where the administrator
 	// explicitly configures trusted redirect URIs for native applications.
 	RedirectURIPolicyAllowPrivateSchemes
+
+	// RedirectURIPolicyAllowHTTP allows http:// for any host, bypassing the
+	// loopback-only restriction. Intended for in-cluster Kubernetes deployments
+	// where the OAuth callback runs over HTTP on a trusted internal network.
+	RedirectURIPolicyAllowHTTP
 )
 
 // ValidateRedirectURI validates a redirect URI per RFC 6749 Section 3.1.2 and RFC 8252.
@@ -68,6 +73,12 @@ func ValidateRedirectURI(uri string, policy RedirectURIPolicy) error {
 		// RFC 8252 Section 7.1: also allow private-use URI schemes
 		if !fosite.IsRedirectURISecure(context.Background(), parsed) {
 			return fmt.Errorf("redirect_uri must use a secure scheme (https, http for loopback, or a private-use scheme)")
+		}
+	case RedirectURIPolicyAllowHTTP:
+		// In-cluster mode: any http or https URI is accepted; only the basic
+		// absolute-URI-without-fragment requirement from RFC 6749 Section 3.1.2 is enforced.
+		if parsed.Scheme != "http" && parsed.Scheme != "https" {
+			return fmt.Errorf("redirect_uri must use http or https scheme")
 		}
 	default:
 		return fmt.Errorf("unknown redirect URI policy: %d", policy)

@@ -1034,6 +1034,26 @@ func TestWrapBackendError(t *testing.T) {
 			err:          transport.ErrOAuthAuthorizationRequired,
 			wantSentinel: vmcp.ErrAuthenticationFailed,
 		},
+		{
+			// ErrUpstreamTokenNotFound is returned by the outgoing auth strategies
+			// (upstream_inject, token_exchange, aws_sts) when the upstream provider
+			// token is absent from the identity. Must map to ErrAuthenticationFailed
+			// via an explicit errors.Is check rather than the fragile "authentication
+			// failed" substring match that also matches the authRoundTripper's wrapper.
+			name:            "ErrUpstreamTokenNotFound maps to ErrAuthenticationFailed",
+			err:             authtypes.ErrUpstreamTokenNotFound,
+			wantSentinel:    vmcp.ErrAuthenticationFailed,
+			wantMsgContains: "upstream token missing",
+		},
+		{
+			// The authRoundTripper wraps ErrUpstreamTokenNotFound with additional
+			// context; errors.Is must still find the sentinel through the chain.
+			name: "wrapped ErrUpstreamTokenNotFound maps to ErrAuthenticationFailed",
+			err: fmt.Errorf("authentication failed for backend foo: provider %q: %w",
+				"my-provider", authtypes.ErrUpstreamTokenNotFound),
+			wantSentinel:    vmcp.ErrAuthenticationFailed,
+			wantMsgContains: "upstream token missing",
+		},
 	}
 
 	for _, tt := range tests {

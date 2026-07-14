@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -572,4 +573,138 @@ func (m *mockRoundTripper) RoundTrip(_ *http.Request) (*http.Response, error) {
 		StatusCode: 200,
 		Body:       io.NopCloser(strings.NewReader("OK")),
 	}, nil
+}
+
+func mustReq(t *testing.T, rawURL string) *http.Request {
+	t.Helper()
+	u, err := url.Parse(rawURL)
+	require.NoError(t, err)
+	return &http.Request{URL: u, Host: u.Host}
+}
+
+func TestSameHostRedirectPolicy(t *testing.T) {
+	t.Parallel()
+
+	policy := SameHostRedirectPolicy()
+
+	tests := []struct {
+		name      string
+		req       string
+		via       []string
+		wantRefus bool
+	}{
+		{
+			name: "same host same scheme is allowed",
+			req:  "https://mcp.example.com/next",
+			via:  []string{"https://mcp.example.com/start"},
+		},
+		{
+			name:      "same host different port is refused (distinct service)",
+			req:       "https://mcp.example.com:8443/next",
+			via:       []string{"https://mcp.example.com/start"},
+			wantRefus: true,
+		},
+		{
+			name:      "cross-host redirect to internal metadata endpoint is refused",
+			req:       "http://169.254.169.254/latest/meta-data/",
+			via:       []string{"https://mcp.example.com/.well-known/oauth-protected-resource"},
+			wantRefus: true,
+		},
+		{
+			name:      "cross-host redirect to another public host is refused",
+			req:       "https://evil.example.net/x",
+			via:       []string{"https://mcp.example.com/start"},
+			wantRefus: true,
+		},
+		{
+			name:      "https to http downgrade on same host is refused",
+			req:       "http://mcp.example.com/next",
+			via:       []string{"https://mcp.example.com/start"},
+			wantRefus: true,
+		},
+		{
+			name: "http to http on same host is allowed (no downgrade)",
+			req:  "http://localhost:9000/next",
+			via:  []string{"http://localhost:9000/start"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			via := make([]*http.Request, 0, len(tt.via))
+			for _, v := range tt.via {
+				via = append(via, mustReq(t, v))
+			}
+			err := policy(mustReq(t, tt.req), via)
+			if tt.wantRefus {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, ErrRedirectRefused)
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestSameHostRedirectPolicy_CapsChain(t *testing.T) {
+	t.Parallel()
+
+	policy := SameHostRedirectPolicy()
+	via := make([]*http.Request, MaxRedirects)
+	for i := range via {
+		via[i] = mustReq(t, "https://mcp.example.com/start")
+	}
+	err := policy(mustReq(t, "https://mcp.example.com/next"), via)
+	require.Error(t, err)
+	assert.ErrorIs(t, err, ErrRedirectRefused)
+}
+
+func TestSameHostRedirectPolicy_Integration(t *testing.T) {
+	t.Parallel()
+
+	// internal stands in for an internal-only endpoint a malicious server
+	// would try to reach via a cross-host redirect.
+	internal := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte("SECRET"))
+	}))
+	t.Cleanup(internal.Close)
+
+	// attacker redirects any request to the internal endpoint (cross-host).
+	attacker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/same" {
+			// same-host relative redirect should be followed
+			http.Redirect(w, r, "/ok", http.StatusFound)
+			return
+		}
+		if r.URL.Path == "/ok" {
+			_, _ = w.Write([]byte("OK"))
+			return
+		}
+		http.Redirect(w, r, internal.URL, http.StatusFound)
+	}))
+	t.Cleanup(attacker.Close)
+
+	client := &http.Client{CheckRedirect: SameHostRedirectPolicy()}
+
+	t.Run("cross-host redirect is refused", func(t *testing.T) {
+		t.Parallel()
+		resp, err := client.Get(attacker.URL + "/evil") //nolint:bodyclose // err path, no body
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrRedirectRefused)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+	})
+
+	t.Run("same-host redirect is followed", func(t *testing.T) {
+		t.Parallel()
+		resp, err := client.Get(attacker.URL + "/same")
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Equal(t, "OK", string(body))
+	})
 }

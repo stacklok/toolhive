@@ -18,6 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
@@ -297,15 +298,11 @@ func TestReconcile_MCPRemoteProxy_Success(t *testing.T) {
 	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
 
 	// Create MCPRemoteProxy with matching groupRef
-	mcpRemoteProxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: "default",
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "test-group"},
-		},
-	}
+	mcpRemoteProxy := v1beta1test.NewMCPRemoteProxy("test-proxy", "default",
+		v1beta1test.WithRemoteProxyGroupRef("test-group"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
 
 	k8sClient := fake.NewClientBuilder().
 		WithScheme(scheme).

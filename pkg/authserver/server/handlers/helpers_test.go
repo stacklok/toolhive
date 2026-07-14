@@ -92,6 +92,13 @@ type testStorageState struct {
 	pkceSessions       map[string]fosite.Requester          // PKCE sessions for token exchange
 	idpTokenCount      int
 	renewedClients     []string // client IDs passed to RenewClientTTL
+	// getAllUpstreamCtx and deleteUpstreamCtx capture the context passed to
+	// GetAllUpstreamTokens / DeleteUpstreamTokens, so a test can assert the
+	// callback placed the authenticated identity into the request context before
+	// that storage call runs. Each records only the most recent call; tests that
+	// trigger multiple calls must account for last-write-wins.
+	getAllUpstreamCtx context.Context
+	deleteUpstreamCtx context.Context
 }
 
 // baseTestSetupOption configures optional behavior overrides for baseTestSetup.
@@ -341,7 +348,12 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 		}).AnyTimes()
 
 	stor.EXPECT().DeleteUpstreamTokens(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, sessionID string) error {
+		func(ctx context.Context, sessionID string) error {
+			// DeleteUpstreamTokens takes only (ctx, sessionID) — no tokens argument
+			// to carry the user — so a context-keyed storage decorator can resolve
+			// the user only from ctx. Capture the ctx so a test can assert the
+			// callback placed the identity into it before this delete runs.
+			storState.deleteUpstreamCtx = ctx
 			for key := range storState.upstreamTokens {
 				if len(key) > len(sessionID) && key[:len(sessionID)+1] == sessionID+":" {
 					delete(storState.upstreamTokens, key)
@@ -351,7 +363,12 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 		}).AnyTimes()
 
 	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, sessionID string) (map[string]*storage.UpstreamTokens, error) {
+		func(ctx context.Context, sessionID string) (map[string]*storage.UpstreamTokens, error) {
+			// GetAllUpstreamTokens takes only (ctx, sessionID) — no tokens argument to
+			// carry the user — so a user-keyed storage decorator can resolve the user
+			// only from ctx. Capture the ctx here so a test can assert the callback
+			// placed the identity into it before this read runs.
+			storState.getAllUpstreamCtx = ctx
 			result := make(map[string]*storage.UpstreamTokens)
 			prefix := sessionID + ":"
 			for key, tokens := range storState.upstreamTokens {
@@ -434,8 +451,8 @@ func handlerTestSetup(t *testing.T, opts ...baseTestSetupOption) (*Handler, *tes
 }
 
 // multiUpstreamTestSetup creates a test setup with two upstream providers ("provider-1" and "provider-2")
-// for testing multi-upstream authorization chain logic.
-func multiUpstreamTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDPProvider, *mockIDPProvider) {
+// for testing multi-upstream authorization chain logic. Any Option values are forwarded to NewHandler.
+func multiUpstreamTestSetup(t *testing.T, opts ...Option) (*Handler, *testStorageState, *mockIDPProvider, *mockIDPProvider) {
 	t.Helper()
 
 	provider, oauth2Config, stor, storState := baseTestSetup(t)
@@ -476,7 +493,7 @@ func multiUpstreamTestSetup(t *testing.T) (*Handler, *testStorageState, *mockIDP
 		{Name: "provider-1", Provider: mockProvider1},
 		{Name: "provider-2", Provider: mockProvider2},
 	}
-	handler, err := NewHandler(provider, oauth2Config, stor, upstreams)
+	handler, err := NewHandler(provider, oauth2Config, stor, upstreams, opts...)
 	require.NoError(t, err)
 
 	return handler, storState, mockProvider1, mockProvider2

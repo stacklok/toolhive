@@ -11,7 +11,6 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 )
@@ -50,11 +49,8 @@ func WithDefaults(cfg *Config) *Config {
 // values and deriveServerConfig applies no defaulting of its own. Port 0 still means
 // "OS-assigned".
 //
-// Three collaborators the transport needs but server.Config does not carry directly are
+// Two collaborators the transport needs but server.Config does not carry directly are
 // passed in by the composition root rather than reached out of cfg:
-//   - healthMon: the *health.Monitor built at the composition root (A2). Serve owns only
-//     its Start/Stop; the same instance's StatusProvider is injected into the core via
-//     deriveCoreConfig. Nil disables health monitoring.
 //   - backendRegistry: the shared backend registry (also passed to deriveCoreConfig);
 //     the Serve session layer enumerates it when opening a session's connections.
 //   - sessionManagerConfig: the pre-assembled *sessionmanager.FactoryConfig. The legacy
@@ -69,7 +65,6 @@ func WithDefaults(cfg *Config) *Config {
 // it are removed later (#5445).
 func deriveServerConfig(
 	cfg *Config,
-	healthMon *health.Monitor,
 	backendRegistry vmcp.BackendRegistry,
 	sessionManagerConfig *sessionmanager.FactoryConfig,
 ) *ServerConfig {
@@ -82,11 +77,9 @@ func deriveServerConfig(
 		EndpointPath:            cfg.EndpointPath,
 		SessionTTL:              cfg.SessionTTL,
 		AuthMiddleware:          cfg.AuthMiddleware,
-		RateLimitMiddleware:     cfg.RateLimitMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
 		PassthroughHeaders:      cfg.PassthroughHeaders,
 		AuthServer:              cfg.AuthServer,
-		HealthMonitor:           healthMon,
 		StatusReportingInterval: cfg.StatusReportingInterval,
 		StatusReporter:          cfg.StatusReporter,
 		Watcher:                 cfg.Watcher,
@@ -116,11 +109,10 @@ func deriveServerConfig(
 // aggregator, router, backend client, backend registry, and workflow definitions that
 // arrive as separate server.New parameters today; the authz config that feeds the
 // admission seam (server.Config carries only the pre-built AuthzMiddleware, never the
-// authz.Config, so it cannot come from cfg); the elicitation requester; and the health
-// StatusProvider — the read-only view of the same *health.Monitor deriveServerConfig
-// places on ServerConfig.HealthMonitor (A2). A nil healthProvider means no health
-// filtering; a nil authzCfg means allow-all (matching today's AuthzMiddleware != nil
-// guard).
+// authz.Config, so it cannot come from cfg); the elicitation requester; and the backend
+// health monitor configuration (cfg.HealthMonitorConfig), from which the core builds, runs,
+// and stops the monitor it owns (#5443 reversal). A nil HealthMonitorConfig means no health
+// filtering; a nil authzCfg means allow-all (matching today's AuthzMiddleware != nil guard).
 func deriveCoreConfig(
 	cfg *Config,
 	agg aggregator.Aggregator,
@@ -130,7 +122,6 @@ func deriveCoreConfig(
 	workflowDefs map[string]*composer.WorkflowDefinition,
 	authzCfg *authz.Config,
 	elicitation vmcp.ElicitationRequester,
-	healthProvider health.StatusProvider,
 ) *core.Config {
 	return &core.Config{
 		Aggregator:      agg,
@@ -141,9 +132,9 @@ func deriveCoreConfig(
 		Authz:           authzCfg,
 		ServerName:      cfg.Name,
 		// Cross-cutting (also on ServerConfig) — R3, not a clean partition:
-		TelemetryProvider:    cfg.TelemetryProvider,
-		AuditConfig:          cfg.AuditConfig,
-		HealthStatusProvider: healthProvider,
-		Elicitation:          elicitation,
+		TelemetryProvider:   cfg.TelemetryProvider,
+		AuditConfig:         cfg.AuditConfig,
+		HealthMonitorConfig: cfg.HealthMonitorConfig,
+		Elicitation:         elicitation,
 	}
 }

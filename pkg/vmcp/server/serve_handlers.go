@@ -188,19 +188,14 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 		}
 
 		caller, _ := auth.IdentityFromContext(ctx)
-		if err := s.enforceSessionBinding(sessionID, caller); err != nil {
+		if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
 			s.terminateOnBindingFailure(sessionID, toolName, err)
 			return mcp.NewToolResultError(fmt.Sprintf("Unauthorized: %v", err)), nil
 		}
 
 		result, err := s.core.CallTool(ctx, caller, toolName, args, conversion.FromMCPMeta(req.Params.Meta))
 		if err != nil {
-			// Admission denial returns a generic message so the underlying authorizer
-			// error is never forwarded to the client.
-			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
-				return mcp.NewToolResultError("call denied by authorization policy"), nil
-			}
-			return mcp.NewToolResultError(err.Error()), nil
+			return conversion.ErrorToToolResult(err), nil
 		}
 
 		return &mcp.CallToolResult{
@@ -223,7 +218,7 @@ func (s *Server) coreResourceHandler(
 		}
 
 		caller, _ := auth.IdentityFromContext(ctx)
-		if err := s.enforceSessionBinding(sessionID, caller); err != nil {
+		if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
 			s.terminateOnBindingFailure(sessionID, uri, err)
 			return nil, fmt.Errorf("unauthorized: %w", err)
 		}
@@ -251,8 +246,8 @@ func (s *Server) coreResourceHandler(
 // ErrSessionOwnerUnknown. Unlike the legacy GetAdaptedTools handler, which terminates
 // only on ErrUnauthorizedCaller/ErrNilCaller, terminateOnBindingFailure terminates on
 // any rejection here — intentional fail-closed behavior, not a bug.
-func (s *Server) enforceSessionBinding(sessionID string, caller *auth.Identity) error {
-	sess, ok := s.vmcpSessionMgr.GetMultiSession(sessionID)
+func (s *Server) enforceSessionBinding(ctx context.Context, sessionID string, caller *auth.Identity) error {
+	sess, ok := s.vmcpSessionMgr.GetMultiSession(ctx, sessionID)
 	if !ok {
 		return sessiontypes.ErrUnauthorizedCaller
 	}

@@ -258,6 +258,9 @@ func AddExternalAuthConfigOptions(
 		// default's "unsupported external auth type" path so callers can
 		// distinguish via errors.Is(err, obo.ErrEnterpriseRequired).
 		return OBOApplyRunConfig(ctx, c, namespace, externalAuthConfig, options)
+	case mcpv1beta1.ExternalAuthTypeXAA:
+		// XAA is handled by the vMCP converter at runtime
+		return nil
 	default:
 		return fmt.Errorf("unsupported external auth type: %s", externalAuthConfig.Spec.Type)
 	}

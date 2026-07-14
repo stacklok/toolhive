@@ -31,6 +31,9 @@ type GatewayManager interface {
 	ConfigureLLMGateway(clientType string, cfg llmgateway.ApplyConfig) (string, error)
 	// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 	LLMGatewayModeFor(clientType string) string
+	// IsManaged reports whether a managed-preferences profile overrides the
+	// client's local config (so the config setup writes would be ignored).
+	IsManaged(clientType string) bool
 	// ConfigureEnvFile writes .env file entries for the client and returns the
 	// env file path. Returns ("", nil) when the client has no env-file entries.
 	ConfigureEnvFile(clientType string, cfg llmgateway.ApplyConfig) (string, error)
@@ -69,7 +72,7 @@ func Setup(
 	ctx context.Context, out, errOut io.Writer,
 	gm GatewayManager, provider ConfigUpdater, login LoginFunc,
 	inlineOpts SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
-	lazy bool,
+	lazy bool, models []string,
 ) error {
 	llmCfg := provider.GetLLMConfig()
 
@@ -82,11 +85,6 @@ func Setup(
 
 	if !llmCfg.IsConfigured() {
 		return fmt.Errorf("LLM gateway is not configured — run \"thv llm config set\" first")
-	}
-
-	tokenHelperCommand, err := buildTokenHelperCommand()
-	if err != nil {
-		return err
 	}
 
 	proxyBaseURL := fmt.Sprintf("http://localhost:%d/v1", llmCfg.EffectiveProxyPort())
@@ -102,6 +100,21 @@ func Setup(
 	if len(detected) == 0 {
 		_, _ = fmt.Fprintln(out, "No supported AI tools detected.")
 		return nil
+	}
+
+	// Only build the shell-string token helper if a detected tool actually
+	// consumes it — its shell-safety check on the thv executable path would
+	// otherwise fail setup for e.g. a Codex-only run, which never uses it.
+	var tokenHelperCommand string
+	if tokenHelperCommandNeeded(gm, detected) {
+		tokenHelperCommand, err = buildTokenHelperCommand()
+		if err != nil {
+			return err
+		}
+	}
+	tokenHelperPath, tokenHelperArgs, err := buildTokenHelperArgv()
+	if err != nil {
+		return err
 	}
 
 	// In lazy mode the interactive login is deferred until a configured tool
@@ -131,13 +144,14 @@ func Setup(
 
 	configured, err := configureDetectedTools(
 		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand,
-		llmCfg.TLSSkipVerify, anthropicPrefix,
+		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, models,
 	)
 	if err != nil {
 		return err
 	}
 
 	warnTLSSkipVerify(errOut, llmCfg.TLSSkipVerify, configured)
+	warnCredentialHelperTools(out, errOut, gm, configured)
 
 	if err := provider.UpdateLLMConfig(func(c *Config) error {
 		// SetFields applies inline opts to the on-disk config (preserving any
@@ -294,13 +308,13 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 	}
 	for _, tc := range configured {
 		switch tc.Mode {
-		case "direct":
+		case llmgateway.ModeDirect:
 			_, _ = fmt.Fprintf(errOut,
 				"Warning: %s uses direct mode — NODE_TLS_REJECT_UNAUTHORIZED=0 has been written to its "+
 					"settings, disabling TLS certificate verification for ALL of %s's outbound connections "+
 					"(LLM provider APIs, MCP registry, etc.), not just the LLM gateway. "+
 					"Use only in isolated local environments.\n", tc.Tool, tc.Tool)
-		case "proxy":
+		case llmgateway.ModeProxy:
 			if tc.Tool == "gemini-cli" {
 				_, _ = fmt.Fprintf(errOut,
 					"Note: --tls-skip-verify is not supported for Gemini CLI "+
@@ -311,6 +325,11 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 					"Warning: %s uses proxy mode — TLS certificate verification is disabled for the "+
 						"proxy's upstream gateway connection only. Use only in isolated local environments.\n", tc.Tool)
 			}
+		case llmgateway.ModeCodexAuth:
+			_, _ = fmt.Fprintf(errOut,
+				"Warning: --tls-skip-verify was NOT applied to %s — its config.toml has no "+
+					"TLS-skip option. Codex will fail against a self-signed gateway until you "+
+					"trust the certificate in the system store.\n", tc.Tool)
 		}
 	}
 }
@@ -338,17 +357,21 @@ func configureDetectedTools(
 	gm GatewayManager,
 	detected []string,
 	gatewayURL, proxyBaseURL, tokenHelperCommand string,
+	tokenHelperPath string, tokenHelperArgs []string,
 	tlsSkipVerify bool,
 	anthropicPathPrefix string,
+	models []string,
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
 		mode := gm.LLMGatewayModeFor(clientType)
 
-		// Only apply the Anthropic path prefix for direct-mode tools.
-		// Proxy-mode tools (Cursor, VS Code, Xcode) do not use ANTHROPIC_BASE_URL.
+		// Apply the Anthropic path prefix for tools that talk the Anthropic API
+		// directly — direct-mode (ANTHROPIC_BASE_URL) and credential-helper mode
+		// (Claude Desktop's inferenceGatewayBaseUrl). Proxy-mode tools (Cursor,
+		// VS Code, Xcode) do not use it.
 		anthropicBaseURL := ""
-		if mode == "direct" && anthropicPathPrefix != "" {
+		if usesAnthropicBaseURL(mode) && anthropicPathPrefix != "" {
 			// Trim any leading slash: url.JoinPath docs say elements should not
 			// start with "/", and path.Join already handles the join correctly.
 			if joined, err := url.JoinPath(gatewayURL, strings.TrimLeft(anthropicPathPrefix, "/")); err == nil {
@@ -361,7 +384,10 @@ func configureDetectedTools(
 			AnthropicBaseURL:   anthropicBaseURL,
 			ProxyBaseURL:       proxyBaseURL,
 			TokenHelperCommand: tokenHelperCommand,
+			TokenHelperPath:    tokenHelperPath,
+			TokenHelperArgs:    tokenHelperArgs,
 			TLSSkipVerify:      tlsSkipVerify,
+			Models:             models,
 		}
 		configPath, err := gm.ConfigureLLMGateway(clientType, applyCfg)
 		if err != nil {
@@ -455,6 +481,20 @@ func probeAnthropicPrefix(ctx context.Context, gatewayURL string, tlsSkipVerify 
 	return ""
 }
 
+// tokenHelperCommandNeeded reports whether any detected client's mode consumes
+// the shell-string token helper (TokenHelperCommand) — direct-mode's
+// apiKeyHelper-style JSON-Pointer clients and Claude Desktop's credential
+// helper. Proxy-mode tools and Codex (argv-based auth) never use it.
+func tokenHelperCommandNeeded(gm GatewayManager, detected []string) bool {
+	for _, clientType := range detected {
+		switch gm.LLMGatewayModeFor(clientType) {
+		case llmgateway.ModeDirect, llmgateway.ModeCredentialHelper:
+			return true
+		}
+	}
+	return false
+}
+
 // buildTokenHelperCommand returns the shell command string used as the
 // token-helper for direct-mode tools. It rejects executable paths that contain
 // shell metacharacters, since the command is written verbatim into long-lived
@@ -482,16 +522,58 @@ func buildTokenHelperCommand() (string, error) {
 	return fmt.Sprintf(`"%s" llm token`, self), nil
 }
 
-// hasDirectModeClient reports whether any client in the detected list uses
-// direct mode. Used to skip the Anthropic-prefix probe when no direct-mode
-// tools are present (proxy-mode tools ignore ANTHROPIC_BASE_URL entirely).
+// buildTokenHelperArgv returns the argv-form of the token helper, for config
+// formats that invoke an executable directly (no shell) — e.g. Codex's
+// [model_providers.<id>.auth] command/args table. Since args are passed as a
+// TOML array rather than interpolated into a shell string, no shell-metacharacter
+// validation is needed. --skip-browser is always included since Codex has no
+// interactive-context signal like Claude Desktop's credential-helper shim.
+func buildTokenHelperArgv() (string, []string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return "", nil, fmt.Errorf("resolving thv executable path: %w", err)
+	}
+	return self, []string{"llm", "token", "--skip-browser"}, nil
+}
+
+// usesAnthropicBaseURL reports whether a client mode consumes the Anthropic base
+// URL (gateway + /anthropic prefix): direct mode via ANTHROPIC_BASE_URL, and
+// credential-helper mode (Claude Desktop) via inferenceGatewayBaseUrl.
+func usesAnthropicBaseURL(mode string) bool {
+	return mode == llmgateway.ModeDirect || mode == llmgateway.ModeCredentialHelper
+}
+
+// hasDirectModeClient reports whether any client in the detected list uses a
+// mode that needs the Anthropic base URL. Used to skip the Anthropic-prefix
+// probe when no such tools are present (proxy-mode tools ignore it entirely).
 func hasDirectModeClient(gm GatewayManager, detected []string) bool {
 	for _, clientType := range detected {
-		if gm.LLMGatewayModeFor(clientType) == "direct" {
+		if usesAnthropicBaseURL(gm.LLMGatewayModeFor(clientType)) {
 			return true
 		}
 	}
 	return false
+}
+
+// warnCredentialHelperTools prints the follow-up notes credential-helper clients
+// (Claude Desktop) need: they read config only at launch, so the user must fully
+// quit and relaunch; and a managed-preferences profile, if present, overrides
+// the local config setup just wrote.
+func warnCredentialHelperTools(out, errOut io.Writer, gm GatewayManager, configured []ToolConfig) {
+	for _, tc := range configured {
+		if tc.Mode != llmgateway.ModeCredentialHelper {
+			continue
+		}
+		_, _ = fmt.Fprintf(out,
+			"%s reads its configuration only at launch — fully quit and reopen it "+
+				"for the gateway change to take effect.\n", tc.Tool)
+		if gm.IsManaged(tc.Tool) {
+			_, _ = fmt.Fprintf(errOut,
+				"Warning: a managed-preferences profile for %s is present; it overrides the local "+
+					"configuration just written, which will be ignored. Remove the managed profile or "+
+					"configure the gateway there instead.\n", tc.Tool)
+		}
+	}
 }
 
 // revertToolConfig reverts the settings-file and .env patches for a single
@@ -525,7 +607,7 @@ func rollbackConfiguredTools(errOut io.Writer, gm GatewayManager, configured []T
 // hasProxyMode reports whether any of the given tool configs uses proxy mode.
 func hasProxyMode(cfgs []ToolConfig) bool {
 	for _, t := range cfgs {
-		if t.Mode == "proxy" {
+		if t.Mode == llmgateway.ModeProxy {
 			return true
 		}
 	}

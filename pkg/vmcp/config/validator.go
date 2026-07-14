@@ -226,6 +226,7 @@ func (v *DefaultValidator) validateOutgoingAuth(auth *OutgoingAuthConfig) error 
 	return nil
 }
 
+//nolint:gocyclo // Strategy-specific validation requires checking multiple fields per type
 func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtypes.BackendAuthStrategy) error {
 	if strategy == nil {
 		return fmt.Errorf("strategy is nil")
@@ -237,6 +238,8 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		authtypes.StrategyTypeTokenExchange,
 		authtypes.StrategyTypeUpstreamInject,
 		authtypes.StrategyTypeAwsSts,
+		authtypes.StrategyTypeOBO,
+		authtypes.StrategyTypeXAA,
 	}
 	if !slices.Contains(validTypes, strategy.Type) {
 		return fmt.Errorf("type must be one of: %s", strings.Join(validTypes, ", "))
@@ -278,6 +281,35 @@ func (*DefaultValidator) validateBackendAuthStrategy(_ string, strategy *authtyp
 		}
 		if strategy.AwsSts.Region == "" {
 			return fmt.Errorf("aws_sts requires region field")
+		}
+
+	case authtypes.StrategyTypeOBO:
+		if strategy.OBO == nil {
+			return fmt.Errorf("obo requires OBO configuration")
+		}
+		if strategy.OBO.TokenURL == "" {
+			return fmt.Errorf("obo requires tokenUrl field")
+		}
+		if strategy.OBO.ClientSecret != "" && strategy.OBO.ClientSecretEnv != "" {
+			return fmt.Errorf("obo: clientSecret and clientSecretEnv are mutually exclusive")
+		}
+
+	case authtypes.StrategyTypeXAA:
+		if strategy.XAA == nil {
+			return fmt.Errorf("xaa requires XAA configuration")
+		}
+		if strategy.XAA.IDPTokenURL == "" {
+			return fmt.Errorf("xaa requires idpTokenUrl field")
+		}
+		if strategy.XAA.TargetTokenURL == "" {
+			return fmt.Errorf("xaa requires targetTokenUrl field")
+		}
+		if strategy.XAA.TargetAudience == "" {
+			return fmt.Errorf("xaa requires targetAudience field")
+		}
+		if strategy.XAA.SubjectTokenType != "" && strategy.XAA.SubjectTokenType != "urn:ietf:params:oauth:token-type:id_token" {
+			return fmt.Errorf("xaa: unsupported subjectTokenType %q; only %q is accepted",
+				strategy.XAA.SubjectTokenType, "urn:ietf:params:oauth:token-type:id_token")
 		}
 	}
 

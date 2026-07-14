@@ -42,6 +42,7 @@ var StaticModeAllowedTransports = []string{TransportSSE, TransportStreamableHTTP
 
 // Duration is a wrapper around time.Duration that marshals/unmarshals as a duration string.
 // This ensures duration values are serialized as "30s", "1m", etc. instead of nanosecond integers.
+// +gendoc
 // +kubebuilder:validation:Type=string
 // +kubebuilder:validation:Pattern=`^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 type Duration time.Duration
@@ -167,6 +168,14 @@ type Config struct {
 	// LLMs to discover relevant tools on demand rather than receiving all tool definitions.
 	// +optional
 	Optimizer *OptimizerConfig `json:"optimizer,omitempty" yaml:"optimizer,omitempty"`
+
+	// CodeMode configures vMCP code mode: server-side execution of Starlark scripts that
+	// orchestrate multiple backend tool calls in a single request via the execute_tool_script
+	// virtual tool. When enabled, execute_tool_script is advertised alongside the backend
+	// tools; a script's inner tool calls are authorized individually, so a script can only
+	// reach tools the caller is already permitted to use. Disabled by default.
+	// +optional
+	CodeMode *CodeModeConfig `json:"codeMode,omitempty" yaml:"codeMode,omitempty"`
 
 	// SessionStorage configures session storage for stateful horizontal scaling.
 	// When provider is "redis", the operator injects Redis connection parameters
@@ -900,8 +909,13 @@ type OutputProperty struct {
 // OptimizerConfig configures the MCP optimizer.
 // When enabled, vMCP exposes only find_tool and call_tool operations to clients
 // instead of all backend tools directly.
+//
 // +kubebuilder:object:generate=true
+// +kubebuilder:validation:XValidation:rule="!has(self.embeddingHeaders) || (has(self.embeddingProvider) && self.embeddingProvider == 'openai')",message="embeddingHeaders is only supported when embeddingProvider is 'openai'"
+// +kubebuilder:validation:XValidation:rule=`!has(self.embeddingHeaders) || self.embeddingHeaders.all(k, k.matches('^[!#$%&\\x27*+.^_\\x60|~0-9A-Za-z-]+$') && !(k.lowerAscii() in ['authorization', 'content-type']))`,message="embeddingHeaders names must be valid HTTP header names and must not include Authorization or Content-Type"
 // +gendoc
+//
+//nolint:lll // CEL validation rules exceed line length limit
 type OptimizerConfig struct {
 	// EmbeddingService is the full base URL of the embedding service endpoint
 	// (e.g., http://my-embedding.default.svc.cluster.local:8080) for semantic
@@ -924,6 +938,40 @@ type OptimizerConfig struct {
 	// +kubebuilder:default="30s"
 	// +optional
 	EmbeddingServiceTimeout Duration `json:"embeddingServiceTimeout,omitempty" yaml:"embeddingServiceTimeout,omitempty"`
+
+	// EmbeddingProvider selects the wire protocol used to talk to the embedding
+	// service. "tei" speaks the HuggingFace Text Embeddings Inference API;
+	// "openai" speaks the OpenAI-compatible /embeddings API, which lets the
+	// optimizer use OpenAI, Azure OpenAI, or another OpenAI-compatible gateway.
+	// Defaults to "tei" when empty.
+	//
+	// The "openai" provider reads EmbeddingService directly and cannot be combined
+	// with EmbeddingServerRef, which provisions a managed TEI server; the operator
+	// rejects that combination at admission.
+	// +kubebuilder:validation:Enum=tei;openai
+	// +kubebuilder:default="tei"
+	// +optional
+	EmbeddingProvider string `json:"embeddingProvider,omitempty" yaml:"embeddingProvider,omitempty"`
+
+	// EmbeddingModel is the model name requested from the embedding service
+	// (e.g. "text-embedding-3-small"). Required when EmbeddingProvider is
+	// "openai". Ignored for the "tei" provider, where the model is fixed by the
+	// running TEI container.
+	//
+	// The API key for an OpenAI-compatible service is not configured here: it is
+	// read from the OPENAI_API_KEY environment variable so the secret never
+	// lands in a CRD spec or ConfigMap. An empty key omits the Authorization
+	// header, which supports keyless in-cluster gateways.
+	// +optional
+	EmbeddingModel string `json:"embeddingModel,omitempty" yaml:"embeddingModel,omitempty"`
+
+	// EmbeddingHeaders holds additional HTTP headers sent with every embedding
+	// request. Only supported when EmbeddingProvider is "openai". Values are
+	// stored in plain text and must not contain secrets; Authorization
+	// (derived from OPENAI_API_KEY) and Content-Type cannot be set.
+	// +kubebuilder:validation:MaxProperties=32
+	// +optional
+	EmbeddingHeaders map[string]EmbeddingHeaderValue `json:"embeddingHeaders,omitempty" yaml:"embeddingHeaders,omitempty"`
 
 	// MaxToolsToReturn is the maximum number of tool results returned by a search query.
 	// Defaults to 8 if not specified or zero.
@@ -949,6 +997,47 @@ type OptimizerConfig struct {
 	// +kubebuilder:validation:Pattern=`^([0-9]*[.])?[0-9]+$`
 	// +optional
 	SemanticDistanceThreshold string `json:"semanticDistanceThreshold,omitempty" yaml:"semanticDistanceThreshold,omitempty"`
+}
+
+// EmbeddingHeaderValue is a custom embedding request header value: 1 to 8192
+// characters with no control characters other than tab.
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=8192
+// +kubebuilder:validation:Pattern=`^[^\x00-\x08\x0A-\x1F\x7F]*$`
+type EmbeddingHeaderValue string
+
+// CodeModeConfig configures vMCP code mode (the execute_tool_script virtual tool).
+// When enabled, agents can submit a Starlark script that calls multiple backend tools
+// server-side — with loops, conditionals, and parallel() fan-out — and receive a single
+// aggregated result, collapsing many tool-call round-trips into one.
+// +kubebuilder:object:generate=true
+// +gendoc
+type CodeModeConfig struct {
+	// Enabled turns code mode on. When false (the default), execute_tool_script is not
+	// advertised in tools/list and scripts cannot be executed.
+	// +optional
+	Enabled bool `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+
+	// StepLimit is the maximum number of Starlark execution steps per script. It bounds
+	// runaway loops and computation. Defaults to 100000 if unset or zero.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=100000
+	// +optional
+	StepLimit int64 `json:"stepLimit,omitempty" yaml:"stepLimit,omitempty"`
+
+	// ParallelMaxConcurrency caps the number of goroutines a script's parallel() builtin
+	// may run concurrently. Defaults to 10 if unset or zero.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:default=10
+	// +optional
+	ParallelMaxConcurrency int `json:"parallelMaxConcurrency,omitempty" yaml:"parallelMaxConcurrency,omitempty"`
+
+	// ToolCallTimeout bounds each individual backend tool call made from within a script.
+	// A call exceeding it is cancelled and surfaces a timeout error to the script.
+	// Defaults to 30s if unset.
+	// +kubebuilder:default="30s"
+	// +optional
+	ToolCallTimeout Duration `json:"toolCallTimeout,omitempty" yaml:"toolCallTimeout,omitempty"`
 }
 
 // SessionStorageConfig configures session storage for stateful horizontal scaling.

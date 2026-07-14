@@ -21,30 +21,31 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
 
 	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authz"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
+	baseratelimit "github.com/stacklok/toolhive/pkg/ratelimit"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	transportmiddleware "github.com/stacklok/toolhive/pkg/transport/middleware"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/composer"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
-	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
-	"github.com/stacklok/toolhive/pkg/vmcp/internal/backendtelemetry"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	vmcpratelimit "github.com/stacklok/toolhive/pkg/vmcp/ratelimit"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
-	"github.com/stacklok/toolhive/pkg/vmcp/server/adapter"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
@@ -86,6 +87,13 @@ const (
 	defaultServerVersion = "0.1.0"
 	defaultHost          = "127.0.0.1"
 	defaultEndpointPath  = "/mcp"
+
+	// capabilityCacheTTL bounds how long the per-identity aggregated capability view is
+	// reused before re-sweeping backends. The core re-aggregates on every call (it holds no
+	// per-session cache), so without this the Serve path does a full backend tools/list sweep
+	// per tool call; a short TTL collapses bursts of calls into ~one sweep while keeping
+	// staleness tighter than the legacy once-per-session refresh.
+	capabilityCacheTTL = 30 * time.Second
 )
 
 //go:generate mockgen -destination=mocks/mock_watcher.go -package=mocks -source=server.go Watcher
@@ -146,9 +154,10 @@ type Config struct {
 	// capture (no middleware is installed).
 	PassthroughHeaders []string
 
-	// RateLimitMiddleware is the optional rate-limit middleware to apply after
-	// authentication and MCP request parsing.
-	RateLimitMiddleware func(http.Handler) http.Handler
+	// RateLimiter is the optional core-layer limiter applied at CallTool.
+	// It runs below the session optimizer, so tool names are already resolved
+	// to the backend tool name before bucket selection.
+	RateLimiter baseratelimit.Limiter
 
 	// AuthServer is the optional embedded authorization server.
 	// When non-nil, the routes returned by Routes() are registered on the mux
@@ -188,6 +197,20 @@ type Config struct {
 	// A nil value disables the optimizer.
 	OptimizerConfig *optimizer.Config
 
+	// CodeModeConfig enables vMCP code mode. When non-nil, New wraps the core with a
+	// codemode decorator that advertises the execute_tool_script virtual tool and runs
+	// submitted Starlark scripts, whose inner tool calls route back through core.CallTool
+	// (so the core admission seam authorizes each one). The decorator sits below any
+	// optimizer: execute_tool_script appears in the core's tool set, so an enabled
+	// optimizer indexes and routes to it like any other tool. A nil value (the default)
+	// leaves the core undecorated and execute_tool_script absent from tools/list.
+	//
+	// Unlike the optimizer (which is mutually exclusive with Authz, see the guard in New),
+	// code mode may be combined with Authz: a script's inner tool calls are re-authorized
+	// by real name through the core admission seam, so Cedar remains the gate on everything
+	// a script can do. See the codemode.decorator doc for the full rationale.
+	CodeModeConfig *codemode.Config
+
 	// StatusReporter enables vMCP runtime to report operational status.
 	// In Kubernetes mode: Updates VirtualMCPServer.Status (requires RBAC)
 	// In CLI mode: NoOpReporter (no persistent status)
@@ -204,26 +227,39 @@ type Config struct {
 	// session persistence; the Redis password is read from the
 	// THV_SESSION_REDIS_PASSWORD environment variable.
 	SessionStorage *vmcpconfig.SessionStorageConfig
+
+	// Aggregator merges backend capabilities into the advertised set. It is consumed
+	// by the domain core (core.Config.Aggregator) that New builds via deriveCoreConfig:
+	// the core is the single aggregator on the New/Serve path, so the session factory
+	// must NOT also aggregate. Required; New fails (via core.New) when nil. The
+	// composition root supplies it (the same aggregator that backs discovery).
+	Aggregator aggregator.Aggregator
+
+	// Authz is the authorizer-agnostic authorization config fed to the core admission
+	// seam (core.Config.Authz). A nil value means authorization is unconfigured
+	// (allow-all), matching the legacy `AuthzMiddleware != nil` guard: the composition
+	// root populates it only when Cedar policies exist. It is distinct from the
+	// (vestigial) AuthzMiddleware field — the core enforces authz from this config, not
+	// from the HTTP middleware. When non-nil, Name must be non-empty (the Cedar resource
+	// entity name).
+	Authz *authz.Config
 }
 
 // Server is the Virtual MCP Server that aggregates multiple backends.
 type Server struct {
 	config *Config
 
-	// core is the domain VMCP, set only on the Serve path (nil on the legacy
-	// server.New path). When non-nil it is the single source of truth for the
-	// advertised capability set and call routing: session registration sources
+	// core is the domain VMCP and the single source of truth for the advertised
+	// capability set and call routing: session registration sources
 	// tools/resources from core.ListTools/ListResources, request handlers
-	// delegate to core.CallTool/ReadResource, and the discovery middleware +
-	// context-based audit enrichment are guarded off (the core applies the
-	// admission filter the legacy authz/discovery path applied). The nil/non-nil
-	// value is the branch selector throughout this file ("s.core == nil" == legacy).
+	// delegate to core.CallTool/ReadResource, and authorization is enforced by
+	// the core admission seam. Serve always sets it, so it is non-nil for every
+	// server (BackendHealth keeps a defensive nil guard regardless).
 	core core.VMCP
 
 	// optimizerFactory builds a per-session optimizer over the core's advertised
-	// tools. Set only on the Serve path when the optimizer is enabled (nil otherwise,
-	// including the entire legacy server.New path, which decorates the session factory
-	// instead). When non-nil, Serve-path session registration advertises find_tool/
+	// tools. Set only when the optimizer is enabled (nil otherwise). When non-nil,
+	// session registration advertises find_tool/
 	// call_tool in place of the raw core tools and dispatches call_tool's inner
 	// invocation through core.CallTool. The shared store and cleanup are owned by the
 	// session manager; this is the resolved factory surfaced via Manager.OptimizerFactory.
@@ -238,18 +274,6 @@ type Server struct {
 	// Network listener (tracks actual bound port when using port 0)
 	listener   net.Listener
 	listenerMu sync.RWMutex
-
-	// Router for forwarding requests to backends
-	router router.Router
-
-	// Backend client for making requests to backends
-	backendClient vmcp.BackendClient
-
-	// Handler factory for creating MCP request handlers
-	handlerFactory *adapter.DefaultHandlerFactory
-
-	// Discovery manager for lazy per-user capability discovery
-	discoveryMgr discovery.Manager
 
 	// Backend registry for capability discovery
 	// For static mode (CLI), this is an immutable registry created from initial backends.
@@ -269,9 +293,6 @@ type Server struct {
 	// Redis-backed storage for multi-pod deployments is not yet wired.
 	sessionDataStorage transportsession.DataStorage
 
-	// Capability adapter for converting aggregator types to SDK types
-	capabilityAdapter *adapter.CapabilityAdapter
-
 	// vmcpSessionMgr manages session-scoped backend client lifecycle.
 	vmcpSessionMgr SessionManager
 
@@ -279,13 +300,6 @@ type Server struct {
 	// Closed once the listener is created and serving.
 	ready     chan struct{}
 	readyOnce sync.Once
-
-	// healthMonitor performs periodic health checks on backends.
-	// Nil if health monitoring is disabled.
-	// Protected by healthMonitorMu: RLock for reads (getter methods, HTTP handlers),
-	// Lock for writes (initialization, disabling on start failure).
-	healthMonitor   *health.Monitor
-	healthMonitorMu sync.RWMutex
 
 	// statusReporter enables vMCP to report operational status to control plane.
 	// Nil if status reporting is disabled.
@@ -332,218 +346,143 @@ func buildSessionDataStorage(ctx context.Context, cfg *Config) (transportsession
 	return transportsession.NewRedisSessionDataStorage(ctx, redisCfg, keyPrefix, cfg.SessionTTL)
 }
 
-// New creates a new Virtual MCP Server instance.
+// New creates a Virtual MCP Server by composing the domain core (core.New) with the
+// transport (Serve).
+//
+// It is the composition root for the in-memory Config form: it builds the backend
+// health monitor (A2), assembles the core via core.New using the config projected by
+// deriveCoreConfig, and hands that core to Serve with the transport config projected by
+// deriveServerConfig. The transport/core wiring it once performed inline now lives
+// behind core.New + Serve.
 //
 // The backendRegistry parameter provides the list of available backends:
 // - For static mode (CLI), pass an immutable registry created from initial backends
 // - For dynamic mode (K8s), pass a DynamicRegistry that will be updated by the operator
 //
-//nolint:gocyclo // Complexity from hook logic is acceptable
+// Signature/contract changes for embedders (the body now routes through core.New + Serve):
+//   - The discovery.Manager parameter was dropped when the discovery middleware was
+//     removed; capability discovery is the core's responsibility. Existing callers must
+//     drop that argument.
+//   - Config.Aggregator is now REQUIRED (core.New rejects a nil aggregator); the core is
+//     the single source of the advertised capability set.
+//   - Config.AuthzMiddleware is vestigial: the Serve path never applies it. Authorization
+//     is enforced by the core admission seam from Config.Authz. An embedder that enforced
+//     Cedar authz only via AuthzMiddleware must set Config.Authz instead — New returns an
+//     error (ErrInvalidConfig) if AuthzMiddleware is set without Authz, so a silent
+//     allow-all fails fast at construction.
 func New(
 	ctx context.Context,
 	cfg *Config,
 	rt router.Router,
 	backendClient vmcp.BackendClient,
-	discoveryMgr discovery.Manager,
 	backendRegistry vmcp.BackendRegistry,
 	workflowDefs map[string]*composer.WorkflowDefinition,
 ) (*Server, error) {
-	// Resolve transport defaults on a COPY. The composition root (cli) already resolves
-	// them at the edge via WithDefaults (a single defaulting list); New repeats
-	// it defensively so legacy direct callers and tests that build a Config by hand keep
-	// working — but without mutating the caller's value (go-style: copy before mutating
-	// caller input). That non-mutation is what lets #5445 hand the raw, un-defaulted
-	// cfg.Name to the core for Cedar authz parity. New's own defaulting goes away when
-	// #5445 reduces it to a Serve(core.New(...)) wrapper; until then WithDefaults is the
-	// single place the default list lives, shared with the edge.
-	cfg = WithDefaults(cfg)
+	// Resolve transport defaults for the transport side on a COPY (WithDefaults does not
+	// mutate cfg). The core receives the RAW cfg so its ServerName is the un-defaulted
+	// cfg.Name: Cedar authz keys on the real VirtualMCPServer name, not the synthetic
+	// "toolhive-vmcp" transport fallback.
+	resolved := WithDefaults(cfg)
 
-	// Create hooks for SDK integration
-	hooks := &server.Hooks{}
-
-	// Create mark3labs MCP server
-	mcpServer := server.NewMCPServer(
-		cfg.Name,
-		cfg.Version,
-		server.WithToolCapabilities(false), // We'll register tools dynamically
-		server.WithResourceCapabilities(false, false), // We'll register resources dynamically
-		server.WithLogging(),
-		server.WithHooks(hooks),
-	)
-
-	// Create SDK elicitation adapter for workflow engine
-	// This wraps the mark3labs SDK to provide elicitation functionality to the composer
-	sdkElicitationRequester := NewSDKElicitationAdapter(mcpServer)
-
-	// Create elicitation handler for workflow engine
-	// This provides SDK-agnostic elicitation with security validation
-	elicitationHandler := composer.NewDefaultElicitationHandler(sdkElicitationRequester)
-
-	// Decorate backend client with telemetry if provider is configured
-	// This must happen BEFORE creating the workflow engine so that workflow
-	// backend calls are instrumented when they occur during workflow execution.
-	if cfg.TelemetryProvider != nil {
-		var err error
-		// Get initial backends list from registry for telemetry setup
-		initialBackends := backendRegistry.List(ctx)
-		backendClient, err = backendtelemetry.MonitorBackends(
-			ctx,
-			cfg.TelemetryProvider.MeterProvider(),
-			cfg.TelemetryProvider.TracerProvider(),
-			initialBackends,
-			backendClient,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to monitor backends: %w", err)
-		}
+	// AuthzMiddleware is vestigial on the New/Serve path (Serve never applies it; authz
+	// moved to the core admission seam). Setting it without a corresponding Config.Authz
+	// would silently degrade to allow-all — a security regression for an embedder that
+	// relied on it for Cedar authz — so fail fast instead of logging a warning the embedder
+	// is unlikely to notice. cli/serve.go sets Authz whenever it sets AuthzMiddleware, so
+	// this never fires in-tree.
+	if cfg.AuthzMiddleware != nil && cfg.Authz == nil {
+		return nil, fmt.Errorf("%w: Config.AuthzMiddleware is set but has no effect on the "+
+			"New/Serve path; set Config.Authz to enforce authorization, or clear AuthzMiddleware",
+			vmcp.ErrInvalidConfig)
 	}
 
-	// Create workflow auditor if audit config is provided
-	var workflowAuditor *audit.WorkflowAuditor
-	if cfg.AuditConfig != nil {
-		if err := cfg.AuditConfig.Validate(); err != nil {
-			return nil, fmt.Errorf("invalid audit configuration: %w", err)
-		}
-		var err error
-		workflowAuditor, err = audit.NewWorkflowAuditor(cfg.AuditConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create workflow auditor: %w", err)
-		}
-		slog.Info("workflow audit logging enabled")
+	// The core admission seam has no representation for the optimizer's meta-tools
+	// (find_tool/call_tool), so combining Authz with the optimizer would let those calls
+	// bypass Cedar evaluation entirely. Fail fast per the admission seam contract (see the
+	// core.Admission doc); the optimizer keeps its own HTTP-path authz until a focused PR.
+	if cfg.Authz != nil && cfg.OptimizerConfig != nil {
+		return nil, fmt.Errorf("%w: Config.Authz and Config.OptimizerConfig are mutually "+
+			"exclusive; the optimizer meta-tools (find_tool, call_tool) are not represented "+
+			"in the core admission seam", vmcp.ErrInvalidConfig)
 	}
 
-	// Create workflow engine (composer) for executing composite tools
-	// The composer orchestrates multi-step workflows across backends
-	// Use in-memory state store with 5-minute cleanup interval and 1-hour max age for completed workflows
-	stateStore := composer.NewInMemoryStateStore(5*time.Minute, 1*time.Hour)
-	workflowComposer := composer.NewWorkflowEngine(rt, backendClient, elicitationHandler, stateStore, workflowAuditor, nil)
-
-	// composerFactory builds a per-session workflow engine at session registration
-	// time, binding composite tool routing to the session's own routing table and
-	// tool list. This removes composite tools' dependency on the discovery middleware
-	// injecting DiscoveredCapabilities into the request context.
-	sessionComposerFactory := func(sessionRT *vmcp.RoutingTable, sessionTools []vmcp.Tool) composer.Composer {
-		return composer.NewWorkflowEngine(
-			router.NewSessionRouter(sessionRT), backendClient, elicitationHandler, stateStore, workflowAuditor,
-			sessionTools,
-		)
+	// Cedar resource entities are scoped to MCP::"<Name>" (see Config.Authz), so an empty
+	// Name with Authz set would key policies on MCP::"" and silently fail to match. core.New
+	// also rejects this (its admission seam), but fail at the construction root too for a
+	// clearer error consistent with the guards above.
+	if cfg.Authz != nil && cfg.Name == "" {
+		return nil, fmt.Errorf("%w: Config.Name is required when Config.Authz is set "+
+			"(it is the Cedar resource entity name)", vmcp.ErrInvalidConfig)
 	}
 
-	// Validate workflows (fail fast on invalid definitions)
-	var err error
-	workflowDefs, err = validateWorkflows(workflowComposer, workflowDefs)
-	if err != nil {
-		return nil, fmt.Errorf("workflow validation failed: %w", err)
-	}
+	// The SDK elicitation adapter wraps the mcp-go server Serve builds below, so it
+	// cannot exist before core.New. Give the core a late-bound requester now and bind the
+	// real adapter to Serve's server before serving begins (RequestElicitation is only
+	// invoked at request time, after bind).
+	elicitation := newLateBoundElicitationRequester()
 
-	// Create session manager using StreamableSession as the transport-layer placeholder.
-	// StreamableSession is a lightweight implementation of transportsession.Session that
-	// handles disconnect tracking, TTL, and metadata for Streamable HTTP connections.
-	// It intentionally carries no vmcp-specific state — backend connections, routing
-	// tables, tool lists, and token binding all live in the separate sessionmanager.Manager,
-	// keyed by the same session ID.
-	sessionManager := transportsession.NewManager(cfg.SessionTTL, transportsession.NewStreamableSession)
+	// Wrap the aggregator in a per-identity caching decorator: the core re-derives the
+	// advertised view on every call, so without this the Serve path re-sweeps every backend's
+	// tools/list per tool call. The cache is keyed on identity + forwarded credentials, so it
+	// never serves one caller's capability view to another.
+	cachedAgg := aggregator.NewCachingAggregator(cfg.Aggregator, capabilityCacheTTL)
 
-	sessionDataStorage, err := buildSessionDataStorage(ctx, cfg)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create session data storage: %w", err)
-	}
-	// Close sessionDataStorage if New() returns an error after this point so the
-	// background cleanup goroutine does not leak.
-	closeStorageOnErr := true
-	defer func() {
-		if closeStorageOnErr {
-			_ = sessionDataStorage.Close()
-		}
-	}()
-
-	// Create handler factory (used by adapter and for future dynamic registration)
-	handlerFactory := adapter.NewDefaultHandlerFactory(rt, backendClient)
-
-	// Create capability adapter (single source of truth for converting aggregator types to SDK types)
-	capabilityAdapter := adapter.NewCapabilityAdapter(handlerFactory)
-
-	// Create health monitor if configured
-	var healthMon *health.Monitor
-	if cfg.HealthMonitorConfig != nil {
-		// Get initial backends list from registry for health monitoring setup
-		initialBackends := backendRegistry.List(ctx)
-		healthMon, err = health.NewMonitor(backendClient, initialBackends, *cfg.HealthMonitorConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create health monitor: %w", err)
-		}
-		slog.Info("health monitoring enabled",
-			"check_interval", cfg.HealthMonitorConfig.CheckInterval,
-			"unhealthy_threshold", cfg.HealthMonitorConfig.UnhealthyThreshold,
-			"timeout", cfg.HealthMonitorConfig.Timeout,
-			"degraded_threshold", cfg.HealthMonitorConfig.DegradedThreshold)
-	} else {
-		slog.Info("health monitoring disabled")
-	}
-
-	// Pass the whole factory config so the session manager constructs everything
-	// it needs (optimizer wiring, composite tool layers, telemetry instruments).
-	sessMgrCfg := &sessionmanager.FactoryConfig{
-		Base:              cfg.SessionFactory,
-		WorkflowDefs:      workflowDefs,
-		ComposerFactory:   sessionComposerFactory,
-		OptimizerConfig:   cfg.OptimizerConfig,
-		OptimizerFactory:  cfg.OptimizerFactory,
-		TelemetryProvider: cfg.TelemetryProvider,
-	}
-	vmcpSessMgr, optimizerCleanup, err := sessionmanager.New(sessionDataStorage, sessMgrCfg, backendRegistry)
+	coreVMCP, err := core.New(deriveCoreConfig(
+		cfg, cachedAgg, rt, backendClient, backendRegistry, workflowDefs,
+		cfg.Authz, elicitation,
+	))
 	if err != nil {
 		return nil, err
 	}
 
-	// Create Server instance
-	srv := &Server{
-		config:             cfg,
-		mcpServer:          mcpServer,
-		router:             rt,
-		backendClient:      backendClient,
-		handlerFactory:     handlerFactory,
-		discoveryMgr:       discoveryMgr,
-		backendRegistry:    backendRegistry,
-		sessionManager:     sessionManager,
-		sessionDataStorage: sessionDataStorage,
-		capabilityAdapter:  capabilityAdapter,
-		ready:              make(chan struct{}),
-		healthMonitor:      healthMon,
-		statusReporter:     cfg.StatusReporter,
-		vmcpSessionMgr:     vmcpSessMgr,
+	if cfg.RateLimiter != nil {
+		coreVMCP = vmcpratelimit.NewDecorator(coreVMCP, cfg.RateLimiter)
 	}
 
-	if optimizerCleanup != nil {
-		srv.shutdownFuncs = append(srv.shutdownFuncs, optimizerCleanup)
+	// Wrap the core with the code mode decorator when enabled. It sits BELOW any optimizer:
+	// ListTools now advertises execute_tool_script alongside the backend tools, so the
+	// Serve-layer optimizer (if enabled) indexes it like any other tool, and the script's
+	// inner calls route back through core.CallTool for admission. The decorator delegates
+	// Close to the inner core, so the closeCoreOnErr guard below still releases it.
+	if cfg.CodeModeConfig != nil {
+		coreVMCP = codemode.NewDecorator(coreVMCP, cfg.CodeModeConfig)
 	}
 
-	// Register OnRegisterSession hook to inject capabilities after SDK registers session.
-	// See handleSessionRegistration for implementation details.
-	hooks.AddOnRegisterSession(func(ctx context.Context, session server.ClientSession) {
-		srv.handleSessionRegistration(ctx, session)
-	})
+	// core.New started the workflow state store's cleanup goroutine and the backend health
+	// monitor (both owned by the core now). If Serve fails after this point, close the core so
+	// neither leaks (mirrors Serve's closeStorageOnErr guard); on success the core's lifecycle
+	// is owned by srv.Stop, so the guard is disarmed before returning.
+	closeCoreOnErr := true
+	defer func() {
+		if closeCoreOnErr {
+			_ = coreVMCP.Close()
+		}
+	}()
 
-	// Register OnBeforeListTools hook for lazy session tool injection.
-	//
-	// When a session is reconstructed from Redis on a different pod (cross-pod sharing),
-	// the SDK's per-session tool store is empty because OnRegisterSession only fires
-	// during Initialize, which the client doesn't re-send to pod B. This hook lazily
-	// injects the tools from the VMCP session manager into the ephemeral SDK session
-	// before handleListTools reads from the per-session tool store.
-	hooks.AddBeforeListTools(func(ctx context.Context, _ any, _ *mcp.ListToolsRequest) {
-		srv.lazyInjectSessionTools(ctx)
-	})
+	// On the New/Serve path the core is the single aggregator and the source of the
+	// advertised set; the session factory only opens per-session backend connections and
+	// binds identity. AdvertiseFromCore makes the session manager source tools from the
+	// core and (when the optimizer is enabled) build the Serve-layer optimizer over the
+	// core's tools instead of decorating the factory. Composite-tool workflows are owned
+	// by the core, so no WorkflowDefs/ComposerFactory are wired here.
+	sessMgrCfg := &sessionmanager.FactoryConfig{
+		Base:              cfg.SessionFactory,
+		OptimizerConfig:   cfg.OptimizerConfig,
+		OptimizerFactory:  cfg.OptimizerFactory,
+		TelemetryProvider: cfg.TelemetryProvider,
+		AdvertiseFromCore: true,
+	}
 
-	// Register OnBeforeCallTool hook for the same reason as OnBeforeListTools.
-	// A client may call a tool directly without first calling tools/list, so we
-	// also need to ensure the tool handlers are registered before the call is routed.
-	hooks.AddBeforeCallTool(func(ctx context.Context, _ any, _ *mcp.CallToolRequest) {
-		srv.lazyInjectSessionTools(ctx)
-	})
+	srv, err := Serve(ctx, coreVMCP, deriveServerConfig(resolved, backendRegistry, sessMgrCfg))
+	if err != nil {
+		return nil, err
+	}
 
-	// Disarm the close-on-error guard: Server is fully constructed.
-	closeStorageOnErr = false
+	// Bind the elicitation adapter to the SDK server Serve built so composite-workflow
+	// elicitation reaches the same mcp-go server that serves client traffic.
+	elicitation.bind(NewSDKElicitationAdapter(srv.MCPServer()))
+
+	closeCoreOnErr = false // Serve succeeded; srv.Stop now owns the core's lifecycle.
 	return srv, nil
 }
 
@@ -551,8 +490,8 @@ func New(
 // This enables embedding the vmcp server inside another HTTP server or framework.
 //
 // The returned handler includes all routes (health, metrics, well-known, MCP)
-// and the full middleware chain (recovery, header validation, auth, audit,
-// discovery, backend enrichment, MCP parsing, telemetry).
+// and the full middleware chain (recovery, body limit, header validation, auth,
+// rate limit, audit, MCP parsing, telemetry).
 //
 // Each call builds a fresh handler. The method is safe to call multiple times.
 // All returned handlers share the same underlying MCPServer and SessionManager,
@@ -604,18 +543,19 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth+parser → rate-limit → audit → discovery → annotation-enrichment →
-	//   authz → backend-enrichment → MCP-parsing → telemetry
-	// Execution order: recovery → header-val → auth+parser → rate-limit → audit →
-	//   discovery → annotation-enrichment → authz → backend-enrichment →
-	//   MCP-parsing → telemetry → handler
+	// Code wraps: auth → rate-limit → audit → MCP-parsing → telemetry
+	// Execution order: recovery → body-limit → header-val → auth →
+	//   rate-limit → audit → MCP-parsing → telemetry → handler
 	//
-	// The authz and annotation-enrichment layers are both guarded by
-	// s.config.AuthzMiddleware != nil: applied on the server.New path (authz on) and
-	// omitted on the Serve path, which leaves AuthzMiddleware nil so authorization
-	// moves to the core admission seam (#5438). Both blocks remain in this shared
-	// Handler — physical removal is deferred to Phase 3 (#5445), after server.New is
-	// routed through Serve and the legacy authz path is gone.
+	// Upstream token refresh failures are detected inside AuthMiddleware itself:
+	// GetAllUpstreamCredentials returns a non-empty failed-provider slice when
+	// any upstream refresh fails, and the middleware short-circuits with
+	// HTTP 401 + WWW-Authenticate before the request reaches any inner layer.
+	//
+	// The legacy HTTP authz, annotation-enrichment, and discovery layers have all been
+	// removed: every caller now routes through Serve, so authorization is enforced by the
+	// core admission seam (#5438) and capability/health filtering by the core, rather than
+	// by HTTP middleware.
 
 	var mcpHandler http.Handler = streamableServer
 
@@ -633,54 +573,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// when auth middleware is nil.
 	mcpHandler = mcpparser.ParsingMiddleware(mcpHandler)
 
-	// Apply backend enrichment middleware (legacy path only — see withBackendEnrichment).
-	mcpHandler = s.withBackendEnrichment(mcpHandler)
-
-	// Apply authorization middleware if configured (runs AFTER discovery in execution).
-	// Wrapping it here (before discovery wrap) means discovery runs first, then authz.
-	if s.config.AuthzMiddleware != nil {
-		mcpHandler = s.config.AuthzMiddleware(mcpHandler)
-		slog.Info("authorization middleware enabled for MCP endpoints (post-discovery)")
-	}
-
-	// Apply annotation enrichment middleware (runs after discovery, before authz in execution).
-	// Reads tool annotations from discovered capabilities and injects them into the
-	// request context so the authz middleware can make annotation-aware decisions.
-	if s.config.AuthzMiddleware != nil {
-		mcpHandler = AnnotationEnrichmentMiddleware(mcpHandler)
-		slog.Info("annotation enrichment middleware enabled for MCP endpoints")
-	}
-
-	// Apply discovery middleware (runs after audit/auth middleware) — legacy path only.
-	// Discovery middleware performs per-request capability aggregation with user context,
-	// injecting the routing table into the request context (the discovery-into-context seam).
-	// vmcpSessionMgr (MultiSessionGetter) is used to retrieve the fully-formed MultiSession
-	// for subsequent requests so the routing table can be injected into context.
-	// The backend registry provides a dynamic backend list (supports DynamicRegistry for K8s).
-	// The health monitor enables filtering based on current health status (respects circuit breaker).
-	//
-	// Guarded to the legacy server.New path (s.core == nil). On the Serve path the core is
-	// the single source of truth: session registration aggregates once via core.ListTools and
-	// handlers route through the core (#5442), so discovery is skipped — applying it would
-	// also nil-deref, since a Serve-built server has a nil discoveryMgr. WithSessionScopedRouting's
-	// initialize-skip behavior is preserved here on the legacy path; physical removal of the
-	// middleware and the context seam is deferred to Phase 3 (#5445).
-	if s.core == nil {
-		s.healthMonitorMu.RLock()
-		healthMon := s.healthMonitor
-		s.healthMonitorMu.RUnlock()
-
-		var healthStatusProvider health.StatusProvider
-		if healthMon != nil {
-			healthStatusProvider = healthMon
-		}
-		mcpHandler = discovery.Middleware(
-			s.discoveryMgr, s.backendRegistry, s.vmcpSessionMgr, healthStatusProvider,
-			discovery.WithSessionScopedRouting(),
-		)(mcpHandler)
-		slog.Info("discovery middleware enabled for lazy per-user capability discovery")
-	}
-
 	// Apply audit middleware if configured (runs after auth, before discovery)
 	if s.config.AuditConfig != nil {
 		if err := s.config.AuditConfig.Validate(); err != nil {
@@ -696,8 +588,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		mcpHandler = auditor.Middleware(mcpHandler)
 		slog.Info("audit middleware enabled for MCP endpoints")
 	}
-
-	mcpHandler = s.applyRateLimiting(mcpHandler)
 
 	// Apply authentication middleware if configured (runs first in chain)
 	if s.config.AuthMiddleware != nil {
@@ -732,14 +622,6 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	return mux, nil
 }
 
-func (s *Server) applyRateLimiting(next http.Handler) http.Handler {
-	if s.config.RateLimitMiddleware == nil {
-		return next
-	}
-	slog.Info("rate limit middleware enabled for MCP endpoints")
-	return s.config.RateLimitMiddleware(next)
-}
-
 // applyForwardedHeaderCapture wraps next with the forwarded-header capture
 // middleware when passthrough headers are configured. It copies the allowlisted
 // incoming headers into the request context so the per-session backend client
@@ -756,8 +638,6 @@ func (s *Server) applyForwardedHeaderCapture(next http.Handler) http.Handler {
 }
 
 // Start starts the Virtual MCP Server and begins serving requests.
-//
-//nolint:gocyclo // Complexity from health monitoring and startup orchestration is acceptable
 func (s *Server) Start(ctx context.Context) error {
 	// Build the HTTP handler (middleware chain, routes, mux)
 	handler, err := s.Handler(ctx)
@@ -808,23 +688,8 @@ func (s *Server) Start(ctx context.Context) error {
 		close(s.ready)
 	})
 
-	// Start health monitor if configured
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
-
-	if healthMon != nil {
-		if err := healthMon.Start(ctx); err != nil {
-			// Log error and disable health monitoring - treat as if it wasn't configured
-			// This ensures getter methods correctly report monitoring as disabled
-			slog.Warn("failed to start health monitor, disabling health monitoring", "error", err)
-			s.healthMonitorMu.Lock()
-			s.healthMonitor = nil
-			s.healthMonitorMu.Unlock()
-		} else {
-			slog.Info("health monitor started")
-		}
-	}
+	// The backend health monitor is owned by the core (built and started in core.New, stopped
+	// in core.Close), so the server no longer starts or stops it here.
 
 	// Start status reporter if configured
 	if s.statusReporter != nil {
@@ -894,16 +759,8 @@ func (s *Server) Stop(ctx context.Context) error {
 	s.listener = nil
 	s.listenerMu.Unlock()
 
-	// Stop health monitor to clean up health check goroutines
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
-
-	if healthMon != nil {
-		if err := healthMon.Stop(); err != nil {
-			errs = append(errs, fmt.Errorf("failed to stop health monitor: %w", err))
-		}
-	}
+	// The backend health monitor is stopped by core.Close (the core owns it); Serve registered
+	// a shutdown function that closes the core, run in the loop below.
 
 	// Run shutdown functions (e.g., status reporter cleanup, future components)
 	for _, shutdown := range s.shutdownFuncs {
@@ -917,11 +774,6 @@ func (s *Server) Stop(ctx context.Context) error {
 		if err := s.sessionManager.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("failed to stop session manager: %w", err))
 		}
-	}
-
-	// Stop discovery manager to clean up background goroutines
-	if s.discoveryMgr != nil {
-		s.discoveryMgr.Stop()
 	}
 
 	// Close session data storage last: HTTP server is down (no new in-flight requests),
@@ -1168,26 +1020,19 @@ func (s *Server) lazyInjectSessionTools(ctx context.Context) {
 	sessionID := sess.SessionID()
 
 	// Re-derive the tool set the same way registration did, so cross-pod re-injection
-	// matches the advertised set. On the Serve path (s.core != nil) that means a fresh
-	// core.ListTools for the request identity (the core is stateless, so re-deriving on
-	// pod B is the cache-miss equivalent of the once-per-session registration call),
-	// optimizer-wrapped into find_tool/call_tool when the optimizer is enabled — both
-	// via serveSessionTools, the same helper registration uses; on the legacy path it
-	// reads the factory-built session's tools via GetAdaptedTools.
+	// matches the advertised set: a fresh core.ListTools for the request identity (the core
+	// is stateless, so re-deriving on pod B is the cache-miss equivalent of the
+	// once-per-session registration call), optimizer-wrapped into find_tool/call_tool when
+	// the optimizer is enabled — via serveSessionTools, the same helper registration uses.
 	//
-	// Note: on the Serve path this lists under the CURRENT request identity, not the
-	// session's bound identity. For the realistic same-principal load-balanced case they
-	// are equal, so the advertised set is identical across pods. A cross-identity re-hydration
-	// would advertise the requester's own filtered set, but the call-time binding check
-	// (enforceSessionBinding, run before core.CallTool/ReadResource) is the backstop — it
-	// rejects a mismatched caller, so no other principal's capabilities can be invoked.
-	adaptedTools, err := func() ([]server.ServerTool, error) {
-		if s.core != nil {
-			identity, _ := auth.IdentityFromContext(ctx)
-			return s.serveSessionTools(ctx, sessionID, identity)
-		}
-		return s.vmcpSessionMgr.GetAdaptedTools(sessionID)
-	}()
+	// Note: this lists under the CURRENT request identity, not the session's bound identity.
+	// For the realistic same-principal load-balanced case they are equal, so the advertised
+	// set is identical across pods. A cross-identity re-hydration would advertise the
+	// requester's own filtered set, but the call-time binding check (enforceSessionBinding,
+	// run before core.CallTool/ReadResource) is the backstop — it rejects a mismatched
+	// caller, so no other principal's capabilities can be invoked.
+	identity, _ := auth.IdentityFromContext(ctx)
+	adaptedTools, err := s.serveSessionTools(ctx, sessionID, identity)
 	if err != nil || len(adaptedTools) == 0 {
 		slog.Debug("lazyInjectSessionTools: no tools available for session", "session_id", sessionID)
 		return
@@ -1216,7 +1061,7 @@ func (s *Server) handleSessionRegistration(
 //  3. Registers backend tools, composite tools, and resources with the SDK for the session.
 //
 // Tool and resource calls are routed directly through the session's backend connections
-// rather than through the global router and discovery middleware.
+// rather than through a global router.
 // Composite tool executors use the shared backend client and router.
 //
 // # Current capability surface
@@ -1261,95 +1106,28 @@ func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session serv
 		return retErr
 	}
 
-	// Serve path: the core is the single authoritative aggregation. Source the
-	// advertised tool/resource set from core.ListTools/ListResources (called once
-	// per session here) and install handlers that route through the core; the
-	// session factory's own aggregation is not used. CreateSession above still
-	// establishes the bound session record (identity binding, TTL, Validate). The
-	// returned error becomes retErr (named return), so the defer terminates the
-	// session on failure.
-	if s.core != nil {
-		return s.injectCoreSessionCapabilities(ctx, session)
-	}
-
-	// Legacy server.New path: uniform registration — same code path regardless of
-	// which decorators are active. session.Tools() returns the final decorated tool list.
-	adaptedTools, retErr := s.vmcpSessionMgr.GetAdaptedTools(sessionID)
-	if retErr != nil {
-		slog.Error("failed to get session-scoped tools",
-			"session_id", sessionID,
-			"error", retErr)
-		return retErr
-	}
-
-	adaptedResources, retErr := s.vmcpSessionMgr.GetAdaptedResources(sessionID)
-	if retErr != nil {
-		slog.Error("failed to get session-scoped resources",
-			"session_id", sessionID,
-			"error", retErr)
-		return retErr
-	}
-
-	if len(adaptedResources) > 0 {
-		if err := setSessionResourcesDirect(session, adaptedResources); err != nil {
-			slog.Error("failed to add session resources", "session_id", sessionID, "error", err)
-			return err
-		}
-	}
-
-	if len(adaptedTools) > 0 {
-		if err := setSessionToolsDirect(session, adaptedTools); err != nil {
-			slog.Error("failed to add session tools", "session_id", sessionID, "error", err)
-			return err
-		}
-	}
-
-	slog.Info("session capabilities injected",
-		"session_id", sessionID,
-		"tool_count", len(adaptedTools))
-	return nil
+	// The core is the single authoritative aggregation: source the advertised tool/resource
+	// set from core.ListTools/ListResources (called once per session here) and install
+	// handlers that route through the core. CreateSession above still establishes the bound
+	// session record (identity binding, TTL, Validate). The returned error becomes retErr
+	// (named return), so the defer terminates the session on failure.
+	return s.injectCoreSessionCapabilities(ctx, session)
 }
 
-// validateWorkflows validates workflow definitions, returning only the valid ones.
-//
-// This function:
-//  1. Validates each workflow definition (cycle detection, tool references, etc.)
-//  2. Returns error on first validation failure (fail-fast)
-//
-// Failing fast on invalid workflows provides immediate user feedback and prevents
-// security issues (resource exhaustion from cycles, information disclosure from errors).
-func validateWorkflows(
-	validator composer.Composer,
-	workflowDefs map[string]*composer.WorkflowDefinition,
-) (map[string]*composer.WorkflowDefinition, error) {
-	if len(workflowDefs) == 0 {
-		return nil, nil
+// backendHealth returns the core-owned backend health reporter, or nil when health
+// monitoring is disabled (the core owns the monitor's lifecycle; #5443 reversal). The
+// s.core nil guard is defensive: a Serve-built server always has a non-nil core.
+func (s *Server) backendHealth() health.Reporter {
+	if s.core == nil {
+		return nil
 	}
-
-	validDefs := make(map[string]*composer.WorkflowDefinition, len(workflowDefs))
-
-	for name, def := range workflowDefs {
-		if err := validator.ValidateWorkflow(context.Background(), def); err != nil {
-			return nil, fmt.Errorf("invalid workflow definition '%s': %w", name, err)
-		}
-
-		validDefs[name] = def
-		slog.Debug("validated workflow definition", "name", name)
-	}
-
-	if len(validDefs) > 0 {
-		slog.Info("loaded valid composite tool workflows", "count", len(validDefs))
-	}
-
-	return validDefs, nil
+	return s.core.BackendHealth()
 }
 
 // GetBackendHealthStatus returns the health status of a specific backend.
 // Returns error if health monitoring is disabled or backend not found.
 func (s *Server) GetBackendHealthStatus(backendID string) (vmcp.BackendHealthStatus, error) {
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
+	healthMon := s.backendHealth()
 
 	if healthMon == nil {
 		return vmcp.BackendUnknown, fmt.Errorf("health monitoring is disabled")
@@ -1360,9 +1138,7 @@ func (s *Server) GetBackendHealthStatus(backendID string) (vmcp.BackendHealthSta
 // GetBackendHealthState returns the full health state of a specific backend.
 // Returns error if health monitoring is disabled or backend not found.
 func (s *Server) GetBackendHealthState(backendID string) (*health.State, error) {
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
+	healthMon := s.backendHealth()
 
 	if healthMon == nil {
 		return nil, fmt.Errorf("health monitoring is disabled")
@@ -1373,9 +1149,7 @@ func (s *Server) GetBackendHealthState(backendID string) (*health.State, error) 
 // GetAllBackendHealthStates returns the health states of all backends.
 // Returns empty map if health monitoring is disabled.
 func (s *Server) GetAllBackendHealthStates() map[string]*health.State {
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
+	healthMon := s.backendHealth()
 
 	if healthMon == nil {
 		return make(map[string]*health.State)
@@ -1386,9 +1160,7 @@ func (s *Server) GetAllBackendHealthStates() map[string]*health.State {
 // GetHealthSummary returns a summary of backend health across all backends.
 // Returns zero-valued summary if health monitoring is disabled.
 func (s *Server) GetHealthSummary() health.Summary {
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
+	healthMon := s.backendHealth()
 
 	if healthMon == nil {
 		return health.Summary{}
@@ -1416,9 +1188,7 @@ type BackendHealthResponse struct {
 // Security Note: This endpoint is unauthenticated and may expose backend topology.
 // Consider applying authentication middleware if operating in multi-tenant mode.
 func (s *Server) handleBackendHealth(w http.ResponseWriter, _ *http.Request) {
-	s.healthMonitorMu.RLock()
-	healthMon := s.healthMonitor
-	s.healthMonitorMu.RUnlock()
+	healthMon := s.backendHealth()
 
 	response := BackendHealthResponse{
 		MonitoringEnabled: healthMon != nil,

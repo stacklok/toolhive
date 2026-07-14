@@ -34,7 +34,7 @@ jobs:
 
     steps:
     - name: Checkout code
-      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+      uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
 
     - name: Disable containerd image store
       # Workaround for https://github.com/kubernetes-sigs/kind/issues/3795
@@ -50,13 +50,13 @@ jobs:
         sudo systemctl restart docker
 
     - name: Set up Helm
-      uses: azure/setup-helm@dda3372f752e03dde6b3237bc9431cdc2f7a02a2 # v5.0.0
+      uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
 
     - name: Setup Ko
-      uses: ko-build/setup-ko@d006021bd0c28d1ce33a07e7943d48b079944c8d # v0.9
+      uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
 
     - name: Set up Go
-      uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6
+      uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
       with:
         go-version: 'stable'
         cache: true
@@ -101,6 +101,7 @@ jobs:
         docker pull python:3.9-slim &
         docker pull curlimages/curl:8.17.0 &
         docker pull ghcr.io/huggingface/text-embeddings-inference:cpu-latest &
+        docker pull ghcr.io/dexidp/dex:v2.42.0 &
         wait
 
         # Load all images into kind
@@ -110,6 +111,7 @@ jobs:
         kind load docker-image --name toolhive python:3.9-slim
         kind load docker-image --name toolhive curlimages/curl:8.17.0
         kind load docker-image --name toolhive ghcr.io/huggingface/text-embeddings-inference:cpu-latest
+        kind load docker-image --name toolhive ghcr.io/dexidp/dex:v2.42.0
 
     - name: Deploy operator with VMCP_IMAGE
       run: |

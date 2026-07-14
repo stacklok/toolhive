@@ -17,6 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -518,35 +519,21 @@ func TestListWorkloadsInGroup_MCPRemoteProxies(t *testing.T) {
 	namespace := testNamespace
 
 	// Create multiple MCPRemoteProxies in different groups
-	proxy1 := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy1",
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "group-a"},
-		},
-	}
-
-	proxy2 := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy2",
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "group-a"},
-		},
-	}
-
-	proxy3 := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy3",
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "group-b"},
-		},
-	}
+	proxy1 := v1beta1test.NewMCPRemoteProxy("proxy1", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-a"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
+	proxy2 := v1beta1test.NewMCPRemoteProxy("proxy2", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-a"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
+	proxy3 := v1beta1test.NewMCPRemoteProxy("proxy3", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-b"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
 
 	k8sClient := setupTestClient(t, proxy1, proxy2, proxy3)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
@@ -601,25 +588,16 @@ func TestListWorkloadsInGroup_MixedWorkloads(t *testing.T) {
 	}
 
 	// Create MCPRemoteProxies
-	proxy1 := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy1",
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "group-a"},
-		},
-	}
-
-	proxy2 := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy2",
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "group-a"},
-		},
-	}
+	proxy1 := v1beta1test.NewMCPRemoteProxy("proxy1", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-a"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
+	proxy2 := v1beta1test.NewMCPRemoteProxy("proxy2", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-a"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
 
 	k8sClient := setupTestClient(t, server1, server2, proxy1, proxy2)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
@@ -698,20 +676,15 @@ func TestMCPRemoteProxyToBackend_EmptyStatusURL(t *testing.T) {
 	namespace := testNamespace
 
 	// MCPRemoteProxy is Ready with transport, but Status.URL is empty.
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "pending-proxy",
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote-mcp.example.com",
-			Transport: "streamable-http",
-		},
-		Status: mcpv1beta1.MCPRemoteProxyStatus{
+	proxy := v1beta1test.NewMCPRemoteProxy("pending-proxy", namespace,
+		v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady,
 			// URL intentionally empty — not yet assigned by the operator
-		},
-	}
+		}),
+	)
 
 	k8sClient := setupTestClient(t, proxy)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
@@ -732,20 +705,15 @@ func TestMCPRemoteProxyToBackend_BasicFields(t *testing.T) {
 
 	namespace := testNamespace
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote-mcp.example.com",
-			Transport: "streamable-http",
-		},
-		Status: mcpv1beta1.MCPRemoteProxyStatus{
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", namespace,
+		v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady,
 			URL:   "http://proxy-service:8080",
-		},
-	}
+		}),
+	)
 
 	k8sClient := setupTestClient(t, proxy)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
@@ -771,24 +739,21 @@ func TestMCPRemoteProxyToBackend_WithAnnotations(t *testing.T) {
 
 	namespace := testNamespace
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: namespace,
-			Annotations: map[string]string{
-				"custom-annotation":         "custom-value",
-				"kubectl.kubernetes.io/foo": "should-be-filtered",
-			},
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote-mcp.example.com",
-			Transport: "streamable-http",
-		},
-		Status: mcpv1beta1.MCPRemoteProxyStatus{
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", namespace,
+		v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady,
 			URL:   "http://proxy-service:8080",
-		},
-	}
+		}),
+		v1beta1test.MutateRemoteProxy(func(p *mcpv1beta1.MCPRemoteProxy) {
+			p.Annotations = map[string]string{
+				"custom-annotation":         "custom-value",
+				"kubectl.kubernetes.io/foo": "should-be-filtered",
+			}
+		}),
+	)
 
 	k8sClient := setupTestClient(t, proxy)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
@@ -840,20 +805,15 @@ func TestMCPRemoteProxyToBackend_HealthStatusMapping(t *testing.T) {
 
 			namespace := testNamespace
 
-			proxy := &mcpv1beta1.MCPRemoteProxy{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-proxy",
-					Namespace: namespace,
-				},
-				Spec: mcpv1beta1.MCPRemoteProxySpec{
-					RemoteURL: "https://remote-mcp.example.com",
-					Transport: "streamable-http",
-				},
-				Status: mcpv1beta1.MCPRemoteProxyStatus{
+			proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", namespace,
+				v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+				v1beta1test.WithRemoteProxyPort(0),
+				v1beta1test.WithRemoteProxyTransport("streamable-http"),
+				v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 					Phase: tt.phase,
 					URL:   "http://proxy-service:8080",
-				},
-			}
+				}),
+			)
 
 			k8sClient := setupTestClient(t, proxy)
 			discoverer := NewK8SDiscovererWithClient(k8sClient, namespace).(*k8sDiscoverer)
@@ -872,20 +832,15 @@ func TestGetWorkloadAsVMCPBackend_MCPRemoteProxy(t *testing.T) {
 
 	namespace := testNamespace
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote-mcp.example.com",
-			Transport: "streamable-http",
-		},
-		Status: mcpv1beta1.MCPRemoteProxyStatus{
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", namespace,
+		v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady,
 			URL:   "http://proxy-service:8080",
-		},
-	}
+		}),
+	)
 
 	k8sClient := setupTestClient(t, proxy)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
@@ -942,23 +897,16 @@ func TestDiscoverAuth_MCPRemoteProxy_TokenExchange(t *testing.T) {
 	}
 
 	// Create MCPRemoteProxy that references the auth config
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-proxy",
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			RemoteURL: "https://remote-mcp.example.com",
-			Transport: "streamable-http",
-			ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
-				Name: "test-token-exchange",
-			},
-		},
-		Status: mcpv1beta1.MCPRemoteProxyStatus{
+	proxy := v1beta1test.NewMCPRemoteProxy("test-proxy", namespace,
+		v1beta1test.WithRemoteProxyURL("https://remote-mcp.example.com"),
+		v1beta1test.WithRemoteProxyPort(0),
+		v1beta1test.WithRemoteProxyTransport("streamable-http"),
+		v1beta1test.WithRemoteProxyExternalAuthConfigRef("test-token-exchange"),
+		v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 			Phase: mcpv1beta1.MCPRemoteProxyPhaseReady,
 			URL:   "http://proxy-service:8080",
-		},
-	}
+		}),
+	)
 
 	k8sClient := setupTestClient(t, secret, authConfig, proxy)
 	discoverer := NewK8SDiscovererWithClient(k8sClient, namespace)
@@ -1062,15 +1010,11 @@ func TestListWorkloadsInGroup_AllWorkloadTypes(t *testing.T) {
 		},
 	}
 
-	proxy := &mcpv1beta1.MCPRemoteProxy{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "proxy1",
-			Namespace: namespace,
-		},
-		Spec: mcpv1beta1.MCPRemoteProxySpec{
-			GroupRef: &mcpv1beta1.MCPGroupRef{Name: "group-a"},
-		},
-	}
+	proxy := v1beta1test.NewMCPRemoteProxy("proxy1", namespace,
+		v1beta1test.WithRemoteProxyGroupRef("group-a"),
+		v1beta1test.WithRemoteProxyURL(""),
+		v1beta1test.WithRemoteProxyPort(0),
+	)
 
 	entry := &mcpv1beta1.MCPServerEntry{
 		ObjectMeta: metav1.ObjectMeta{

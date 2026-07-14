@@ -25,15 +25,6 @@ import (
 	routermocks "github.com/stacklok/toolhive/pkg/vmcp/router/mocks"
 )
 
-// stubStatusProvider is a non-nil health.StatusProvider for derivation tests; its
-// behavior is not exercised — only its identity is asserted (it is passed through
-// onto core.Config.HealthStatusProvider).
-type stubStatusProvider struct{}
-
-func (*stubStatusProvider) QueryBackendStatus(string) (vmcp.BackendHealthStatus, bool) {
-	return vmcp.BackendHealthy, true
-}
-
 // populatedLegacyConfig returns a server.Config with every field deriveServerConfig
 // reads set to a distinctive non-zero value, so a dropped or wrong-source mapping
 // surfaces in the assertions below. AuthzMiddleware is set too, to prove derivation
@@ -52,7 +43,6 @@ func populatedLegacyConfig() *Config {
 		AuthzMiddleware:         passthrough,
 		AuthInfoHandler:         http.NewServeMux(),
 		PassthroughHeaders:      []string{"X-Tenant-Id"},
-		RateLimitMiddleware:     passthrough,
 		AuthServer:              &asrunner.EmbeddedAuthServer{},
 		TelemetryProvider:       &telemetry.Provider{},
 		AuditConfig:             &audit.Config{},
@@ -67,11 +57,10 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 	t.Parallel()
 
 	cfg := populatedLegacyConfig()
-	healthMon := &health.Monitor{}
 	registry := vmcp.NewImmutableRegistry([]vmcp.Backend{})
 	smCfg := testMinimalSessionManagerConfig()
 
-	got := deriveServerConfig(cfg, healthMon, registry, smCfg)
+	got := deriveServerConfig(cfg, registry, smCfg)
 
 	// Scalars projected verbatim (cfg's values are all non-default, so cmp.Or returns them).
 	assert.Equal(t, "vmcp-name", got.Name)
@@ -85,7 +74,6 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 
 	// Func/handler/pointer fields projected by reference.
 	assert.NotNil(t, got.AuthMiddleware)
-	assert.NotNil(t, got.RateLimitMiddleware)
 	assert.Same(t, cfg.AuthInfoHandler, got.AuthInfoHandler)
 	assert.Equal(t, cfg.PassthroughHeaders, got.PassthroughHeaders)
 	assert.Same(t, cfg.AuthServer, got.AuthServer)
@@ -98,7 +86,6 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 	assert.Same(t, cfg.AuditConfig, got.AuditConfig)
 
 	// Collaborators passed in (not on server.Config) — threaded through, not from cfg.
-	assert.Same(t, healthMon, got.HealthMonitor)
 	assert.Same(t, registry, got.BackendRegistry)
 	assert.Same(t, smCfg, got.SessionManagerConfig)
 }
@@ -110,13 +97,12 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 func TestDeriveServerConfigPropagatesNilCrossCutting(t *testing.T) {
 	t.Parallel()
 
-	// A deliberately-disabled subsystem (nil provider/config/monitor) must stay nil —
+	// A deliberately-disabled subsystem (nil provider/config) must stay nil —
 	// derivation must not substitute a default or panic.
-	got := deriveServerConfig(&Config{}, nil, nil, nil)
+	got := deriveServerConfig(&Config{}, nil, nil)
 
 	assert.Nil(t, got.TelemetryProvider)
 	assert.Nil(t, got.AuditConfig)
-	assert.Nil(t, got.HealthMonitor)
 	assert.Nil(t, got.BackendRegistry)
 	assert.Nil(t, got.SessionManagerConfig)
 }
@@ -133,7 +119,6 @@ func TestDeriveServerConfigMapsAllFields(t *testing.T) {
 
 	got := deriveServerConfig(
 		populatedLegacyConfig(),
-		&health.Monitor{},
 		vmcp.NewImmutableRegistry([]vmcp.Backend{}),
 		testMinimalSessionManagerConfig(),
 	)
@@ -146,9 +131,10 @@ func TestDeriveCoreConfigAssemblesCollaborators(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	cfg := &Config{
-		Name:              "core-name",
-		TelemetryProvider: &telemetry.Provider{},
-		AuditConfig:       &audit.Config{},
+		Name:                "core-name",
+		TelemetryProvider:   &telemetry.Provider{},
+		AuditConfig:         &audit.Config{},
+		HealthMonitorConfig: &health.MonitorConfig{},
 	}
 	agg := aggmocks.NewMockAggregator(ctrl)
 	rt := routermocks.NewMockRouter(ctrl)
@@ -157,9 +143,8 @@ func TestDeriveCoreConfigAssemblesCollaborators(t *testing.T) {
 	workflowDefs := map[string]*composer.WorkflowDefinition{"wf": {}}
 	authzCfg := &authz.Config{}
 	elicitation := vmcpmocks.NewMockElicitationRequester(ctrl)
-	healthProvider := &stubStatusProvider{}
 
-	got := deriveCoreConfig(cfg, agg, rt, backendClient, registry, workflowDefs, authzCfg, elicitation, healthProvider)
+	got := deriveCoreConfig(cfg, agg, rt, backendClient, registry, workflowDefs, authzCfg, elicitation)
 
 	// Collaborators passed through by identity.
 	assert.Same(t, agg, got.Aggregator)
@@ -168,7 +153,7 @@ func TestDeriveCoreConfigAssemblesCollaborators(t *testing.T) {
 	assert.Same(t, registry, got.BackendRegistry)
 	assert.Same(t, authzCfg, got.Authz)
 	assert.Same(t, elicitation, got.Elicitation)
-	assert.Same(t, healthProvider, got.HealthStatusProvider)
+	assert.Same(t, cfg.HealthMonitorConfig, got.HealthMonitorConfig)
 	assert.Equal(t, workflowDefs, got.WorkflowDefs)
 
 	// ServerName uses the raw cfg.Name for authz parity (no transport default applied).
@@ -194,13 +179,12 @@ func TestDeriveCoreConfigUsesRawServerNameAndNilDefaults(t *testing.T) {
 		nil, // workflowDefs
 		nil, // authzCfg
 		nil, // elicitation
-		nil, // healthProvider
 	)
 
 	assert.Empty(t, got.ServerName)
 	assert.Nil(t, got.Authz)
 	assert.Nil(t, got.Elicitation)
-	assert.Nil(t, got.HealthStatusProvider)
+	assert.Nil(t, got.HealthMonitorConfig)
 	assert.Nil(t, got.WorkflowDefs)
 }
 
@@ -214,9 +198,10 @@ func TestDeriveCoreConfigMapsAllFields(t *testing.T) {
 
 	ctrl := gomock.NewController(t)
 	cfg := &Config{
-		Name:              "core-name",
-		TelemetryProvider: &telemetry.Provider{},
-		AuditConfig:       &audit.Config{},
+		Name:                "core-name",
+		TelemetryProvider:   &telemetry.Provider{},
+		AuditConfig:         &audit.Config{},
+		HealthMonitorConfig: &health.MonitorConfig{},
 	}
 
 	got := deriveCoreConfig(
@@ -228,7 +213,6 @@ func TestDeriveCoreConfigMapsAllFields(t *testing.T) {
 		map[string]*composer.WorkflowDefinition{"wf": {}},
 		&authz.Config{},
 		vmcpmocks.NewMockElicitationRequester(ctrl),
-		&stubStatusProvider{},
 	)
 
 	assertAllFieldsPopulated(t, *got, "core.Config", nil)
@@ -244,14 +228,14 @@ func TestDeriveConfigsTreatInputAsReadOnly(t *testing.T) {
 	authzFn := func(h http.Handler) http.Handler { return h }
 	cfg := &Config{AuthzMiddleware: authzFn} // empty scalars: defaulting would mutate them.
 
-	_ = deriveServerConfig(cfg, nil, nil, nil)
+	_ = deriveServerConfig(cfg, nil, nil)
 	_ = deriveCoreConfig(
 		cfg,
 		aggmocks.NewMockAggregator(ctrl),
 		routermocks.NewMockRouter(ctrl),
 		vmcpmocks.NewMockBackendClient(ctrl),
 		vmcpmocks.NewMockBackendRegistry(ctrl),
-		nil, nil, nil, nil,
+		nil, nil, nil,
 	)
 
 	// Transport defaults were NOT written back onto the caller's Config.

@@ -26,6 +26,10 @@ const (
 	DirPermissions os.FileMode = 0750
 	// FilePermissionMask strips setuid, setgid, sticky bits and caps at 0644.
 	FilePermissionMask os.FileMode = 0644
+	// PluginFilePermissionMask strips setuid, setgid, sticky bits and caps at
+	// 0755, preserving the executable bit so plugin hook scripts keep +x.
+	// For non-executable files (mode 0644), 0644 & 0755 = 0644 — no change.
+	PluginFilePermissionMask os.FileMode = 0755
 )
 
 // ExtractResult contains the outcome of an Extract operation.
@@ -47,6 +51,10 @@ func NewInstaller() Installer {
 
 func (*defaultInstaller) Extract(layerData []byte, targetDir string, force bool) (*ExtractResult, error) {
 	return Extract(layerData, targetDir, force)
+}
+
+func (*defaultInstaller) ExtractPlugin(layerData []byte, targetDir string, force bool) (*ExtractResult, error) {
+	return ExtractPlugin(layerData, targetDir, force)
 }
 
 func (*defaultInstaller) Remove(skillDir string) error {
@@ -94,7 +102,63 @@ func Extract(layerData []byte, targetDir string, force bool) (*ExtractResult, er
 		return nil, fmt.Errorf("creating target directory: %w", err)
 	}
 
-	if err := writeFiles(files, targetDir); err != nil {
+	if err := writeFiles(files, targetDir, FilePermissionMask); err != nil {
+		return nil, err
+	}
+
+	// Defense in depth: verify the extracted directory post-extraction
+	if err := CheckFilesystem(targetDir); err != nil {
+		_ = os.RemoveAll(targetDir) // clean up on verification failure
+		return nil, fmt.Errorf("post-extraction verification failed: %w", err)
+	}
+
+	return &ExtractResult{
+		SkillDir: targetDir,
+		Files:    len(files),
+	}, nil
+}
+
+// ExtractPlugin is like Extract but uses PluginFilePermissionMask (0755) so
+// executable files (hook scripts, entry points) keep their +x bit. Used by
+// plugin adapters which install multi-component trees that may include
+// executable hooks — unlike skills, which are single markdown files.
+func ExtractPlugin(layerData []byte, targetDir string, force bool) (*ExtractResult, error) {
+	// Decompress gzip with total size limit
+	tarData, err := ociskills.DecompressWithLimit(layerData, MaxTotalExtractSize)
+	if err != nil {
+		return nil, fmt.Errorf("decompressing layer: %w", err)
+	}
+
+	// Extract tar with per-file size limit (rejects symlinks, hardlinks, path traversal)
+	files, err := ociskills.ExtractTarWithLimit(tarData, MaxFileExtractSize)
+	if err != nil {
+		return nil, fmt.Errorf("extracting tar: %w", err)
+	}
+
+	if len(files) > MaxExtractFileCount {
+		return nil, fmt.Errorf("archive contains %d files, exceeding limit of %d", len(files), MaxExtractFileCount)
+	}
+
+	// Handle existing directory
+	if _, statErr := os.Stat(targetDir); statErr == nil {
+		if !force {
+			return nil, fmt.Errorf("target directory %q already exists; use force to overwrite", targetDir)
+		}
+		if err := Remove(targetDir); err != nil {
+			return nil, fmt.Errorf("removing existing directory: %w", err)
+		}
+	}
+
+	// Pre-extraction: validate that no existing path components are symlinks.
+	if err := ValidatePathNoSymlinks(targetDir); err != nil {
+		return nil, fmt.Errorf("target path validation: %w", err)
+	}
+
+	if err := os.MkdirAll(targetDir, DirPermissions); err != nil {
+		return nil, fmt.Errorf("creating target directory: %w", err)
+	}
+
+	if err := writeFiles(files, targetDir, PluginFilePermissionMask); err != nil {
 		return nil, err
 	}
 
@@ -111,14 +175,16 @@ func Extract(layerData []byte, targetDir string, force bool) (*ExtractResult, er
 }
 
 // writeFiles writes extracted file entries to targetDir with containment checks
-// and sanitized permissions.
-func writeFiles(files []ociskills.FileEntry, targetDir string) error {
+// and sanitized permissions. The mask controls how much of the original mode
+// is preserved (FilePermissionMask for skills, PluginFilePermissionMask for
+// plugins).
+func writeFiles(files []ociskills.FileEntry, targetDir string, mask os.FileMode) error {
 	cleanTarget := filepath.Clean(targetDir)
 
 	for _, f := range files {
-		// Sanitize file permissions: strip setuid/setgid/sticky, cap at 0644.
+		// Sanitize file permissions: strip setuid/setgid/sticky, apply mask.
 		// Pre-write containment check is handled by WriteContainedFile.
-		mode := os.FileMode(f.Mode&0o777) & FilePermissionMask //nolint:gosec // mode is masked to 9 bits before conversion
+		mode := os.FileMode(f.Mode&0o777) & mask //nolint:gosec // mode is masked to 9 bits before conversion
 
 		if err := fileutils.WriteContainedFile(cleanTarget, f.Path, f.Content, DirPermissions, mode); err != nil {
 			return err

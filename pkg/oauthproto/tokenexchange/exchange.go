@@ -240,7 +240,13 @@ func (ts *tokenSource) Token() (*oauth2.Token, error) {
 		return nil, fmt.Errorf("token exchange: server returned empty issued_token_type (required by RFC 8693)")
 	}
 
-	return resp.Token, nil
+	// Surface the RFC 8693 issued_token_type so callers can verify the server
+	// returned the type they asked for (e.g., XAA's IdP exchange requires an ID-JAG).
+	token := resp.Token.WithExtra(map[string]any{
+		"issued_token_type": resp.IssuedTokenType,
+	})
+
+	return token, nil
 }
 
 // TokenSource returns an oauth2.TokenSource that performs token exchange.

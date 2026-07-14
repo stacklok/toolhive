@@ -72,6 +72,7 @@ func launchYardstickOnPort(config *e2e.TestConfig, groupName, backendName string
 		"--name", backendName,
 		"--group", groupName,
 		"--transport", "streamable-http",
+		"--isolate-network=false",
 		"--target-port", portStr,
 		"--env", "TRANSPORT=streamable-http",
 		"--", "-port", portStr, "-transport", "streamable-http",

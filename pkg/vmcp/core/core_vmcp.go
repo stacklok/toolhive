@@ -48,9 +48,17 @@ type coreVMCP struct {
 	backendRegistry vmcp.BackendRegistry
 	backendClient   vmcp.BackendClient
 
-	// health is the injected read-only backend health view. Nil means no health
-	// filtering (all backends included), matching today's no-monitor behavior.
+	// health is the read-only backend health view used for capability filtering. It is the
+	// healthMonitor below as a StatusProvider, or a true nil interface when monitoring is
+	// disabled/failed (so filterHealthyBackends includes all backends rather than calling
+	// through a typed-nil).
 	health health.StatusProvider
+
+	// healthMonitor is the backend health monitor the core owns: built and started in New,
+	// stopped in Close, and exposed for reporting via BackendHealth. Nil when health
+	// monitoring is disabled or failed to start. (#5443 reversal: the monitor's lifecycle
+	// moved here from server.New/Serve so it has a single owner.)
+	healthMonitor *health.Monitor
 
 	// admission enforces the authorization decision for List* (filter) and
 	// Call/Read/Get (deny) from one source. Never nil: New installs an allow-all
@@ -188,16 +196,70 @@ func New(cfg *Config) (VMCP, error) {
 		return nil, fmt.Errorf("workflow validation failed: %w", err)
 	}
 
+	// Build and start the backend health monitor (#5443 reversal: the core owns its
+	// lifecycle). The core filters capabilities with it and stops it in Close. It is started
+	// with context.Background() and torn down via Close — like the state store — since New has
+	// no request-scoped context. The monitor uses the undecorated backend client so health
+	// checks do not emit backend-call telemetry. Built last so few error paths must stop it.
+	healthMonitor, healthProvider, err := buildHealthMonitor(cfg)
+	if err != nil {
+		stopStore()
+		return nil, err
+	}
+
 	return &coreVMCP{
 		aggregator:      cfg.Aggregator,
 		backendRegistry: cfg.BackendRegistry,
 		backendClient:   backendClient,
-		health:          cfg.HealthStatusProvider,
+		health:          healthProvider,
+		healthMonitor:   healthMonitor,
 		admission:       admission,
 		workflowDefs:    workflowDefs,
 		composerFactory: composerFactory,
 		stopStore:       stopStore,
 	}, nil
+}
+
+// buildHealthMonitor builds and starts the backend health monitor from cfg, returning the
+// monitor (for Close/reporting) and its StatusProvider view (for capability filtering).
+// Returns (nil, nil, nil) when health monitoring is not configured. A monitor that fails to
+// start is logged and disabled — not fatal — preserving the legacy lenient behavior, so the
+// returned monitor is nil in that case too. The StatusProvider is returned as a true nil
+// interface when disabled so filterHealthyBackends does not call through a typed-nil.
+func buildHealthMonitor(cfg *Config) (*health.Monitor, health.StatusProvider, error) {
+	if cfg.HealthMonitorConfig == nil {
+		slog.Info("health monitoring disabled")
+		return nil, nil, nil
+	}
+
+	// Use the undecorated client so health checks do not emit backend-call telemetry.
+	monitor, err := health.NewMonitor(
+		cfg.BackendClient, cfg.BackendRegistry.List(context.Background()), *cfg.HealthMonitorConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create health monitor: %w", err)
+	}
+
+	if err := monitor.Start(context.Background()); err != nil {
+		slog.Warn("failed to start health monitor, disabling health monitoring", "error", err)
+		return nil, nil, nil
+	}
+
+	slog.Info("health monitoring enabled",
+		"check_interval", cfg.HealthMonitorConfig.CheckInterval,
+		"unhealthy_threshold", cfg.HealthMonitorConfig.UnhealthyThreshold,
+		"timeout", cfg.HealthMonitorConfig.Timeout,
+		"degraded_threshold", cfg.HealthMonitorConfig.DegradedThreshold)
+	return monitor, monitor, nil
+}
+
+// BackendHealth returns the core's backend health reporter, or nil when health monitoring is
+// disabled. The core owns the monitor's lifecycle (build/start in New, stop in Close); the
+// transport layer uses this only to report on or sync backend health.
+func (c *coreVMCP) BackendHealth() health.Reporter {
+	if c.healthMonitor == nil {
+		return nil
+	}
+	return c.healthMonitor
 }
 
 // ListTools health-filters the registry, aggregates backend capabilities on
@@ -289,11 +351,62 @@ func (c *coreVMCP) LookupPrompt(ctx context.Context, identity *auth.Identity, na
 	return nil, fmt.Errorf("%w: prompt %q", vmcp.ErrNotFound, name)
 }
 
+// ListBackends returns the backends visible to identity. In admin mode
+// (filterUnauthorized=false) it returns the full group registry as-is — no
+// aggregation, no admission, no health filter. In authorized mode it returns only
+// the backends the identity is admitted at least one capability on. See the [VMCP]
+// interface contract for the full semantics.
+func (c *coreVMCP) ListBackends(
+	ctx context.Context, identity *auth.Identity, filterUnauthorized bool,
+) ([]vmcp.Backend, error) {
+	all := c.backendRegistry.List(ctx)
+	if !filterUnauthorized {
+		return all, nil
+	}
+	// An empty group has nothing to authorize: return an empty (non-nil) set rather
+	// than aggregating, which would surface the aggregator's "no backends returned
+	// capabilities" sentinel as an error and make the authorized view disagree with
+	// the admin view for the same empty group. A non-empty group whose backends are
+	// all unreachable still errors (consistent with ListTools) — that is a live
+	// failure, not an empty answer.
+	if len(all) == 0 {
+		return []vmcp.Backend{}, nil
+	}
+	return c.authorizedBackends(ctx, identity, all)
+}
+
+// LookupBackend resolves a single backend id in the authorized view, mirroring
+// LookupTool: it delegates to ListBackends(ctx, identity, true) and returns
+// vmcp.ErrNotFound for an id that view does not contain (unknown, out-of-group, or
+// unauthorized).
+func (c *coreVMCP) LookupBackend(
+	ctx context.Context, identity *auth.Identity, backendID string,
+) (*vmcp.Backend, error) {
+	backends, err := c.ListBackends(ctx, identity, true)
+	if err != nil {
+		return nil, err
+	}
+	for i := range backends {
+		if backends[i].ID == backendID {
+			backend := backends[i]
+			return &backend, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: backend %q", vmcp.ErrNotFound, backendID)
+}
+
 // Close stops the workflow state store's cleanup goroutine. It is idempotent:
 // the underlying Stop closes a channel that cannot be closed twice, so the work
 // is guarded by sync.Once and subsequent calls return nil.
 func (c *coreVMCP) Close() error {
-	c.closeOnce.Do(c.stopStore)
+	c.closeOnce.Do(func() {
+		c.stopStore()
+		if c.healthMonitor != nil {
+			if err := c.healthMonitor.Stop(); err != nil {
+				slog.Warn("failed to stop health monitor", "error", err)
+			}
+		}
+	})
 	return nil
 }
 
@@ -303,12 +416,72 @@ func (c *coreVMCP) Close() error {
 // lookup-then-call flow aggregates twice. This is intentional — caching is the
 // Serve layer's responsibility, not the core's (vmcp anti-patterns #8/#9).
 func (c *coreVMCP) aggregatedView(ctx context.Context) (*aggregator.AggregatedCapabilities, error) {
-	backends := filterHealthyBackends(c.backendRegistry.List(ctx), c.health)
+	return c.aggregateBackends(ctx, filterHealthyBackends(c.backendRegistry.List(ctx), c.health))
+}
+
+// aggregateBackends aggregates capabilities across the given backends. The caller
+// decides the backend set: aggregatedView passes the health-filtered subset (the
+// data path), while authorizedBackends passes the full registry (backend
+// visibility, per #5741: health is a status, not a visibility filter). It exists so
+// both share one aggregation error-wrap. Unreachable backends fail their live
+// capability query and simply contribute nothing.
+func (c *coreVMCP) aggregateBackends(
+	ctx context.Context, backends []vmcp.Backend,
+) (*aggregator.AggregatedCapabilities, error) {
 	agg, err := c.aggregator.AggregateCapabilities(ctx, backends)
 	if err != nil {
 		return nil, fmt.Errorf("capability aggregation failed: %w", err)
 	}
 	return agg, nil
+}
+
+// authorizedBackends returns the subset of all on which identity is admitted at
+// least one capability. It aggregates over the full set (no health filter — #5741),
+// runs the same admission seam List{Tools,Resources,Prompts} use, and unions the
+// surviving capabilities' BackendIDs. Composite tools are excluded (agg.Tools, not
+// advertisedTools): they are workflows with no single backend, so they cannot make
+// a backend visible. Callers guard the empty-group case before calling this (see
+// ListBackends) so an empty group never reaches the aggregator's "no backends"
+// sentinel here.
+func (c *coreVMCP) authorizedBackends(
+	ctx context.Context, identity *auth.Identity, all []vmcp.Backend,
+) ([]vmcp.Backend, error) {
+	agg, err := c.aggregateBackends(ctx, all)
+	if err != nil {
+		return nil, err
+	}
+
+	tools, err := c.admission.FilterTools(ctx, identity, agg.Tools)
+	if err != nil {
+		return nil, err
+	}
+	resources, err := c.admission.FilterResources(ctx, identity, agg.Resources)
+	if err != nil {
+		return nil, err
+	}
+	prompts, err := c.admission.FilterPrompts(ctx, identity, agg.Prompts)
+	if err != nil {
+		return nil, err
+	}
+
+	allowed := make(map[string]struct{})
+	for i := range tools {
+		allowed[tools[i].BackendID] = struct{}{}
+	}
+	for i := range resources {
+		allowed[resources[i].BackendID] = struct{}{}
+	}
+	for i := range prompts {
+		allowed[prompts[i].BackendID] = struct{}{}
+	}
+
+	out := make([]vmcp.Backend, 0, len(allowed))
+	for i := range all {
+		if _, ok := allowed[all[i].ID]; ok {
+			out = append(out, all[i])
+		}
+	}
+	return out, nil
 }
 
 // advertisedTools returns the aggregated backend tools followed by the composite
@@ -449,10 +622,9 @@ func workflowsRequireElicitation(defs map[string]*composer.WorkflowDefinition) b
 // health monitor is used (respects circuit breaker state). When nil, falls back
 // to the initial health status from the backend registry.
 //
-// This is an intentional, temporary duplication of discovery.filterHealthyBackends
-// (discovery/middleware.go:157, rules at 185-188): the discovery middleware keeps
-// its own copy on the legacy server.New path until that path is removed in Phase 3
-// (#5442/#5445). Keep the include/exclude rules identical across both copies.
+// This filtering previously had a second copy in the discovery middleware on the
+// legacy server.New path. That path and its copy were removed in Phase 3 (#5445),
+// so this is now the single source of truth for backend health filtering.
 func filterHealthyBackends(backends []vmcp.Backend, healthStatusProvider health.StatusProvider) []vmcp.Backend {
 	if len(backends) == 0 {
 		return backends

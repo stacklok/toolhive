@@ -33,6 +33,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 	headerfwd "github.com/stacklok/toolhive/pkg/transport/middleware"
+	"github.com/stacklok/toolhive/pkg/transport/middleware/origin"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/webhook"
 	"github.com/stacklok/toolhive/pkg/webhook/mutating"
@@ -123,6 +124,65 @@ func TestAddHeaderForwardMiddleware(t *testing.T) {
 			var params headerfwd.HeaderForwardMiddlewareParams
 			require.NoError(t, json.Unmarshal(added.Parameters, &params))
 			assert.Equal(t, tt.config.HeaderForward.ResolvedHeaders(), params.AddHeaders)
+		})
+	}
+}
+
+func TestPrependOriginMiddleware(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		config           *RunConfig
+		wantPrepended    bool
+		wantAllowedCount int
+	}{
+		{
+			name:          "non-loopback bind without explicit allowlist skips middleware",
+			config:        &RunConfig{Host: "0.0.0.0", Port: 8080},
+			wantPrepended: false,
+		},
+		{
+			name:          "zero port skips middleware",
+			config:        &RunConfig{Host: "127.0.0.1", Port: 0},
+			wantPrepended: false,
+		},
+		{
+			name:             "loopback bind derives default allowlist and prepends",
+			config:           &RunConfig{Host: "127.0.0.1", Port: 8080},
+			wantPrepended:    true,
+			wantAllowedCount: 3, // localhost + 127.0.0.1 + [::1]
+		},
+		{
+			name:             "explicit allowlist on non-loopback bind prepends",
+			config:           &RunConfig{Host: "0.0.0.0", Port: 8080, AllowedOrigins: []string{"https://app.example.com"}},
+			wantPrepended:    true,
+			wantAllowedCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Seed with an existing entry so we can prove origin is prepended,
+			// not appended — the security intent requires it to run first.
+			initial := []types.MiddlewareConfig{{Type: auth.MiddlewareType}}
+			got, err := prependOriginMiddleware(initial, tt.config)
+			require.NoError(t, err)
+
+			if !tt.wantPrepended {
+				assert.Equal(t, initial, got, "middleware slice should be unchanged")
+				return
+			}
+
+			require.Len(t, got, len(initial)+1)
+			assert.Equal(t, origin.MiddlewareType, got[0].Type, "origin middleware must be first in the chain")
+			assert.Equal(t, auth.MiddlewareType, got[1].Type, "pre-existing middleware must follow origin")
+
+			var params origin.MiddlewareParams
+			require.NoError(t, json.Unmarshal(got[0].Parameters, &params))
+			assert.Len(t, params.AllowedOrigins, tt.wantAllowedCount)
 		})
 	}
 }

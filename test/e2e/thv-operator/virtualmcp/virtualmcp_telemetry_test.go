@@ -15,6 +15,7 @@ import (
 	"sigs.k8s.io/yaml"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -102,26 +103,22 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 		}, timeout, pollingInterval).Should(BeTrue())
 
 		By("Creating VirtualMCPServer with telemetryConfigRef")
-		vmcp := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1beta1.VirtualMCPServerSpec{
-				GroupRef:    &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
-				ServiceType: "NodePort",
-				IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
+		vmcp := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+				v.Spec.TelemetryConfigRef = &mcpv1beta1.MCPTelemetryConfigReference{
 					Name:        "e2e-telemetry-config",
 					ServiceName: "custom-service-name",
-				},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-				},
-			},
-		}
+				}
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcp)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -142,12 +139,7 @@ var _ = Describe("VirtualMCPServer Telemetry Config", Ordered, func() {
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcp := &mcpv1beta1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-		}
+		vmcp := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace)
 		Expect(k8sClient.Delete(ctx, vmcp)).To(Succeed())
 
 		By("Cleaning up backend MCPServer")

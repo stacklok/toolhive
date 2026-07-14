@@ -54,8 +54,6 @@ func (*DetachedEnvVarValidator) Validate(
 				continue
 			} else if envVar.Required {
 				return nil, fmt.Errorf("missing required environment variable: %s", envVar.Name)
-			} else if envVar.Secret {
-				return nil, fmt.Errorf("missing required secret environment variable: %s", envVar.Name)
 			} else if envVar.Default != "" {
 				addAsEnvironmentVariable(envVar, envVar.Default, &suppliedEnvVars)
 			}

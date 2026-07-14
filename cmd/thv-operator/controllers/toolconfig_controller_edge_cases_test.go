@@ -80,8 +80,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 			v1beta1test.WithToolConfigRef("test-config"),
 		)
 
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
+		fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 			WithObjects(toolConfig, mcpServer).
 			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()
@@ -137,8 +136,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 			},
 		}
 
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
+		fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 			WithObjects(toolConfig).
 			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()
@@ -283,8 +281,7 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 			objs = append(objs, server)
 		}
 
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
+		fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 			WithObjects(objs...).
 			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()
@@ -341,8 +338,7 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 			},
 		}
 
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
+		fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 			WithObjects(toolConfig).
 			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()

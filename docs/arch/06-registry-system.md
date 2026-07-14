@@ -971,6 +971,7 @@ re-sync, modify `configYAML` (or restart the registry API pod).
 - [Deployment Modes](01-deployment-modes.md) - Registry usage per mode
 - [Groups](07-groups.md) - Groups in registry
 - [Operator Architecture](09-operator-architecture.md) - MCPRegistry CRD
+- [RunConfig and Permissions](05-runconfig-and-permissions.md) - How registry metadata feeds a server's RunConfig
 - [Skills System](12-skills-system.md) - Skills discovery and distribution via registry
 
 ### External Documentation

@@ -308,13 +308,13 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 	}
 	for _, tc := range configured {
 		switch tc.Mode {
-		case "direct":
+		case llmgateway.ModeDirect:
 			_, _ = fmt.Fprintf(errOut,
 				"Warning: %s uses direct mode — NODE_TLS_REJECT_UNAUTHORIZED=0 has been written to its "+
 					"settings, disabling TLS certificate verification for ALL of %s's outbound connections "+
 					"(LLM provider APIs, MCP registry, etc.), not just the LLM gateway. "+
 					"Use only in isolated local environments.\n", tc.Tool, tc.Tool)
-		case "proxy":
+		case llmgateway.ModeProxy:
 			if tc.Tool == "gemini-cli" {
 				_, _ = fmt.Fprintf(errOut,
 					"Note: --tls-skip-verify is not supported for Gemini CLI "+

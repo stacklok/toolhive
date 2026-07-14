@@ -140,9 +140,8 @@ func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) erro
 		if carriesResult(rawResponse) {
 			slog.Warn("JSON response carried a result outside a clean Response frame; dropping as a protocol violation",
 				"method", rfw.method)
-			rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-			_, werr := rfw.ResponseWriter.Write([]byte("{}"))
-			return werr
+			return rfw.writeErrorResponse(jsonrpc2.ID{},
+				fmt.Errorf("dropped a frame carrying a result outside a clean Response"))
 		}
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
 		_, werr := rfw.ResponseWriter.Write(rawResponse)
@@ -164,7 +163,6 @@ func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) erro
 	return err
 }
 
-//nolint:gocyclo
 func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error {
 	// Note: this routine is adapted from the one in pkg/mcp/tool_filter.go.
 	// I don't see an obvious way to factor out the commonalities, so I'm
@@ -191,50 +189,11 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 
 		var written bool
 		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
-			message, err := jsonrpc2.DecodeMessage(data)
-			response, isResponse := message.(*jsonrpc2.Response)
-			if isResponse {
-				filteredResponse, err := rfw.filterListResponse(response)
-				if err != nil {
-					return rfw.writeErrorResponse(response.ID, err)
-				}
-
-				filteredData, err := jsonrpc2.EncodeMessage(filteredResponse)
-				if err != nil {
-					return rfw.writeErrorResponse(response.ID, err)
-				}
-
-				// The loop writes linesep after this line, so do not append a
-				// terminator here. A hardcoded "\n" desyncs \r\n streams.
-				if _, err := rfw.ResponseWriter.Write([]byte("data: " + string(filteredData))); err != nil {
-					return fmt.Errorf("%w: %w", errBug, err)
-				}
-
-				written = true
-			} else if carriesResult(data) {
-				// The frame is not a clean Response but still carries a result.
-				// This covers a non-Response type (a request/notification frame
-				// smuggling a result), a decode error (missing or invalid jsonrpc
-				// tag, a response frame with no or a non-scalar id), and a batch
-				// array. All are upstream-controlled shapes that would otherwise
-				// fall through and leak the very list this filter scrubs (#5257).
-				// Fail closed and drop the line.
-				slog.Warn("SSE data line carried a result outside a clean Response frame; dropping as a protocol violation",
-					"method", rfw.method)
-				written = true
-			} else if err != nil {
-				// Genuinely undecodable and no smuggled result. Pass this line
-				// through unfiltered (this line only).
-				slog.Warn("SSE data line could not be decoded as JSON-RPC; passing through unfiltered",
-					"method", rfw.method, "error", err)
-			} else {
-				// Genuine non-Response frame (e.g. an interleaved notifications/*
-				// message) with no result payload. Routine SSE traffic, so log at
-				// Debug to keep the suspicious branches above from being buried.
-				// Pass through this line only.
-				slog.Debug("SSE data line was not a JSON-RPC Response; passing through unfiltered",
-					"method", rfw.method)
+			w, stop, err := rfw.writeSSEDataLine(data)
+			if stop {
+				return err
 			}
+			written = w
 		}
 
 		if !written {
@@ -261,6 +220,56 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	}
 
 	return nil
+}
+
+// writeSSEDataLine classifies a single SSE `data:` payload and writes the
+// filtered response when it is a clean Response. written reports whether the
+// caller should skip the raw passthrough for this line. stop reports that
+// processSSEResponse should return err immediately (an error response has
+// already been written on the filter/encode error paths).
+func (rfw *ResponseFilteringWriter) writeSSEDataLine(data []byte) (written, stop bool, err error) {
+	message, decodeErr := jsonrpc2.DecodeMessage(data)
+	response, isResponse := message.(*jsonrpc2.Response)
+	switch {
+	case isResponse:
+		filteredResponse, ferr := rfw.filterListResponse(response)
+		if ferr != nil {
+			return false, true, rfw.writeErrorResponse(response.ID, ferr)
+		}
+		filteredData, ferr := jsonrpc2.EncodeMessage(filteredResponse)
+		if ferr != nil {
+			return false, true, rfw.writeErrorResponse(response.ID, ferr)
+		}
+		// The caller writes linesep after this line, so do not append a
+		// terminator here. A hardcoded "\n" desyncs \r\n streams.
+		if _, werr := rfw.ResponseWriter.Write([]byte("data: " + string(filteredData))); werr != nil {
+			return false, true, fmt.Errorf("%w: %w", errBug, werr)
+		}
+		return true, false, nil
+	case carriesResult(data):
+		// The frame is not a clean Response but still carries a result. This
+		// covers a non-Response type (a request/notification frame smuggling a
+		// result), a decode error (missing or invalid jsonrpc tag, a response
+		// frame with no or a non-scalar id), and a batch array. All are
+		// upstream-controlled shapes that would otherwise fall through and leak
+		// the very list this filter scrubs (#5257). Fail closed and drop the line.
+		slog.Warn("SSE data line carried a result outside a clean Response frame; dropping as a protocol violation",
+			"method", rfw.method)
+		return true, false, nil
+	case decodeErr != nil:
+		// Genuinely undecodable and no smuggled result. Pass this line through
+		// unfiltered (this line only).
+		slog.Warn("SSE data line could not be decoded as JSON-RPC; passing through unfiltered",
+			"method", rfw.method, "error", decodeErr)
+		return false, false, nil
+	default:
+		// Genuine non-Response frame (e.g. an interleaved notifications/* message)
+		// with no result payload. Routine SSE traffic, so log at Debug to keep the
+		// suspicious branches above from being buried. Pass through this line only.
+		slog.Debug("SSE data line was not a JSON-RPC Response; passing through unfiltered",
+			"method", rfw.method)
+		return false, false, nil
+	}
 }
 
 // requiresResponseFiltering reports whether the method needs response filtering.

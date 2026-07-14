@@ -424,12 +424,14 @@ func TestBuildTokenHelperArgv(t *testing.T) {
 	assert.Equal(t, []string{"llm", "token", "--skip-browser"}, args)
 }
 
-func TestWarnTLSSkipVerify_CodexNote(t *testing.T) {
+func TestWarnTLSSkipVerify_CodexWarning(t *testing.T) {
 	t.Parallel()
 
 	var errOut bytes.Buffer
 	warnTLSSkipVerify(&errOut, true, []ToolConfig{{Tool: "codex", Mode: llmgateway.ModeCodexAuth}})
-	assert.Contains(t, errOut.String(), "not supported for Codex")
+	out := errOut.String()
+	assert.Contains(t, out, "Warning:")
+	assert.Contains(t, out, "was NOT applied to codex")
 }
 
 // ── probeAnthropicPrefix ──────────────────────────────────────────────────────

@@ -28,6 +28,10 @@ func TestRefreshWindowExceedsHelperTTL(t *testing.T) {
 	assert.Equal(t, int64(300000), llmgateway.ClaudeCodeHelperTTL.Milliseconds(),
 		"helper TTL is written to settings.json in milliseconds")
 	assert.Equal(t, 10*time.Minute, llmgateway.LLMTokenRefreshWindow)
+
+	// Codex writes refresh_interval_ms and relies on the same invariant.
+	assert.Greater(t, llmgateway.LLMTokenRefreshWindow, llmgateway.CodexHelperTTL,
+		"refresh window must exceed Codex's helper TTL for the same reason it exceeds Claude Code's")
 }
 
 func TestProxyOriginOf(t *testing.T) {

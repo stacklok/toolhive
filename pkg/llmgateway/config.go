@@ -39,6 +39,13 @@ const ClaudeDesktopHelperTTL = ClaudeCodeHelperTTL
 // performs up front so the steady-state helper call stays fast.
 const ClaudeDesktopHelperTimeout = 30 * time.Second
 
+// CodexHelperTTL is written to config.toml as
+// [model_providers.<id>.auth].refresh_interval_ms: how often Codex re-invokes
+// the token helper ("thv llm token"). Kept equal to ClaudeCodeHelperTTL so the
+// same LLMTokenRefreshWindow invariant holds — every invocation in the final
+// window forces a refresh, so Codex never receives an about-to-expire token.
+const CodexHelperTTL = ClaudeCodeHelperTTL
+
 // LLM gateway client modes. The single source of truth dispatched on in
 // pkg/client (ConfigureLLMGateway/RevertLLMGateway) and pkg/llm
 // (usesAnthropicBaseURL/warnCredentialHelperTools). Kept here so both packages

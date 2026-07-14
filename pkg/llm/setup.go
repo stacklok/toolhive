@@ -327,9 +327,9 @@ func warnTLSSkipVerify(errOut io.Writer, skip bool, configured []ToolConfig) {
 			}
 		case llmgateway.ModeCodexAuth:
 			_, _ = fmt.Fprintf(errOut,
-				"Note: --tls-skip-verify is not supported for Codex "+
-					"(its config.toml has no documented TLS-skip option). "+
-					"Ensure your gateway certificate is trusted by the system store instead.\n")
+				"Warning: --tls-skip-verify was NOT applied to %s — its config.toml has no "+
+					"TLS-skip option. Codex will fail against a self-signed gateway until you "+
+					"trust the certificate in the system store.\n", tc.Tool)
 		}
 	}
 }

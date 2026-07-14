@@ -62,7 +62,13 @@ func (cm *ClientManager) configureCodexAuth(appCfg *clientAppConfig, cfg llmgate
 
 		config["model_provider"] = codexProviderID
 
-		providers, _ := config["model_providers"].(map[string]any)
+		// Refuse to overwrite a pre-existing model_providers that isn't a table
+		// (malformed file, or a future Codex schema): clobbering it would silently
+		// destroy the user's config. The revert path makes the same ok check.
+		providers, ok := config["model_providers"].(map[string]any)
+		if existing, present := config["model_providers"]; present && !ok {
+			return fmt.Errorf("existing model_providers in %s is not a table (%T); refusing to overwrite", path, existing)
+		}
 		if providers == nil {
 			providers = map[string]any{}
 		}
@@ -77,6 +83,10 @@ func (cm *ClientManager) configureCodexAuth(appCfg *clientAppConfig, cfg llmgate
 			"auth": map[string]any{
 				"command": cfg.TokenHelperPath,
 				"args":    cfg.TokenHelperArgs,
+				// How often Codex re-invokes the token helper. Kept in sync with the
+				// TTL the other clients write (see pkg/llmgateway constants) so the
+				// token source's preemptive-refresh invariant holds for Codex too.
+				"refresh_interval_ms": llmgateway.CodexHelperTTL.Milliseconds(),
 			},
 		}
 		config["model_providers"] = providers
@@ -95,6 +105,11 @@ func (cm *ClientManager) configureCodexAuth(appCfg *clientAppConfig, cfg llmgate
 // changed since setup (by the user or another tool) is left alone, mirroring
 // revertCredentialHelper's appliedId check for Claude Desktop. A missing file
 // is treated as already-reverted.
+//
+// Revert removes model_provider rather than restoring whatever it was before
+// setup: configureCodexAuth does not stash the prior selection, so a user who
+// had e.g. model_provider = "openai" before setup is left with none after
+// revert (Codex then falls back to its own default).
 func (*ClientManager) revertCodexAuth(_ *clientAppConfig, configPath string) error {
 	if configPath == "" || !fileExistsAt(configPath) {
 		return nil

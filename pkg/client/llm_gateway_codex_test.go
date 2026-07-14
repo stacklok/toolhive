@@ -58,6 +58,25 @@ func TestConfigureCodexAuth_WritesProviderAndAuth(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "/usr/local/bin/thv", auth["command"])
 	assert.Equal(t, []any{"llm", "token", "--skip-browser"}, auth["args"])
+	assert.Equal(t, llmgateway.CodexHelperTTL.Milliseconds(), auth["refresh_interval_ms"],
+		"refresh_interval_ms keeps Codex's token-helper cadence in sync with the refresh window")
+}
+
+func TestConfigureCodexAuth_RejectsNonTableModelProviders(t *testing.T) {
+	t.Parallel()
+	cm, configPath := newCodexManager(t)
+
+	// A malformed (or future-schema) config where model_providers is not a table.
+	// Setup must refuse rather than silently overwrite the user's value.
+	require.NoError(t, os.MkdirAll(filepath.Dir(configPath), 0o700))
+	require.NoError(t, writeTOMLConfig(configPath, map[string]any{"model_providers": "garbage"}))
+
+	_, err := cm.ConfigureLLMGateway(ClientApp(Codex), codexApplyCfg())
+	require.Error(t, err)
+
+	config, err := readTOMLConfig(configPath)
+	require.NoError(t, err)
+	assert.Equal(t, "garbage", config["model_providers"], "the user's original value must be left untouched")
 }
 
 func TestConfigureCodexAuth_IsIdempotent(t *testing.T) {

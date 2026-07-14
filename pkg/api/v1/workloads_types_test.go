@@ -124,7 +124,8 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, "sse", result.Transport)
 		assert.Equal(t, "test-group", result.Group)
 		assert.Equal(t, "sse", result.ProxyMode)
-		assert.True(t, result.NetworkIsolation)
+		require.NotNil(t, result.NetworkIsolation)
+		assert.True(t, *result.NetworkIsolation)
 		assert.Equal(t, []string{"tool1", "tool2"}, result.ToolsFilter)
 	})
 
@@ -677,6 +678,30 @@ func TestValidateHeaderForwardConfig(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestNetworkIsolationEnabled(t *testing.T) {
+	t.Parallel()
+
+	trueVal := true
+	falseVal := false
+
+	tests := []struct {
+		name string
+		in   *bool
+		want bool
+	}{
+		{name: "nil defaults to enabled", in: nil, want: true},
+		{name: "explicit false disables", in: &falseVal, want: false},
+		{name: "explicit true enables", in: &trueVal, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, networkIsolationEnabled(tt.in))
 		})
 	}
 }

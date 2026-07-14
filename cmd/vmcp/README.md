@@ -2,7 +2,7 @@
 
 The Virtual MCP Server (vmcp) is a standalone binary that aggregates multiple MCP (Model Context Protocol) servers from a ToolHive group into a single unified interface. It acts as an aggregation proxy that consolidates tools, resources, and prompts from all workloads in the group.
 
-**Reference**: See [THV-2106 Virtual MCP Server Proposal](/docs/proposals/THV-2106-virtual-mcp-server.md) for complete design details.
+**Reference**: See [THV-0008 Virtual MCP Server Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0008-virtual-mcp-server.md) for complete design details.
 
 ## Features
 

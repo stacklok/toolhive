@@ -14,7 +14,7 @@
 
 ## Run any MCP server securely, instantly, anywhere.
 
-ToolHive runs every MCP server in an isolated container, enforces identity and access policy per request, and gives platform teams the observability they need to put MCP in production.
+ToolHive runs every MCP server in an isolated container, enforces identity and access policy per request when configured with an authentication source, and gives platform teams the observability they need to put MCP in production.
 
 ## Why ToolHive?
 
@@ -29,7 +29,7 @@ Here are some of the more common use cases for ToolHive:
   <tr valign="top">
     <td>Connect Claude Code, Cursor, GitHub Copilot, or your preferred client to MCP servers with a single click or command.<br><br>
     ToolHive wraps every MCP server in an isolated container with a minimal permission file (no local credentials) and uses semantic tool search to reduce your token usage by up to 85%.</td>
-    <td>Put an end to shadow MCP use by your developers, and give your security team the audit logs and identity enforcement they require.<br><br>
+    <td>Put an end to shadow MCP use by your developers, and give your security team the audit logs and configurable identity enforcement they require.<br><br>
     ToolHive includes a Kubernetes operator, so you can declare policies, integrate with your IdP and observability stack, emit OTel traces, and more … all with familiar tools and patterns.</td>
     <td>Most MCP solutions are SaaS, but your compliance requirements prohibit sensitive info from being processed by SaaS providers.<br><br>
     ToolHive is the exception that allows you to self-host your MCP registry, gateway, etc. You can pilot the entire platform, and when you’re ready to scale, Stacklok’s got the added capabilities and expert team ready!</td>

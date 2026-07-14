@@ -206,6 +206,20 @@ func (mr *MockClientRegistryMockRecorder) RegisterClient(ctx, client any) *gomoc
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterClient", reflect.TypeOf((*MockClientRegistry)(nil).RegisterClient), ctx, client)
 }
 
+// RenewClientTTL mocks base method.
+func (m *MockClientRegistry) RenewClientTTL(ctx context.Context, client fosite.Client) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RenewClientTTL", ctx, client)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RenewClientTTL indicates an expected call of RenewClientTTL.
+func (mr *MockClientRegistryMockRecorder) RenewClientTTL(ctx, client any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RenewClientTTL", reflect.TypeOf((*MockClientRegistry)(nil).RenewClientTTL), ctx, client)
+}
+
 // SetClientAssertionJWT mocks base method.
 func (m *MockClientRegistry) SetClientAssertionJWT(ctx context.Context, jti string, exp time.Time) error {
 	m.ctrl.T.Helper()
@@ -256,6 +270,20 @@ func (m *MockUpstreamTokenStorage) DeleteUpstreamTokens(ctx context.Context, ses
 func (mr *MockUpstreamTokenStorageMockRecorder) DeleteUpstreamTokens(ctx, sessionID any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteUpstreamTokens", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).DeleteUpstreamTokens), ctx, sessionID)
+}
+
+// DeleteUpstreamTokensForProvider mocks base method.
+func (m *MockUpstreamTokenStorage) DeleteUpstreamTokensForProvider(ctx context.Context, sessionID, providerName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteUpstreamTokensForProvider", ctx, sessionID, providerName)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteUpstreamTokensForProvider indicates an expected call of DeleteUpstreamTokensForProvider.
+func (mr *MockUpstreamTokenStorageMockRecorder) DeleteUpstreamTokensForProvider(ctx, sessionID, providerName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteUpstreamTokensForProvider", reflect.TypeOf((*MockUpstreamTokenStorage)(nil).DeleteUpstreamTokensForProvider), ctx, sessionID, providerName)
 }
 
 // GetAllUpstreamTokens mocks base method.
@@ -687,6 +715,20 @@ func (mr *MockStorageMockRecorder) DeleteUpstreamTokens(ctx, sessionID any) *gom
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteUpstreamTokens", reflect.TypeOf((*MockStorage)(nil).DeleteUpstreamTokens), ctx, sessionID)
 }
 
+// DeleteUpstreamTokensForProvider mocks base method.
+func (m *MockStorage) DeleteUpstreamTokensForProvider(ctx context.Context, sessionID, providerName string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "DeleteUpstreamTokensForProvider", ctx, sessionID, providerName)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// DeleteUpstreamTokensForProvider indicates an expected call of DeleteUpstreamTokensForProvider.
+func (mr *MockStorageMockRecorder) DeleteUpstreamTokensForProvider(ctx, sessionID, providerName any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "DeleteUpstreamTokensForProvider", reflect.TypeOf((*MockStorage)(nil).DeleteUpstreamTokensForProvider), ctx, sessionID, providerName)
+}
+
 // DeleteUser mocks base method.
 func (m *MockStorage) DeleteUser(ctx context.Context, id string) error {
 	m.ctrl.T.Helper()
@@ -921,6 +963,20 @@ func (m *MockStorage) RegisterClient(ctx context.Context, client fosite.Client) 
 func (mr *MockStorageMockRecorder) RegisterClient(ctx, client any) *gomock.Call {
 	mr.mock.ctrl.T.Helper()
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RegisterClient", reflect.TypeOf((*MockStorage)(nil).RegisterClient), ctx, client)
+}
+
+// RenewClientTTL mocks base method.
+func (m *MockStorage) RenewClientTTL(ctx context.Context, client fosite.Client) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "RenewClientTTL", ctx, client)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// RenewClientTTL indicates an expected call of RenewClientTTL.
+func (mr *MockStorageMockRecorder) RenewClientTTL(ctx, client any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "RenewClientTTL", reflect.TypeOf((*MockStorage)(nil).RenewClientTTL), ctx, client)
 }
 
 // RevokeAccessToken mocks base method.

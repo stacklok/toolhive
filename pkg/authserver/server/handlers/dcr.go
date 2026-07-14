@@ -14,12 +14,17 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// maxDCRBodySize is the maximum allowed size for DCR request bodies (64KB).
+// MaxDCRBodySize is the maximum allowed size for DCR request bodies (64KB).
 // This prevents DoS attacks via extremely large payloads while being generous
 // enough for legitimate requests with multiple redirect URIs.
-const maxDCRBodySize = 64 * 1024
+//
+// It is exported to serve as the single source of truth for the auth-server
+// body-size cap: the embedded auth server (pkg/authserver/runner) derives its
+// own request-body limit from this constant so the two cannot drift.
+const MaxDCRBodySize = 64 * 1024
 
 // RegisterClientHandler handles POST /oauth/register requests.
 // It implements RFC 7591 Dynamic Client Registration for public clients
@@ -28,7 +33,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	ctx := req.Context()
 
 	// Limit request body size to prevent DoS attacks
-	req.Body = http.MaxBytesReader(w, req.Body, maxDCRBodySize)
+	req.Body = http.MaxBytesReader(w, req.Body, MaxDCRBodySize)
 
 	// Validate Content-Type header (RFC 7591 requires application/json)
 	contentType := req.Header.Get("Content-Type")
@@ -40,8 +45,10 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		return
 	}
 
-	// Parse request body
-	var dcrReq registration.DCRRequest
+	// Parse request body. oauthproto.ScopeList.UnmarshalJSON handles both
+	// RFC 7591 wire formats for "scope" (space-delimited string or JSON
+	// array) so we accept either shape transparently here.
+	var dcrReq oauthproto.DynamicClientRegistrationRequest
 	if err := json.NewDecoder(req.Body).Decode(&dcrReq); err != nil {
 		writeDCRError(w, http.StatusBadRequest, &registration.DCRError{
 			Error:            registration.DCRErrorInvalidClientMetadata,
@@ -58,7 +65,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	}
 
 	// Validate requested scopes against server's supported scopes
-	scopes, dcrErr := registration.ValidateScopes(dcrReq.Scope, h.config.ScopesSupported)
+	scopes, dcrErr := registration.ValidateScopes(dcrReq.Scopes, h.config.ScopesSupported)
 	if dcrErr != nil {
 		writeDCRError(w, http.StatusBadRequest, dcrErr)
 		return
@@ -74,7 +81,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	// offline_access) — every DCR-registered client gains the ability to request
 	// these scopes at /oauth/authorize regardless of what they registered with.
 	if len(h.config.BaselineClientScopes) > 0 {
-		effective := unionScopes(scopes, h.config.BaselineClientScopes)
+		effective := registration.UnionScopes(scopes, h.config.BaselineClientScopes)
 		if !slices.Equal(effective, scopes) {
 			// Baseline-driven expansion is the intended behavior whenever
 			// baseline_client_scopes is configured, so per-registration
@@ -151,13 +158,14 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 	slog.Debug("registered new DCR client", logAttrs...)
 
 	// Build response per RFC 7591 Section 3.2.1.
-	// Scope reflects the scopes actually granted to this client: the
+	// Scopes reflects the scopes actually granted to this client: the
 	// client-supplied scope set was validated against ScopesSupported by
 	// ValidateScopes above, then (if configured) unioned with
 	// BaselineClientScopes — which is itself guaranteed by startup-time
 	// validation to be a subset of ScopesSupported. The unioned set is NOT
-	// re-validated here.
-	response := registration.DCRResponse{
+	// re-validated here. ScopeList.MarshalJSON emits the RFC 7591 §2
+	// space-delimited wire form on the way out.
+	response := oauthproto.DynamicClientRegistrationResponse{
 		ClientID:                clientID,
 		ClientIDIssuedAt:        time.Now().Unix(),
 		RedirectURIs:            validated.RedirectURIs,
@@ -165,7 +173,7 @@ func (h *Handler) RegisterClientHandler(w http.ResponseWriter, req *http.Request
 		TokenEndpointAuthMethod: validated.TokenEndpointAuthMethod,
 		GrantTypes:              validated.GrantTypes,
 		ResponseTypes:           validated.ResponseTypes,
-		Scope:                   registration.FormatScopes(scopes),
+		Scopes:                  oauthproto.ScopeList(scopes),
 	}
 
 	w.Header().Set("Content-Type", "application/json")

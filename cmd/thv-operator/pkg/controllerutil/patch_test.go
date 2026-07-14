@@ -11,12 +11,12 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 // specPatchRecordingClient wraps a client.Client and intercepts top-level
@@ -54,8 +54,7 @@ func (c *specPatchRecordingClient) lastBody() string {
 
 func buildSpecTestClient(t *testing.T, seed *mcpv1beta1.MCPServer) (*specPatchRecordingClient, client.Client) {
 	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 	inner := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(seed).

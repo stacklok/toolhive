@@ -12,7 +12,7 @@ roleRef:
   name: toolhive-operator-manager-role
 subjects:
 - kind: ServiceAccount
-  name: toolhive-operator
+  name: {{ include "toolhive-operator.serviceAccountName" . }}
   namespace: {{ .Release.Namespace }}
 {{- end }}
 
@@ -28,7 +28,7 @@ metadata:
     {{- include "toolhive.labels" $ | nindent 4 }}
 subjects:
 - kind: ServiceAccount
-  name: toolhive-operator
+  name: {{ include "toolhive-operator.serviceAccountName" $ }}
   namespace: {{ $.Release.Namespace }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io

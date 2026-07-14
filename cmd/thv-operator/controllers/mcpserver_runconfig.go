@@ -204,6 +204,13 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 		return nil, fmt.Errorf("failed to process AuthzConfig: %w", err)
 	}
 
+	// Resolve a referenced MCPAuthzConfig (spec.authzConfigRef) into runtime authz.
+	// Mutually exclusive with the inline spec.authzConfig handled above. Backend-
+	// agnostic: the proxy runner's authz factory dispatches on type (cedarv1, httpv1).
+	if err := ctrlutil.AddAuthzConfigRefOptions(ctx, r.Client, m.Namespace, m.Spec.AuthzConfigRef, &options); err != nil {
+		return nil, fmt.Errorf("failed to process AuthzConfigRef: %w", err)
+	}
+
 	// Resolve OIDC configuration from either legacy OIDCConfig or new MCPOIDCConfigRef.
 	// Resolve once and reuse for both RunConfig options and embedded auth server config.
 	var resolvedOIDCConfig *oidc.OIDCConfig
@@ -297,12 +304,18 @@ func (r *MCPServerReconciler) createRunConfigFromMCPServer(m *mcpv1beta1.MCPServ
 }
 
 // populateScalingConfig sets BackendReplicas and SessionRedis on the RunConfig from the MCPServer spec.
-// Fields are only set when present in the spec; nil means "not configured" and is left as-is.
+// When spec.sessionStorage is nil, falls back to TOOLHIVE_DEFAULT_REDIS_ADDR if set.
+// Fields are only set when present in the spec or env; nil means "not configured" and is left as-is.
 func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1beta1.MCPServer) {
 	hasBackendReplicas := m.Spec.BackendReplicas != nil
 	hasRedis := m.Spec.SessionStorage != nil && m.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis
 
-	if !hasBackendReplicas && !hasRedis {
+	var defaultRedis *ctrlutil.DefaultRedisConfig
+	if !hasRedis {
+		defaultRedis = ctrlutil.ReadDefaultRedisConfig()
+	}
+
+	if !hasBackendReplicas && !hasRedis && defaultRedis == nil {
 		return
 	}
 
@@ -320,6 +333,10 @@ func populateScalingConfig(runConfig *runner.RunConfig, m *mcpv1beta1.MCPServer)
 			Address:   m.Spec.SessionStorage.Address,
 			DB:        m.Spec.SessionStorage.DB,
 			KeyPrefix: m.Spec.SessionStorage.KeyPrefix,
+		}
+	} else if defaultRedis != nil {
+		runConfig.ScalingConfig.SessionRedis = &runner.SessionRedisConfig{
+			Address: defaultRedis.Addr,
 		}
 	}
 }

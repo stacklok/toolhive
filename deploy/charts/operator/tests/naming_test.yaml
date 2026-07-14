@@ -1,0 +1,32 @@
+suite: name overrides
+# Resource names come from the fullname helper; the name-based labels come from
+# the name helper. Pin the precedence so a refactor of _helpers.tpl can't
+# silently rename resources (which orphans RBAC) or change label values.
+templates:
+  - deployment.yaml
+tests:
+  - it: uses fullnameOverride verbatim for resource names
+    template: deployment.yaml
+    set:
+      fullnameOverride: custom-operator
+    asserts:
+      - equal: { path: metadata.name, value: custom-operator }
+
+  - it: applies nameOverride to the name labels but not the resource name
+    template: deployment.yaml
+    set:
+      nameOverride: custom-name
+    asserts:
+      # fullnameOverride still defaults to toolhive-operator, so the resource
+      # name is unchanged; only the name-derived labels pick up nameOverride.
+      - equal: { path: metadata.name, value: toolhive-operator }
+      - equal: { path: 'spec.selector.matchLabels["app.kubernetes.io/name"]', value: custom-name }
+
+  - it: prefixes the release name when fullnameOverride is cleared
+    template: deployment.yaml
+    release:
+      name: prod
+    set:
+      fullnameOverride: ""
+    asserts:
+      - equal: { path: metadata.name, value: prod-toolhive-operator }

@@ -13,8 +13,11 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/metric"
 
 	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/ratelimit/internal/bucket"
 )
 
@@ -36,15 +39,57 @@ type Decision struct {
 	RetryAfter time.Duration
 }
 
+// Allow checks whether identity may call toolName through limiter.
+func Allow(ctx context.Context, limiter Limiter, identity *auth.Identity, toolName string) error {
+	if limiter == nil {
+		return nil
+	}
+
+	// When no identity is present (unauthenticated), userID stays empty and
+	// per-user buckets are skipped — only shared limits apply. CEL validation
+	// ensures perUser rate limits require auth to be enabled.
+	var userID string
+	if identity != nil {
+		userID = identity.Subject
+	}
+
+	decision, err := limiter.Allow(ctx, toolName, userID)
+	if err != nil {
+		return err
+	}
+	if !decision.Allowed {
+		return &RateLimitedError{RetryAfter: decision.RetryAfter}
+	}
+	return nil
+}
+
 // NewLimiter constructs a Limiter from CRD configuration.
 // Returns a no-op limiter (always allows) when crd is nil.
 // namespace and name identify the MCP server for Redis key derivation.
 func NewLimiter(client redis.Cmdable, namespace, name string, crd *v1beta1.RateLimitConfig) (Limiter, error) {
+	return newLimiter(client, namespace, name, crd, otel.GetMeterProvider())
+}
+
+func newLimiter(
+	client redis.Cmdable,
+	namespace string,
+	name string,
+	crd *v1beta1.RateLimitConfig,
+	meterProvider metric.MeterProvider,
+) (Limiter, error) {
 	if crd == nil {
 		return noopLimiter{}, nil
 	}
 
-	l := &limiter{client: client}
+	telemetry, err := newRateLimitTelemetry(meterProvider, namespace, name)
+	if err != nil {
+		return nil, fmt.Errorf("rate limit telemetry: %w", err)
+	}
+
+	l := &limiter{
+		client:    client,
+		telemetry: telemetry,
+	}
 
 	if crd.Shared != nil {
 		b, err := newBucket(namespace, name, "shared", crd.Shared)
@@ -97,9 +142,17 @@ type bucketSpec struct {
 	refillPeriod time.Duration
 }
 
+// limitCheck keeps a bucket paired with its metric dimensions.
+type limitCheck struct {
+	bucket        *bucket.TokenBucket
+	scope         string
+	operationType string
+}
+
 // limiter is the concrete implementation of Limiter.
 type limiter struct {
 	client       redis.Cmdable
+	telemetry    *rateLimitTelemetry
 	serverBucket *bucket.TokenBucket            // nil when no shared server limit
 	toolBuckets  map[string]*bucket.TokenBucket // tool name -> shared bucket
 	perUserSpec  *bucketSpec                    // nil when no server-level per-user limit
@@ -111,13 +164,21 @@ type limiter struct {
 // a rejected per-tool or per-user call from draining other budgets.
 func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision, error) {
 	// Collect applicable buckets in priority order.
-	var buckets []*bucket.TokenBucket
+	var checks []limitCheck
 	if l.serverBucket != nil {
-		buckets = append(buckets, l.serverBucket)
+		checks = append(checks, limitCheck{
+			bucket:        l.serverBucket,
+			scope:         rateLimitScopeShared,
+			operationType: rateLimitOperationServer,
+		})
 	}
 	if toolName != "" && l.toolBuckets != nil {
 		if tb, ok := l.toolBuckets[toolName]; ok {
-			buckets = append(buckets, tb)
+			checks = append(checks, limitCheck{
+				bucket:        tb,
+				scope:         rateLimitScopeShared,
+				operationType: rateLimitOperationTool,
+			})
 		}
 	}
 
@@ -132,40 +193,58 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 	if userID != "" {
 		if l.perUserSpec != nil {
 			s := l.perUserSpec
-			buckets = append(buckets, bucket.New(
-				s.namespace, s.serverName,
-				"user:"+userID,
-				s.maxTokens, s.refillPeriod,
-			))
+			checks = append(checks, limitCheck{
+				bucket: bucket.New(
+					s.namespace, s.serverName,
+					"user:"+userID,
+					s.maxTokens, s.refillPeriod,
+				),
+				scope:         rateLimitScopePerUser,
+				operationType: rateLimitOperationServer,
+			})
 		}
 		if toolName != "" && l.perUserTools != nil {
 			if s, ok := l.perUserTools[toolName]; ok {
 				// Key prefix "user-tool:" is distinct from "user:" to prevent
 				// collisions when a userID contains delimiter characters.
-				buckets = append(buckets, bucket.New(
-					s.namespace, s.serverName,
-					"user-tool:"+toolName+":"+userID,
-					s.maxTokens, s.refillPeriod,
-				))
+				checks = append(checks, limitCheck{
+					bucket: bucket.New(
+						s.namespace, s.serverName,
+						"user-tool:"+toolName+":"+userID,
+						s.maxTokens, s.refillPeriod,
+					),
+					scope:         rateLimitScopePerUser,
+					operationType: rateLimitOperationTool,
+				})
 			}
 		}
 	}
 
-	if len(buckets) == 0 {
+	if len(checks) == 0 {
 		return &Decision{Allowed: true}, nil
 	}
 
+	buckets := make([]*bucket.TokenBucket, len(checks))
+	for i, check := range checks {
+		buckets[i] = check.bucket
+	}
+
+	start := time.Now()
 	rejectedIdx, err := bucket.ConsumeAll(ctx, l.client, buckets)
+	l.telemetry.recordCheckLatency(ctx, time.Since(start))
 	if err != nil {
+		l.telemetry.recordRedisError(ctx, err)
 		return nil, fmt.Errorf("rate limit check: %w", err)
 	}
 	if rejectedIdx >= 0 {
+		l.telemetry.recordRejected(ctx, checks[rejectedIdx])
 		return &Decision{
 			Allowed:    false,
 			RetryAfter: buckets[rejectedIdx].RetryAfter(),
 		}, nil
 	}
 
+	l.telemetry.recordAllowed(ctx, checks)
 	return &Decision{Allowed: true}, nil
 }
 

@@ -276,6 +276,149 @@ func TestMCPExternalAuthConfig_Validate(t *testing.T) {
 			errMsg:    "upstreamInject requires a non-empty providerName",
 		},
 		{
+			name: "valid obo type with fully populated OBOConfig",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-full",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeOBO,
+					OBO: &OBOConfig{
+						TenantID:        "72f988bf-86f1-41af-91ab-2d7cd011db47",
+						ClientID:        "app-client-id",
+						ClientSecretRef: &SecretKeyRef{Name: "entra-client", Key: "clientSecret"},
+						Audience:        "api://backend",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "valid xaa type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-xaa",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeXAA,
+					XAA: &XAASpec{
+						IDPTokenURL:    "https://idp.example.com/token",
+						TargetTokenURL: "https://target.example.com/token",
+						TargetAudience: "https://target.example.com",
+						TargetResource: "https://mcp.example.com",
+					},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			// Go Validate() intentionally does NOT check OBOConfig fields: the
+			// required-field, pattern, and "at least one of audience or scopes"
+			// rules are enforced by the kubebuilder markers + CEL at admission,
+			// and the registered OBO handler validates semantics at reconcile.
+			// So a minimal obo block passes the Go method even though the
+			// apiserver would reject it (covered by the envtest CEL suite).
+			name: "obo type with minimal OBOConfig passes Go Validate (field checks deferred)",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeOBO,
+					OBO:  &OBOConfig{},
+				},
+			},
+			expectErr: false,
+		},
+		{
+			name: "invalid obo type with nil obo config",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-missing",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeOBO,
+					OBO:  nil,
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
+			name: "invalid obo config set on non-obo type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-on-tokenexchange",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:          ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{TokenURL: "https://example.com/token"},
+					OBO:           &OBOConfig{},
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
+			// Also intentional shape-parity coverage for the unauthenticated
+			// guard's OBO != nil disjunct, even though the OBO biconditional
+			// above intercepts first for this input.
+			name: "invalid obo config on unauthenticated type (obo biconditional intercepts first)",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-obo-on-unauth",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeUnauthenticated,
+					OBO:  &OBOConfig{},
+				},
+			},
+			expectErr: true,
+			errMsg:    "obo configuration must be set if and only if type is 'obo'",
+		},
+		{
+			name: "invalid xaa with nil spec",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-xaa-nil",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type: ExternalAuthTypeXAA,
+					XAA:  nil,
+				},
+			},
+			expectErr: true,
+			errMsg:    "xaa configuration must be set if and only if type is 'xaa'",
+		},
+		{
+			name: "invalid xaa config set on non-xaa type",
+			config: &MCPExternalAuthConfig{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-xaa-on-tokenexchange",
+					Namespace: "default",
+				},
+				Spec: MCPExternalAuthConfigSpec{
+					Type:          ExternalAuthTypeTokenExchange,
+					TokenExchange: &TokenExchangeConfig{TokenURL: "https://example.com/token"},
+					XAA: &XAASpec{
+						IDPTokenURL:    "https://idp.example.com/token",
+						TargetTokenURL: "https://target.example.com/token",
+						TargetAudience: "https://target.example.com",
+						TargetResource: "https://mcp.example.com",
+					},
+				},
+			},
+			expectErr: true,
+			errMsg:    "xaa configuration must be set if and only if type is 'xaa'",
+		},
+		{
 			name: "invalid OIDC provider with oauth2Config instead",
 			config: &MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{

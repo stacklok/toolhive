@@ -86,8 +86,9 @@ func signJWT(t *testing.T, privateKey *rsa.PrivateKey, claims jwt.MapClaims) str
 
 // TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring verifies the full wiring:
 // newOIDCAuthMiddleware forwards the TokenReader through to the TokenValidator,
-// and a request with a JWT containing a "tsid" claim triggers GetAllValidTokens
-// on the reader, populating Identity.UpstreamTokens.
+// and a request with a JWT containing a "tsid" claim triggers
+// GetAllUpstreamCredentials on the reader, populating both Identity.UpstreamTokens
+// and Identity.UpstreamIDTokens.
 func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 	t.Parallel()
 
@@ -110,8 +111,10 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		reader.EXPECT().
-			GetAllValidTokens(gomock.Any(), "session-abc").
-			Return(map[string]string{"google": "gcp-access-token"}, nil)
+			GetAllUpstreamCredentials(gomock.Any(), "session-abc").
+			Return(map[string]upstreamtoken.UpstreamCredential{
+				"google": {AccessToken: "gcp-access-token", IDToken: "gcp-id-token"},
+			}, []string(nil), nil)
 
 		authMw, _, err := newOIDCAuthMiddleware(t.Context(), oidcCfg, reader, nil)
 		require.NoError(t, err, "middleware creation should succeed with non-nil reader")
@@ -140,6 +143,8 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 		require.NotNil(t, capturedIdentity, "identity should be present in context")
 		assert.Equal(t, map[string]string{"google": "gcp-access-token"}, capturedIdentity.UpstreamTokens,
 			"upstream tokens should be populated from the reader")
+		assert.Equal(t, map[string]string{"google": "gcp-id-token"}, capturedIdentity.UpstreamIDTokens,
+			"upstream ID tokens should be populated from the reader")
 	})
 
 	t.Run("upstream tokens nil when reader is nil", func(t *testing.T) {
@@ -172,6 +177,8 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 		require.NotNil(t, capturedIdentity, "identity should be present in context")
 		assert.Nil(t, capturedIdentity.UpstreamTokens,
 			"upstream tokens should be nil when no reader is configured")
+		assert.Nil(t, capturedIdentity.UpstreamIDTokens,
+			"upstream ID tokens should be nil when no reader is configured")
 	})
 
 	t.Run("reader not called when tsid claim absent", func(t *testing.T) {

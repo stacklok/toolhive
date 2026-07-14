@@ -10,32 +10,49 @@ import (
 	"log/slog"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 )
+
+// refreshTimeout bounds how long a singleflight-deduplicated token refresh
+// may take before being cancelled. It is deliberately detached from the
+// triggering request's context so that waiting callers are not abandoned.
+const refreshTimeout = 30 * time.Second
+
+// upstreamStoreMaxAttempts is the maximum number of attempts to store refreshed
+// upstream tokens before giving up.
+const upstreamStoreMaxAttempts = 3
+
+// upstreamStoreRetryBackoff is the fixed delay between store retry attempts.
+const upstreamStoreRetryBackoff = 50 * time.Millisecond
+
+// upstreamDeleteTimeout bounds how long the best-effort per-provider delete may
+// take. A fresh detached context is used so a ctx deadline/cancel on the store
+// attempts does not also kill the delete, which would leave the stale row behind.
+const upstreamDeleteTimeout = 5 * time.Second
 
 // upstreamTokenRefresher implements storage.UpstreamTokenRefresher by wrapping
 // a set of upstream OAuth2Providers (keyed by provider name) and
 // UpstreamTokenStorage (for persisting the refreshed tokens). On each refresh
 // call it dispatches to the correct provider based on the expired token's
-// ProviderID.
-//
-// refreshTokenLifespan is used as the defensive re-anchor value for
-// SessionExpiresAt when the persisted row pre-dates the unconditional callback
-// write (legacy data) and the upstream provider drops expires_in on the
-// refresh response. Without this, both bounds would be zero and the row would
-// be persisted with no TTL — see RefreshAndStore.
+// ProviderID, deduplicating concurrent refreshes for the same
+// (session, provider) pair via sfGroup.
 type upstreamTokenRefresher struct {
 	providers            map[string]upstream.OAuth2Provider
 	storage              storage.UpstreamTokenStorage
 	refreshTokenLifespan time.Duration
+	sfGroup              singleflight.Group
 }
 
 // Compile-time check that upstreamTokenRefresher implements storage.UpstreamTokenRefresher.
 var _ storage.UpstreamTokenRefresher = (*upstreamTokenRefresher)(nil)
 
-// RefreshAndStore refreshes expired upstream tokens using the stored refresh token,
-// persists the new tokens, and returns them.
+// RefreshAndStore deduplicates concurrent refreshes for the same (session,
+// provider) pair, then delegates to refreshAndStore. The detached-context
+// timeout ensures waiting callers are not abandoned if the initiating request
+// cancels before the upstream round-trip completes.
 func (r *upstreamTokenRefresher) RefreshAndStore(
 	ctx context.Context,
 	sessionID string,
@@ -44,6 +61,31 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 	if expired == nil {
 		return nil, errors.New("expired tokens are required")
 	}
+
+	// providerName == ProviderID throughout the authserver; both originate from
+	// UpstreamConfig.Name and are stored verbatim in UpstreamTokens.ProviderID.
+	key := sessionID + ":" + expired.ProviderID
+	result, err, _ := r.sfGroup.Do(key, func() (any, error) {
+		refreshCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), refreshTimeout)
+		defer cancel()
+		return r.refreshAndStore(refreshCtx, sessionID, expired)
+	})
+	if err != nil {
+		return nil, err
+	}
+	refreshed, ok := result.(*storage.UpstreamTokens)
+	if !ok || refreshed == nil {
+		return nil, errors.New("unexpected nil result from upstream token refresh")
+	}
+	return refreshed, nil
+}
+
+// refreshAndStore performs the actual token refresh and storage write.
+func (r *upstreamTokenRefresher) refreshAndStore(
+	ctx context.Context,
+	sessionID string,
+	expired *storage.UpstreamTokens,
+) (*storage.UpstreamTokens, error) {
 	if expired.RefreshToken == "" {
 		return nil, errors.New("no refresh token available for upstream token refresh")
 	}
@@ -97,20 +139,57 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 		ClientID:         expired.ClientID,
 	}
 
-	// If the provider didn't rotate the refresh token, keep the original
+	// Detect rotation BEFORE the old-RT backfill below so the original
+	// (provider-issued) value is compared, not the backfilled fallback.
+	rotated := updated.RefreshToken != "" && updated.RefreshToken != expired.RefreshToken
+
+	// If the provider didn't rotate the refresh token, keep the original.
 	if updated.RefreshToken == "" {
 		updated.RefreshToken = expired.RefreshToken
 	}
 
-	// Store the refreshed tokens
-	if err := r.storage.StoreUpstreamTokens(ctx, sessionID, expired.ProviderID, updated); err != nil {
-		// Log but still return the refreshed tokens — the current request can
-		// proceed even if storage fails. The next request will retry the refresh.
-		slog.Warn("failed to store refreshed upstream tokens",
-			"session_id", sessionID,
-			"error", err,
+	// OIDC Core 1.0 §12.2 permits but does not require a new id_token on refresh.
+	// When the provider omits one, keep the ID token captured at the initial login
+	// so it is not erased from storage. StoreUpstreamTokens replaces the whole row,
+	// so without this the persisted IDToken would be overwritten with "" and the
+	// original login ID token would be lost for the remainder of the session.
+	// Mirrors the RefreshToken carry-forward above.
+	if updated.IDToken == "" {
+		updated.IDToken = expired.IDToken
+	}
+
+	if err := r.storeWithRetry(ctx, sessionID, expired.ProviderID, updated); err != nil {
+		if !rotated {
+			// The old refresh token is still valid in storage; the caller can
+			// proceed with the refreshed access token for this request.
+			slog.Warn("failed to persist refreshed upstream tokens; old refresh token still valid",
+				"session_id", sessionID,
+				"provider_id", expired.ProviderID,
+				"error", err,
+			)
+			return updated, nil
+		}
+
+		// The IdP rotated the refresh token: the new RT was redeemed but could
+		// not be persisted. The old RT is now dead in storage and will trigger
+		// reuse-detection lockout on the next refresh attempt.
+		//
+		// Residual window: if the process crashes here, the dead old RT stays in
+		// storage. ErrNotFound on the next refresh attempt forces re-auth, which
+		// is the backstop. Store-intent-before-redeem is out of scope for this fix.
+		deleteCtx, deleteCancel := context.WithTimeout(context.WithoutCancel(ctx), upstreamDeleteTimeout)
+		defer deleteCancel()
+		if delErr := r.storage.DeleteUpstreamTokensForProvider(deleteCtx, sessionID, expired.ProviderID); delErr != nil {
+			slog.Error("failed to delete stale upstream token row after rotation persist failure",
+				"session_id", sessionID,
+				"provider_id", expired.ProviderID,
+				"error", delErr,
+			)
+		}
+		return nil, fmt.Errorf(
+			"failed to persist rotated upstream refresh token for session %q provider %q: %w",
+			sessionID, expired.ProviderID, err,
 		)
-		return updated, nil
 	}
 
 	slog.Debug("upstream tokens refreshed successfully",
@@ -119,4 +198,37 @@ func (r *upstreamTokenRefresher) RefreshAndStore(
 	)
 
 	return updated, nil
+}
+
+// storeWithRetry attempts to store updated tokens up to upstreamStoreMaxAttempts times,
+// waiting upstreamStoreRetryBackoff between attempts. Returns nil on first success.
+// Returns the last error after all attempts are exhausted. Ctx-cancellation short-circuits
+// between attempts and returns the last store error (not ctx.Err()).
+func (r *upstreamTokenRefresher) storeWithRetry(
+	ctx context.Context,
+	sessionID, providerID string,
+	updated *storage.UpstreamTokens,
+) error {
+	var lastErr error
+	for attempt := 1; attempt <= upstreamStoreMaxAttempts; attempt++ {
+		storeErr := r.storage.StoreUpstreamTokens(ctx, sessionID, providerID, updated)
+		if storeErr == nil {
+			return nil
+		}
+		lastErr = storeErr
+		slog.Debug("failed to store refreshed upstream tokens",
+			"session_id", sessionID,
+			"provider_id", providerID,
+			"attempt", attempt,
+			"error", lastErr,
+		)
+		if attempt < upstreamStoreMaxAttempts {
+			select {
+			case <-ctx.Done():
+				return lastErr
+			case <-time.After(upstreamStoreRetryBackoff):
+			}
+		}
+	}
+	return lastErr
 }

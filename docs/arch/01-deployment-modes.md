@@ -15,7 +15,7 @@ graph LR
         Operator[Operator Mode<br/>thv-operator]
     end
 
-    CLI --> Docker[Docker/Podman<br/>Colima<br/>Rancher Desktop]
+    CLI --> Docker[Docker/Podman<br/>Colima<br/>Rancher Desktop<br/>OrbStack]
     UI --> Docker
     Operator --> K8s[Kubernetes]
 
@@ -31,7 +31,7 @@ graph LR
 | Feature | Local CLI | Local UI | Kubernetes |
 |---------|-----------|----------|------------|
 | **Binary** | `thv` | `thv` (API server) | `thv-operator` + `thv-proxyrunner` |
-| **Container Runtime** | Docker/Podman/Colima/Rancher | Docker/Podman/Colima/Rancher | Kubernetes |
+| **Container Runtime** | Docker/Podman/Colima/Rancher/OrbStack | Docker/Podman/Colima/Rancher/OrbStack | Kubernetes |
 | **Process Management** | Detached processes | API-managed | Operator-managed |
 | **State Storage** | Local filesystem | Local filesystem | etcd (K8s API) |
 | **Scaling** | Single machine | Single machine | Cluster-wide |
@@ -45,7 +45,7 @@ graph LR
 graph TB
     User[User] -->|CLI Commands| THV[thv binary]
     THV -->|spawn detached| Proxy[Proxy Process]
-    Proxy -->|Docker API| Runtime[Container Runtime<br/>Docker/Podman/Colima]
+    Proxy -->|Docker API| Runtime[Container Runtime<br/>Docker/Podman/Colima<br/>Rancher Desktop/OrbStack]
     Runtime -->|creates| Container[MCP Server Container]
     Proxy -->|stdin/stdout or HTTP| Container
     Client[MCP Client] -->|HTTP/SSE/Streamable| Proxy
@@ -65,7 +65,7 @@ graph TB
    - Instantiates workloads API (`pkg/workloads/manager.go`)
 
 3. **Workload Manager**:
-   - Detects available container runtime (Podman → Colima → Docker)
+   - Detects available container runtime (Podman → Docker → Colima)
    - Creates container via Runtime API
    - Spawns detached proxy process
 
@@ -76,13 +76,14 @@ graph TB
    - Exposes local HTTP endpoint for MCP clients
 
 5. **State Management**:
-   - RunConfig saved to `~/.toolhive/state/` (or XDG equivalent)
-   - PID file for process management
-   - Status file for workload state tracking
+   - RunConfig saved under `$XDG_STATE_HOME/toolhive/runconfigs/`
+   - PID file in `$XDG_DATA_HOME/toolhive/pids/` for process management
+   - Status file in `$XDG_DATA_HOME/toolhive/statuses/` for workload state tracking
+   - See the platform path table below for full XDG layout
 
 ### Container Runtime Selection
 
-**Implementation**: `pkg/container/factory.go`
+**Implementation**: `pkg/container/docker/sdk/factory.go` (with per-runtime socket discovery in `pkg/container/docker/sdk/client_unix.go`)
 
 The CLI automatically detects container runtimes in this order:
 
@@ -93,17 +94,17 @@ The CLI automatically detects container runtimes in this order:
    - `~/.local/share/containers/podman/machine/podman.sock` (Podman Machine on macOS)
    - `$TMPDIR/podman/*-api.sock` (Podman Machine API on macOS)
 
-2. **Colima** - Checks for Colima socket at:
-   - `$TOOLHIVE_COLIMA_SOCKET` (if set)
-   - `~/.colima/default/docker.sock`
-
-3. **Docker** (including Docker Desktop, Rancher Desktop, and OrbStack) - Checks for Docker socket at:
+2. **Docker** (including Docker Desktop, Rancher Desktop, and OrbStack) - Checks for Docker socket at:
    - `$TOOLHIVE_DOCKER_SOCKET` (if set)
    - `/var/run/docker.sock`
    - `~/.docker/run/docker.sock` (Docker Desktop on macOS)
    - `~/.docker/desktop/docker.sock` (Docker Desktop on Linux)
    - `~/.rd/docker.sock` (Rancher Desktop on macOS)
    - `~/.orbstack/run/docker.sock` (OrbStack on macOS)
+
+3. **Colima** - Checks for Colima socket at:
+   - `$TOOLHIVE_COLIMA_SOCKET` (if set)
+   - `~/.colima/default/docker.sock`
 
 ### Detached Process Model
 
@@ -129,9 +130,8 @@ sequenceDiagram
 
 **Key Implementation**:
 - `pkg/workloads/manager.go` - `RunWorkloadDetached` method
-- Uses `exec.Command` with `SysProcAttr` to detach
-- Sets `TOOLHIVE_DETACHED=true` environment variable
-- Redirects stdout/stderr to log file: `~/.toolhive/logs/<workload>.log`
+- Uses `exec.Command` with `SysProcAttr` (`Setsid` on Unix, equivalent flag on Windows) to detach from the parent session
+- Redirects stdout/stderr to log file under `$XDG_DATA_HOME/toolhive/logs/<workload>.log`
 
 ### File Locations
 
@@ -186,7 +186,7 @@ graph TB
 
 5. **Runtime Selection**:
    - Picks runtime driver based on environment
-   - Docker, Podman, or Rancher Desktop
+   - Docker, Podman, Colima, OrbStack, or Rancher Desktop (same set as CLI mode)
    - Uses driver API to spawn containers
 
 ### API Endpoints
@@ -231,7 +231,7 @@ Available flags:
 |------|-------------|-------------|
 | `--sentry-dsn` | `SENTRY_DSN` | Sentry Data Source Name (required to enable) |
 | `--sentry-environment` | `SENTRY_ENVIRONMENT` | Environment name (e.g. `production`, `development`) |
-| `--sentry-traces-sample-rate` | `SENTRY_TRACES_SAMPLE_RATE` | Trace sampling rate, 0.0–1.0 (default: `1.0`) |
+| `--sentry-traces-sample-rate` | — | Trace sampling rate, 0.0–1.0 (default: `1.0`) |
 
 When no DSN is configured, all Sentry operations are no-ops with zero overhead.
 
@@ -281,7 +281,7 @@ graph TB
 
 3. **Operator creates Deployment**:
    - Runs `thv-proxyrunner` container
-   - Mounts RunConfig as ConfigMap or secret
+   - Mounts RunConfig as ConfigMap
    - Applies middleware configuration
 
 4. **Proxy runner creates StatefulSet**:
@@ -519,3 +519,5 @@ This allows the same codebase to behave appropriately in different environments.
 - [Transport Architecture](03-transport-architecture.md) - How proxying works
 - [RunConfig and Permissions](05-runconfig-and-permissions.md) - Configuration format
 - [Operator Architecture](09-operator-architecture.md) - Kubernetes operator details
+- [Groups](07-groups.md) - Logical grouping of servers across deployment modes
+- [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - Aggregating backends as a deployment pattern

@@ -113,16 +113,6 @@ func GetPort(labels map[string]string) (int, error) {
 	return port, nil
 }
 
-// GetGroup gets the group name from labels
-func GetGroup(labels map[string]string) string {
-	return labels[LabelGroup]
-}
-
-// SetGroup sets the group name in labels
-func SetGroup(labels map[string]string, groupName string) {
-	labels[LabelGroup] = groupName
-}
-
 // IsAuxiliaryWorkload checks if a workload is an auxiliary workload (like inspector)
 // Auxiliary workloads don't follow standard workload management patterns and don't use proxy processes
 func IsAuxiliaryWorkload(labels map[string]string) bool {

@@ -7,6 +7,8 @@ metadata:
     helm.sh/resource-policy: keep
     {{- end }}
     controller-gen.kubebuilder.io/version: v0.17.3
+  labels:
+    toolhive.stacklok.dev/auto-migrate-storage-version: "true"
   name: virtualmcpservers.toolhive.stacklok.dev
 spec:
   group: toolhive.stacklok.dev
@@ -87,7 +89,8 @@ spec:
                       All other endpoints (token, registration, JWKS) remain derived from the issuer.
                       This is useful when the browser-facing authorization endpoint needs to be on a
                       different host than the issuer used for backend-to-backend calls.
-                      Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+                      Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts
+                      when insecureAllowHTTP is true) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
                   baselineClientScopes:
@@ -106,6 +109,9 @@ spec:
                       "openid" and "offline_access"). Adding a privileged scope here — e.g.
                       "admin:read" — would grant it to every DCR-registered client, including
                       public clients like Claude Code, Cursor, and VS Code.
+                      When cimd.enabled is true, every dynamically resolved CIMD client will
+                      also gain the ability to request these scopes, including third-party
+                      clients resolved from arbitrary HTTPS URLs.
                     items:
                       minLength: 1
                       pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
@@ -113,6 +119,48 @@ spec:
                     maxItems: 10
                     type: array
                     x-kubernetes-list-type: atomic
+                  cimd:
+                    description: CIMD configures Client ID Metadata Document support.
+                      When omitted, CIMD is disabled.
+                    properties:
+                      cacheFallbackTtl:
+                        description: |-
+                          CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+                          Cache-Control header parsing is not yet implemented; all entries use this value.
+                          Format: Go duration string (e.g. "5m", "10m", "1h").
+                          Defaults to 5 minutes when Enabled is true and this field is omitted.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      cacheMaxSize:
+                        description: |-
+                          CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+                          Defaults to 256 when Enabled is true and this field is omitted.
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled activates CIMD client lookup. When false (the default), the AS only
+                          accepts client_id values that were registered via DCR.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  disableUpstreamTokenInjection:
+                    default: false
+                    description: |-
+                      DisableUpstreamTokenInjection prevents the embedded auth server from injecting
+                      upstream IdP tokens into requests forwarded to the backend MCP server.
+                      When true, the embedded auth server still handles OAuth flows for clients,
+                      but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS
+                      the client's credential headers (Authorization, Cookie, Proxy-Authorization)
+                      after validating the JWT — the backend receives an unauthenticated request.
+                      Use headerForward to attach static credentials (e.g. an API key) if the
+                      backend needs them. Cannot be combined with token exchange or AWS STS,
+                      which would re-add credentials after the strip.
+                      This is useful when the backend MCP server does not require authentication
+                      (e.g., public documentation servers) but you still want client authentication.
+                    type: boolean
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -136,12 +184,49 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  insecureAllowHTTP:
+                    default: false
+                    description: |-
+                      InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+                      Only set this for in-cluster Kubernetes deployments where traffic between
+                      pods traverses a trusted network (e.g. the in-cluster service mesh).
+                      Production deployments reachable outside the cluster MUST use https://.
+
+                      On VirtualMCPServer: when false (the default), http:// issuers for non-localhost
+                      hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.
+
+                      On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is
+                      structurally present but enforcement is deferred to pod startup via Config.Validate();
+                      a misconfigured issuer will cause the pod to crash at startup rather than surface
+                      as an operator condition.
+                    type: boolean
                   issuer:
                     description: |-
                       Issuer is the issuer identifier for this authorization server.
                       This will be included in the "iss" claim of issued tokens.
-                      Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
+                      Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts when
+                      insecureAllowHTTP is true) without query, fragment, or trailing slash (per RFC 8414).
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
+                    type: string
+                  primaryUpstreamProvider:
+                    description: |-
+                      PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
+                      should read claims from when authorising a request. Must match the name
+                      of one of the entries in UpstreamProviders. When empty, the controller
+                      auto-selects the first entry of UpstreamProviders.
+
+                      Only meaningful on VirtualMCPServer, where multiple upstream providers
+                      can be configured and Cedar needs to pick which token's claims to
+                      evaluate. The VirtualMCPServer controller validates this field against
+                      UpstreamProviders at admission and rejects unresolvable values.
+
+                      On MCPServer and MCPRemoteProxy this field is structurally present (the
+                      EmbeddedAuthServerConfig struct is shared) but has no runtime effect:
+                      those CRDs are restricted to a single upstream so there is no choice to
+                      make. Setting it on those CRDs is silently ignored.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                     type: string
                   signingKeySecretRefs:
                     description: |-
@@ -313,7 +398,7 @@ spec:
                             type: object
                           tls:
                             description: |-
-                              TLS configures TLS for connections to the Redis/Valkey master.
+                              TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
                               Presence of this field enables TLS. Omit to use plaintext.
                             properties:
                               caCertSecretRef:
@@ -589,13 +674,13 @@ spec:
                               type: object
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: Scopes are the OAuth scopes to request
-                                from the upstream IDP.
+                                from the upstream IdP.
                               items:
                                 type: string
                               type: array
@@ -739,7 +824,7 @@ spec:
                               type: object
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
-                                registered with the upstream IDP.
+                                registered with the upstream IdP.
                               type: string
                             clientSecretRef:
                               description: |-
@@ -764,13 +849,13 @@ spec:
                               type: string
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: |-
-                                Scopes are the OAuth scopes to request from the upstream IDP.
+                                Scopes are the OAuth scopes to request from the upstream IdP.
                                 If not specified, defaults to ["openid", "offline_access"].
                                 When using additionalAuthorizationParams with provider-specific refresh token
                                 mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
@@ -779,6 +864,39 @@ spec:
                                 type: string
                               type: array
                               x-kubernetes-list-type: atomic
+                            subjectClaim:
+                              description: |-
+                                SubjectClaim names the validated ID-token claim to use as the upstream
+                                subject. Defaults to "sub" when empty. Set it for IdPs where "sub" isn't
+                                stable per user — e.g. Entra/Azure AD, whose "sub" rotates per application
+                                and whose stable identifier is "oid".
+
+                                The value is looked up verbatim as a top-level claim name, so it is
+                                constrained to a claim-name shape: it must start with a letter or
+                                underscore and contain only letters, digits, and underscores. This rejects
+                                dotted, colon-namespaced, or whitespace-containing values at admission
+                                rather than letting a typo silently miss the claim at login, and keeps the
+                                field aligned with the directory service's per-issuer bindingClaim.
+
+                                Changing this on a live deployment re-keys existing users (the value
+                                resolves to the internal user ID), so treat it as immutable once users
+                                exist.
+
+                                Per-IdP notes:
+                                  - Entra/Azure AD: use "oid"; it is only emitted when the upstream scopes
+                                    include "profile". "oid" is unique within a single tenant — multi-tenant
+                                    apps need oid+tid, which this single-claim field cannot express.
+                                  - Okta: the org auth server already puts the stable id in "sub" (default
+                                    works). A custom auth server's "sub" is the mutable login/email and the
+                                    stable "uid" lives only in the access token, not the ID token — map a
+                                    custom ID-token claim and point subjectClaim at it.
+                                The pattern matches the claim-name shape and allows empty (defaults to
+                                "sub"). Using Pattern rather than a CEL XValidation rule keeps this off the
+                                CRD's CEL cost budget — a single-field format check via CEL is rejected by
+                                the apiserver as too expensive once multiplied across the upstreams list.
+                              maxLength: 128
+                              pattern: ^([a-zA-Z_][a-zA-Z0-9_]*)?$
+                              type: string
                             userInfoOverride:
                               description: |-
                                 UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
@@ -1129,6 +1247,43 @@ spec:
                       - url
                       type: object
                     type: array
+                  codeMode:
+                    description: |-
+                      CodeMode configures vMCP code mode: server-side execution of Starlark scripts that
+                      orchestrate multiple backend tool calls in a single request via the execute_tool_script
+                      virtual tool. When enabled, execute_tool_script is advertised alongside the backend
+                      tools; a script's inner tool calls are authorized individually, so a script can only
+                      reach tools the caller is already permitted to use. Disabled by default.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled turns code mode on. When false (the default), execute_tool_script is not
+                          advertised in tools/list and scripts cannot be executed.
+                        type: boolean
+                      parallelMaxConcurrency:
+                        default: 10
+                        description: |-
+                          ParallelMaxConcurrency caps the number of goroutines a script's parallel() builtin
+                          may run concurrently. Defaults to 10 if unset or zero.
+                        minimum: 1
+                        type: integer
+                      stepLimit:
+                        default: 100000
+                        description: |-
+                          StepLimit is the maximum number of Starlark execution steps per script. It bounds
+                          runaway loops and computation. Defaults to 100000 if unset or zero.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      toolCallTimeout:
+                        default: 30s
+                        description: |-
+                          ToolCallTimeout bounds each individual backend tool call made from within a script.
+                          A call exceeding it is cancelled and surfaces a timeout error to the script.
+                          Defaults to 30s if unset.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                    type: object
                   compositeToolRefs:
                     description: |-
                       CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
@@ -1426,6 +1581,29 @@ spec:
                       authz:
                         description: Authz contains authorization configuration (optional).
                         properties:
+                          entitiesJson:
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required for
+                              enterprise policies that rely on transitive relationships (e.g.
+                              `ClaimGroup → PlatformRole`) — without it the Cedar authorizer is
+                              constructed with an empty entity store and `in` checks against absent
+                              entities silently evaluate to false. Defaults to "[]" when empty.
+                            type: string
+                          groupClaimName:
+                            description: |-
+                              GroupClaimName is the JWT claim key that contains group membership for
+                              the principal. When set, takes priority over the well-known defaults
+                              ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                              groups under a URI-style claim (e.g. "https://example.com/groups").
+                              When empty, only the well-known claim names are checked.
+                            type: string
+                          groupEntityType:
+                            description: |-
+                              GroupEntityType is the Cedar entity type name used for principal parent
+                              UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                              empty. Must match the entity type used in EntitiesJSON for transitive
+                              `in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported.
+                            type: string
                           policies:
                             description: Policies contains Cedar policy definitions
                               (when Type = "cedar").
@@ -1439,6 +1617,13 @@ spec:
                               When empty, claims from the ToolHive-issued token are used.
                               Must match an upstream provider name configured in the embedded auth server
                               (e.g. "default", "github"). Only relevant when the embedded auth server is active.
+                            type: string
+                          roleClaimName:
+                            description: |-
+                              RoleClaimName is the JWT claim key that contains role membership for the
+                              principal. When set, the claim is extracted separately from GroupClaimName
+                              and both are mapped to the configured group entity type. When empty, no
+                              role extraction is performed.
                             type: string
                           type:
                             description: 'Type is the authz type: "cedar", "none"'
@@ -1628,6 +1813,50 @@ spec:
                       instead of all backend tools directly. This reduces token usage by allowing
                       LLMs to discover relevant tools on demand rather than receiving all tool definitions.
                     properties:
+                      embeddingHeaders:
+                        additionalProperties:
+                          description: |-
+                            EmbeddingHeaderValue is a custom embedding request header value: 1 to 8192
+                            characters with no control characters other than tab.
+                          maxLength: 8192
+                          minLength: 1
+                          pattern: ^[^\x00-\x08\x0A-\x1F\x7F]*$
+                          type: string
+                        description: |-
+                          EmbeddingHeaders holds additional HTTP headers sent with every embedding
+                          request. Only supported when EmbeddingProvider is "openai". Values are
+                          stored in plain text and must not contain secrets; Authorization
+                          (derived from OPENAI_API_KEY) and Content-Type cannot be set.
+                        maxProperties: 32
+                        type: object
+                      embeddingModel:
+                        description: |-
+                          EmbeddingModel is the model name requested from the embedding service
+                          (e.g. "text-embedding-3-small"). Required when EmbeddingProvider is
+                          "openai". Ignored for the "tei" provider, where the model is fixed by the
+                          running TEI container.
+
+                          The API key for an OpenAI-compatible service is not configured here: it is
+                          read from the OPENAI_API_KEY environment variable so the secret never
+                          lands in a CRD spec or ConfigMap. An empty key omits the Authorization
+                          header, which supports keyless in-cluster gateways.
+                        type: string
+                      embeddingProvider:
+                        default: tei
+                        description: |-
+                          EmbeddingProvider selects the wire protocol used to talk to the embedding
+                          service. "tei" speaks the HuggingFace Text Embeddings Inference API;
+                          "openai" speaks the OpenAI-compatible /embeddings API, which lets the
+                          optimizer use OpenAI, Azure OpenAI, or another OpenAI-compatible gateway.
+                          Defaults to "tei" when empty.
+
+                          The "openai" provider reads EmbeddingService directly and cannot be combined
+                          with EmbeddingServerRef, which provisions a managed TEI server; the operator
+                          rejects that combination at admission.
+                        enum:
+                        - tei
+                        - openai
+                        type: string
                       embeddingService:
                         description: |-
                           EmbeddingService is the full base URL of the embedding service endpoint
@@ -1677,6 +1906,16 @@ spec:
                         pattern: ^([0-9]*[.])?[0-9]+$
                         type: string
                     type: object
+                    x-kubernetes-validations:
+                    - message: embeddingHeaders is only supported when embeddingProvider
+                        is 'openai'
+                      rule: '!has(self.embeddingHeaders) || (has(self.embeddingProvider)
+                        && self.embeddingProvider == ''openai'')'
+                    - message: embeddingHeaders names must be valid HTTP header names
+                        and must not include Authorization or Content-Type
+                      rule: '!has(self.embeddingHeaders) || self.embeddingHeaders.all(k,
+                        k.matches(''^[!#$%&\\x27*+.^_\\x60|~0-9A-Za-z-]+$'') && !(k.lowerAscii()
+                        in [''authorization'', ''content-type'']))'
                   outgoingAuth:
                     description: |-
                       OutgoingAuth configures how the virtual MCP server authenticates to backends.
@@ -1785,6 +2024,60 @@ spec:
                               required:
                               - headerName
                               type: object
+                            obo:
+                              description: |-
+                                OBO contains configuration for on-behalf-of (OBO) auth strategy.
+                                Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
+                                an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                              properties:
+                                audience:
+                                  description: Audience is the target audience (resource
+                                    URI) for the exchanged token.
+                                  type: string
+                                cacheSkewSeconds:
+                                  description: |-
+                                    CacheSkewSeconds is the number of seconds to subtract from a cached token's
+                                    expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                    The operator CRD stores this as CacheSkew *metav1.Duration and converts it
+                                    to an integer-seconds value for the vMCP runtime contract.
+                                  format: int32
+                                  type: integer
+                                clientId:
+                                  description: ClientID is the OAuth client ID for
+                                    the OBO request.
+                                  type: string
+                                clientSecret:
+                                  description: ClientSecret is the OAuth client secret
+                                    (use ClientSecretEnv for security).
+                                  type: string
+                                clientSecretEnv:
+                                  description: |-
+                                    ClientSecretEnv is the environment variable name containing the client secret.
+                                    The value will be resolved at runtime from this environment variable.
+                                  type: string
+                                scopes:
+                                  description: Scopes are the requested scopes for
+                                    the exchanged token.
+                                  items:
+                                    type: string
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                subjectTokenProviderName:
+                                  description: |-
+                                    SubjectTokenProviderName selects which upstream provider's token to use as the
+                                    subject (assertion) token for the OBO exchange. When set, the token is looked
+                                    up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
+                                    inbound end-user token (Identity.Token) is used directly.
+                                    Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
+                                    converter maps both to the runtime contract without renaming.
+                                  type: string
+                                tokenUrl:
+                                  description: TokenURL is the Entra token endpoint
+                                    URL for the OBO exchange.
+                                  type: string
+                              required:
+                              - tokenUrl
+                              type: object
                             tokenExchange:
                               description: |-
                                 TokenExchange contains configuration for token exchange auth strategy.
@@ -1813,6 +2106,7 @@ spec:
                                   items:
                                     type: string
                                   type: array
+                                  x-kubernetes-list-type: atomic
                                 subjectProviderName:
                                   description: |-
                                     SubjectProviderName selects which upstream provider's token to use as the
@@ -1838,7 +2132,7 @@ spec:
                             type:
                               description: 'Type is the auth strategy: "unauthenticated",
                                 "header_injection", "token_exchange", "upstream_inject",
-                                "aws_sts", "obo"'
+                                "aws_sts", "obo", "xaa"'
                               type: string
                             upstreamInject:
                               description: |-
@@ -1852,6 +2146,84 @@ spec:
                                   type: string
                               required:
                               - providerName
+                              type: object
+                            xaa:
+                              description: |-
+                                XAA contains configuration for XAA (Cross-Application Access) auth strategy.
+                                Used when Type = "xaa".
+                              properties:
+                                idpClientId:
+                                  description: IDPClientID is the OAuth client ID
+                                    at the IdP for IdP exchange.
+                                  type: string
+                                idpClientSecret:
+                                  description: IDPClientSecret is the client secret
+                                    at the IdP for IdP exchange.
+                                  type: string
+                                idpClientSecretEnv:
+                                  description: IDPClientSecretEnv is the env var containing
+                                    the IdP client secret.
+                                  type: string
+                                idpTokenUrl:
+                                  description: IDPTokenURL is the IdP token endpoint
+                                    for IdP exchange (RFC 8693 exchange).
+                                  type: string
+                                insecureTargetTokenUrl:
+                                  description: |-
+                                    InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+                                    WARNING: this is insecure and must only be set for in-cluster or
+                                    development/testing endpoints — never in production.
+                                  type: boolean
+                                scopes:
+                                  description: Scopes are the requested scopes for
+                                    IdP exchange and target grant.
+                                  items:
+                                    type: string
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                subjectProviderName:
+                                  description: |-
+                                    SubjectProviderName selects which upstream provider's ID token to use.
+                                    Auto-populated when embedded AS is active.
+                                  type: string
+                                subjectTokenType:
+                                  description: |-
+                                    SubjectTokenType is the token-type URN of the upstream subject token
+                                    used in IdP exchange. Defaults to TokenTypeIDToken when empty. Currently only
+                                    urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
+                                    to allow future expansion to SAML upstreams without an API break.
+                                  type: string
+                                targetAudience:
+                                  description: TargetAudience is the resource AS URL
+                                    for the ID-JAG audience claim (required).
+                                  type: string
+                                targetClientId:
+                                  description: TargetClientID is the OAuth client
+                                    ID at the target AS for target grant.
+                                  type: string
+                                targetClientSecret:
+                                  description: TargetClientSecret is the client secret
+                                    at the target AS for target grant.
+                                  type: string
+                                targetClientSecretEnv:
+                                  description: TargetClientSecretEnv is the env var
+                                    containing the target AS client secret.
+                                  type: string
+                                targetResource:
+                                  description: |-
+                                    TargetResource is the RFC 8707 resource indicator sent as the `resource`
+                                    parameter in IdP exchange's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                    identifies the target resource server — not the access-token audience, which
+                                    is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+                                  type: string
+                                targetTokenUrl:
+                                  description: TargetTokenURL is the target AS token
+                                    endpoint for target grant (JWT Bearer grant).
+                                  type: string
+                              required:
+                              - idpTokenUrl
+                              - targetAudience
+                              - targetTokenUrl
                               type: object
                           required:
                           - type
@@ -1956,6 +2328,60 @@ spec:
                             required:
                             - headerName
                             type: object
+                          obo:
+                            description: |-
+                              OBO contains configuration for on-behalf-of (OBO) auth strategy.
+                              Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
+                              an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                            properties:
+                              audience:
+                                description: Audience is the target audience (resource
+                                  URI) for the exchanged token.
+                                type: string
+                              cacheSkewSeconds:
+                                description: |-
+                                  CacheSkewSeconds is the number of seconds to subtract from a cached token's
+                                  expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                  The operator CRD stores this as CacheSkew *metav1.Duration and converts it
+                                  to an integer-seconds value for the vMCP runtime contract.
+                                format: int32
+                                type: integer
+                              clientId:
+                                description: ClientID is the OAuth client ID for the
+                                  OBO request.
+                                type: string
+                              clientSecret:
+                                description: ClientSecret is the OAuth client secret
+                                  (use ClientSecretEnv for security).
+                                type: string
+                              clientSecretEnv:
+                                description: |-
+                                  ClientSecretEnv is the environment variable name containing the client secret.
+                                  The value will be resolved at runtime from this environment variable.
+                                type: string
+                              scopes:
+                                description: Scopes are the requested scopes for the
+                                  exchanged token.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              subjectTokenProviderName:
+                                description: |-
+                                  SubjectTokenProviderName selects which upstream provider's token to use as the
+                                  subject (assertion) token for the OBO exchange. When set, the token is looked
+                                  up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
+                                  inbound end-user token (Identity.Token) is used directly.
+                                  Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
+                                  converter maps both to the runtime contract without renaming.
+                                type: string
+                              tokenUrl:
+                                description: TokenURL is the Entra token endpoint
+                                  URL for the OBO exchange.
+                                type: string
+                            required:
+                            - tokenUrl
+                            type: object
                           tokenExchange:
                             description: |-
                               TokenExchange contains configuration for token exchange auth strategy.
@@ -1984,6 +2410,7 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                                x-kubernetes-list-type: atomic
                               subjectProviderName:
                                 description: |-
                                   SubjectProviderName selects which upstream provider's token to use as the
@@ -2009,7 +2436,7 @@ spec:
                           type:
                             description: 'Type is the auth strategy: "unauthenticated",
                               "header_injection", "token_exchange", "upstream_inject",
-                              "aws_sts", "obo"'
+                              "aws_sts", "obo", "xaa"'
                             type: string
                           upstreamInject:
                             description: |-
@@ -2024,6 +2451,84 @@ spec:
                             required:
                             - providerName
                             type: object
+                          xaa:
+                            description: |-
+                              XAA contains configuration for XAA (Cross-Application Access) auth strategy.
+                              Used when Type = "xaa".
+                            properties:
+                              idpClientId:
+                                description: IDPClientID is the OAuth client ID at
+                                  the IdP for IdP exchange.
+                                type: string
+                              idpClientSecret:
+                                description: IDPClientSecret is the client secret
+                                  at the IdP for IdP exchange.
+                                type: string
+                              idpClientSecretEnv:
+                                description: IDPClientSecretEnv is the env var containing
+                                  the IdP client secret.
+                                type: string
+                              idpTokenUrl:
+                                description: IDPTokenURL is the IdP token endpoint
+                                  for IdP exchange (RFC 8693 exchange).
+                                type: string
+                              insecureTargetTokenUrl:
+                                description: |-
+                                  InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+                                  WARNING: this is insecure and must only be set for in-cluster or
+                                  development/testing endpoints — never in production.
+                                type: boolean
+                              scopes:
+                                description: Scopes are the requested scopes for IdP
+                                  exchange and target grant.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              subjectProviderName:
+                                description: |-
+                                  SubjectProviderName selects which upstream provider's ID token to use.
+                                  Auto-populated when embedded AS is active.
+                                type: string
+                              subjectTokenType:
+                                description: |-
+                                  SubjectTokenType is the token-type URN of the upstream subject token
+                                  used in IdP exchange. Defaults to TokenTypeIDToken when empty. Currently only
+                                  urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
+                                  to allow future expansion to SAML upstreams without an API break.
+                                type: string
+                              targetAudience:
+                                description: TargetAudience is the resource AS URL
+                                  for the ID-JAG audience claim (required).
+                                type: string
+                              targetClientId:
+                                description: TargetClientID is the OAuth client ID
+                                  at the target AS for target grant.
+                                type: string
+                              targetClientSecret:
+                                description: TargetClientSecret is the client secret
+                                  at the target AS for target grant.
+                                type: string
+                              targetClientSecretEnv:
+                                description: TargetClientSecretEnv is the env var
+                                  containing the target AS client secret.
+                                type: string
+                              targetResource:
+                                description: |-
+                                  TargetResource is the RFC 8707 resource indicator sent as the `resource`
+                                  parameter in IdP exchange's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                  identifies the target resource server — not the access-token audience, which
+                                  is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+                                type: string
+                              targetTokenUrl:
+                                description: TargetTokenURL is the target AS token
+                                  endpoint for target grant (JWT Bearer grant).
+                                type: string
+                            required:
+                            - idpTokenUrl
+                            - targetAudience
+                            - targetTokenUrl
+                            type: object
                         required:
                         - type
                         type: object
@@ -2036,6 +2541,17 @@ spec:
                     required:
                     - source
                     type: object
+                  passthroughHeaders:
+                    description: |-
+                      PassthroughHeaders is an allowlist of incoming client request header names
+                      forwarded verbatim to all backends. Captured at the vMCP incoming edge by
+                      headerforward.CaptureMiddleware and consumed once at session creation
+                      when the per-session backend client's HeaderForwardConfig is built. Names
+                      must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                   rateLimiting:
                     description: |-
                       RateLimiting defines rate limiting configuration for the Virtual MCP server.
@@ -2370,8 +2886,9 @@ spec:
                 properties:
                   authzConfig:
                     description: |-
-                      AuthzConfig defines authorization policy configuration
-                      Reuses MCPServer authz patterns
+                      AuthzConfig defines authorization policy configuration.
+                      Reuses MCPServer authz patterns.
+                      AuthzConfig and AuthzConfigRef are mutually exclusive.
                     properties:
                       configMap:
                         description: |-
@@ -2389,6 +2906,28 @@ spec:
                         required:
                         - name
                         type: object
+                      groupClaimName:
+                        description: |-
+                          GroupClaimName is the JWT claim key that contains group membership for the
+                          principal. When set, takes priority over the well-known defaults
+                          ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                          groups under a URI-style claim (e.g. "https://example.com/groups"). When
+                          Type is "configMap", a group_claim_name entry in the referenced ConfigMap
+                          is overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
+                      groupEntityType:
+                        description: |-
+                          GroupEntityType is the Cedar entity type name used for principal parent
+                          UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                          empty. Must match the entity type used in the static entity store for
+                          transitive `in` checks (e.g. `ClaimGroup → PlatformRole`) to resolve.
+                          Namespaced names (`Foo::Bar`) are not yet supported. When Type is
+                          "configMap", a group_entity_type entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 63
+                        pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                        type: string
                       inline:
                         description: |-
                           Inline contains direct authorization configuration
@@ -2396,8 +2935,10 @@ spec:
                         properties:
                           entitiesJson:
                             default: '[]'
-                            description: EntitiesJSON is a JSON string representing
-                              Cedar entities
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required when
+                              transitive policies (e.g. `ClaimGroup → PlatformRole`) need a static
+                              entity store; defaults to "[]".
                             type: string
                           policies:
                             description: Policies is a list of Cedar policy strings
@@ -2408,17 +2949,20 @@ spec:
                             x-kubernetes-list-type: atomic
                           primaryUpstreamProvider:
                             description: |-
-                              PrimaryUpstreamProvider names the upstream IDP whose access token's claims
-                              Cedar should evaluate. Currently honored only when the parent
-                              AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
-                              this in a future release (see #5208). Only meaningful for VirtualMCPServer
-                              with an embedded auth server. When empty and an embedded auth server has
-                              upstreams configured, the controller defaults to the first upstream
-                              provider. The name must match one of the upstreams declared on
-                              spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
-                              rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
-                              have no embedded auth server; setting this field on those CRs surfaces an
-                              AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+                              PrimaryUpstreamProvider names the upstream IDP whose access token's
+                              claims Cedar should evaluate.
+
+                              Deprecated: on VirtualMCPServer this field has moved to
+                              spec.authServerConfig.primaryUpstreamProvider. The old location is
+                              still read for one release for backward compatibility; the
+                              VirtualMCPServer controller emits an AuthzPrimaryUpstreamProviderDeprecated
+                              Warning event whenever it is consumed, and removal is planned for the
+                              release after the deprecation cycle.
+
+                              On MCPServer and MCPRemoteProxy this field has always been a structural
+                              no-op (those CRDs do not run an embedded auth server). Setting it
+                              continues to surface the AuthzPrimaryUpstreamProviderIgnored advisory
+                              condition; the deprecation does not change that behaviour.
                             maxLength: 63
                             minLength: 1
                             pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
@@ -2426,6 +2970,15 @@ spec:
                         required:
                         - policies
                         type: object
+                      roleClaimName:
+                        description: |-
+                          RoleClaimName is the JWT claim key that contains role membership for the
+                          principal. When set, the claim is extracted separately from GroupClaimName
+                          and both are mapped to the configured GroupEntityType. When Type is
+                          "configMap", a role_claim_name entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
                       type:
                         default: configMap
                         description: Type is the type of authorization configuration
@@ -2443,6 +2996,24 @@ spec:
                     - message: inline must be set when type is 'inline', and must
                         not be set otherwise
                       rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+                  authzConfigRef:
+                    description: |-
+                      AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                      The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+                      Mutually exclusive with authzConfig.
+
+                      Only cedarv1 MCPAuthzConfig resources are supported for VirtualMCPServer
+                      today; referencing a non-Cedar config fails reconciliation with a clear
+                      error because the vMCP runtime authz middleware is Cedar-only.
+                    properties:
+                      name:
+                        description: Name is the name of the MCPAuthzConfig resource
+                          in the same namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
                   oidcConfigRef:
                     description: |-
                       OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
@@ -2494,6 +3065,9 @@ spec:
                 - message: spec.incomingAuth.oidcConfigRef is required when type is
                     oidc
                   rule: 'self.type == ''oidc'' ? has(self.oidcConfigRef) : true'
+                - message: authzConfig and authzConfigRef are mutually exclusive;
+                    use authzConfigRef to reference a shared MCPAuthzConfig
+                  rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
@@ -2567,6 +3141,17 @@ spec:
                     - inline
                     type: string
                 type: object
+              passthroughHeaders:
+                description: |-
+                  PassthroughHeaders is an allowlist of incoming client request header names
+                  forwarded verbatim to all backends (e.g. an API key the backend resolves to
+                  a user). Takes precedence over config.PassthroughHeaders. Names must not be
+                  restricted headers (Host, hop-by-hop, X-Forwarded-*). Forwarded headers are
+                  attacker-influenceable unless a trusted upstream sets them.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
               podTemplateSpec:
                 description: |-
                   PodTemplateSpec defines the pod template to use for the Virtual MCP server
@@ -2692,9 +3277,20 @@ spec:
               rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
                 || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
                 && self.incomingAuth.type == ''oidc'')'
+            - message: embeddingServerRef provisions a managed TEI server and cannot
+                be combined with optimizer.embeddingProvider 'openai'; openai mode
+                uses embeddingService directly
+              rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
+                && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
+                == ''openai'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
+              authzConfigHash:
+                description: |-
+                  AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection.
+                  Only populated when IncomingAuth.AuthzConfigRef is set.
+                type: string
               backendCount:
                 description: |-
                   BackendCount is the number of routable backends (ready + unauthenticated).
@@ -2925,7 +3521,8 @@ spec:
                       All other endpoints (token, registration, JWKS) remain derived from the issuer.
                       This is useful when the browser-facing authorization endpoint needs to be on a
                       different host than the issuer used for backend-to-backend calls.
-                      Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.
+                      Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts
+                      when insecureAllowHTTP is true) without query, fragment, or trailing slash.
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
                     type: string
                   baselineClientScopes:
@@ -2944,6 +3541,9 @@ spec:
                       "openid" and "offline_access"). Adding a privileged scope here — e.g.
                       "admin:read" — would grant it to every DCR-registered client, including
                       public clients like Claude Code, Cursor, and VS Code.
+                      When cimd.enabled is true, every dynamically resolved CIMD client will
+                      also gain the ability to request these scopes, including third-party
+                      clients resolved from arbitrary HTTPS URLs.
                     items:
                       minLength: 1
                       pattern: ^[\x21\x23-\x5B\x5D-\x7E]+$
@@ -2951,6 +3551,48 @@ spec:
                     maxItems: 10
                     type: array
                     x-kubernetes-list-type: atomic
+                  cimd:
+                    description: CIMD configures Client ID Metadata Document support.
+                      When omitted, CIMD is disabled.
+                    properties:
+                      cacheFallbackTtl:
+                        description: |-
+                          CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+                          Cache-Control header parsing is not yet implemented; all entries use this value.
+                          Format: Go duration string (e.g. "5m", "10m", "1h").
+                          Defaults to 5 minutes when Enabled is true and this field is omitted.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                      cacheMaxSize:
+                        description: |-
+                          CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+                          Defaults to 256 when Enabled is true and this field is omitted.
+                        minimum: 1
+                        type: integer
+                      enabled:
+                        default: false
+                        description: |-
+                          Enabled activates CIMD client lookup. When false (the default), the AS only
+                          accepts client_id values that were registered via DCR.
+                        type: boolean
+                    required:
+                    - enabled
+                    type: object
+                  disableUpstreamTokenInjection:
+                    default: false
+                    description: |-
+                      DisableUpstreamTokenInjection prevents the embedded auth server from injecting
+                      upstream IdP tokens into requests forwarded to the backend MCP server.
+                      When true, the embedded auth server still handles OAuth flows for clients,
+                      but instead of swapping ToolHive JWTs for upstream tokens the proxy STRIPS
+                      the client's credential headers (Authorization, Cookie, Proxy-Authorization)
+                      after validating the JWT — the backend receives an unauthenticated request.
+                      Use headerForward to attach static credentials (e.g. an API key) if the
+                      backend needs them. Cannot be combined with token exchange or AWS STS,
+                      which would re-add credentials after the strip.
+                      This is useful when the backend MCP server does not require authentication
+                      (e.g., public documentation servers) but you still want client authentication.
+                    type: boolean
                   hmacSecretRefs:
                     description: |-
                       HMACSecretRefs references Kubernetes Secrets containing symmetric secrets for signing
@@ -2974,12 +3616,49 @@ spec:
                       type: object
                     type: array
                     x-kubernetes-list-type: atomic
+                  insecureAllowHTTP:
+                    default: false
+                    description: |-
+                      InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+                      Only set this for in-cluster Kubernetes deployments where traffic between
+                      pods traverses a trusted network (e.g. the in-cluster service mesh).
+                      Production deployments reachable outside the cluster MUST use https://.
+
+                      On VirtualMCPServer: when false (the default), http:// issuers for non-localhost
+                      hosts are rejected at reconcile time with an AuthServerConfigValidated=False condition.
+
+                      On MCPServer and MCPRemoteProxy (via MCPExternalAuthConfig): this field is
+                      structurally present but enforcement is deferred to pod startup via Config.Validate();
+                      a misconfigured issuer will cause the pod to crash at startup rather than surface
+                      as an operator condition.
+                    type: boolean
                   issuer:
                     description: |-
                       Issuer is the issuer identifier for this authorization server.
                       This will be included in the "iss" claim of issued tokens.
-                      Must be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash (per RFC 8414).
+                      Must be a valid HTTPS URL (or HTTP for localhost, or HTTP for trusted in-cluster hosts when
+                      insecureAllowHTTP is true) without query, fragment, or trailing slash (per RFC 8414).
                     pattern: ^https?://[^\s?#]+[^/\s?#]$
+                    type: string
+                  primaryUpstreamProvider:
+                    description: |-
+                      PrimaryUpstreamProvider names the upstream IDP whose access token Cedar
+                      should read claims from when authorising a request. Must match the name
+                      of one of the entries in UpstreamProviders. When empty, the controller
+                      auto-selects the first entry of UpstreamProviders.
+
+                      Only meaningful on VirtualMCPServer, where multiple upstream providers
+                      can be configured and Cedar needs to pick which token's claims to
+                      evaluate. The VirtualMCPServer controller validates this field against
+                      UpstreamProviders at admission and rejects unresolvable values.
+
+                      On MCPServer and MCPRemoteProxy this field is structurally present (the
+                      EmbeddedAuthServerConfig struct is shared) but has no runtime effect:
+                      those CRDs are restricted to a single upstream so there is no choice to
+                      make. Setting it on those CRDs is silently ignored.
+                    maxLength: 63
+                    minLength: 1
+                    pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
                     type: string
                   signingKeySecretRefs:
                     description: |-
@@ -3151,7 +3830,7 @@ spec:
                             type: object
                           tls:
                             description: |-
-                              TLS configures TLS for connections to the Redis/Valkey master.
+                              TLS configures TLS for connections to the Redis/Valkey master or cluster nodes.
                               Presence of this field enables TLS. Omit to use plaintext.
                             properties:
                               caCertSecretRef:
@@ -3427,13 +4106,13 @@ spec:
                               type: object
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: Scopes are the OAuth scopes to request
-                                from the upstream IDP.
+                                from the upstream IdP.
                               items:
                                 type: string
                               type: array
@@ -3577,7 +4256,7 @@ spec:
                               type: object
                             clientId:
                               description: ClientID is the OAuth 2.0 client identifier
-                                registered with the upstream IDP.
+                                registered with the upstream IdP.
                               type: string
                             clientSecretRef:
                               description: |-
@@ -3602,13 +4281,13 @@ spec:
                               type: string
                             redirectUri:
                               description: |-
-                                RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
+                                RedirectURI is the callback URL where the upstream IdP will redirect after authentication.
                                 When not specified, defaults to `{resourceUrl}/oauth/callback` where `resourceUrl` is the
                                 URL associated with the resource (e.g., MCPServer or vMCP) using this config.
                               type: string
                             scopes:
                               description: |-
-                                Scopes are the OAuth scopes to request from the upstream IDP.
+                                Scopes are the OAuth scopes to request from the upstream IdP.
                                 If not specified, defaults to ["openid", "offline_access"].
                                 When using additionalAuthorizationParams with provider-specific refresh token
                                 mechanisms (e.g., Google's access_type=offline), set explicit scopes to avoid
@@ -3617,6 +4296,39 @@ spec:
                                 type: string
                               type: array
                               x-kubernetes-list-type: atomic
+                            subjectClaim:
+                              description: |-
+                                SubjectClaim names the validated ID-token claim to use as the upstream
+                                subject. Defaults to "sub" when empty. Set it for IdPs where "sub" isn't
+                                stable per user — e.g. Entra/Azure AD, whose "sub" rotates per application
+                                and whose stable identifier is "oid".
+
+                                The value is looked up verbatim as a top-level claim name, so it is
+                                constrained to a claim-name shape: it must start with a letter or
+                                underscore and contain only letters, digits, and underscores. This rejects
+                                dotted, colon-namespaced, or whitespace-containing values at admission
+                                rather than letting a typo silently miss the claim at login, and keeps the
+                                field aligned with the directory service's per-issuer bindingClaim.
+
+                                Changing this on a live deployment re-keys existing users (the value
+                                resolves to the internal user ID), so treat it as immutable once users
+                                exist.
+
+                                Per-IdP notes:
+                                  - Entra/Azure AD: use "oid"; it is only emitted when the upstream scopes
+                                    include "profile". "oid" is unique within a single tenant — multi-tenant
+                                    apps need oid+tid, which this single-claim field cannot express.
+                                  - Okta: the org auth server already puts the stable id in "sub" (default
+                                    works). A custom auth server's "sub" is the mutable login/email and the
+                                    stable "uid" lives only in the access token, not the ID token — map a
+                                    custom ID-token claim and point subjectClaim at it.
+                                The pattern matches the claim-name shape and allows empty (defaults to
+                                "sub"). Using Pattern rather than a CEL XValidation rule keeps this off the
+                                CRD's CEL cost budget — a single-field format check via CEL is rejected by
+                                the apiserver as too expensive once multiplied across the upstreams list.
+                              maxLength: 128
+                              pattern: ^([a-zA-Z_][a-zA-Z0-9_]*)?$
+                              type: string
                             userInfoOverride:
                               description: |-
                                 UserInfoOverride allows customizing UserInfo fetching behavior for OIDC providers.
@@ -3967,6 +4679,43 @@ spec:
                       - url
                       type: object
                     type: array
+                  codeMode:
+                    description: |-
+                      CodeMode configures vMCP code mode: server-side execution of Starlark scripts that
+                      orchestrate multiple backend tool calls in a single request via the execute_tool_script
+                      virtual tool. When enabled, execute_tool_script is advertised alongside the backend
+                      tools; a script's inner tool calls are authorized individually, so a script can only
+                      reach tools the caller is already permitted to use. Disabled by default.
+                    properties:
+                      enabled:
+                        description: |-
+                          Enabled turns code mode on. When false (the default), execute_tool_script is not
+                          advertised in tools/list and scripts cannot be executed.
+                        type: boolean
+                      parallelMaxConcurrency:
+                        default: 10
+                        description: |-
+                          ParallelMaxConcurrency caps the number of goroutines a script's parallel() builtin
+                          may run concurrently. Defaults to 10 if unset or zero.
+                        minimum: 1
+                        type: integer
+                      stepLimit:
+                        default: 100000
+                        description: |-
+                          StepLimit is the maximum number of Starlark execution steps per script. It bounds
+                          runaway loops and computation. Defaults to 100000 if unset or zero.
+                        format: int64
+                        minimum: 1
+                        type: integer
+                      toolCallTimeout:
+                        default: 30s
+                        description: |-
+                          ToolCallTimeout bounds each individual backend tool call made from within a script.
+                          A call exceeding it is cancelled and surfaces a timeout error to the script.
+                          Defaults to 30s if unset.
+                        pattern: ^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$
+                        type: string
+                    type: object
                   compositeToolRefs:
                     description: |-
                       CompositeToolRefs references VirtualMCPCompositeToolDefinition resources
@@ -4264,6 +5013,29 @@ spec:
                       authz:
                         description: Authz contains authorization configuration (optional).
                         properties:
+                          entitiesJson:
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required for
+                              enterprise policies that rely on transitive relationships (e.g.
+                              `ClaimGroup → PlatformRole`) — without it the Cedar authorizer is
+                              constructed with an empty entity store and `in` checks against absent
+                              entities silently evaluate to false. Defaults to "[]" when empty.
+                            type: string
+                          groupClaimName:
+                            description: |-
+                              GroupClaimName is the JWT claim key that contains group membership for
+                              the principal. When set, takes priority over the well-known defaults
+                              ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                              groups under a URI-style claim (e.g. "https://example.com/groups").
+                              When empty, only the well-known claim names are checked.
+                            type: string
+                          groupEntityType:
+                            description: |-
+                              GroupEntityType is the Cedar entity type name used for principal parent
+                              UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                              empty. Must match the entity type used in EntitiesJSON for transitive
+                              `in` checks to resolve. Namespaced names (`Foo::Bar`) are not yet supported.
+                            type: string
                           policies:
                             description: Policies contains Cedar policy definitions
                               (when Type = "cedar").
@@ -4277,6 +5049,13 @@ spec:
                               When empty, claims from the ToolHive-issued token are used.
                               Must match an upstream provider name configured in the embedded auth server
                               (e.g. "default", "github"). Only relevant when the embedded auth server is active.
+                            type: string
+                          roleClaimName:
+                            description: |-
+                              RoleClaimName is the JWT claim key that contains role membership for the
+                              principal. When set, the claim is extracted separately from GroupClaimName
+                              and both are mapped to the configured group entity type. When empty, no
+                              role extraction is performed.
                             type: string
                           type:
                             description: 'Type is the authz type: "cedar", "none"'
@@ -4466,6 +5245,50 @@ spec:
                       instead of all backend tools directly. This reduces token usage by allowing
                       LLMs to discover relevant tools on demand rather than receiving all tool definitions.
                     properties:
+                      embeddingHeaders:
+                        additionalProperties:
+                          description: |-
+                            EmbeddingHeaderValue is a custom embedding request header value: 1 to 8192
+                            characters with no control characters other than tab.
+                          maxLength: 8192
+                          minLength: 1
+                          pattern: ^[^\x00-\x08\x0A-\x1F\x7F]*$
+                          type: string
+                        description: |-
+                          EmbeddingHeaders holds additional HTTP headers sent with every embedding
+                          request. Only supported when EmbeddingProvider is "openai". Values are
+                          stored in plain text and must not contain secrets; Authorization
+                          (derived from OPENAI_API_KEY) and Content-Type cannot be set.
+                        maxProperties: 32
+                        type: object
+                      embeddingModel:
+                        description: |-
+                          EmbeddingModel is the model name requested from the embedding service
+                          (e.g. "text-embedding-3-small"). Required when EmbeddingProvider is
+                          "openai". Ignored for the "tei" provider, where the model is fixed by the
+                          running TEI container.
+
+                          The API key for an OpenAI-compatible service is not configured here: it is
+                          read from the OPENAI_API_KEY environment variable so the secret never
+                          lands in a CRD spec or ConfigMap. An empty key omits the Authorization
+                          header, which supports keyless in-cluster gateways.
+                        type: string
+                      embeddingProvider:
+                        default: tei
+                        description: |-
+                          EmbeddingProvider selects the wire protocol used to talk to the embedding
+                          service. "tei" speaks the HuggingFace Text Embeddings Inference API;
+                          "openai" speaks the OpenAI-compatible /embeddings API, which lets the
+                          optimizer use OpenAI, Azure OpenAI, or another OpenAI-compatible gateway.
+                          Defaults to "tei" when empty.
+
+                          The "openai" provider reads EmbeddingService directly and cannot be combined
+                          with EmbeddingServerRef, which provisions a managed TEI server; the operator
+                          rejects that combination at admission.
+                        enum:
+                        - tei
+                        - openai
+                        type: string
                       embeddingService:
                         description: |-
                           EmbeddingService is the full base URL of the embedding service endpoint
@@ -4515,6 +5338,16 @@ spec:
                         pattern: ^([0-9]*[.])?[0-9]+$
                         type: string
                     type: object
+                    x-kubernetes-validations:
+                    - message: embeddingHeaders is only supported when embeddingProvider
+                        is 'openai'
+                      rule: '!has(self.embeddingHeaders) || (has(self.embeddingProvider)
+                        && self.embeddingProvider == ''openai'')'
+                    - message: embeddingHeaders names must be valid HTTP header names
+                        and must not include Authorization or Content-Type
+                      rule: '!has(self.embeddingHeaders) || self.embeddingHeaders.all(k,
+                        k.matches(''^[!#$%&\\x27*+.^_\\x60|~0-9A-Za-z-]+$'') && !(k.lowerAscii()
+                        in [''authorization'', ''content-type'']))'
                   outgoingAuth:
                     description: |-
                       OutgoingAuth configures how the virtual MCP server authenticates to backends.
@@ -4623,6 +5456,60 @@ spec:
                               required:
                               - headerName
                               type: object
+                            obo:
+                              description: |-
+                                OBO contains configuration for on-behalf-of (OBO) auth strategy.
+                                Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
+                                an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                              properties:
+                                audience:
+                                  description: Audience is the target audience (resource
+                                    URI) for the exchanged token.
+                                  type: string
+                                cacheSkewSeconds:
+                                  description: |-
+                                    CacheSkewSeconds is the number of seconds to subtract from a cached token's
+                                    expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                    The operator CRD stores this as CacheSkew *metav1.Duration and converts it
+                                    to an integer-seconds value for the vMCP runtime contract.
+                                  format: int32
+                                  type: integer
+                                clientId:
+                                  description: ClientID is the OAuth client ID for
+                                    the OBO request.
+                                  type: string
+                                clientSecret:
+                                  description: ClientSecret is the OAuth client secret
+                                    (use ClientSecretEnv for security).
+                                  type: string
+                                clientSecretEnv:
+                                  description: |-
+                                    ClientSecretEnv is the environment variable name containing the client secret.
+                                    The value will be resolved at runtime from this environment variable.
+                                  type: string
+                                scopes:
+                                  description: Scopes are the requested scopes for
+                                    the exchanged token.
+                                  items:
+                                    type: string
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                subjectTokenProviderName:
+                                  description: |-
+                                    SubjectTokenProviderName selects which upstream provider's token to use as the
+                                    subject (assertion) token for the OBO exchange. When set, the token is looked
+                                    up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
+                                    inbound end-user token (Identity.Token) is used directly.
+                                    Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
+                                    converter maps both to the runtime contract without renaming.
+                                  type: string
+                                tokenUrl:
+                                  description: TokenURL is the Entra token endpoint
+                                    URL for the OBO exchange.
+                                  type: string
+                              required:
+                              - tokenUrl
+                              type: object
                             tokenExchange:
                               description: |-
                                 TokenExchange contains configuration for token exchange auth strategy.
@@ -4651,6 +5538,7 @@ spec:
                                   items:
                                     type: string
                                   type: array
+                                  x-kubernetes-list-type: atomic
                                 subjectProviderName:
                                   description: |-
                                     SubjectProviderName selects which upstream provider's token to use as the
@@ -4676,7 +5564,7 @@ spec:
                             type:
                               description: 'Type is the auth strategy: "unauthenticated",
                                 "header_injection", "token_exchange", "upstream_inject",
-                                "aws_sts", "obo"'
+                                "aws_sts", "obo", "xaa"'
                               type: string
                             upstreamInject:
                               description: |-
@@ -4690,6 +5578,84 @@ spec:
                                   type: string
                               required:
                               - providerName
+                              type: object
+                            xaa:
+                              description: |-
+                                XAA contains configuration for XAA (Cross-Application Access) auth strategy.
+                                Used when Type = "xaa".
+                              properties:
+                                idpClientId:
+                                  description: IDPClientID is the OAuth client ID
+                                    at the IdP for IdP exchange.
+                                  type: string
+                                idpClientSecret:
+                                  description: IDPClientSecret is the client secret
+                                    at the IdP for IdP exchange.
+                                  type: string
+                                idpClientSecretEnv:
+                                  description: IDPClientSecretEnv is the env var containing
+                                    the IdP client secret.
+                                  type: string
+                                idpTokenUrl:
+                                  description: IDPTokenURL is the IdP token endpoint
+                                    for IdP exchange (RFC 8693 exchange).
+                                  type: string
+                                insecureTargetTokenUrl:
+                                  description: |-
+                                    InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+                                    WARNING: this is insecure and must only be set for in-cluster or
+                                    development/testing endpoints — never in production.
+                                  type: boolean
+                                scopes:
+                                  description: Scopes are the requested scopes for
+                                    IdP exchange and target grant.
+                                  items:
+                                    type: string
+                                  type: array
+                                  x-kubernetes-list-type: atomic
+                                subjectProviderName:
+                                  description: |-
+                                    SubjectProviderName selects which upstream provider's ID token to use.
+                                    Auto-populated when embedded AS is active.
+                                  type: string
+                                subjectTokenType:
+                                  description: |-
+                                    SubjectTokenType is the token-type URN of the upstream subject token
+                                    used in IdP exchange. Defaults to TokenTypeIDToken when empty. Currently only
+                                    urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
+                                    to allow future expansion to SAML upstreams without an API break.
+                                  type: string
+                                targetAudience:
+                                  description: TargetAudience is the resource AS URL
+                                    for the ID-JAG audience claim (required).
+                                  type: string
+                                targetClientId:
+                                  description: TargetClientID is the OAuth client
+                                    ID at the target AS for target grant.
+                                  type: string
+                                targetClientSecret:
+                                  description: TargetClientSecret is the client secret
+                                    at the target AS for target grant.
+                                  type: string
+                                targetClientSecretEnv:
+                                  description: TargetClientSecretEnv is the env var
+                                    containing the target AS client secret.
+                                  type: string
+                                targetResource:
+                                  description: |-
+                                    TargetResource is the RFC 8707 resource indicator sent as the `resource`
+                                    parameter in IdP exchange's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                    identifies the target resource server — not the access-token audience, which
+                                    is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+                                  type: string
+                                targetTokenUrl:
+                                  description: TargetTokenURL is the target AS token
+                                    endpoint for target grant (JWT Bearer grant).
+                                  type: string
+                              required:
+                              - idpTokenUrl
+                              - targetAudience
+                              - targetTokenUrl
                               type: object
                           required:
                           - type
@@ -4794,6 +5760,60 @@ spec:
                             required:
                             - headerName
                             type: object
+                          obo:
+                            description: |-
+                              OBO contains configuration for on-behalf-of (OBO) auth strategy.
+                              Used when Type = "obo". The default upstream build returns ErrEnterpriseRequired;
+                              an out-of-tree build registers a real strategy via auth.RegisterOBOStrategy.
+                            properties:
+                              audience:
+                                description: Audience is the target audience (resource
+                                  URI) for the exchanged token.
+                                type: string
+                              cacheSkewSeconds:
+                                description: |-
+                                  CacheSkewSeconds is the number of seconds to subtract from a cached token's
+                                  expiry when deciding whether to refresh it. Defaults to zero (no skew).
+                                  The operator CRD stores this as CacheSkew *metav1.Duration and converts it
+                                  to an integer-seconds value for the vMCP runtime contract.
+                                format: int32
+                                type: integer
+                              clientId:
+                                description: ClientID is the OAuth client ID for the
+                                  OBO request.
+                                type: string
+                              clientSecret:
+                                description: ClientSecret is the OAuth client secret
+                                  (use ClientSecretEnv for security).
+                                type: string
+                              clientSecretEnv:
+                                description: |-
+                                  ClientSecretEnv is the environment variable name containing the client secret.
+                                  The value will be resolved at runtime from this environment variable.
+                                type: string
+                              scopes:
+                                description: Scopes are the requested scopes for the
+                                  exchanged token.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              subjectTokenProviderName:
+                                description: |-
+                                  SubjectTokenProviderName selects which upstream provider's token to use as the
+                                  subject (assertion) token for the OBO exchange. When set, the token is looked
+                                  up from Identity.UpstreamTokens[SubjectTokenProviderName]; when omitted, the
+                                  inbound end-user token (Identity.Token) is used directly.
+                                  Matches the operator CRD's SubjectTokenProviderName field; the enterprise OBO
+                                  converter maps both to the runtime contract without renaming.
+                                type: string
+                              tokenUrl:
+                                description: TokenURL is the Entra token endpoint
+                                  URL for the OBO exchange.
+                                type: string
+                            required:
+                            - tokenUrl
+                            type: object
                           tokenExchange:
                             description: |-
                               TokenExchange contains configuration for token exchange auth strategy.
@@ -4822,6 +5842,7 @@ spec:
                                 items:
                                   type: string
                                 type: array
+                                x-kubernetes-list-type: atomic
                               subjectProviderName:
                                 description: |-
                                   SubjectProviderName selects which upstream provider's token to use as the
@@ -4847,7 +5868,7 @@ spec:
                           type:
                             description: 'Type is the auth strategy: "unauthenticated",
                               "header_injection", "token_exchange", "upstream_inject",
-                              "aws_sts", "obo"'
+                              "aws_sts", "obo", "xaa"'
                             type: string
                           upstreamInject:
                             description: |-
@@ -4862,6 +5883,84 @@ spec:
                             required:
                             - providerName
                             type: object
+                          xaa:
+                            description: |-
+                              XAA contains configuration for XAA (Cross-Application Access) auth strategy.
+                              Used when Type = "xaa".
+                            properties:
+                              idpClientId:
+                                description: IDPClientID is the OAuth client ID at
+                                  the IdP for IdP exchange.
+                                type: string
+                              idpClientSecret:
+                                description: IDPClientSecret is the client secret
+                                  at the IdP for IdP exchange.
+                                type: string
+                              idpClientSecretEnv:
+                                description: IDPClientSecretEnv is the env var containing
+                                  the IdP client secret.
+                                type: string
+                              idpTokenUrl:
+                                description: IDPTokenURL is the IdP token endpoint
+                                  for IdP exchange (RFC 8693 exchange).
+                                type: string
+                              insecureTargetTokenUrl:
+                                description: |-
+                                  InsecureTargetTokenURL allows plain HTTP for TargetTokenURL.
+                                  WARNING: this is insecure and must only be set for in-cluster or
+                                  development/testing endpoints — never in production.
+                                type: boolean
+                              scopes:
+                                description: Scopes are the requested scopes for IdP
+                                  exchange and target grant.
+                                items:
+                                  type: string
+                                type: array
+                                x-kubernetes-list-type: atomic
+                              subjectProviderName:
+                                description: |-
+                                  SubjectProviderName selects which upstream provider's ID token to use.
+                                  Auto-populated when embedded AS is active.
+                                type: string
+                              subjectTokenType:
+                                description: |-
+                                  SubjectTokenType is the token-type URN of the upstream subject token
+                                  used in IdP exchange. Defaults to TokenTypeIDToken when empty. Currently only
+                                  urn:ietf:params:oauth:token-type:id_token is accepted; the field exists
+                                  to allow future expansion to SAML upstreams without an API break.
+                                type: string
+                              targetAudience:
+                                description: TargetAudience is the resource AS URL
+                                  for the ID-JAG audience claim (required).
+                                type: string
+                              targetClientId:
+                                description: TargetClientID is the OAuth client ID
+                                  at the target AS for target grant.
+                                type: string
+                              targetClientSecret:
+                                description: TargetClientSecret is the client secret
+                                  at the target AS for target grant.
+                                type: string
+                              targetClientSecretEnv:
+                                description: TargetClientSecretEnv is the env var
+                                  containing the target AS client secret.
+                                type: string
+                              targetResource:
+                                description: |-
+                                  TargetResource is the RFC 8707 resource indicator sent as the `resource`
+                                  parameter in IdP exchange's RFC 8693 token exchange (draft §4.3, OPTIONAL). It
+                                  identifies the target resource server — not the access-token audience, which
+                                  is governed by TargetAudience. For MCP backends, set to the MCP server URL.
+                                type: string
+                              targetTokenUrl:
+                                description: TargetTokenURL is the target AS token
+                                  endpoint for target grant (JWT Bearer grant).
+                                type: string
+                            required:
+                            - idpTokenUrl
+                            - targetAudience
+                            - targetTokenUrl
+                            type: object
                         required:
                         - type
                         type: object
@@ -4874,6 +5973,17 @@ spec:
                     required:
                     - source
                     type: object
+                  passthroughHeaders:
+                    description: |-
+                      PassthroughHeaders is an allowlist of incoming client request header names
+                      forwarded verbatim to all backends. Captured at the vMCP incoming edge by
+                      headerforward.CaptureMiddleware and consumed once at session creation
+                      when the per-session backend client's HeaderForwardConfig is built. Names
+                      must not be in the restricted set (Host, hop-by-hop, X-Forwarded-*, etc.).
+                    items:
+                      type: string
+                    type: array
+                    x-kubernetes-list-type: atomic
                   rateLimiting:
                     description: |-
                       RateLimiting defines rate limiting configuration for the Virtual MCP server.
@@ -5208,8 +6318,9 @@ spec:
                 properties:
                   authzConfig:
                     description: |-
-                      AuthzConfig defines authorization policy configuration
-                      Reuses MCPServer authz patterns
+                      AuthzConfig defines authorization policy configuration.
+                      Reuses MCPServer authz patterns.
+                      AuthzConfig and AuthzConfigRef are mutually exclusive.
                     properties:
                       configMap:
                         description: |-
@@ -5227,6 +6338,28 @@ spec:
                         required:
                         - name
                         type: object
+                      groupClaimName:
+                        description: |-
+                          GroupClaimName is the JWT claim key that contains group membership for the
+                          principal. When set, takes priority over the well-known defaults
+                          ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                          groups under a URI-style claim (e.g. "https://example.com/groups"). When
+                          Type is "configMap", a group_claim_name entry in the referenced ConfigMap
+                          is overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
+                      groupEntityType:
+                        description: |-
+                          GroupEntityType is the Cedar entity type name used for principal parent
+                          UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                          empty. Must match the entity type used in the static entity store for
+                          transitive `in` checks (e.g. `ClaimGroup → PlatformRole`) to resolve.
+                          Namespaced names (`Foo::Bar`) are not yet supported. When Type is
+                          "configMap", a group_entity_type entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 63
+                        pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                        type: string
                       inline:
                         description: |-
                           Inline contains direct authorization configuration
@@ -5234,8 +6367,10 @@ spec:
                         properties:
                           entitiesJson:
                             default: '[]'
-                            description: EntitiesJSON is a JSON string representing
-                              Cedar entities
+                            description: |-
+                              EntitiesJSON is a JSON string representing Cedar entities. Required when
+                              transitive policies (e.g. `ClaimGroup → PlatformRole`) need a static
+                              entity store; defaults to "[]".
                             type: string
                           policies:
                             description: Policies is a list of Cedar policy strings
@@ -5246,17 +6381,20 @@ spec:
                             x-kubernetes-list-type: atomic
                           primaryUpstreamProvider:
                             description: |-
-                              PrimaryUpstreamProvider names the upstream IDP whose access token's claims
-                              Cedar should evaluate. Currently honored only when the parent
-                              AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
-                              this in a future release (see #5208). Only meaningful for VirtualMCPServer
-                              with an embedded auth server. When empty and an embedded auth server has
-                              upstreams configured, the controller defaults to the first upstream
-                              provider. The name must match one of the upstreams declared on
-                              spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
-                              rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
-                              have no embedded auth server; setting this field on those CRs surfaces an
-                              AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+                              PrimaryUpstreamProvider names the upstream IDP whose access token's
+                              claims Cedar should evaluate.
+
+                              Deprecated: on VirtualMCPServer this field has moved to
+                              spec.authServerConfig.primaryUpstreamProvider. The old location is
+                              still read for one release for backward compatibility; the
+                              VirtualMCPServer controller emits an AuthzPrimaryUpstreamProviderDeprecated
+                              Warning event whenever it is consumed, and removal is planned for the
+                              release after the deprecation cycle.
+
+                              On MCPServer and MCPRemoteProxy this field has always been a structural
+                              no-op (those CRDs do not run an embedded auth server). Setting it
+                              continues to surface the AuthzPrimaryUpstreamProviderIgnored advisory
+                              condition; the deprecation does not change that behaviour.
                             maxLength: 63
                             minLength: 1
                             pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
@@ -5264,6 +6402,15 @@ spec:
                         required:
                         - policies
                         type: object
+                      roleClaimName:
+                        description: |-
+                          RoleClaimName is the JWT claim key that contains role membership for the
+                          principal. When set, the claim is extracted separately from GroupClaimName
+                          and both are mapped to the configured GroupEntityType. When Type is
+                          "configMap", a role_claim_name entry in the referenced ConfigMap is
+                          overridden by this field if both are set.
+                        maxLength: 253
+                        type: string
                       type:
                         default: configMap
                         description: Type is the type of authorization configuration
@@ -5281,6 +6428,24 @@ spec:
                     - message: inline must be set when type is 'inline', and must
                         not be set otherwise
                       rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+                  authzConfigRef:
+                    description: |-
+                      AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                      The referenced MCPAuthzConfig must exist in the same namespace as this VirtualMCPServer.
+                      Mutually exclusive with authzConfig.
+
+                      Only cedarv1 MCPAuthzConfig resources are supported for VirtualMCPServer
+                      today; referencing a non-Cedar config fails reconciliation with a clear
+                      error because the vMCP runtime authz middleware is Cedar-only.
+                    properties:
+                      name:
+                        description: Name is the name of the MCPAuthzConfig resource
+                          in the same namespace.
+                        minLength: 1
+                        type: string
+                    required:
+                    - name
+                    type: object
                   oidcConfigRef:
                     description: |-
                       OIDCConfigRef references a shared MCPOIDCConfig resource for OIDC authentication.
@@ -5332,6 +6497,9 @@ spec:
                 - message: spec.incomingAuth.oidcConfigRef is required when type is
                     oidc
                   rule: 'self.type == ''oidc'' ? has(self.oidcConfigRef) : true'
+                - message: authzConfig and authzConfigRef are mutually exclusive;
+                    use authzConfigRef to reference a shared MCPAuthzConfig
+                  rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
               outgoingAuth:
                 description: |-
                   OutgoingAuth configures authentication from Virtual MCP to backend MCPServers.
@@ -5405,6 +6573,17 @@ spec:
                     - inline
                     type: string
                 type: object
+              passthroughHeaders:
+                description: |-
+                  PassthroughHeaders is an allowlist of incoming client request header names
+                  forwarded verbatim to all backends (e.g. an API key the backend resolves to
+                  a user). Takes precedence over config.PassthroughHeaders. Names must not be
+                  restricted headers (Host, hop-by-hop, X-Forwarded-*). Forwarded headers are
+                  attacker-influenceable unless a trusted upstream sets them.
+                items:
+                  type: string
+                type: array
+                x-kubernetes-list-type: atomic
               podTemplateSpec:
                 description: |-
                   PodTemplateSpec defines the pod template to use for the Virtual MCP server
@@ -5530,9 +6709,20 @@ spec:
               rule: '!has(self.config) || !has(self.config.rateLimiting) || !has(self.config.rateLimiting.tools)
                 || self.config.rateLimiting.tools.all(t, !has(t.perUser)) || (has(self.incomingAuth)
                 && self.incomingAuth.type == ''oidc'')'
+            - message: embeddingServerRef provisions a managed TEI server and cannot
+                be combined with optimizer.embeddingProvider 'openai'; openai mode
+                uses embeddingService directly
+              rule: '!(has(self.embeddingServerRef) && has(self.config) && has(self.config.optimizer)
+                && has(self.config.optimizer.embeddingProvider) && self.config.optimizer.embeddingProvider
+                == ''openai'')'
           status:
             description: VirtualMCPServerStatus defines the observed state of VirtualMCPServer
             properties:
+              authzConfigHash:
+                description: |-
+                  AuthzConfigHash is the hash of the referenced MCPAuthzConfig spec for change detection.
+                  Only populated when IncomingAuth.AuthzConfigRef is set.
+                type: string
               backendCount:
                 description: |-
                   BackendCount is the number of routable backends (ready + unauthenticated).

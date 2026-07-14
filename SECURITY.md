@@ -85,14 +85,12 @@ These steps should be completed within the 1-7 days of Disclosure.
   (if available yet). As more information is discovered, edit and update the
   advisory accordingly.
 - Use the CVSS calculator to score a severity level.
-  ![CVSS Calculator](/images/calc.png)
 - Add collaborators from codeowners team only (outside members can only be added
   after approval from the security team)
 - The reporter may be added to the issue to assist with review, but **only
   reporters who have contacted the security team using a private channel**.
-- Select 'Request CVE' ![Request CVE](/docs/static/img/cve.png)
+- Select 'Request CVE'
 - The security team / Fix Team create a private temporary fork
-  ![Security Fork](/docs/static/img/fork.png)
 - The Fix team performs all work in a 'security advisory' within its temporary
   fork
 - CI can be checked locally using the [act](https://github.com/nektos/act)
@@ -130,7 +128,6 @@ realistic timeline can be communicated to users.
   branch of the security advisory
 - The security team will merge the security advisory / temporary fork and its
   commits into the main branch of the affected repository
-  ![Security Advisory](docs/images/publish.png)
 - The security team will ensure all the binaries are built, signed, publicly
   available, and functional.
 - The security team will announce the new releases, the CVE number, severity,

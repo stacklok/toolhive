@@ -11,12 +11,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 )
@@ -24,9 +26,7 @@ import (
 func TestEnsureAuthzConfigMap(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	tests := []struct {
 		name               string
@@ -35,16 +35,8 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 		expectedConfigData string
 	}{
 		{
-			name: "no authz config",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-namespace",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-				},
-			},
+			name:            "no authz config",
+			mcpServer:       v1beta1test.NewMCPServer("test-server", "test-namespace", v1beta1test.WithImage("test-image")),
 			expectConfigMap: false,
 		},
 		{
@@ -162,9 +154,7 @@ func TestEnsureAuthzConfigMap(t *testing.T) {
 func TestEnsureAuthzConfigMap_Updates(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Create MCPServer with initial inline authz config
 	mcpServer := &mcpv1beta1.MCPServer{
@@ -249,10 +239,6 @@ func TestEnsureAuthzConfigMap_Updates(t *testing.T) {
 func TestGenerateAuthzVolumeConfig(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
-
 	tests := []struct {
 		name               string
 		mcpServer          *mcpv1beta1.MCPServer
@@ -260,16 +246,8 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 		expectedConfigName string
 	}{
 		{
-			name: "no authz config",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "test-namespace",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-				},
-			},
+			name:              "no authz config",
+			mcpServer:         v1beta1test.NewMCPServer("test-server", "test-namespace", v1beta1test.WithImage("test-image")),
 			expectVolumeMount: false,
 		},
 		{
@@ -343,6 +321,107 @@ func TestGenerateAuthzVolumeConfig(t *testing.T) {
 			} else {
 				assert.Nil(t, volumeMount, "Expected no volume mount")
 				assert.Nil(t, volume, "Expected no volume")
+			}
+		})
+	}
+}
+
+// TestValidateAuthzPrimaryUpstreamProviderIgnored locks the advisory condition
+// behaviour: when the deprecated
+// spec.authzConfig.inline.primaryUpstreamProvider field is set on an MCPServer,
+// the operator surfaces AuthzPrimaryUpstreamProviderIgnored=True because
+// MCPServer has no embedded auth server to act on the value. Clearing the field
+// removes the condition. This is the only structural backstop against the
+// field's silent no-op on MCPServer; the relocation of primaryUpstreamProvider
+// onto EmbeddedAuthServerConfig in PR #5290 does not affect this advisory.
+func TestValidateAuthzPrimaryUpstreamProviderIgnored(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		authzConfig       *mcpv1beta1.AuthzConfigRef
+		preexisting       *metav1.Condition
+		wantPresent       bool
+		wantReason        string
+		wantMessageSubstr string
+	}{
+		{
+			name:        "nil AuthzConfig leaves no advisory",
+			authzConfig: nil,
+			wantPresent: false,
+		},
+		{
+			name: "deprecated inline primary set fires the advisory",
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies:                []string{`permit(principal, action, resource);`},
+					PrimaryUpstreamProvider: "okta",
+				},
+			},
+			wantPresent:       true,
+			wantReason:        mcpv1beta1.ConditionReasonAuthzPrimaryUpstreamProviderIgnored,
+			wantMessageSubstr: `primaryUpstreamProvider="okta"`,
+		},
+		{
+			name: "inline without primary leaves no advisory",
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies: []string{`permit(principal, action, resource);`},
+				},
+			},
+			wantPresent: false,
+		},
+		{
+			name: "configMap authz with no inline leaves no advisory",
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
+				ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{Name: "authz-cm"},
+			},
+			wantPresent: false,
+		},
+		{
+			name: "pre-existing advisory is cleared when field is unset",
+			authzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type: mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{
+					Policies: []string{`permit(principal, action, resource);`},
+				},
+			},
+			preexisting: &metav1.Condition{
+				Type:   mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored,
+				Status: metav1.ConditionTrue,
+				Reason: mcpv1beta1.ConditionReasonAuthzPrimaryUpstreamProviderIgnored,
+			},
+			wantPresent: false,
+		},
+	}
+
+	r := &MCPServerReconciler{}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			mcpServer := &mcpv1beta1.MCPServer{
+				ObjectMeta: metav1.ObjectMeta{Name: "m", Namespace: "default", Generation: 7},
+				Spec:       mcpv1beta1.MCPServerSpec{AuthzConfig: tt.authzConfig},
+			}
+			if tt.preexisting != nil {
+				mcpServer.Status.Conditions = []metav1.Condition{*tt.preexisting}
+			}
+			r.validateAuthzPrimaryUpstreamProviderIgnored(mcpServer)
+
+			cond := meta.FindStatusCondition(mcpServer.Status.Conditions, mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored)
+			if !tt.wantPresent {
+				assert.Nil(t, cond, "advisory should be absent")
+				return
+			}
+			require.NotNil(t, cond, "advisory should be set")
+			assert.Equal(t, metav1.ConditionTrue, cond.Status)
+			assert.Equal(t, tt.wantReason, cond.Reason)
+			assert.Equal(t, int64(7), cond.ObservedGeneration)
+			if tt.wantMessageSubstr != "" {
+				assert.Contains(t, cond.Message, tt.wantMessageSubstr)
 			}
 		})
 	}

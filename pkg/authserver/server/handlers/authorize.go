@@ -66,7 +66,9 @@ func (h *Handler) AuthorizeHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	slog.Debug("parsed client-requested scopes", //nolint:gosec // G706: scope count is an integer
+	slog.Debug("authorize request received",
+		"client_id", clientID,
+		"redirect_uri", redirectURI,
 		"scope_count", len(scopes),
 	)
 

@@ -61,7 +61,7 @@ ToolHive implements BOTH discovery mechanisms required by the MCP specification:
 ## Authentication Flow
 
 ### Initial Detection
-When ToolHive connects to a remote MCP server ([`pkg/runner/remote_auth.go:27-87`](../pkg/runner/remote_auth.go#L27)):
+When ToolHive connects to a remote MCP server ([`pkg/auth/remote/handler.go`](../pkg/auth/remote/handler.go)):
 
 1. Makes test request to the remote server (GET, then optionally POST)
 2. Checks for 401 Unauthorized response with WWW-Authenticate header
@@ -71,7 +71,7 @@ When ToolHive connects to a remote MCP server ([`pkg/runner/remote_auth.go:27-87
    - Falls back to `{baseURL}/.well-known/oauth-protected-resource` (root-level)
 
 ### Discovery Priority Chain
-ToolHive follows this priority order for discovering the OAuth issuer ([`pkg/runner/remote_auth.go:95-145`](../pkg/runner/remote_auth.go#L95)):
+ToolHive follows this priority order for discovering the OAuth issuer ([`pkg/auth/remote/handler.go`](../pkg/auth/remote/handler.go)):
 
 **Phase 1: WWW-Authenticate Header Detection**
 1. **Configured Issuer**: Uses `--remote-auth-issuer` flag if provided (highest priority)
@@ -388,7 +388,7 @@ The `oauth_config` section supports:
 
 ### Key Components
 
-1. **RemoteAuthHandler** ([`pkg/runner/remote_auth.go`](../pkg/runner/remote_auth.go))
+1. **RemoteAuthHandler** ([`pkg/auth/remote/handler.go`](../pkg/auth/remote/handler.go))
    - Main entry point for remote authentication
    - Coordinates discovery and OAuth flow
 

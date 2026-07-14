@@ -21,12 +21,13 @@ func TestValidateIssuerURL(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		issuer  string
-		wantErr bool
-		errMsg  string
+		name              string
+		issuer            string
+		insecureAllowHTTP bool
+		wantErr           bool
+		errMsg            string
 	}{
-		// Valid
+		// Valid — strict mode (insecureAllowHTTP=false)
 		{name: "https", issuer: "https://example.com"},
 		{name: "https with port", issuer: "https://example.com:8443"},
 		{name: "https with path", issuer: "https://example.com/auth"},
@@ -35,7 +36,12 @@ func TestValidateIssuerURL(t *testing.T) {
 		{name: "http 127.0.0.1", issuer: "http://127.0.0.1:8080"},
 		{name: "http IPv6 loopback", issuer: "http://[::1]:8080"},
 
-		// Invalid
+		// Valid — insecureAllowHTTP=true permits http for non-localhost
+		{name: "http cluster-local insecure", issuer: "http://vmcp-foo.default.svc.cluster.local:4483", insecureAllowHTTP: true},
+		{name: "http private IP insecure", issuer: "http://10.0.0.1:4483", insecureAllowHTTP: true},
+		{name: "http non-localhost insecure", issuer: "http://example.com", insecureAllowHTTP: true},
+
+		// Invalid — strict mode
 		{name: "empty", issuer: "", wantErr: true, errMsg: "issuer is required"},
 		{name: "missing scheme", issuer: "example.com", wantErr: true, errMsg: "scheme is required"},
 		{name: "missing host", issuer: "https://", wantErr: true, errMsg: "host is required"},
@@ -44,12 +50,23 @@ func TestValidateIssuerURL(t *testing.T) {
 		{name: "http non-localhost", issuer: "http://example.com", wantErr: true, errMsg: "http scheme is only allowed for localhost"},
 		{name: "ftp scheme", issuer: "ftp://example.com", wantErr: true, errMsg: "scheme must be https"},
 		{name: "trailing slash", issuer: "https://example.com/", wantErr: true, errMsg: "must not have trailing slash"},
+
+		// Valid — insecureAllowHTTP=true permits http for non-localhost
+		{name: "http in-cluster insecure allowed", issuer: "http://vmcp-test.default.svc.cluster.local:4483", insecureAllowHTTP: true},
+		{name: "http non-localhost insecure allowed", issuer: "http://example.com", insecureAllowHTTP: true},
+		{name: "https still valid with insecure flag", issuer: "https://example.com", insecureAllowHTTP: true},
+		{name: "http localhost still valid with insecure flag", issuer: "http://localhost:8080", insecureAllowHTTP: true},
+
+		// Invalid — insecureAllowHTTP=true still enforces other rules
+		{name: "trailing slash insecure", issuer: "http://example.com/", insecureAllowHTTP: true, wantErr: true, errMsg: "must not have trailing slash"},
+		{name: "ftp scheme insecure", issuer: "ftp://example.com", insecureAllowHTTP: true, wantErr: true, errMsg: "scheme must be https"},
+		{name: "empty insecure", issuer: "", insecureAllowHTTP: true, wantErr: true, errMsg: "issuer is required"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := validateIssuerURL(tt.issuer)
+			err := validateIssuerURL(tt.issuer, tt.insecureAllowHTTP)
 			assertError(t, err, tt.wantErr, tt.errMsg)
 		})
 	}
@@ -85,6 +102,8 @@ func TestConfigValidate(t *testing.T) {
 		{name: "no upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC}, wantErr: true, errMsg: "at least one upstream is required"},
 		{name: "nil upstream config", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "test", Type: UpstreamProviderTypeOAuth2}}}, wantErr: true, errMsg: "oauth2_config is required"},
 		{name: "multiple upstreams", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}}},
+		{name: "upstream_filter with single upstream rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, UpstreamFilter: &stubChainFilter{}}, wantErr: true, errMsg: "upstream_filter is configured but has no effect"},
+		{name: "upstream_filter with multiple upstreams allowed", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}, AllowedAudiences: []string{"https://mcp.example.com"}, UpstreamFilter: &stubChainFilter{}}},
 		{name: "duplicate upstream names", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "same", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "same", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}}, wantErr: true, errMsg: "duplicate upstream name"},
 		{name: "multi-upstream with empty name on second", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Name: "first", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}}, wantErr: true, errMsg: "upstream[1]: name must be explicitly set"},
 		{name: "multi-upstream with empty name on first", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: []UpstreamConfig{{Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}, {Name: "second", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstream}}}, wantErr: true, errMsg: "upstream[0]: name must be explicitly set"},
@@ -113,6 +132,13 @@ func TestConfigValidate(t *testing.T) {
 		// runtime Config — catches direct constructors that bypass YAML loading).
 		{name: "baseline scope not in scopes_supported", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: []string{"openid"}, BaselineClientScopes: []string{"offline_access"}}, wantErr: true, errMsg: `baseline_client_scopes contains "offline_access"`},
 		{name: "nil supported with baseline in DefaultScopes passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, ScopesSupported: nil, BaselineClientScopes: []string{"offline_access"}}},
+
+		// CIMD validation
+		{name: "CIMD enabled zero cache_max_size rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 0}, wantErr: true, errMsg: "cache_max_size must be >= 1"},
+		{name: "CIMD enabled negative cache_max_size rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: -1}, wantErr: true, errMsg: "cache_max_size must be >= 1"},
+		{name: "CIMD enabled negative cache_fallback_ttl rejected", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: -time.Second}, wantErr: true, errMsg: "cache_fallback_ttl must be non-negative"},
+		{name: "CIMD disabled ignores invalid cache fields", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: false, CIMDCacheMaxSize: -1, CIMDCacheFallbackTTL: -time.Second}},
+		{name: "CIMD enabled with valid bounds passes", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}, CIMDEnabled: true, CIMDCacheMaxSize: 256, CIMDCacheFallbackTTL: 5 * time.Minute}},
 
 		// Valid configs
 		{name: "valid minimal", config: Config{Issuer: "https://example.com", KeyProvider: validKeyProvider, HMACSecrets: validHMAC, Upstreams: validUpstreams, AllowedAudiences: []string{"https://mcp.example.com"}}},
@@ -431,6 +457,14 @@ func TestRunConfigValidate(t *testing.T) {
 			wantErr: true,
 			errMsg:  "foo",
 		},
+		// CIMD RunConfig validation
+		{name: "CIMD nil passes", config: RunConfig{CIMD: nil}},
+		{name: "CIMD disabled passes even with invalid fields", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: false, CacheMaxSize: -1, CacheFallbackTTL: "-1s"}}},
+		{name: "CIMD enabled negative cache_max_size rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheMaxSize: -1}}, wantErr: true, errMsg: "cache_max_size"},
+		{name: "CIMD enabled invalid TTL string rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheFallbackTTL: "not-a-duration"}}, wantErr: true, errMsg: "cache_fallback_ttl"},
+		{name: "CIMD enabled negative TTL rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheFallbackTTL: "-5m"}}, wantErr: true, errMsg: "cache_fallback_ttl"},
+		{name: "CIMD enabled valid passes", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheMaxSize: 64, CacheFallbackTTL: "5m"}}},
+		{name: "CIMD enabled omitted optional fields pass", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true}}},
 	}
 
 	for _, tt := range tests {
@@ -586,6 +620,52 @@ func TestConfigApplyDefaults_BaselineClientScopes(t *testing.T) {
 			} else {
 				require.Equal(t, tt.scopesSupported, cfg.ScopesSupported)
 			}
+		})
+	}
+}
+
+func TestConfigApplyDefaults_CIMD(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		cfg             Config
+		wantMaxSize     int
+		wantFallbackTTL time.Duration
+	}{
+		{
+			name:            "CIMD enabled with zero fields applies defaults",
+			cfg:             Config{Issuer: "https://example.com", CIMDEnabled: true},
+			wantMaxSize:     256,
+			wantFallbackTTL: 5 * time.Minute,
+		},
+		{
+			name: "CIMD enabled preserves non-zero values",
+			cfg: Config{
+				Issuer:               "https://example.com",
+				CIMDEnabled:          true,
+				CIMDCacheMaxSize:     128,
+				CIMDCacheFallbackTTL: 10 * time.Minute,
+			},
+			wantMaxSize:     128,
+			wantFallbackTTL: 10 * time.Minute,
+		},
+		{
+			name:            "CIMD disabled leaves zero fields unchanged",
+			cfg:             Config{Issuer: "https://example.com", CIMDEnabled: false},
+			wantMaxSize:     0,
+			wantFallbackTTL: 0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cfg := tt.cfg
+			err := cfg.applyDefaults()
+			require.NoError(t, err)
+			require.Equal(t, tt.wantMaxSize, cfg.CIMDCacheMaxSize)
+			require.Equal(t, tt.wantFallbackTTL, cfg.CIMDCacheFallbackTTL)
 		})
 	}
 }

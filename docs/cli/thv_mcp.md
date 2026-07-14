@@ -32,6 +32,6 @@ The mcp command provides subcommands to interact with MCP (Model Context Protoco
 ### SEE ALSO
 
 * [thv](thv.md)	 - ToolHive (thv) is a lightweight, secure, and fast manager for MCP servers
+* [thv mcp call](thv_mcp_call.md)	 - Invoke a tool on an MCP server
 * [thv mcp list](thv_mcp_list.md)	 - List MCP server capabilities
-* [thv mcp serve](thv_mcp_serve.md)	 - 🧪 EXPERIMENTAL: Start an MCP server to control ToolHive
 

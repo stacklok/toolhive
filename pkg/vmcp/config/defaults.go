@@ -5,6 +5,7 @@
 package config
 
 import (
+	"fmt"
 	"time"
 
 	"dario.cat/mergo"
@@ -89,44 +90,47 @@ func (c *Config) EnsureOperationalDefaults() {
 }
 
 // InjectSubjectProviderNames auto-populates SubjectProviderName on every
-// token_exchange strategy in cfg.OutgoingAuth that has it unset, when an
-// embedded auth server RunConfig is active.
+// token_exchange, aws_sts, or xaa strategy in cfg.OutgoingAuth that has it
+// unset, when an embedded auth server RunConfig is active.
 //
 // This is a defaulting operation: it ensures YAML-based vMCP deployments
 // behave the same as the Kubernetes operator path. Without it a token_exchange
 // strategy with no SubjectProviderName would silently fall back to
 // identity.Token (the ToolHive-issued JWT), which the exchange endpoint rejects.
 //
-// When cfg or rc is nil the call is a no-op. The provider name is resolved from
-// the first upstream in rc.Upstreams (normalised via authserver.ResolveUpstreamName);
-// if there are no upstreams it falls back to authserver.DefaultUpstreamName.
-func InjectSubjectProviderNames(cfg *Config, rc *authserver.RunConfig) {
+// When cfg or rc is nil the call is a no-op. The provider name is derived via
+// authserver.ResolveFirstUpstreamName over rc.Upstreams. For xaa, if more than
+// one upstream is configured and SubjectProviderName is empty, defaulting is
+// ambiguous and this returns an error wrapping
+// authtypes.ErrAmbiguousSubjectProvider instead of silently defaulting;
+// processing stops at the first error. Strategy structs are replaced via
+// copy-then-assign rather than mutated in place, but cfg.OutgoingAuth itself
+// is still updated by this call.
+func InjectSubjectProviderNames(cfg *Config, rc *authserver.RunConfig) error {
 	if cfg == nil || rc == nil || cfg.OutgoingAuth == nil {
-		return
+		return nil
 	}
 
-	providerName := func() string {
-		if len(rc.Upstreams) > 0 {
-			return authserver.ResolveUpstreamName(rc.Upstreams[0].Name)
+	names := make([]string, len(rc.Upstreams))
+	for i, u := range rc.Upstreams {
+		names[i] = u.Name
+	}
+	providerName := authserver.ResolveFirstUpstreamName(names)
+	hasMultipleUpstreams := len(names) > 1
+
+	defaulted, err := authtypes.DefaultSubjectProviderName(cfg.OutgoingAuth.Default, providerName, hasMultipleUpstreams)
+	if err != nil {
+		return fmt.Errorf("default backend: %w", err)
+	}
+	cfg.OutgoingAuth.Default = defaulted
+
+	for name, strategy := range cfg.OutgoingAuth.Backends {
+		defaulted, err := authtypes.DefaultSubjectProviderName(strategy, providerName, hasMultipleUpstreams)
+		if err != nil {
+			return fmt.Errorf("backend %q: %w", name, err)
 		}
-		return authserver.DefaultUpstreamName
-	}()
-
-	injectIntoStrategy(cfg.OutgoingAuth.Default, providerName)
-	for _, strategy := range cfg.OutgoingAuth.Backends {
-		injectIntoStrategy(strategy, providerName)
+		cfg.OutgoingAuth.Backends[name] = defaulted
 	}
-}
 
-// injectIntoStrategy sets SubjectProviderName on a token_exchange strategy when
-// the field is empty. It mutates the strategy in place because the OutgoingAuth
-// maps hold pointers that are already owned by cfg.
-func injectIntoStrategy(strategy *authtypes.BackendAuthStrategy, providerName string) {
-	if strategy == nil ||
-		strategy.Type != authtypes.StrategyTypeTokenExchange ||
-		strategy.TokenExchange == nil ||
-		strategy.TokenExchange.SubjectProviderName != "" {
-		return
-	}
-	strategy.TokenExchange.SubjectProviderName = providerName
+	return nil
 }

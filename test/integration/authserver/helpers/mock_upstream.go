@@ -25,27 +25,6 @@ type MockUpstreamIDP struct {
 // MockUpstreamOption is a functional option for configuring the mock upstream.
 type MockUpstreamOption func(*MockUpstreamIDP)
 
-// WithAuthorizeHandler sets a custom authorization endpoint handler.
-func WithAuthorizeHandler(h func(w http.ResponseWriter, r *http.Request)) MockUpstreamOption {
-	return func(m *MockUpstreamIDP) {
-		m.AuthorizeHandler = h
-	}
-}
-
-// WithTokenHandler sets a custom token endpoint handler.
-func WithTokenHandler(h func(w http.ResponseWriter, r *http.Request)) MockUpstreamOption {
-	return func(m *MockUpstreamIDP) {
-		m.TokenHandler = h
-	}
-}
-
-// WithUserInfoHandler sets a custom userinfo endpoint handler.
-func WithUserInfoHandler(h func(w http.ResponseWriter, r *http.Request)) MockUpstreamOption {
-	return func(m *MockUpstreamIDP) {
-		m.UserInfoHandler = h
-	}
-}
-
 // NewMockUpstreamIDP creates a mock upstream IDP for testing.
 // The server is automatically started and will be ready when this function returns.
 func NewMockUpstreamIDP(tb testing.TB, opts ...MockUpstreamOption) *MockUpstreamIDP {

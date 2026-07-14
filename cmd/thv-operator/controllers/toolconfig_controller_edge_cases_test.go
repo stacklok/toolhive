@@ -12,13 +12,14 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestToolConfigReconciler_EdgeCases(t *testing.T) {
@@ -28,8 +29,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -57,8 +57,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -76,21 +75,12 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 			},
 		}
 
-		mcpServer := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-server",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "test-config",
-				},
-			},
-		}
+		mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("test-config"),
+		)
 
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
+		fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 			WithObjects(toolConfig, mcpServer).
 			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()
@@ -130,8 +120,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -147,8 +136,7 @@ func TestToolConfigReconciler_EdgeCases(t *testing.T) {
 			},
 		}
 
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
+		fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 			WithObjects(toolConfig).
 			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()
@@ -192,8 +180,7 @@ func TestToolConfigReconciler_ErrorScenarios(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -255,8 +242,7 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
@@ -276,42 +262,18 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 
 		// Create multiple MCPServers referencing the same MCPToolConfig
 		mcpServers := []*mcpv1beta1.MCPServer{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "server1",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-						Name: "shared-config",
-					},
-				},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "server2",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-						Name: "shared-config",
-					},
-				},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "server3",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-						Name: "shared-config",
-					},
-				},
-			},
+			v1beta1test.NewMCPServer("server1", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithToolConfigRef("shared-config"),
+			),
+			v1beta1test.NewMCPServer("server2", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithToolConfigRef("shared-config"),
+			),
+			v1beta1test.NewMCPServer("server3", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithToolConfigRef("shared-config"),
+			),
 		}
 
 		objs := []client.Object{toolConfig}
@@ -319,8 +281,7 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 			objs = append(objs, server)
 		}
 
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
+		fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 			WithObjects(objs...).
 			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()
@@ -364,8 +325,7 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
 		// MCPToolConfig with completely empty spec
 		toolConfig := &mcpv1beta1.MCPToolConfig{
@@ -378,8 +338,7 @@ func TestToolConfigReconciler_ComplexScenarios(t *testing.T) {
 			},
 		}
 
-		fakeClient := fake.NewClientBuilder().
-			WithScheme(scheme).
+		fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 			WithObjects(toolConfig).
 			WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 			Build()

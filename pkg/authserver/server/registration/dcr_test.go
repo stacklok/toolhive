@@ -142,7 +142,7 @@ func TestValidateDCRRequest(t *testing.T) {
 
 	tests := []struct {
 		name               string
-		request            *DCRRequest
+		request            *oauthproto.DynamicClientRegistrationRequest
 		expectError        bool
 		errorCode          string
 		expectedAuthMethod string
@@ -152,7 +152,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		// Valid requests
 		{
 			name: "valid minimal request with loopback redirect URI",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 			},
 			expectError:        false,
@@ -162,7 +162,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "valid request with all fields specified",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs:            []string{"http://localhost:8080/callback", "https://example.com/callback"},
 				ClientName:              "My Test Client",
 				TokenEndpointAuthMethod: "none",
@@ -176,7 +176,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "valid request with https redirect URI",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"https://example.com/oauth/callback"},
 			},
 			expectError:        false,
@@ -188,7 +188,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		// Empty redirect_uris
 		{
 			name: "empty redirect_uris",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{},
 			},
 			expectError: true,
@@ -196,7 +196,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "nil redirect_uris",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: nil,
 			},
 			expectError: true,
@@ -206,7 +206,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		// Too many redirect URIs
 		{
 			name: "too many redirect URIs",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{
 					"http://127.0.0.1:1/callback",
 					"http://127.0.0.1:2/callback",
@@ -228,7 +228,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		// Invalid redirect URI in list
 		{
 			name: "invalid redirect URI in list",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback", "http://example.com/callback"},
 			},
 			expectError: true,
@@ -236,7 +236,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "malformed redirect URI in list",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"://invalid"},
 			},
 			expectError: true,
@@ -246,7 +246,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		// token_endpoint_auth_method validation
 		{
 			name: "token_endpoint_auth_method = none",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs:            []string{"http://127.0.0.1/callback"},
 				TokenEndpointAuthMethod: "none",
 			},
@@ -255,7 +255,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "token_endpoint_auth_method empty defaults to none",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs:            []string{"http://127.0.0.1/callback"},
 				TokenEndpointAuthMethod: "",
 			},
@@ -264,7 +264,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "token_endpoint_auth_method = client_secret_basic fails",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs:            []string{"http://127.0.0.1/callback"},
 				TokenEndpointAuthMethod: "client_secret_basic",
 			},
@@ -273,7 +273,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "token_endpoint_auth_method = client_secret_post fails",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs:            []string{"http://127.0.0.1/callback"},
 				TokenEndpointAuthMethod: "client_secret_post",
 			},
@@ -284,7 +284,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		// grant_types validation
 		{
 			name: "grant_types defaults when empty",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				GrantTypes:   []string{},
 			},
@@ -293,7 +293,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "grant_types defaults when nil",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				GrantTypes:   nil,
 			},
@@ -302,7 +302,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "grant_types without authorization_code fails",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				GrantTypes:   []string{"refresh_token"},
 			},
@@ -311,7 +311,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "grant_types with only client_credentials fails",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				GrantTypes:   []string{"client_credentials"},
 			},
@@ -320,7 +320,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "grant_types with authorization_code passes",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				GrantTypes:   []string{"authorization_code"},
 			},
@@ -329,7 +329,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "grant_types with unsupported type rejected",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				GrantTypes:   []string{"authorization_code", "client_credentials"},
 			},
@@ -340,7 +340,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		// response_types validation
 		{
 			name: "response_types defaults when empty",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs:  []string{"http://127.0.0.1/callback"},
 				ResponseTypes: []string{},
 			},
@@ -349,7 +349,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "response_types defaults when nil",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs:  []string{"http://127.0.0.1/callback"},
 				ResponseTypes: nil,
 			},
@@ -358,7 +358,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "response_types without code fails",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs:  []string{"http://127.0.0.1/callback"},
 				ResponseTypes: []string{"token"},
 			},
@@ -367,7 +367,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "response_types with only id_token fails",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs:  []string{"http://127.0.0.1/callback"},
 				ResponseTypes: []string{"id_token"},
 			},
@@ -376,7 +376,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "response_types with code passes",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs:  []string{"http://127.0.0.1/callback"},
 				ResponseTypes: []string{"code"},
 			},
@@ -385,7 +385,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "response_types with unsupported type rejected",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs:  []string{"http://127.0.0.1/callback"},
 				ResponseTypes: []string{"code", "token"},
 			},
@@ -396,7 +396,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		// ClientName validation
 		{
 			name: "client_name is preserved",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				ClientName:   "My Application",
 			},
@@ -404,7 +404,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "client_name exceeding max length is rejected",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				ClientName:   strings.Repeat("a", MaxClientNameLength+1),
 			},
@@ -413,7 +413,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "client_name at max length is accepted",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				ClientName:   strings.Repeat("a", MaxClientNameLength),
 			},
@@ -423,7 +423,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		// software_id length cap and charset enforcement
 		{
 			name: "software_id at max length is accepted",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				SoftwareID:   strings.Repeat("a", MaxSoftwareIDLength),
 			},
@@ -431,7 +431,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "software_id exceeding max length is rejected",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				SoftwareID:   strings.Repeat("a", MaxSoftwareIDLength+1),
 			},
@@ -440,7 +440,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "software_id with control character is rejected",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				SoftwareID:   "bad\x00id",
 			},
@@ -449,7 +449,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "software_id with non-ASCII character is rejected",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				SoftwareID:   "softwäre",
 			},
@@ -458,7 +458,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "empty software_id is accepted (field is optional)",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				SoftwareID:   "",
 			},
@@ -466,7 +466,7 @@ func TestValidateDCRRequest(t *testing.T) {
 		},
 		{
 			name: "printable-ASCII software_id is accepted",
-			request: &DCRRequest{
+			request: &oauthproto.DynamicClientRegistrationRequest{
 				RedirectURIs: []string{"http://127.0.0.1/callback"},
 				SoftwareID:   "example-app-v1.2.3",
 			},
@@ -518,64 +518,64 @@ func TestValidateScopes(t *testing.T) {
 	allowedScopes := []string{"openid", "profile", "email", "offline_access"}
 
 	tests := []struct {
-		name           string
-		requestedScope string
-		allowedScopes  []string
-		expectError    bool
-		errorCode      string
-		expectedScopes []string
+		name            string
+		requestedScopes []string
+		allowedScopes   []string
+		expectError     bool
+		errorCode       string
+		expectedScopes  []string
 	}{
 		{
-			name:           "valid subset of allowed scopes",
-			requestedScope: "openid profile",
-			allowedScopes:  allowedScopes,
-			expectedScopes: []string{"openid", "profile"},
+			name:            "valid subset of allowed scopes",
+			requestedScopes: []string{"openid", "profile"},
+			allowedScopes:   allowedScopes,
+			expectedScopes:  []string{"openid", "profile"},
 		},
 		{
-			name:           "full set of allowed scopes accepted",
-			requestedScope: "openid profile email offline_access",
-			allowedScopes:  allowedScopes,
-			expectedScopes: []string{"openid", "profile", "email", "offline_access"},
+			name:            "full set of allowed scopes accepted",
+			requestedScopes: []string{"openid", "profile", "email", "offline_access"},
+			allowedScopes:   allowedScopes,
+			expectedScopes:  []string{"openid", "profile", "email", "offline_access"},
 		},
 		{
-			name:           "unknown scope rejected",
-			requestedScope: "openid sneaky_admin",
-			allowedScopes:  allowedScopes,
-			expectError:    true,
-			errorCode:      DCRErrorInvalidClientMetadata,
+			name:            "unknown scope rejected",
+			requestedScopes: []string{"openid", "sneaky_admin"},
+			allowedScopes:   allowedScopes,
+			expectError:     true,
+			errorCode:       DCRErrorInvalidClientMetadata,
 		},
 		{
-			name:           "prefix of valid scope rejected",
-			requestedScope: "openid.evil",
-			allowedScopes:  allowedScopes,
-			expectError:    true,
-			errorCode:      DCRErrorInvalidClientMetadata,
+			name:            "prefix of valid scope rejected",
+			requestedScopes: []string{"openid.evil"},
+			allowedScopes:   allowedScopes,
+			expectError:     true,
+			errorCode:       DCRErrorInvalidClientMetadata,
 		},
 		{
-			name:           "substring of valid scope rejected",
-			requestedScope: "open",
-			allowedScopes:  allowedScopes,
-			expectError:    true,
-			errorCode:      DCRErrorInvalidClientMetadata,
+			name:            "substring of valid scope rejected",
+			requestedScopes: []string{"open"},
+			allowedScopes:   allowedScopes,
+			expectError:     true,
+			errorCode:       DCRErrorInvalidClientMetadata,
 		},
 		{
-			name:           "empty input returns default scopes",
-			requestedScope: "",
-			allowedScopes:  allowedScopes,
-			expectedScopes: DefaultScopes,
+			name:            "empty input returns default scopes",
+			requestedScopes: nil,
+			allowedScopes:   allowedScopes,
+			expectedScopes:  DefaultScopes,
 		},
 		{
-			name:           "duplicate scopes are deduplicated",
-			requestedScope: "openid openid profile",
-			allowedScopes:  allowedScopes,
-			expectedScopes: []string{"openid", "profile"},
+			name:            "duplicate scopes are deduplicated",
+			requestedScopes: []string{"openid", "openid", "profile"},
+			allowedScopes:   allowedScopes,
+			expectedScopes:  []string{"openid", "profile"},
 		},
 		{
-			name:           "empty input rejected when defaults not in allowed set",
-			requestedScope: "",
-			allowedScopes:  []string{"custom_scope"},
-			expectError:    true,
-			errorCode:      DCRErrorInvalidClientMetadata,
+			name:            "empty input rejected when defaults not in allowed set",
+			requestedScopes: nil,
+			allowedScopes:   []string{"custom_scope"},
+			expectError:     true,
+			errorCode:       DCRErrorInvalidClientMetadata,
 		},
 	}
 
@@ -583,7 +583,7 @@ func TestValidateScopes(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scopes, dcrErr := ValidateScopes(tt.requestedScope, tt.allowedScopes)
+			scopes, dcrErr := ValidateScopes(tt.requestedScopes, tt.allowedScopes)
 
 			if tt.expectError {
 				require.NotNil(t, dcrErr, "expected error")
@@ -691,6 +691,34 @@ func TestValidateScopeSubset(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestUnionScopes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		req      []string
+		baseline []string
+		want     []string
+	}{
+		{name: "both nil returns nil", req: nil, baseline: nil, want: nil},
+		{name: "both empty returns nil", req: []string{}, baseline: []string{}, want: nil},
+		{name: "requested only preserved unchanged", req: []string{"openid", "profile"}, baseline: nil, want: []string{"openid", "profile"}},
+		{name: "baseline only returned when no requested", req: nil, baseline: []string{"openid", "email"}, want: []string{"openid", "email"}},
+		{name: "requested subset of baseline expands correctly", req: []string{"openid"}, baseline: []string{"openid", "profile", "email"}, want: []string{"openid", "profile", "email"}},
+		{name: "disjoint sets: requested first then baseline", req: []string{"openid", "profile"}, baseline: []string{"email", "offline_access"}, want: []string{"openid", "profile", "email", "offline_access"}},
+		{name: "exact match produces no duplicates", req: []string{"openid", "profile"}, baseline: []string{"openid", "profile"}, want: []string{"openid", "profile"}},
+		{name: "duplicates in requested are deduplicated", req: []string{"openid", "openid", "profile"}, baseline: nil, want: []string{"openid", "profile"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got := UnionScopes(tt.req, tt.baseline)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/tailscale/hujson"
@@ -38,6 +39,17 @@ func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgatewa
 	appCfg := cm.lookupClientAppConfig(clientType)
 	if appCfg == nil || appCfg.LLMGatewayMode == "" {
 		return "", fmt.Errorf("client %q does not support LLM gateway configuration", clientType)
+	}
+
+	// Credential-helper clients (Claude Desktop) use a document + selector model
+	// that does not fit JSON-key patching; dispatch to the dedicated writer.
+	if appCfg.LLMGatewayMode == llmgateway.ModeCredentialHelper {
+		return cm.configureCredentialHelper(appCfg, cfg)
+	}
+	// Codex's config is TOML, not JSON, and authenticates via a command-backed
+	// bearer token rather than JSON-Pointer keys; dispatch to its writer.
+	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
+		return cm.configureCodexAuth(appCfg, cfg)
 	}
 
 	path := cm.buildLLMSettingsPath(appCfg)
@@ -167,6 +179,22 @@ func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath strin
 		return fmt.Errorf("client %q does not support LLM gateway configuration", clientType)
 	}
 
+	// Credential-helper clients (Claude Desktop) revert via the dedicated writer.
+	if appCfg.LLMGatewayMode == llmgateway.ModeCredentialHelper {
+		return cm.revertCredentialHelper(appCfg, configPath)
+	}
+	// Codex reverts via its dedicated TOML writer.
+	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
+		return cm.revertCodexAuth(appCfg, configPath)
+	}
+
+	return revertJSONPointerGateway(appCfg, configPath)
+}
+
+// revertJSONPointerGateway removes appCfg.LLMGatewayKeys from configPath, the
+// JSON-Pointer-based revert path shared by every LLM-gateway mode except
+// ModeCredentialHelper and ModeCodexAuth (which use dedicated writers).
+func revertJSONPointerGateway(appCfg *clientAppConfig, configPath string) error {
 	// Guard against a missing file (or deleted parent directory) before trying
 	// to acquire the lock — WithFileLock creates configPath+".lock", which
 	// fails when the directory no longer exists.
@@ -225,6 +253,14 @@ func (cm *ClientManager) IsLLMGatewaySupported(clientType ClientApp) bool {
 	return cfg != nil && cfg.LLMGatewayMode != ""
 }
 
+// IsManaged reports whether an MDM/managed-preferences profile is present for
+// the given client. When true, the client reads config from the managed profile
+// and ignores the local config "thv llm setup" writes, so setup warns the user.
+func (cm *ClientManager) IsManaged(clientType ClientApp) bool {
+	cfg := cm.lookupClientAppConfig(clientType)
+	return cfg != nil && managedProfilePresent(cfg.LLMManagedProfileDomain)
+}
+
 // LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
 func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 	cfg := cm.lookupClientAppConfig(clientType)
@@ -248,8 +284,17 @@ func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
 		if cfg.LLMGatewayMode == "" {
 			continue
 		}
-		path := cm.buildLLMSettingsPath(cfg)
-		if _, err := os.Stat(filepath.Dir(path)); err != nil {
+		// Detection directory: for GUI apps whose settings directory does not
+		// exist until first configured (e.g. Claude Desktop's configLibrary),
+		// LLMDetectRelPath points at a directory that exists once the app is
+		// installed. Otherwise fall back to the settings directory.
+		detectDir := func() string {
+			if cfg.LLMDetectRelPath != nil {
+				return buildConfigFilePath("", cfg.LLMDetectRelPath, cfg.LLMDetectPlatformPrefix, []string{cm.homeDir})
+			}
+			return filepath.Dir(cm.buildLLMSettingsPath(cfg))
+		}()
+		if _, err := os.Stat(detectDir); err != nil {
 			continue
 		}
 		if cfg.LLMBinaryName != "" {
@@ -296,6 +341,11 @@ func resolveApplyConfigField(valueField string, cfg llmgateway.ApplyConfig) (str
 		return cfg.TokenHelperCommand, true
 	case "PlaceholderAPIKey":
 		return llmPlaceholderAPIKey, true
+	case "ClaudeCodeHelperTTLMillis":
+		// Constant, independent of cfg: how often Claude Code re-invokes the
+		// apiKeyHelper. Kept in sync with the token source's preemptive refresh
+		// window (see pkg/llmgateway constants).
+		return strconv.FormatInt(llmgateway.ClaudeCodeHelperTTL.Milliseconds(), 10), true
 	case "NodeTLSRejectUnauthorized":
 		if cfg.TLSSkipVerify {
 			return "0", true

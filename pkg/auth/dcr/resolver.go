@@ -881,7 +881,8 @@ func resolveDCREndpoints(
 			return nil, fmt.Errorf("dcr: %w", err)
 		}
 		return &dcrEndpoints{
-			registrationEndpoint: req.RegistrationEndpoint,
+			registrationEndpoint:          req.RegistrationEndpoint,
+			codeChallengeMethodsSupported: req.CodeChallengeMethodsSupported,
 		}, nil
 	}
 
@@ -898,24 +899,31 @@ func resolveDCREndpoints(
 // upstream is expected to claim in its RFC 8414 / OIDC Discovery document,
 // given an operator-configured DiscoveryURL.
 //
-// Two recognised conventions:
+// Three recognised conventions:
 //
 //  1. Well-known suffix: the URL ends with /.well-known/oauth-authorization-server
 //     or /.well-known/openid-configuration. The suffix is stripped to recover
 //     the issuer; this covers single-tenant providers (e.g.
 //     https://mcp.atlassian.com/.well-known/oauth-authorization-server →
-//     https://mcp.atlassian.com) and the issuer-suffix multi-tenant style
-//     (e.g. https://idp.example.com/tenants/acme/.well-known/openid-configuration
+//     https://mcp.atlassian.com) and the OIDC-style suffix-append shape used
+//     by some multi-tenant providers (e.g.
+//     https://idp.example.com/tenants/acme/.well-known/openid-configuration
 //     → https://idp.example.com/tenants/acme).
-//  2. Non-well-known path: the URL points at a custom metadata endpoint that
-//     does not end in either suffix. Origin (scheme://host) is used as a
-//     best-effort fallback; this matches the common shape where the upstream
-//     issuer is the host root.
+//  2. RFC 8414 §3.1 path-insertion: the well-known path is inserted BETWEEN
+//     the host and the issuer's tenant path. Per RFC 8414 §3 / RFC 8615,
+//     this is the canonical form for issuers with a path component, e.g.
+//     issuer https://example.com/v1/mcp →
+//     discovery URL https://example.com/.well-known/oauth-authorization-server/v1/mcp.
+//     The tenant suffix that appears AFTER the well-known segment is
+//     re-attached to the origin to recover the issuer.
+//  3. Non-well-known path: the URL points at a custom metadata endpoint that
+//     contains neither suffix in a recognisable position. Origin
+//     (scheme://host) is used as a best-effort fallback; this matches the
+//     common shape where the upstream issuer is the host root.
 //
-// RFC 8414 §3.1's path-aware form (well-known path inserted between host and
-// tenant path, e.g. https://example.com/.well-known/oauth-authorization-server/tenant)
-// is not auto-detected here — operators on that pattern can switch to
-// dcr_config.registration_endpoint to bypass discovery.
+// Case (1) and case (2) are disambiguated by where the well-known segment
+// sits in the path: at the end ⇒ suffix-append, immediately after the host
+// with more path following ⇒ path-insertion.
 func deriveExpectedIssuerFromDiscoveryURL(discoveryURL string) (string, error) {
 	const (
 		oauthSuffix = "/.well-known/oauth-authorization-server"
@@ -931,10 +939,36 @@ func deriveExpectedIssuerFromDiscoveryURL(discoveryURL string) (string, error) {
 	}
 
 	switch {
+	// Suffix-append form (case 1): well-known segment at end of path.
 	case strings.HasSuffix(u.Path, oauthSuffix):
 		u.Path = strings.TrimSuffix(u.Path, oauthSuffix)
 	case strings.HasSuffix(u.Path, oidcSuffix):
 		u.Path = strings.TrimSuffix(u.Path, oidcSuffix)
+	// RFC 8414 §3.1 path-insertion form (case 2): well-known segment at the
+	// start of the path with tenant path following. Strip just the well-known
+	// segment to recover {origin}{tenant-path}.
+	//
+	// Two shapes hit this branch:
+	//   1. A real tenant suffix follows the well-known segment, e.g.
+	//      /.well-known/oauth-authorization-server/v1/mcp →
+	//      issuer https://host/v1/mcp.
+	//   2. A trailing slash with no tenant, e.g.
+	//      /.well-known/oauth-authorization-server/ — TrimPrefix leaves
+	//      a stray "/", which would yield a spurious issuer
+	//      "https://host/" that fails the §3.3 byte-equality check
+	//      against the upstream's declared "https://host". Normalise
+	//      that stray "/" back to empty so case (2.2) and the bare
+	//      suffix case derive the same origin issuer.
+	case strings.HasPrefix(u.Path, oauthSuffix+"/"):
+		u.Path = strings.TrimPrefix(u.Path, oauthSuffix)
+		if u.Path == "/" {
+			u.Path = ""
+		}
+	case strings.HasPrefix(u.Path, oidcSuffix+"/"):
+		u.Path = strings.TrimPrefix(u.Path, oidcSuffix)
+		if u.Path == "/" {
+			u.Path = ""
+		}
 	default:
 		// Custom (non-well-known) discovery URL — fall back to origin.
 		u.Path = ""

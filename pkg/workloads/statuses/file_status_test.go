@@ -697,6 +697,36 @@ func TestFileStatusManager_ListWorkloads(t *testing.T) {
 			expectedCount: 2,
 		},
 		{
+			name: "auth_retrying workload is visible with listAll=false",
+			setup: func(f *fileStatusManager) error {
+				ctx := context.Background()
+				// Workloads in the AuthRetrying state are still functional
+				// and self-recovering, so default `thv list` should surface
+				// them alongside Running. Other non-Running statuses
+				// (Unhealthy, Unauthenticated, etc.) remain hidden.
+				if err := f.SetWorkloadStatus(ctx, "retrying-workload", rt.WorkloadStatusStarting, ""); err != nil {
+					return err
+				}
+				if err := f.SetWorkloadStatus(ctx, "retrying-workload", rt.WorkloadStatusAuthRetrying, "transient refresh failing"); err != nil {
+					return err
+				}
+				// Also seed an Unauthenticated workload to confirm it stays hidden.
+				if err := f.SetWorkloadStatus(ctx, "dead-workload", rt.WorkloadStatusStarting, ""); err != nil {
+					return err
+				}
+				return f.SetWorkloadStatus(ctx, "dead-workload", rt.WorkloadStatusUnauthenticated, "permanent failure")
+			},
+			listAll: false,
+			setupRuntimeMock: func(m *rtmocks.MockRuntime) {
+				m.EXPECT().ListWorkloads(gomock.Any()).Return([]rt.ContainerInfo{}, nil)
+			},
+			expectedCount: 1,
+			checkWorkloads: func(workloads []core.Workload) {
+				assert.Equal(t, "retrying-workload", workloads[0].Name)
+				assert.Equal(t, rt.WorkloadStatusAuthRetrying, workloads[0].Status)
+			},
+		},
+		{
 			name: "invalid label filter",
 			setup: func(f *fileStatusManager) error {
 				ctx := context.Background()

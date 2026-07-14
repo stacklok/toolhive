@@ -32,6 +32,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
+	"github.com/opencontainers/go-digest"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/trace"
@@ -40,12 +41,14 @@ import (
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	v1 "github.com/stacklok/toolhive/pkg/api/v1"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/client"
 	"github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/container"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/fileutils"
 	"github.com/stacklok/toolhive/pkg/groups"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/recovery"
 	"github.com/stacklok/toolhive/pkg/registry"
 	"github.com/stacklok/toolhive/pkg/server/discovery"
@@ -59,8 +62,13 @@ import (
 
 // Not sure if these values need to be configurable.
 const (
-	middlewareTimeout  = 60 * time.Second
-	readHeaderTimeout  = 10 * time.Second
+	middlewareTimeout = 60 * time.Second
+	readHeaderTimeout = 10 * time.Second
+	// readTimeout bounds reading the entire request (headers + body), mitigating
+	// slow-upload connection exhaustion. WriteTimeout is intentionally NOT set:
+	// the workload router serves multi-minute responses (image pulls) that a
+	// server-level write deadline would sever (see setupDefaultRoutes).
+	readTimeout        = 30 * time.Second
 	idleTimeout        = 120 * time.Second
 	shutdownTimeout    = 30 * time.Second
 	nonceBytes         = 16
@@ -142,47 +150,32 @@ func (b *ServerBuilder) WithOtelEnabled(enabled bool) *ServerBuilder {
 	return b
 }
 
-// WithMiddleware adds middleware to the server
+// WithMiddleware appends HTTP middleware that runs after the default middleware
+// stack (request-ID, body-size limit, headers, update-check, auth) and before
+// route handlers. Part of the ApplyServerExtensions extension point — used by
+// downstream consumers to inject custom authentication or request-scoping
+// middleware into the API server.
+//
+// Public extension API. Do not remove based on deadcode analysis alone:
+// callers may live in repositories that are not visible to this module's
+// analyzer. The test in server_test.go intentionally exercises this method
+// to keep it reachable.
 func (b *ServerBuilder) WithMiddleware(mw ...func(http.Handler) http.Handler) *ServerBuilder {
 	b.middlewares = append(b.middlewares, mw...)
 	return b
 }
 
-// WithRoute adds a custom route to the server
+// WithRoute mounts a sub-router at the given prefix. The caller is responsible
+// for any per-route timeout middleware. Part of the ApplyServerExtensions
+// extension point — used by downstream consumers to add API surface alongside
+// the built-in routes.
+//
+// Public extension API. Do not remove based on deadcode analysis alone:
+// callers may live in repositories that are not visible to this module's
+// analyzer. The test in server_test.go intentionally exercises this method
+// to keep it reachable.
 func (b *ServerBuilder) WithRoute(prefix string, handler http.Handler) *ServerBuilder {
 	b.customRoutes[prefix] = handler
-	return b
-}
-
-// WithContainerRuntime sets the container runtime
-func (b *ServerBuilder) WithContainerRuntime(containerRuntime runtime.Runtime) *ServerBuilder {
-	b.containerRuntime = containerRuntime
-	return b
-}
-
-// WithClientManager sets the client manager
-func (b *ServerBuilder) WithClientManager(manager client.Manager) *ServerBuilder {
-	b.clientManager = manager
-	return b
-}
-
-// WithWorkloadManager sets the workload manager
-func (b *ServerBuilder) WithWorkloadManager(manager workloads.Manager) *ServerBuilder {
-	b.workloadManager = manager
-	return b
-}
-
-// WithGroupManager sets the group manager
-func (b *ServerBuilder) WithGroupManager(manager groups.Manager) *ServerBuilder {
-	b.groupManager = manager
-	return b
-}
-
-// WithSkillManager sets the skill service manager.
-// The caller is responsible for closing any underlying resources
-// when providing an external skill service.
-func (b *ServerBuilder) WithSkillManager(manager skills.SkillService) *ServerBuilder {
-	b.skillManager = manager
 	return b
 }
 
@@ -222,7 +215,7 @@ func (b *ServerBuilder) Build(ctx context.Context) (*chi.Mux, error) {
 	r.Use(
 		middleware.RequestID,
 		// TODO: Figure out logging middleware. We may want to use a different logger.
-		requestBodySizeLimitMiddleware(maxRequestBodySize),
+		bodylimit.Middleware(maxRequestBodySize),
 		headersMiddleware,
 	)
 
@@ -393,6 +386,8 @@ func headersMiddleware(next http.Handler) http.Handler {
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			w.Header().Set("Content-Type", "application/json")
 		}
+		w.Header().Set("X-Content-Type-Options", "nosniff")
+		w.Header().Set("Cross-Origin-Resource-Policy", "same-origin")
 		next.ServeHTTP(w, r)
 	})
 }
@@ -422,98 +417,6 @@ func updateCheckMiddleware() func(next http.Handler) http.Handler {
 				}
 			}()
 			next.ServeHTTP(w, r)
-		})
-	}
-}
-
-// maxBytesTracker wraps an io.ReadCloser to track bytes read and detect size limit violations
-type maxBytesTracker struct {
-	io.ReadCloser
-	bytesRead     *int64
-	limit         int64
-	limitExceeded *bool
-}
-
-func (t *maxBytesTracker) Read(p []byte) (n int, err error) {
-	n, err = t.ReadCloser.Read(p)
-	*t.bytesRead += int64(n)
-
-	// Check if we've reached/exceeded the limit or if this is a MaxBytesError
-	// Use >= because MaxBytesReader stops AT the limit, not after it
-	if *t.bytesRead >= t.limit {
-		*t.limitExceeded = true
-	}
-
-	if err != nil {
-		var maxBytesErr *http.MaxBytesError
-		if errors.As(err, &maxBytesErr) {
-			*t.limitExceeded = true
-		}
-	}
-
-	return n, err
-}
-
-// bodySizeResponseWriter wraps http.ResponseWriter to convert 400 to 413 only when
-// MaxBytesReader's limit was exceeded (not for validation errors)
-type bodySizeResponseWriter struct {
-	http.ResponseWriter
-	limitExceeded *bool
-	written       bool
-}
-
-func (w *bodySizeResponseWriter) WriteHeader(statusCode int) {
-	// Only convert 400 to 413 if MaxBytesReader's limit was actually exceeded
-	if statusCode == http.StatusBadRequest && !w.written && *w.limitExceeded {
-		statusCode = http.StatusRequestEntityTooLarge
-	}
-	w.written = true
-	w.ResponseWriter.WriteHeader(statusCode)
-}
-
-func (w *bodySizeResponseWriter) Write(b []byte) (int, error) {
-	if !w.written {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.ResponseWriter.Write(b)
-}
-
-// requestBodySizeLimitMiddleware limits request body size, returns a 413 for request bodies larger than maxSize.
-func requestBodySizeLimitMiddleware(maxSize int64) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Check Content-Length header first for early rejection
-			if r.ContentLength > maxSize {
-				slog.Warn("request body size exceeds limit", //nolint:gosec // G706: request metadata for diagnostics
-					"content_length", r.ContentLength, "limit", maxSize, "method", r.Method, "path", r.URL.Path)
-				http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
-				return
-			}
-
-			// Track if MaxBytesReader's limit is exceeded
-			limitExceeded := false
-			bytesRead := int64(0)
-
-			// Wrap ResponseWriter to intercept only MaxBytesReader errors
-			wrappedWriter := &bodySizeResponseWriter{
-				ResponseWriter: w,
-				limitExceeded:  &limitExceeded,
-				written:        false,
-			}
-
-			// Set MaxBytesReader as a safety net for requests without Content-Length
-			limitedBody := http.MaxBytesReader(wrappedWriter, r.Body, maxSize)
-
-			// Wrap the limited body to detect when size limit is exceeded
-			tracker := &maxBytesTracker{
-				ReadCloser:    limitedBody,
-				bytesRead:     &bytesRead,
-				limit:         maxSize,
-				limitExceeded: &limitExceeded,
-			}
-			r.Body = tracker
-
-			next.ServeHTTP(wrappedWriter, r)
 		})
 	}
 }
@@ -560,6 +463,9 @@ func NewServer(ctx context.Context, builder *ServerBuilder) (*Server, error) {
 		Addr:              builder.address,
 		Handler:           handler,
 		ReadHeaderTimeout: readHeaderTimeout,
+		// ReadTimeout bounds reading the entire request (headers + body) so a
+		// slow client upload cannot hold a connection open indefinitely.
+		ReadTimeout: readTimeout,
 		// IdleTimeout caps how long a keep-alive connection can sit idle.
 		// On Windows named pipes winio.MaxInstances defaults to 255, so a
 		// slow client cannot hold an instance forever and starve new
@@ -734,13 +640,66 @@ func createListener(address string, isUnixSocket bool) (net.Listener, string, er
 }
 
 // newOCIRegistryClient creates an OCI registry client. In dev mode
-// (TOOLHIVE_DEV=true), plain HTTP is enabled for local test registries.
+// (TOOLHIVE_DEV=true), plain HTTP is used for loopback registries only (e.g.
+// a local test registry started by e2e tests) via devModeOCIRegistryClient.
+//
+// Plain HTTP must NOT be applied to real registries such as ghcr.io: those
+// registries redirect an initial plain-HTTP request to HTTPS, and oras-go
+// refuses to complete the WWW-Authenticate/token-fetch handshake across that
+// redirect (a guard against leaking credentials across origins on redirect,
+// see GHSA-vh4v-2xq2-g5cg). The pull then fails with a bare 401 instead of
+// retrying with a fetched (possibly anonymous) bearer token.
 func newOCIRegistryClient() (ociskills.RegistryClient, error) {
-	var opts []ociskills.RegistryOption
-	if os.Getenv("TOOLHIVE_DEV") == "true" {
-		opts = append(opts, ociskills.WithPlainHTTP(true))
+	secure, err := ociskills.NewRegistry()
+	if err != nil {
+		return nil, err
 	}
-	return ociskills.NewRegistry(opts...)
+	if os.Getenv("TOOLHIVE_DEV") != "true" {
+		return secure, nil
+	}
+	plain, err := ociskills.NewRegistry(ociskills.WithPlainHTTP(true))
+	if err != nil {
+		return nil, err
+	}
+	return &devModeOCIRegistryClient{secure: secure, plain: plain}, nil
+}
+
+// devModeOCIRegistryClient dispatches each Pull/Push to a plain-HTTP client
+// when the target reference's host is loopback (a local test registry), and
+// to a normal TLS client otherwise. This keeps TOOLHIVE_DEV=true's
+// local-test-registry support (see gitresolver.isDevMode for the analogous
+// SSRF relaxation) without silently disabling TLS for real registries.
+type devModeOCIRegistryClient struct {
+	secure ociskills.RegistryClient
+	plain  ociskills.RegistryClient
+}
+
+func (c *devModeOCIRegistryClient) Pull(
+	ctx context.Context, store *ociskills.Store, ref string,
+) (digest.Digest, error) {
+	return c.clientFor(ref).Pull(ctx, store, ref)
+}
+
+func (c *devModeOCIRegistryClient) Push(
+	ctx context.Context, store *ociskills.Store, manifestDigest digest.Digest, ref string,
+) error {
+	return c.clientFor(ref).Push(ctx, store, manifestDigest, ref)
+}
+
+func (c *devModeOCIRegistryClient) clientFor(ref string) ociskills.RegistryClient {
+	if networking.IsLocalhost(ociRefHost(ref)) {
+		return c.plain
+	}
+	return c.secure
+}
+
+// ociRefHost extracts the "host[:port]" portion of an OCI reference such as
+// "ghcr.io/org/repo:tag" or "localhost:5000/repo@sha256:...".
+func ociRefHost(ref string) string {
+	if idx := strings.IndexByte(ref, '/'); idx >= 0 {
+		return ref[:idx]
+	}
+	return ref
 }
 
 // lazySkillLookup implements skillsvc.SkillLookup by resolving the registry
@@ -821,42 +780,4 @@ func GenerateNonce() (string, error) {
 		return "", fmt.Errorf("failed to generate server nonce: %w", err)
 	}
 	return hex.EncodeToString(b), nil
-}
-
-// Serve starts the server on the given address and serves the API.
-// It is assumed that the caller sets up appropriate signal handling.
-// If isUnixSocket is true, address is treated as a UNIX socket path.
-// If oidcConfig is provided, OIDC authentication will be enabled for all API endpoints.
-// Serve is a convenience wrapper that builds and starts the API server.
-// For callers that need to configure OTEL or other builder options not exposed
-// here, use NewServerBuilder and NewServer directly.
-func Serve(
-	ctx context.Context,
-	address string,
-	isUnixSocket bool,
-	debugMode bool,
-	enableDocs bool,
-	oidcConfig *auth.TokenValidatorConfig,
-	middlewares ...func(http.Handler) http.Handler,
-) error {
-	nonce, err := GenerateNonce()
-	if err != nil {
-		return err
-	}
-
-	builder := NewServerBuilder().
-		WithAddress(address).
-		WithUnixSocket(isUnixSocket).
-		WithDebugMode(debugMode).
-		WithDocs(enableDocs).
-		WithNonce(nonce).
-		WithOIDCConfig(oidcConfig).
-		WithMiddleware(middlewares...)
-
-	server, err := NewServer(ctx, builder)
-	if err != nil {
-		return err
-	}
-
-	return server.Start(ctx)
 }

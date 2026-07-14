@@ -491,22 +491,6 @@ func discoverOIDCConfiguration(
 	return &doc, nil
 }
 
-// NewTokenValidatorConfig creates a new TokenValidatorConfig with the provided parameters
-func NewTokenValidatorConfig(issuer, audience, jwksURL, clientID string, clientSecret string) *TokenValidatorConfig {
-	// Only create a config if at least one parameter is provided
-	if issuer == "" && audience == "" && jwksURL == "" && clientID == "" && clientSecret == "" {
-		return nil
-	}
-
-	return &TokenValidatorConfig{
-		Issuer:       issuer,
-		Audience:     audience,
-		JWKSURL:      jwksURL,
-		ClientID:     clientID,
-		ClientSecret: clientSecret,
-	}
-}
-
 // registerIntrospectionProviders creates and configures the provider registry
 // for token introspection based on the configuration.
 func registerIntrospectionProviders(config TokenValidatorConfig, clientSecret string) (*Registry, error) {
@@ -570,7 +554,8 @@ func WithEnvReader(reader env.Reader) TokenValidatorOption {
 // WithUpstreamTokenReader configures the token validator to enrich Identity
 // with upstream provider tokens. When set, the Middleware extracts the token
 // session ID (tsid) from JWT claims and loads all upstream tokens into
-// Identity.UpstreamTokens before placing the Identity in the request context.
+// Identity.UpstreamTokens (access tokens) and Identity.UpstreamIDTokens
+// (ID tokens) before placing the Identity in the request context.
 func WithUpstreamTokenReader(reader upstreamtoken.TokenReader) TokenValidatorOption {
 	return func(o *tokenValidatorOptions) {
 		o.upstreamTokenReader = reader
@@ -1167,7 +1152,7 @@ type RFC6750Error struct {
 }
 
 // writeOAuthError writes an RFC 6750 compliant JSON error response.
-func writeOAuthError(w http.ResponseWriter, errorCode, description string, status int) {
+func writeOAuthError(w http.ResponseWriter, errorCode, description string) {
 	body, err := json.Marshal(RFC6750Error{
 		Error:            errorCode,
 		ErrorDescription: description,
@@ -1177,26 +1162,33 @@ func writeOAuthError(w http.ResponseWriter, errorCode, description string, statu
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusUnauthorized)
 	_, _ = w.Write(body)
 }
 
 // loadUpstreamTokens extracts the token session ID from claims and loads
-// all upstream provider tokens for that session. Returns (nil, nil) if no
-// tsid claim exists. Returns a non-nil error when a tsid claim is present
-// but token loading fails (infrastructure error).
-func (v *TokenValidator) loadUpstreamTokens(ctx context.Context, claims jwt.MapClaims) (map[string]string, error) {
+// all upstream provider credentials (access + ID tokens) for that session.
+// Returns (nil, nil, nil) if no tsid claim exists. Returns a non-nil error
+// when a tsid claim is present but token loading fails due to an infrastructure
+// error (storage unavailable). A non-empty failed slice means one or more
+// providers' tokens could not be refreshed; the caller should return HTTP 401
+// to trigger re-authentication.
+func (v *TokenValidator) loadUpstreamTokens(
+	ctx context.Context, claims jwt.MapClaims,
+) (map[string]upstreamtoken.UpstreamCredential, []string, error) {
 	tsid, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
 	if !ok || tsid == "" {
-		return nil, nil
+		return nil, nil, nil
 	}
 
-	tokens, err := v.upstreamTokenReader.GetAllValidTokens(ctx, tsid)
+	creds, failed, err := v.upstreamTokenReader.GetAllUpstreamCredentials(ctx, tsid)
 	if err != nil {
-		return nil, fmt.Errorf("load upstream tokens for session %s: %w", tsid, err)
+		// Log tsid at DEBUG only — it is credential-adjacent and must not
+		// leak into WARN-level logs or returned error strings.
+		slog.DebugContext(ctx, "load upstream credentials failed", "tsid", tsid, "error", err)
+		return nil, nil, fmt.Errorf("load upstream credentials: %w", err)
 	}
-
-	return tokens, nil
+	return creds, failed, nil
 }
 
 // Middleware creates an HTTP middleware that validates JWT tokens and creates Identity.
@@ -1206,7 +1198,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		tokenString, err := ExtractBearerToken(r)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidRequest, err.Error()))
-			writeOAuthError(w, OAuthErrInvalidRequest, err.Error(), http.StatusUnauthorized)
+			writeOAuthError(w, OAuthErrInvalidRequest, err.Error())
 			return
 		}
 
@@ -1214,7 +1206,7 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		claims, err := v.ValidateToken(r.Context(), tokenString)
 		if err != nil {
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, err.Error()))
-			writeOAuthError(w, OAuthErrInvalidToken, fmt.Sprintf("Invalid token: %v", err), http.StatusUnauthorized)
+			writeOAuthError(w, OAuthErrInvalidToken, fmt.Sprintf("Invalid token: %v", err))
 			return
 		}
 
@@ -1223,25 +1215,71 @@ func (v *TokenValidator) Middleware(next http.Handler) http.Handler {
 		if err != nil {
 			slog.Error("failed to convert claims to identity", "error", err)
 			w.Header().Set("WWW-Authenticate", v.buildWWWAuthenticate(OAuthErrInvalidToken, err.Error()))
-			writeOAuthError(w, OAuthErrInvalidToken, "Invalid authentication claims", http.StatusUnauthorized)
+			writeOAuthError(w, OAuthErrInvalidToken, "Invalid authentication claims")
 			return
 		}
 
-		// Enrich Identity with upstream provider tokens when an embedded
-		// auth server is active (reader configured via WithUpstreamTokenReader).
+		// Enrich Identity with upstream provider tokens when an embedded auth
+		// server is active (reader configured via WithUpstreamTokenReader). The
+		// load runs against a temporary load-scoped context carrying the Identity,
+		// so storage layers invoked during the load can resolve the canonical user
+		// from context (via CanonicalUserFromContext, which falls back to the
+		// Identity's PlatformUserID on this request-serving path). The in-place
+		// UpstreamTokens mutation completes here, before the publicly-reachable
+		// context is built below — so the Identity placed in the served context is
+		// never mutated afterwards (see the UpstreamTokens doc comment in identity.go).
 		if v.upstreamTokenReader != nil {
-			tokens, loadErr := v.loadUpstreamTokens(r.Context(), claims)
+			loadCtx := WithIdentity(r.Context(), identity)
+			creds, failed, loadErr := v.loadUpstreamTokens(loadCtx, claims)
 			if loadErr != nil {
-				slog.WarnContext(r.Context(), "upstream token storage unavailable",
+				slog.WarnContext(loadCtx, "upstream token storage unavailable",
 					"error", loadErr,
 				)
 				http.Error(w, "authentication service temporarily unavailable", http.StatusServiceUnavailable)
 				return
 			}
-			identity.UpstreamTokens = tokens
+			// Conservative policy: any provider refresh failure rejects the entire
+			// request. In vMCP multi-provider sessions this may block requests that
+			// could partially succeed if only some backends need the failing provider.
+			// A per-backend provider check would require routing context not available
+			// at this layer; this is the correct tradeoff for now.
+			if len(failed) > 0 {
+				slog.WarnContext(loadCtx, "upstream token refresh failed; returning 401",
+					"providers", failed)
+				w.Header().Set("WWW-Authenticate",
+					v.buildWWWAuthenticate(OAuthErrInvalidToken, "upstream token is no longer valid; re-authentication required"))
+				writeOAuthError(w, OAuthErrInvalidToken,
+					"upstream token is no longer valid; re-authentication required")
+				return
+			}
+			// Project the per-provider credential bundle onto the two
+			// consumer-facing Identity fields.
+			//
+			// Non-nil empty maps are preserved when a tsid claim was present
+			// so consumers can distinguish "enrichment attempted, nothing
+			// stored" from "enrichment never ran" (nil).
+			if creds != nil {
+				accessTokens := make(map[string]string, len(creds))
+				idTokens := make(map[string]string, len(creds))
+				for provider, cred := range creds {
+					// Omit providers with no usable access token (mirrors the ID-token
+					// filter below); a provider may carry an ID token but no access token.
+					if cred.AccessToken != "" {
+						accessTokens[provider] = cred.AccessToken
+					}
+					// Omit providers whose upstream login did not yield an
+					// ID token so consumers see the same map shape as before
+					// (keyed only on providers with a usable ID token).
+					if cred.IDToken != "" {
+						idTokens[provider] = cred.IDToken
+					}
+				}
+				identity.UpstreamTokens = accessTokens
+				identity.UpstreamIDTokens = idTokens
+			}
 		}
 
-		// Add the Identity to the request context
+		// Add the fully-populated Identity to the request context and serve.
 		ctx := WithIdentity(r.Context(), identity)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

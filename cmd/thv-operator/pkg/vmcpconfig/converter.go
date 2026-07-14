@@ -28,6 +28,11 @@ import (
 const (
 	// authzLabelValueInline is the string value for inline authz configuration
 	authzLabelValueInline = "inline"
+	// AuthzConfigTypeCedarV1 is the MCPAuthzConfig.spec.type value for the Cedar
+	// authorizer. vMCP's incoming-auth middleware is hard-coded to Cedar, so both
+	// the converter and the VirtualMCPServer controller only resolve shared-config
+	// references of this type; any other type fails fast.
+	AuthzConfigTypeCedarV1 = "cedarv1"
 	// conflictResolutionPrefix is the string value for prefix conflict resolution strategy
 	conflictResolutionPrefix = "prefix"
 	// vmcpOIDCClientSecretEnvVar is the environment variable name for the OIDC client secret.
@@ -84,6 +89,11 @@ func (c *Converter) Convert(
 	// This ensures new fields added to config.Config are automatically included
 	// without requiring explicit mapping in this converter.
 	config := vmcp.Spec.Config.DeepCopy()
+
+	// Promoted top-level field takes precedence over spec.config.passthroughHeaders.
+	if len(vmcp.Spec.PassthroughHeaders) > 0 {
+		config.PassthroughHeaders = vmcp.Spec.PassthroughHeaders
+	}
 
 	// Override name with the CR name (authoritative source)
 	config.Name = vmcp.Name
@@ -172,73 +182,229 @@ func (c *Converter) convertIncomingAuth(
 		OIDC: oidcConfig,
 	}
 
-	// Convert authorization configuration
-	if vmcp.Spec.IncomingAuth.AuthzConfig != nil {
-		// Map Kubernetes API types to vmcp config types
-		// API "inline" maps to vmcp "cedar"
-		authzType := vmcp.Spec.IncomingAuth.AuthzConfig.Type
-		if authzType == authzLabelValueInline {
-			authzType = "cedar"
-		}
+	// Convert authorization configuration. The inline/configMap authzConfig and
+	// the shared authzConfigRef are mutually exclusive (enforced by CRD
+	// XValidation). Guard here too so enforcement never depends solely on
+	// apiserver CEL: if both are set, fail loud rather than silently letting one
+	// override the other.
+	if vmcp.Spec.IncomingAuth.AuthzConfig != nil && vmcp.Spec.IncomingAuth.AuthzConfigRef != nil {
+		return nil, fmt.Errorf("authzConfig and authzConfigRef are mutually exclusive")
+	}
 
-		incoming.Authz = &vmcpconfig.AuthzConfig{
-			Type: authzType,
+	switch {
+	case vmcp.Spec.IncomingAuth.AuthzConfig != nil:
+		authz, err := c.convertAuthzConfig(ctx, vmcp)
+		if err != nil {
+			return nil, err
 		}
-
-		// Handle inline policies
-		if vmcp.Spec.IncomingAuth.AuthzConfig.Type == authzLabelValueInline && vmcp.Spec.IncomingAuth.AuthzConfig.Inline != nil {
-			incoming.Authz.Policies = vmcp.Spec.IncomingAuth.AuthzConfig.Inline.Policies
+		incoming.Authz = authz
+	case vmcp.Spec.IncomingAuth.AuthzConfigRef != nil:
+		authz, err := c.resolveAuthzConfigRef(ctx, vmcp)
+		if err != nil {
+			return nil, err
 		}
-		// TODO(#5208): Load policies from ConfigMap if Type is "configMap"
-
-		// When an embedded auth server with upstream providers is configured, Cedar
-		// policies must evaluate claims from the upstream IDP token rather than the
-		// ToolHive-issued AS token. Mirrors injectSubjectProviderIfNeeded in
-		// virtualmcpserver_controller.go (outgoing auth) and
-		// injectUpstreamProviderIfNeeded in pkg/runner/middleware.go (thv run path).
-		// Leaving PrimaryUpstreamProvider empty (no upstreams configured AND no
-		// explicit override) lets Cedar fall back to claims from the
-		// ToolHive-issued token.
-		//
-		// When the user has set spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider
-		// explicitly, honor it (after normalization). Otherwise fall back to the first
-		// configured upstream — matching the SubjectProviderName precedent on the
-		// token-exchange and AWS-STS strategies.
-		//
-		// validateAuthzUpstreamAvailable is the primary user-facing fail-loud point
-		// for explicit-provider misconfigurations; the defense-in-depth check below
-		// ensures Convert cannot produce an unresolvable PrimaryUpstreamProvider
-		// even if invoked outside the reconcile flow (CLI dry-run, webhook, test
-		// harness).
-		// TODO(#5208): load primaryUpstreamProvider from configMap
-		if explicit := vmcp.Spec.IncomingAuth.AuthzConfig.ExplicitPrimaryUpstreamProvider(); explicit != "" {
-			resolved := authserver.ResolveUpstreamName(explicit)
-			if vmcp.Spec.AuthServerConfig == nil {
-				return nil, fmt.Errorf(
-					"authz primaryUpstreamProvider %q set without an embedded auth server "+
-						"(spec.authServerConfig must be configured)", explicit)
-			}
-			matched := false
-			for _, up := range vmcp.Spec.AuthServerConfig.UpstreamProviders {
-				if authserver.ResolveUpstreamName(up.Name) == resolved {
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				return nil, fmt.Errorf(
-					"authz primaryUpstreamProvider %q does not match any upstream declared "+
-						"on spec.authServerConfig.upstreamProviders", explicit)
-			}
-			incoming.Authz.PrimaryUpstreamProvider = resolved
-		} else if vmcp.Spec.AuthServerConfig != nil && len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 0 {
-			incoming.Authz.PrimaryUpstreamProvider = authserver.ResolveUpstreamName(
-				vmcp.Spec.AuthServerConfig.UpstreamProviders[0].Name,
-			)
-		}
+		incoming.Authz = authz
 	}
 
 	return incoming, nil
+}
+
+// resolveAuthzConfigRef resolves a referenced MCPAuthzConfig
+// (spec.incomingAuth.authzConfigRef) into a vmcpconfig.AuthzConfig.
+//
+// Only cedarv1 is supported today: vMCP's incoming-auth middleware hard-codes
+// the Cedar authorizer (pkg/vmcp/auth/factory/incoming.go), so a non-Cedar
+// reference fails fast here with a clear error rather than being carried through
+// as inert config that would fail later with an opaque message. Generalising the
+// vMCP runtime to other backends is tracked as a separate follow-up.
+//
+// The referenced config must exist and be Valid; otherwise an error is returned
+// and the caller stops the conversion (and, in the controller, the reconcile).
+func (c *Converter) resolveAuthzConfigRef(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) (*vmcpconfig.AuthzConfig, error) {
+	ref := vmcp.Spec.IncomingAuth.AuthzConfigRef
+
+	authzConfig, err := controllerutil.GetAuthzConfigForWorkload(ctx, c.k8sClient, vmcp.Namespace, ref)
+	if err != nil {
+		return nil, err
+	}
+	if err := controllerutil.ValidateAuthzConfigReady(authzConfig); err != nil {
+		return nil, err
+	}
+
+	if authzConfig.Spec.Type != AuthzConfigTypeCedarV1 {
+		return nil, fmt.Errorf(
+			"MCPAuthzConfig type %q is not yet supported for VirtualMCPServer; only %s is supported",
+			authzConfig.Spec.Type, AuthzConfigTypeCedarV1)
+	}
+
+	cfg, err := controllerutil.BuildAuthzConfigFromRef(authzConfig)
+	if err != nil {
+		return nil, err
+	}
+	opts, err := controllerutil.ExtractCedarAuthzOptions(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("MCPAuthzConfig %s/%s is not a Cedar config: %w",
+			authzConfig.Namespace, authzConfig.Name, err)
+	}
+
+	authz := &vmcpconfig.AuthzConfig{
+		Type:            "cedar",
+		Policies:        opts.Policies,
+		EntitiesJSON:    opts.EntitiesJSON,
+		GroupClaimName:  opts.GroupClaimName,
+		RoleClaimName:   opts.RoleClaimName,
+		GroupEntityType: opts.GroupEntityType,
+	}
+
+	// PrimaryUpstreamProvider is an auth-server (control-plane) property resolved
+	// from spec.authServerConfig, not from the shared MCPAuthzConfig payload —
+	// identical to the inline/configMap path (convertAuthzConfig), which also does
+	// not copy opts.PrimaryUpstreamProvider. resolvePrimaryUpstreamProvider is the
+	// sole authority so a data-plane config author cannot pick the trusted upstream.
+	if err := c.resolvePrimaryUpstreamProvider(vmcp, authz); err != nil {
+		return nil, err
+	}
+
+	return authz, nil
+}
+
+// convertAuthzConfig resolves the AuthzConfig from either the inline spec or a
+// referenced ConfigMap and applies spec-level overrides for the source-agnostic
+// Cedar JWT-claim mapping fields (GroupClaimName, RoleClaimName,
+// GroupEntityType). PrimaryUpstreamProvider lives on
+// spec.authServerConfig.primaryUpstreamProvider and is resolved separately by
+// resolvePrimaryUpstreamProvider. The ConfigMap path uses the shared loader so
+// the same fetch/parse/validate path is exercised here as in the
+// MCPServer/MCPRemoteProxy runner flow.
+func (c *Converter) convertAuthzConfig(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) (*vmcpconfig.AuthzConfig, error) {
+	authzRef := vmcp.Spec.IncomingAuth.AuthzConfig
+
+	// Both "inline" and "configMap" map to vmcp "cedar"; the difference is the
+	// source the policies are loaded from. Unknown values are rejected by the
+	// default arm of the switch below.
+	authz := &vmcpconfig.AuthzConfig{Type: "cedar"}
+
+	// Pull policy content from the chosen source.
+	switch authzRef.Type {
+	case authzLabelValueInline:
+		if authzRef.Inline != nil {
+			authz.Policies = authzRef.Inline.Policies
+			authz.EntitiesJSON = authzRef.Inline.EntitiesJSON
+		}
+
+	case mcpv1beta1.AuthzConfigTypeConfigMap:
+		loaded, err := controllerutil.LoadAuthzConfigFromConfigMap(ctx, c.k8sClient, vmcp.Namespace, authzRef)
+		if err != nil {
+			return nil, err
+		}
+		opts, err := controllerutil.ExtractCedarAuthzOptions(loaded)
+		if err != nil {
+			return nil, fmt.Errorf("authz ConfigMap %s/%s is not a Cedar config: %w",
+				vmcp.Namespace, authzRef.ConfigMap.Name, err)
+		}
+		authz.Policies = opts.Policies
+		authz.EntitiesJSON = opts.EntitiesJSON
+		// ConfigMap-supplied JWT-claim mapping values are the default; spec-level
+		// overrides apply below. PrimaryUpstreamProvider is an auth-server property
+		// (spec.authServerConfig.primaryUpstreamProvider) so it is not read from
+		// the ConfigMap payload here.
+		authz.GroupClaimName = opts.GroupClaimName
+		authz.RoleClaimName = opts.RoleClaimName
+		authz.GroupEntityType = opts.GroupEntityType
+
+	default:
+		// Defense in depth. The CRD enum (configMap;inline) blocks unknown
+		// values at admission today, but the converter is also reachable from
+		// CLI dry-runs, webhooks, and test harnesses where a stale schema or
+		// a future authz source could slip through. Failing here keeps Cedar
+		// from being constructed with an empty policy set (which silently
+		// denies every request).
+		return nil, fmt.Errorf("unsupported authz config type %q", authzRef.Type)
+	}
+
+	// Spec-level overrides for source-agnostic fields. Spec wins over ConfigMap
+	// when both are set — the spec is the control-plane source of truth and the
+	// ConfigMap is data-plane content that may be written by an external
+	// controller.
+	if authzRef.GroupClaimName != "" {
+		authz.GroupClaimName = authzRef.GroupClaimName
+	}
+	if authzRef.RoleClaimName != "" {
+		authz.RoleClaimName = authzRef.RoleClaimName
+	}
+	if authzRef.GroupEntityType != "" {
+		authz.GroupEntityType = authzRef.GroupEntityType
+	}
+
+	if err := c.resolvePrimaryUpstreamProvider(vmcp, authz); err != nil {
+		return nil, err
+	}
+
+	return authz, nil
+}
+
+// resolvePrimaryUpstreamProvider finalises authz.PrimaryUpstreamProvider.
+// Precedence:
+//
+//  1. spec.authServerConfig.primaryUpstreamProvider (canonical home).
+//  2. spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider (deprecated,
+//     read for backward compatibility).
+//  3. First entry of spec.authServerConfig.upstreamProviders, auto-selected.
+//
+// The resolved value is validated against the declared embedded auth server
+// upstreams; an unresolvable value is rejected.
+//
+// validateAuthzUpstreamAvailable in virtualmcpserver_controller.go is the
+// primary user-facing fail-loud point for explicit-provider misconfigurations
+// and also emits the deprecation Warning event. The defense-in-depth check
+// here ensures Convert cannot produce an unresolvable PrimaryUpstreamProvider
+// even if invoked outside the reconcile flow (CLI dry-run, webhook, test
+// harness).
+//
+// Leaving PrimaryUpstreamProvider empty (no upstreams configured AND no
+// explicit override) lets Cedar fall back to claims from the ToolHive-issued
+// token, which matches the historical behaviour before embedded auth servers
+// were supported.
+func (*Converter) resolvePrimaryUpstreamProvider(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	authz *vmcpconfig.AuthzConfig,
+) error {
+	explicit, _ := vmcp.ExplicitPrimaryUpstreamProvider()
+	if explicit != "" {
+		resolved := authserver.ResolveUpstreamName(explicit)
+		if vmcp.Spec.AuthServerConfig == nil {
+			return fmt.Errorf(
+				"authz primaryUpstreamProvider %q set without an embedded auth server "+
+					"(spec.authServerConfig must be configured)", explicit)
+		}
+		matched := false
+		for _, up := range vmcp.Spec.AuthServerConfig.UpstreamProviders {
+			if authserver.ResolveUpstreamName(up.Name) == resolved {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf(
+				"authz primaryUpstreamProvider %q does not match any upstream declared "+
+					"on spec.authServerConfig.upstreamProviders", explicit)
+		}
+		authz.PrimaryUpstreamProvider = resolved
+		return nil
+	}
+
+	if vmcp.Spec.AuthServerConfig != nil && len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 0 {
+		authz.PrimaryUpstreamProvider = authserver.ResolveUpstreamName(
+			vmcp.Spec.AuthServerConfig.UpstreamProviders[0].Name,
+		)
+	}
+	return nil
 }
 
 // resolveOIDCConfig resolves OIDC configuration from an MCPOIDCConfig reference.
@@ -332,8 +498,7 @@ func (*Converter) normalizeTelemetry(
 }
 
 // convertSessionStorage populates SessionStorage from the VirtualMCPServer spec.
-// spec.sessionStorage is the authoritative source; always overwrite whatever
-// the DeepCopy brought in from spec.config.sessionStorage.
+// Falls back to TOOLHIVE_DEFAULT_REDIS_ADDR when spec.sessionStorage is nil.
 // PasswordRef is K8s-specific and is resolved separately; the password is injected
 // as the THV_SESSION_REDIS_PASSWORD environment variable by the deployment builder.
 func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.SessionStorageConfig {
@@ -344,6 +509,13 @@ func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.Sessio
 			Address:   vmcp.Spec.SessionStorage.Address,
 			DB:        vmcp.Spec.SessionStorage.DB,
 			KeyPrefix: vmcp.Spec.SessionStorage.KeyPrefix,
+		}
+	}
+
+	if def := controllerutil.ReadDefaultRedisConfig(); def != nil {
+		return &vmcpconfig.SessionStorageConfig{
+			Provider: mcpv1beta1.SessionStorageProviderRedis,
+			Address:  def.Addr,
 		}
 	}
 	return nil

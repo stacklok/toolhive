@@ -10,13 +10,14 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestMapAuthzConfigMapToVirtualMCPServer(t *testing.T) {
@@ -26,66 +27,49 @@ func TestMapAuthzConfigMapToVirtualMCPServer(t *testing.T) {
 	const cmName = "shared-authz"
 
 	// vmcpWithConfigMapRef references cmName via configMap.
-	vmcpWithConfigMapRef := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "vmcp-cm", Namespace: ns},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type: "oidc",
-				AuthzConfig: &mcpv1beta1.AuthzConfigRef{
-					Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
-					ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{Name: cmName, Key: "authz.json"},
-				},
+	vmcpWithConfigMapRef := v1beta1test.NewVirtualMCPServer("vmcp-cm", ns,
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "oidc",
+			AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
+				ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{Name: cmName, Key: "authz.json"},
 			},
-		},
-	}
+		}),
+	)
 	// vmcpDifferentCM references a different ConfigMap by the same type.
-	vmcpDifferentCM := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "vmcp-other-cm", Namespace: ns},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type: "oidc",
-				AuthzConfig: &mcpv1beta1.AuthzConfigRef{
-					Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
-					ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{Name: "other-authz"},
-				},
+	vmcpDifferentCM := v1beta1test.NewVirtualMCPServer("vmcp-other-cm", ns,
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "oidc",
+			AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
+				ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{Name: "other-authz"},
 			},
-		},
-	}
+		}),
+	)
 	// vmcpInline uses inline authz — same name on Inline.something should not match.
-	vmcpInline := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "vmcp-inline", Namespace: ns},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type: "oidc",
-				AuthzConfig: &mcpv1beta1.AuthzConfigRef{
-					Type:   mcpv1beta1.AuthzConfigTypeInline,
-					Inline: &mcpv1beta1.InlineAuthzConfig{Policies: []string{"permit(principal, action, resource);"}},
-				},
+	vmcpInline := v1beta1test.NewVirtualMCPServer("vmcp-inline", ns,
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "oidc",
+			AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type:   mcpv1beta1.AuthzConfigTypeInline,
+				Inline: &mcpv1beta1.InlineAuthzConfig{Policies: []string{"permit(principal, action, resource);"}},
 			},
-		},
-	}
+		}),
+	)
 	// vmcpNoIncomingAuth has no incoming auth configured.
-	vmcpNoIncomingAuth := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "vmcp-no-auth", Namespace: ns},
-		Spec:       mcpv1beta1.VirtualMCPServerSpec{},
-	}
+	vmcpNoIncomingAuth := v1beta1test.NewVirtualMCPServer("vmcp-no-auth", ns)
 	// vmcpInOtherNamespace references the same name in a different namespace.
-	vmcpInOtherNamespace := &mcpv1beta1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{Name: "vmcp-other-ns", Namespace: "other"},
-		Spec: mcpv1beta1.VirtualMCPServerSpec{
-			IncomingAuth: &mcpv1beta1.IncomingAuthConfig{
-				Type: "oidc",
-				AuthzConfig: &mcpv1beta1.AuthzConfigRef{
-					Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
-					ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{Name: cmName},
-				},
+	vmcpInOtherNamespace := v1beta1test.NewVirtualMCPServer("vmcp-other-ns", "other",
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "oidc",
+			AuthzConfig: &mcpv1beta1.AuthzConfigRef{
+				Type:      mcpv1beta1.AuthzConfigTypeConfigMap,
+				ConfigMap: &mcpv1beta1.ConfigMapAuthzRef{Name: cmName},
 			},
-		},
-	}
+		}),
+	)
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).

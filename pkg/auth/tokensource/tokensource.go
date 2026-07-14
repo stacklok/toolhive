@@ -40,8 +40,11 @@ import (
 // from real backend errors. It is never exposed to callers.
 var errCacheMiss = errors.New("no cached refresh token")
 
-// preemptiveRefreshWindow is how far before actual expiry a token is treated as
-// expired, triggering a proactive refresh before the upstream rejects it.
+// preemptiveRefreshWindow is the default distance before actual expiry at which
+// a token is treated as expired, triggering a proactive refresh before the
+// upstream rejects it. Callers that re-invoke the token source on a fixed
+// cadence (e.g. the LLM gateway's apiKeyHelper) widen this via
+// Options.PreemptiveRefreshWindow so a refresh always lands before expiry.
 const preemptiveRefreshWindow = 30 * time.Second
 
 // OIDCParams holds the OIDC connection parameters for a token source.
@@ -69,6 +72,11 @@ type Options struct {
 	SecretsProvider secrets.Provider
 	// Interactive controls whether the browser OIDC+PKCE flow is allowed.
 	Interactive bool
+	// SkipBrowser, when true, makes the interactive flow print the authorization
+	// URL to stderr and wait for the callback instead of opening a browser. It
+	// only has effect when Interactive is true. Useful for headless/SSH/CI
+	// environments where no system browser is available.
+	SkipBrowser bool
 	// KeyProvider returns the secrets-provider key for the refresh token.
 	// May be called multiple times per Token() invocation; must be deterministic
 	// and free of side effects. Typically returns a cached config ref if set,
@@ -80,6 +88,13 @@ type Options struct {
 	// FallbackErr is returned in non-interactive mode when no cached credentials
 	// exist and no actionable lastErr is available. Defaults to a generic error.
 	FallbackErr error
+	// PreemptiveRefreshWindow overrides how far before expiry a token is
+	// proactively refreshed. Zero uses the default (preemptiveRefreshWindow,
+	// 30 s); a negative value panics in New. Widen this when the caller polls
+	// the token source on a fixed cadence (e.g. the LLM gateway apiKeyHelper) so
+	// the window comfortably exceeds that cadence and a refresh always lands
+	// before expiry.
+	PreemptiveRefreshWindow time.Duration
 }
 
 // OAuthTokenSource provides OIDC-backed access tokens via a four-tier strategy.
@@ -91,11 +106,16 @@ type OAuthTokenSource struct {
 }
 
 // New creates an OAuthTokenSource from the given Options.
-// It panics if opts.KeyProvider is nil, as this is a required field.
+// It panics if opts.KeyProvider is nil, as this is a required field, or if
+// opts.PreemptiveRefreshWindow is negative.
 // If opts.OIDC.CallbackPort is zero, it defaults to remote.DefaultCallbackPort.
+// If opts.PreemptiveRefreshWindow is zero, it defaults to preemptiveRefreshWindow.
 func New(opts Options) *OAuthTokenSource {
 	if opts.KeyProvider == nil {
 		panic("tokensource.New: Options.KeyProvider must not be nil")
+	}
+	if opts.PreemptiveRefreshWindow < 0 {
+		panic("tokensource.New: Options.PreemptiveRefreshWindow must not be negative")
 	}
 	if opts.FallbackErr == nil {
 		opts.FallbackErr = errors.New("authentication required: no cached credentials found; complete an interactive login first")
@@ -220,9 +240,9 @@ func (t *OAuthTokenSource) tryRestoreFromCache(ctx context.Context) error {
 	//
 	// oauth2Cfg.TokenSource caches internally and only refreshes when the real
 	// expiry passes. When the outer ReuseTokenSource enters the preemptive window
-	// (30 s before real expiry) it calls preemptiveTokenSource, which calls the
-	// inner source; the inner source sees the real token as still valid and returns
-	// it unchanged; preemptiveTokenSource shifts the expiry back by 30 s, producing
+	// (refreshWindow before real expiry) it calls preemptiveTokenSource, which calls
+	// the inner source; the inner source sees the real token as still valid and returns
+	// it unchanged; preemptiveTokenSource shifts the expiry back by the window, producing
 	// an already-expired token; the outer ReuseTokenSource then re-enters the chain
 	// on every subsequent call — an infinite non-refreshing loop.
 	//
@@ -239,9 +259,16 @@ func (t *OAuthTokenSource) tryRestoreFromCache(ctx context.Context) error {
 	// old token on refresh (common with OIDC providers that rotate refresh tokens).
 	base := remote.NewPersistingTokenSource(rawRefresher, t.makeTokenPersister(key))
 
-	// Wrap with preemptive refresh so tokens are renewed 30 s before real expiry.
-	t.tokenSource = withPreemptiveRefresh(base)
+	// Wrap with preemptive refresh so tokens are renewed before real expiry.
+	t.tokenSource = withPreemptiveRefresh(base, t.refreshWindow())
 	return nil
+}
+
+// startFlow runs the interactive OAuth flow to completion. It is a package var
+// so tests can stub the browser/callback round-trip and assert how skipBrowser
+// is forwarded without standing up a real browser or callback listener.
+var startFlow = func(ctx context.Context, flow *oauth.Flow, skipBrowser bool) (*oauth.TokenResult, error) {
+	return flow.Start(ctx, skipBrowser)
 }
 
 // performBrowserFlow runs the interactive OIDC+PKCE browser flow and persists
@@ -257,7 +284,7 @@ func (t *OAuthTokenSource) performBrowserFlow(ctx context.Context) error {
 		return fmt.Errorf("creating OAuth flow: %w", err)
 	}
 
-	tokenResult, err := flow.Start(ctx, false)
+	tokenResult, err := startFlow(ctx, flow, t.opts.SkipBrowser)
 	if err != nil {
 		return fmt.Errorf("OAuth flow start failed: %w", err)
 	}
@@ -292,7 +319,7 @@ func (t *OAuthTokenSource) performBrowserFlow(ctx context.Context) error {
 
 	// Pre-seed the outer ReuseTokenSource with the shifted initial token so the
 	// just-obtained access token is served without an immediate network round-trip.
-	t.tokenSource = withPreemptiveRefreshFrom(initialToken, base)
+	t.tokenSource = withPreemptiveRefreshFrom(initialToken, base, t.refreshWindow())
 	return nil
 }
 
@@ -443,10 +470,21 @@ func EnsureOfflineAccess(scopes []string) []string {
 	return append(scopes[:len(scopes):len(scopes)], "offline_access")
 }
 
+// refreshWindow returns the configured preemptive refresh window, falling back
+// to the package default when the caller left Options.PreemptiveRefreshWindow
+// unset. New rejects negative values, so this is always > 0.
+func (t *OAuthTokenSource) refreshWindow() time.Duration {
+	if t.opts.PreemptiveRefreshWindow > 0 {
+		return t.opts.PreemptiveRefreshWindow
+	}
+	return preemptiveRefreshWindow
+}
+
 // preemptiveTokenSource wraps an oauth2.TokenSource and shifts each returned
-// token's expiry back by preemptiveRefreshWindow.
+// token's expiry back by window.
 type preemptiveTokenSource struct {
-	inner oauth2.TokenSource
+	inner  oauth2.TokenSource
+	window time.Duration
 }
 
 func (p *preemptiveTokenSource) Token() (*oauth2.Token, error) {
@@ -456,29 +494,29 @@ func (p *preemptiveTokenSource) Token() (*oauth2.Token, error) {
 	}
 	if !tok.Expiry.IsZero() {
 		shifted := *tok
-		shifted.Expiry = tok.Expiry.Add(-preemptiveRefreshWindow)
+		shifted.Expiry = tok.Expiry.Add(-p.window)
 		return &shifted, nil
 	}
 	return tok, nil
 }
 
-// withPreemptiveRefresh wraps src so tokens appear expired preemptiveRefreshWindow
-// before they actually expire, then re-wraps with ReuseTokenSource so the refresh
-// is only triggered once per window.
-func withPreemptiveRefresh(src oauth2.TokenSource) oauth2.TokenSource {
-	return withPreemptiveRefreshFrom(nil, src)
+// withPreemptiveRefresh wraps src so tokens appear expired window before they
+// actually expire, then re-wraps with ReuseTokenSource so the refresh is only
+// triggered once per window.
+func withPreemptiveRefresh(src oauth2.TokenSource, window time.Duration) oauth2.TokenSource {
+	return withPreemptiveRefreshFrom(nil, src, window)
 }
 
 // withPreemptiveRefreshFrom is like withPreemptiveRefresh but pre-seeds the outer
 // ReuseTokenSource with a shifted copy of initial (if non-nil and valid).
-func withPreemptiveRefreshFrom(initial *oauth2.Token, src oauth2.TokenSource) oauth2.TokenSource {
+func withPreemptiveRefreshFrom(initial *oauth2.Token, src oauth2.TokenSource, window time.Duration) oauth2.TokenSource {
 	var seeded *oauth2.Token
 	if initial != nil && initial.Valid() && !initial.Expiry.IsZero() {
 		shifted := *initial
-		shifted.Expiry = initial.Expiry.Add(-preemptiveRefreshWindow)
+		shifted.Expiry = initial.Expiry.Add(-window)
 		if shifted.Valid() {
 			seeded = &shifted
 		}
 	}
-	return oauth2.ReuseTokenSource(seeded, &preemptiveTokenSource{inner: src})
+	return oauth2.ReuseTokenSource(seeded, &preemptiveTokenSource{inner: src, window: window})
 }

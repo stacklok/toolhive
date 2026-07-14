@@ -10,7 +10,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"sync"
 	"testing"
 	"time"
 
@@ -23,44 +22,24 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
 // ---------------------------------------------------------------------------
-// backendAwareTestSession / backendAwareTestFactory
+// backendAwareTestFactory
 // ---------------------------------------------------------------------------
-// Used by TestIntegration_TelemetryMiddleware to verify that tool calls reach
-// the monitorBackends-wrapped backend client so backend-level metrics are recorded.
+// Provides a bound MultiSession for TestIntegration_TelemetryMiddleware. On the New/Serve
+// path the core sources the advertised set and routes tool calls through its own
+// monitorBackends-wrapped backend client, so this factory only needs to open a bound
+// session — its capability/call methods are not exercised by the Serve path.
 
-// backendClientRef holds a vmcp.BackendClient that can be set after server
-// creation, once the monitorBackends-wrapped client is available.
-type backendClientRef struct {
-	mu     sync.Mutex
-	client vmcp.BackendClient
-}
-
-func (r *backendClientRef) set(c vmcp.BackendClient) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.client = c
-}
-
-func (r *backendClientRef) get() vmcp.BackendClient {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.client
-}
-
-// backendAwareTestSession delegates CallTool to the wrapped backend client so
-// that monitorBackends instrumentation is exercised during tool calls.
+// backendAwareTestSession is a minimal bound MultiSession.
 type backendAwareTestSession struct {
 	transportsession.Session
 	tools        []vmcp.Tool
 	routingTable *vmcp.RoutingTable
-	clientRef    *backendClientRef
 }
 
 func (s *backendAwareTestSession) Tools() []vmcp.Tool                  { return s.tools }
@@ -70,66 +49,63 @@ func (*backendAwareTestSession) Prompts() []vmcp.Prompt                { return 
 func (*backendAwareTestSession) BackendSessions() map[string]string    { return nil }
 func (s *backendAwareTestSession) GetRoutingTable() *vmcp.RoutingTable { return s.routingTable }
 func (*backendAwareTestSession) Close() error                          { return nil }
-func (s *backendAwareTestSession) CallTool(
-	ctx context.Context, _ *auth.Identity, toolName string, args map[string]any, meta map[string]any,
+
+// CallTool is not exercised on the Serve path (the core routes tool calls); it returns an
+// empty result to satisfy the MultiSession interface.
+func (*backendAwareTestSession) CallTool(
+	context.Context, *auth.Identity, string, map[string]any, map[string]any,
 ) (*vmcp.ToolCallResult, error) {
-	client := s.clientRef.get()
-	if s.routingTable == nil || client == nil {
-		return &vmcp.ToolCallResult{Content: []vmcp.Content{}}, nil
-	}
-	target, ok := s.routingTable.Tools[toolName]
-	if !ok {
-		return &vmcp.ToolCallResult{Content: []vmcp.Content{}}, nil
-	}
-	return client.CallTool(ctx, target, toolName, args, meta)
+	return &vmcp.ToolCallResult{Content: []vmcp.Content{}}, nil
 }
 
 func (*backendAwareTestSession) ReadResource(
-	_ context.Context, _ *auth.Identity, _ string,
+	context.Context, *auth.Identity, string,
 ) (*vmcp.ResourceReadResult, error) {
 	return nil, errors.New("not implemented")
 }
 
 func (*backendAwareTestSession) GetPrompt(
-	_ context.Context, _ *auth.Identity, _ string, _ map[string]any,
+	context.Context, *auth.Identity, string, map[string]any,
 ) (*vmcp.PromptGetResult, error) {
 	return nil, errors.New("not implemented")
 }
 
-// backendAwareTestFactory creates backendAwareTestSessions.
+// backendAwareTestFactory creates bound backendAwareTestSessions.
 type backendAwareTestFactory struct {
 	tools        []vmcp.Tool
 	routingTable *vmcp.RoutingTable
-	clientRef    *backendClientRef
 }
 
 var _ vmcpsession.MultiSessionFactory = (*backendAwareTestFactory)(nil)
 
-func newBackendAwareTestFactory(tools []vmcp.Tool, rt *vmcp.RoutingTable) (*backendAwareTestFactory, *backendClientRef) {
-	ref := &backendClientRef{}
-	return &backendAwareTestFactory{tools: tools, routingTable: rt, clientRef: ref}, ref
+func newBackendAwareTestFactory(tools []vmcp.Tool, rt *vmcp.RoutingTable) *backendAwareTestFactory {
+	return &backendAwareTestFactory{tools: tools, routingTable: rt}
 }
 
 func (f *backendAwareTestFactory) MakeSessionWithID(
-	_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend,
+	_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend,
 ) (vmcpsession.MultiSession, error) {
-	return &backendAwareTestSession{
-		Session:      transportsession.NewStreamableSession(id),
-		tools:        f.tools,
-		routingTable: f.routingTable,
-		clientRef:    f.clientRef,
-	}, nil
+	return f.newSession(id), nil
 }
 
 func (f *backendAwareTestFactory) RestoreSession(
 	_ context.Context, id string, _ map[string]string, _ []*vmcp.Backend,
 ) (vmcpsession.MultiSession, error) {
-	return &backendAwareTestSession{
+	return f.newSession(id), nil
+}
+
+// newSession builds a session carrying the unauthenticated identity-binding sentinel.
+// The Serve-path enforceSessionBinding reads it via GetMetadataValue before each
+// core.CallTool; this test has no auth middleware, so the caller is anonymous and the
+// sentinel admits it.
+func (f *backendAwareTestFactory) newSession(id string) *backendAwareTestSession {
+	sess := &backendAwareTestSession{
 		Session:      transportsession.NewStreamableSession(id),
 		tools:        f.tools,
 		routingTable: f.routingTable,
-		clientRef:    f.clientRef,
-	}, nil
+	}
+	sess.SetMetadata(vmcpsession.MetadataKeyIdentityBinding, "unauthenticated")
+	return sess
 }
 
 // TestIntegration_TelemetryMiddleware tests that the vMCP server records telemetry
@@ -215,19 +191,9 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 	}
 
 	// Create discovery manager (follows same pattern as TestIntegration_AuditLogging)
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	mockDiscoveryMgr.EXPECT().
-		Discover(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
-			resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
-			return agg.AggregateCapabilities(ctx, backends)
-		}).
-		AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	// Create router
-	rt := router.NewDefaultRouter()
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 	// Build the tools and routing table. The aggregator prefixes tool names with
 	// "{workload}_", so "search" becomes "search-svc_search".
@@ -253,7 +219,14 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 	// client with monitorBackends() which instruments outgoing backend calls.
 	// Use backendAwareTestFactory so that CallTool delegates to the monitorBackends-wrapped
 	// backendClient, ensuring toolhive_vmcp_backend_requests metrics are recorded.
-	telemetryFactory, clientRef := newBackendAwareTestFactory(telemetryTools, telemetryRoutingTable)
+	// The core sources the advertised set by aggregating over mockBackendClient (prefix
+	// resolver → "search-svc_search"). core.New wraps this same client with monitorBackends
+	// for telemetry, and core.CallTool routes tool calls through that wrapped client — so
+	// the backend instrumentation (toolhive_vmcp_backend_requests) is exercised without the
+	// session factory needing to hold the wrapped client.
+	telemetryAgg := aggregator.NewDefaultAggregator(
+		mockBackendClient, aggregator.NewPrefixConflictResolver("{workload}_"), nil, nil)
+	telemetryFactory := newBackendAwareTestFactory(telemetryTools, telemetryRoutingTable)
 	srv, err := New(ctx, &Config{
 		Name:              "telemetry-vmcp",
 		Version:           "1.0.0",
@@ -261,11 +234,9 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 		Port:              0, // Random available port
 		TelemetryProvider: telemetryProvider,
 		SessionFactory:    telemetryFactory,
-	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
+		Aggregator:        telemetryAgg,
+	}, rt, mockBackendClient, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
-	// Wire the monitorBackends-wrapped client into the session factory so that
-	// tool calls go through the telemetry instrumentation layer.
-	clientRef.set(srv.backendClient)
 
 	// Start server
 	serverCtx, cancelServer := context.WithCancel(ctx)
@@ -388,7 +359,7 @@ func TestIntegration_TelemetryMiddleware(t *testing.T) {
 		assert.Contains(t, metrics, "toolhive_mcp_request_duration",
 			"Should record request duration histogram")
 
-		// --- Backend metrics (from monitorBackends in vmcp/server/telemetry.go) ---
+		// --- Backend metrics (from backendtelemetry.MonitorBackends) ---
 
 		// Backend request counter — recorded when the tool call was routed to the backend
 		assert.Contains(t, metrics, "toolhive_vmcp_backend_requests",

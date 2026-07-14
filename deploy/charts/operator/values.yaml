@@ -8,6 +8,12 @@ operator:
   features:
     # -- Enable experimental features
     experimental: false
+    # -- Enable the StorageVersionMigrator controller, which auto-cleans
+    # status.storedVersions on opted-in toolhive.stacklok.dev CRDs so a
+    # future release can drop deprecated versions (e.g. v1alpha1) without
+    # orphaning etcd objects in the cluster. Sets
+    # TOOLHIVE_ENABLE_STORAGE_VERSION_MIGRATOR in the operator deployment.
+    storageVersionMigrator: false
   # -- Number of replicas for the operator deployment
   replicaCount: 1
 
@@ -29,16 +35,39 @@ operator:
   # The two shapes are equivalent; the object form matches `operator.imagePullSecrets`
   # above for convenience.
   defaultImagePullSecrets: []
+
+  # -- Default Redis/Valkey address used by the operator when a workload CR has
+  # no sessionStorage configured. The operator injects this as
+  # TOOLHIVE_DEFAULT_REDIS_ADDR on pods it creates. When empty, no global Redis
+  # default is active. Override per-CR with spec.sessionStorage.
+  #
+  # global.redis.host (from a parent umbrella chart) is used as fallback when
+  # addr is empty here. Both express the same addr concept; addr takes precedence.
+  #
+  # For the password, reference a pre-existing Kubernetes Secret:
+  #   defaultRedis:
+  #     addr: "myredis.svc:6379"
+  #     existingSecret: "redis-credentials"
+  #     existingSecretKey: "password"
+  defaultRedis:
+    # -- addr is the Redis/Valkey address (host:port).
+    addr: ""
+    # -- existingSecret is the name of a Secret containing the Redis password.
+    existingSecret: ""
+    # -- existingSecretKey is the key within existingSecret that holds the password.
+    # Empty means use global.redis.existingSecretKey or fall back to "redis-password".
+    existingSecretKey: ""
+
   # -- Container image for the operator
-  image: ghcr.io/stacklok/toolhive/operator:v0.28.1
+  image: ghcr.io/stacklok/toolhive/operator:v0.36.0
   # -- Image pull policy for the operator container
   imagePullPolicy: IfNotPresent
 
   # -- Image to use for Toolhive runners
-  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.28.1
+  toolhiveRunnerImage: ghcr.io/stacklok/toolhive/proxyrunner:v0.36.0
 
   # -- Image to use for Virtual MCP Server (vMCP) deployments
-  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.28.1
+  vmcpImage: ghcr.io/stacklok/toolhive/vmcp:v0.36.0
 
   # -- Host for the proxy deployed by the operator
   proxyHost: 0.0.0.0

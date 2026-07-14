@@ -89,13 +89,16 @@ func DetectAuthenticationFromServer(ctx context.Context, targetURI string, confi
 	detectCtx, cancel := context.WithTimeout(ctx, config.Timeout)
 	defer cancel()
 
-	// Make a test request to the target server to see if it returns WWW-Authenticate
+	// Make a test request to the target server to see if it returns WWW-Authenticate.
+	// The remote MCP server is untrusted, so refuse cross-host / scheme-downgrade
+	// redirects to prevent it driving the host into an SSRF (CWE-918).
 	client := &http.Client{
 		Timeout: config.Timeout,
 		Transport: &http.Transport{
 			TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
 			ResponseHeaderTimeout: config.ResponseHeaderTimeout,
 		},
+		CheckRedirect: networking.SameHostRedirectPolicy(),
 	}
 
 	// First try a GET request
@@ -162,7 +165,9 @@ func detectAuthWithRequest(
 		}
 	}
 
-	resp, err := client.Do(req) // #nosec G704 -- targetURI is the MCP server endpoint URL from internal config
+	// #nosec G704 -- targetURI is server-controlled; the client refuses cross-host and
+	// HTTPS->HTTP redirects (networking.SameHostRedirectPolicy) to contain SSRF.
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make %s request: %w", method, err)
 	}
@@ -216,7 +221,9 @@ func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri strin
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req) // #nosec G704 -- uri is built from the MCP server endpoint for auth discovery
+	// #nosec G704 -- uri is server-controlled; the client refuses cross-host and
+	// HTTPS->HTTP redirects (networking.SameHostRedirectPolicy) to contain SSRF.
+	resp, err := client.Do(req)
 	if err != nil {
 		//nolint:gosec // G706: uri is from server endpoint discovery
 		slog.Debug("Failed to check well-known URI", "uri", uri, "error", err)
@@ -673,30 +680,22 @@ func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuth
 // to register with token_endpoint_auth_method=none and to refuse when
 // S256 PKCE is not advertised (rather than silently downgrading).
 //
-// Redundant discovery fetch — acknowledged trade-off. The CLI's
-// pre-discovery layer (pkg/auth/remote/handler.go via
-// ValidateAndDiscoverAuthServer) populates OAuthFlowConfig.AuthorizeURL /
-// TokenURL / RegistrationEndpoint but does NOT carry the upstream's
-// code_challenge_methods_supported through to here — that field is the
-// S256 PKCE gate's only input, and AuthServerInfo does not model it. So
-// when the CLI already has endpoints in hand, the resolver MUST still
-// re-fetch the upstream's discovery document to evaluate the gate; the
-// alternative ("skip the gate on the pre-discovered path") would either
-// regress the inherited-S256 acceptance criterion or silently downgrade
-// to a non-public-PKCE registration. Threading
-// code_challenge_methods_supported through AuthServerInfo (and updating
-// every caller of ValidateAndDiscoverAuthServer) would close this loop
-// and is the natural follow-up; it is out of scope for sub-issue 4b.
+// Discovery fetch — multi-URL fallback. oauthproto.FetchAuthorizationServerMetadata
+// tries the three well-known URL forms defined by RFC 8414 §3.1 and OIDC
+// Discovery in priority order: RFC 8414 path-insertion
+// (scheme://host/.well-known/oauth-authorization-server/{path}), OIDC
+// issuer-suffix ({issuer}/.well-known/openid-configuration), and bare
+// RFC 8414 (scheme://host/.well-known/oauth-authorization-server). Using
+// this function rather than constructing a single OIDC URL ensures that
+// authorization servers with non-root issuer paths whose metadata lives
+// at the path-insertion URL are correctly reached (fixes #5356).
+// The fetched code_challenge_methods_supported is forwarded to the
+// resolver via dcr.Request so the S256 PKCE gate fires without a
+// second discovery round-trip inside the resolver.
 //
-// Threat-model correctness in the multi-tenant case: a few upstreams
-// (multi-tenant IdPs) serve their OIDC discovery document at a path
-// the issuer-derived well-known URL would not reach. For those
-// providers the remote handler's pre-discovery already accepted the
-// non-well-known URL via DiscoverActualIssuer; the resolver's second
-// fetch against {issuer}/.well-known/openid-configuration may then 404.
-// The CLI surfaces a clean resolver error in that case rather than
-// silently registering. This is a known limitation of the option (b)
-// migration and is documented for follow-up.
+// Threading code_challenge_methods_supported through AuthServerInfo (and
+// updating every caller of ValidateAndDiscoverAuthServer) would eliminate
+// this fetch on the pre-discovered path and is a natural follow-up.
 func resolveDCRCredentials(
 	ctx context.Context,
 	issuer string,
@@ -723,22 +722,37 @@ func resolveDCRCredentials(
 		PublicClient:          true,
 	}
 
-	// Route the resolver through discovery (not direct registration
-	// endpoint) so the upstream's code_challenge_methods_supported is
-	// available to the S256 PKCE gate. See the function-level doc for
-	// why a second fetch is required even when endpoints are already in
-	// hand. The discovered metadata.RegistrationEndpoint will round-trip
-	// through the fetch — explicit AuthorizationEndpoint / TokenEndpoint
-	// overrides still win for endpoint selection.
-	//
-	// discoveredDoc.Issuer is non-empty for every reachable caller (both
-	// branches of getDiscoveryDocument set it), so the conditional is
-	// defence-in-depth against a future refactor that produces an empty-
-	// issuer doc; on that branch DiscoveryURL stays empty and the
-	// resolver would have nothing to fetch, surfacing a clean validation
-	// error rather than dereferencing an empty URL.
+	// Fetch AS metadata using the multi-URL fallback so non-root issuers
+	// are correctly reached (see function-level doc). discoveredDoc.Issuer
+	// is non-empty for every reachable caller; the else branch is
+	// defence-in-depth for a future refactor that produces an empty-issuer
+	// doc and preserves the pre-existing RegistrationEndpoint-direct path.
 	if discoveredDoc.Issuer != "" {
-		req.DiscoveryURL = strings.TrimRight(discoveredDoc.Issuer, "/") + "/.well-known/openid-configuration"
+		fullMeta, metaErr := oauthproto.FetchAuthorizationServerMetadata(ctx, discoveredDoc.Issuer, nil)
+		if metaErr != nil && !errors.Is(metaErr, oauthproto.ErrRegistrationEndpointMissing) {
+			return nil, fmt.Errorf("dynamic client registration failed: discover authorization server metadata: %w", metaErr)
+		}
+		if fullMeta == nil {
+			// Contract violation guard — FetchAuthorizationServerMetadata
+			// guarantees non-nil metadata alongside ErrRegistrationEndpointMissing.
+			return nil, fmt.Errorf("dynamic client registration failed: authorization server metadata unexpectedly nil")
+		}
+		regEndpoint := fullMeta.RegistrationEndpoint
+		if regEndpoint == "" {
+			// Synthesise per nanobot/Hydra convention, mirroring the resolver's
+			// own synthesiseRegistrationEndpoint for the DiscoveryURL branch.
+			u, parseErr := url.Parse(discoveredDoc.Issuer)
+			if parseErr != nil {
+				return nil, fmt.Errorf("dynamic client registration failed: parse issuer for endpoint synthesis: %w", parseErr)
+			}
+			regEndpoint = (&url.URL{
+				Scheme: u.Scheme,
+				Host:   u.Host,
+				Path:   strings.TrimRight(u.Path, "/") + "/register",
+			}).String()
+		}
+		req.RegistrationEndpoint = regEndpoint
+		req.CodeChallengeMethodsSupported = fullMeta.CodeChallengeMethodsSupported
 	} else {
 		req.RegistrationEndpoint = discoveredDoc.RegistrationEndpoint
 	}
@@ -888,8 +902,17 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 	}, nil
 }
 
-// FetchResourceMetadata as specified in RFC 9728
-func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC9728AuthInfo, error) {
+// FetchResourceMetadata fetches RFC 9728 protected-resource metadata from a
+// server-supplied URL.
+//
+// The metadataURL originates from untrusted remote-server discovery (the
+// WWW-Authenticate resource_metadata parameter), so the client refuses
+// cross-host and HTTPS->HTTP redirects (CWE-918). When blockPrivateIPs is true
+// it additionally refuses to dial private/loopback/link-local addresses on
+// every hop. Callers set blockPrivateIPs when the operator-configured target is
+// public; when the operator deliberately targets an internal network it is
+// false so legitimately-internal auth metadata stays reachable.
+func FetchResourceMetadata(ctx context.Context, metadataURL string, blockPrivateIPs bool) (*auth.RFC9728AuthInfo, error) {
 	if metadataURL == "" {
 		return nil, fmt.Errorf("metadata URL is empty")
 	}
@@ -905,13 +928,21 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 		return nil, fmt.Errorf("metadata URL must use HTTPS: %s", metadataURL)
 	}
 
-	// Create HTTP client with timeout
+	// The HTTPS check above runs once on the initial URL only, so refuse
+	// cross-host and scheme-downgrade redirects to stop a 30x reaching an
+	// internal address; optionally block private dials on every hop.
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+	}
+	if blockPrivateIPs {
+		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
+		transport.DisableKeepAlives = true
+	}
 	client := &http.Client{
-		Timeout: DefaultHTTPTimeout,
-		Transport: &http.Transport{
-			TLSHandshakeTimeout:   5 * time.Second,
-			ResponseHeaderTimeout: 5 * time.Second,
-		},
+		Timeout:       DefaultHTTPTimeout,
+		Transport:     transport,
+		CheckRedirect: networking.SameHostRedirectPolicy(),
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metadataURL, nil)
@@ -921,7 +952,9 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req) // #nosec G704 -- URL is the OIDC well-known metadata endpoint
+	// #nosec G704 -- metadataURL is server-controlled; the client refuses cross-host and
+	// HTTPS->HTTP redirects (networking.SameHostRedirectPolicy) to contain SSRF.
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
 	}
@@ -961,10 +994,15 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 // and discover its actual issuer by fetching its metadata.
 // This handles the case where the URL used to fetch metadata differs from the actual issuer
 // (e.g., Stripe's case where https://mcp.stripe.com hosts metadata for https://marketplace.stripe.com)
-func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string) (*AuthServerInfo, error) {
+//
+// When blockPrivateIPs is true the underlying discovery refuses to dial
+// private/loopback/link-local addresses (SSRF guard for server-supplied issuer
+// URLs); callers pass false when the issuer is operator-configured or the
+// configured target is itself internal.
+func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string, blockPrivateIPs bool) (*AuthServerInfo, error) {
 	// Use DiscoverActualIssuer which doesn't validate issuer match
 	// This allows us to discover the real issuer even when it differs from the metadata URL
-	doc, err := oauth.DiscoverActualIssuer(ctx, potentialIssuer)
+	doc, err := oauth.DiscoverActualIssuer(ctx, potentialIssuer, blockPrivateIPs)
 	if err == nil && doc != nil && doc.Issuer != "" {
 		// Found valid authorization server metadata, return the actual issuer and endpoints
 		if doc.Issuer != potentialIssuer {

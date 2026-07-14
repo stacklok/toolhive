@@ -58,7 +58,22 @@ const (
 	// to a version that reads this annotation; operator-only upgrades leave the race window
 	// in place until proxyrunner is also rolled. Exported because it forms a wire contract
 	// that external readers (operator, diagnostic tooling) may consume.
+	//
+	// The operator also stamps this same annotation on the proxyrunner Deployment's
+	// pod template and projects it into the proxyrunner container as the env var
+	// EnvVarMCPServerGeneration via the downward API. That projection freezes the
+	// generation per pod at creation time, so two coexisting proxyrunner pods cannot
+	// converge on the same generation by re-reading the live-mounted RunConfig
+	// ConfigMap (issue #5360).
 	RunConfigMCPServerGenerationAnnotation = "toolhive.stacklok.dev/mcpserver-generation"
+
+	// EnvVarMCPServerGeneration is the env var name through which the proxyrunner
+	// container receives its frozen-per-pod MCPServer generation. Sourced via the
+	// downward API from the pod-template annotation RunConfigMCPServerGenerationAnnotation,
+	// it overrides the value read from /etc/runconfig/runconfig.json (which would
+	// otherwise live-update across all proxyrunner pods during a helm upgrade and
+	// defeat the apply-gate). See issue #5360.
+	EnvVarMCPServerGeneration = "THV_MCPSERVER_GENERATION"
 )
 
 // RuntimeName is the name identifier for the Kubernetes runtime
@@ -106,11 +121,6 @@ func NewClient(_ context.Context) (*Client, error) {
 	}
 
 	return NewClientWithConfig(clientset, config), nil
-}
-
-// IsAvailable checks if kubernetes is available
-func IsAvailable() bool {
-	return k8s.IsAvailable()
 }
 
 // NewClientWithConfig creates a new container client with a provided config

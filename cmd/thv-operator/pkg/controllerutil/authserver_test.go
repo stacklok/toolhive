@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	authrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
@@ -638,9 +639,7 @@ func TestGenerateAuthServerEnvVars(t *testing.T) {
 func TestGenerateAuthServerConfigByName(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	tests := []struct {
 		name            string
@@ -1123,6 +1122,40 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "OIDC upstream propagates SubjectClaim",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name: "entra",
+						Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+							IssuerURL:    "https://login.microsoftonline.com/tenant/v2.0",
+							ClientID:     "entra-client-id",
+							RedirectURI:  "https://auth.example.com/callback",
+							Scopes:       []string{"openid", "profile"},
+							SubjectClaim: "oid",
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 1)
+				upstream := config.Upstreams[0]
+				require.NotNil(t, upstream.OIDCConfig)
+				assert.Equal(t, "oid", upstream.OIDCConfig.SubjectClaim)
+			},
+		},
+		{
 			name: "OAuth2 upstream propagates AdditionalAuthorizationParams",
 			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
 				Issuer: "https://auth.example.com",
@@ -1538,6 +1571,79 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 					"IdentityFromToken must be nil when not configured")
 			},
 		},
+		{
+			name: "DisableUpstreamTokenInjection is wired through",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				DisableUpstreamTokenInjection: true,
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.True(t, config.DisableUpstreamTokenInjection,
+					"DisableUpstreamTokenInjection should be wired from CRD to RunConfig")
+			},
+		},
+		{
+			name: "DisableUpstreamTokenInjection defaults to false",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.False(t, config.DisableUpstreamTokenInjection,
+					"DisableUpstreamTokenInjection should default to false")
+			},
+		},
+		{
+			name: "insecureAllowHTTP true is propagated to RunConfig",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:            "http://vmcp-test.default.svc.cluster.local:4483",
+				InsecureAllowHTTP: true,
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.True(t, config.InsecureAllowHTTP,
+					"InsecureAllowHTTP must propagate from CRD field to RunConfig")
+			},
+		},
+		{
+			name: "insecureAllowHTTP false is propagated to RunConfig",
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer:            "https://authserver.example.com",
+				InsecureAllowHTTP: false,
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				assert.False(t, config.InsecureAllowHTTP,
+					"InsecureAllowHTTP false must propagate from CRD field to RunConfig")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1614,9 +1720,7 @@ func TestBuildAuthServerRunConfig_InvalidDCR(t *testing.T) {
 func TestAddEmbeddedAuthServerConfigOptions_Validation(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	err := mcpv1beta1.AddToScheme(scheme)
-	require.NoError(t, err)
+	scheme := testutil.NewScheme(t)
 
 	// Helper function to create a fresh external auth config for each test
 	// This avoids data races when running subtests in parallel
@@ -2306,9 +2410,7 @@ func TestBuildAuthServerRunConfig_WithRedisStorage(t *testing.T) {
 func TestAddAuthServerRefOptions(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	newValidEmbeddedAuthConfig := func() *mcpv1beta1.MCPExternalAuthConfig {
 		return &mcpv1beta1.MCPExternalAuthConfig{
@@ -2482,9 +2584,7 @@ func TestAddAuthServerRefOptions(t *testing.T) {
 func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1beta1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	newEmbeddedAuthConfig := func() *mcpv1beta1.MCPExternalAuthConfig {
 		return &mcpv1beta1.MCPExternalAuthConfig{
@@ -2641,6 +2741,135 @@ func TestValidateAndAddAuthServerRefOptions(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 				assert.Len(t, options, tt.wantOptions)
+			}
+		})
+	}
+}
+
+// TestBuildAuthServerRunConfig_CIMD verifies that BuildAuthServerRunConfig
+// correctly converts the CRD EmbeddedAuthServerCIMDConfig into
+// authserver.CIMDRunConfig. The four cases cover the nil path (CIMD off
+// by default), explicit values (fields are mapped and TTL is parsed), zero
+// optional fields (authserver applies its own defaults at startup), and an
+// invalid TTL string (returns a parse error).
+func TestBuildAuthServerRunConfig_CIMD(t *testing.T) {
+	t.Parallel()
+
+	// baseAuthConfig returns a minimal EmbeddedAuthServerConfig that is valid
+	// enough for BuildAuthServerRunConfig to proceed past signing-key and
+	// upstream validation without requiring real secrets.
+	baseAuthConfig := func(cimd *mcpv1beta1.EmbeddedAuthServerCIMDConfig) *mcpv1beta1.EmbeddedAuthServerConfig {
+		return &mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: "https://auth.example.com",
+			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+				{Name: "signing-key", Key: "private.pem"},
+			},
+			HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+				{Name: "hmac-secret", Key: "hmac"},
+			},
+			CIMD: cimd,
+		}
+	}
+
+	defaultAudiences := []string{"https://mcp.example.com"}
+	defaultScopes := []string{"openid", "offline_access"}
+
+	tests := []struct {
+		name        string
+		cimd        *mcpv1beta1.EmbeddedAuthServerCIMDConfig
+		wantCIMD    bool
+		wantErr     bool
+		errContains string
+		checkFunc   func(t *testing.T, got *authserver.CIMDRunConfig)
+	}{
+		{
+			name:     "nil CIMD leaves config.CIMD nil",
+			cimd:     nil,
+			wantCIMD: false,
+		},
+		{
+			name: "CIMD disabled leaves config.CIMD nil",
+			cimd: &mcpv1beta1.EmbeddedAuthServerCIMDConfig{
+				Enabled:          false,
+				CacheMaxSize:     100,
+				CacheFallbackTTL: "10m",
+			},
+			wantCIMD: false,
+		},
+		{
+			name: "CIMD enabled with explicit values maps all fields",
+			cimd: &mcpv1beta1.EmbeddedAuthServerCIMDConfig{
+				Enabled:          true,
+				CacheMaxSize:     512,
+				CacheFallbackTTL: "10m",
+			},
+			wantCIMD: true,
+			checkFunc: func(t *testing.T, got *authserver.CIMDRunConfig) {
+				t.Helper()
+				assert.True(t, got.Enabled)
+				assert.Equal(t, 512, got.CacheMaxSize)
+				assert.Equal(t, "10m", got.CacheFallbackTTL)
+			},
+		},
+		{
+			name: "CIMD enabled with zero optional fields leaves defaults to authserver",
+			cimd: &mcpv1beta1.EmbeddedAuthServerCIMDConfig{
+				Enabled: true,
+			},
+			wantCIMD: true,
+			checkFunc: func(t *testing.T, got *authserver.CIMDRunConfig) {
+				t.Helper()
+				assert.True(t, got.Enabled)
+				assert.Zero(t, got.CacheMaxSize, "zero means authserver applies its own default at startup")
+				assert.Zero(t, got.CacheFallbackTTL, "zero means authserver applies its own default at startup")
+			},
+		},
+		{
+			name: "invalid CacheFallbackTTL passes through to runner for validation",
+			cimd: &mcpv1beta1.EmbeddedAuthServerCIMDConfig{
+				Enabled:          true,
+				CacheFallbackTTL: "not-a-duration",
+			},
+			wantCIMD: true,
+			checkFunc: func(t *testing.T, got *authserver.CIMDRunConfig) {
+				t.Helper()
+				// The converter passes the string through; parse errors are caught
+				// by CIMDRunConfig.Validate() or resolveCIMDConfig in the runner.
+				assert.Equal(t, "not-a-duration", got.CacheFallbackTTL)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg, err := BuildAuthServerRunConfig(
+				"default", "test-server",
+				baseAuthConfig(tt.cimd),
+				defaultAudiences, defaultScopes,
+				"https://mcp.example.com",
+			)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				if tt.errContains != "" {
+					assert.Contains(t, err.Error(), tt.errContains)
+				}
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, cfg)
+
+			if !tt.wantCIMD {
+				assert.Nil(t, cfg.CIMD, "expected config.CIMD to be nil")
+				return
+			}
+
+			require.NotNil(t, cfg.CIMD, "expected config.CIMD to be set")
+			if tt.checkFunc != nil {
+				tt.checkFunc(t, cfg.CIMD)
 			}
 		})
 	}

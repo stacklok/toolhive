@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strconv"
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
 	"github.com/stacklok/toolhive/pkg/container"
+	"github.com/stacklok/toolhive/pkg/container/kubernetes"
 	"github.com/stacklok/toolhive/pkg/container/runtime"
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/workloads/statuses"
@@ -151,12 +153,49 @@ func tryLoadConfigFromFile() (*runner.RunConfig, error) {
 			return nil, fmt.Errorf("found config file at %s but failed to parse JSON: %w", path, err)
 		}
 
+		applyMCPServerGenerationOverride(runConfig)
+
 		slog.Info(fmt.Sprintf("Successfully loaded configuration from %s", path))
 		return runConfig, nil
 	}
 
 	// No configuration file found
 	return nil, fmt.Errorf("configuration file required but no configuration file was found")
+}
+
+// applyMCPServerGenerationOverride replaces runConfig.MCPServerGeneration with
+// the value of the EnvVarMCPServerGeneration environment variable when set.
+// The operator projects this env var via the downward API from the pod's
+// mcpserver-generation annotation, freezing the value per pod at creation
+// time. Without this override the value would come from /etc/runconfig
+// (a live-updating ConfigMap volume), letting two coexisting proxyrunner
+// pods converge on the same generation during a rolling update and defeat
+// the apply-gate at shouldSkipStatefulSetApply. See issue #5360.
+func applyMCPServerGenerationOverride(runConfig *runner.RunConfig) {
+	raw := os.Getenv(kubernetes.EnvVarMCPServerGeneration)
+	if raw == "" {
+		return
+	}
+	gen, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		slog.Warn("ignoring unparsable env var; falling back to runconfig value",
+			"env", kubernetes.EnvVarMCPServerGeneration, "value", raw, "err", err)
+		return
+	}
+	// metadata.generation is a monotonic non-negative integer per the K8s API
+	// convention. A negative value cannot have come from a legitimate downward
+	// API projection of the pod annotation and would silently disable the
+	// apply-gate stamp at pkg/container/kubernetes/client.go:479-482.
+	if gen < 0 {
+		slog.Warn("ignoring negative env var; falling back to runconfig value",
+			"env", kubernetes.EnvVarMCPServerGeneration, "value", raw)
+		return
+	}
+	slog.Debug("applied MCPServer generation override from env var",
+		"env", kubernetes.EnvVarMCPServerGeneration,
+		"file_value", runConfig.MCPServerGeneration,
+		"env_value", gen)
+	runConfig.MCPServerGeneration = gen
 }
 
 // runWithFileBasedConfig handles execution when a runconfig.json file is found.

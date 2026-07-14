@@ -161,6 +161,8 @@ const (
 	// This occurs when:
 	// - Health checks succeed but response times exceed the degraded threshold (slow but working)
 	// - Backend just recovered from failures and is in a stabilizing state
+	// - Background OAuth token refresh is failing transiently while the
+	//   workload monitor retries (auth_retrying workload status)
 	BackendDegraded BackendHealthStatus = "degraded"
 
 	// BackendUnhealthy indicates the backend is not responding to health checks.
@@ -239,6 +241,7 @@ const (
 
 // DiscoveredBackend represents a backend server discovered by vMCP runtime.
 // This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
+// +gendoc
 type DiscoveredBackend struct {
 	// Name is the name of the backend MCPServer
 	Name string `json:"name"`
@@ -608,6 +611,7 @@ type RoutingTable struct {
 
 // ConflictResolutionStrategy defines how to handle capability name conflicts.
 // Placed in vmcp root package to be shared by config and aggregator packages.
+// +gendoc
 type ConflictResolutionStrategy string
 
 const (

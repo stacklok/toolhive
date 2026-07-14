@@ -54,7 +54,7 @@ type MCPRemoteProxyReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptelemetryconfigs,verbs=get;list;watch
-// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpoidcconfigs/status,verbs=get;update;patch
+// +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpauthzconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="",resources=services,verbs=create;delete;get;list;patch;update;watch
 // +kubebuilder:rbac:groups="rbac.authorization.k8s.io",resources=roles,verbs=create;delete;get;list;patch;update;watch
@@ -124,8 +124,14 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	// Validate the GroupRef if specified
 	r.validateGroupRef(ctx, proxy)
 
+	// Validate the OIDC CA bundle reference if specified
+	r.validateCABundleRef(ctx, proxy)
+
 	// Surface advisory condition when primaryUpstreamProvider is set but ignored
 	r.validateAuthzPrimaryUpstreamProviderIgnored(proxy)
+
+	// Surface advisory condition when replicas > 1 without Redis session storage
+	r.validateSessionStorageForReplicas(proxy)
 
 	// Handle MCPToolConfig
 	if err := r.handleToolConfig(ctx, proxy); err != nil {
@@ -177,6 +183,16 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 		return err
 	}
 
+	// Handle MCPAuthzConfig
+	if err := r.handleAuthzConfig(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "Failed to handle MCPAuthzConfig")
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after MCPAuthzConfig error")
+		}
+		return err
+	}
+
 	return nil
 }
 
@@ -220,7 +236,11 @@ func (r *MCPRemoteProxyReconciler) ensureAllResources(ctx context.Context, proxy
 	return r.ensureServiceURL(ctx, proxy)
 }
 
-// ensureAuthzConfigMapForProxy ensures the authorization ConfigMap for inline configuration
+// ensureAuthzConfigMapForProxy ensures the authorization ConfigMap exists for inline
+// configuration (spec.authzConfig). A referenced MCPAuthzConfig
+// (spec.authzConfigRef) is not materialized into a ConfigMap: it is enforced by
+// embedding the resolved authz config directly in the RunConfig (see
+// AddAuthzConfigRefOptions), which is the path the proxy actually reads.
 func (r *MCPRemoteProxyReconciler) ensureAuthzConfigMapForProxy(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	authzLabels := labelsForMCPRemoteProxy(proxy.Name)
 	authzLabels[authzLabelKey] = authzLabelValueInline
@@ -301,10 +321,15 @@ func (r *MCPRemoteProxyReconciler) ensureDeployment(
 		if newDeployment == nil {
 			return ctrl.Result{}, fmt.Errorf("failed to create updated Deployment object")
 		}
-		// Update the deployment spec but preserve replica count for HPA compatibility
+		// Update template and metadata. Also sync Spec.Replicas when spec.replicas
+		// is non-nil (operator authoritative); preserve it when nil so an HPA or
+		// other external controller can manage scaling.
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
 		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
+		if newDeployment.Spec.Replicas != nil {
+			deployment.Spec.Replicas = newDeployment.Spec.Replicas
+		}
 
 		ctxLogger.Info("Updating Deployment", "Deployment.Namespace", deployment.Namespace, "Deployment.Name", deployment.Name)
 		if err := r.Update(ctx, deployment); err != nil {
@@ -351,8 +376,11 @@ func (r *MCPRemoteProxyReconciler) ensureService(
 		}
 		service.Spec.Ports = newService.Spec.Ports
 		service.Spec.SessionAffinity = newService.Spec.SessionAffinity
-		service.Labels = newService.Labels
-		service.Annotations = newService.Annotations
+		// Merge (not replace) Labels/Annotations so keys written by external controllers
+		// (e.g. GKE NEG's cloud.google.com/* annotations) are preserved while the
+		// operator-owned values are applied.
+		service.Labels = ctrlutil.MergeLabels(newService.Labels, service.Labels)
+		service.Annotations = ctrlutil.MergeAnnotations(newService.Annotations, service.Annotations)
 
 		ctxLogger.Info("Updating Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
 		if err := r.Update(ctx, service); err != nil {
@@ -460,42 +488,34 @@ func (*MCPRemoteProxyReconciler) validateAuthzPolicySyntax(
 }
 
 // validateK8sRefs validates that referenced ConfigMaps and Secrets exist.
+// Authz ConfigMap references are validated through the shared loader so a malformed
+// payload surfaces as AuthzConfigMapInvalid here instead of crashing the runner pod.
 func (r *MCPRemoteProxyReconciler) validateK8sRefs(
 	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
 ) error {
-	// Check authz ConfigMap reference
+	// Check authz ConfigMap reference.
 	if proxy.Spec.AuthzConfig != nil &&
 		proxy.Spec.AuthzConfig.Type == mcpv1beta1.AuthzConfigTypeConfigMap &&
 		proxy.Spec.AuthzConfig.ConfigMap != nil {
-		cm := &corev1.ConfigMap{}
 		cmName := proxy.Spec.AuthzConfig.ConfigMap.Name
-		err := r.Get(ctx, types.NamespacedName{
-			Name: cmName, Namespace: proxy.Namespace,
-		}, cm)
-		if err != nil {
-			if errors.IsNotFound(err) {
-				msg := fmt.Sprintf(
-					"authorization ConfigMap %q not found in namespace %q",
-					cmName, proxy.Namespace,
-				)
-				r.recordValidationEvent(
-					proxy,
-					mcpv1beta1.ConditionReasonAuthzConfigMapNotFound,
-					msg,
-				)
-				setConfigurationInvalidCondition(
-					proxy,
-					mcpv1beta1.ConditionReasonAuthzConfigMapNotFound,
-					msg,
-				)
-				return stderrors.New(msg)
+		cfg, err := ctrlutil.LoadAuthzConfigFromConfigMap(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfig)
+		if err == nil {
+			if _, cerr := ctrlutil.ExtractCedarAuthzOptions(cfg); cerr != nil {
+				err = fmt.Errorf("authz ConfigMap %q is not a Cedar config: %w", cmName, cerr)
 			}
-			ctxLogger := log.FromContext(ctx)
-			ctxLogger.Error(err, "Failed to fetch authorization ConfigMap", "name", cmName, "namespace", proxy.Namespace)
-			genericMsg := fmt.Sprintf("failed to fetch authorization ConfigMap %q", cmName)
-			r.recordValidationEvent(proxy, mcpv1beta1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
-			setConfigurationInvalidCondition(proxy, mcpv1beta1.ConditionReasonAuthzConfigMapNotFound, genericMsg)
-			return stderrors.New(genericMsg)
+		}
+		if err != nil {
+			reason := mcpv1beta1.ConditionReasonAuthzConfigMapInvalid
+			msg := fmt.Sprintf("authorization ConfigMap %q is invalid: %v", cmName, err)
+			if errors.IsNotFound(err) {
+				reason = mcpv1beta1.ConditionReasonAuthzConfigMapNotFound
+				msg = fmt.Sprintf("authorization ConfigMap %q not found in namespace %q", cmName, proxy.Namespace)
+			} else {
+				log.FromContext(ctx).Error(err, "Authz ConfigMap validation failed", "name", cmName, "namespace", proxy.Namespace)
+			}
+			r.recordValidationEvent(proxy, reason, msg)
+			setConfigurationInvalidCondition(proxy, reason, msg)
+			return stderrors.New(msg)
 		}
 	}
 
@@ -735,6 +755,14 @@ func (r *MCPRemoteProxyReconciler) handleExternalAuthConfig(ctx context.Context,
 		return fmt.Errorf("failed to fetch MCPExternalAuthConfig: %w", err)
 	}
 
+	// Mirror the referenced MCPExternalAuthConfig's Valid=False condition onto
+	// the MCPRemoteProxy so the failure is visible on the consumer CR (e.g.
+	// obo-typed configs surface Valid=False/EnterpriseRequired here without the
+	// user having to inspect the referenced MCPExternalAuthConfig).
+	if mirrored, err := mirrorInvalidOnRemoteProxy(proxy, externalAuthConfig); mirrored {
+		return err
+	}
+
 	// MCPRemoteProxy supports only single-upstream embedded auth server configs.
 	// Multi-upstream requires VirtualMCPServer.
 	if embeddedCfg := externalAuthConfig.Spec.EmbeddedAuthServer; embeddedCfg != nil && len(embeddedCfg.UpstreamProviders) > 1 {
@@ -912,11 +940,13 @@ func (r *MCPRemoteProxyReconciler) handleOIDCConfig(ctx context.Context, proxy *
 		return err
 	}
 
-	// Update ReferencingWorkloads on the MCPOIDCConfig status
-	if err := r.updateOIDCConfigReferencingWorkloads(ctx, oidcConfig, proxy.Name); err != nil {
-		ctxLogger.Error(err, "Failed to update MCPOIDCConfig ReferencingWorkloads")
-		// Non-fatal: continue with reconciliation
-	}
+	// ReferencingWorkloads on the MCPOIDCConfig is maintained solely by the
+	// MCPOIDCConfig controller, which watches MCPServer/VirtualMCPServer/
+	// MCPRemoteProxy and recomputes the full list (additions and removals). The
+	// MCPRemoteProxy controller must not write the config's status: a full
+	// r.Status().Update here would clobber conditions the config controller
+	// owns, and the previous append-only write never removed stale entries.
+	// See #5511.
 
 	// Detect whether the condition is transitioning to True (e.g. recovering from
 	// a transient error). Without this check the status update is skipped when the
@@ -1009,35 +1039,6 @@ func (r *MCPRemoteProxyReconciler) fetchAndValidateOIDCConfig(
 	return oidcConfig, nil
 }
 
-// updateOIDCConfigReferencingWorkloads ensures the MCPRemoteProxy is listed in
-// the MCPOIDCConfig's ReferencingWorkloads status field.
-func (r *MCPRemoteProxyReconciler) updateOIDCConfigReferencingWorkloads(
-	ctx context.Context,
-	oidcConfig *mcpv1beta1.MCPOIDCConfig,
-	proxyName string,
-) error {
-	ref := mcpv1beta1.WorkloadReference{
-		Kind: mcpv1beta1.WorkloadKindMCPRemoteProxy,
-		Name: proxyName,
-	}
-
-	// Check if already listed
-	for _, entry := range oidcConfig.Status.ReferencingWorkloads {
-		if entry.Kind == ref.Kind && entry.Name == ref.Name {
-			return nil
-		}
-	}
-
-	// Add the workload reference
-	oidcConfig.Status.ReferencingWorkloads = append(oidcConfig.Status.ReferencingWorkloads, ref)
-	oidcConfig.Status.ReferenceCount = workloadReferenceCount(oidcConfig.Status.ReferencingWorkloads)
-	if err := r.Status().Update(ctx, oidcConfig); err != nil {
-		return fmt.Errorf("failed to update MCPOIDCConfig ReferencingWorkloads: %w", err)
-	}
-
-	return nil
-}
-
 // validateGroupRef validates the GroupRef field of the MCPRemoteProxy.
 // This function only sets conditions on the proxy object - the caller is responsible
 // for persisting the status update to avoid multiple conflicting status updates.
@@ -1082,6 +1083,132 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 	}
 }
 
+// validateCABundleRef validates the OIDC CA bundle ConfigMap reference if specified.
+// The CA bundle is sourced from the referenced MCPOIDCConfig's inline configuration.
+// It mirrors MCPServer.validateCABundleRef so the proxy surfaces the same
+// CABundleRefValidated condition (see the Status Condition Parity rule).
+//
+// Writes go through MutateAndPatchStatus (per the operator.md Status Writes rule),
+// which diffs and skips the wire call when nothing changed, so a steady-state
+// reconcile is a no-op (idempotency) and only the condition is patched rather than
+// the whole status PUT.
+//
+// This validator runs before handleOIDCConfig, which is the authoritative validator
+// for the OIDCConfigRef itself. So when the MCPOIDCConfig cannot be resolved (e.g. a
+// transient apiserver/cache error), it leaves the existing condition untouched and
+// lets handleOIDCConfig's requeue drive recovery — clearing the condition only when
+// the config resolves and genuinely has no CA bundle.
+func (r *MCPRemoteProxyReconciler) validateCABundleRef(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) {
+	condType := mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated
+
+	caBundleRef, resolved := r.resolveOIDCCABundleRef(ctx, proxy)
+	if !resolved {
+		// Could not resolve the MCPOIDCConfig; leave any existing condition in place.
+		return
+	}
+	if caBundleRef == nil || caBundleRef.ConfigMapRef == nil {
+		// Config resolved and has no CA bundle: clear any stale condition.
+		r.patchCABundleStatus(ctx, proxy, func(p *mcpv1beta1.MCPRemoteProxy) {
+			meta.RemoveStatusCondition(&p.Status.Conditions, condType)
+		})
+		return
+	}
+
+	status, reason, message := r.evaluateCABundleRef(ctx, proxy, caBundleRef)
+	r.patchCABundleStatus(ctx, proxy, func(p *mcpv1beta1.MCPRemoteProxy) {
+		setRemoteProxyCABundleRefCondition(p, status, reason, message)
+	})
+}
+
+// evaluateCABundleRef checks the referenced CA bundle ConfigMap and returns the
+// resulting CABundleRefValidated condition status, reason, and message. It performs
+// no status mutation or persistence. Mirrors MCPServer.validateCABundleRef's checks.
+func (r *MCPRemoteProxyReconciler) evaluateCABundleRef(
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, caBundleRef *mcpv1beta1.CABundleSource,
+) (metav1.ConditionStatus, string, string) {
+	ctxLogger := log.FromContext(ctx)
+
+	// Validate the CABundleRef configuration
+	if err := validation.ValidateCABundleSource(caBundleRef); err != nil {
+		ctxLogger.Error(err, "Invalid CABundleRef configuration")
+		return metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid, err.Error()
+	}
+
+	// Check if the referenced ConfigMap exists
+	cmName := caBundleRef.ConfigMapRef.Name
+	configMap := &corev1.ConfigMap{}
+	if err := r.Get(ctx, types.NamespacedName{Namespace: proxy.Namespace, Name: cmName}, configMap); err != nil {
+		ctxLogger.Error(err, "Failed to find CA bundle ConfigMap", "configMap", cmName)
+		return metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefNotFound,
+			fmt.Sprintf("CA bundle ConfigMap '%s' not found in namespace '%s'", cmName, proxy.Namespace)
+	}
+
+	// Verify the key exists in the ConfigMap. A missing key is a configuration state
+	// surfaced through the condition, not a Go error, so it logs at Info (the two
+	// branches above carry a real error and log at Error).
+	key := caBundleRef.ConfigMapRef.Key
+	if key == "" {
+		key = validation.OIDCCABundleDefaultKey
+	}
+	if _, exists := configMap.Data[key]; !exists {
+		ctxLogger.Info("CA bundle key not found in ConfigMap", "configMap", cmName, "key", key)
+		return metav1.ConditionFalse, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefInvalid,
+			fmt.Sprintf("Key '%s' not found in ConfigMap '%s'", key, cmName)
+	}
+
+	return metav1.ConditionTrue, mcpv1beta1.ConditionReasonMCPRemoteProxyCABundleRefValid,
+		fmt.Sprintf("CA bundle ConfigMap '%s' is valid (key: %s)", cmName, key)
+}
+
+// resolveOIDCCABundleRef returns the CA bundle reference from the proxy's referenced
+// MCPOIDCConfig inline configuration. The bool reports whether the OIDC config was
+// successfully resolved: (nil, true) means "resolved, no CA bundle" and (nil, false)
+// means "could not resolve" (no ref, or a transient fetch error). The caller must not
+// clear the condition when resolved is false, to avoid flapping it on a transient
+// apiserver/cache error — handleOIDCConfig is the authoritative validator for the ref.
+func (r *MCPRemoteProxyReconciler) resolveOIDCCABundleRef(
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
+) (ref *mcpv1beta1.CABundleSource, resolved bool) {
+	if proxy.Spec.OIDCConfigRef == nil {
+		// No OIDC reference at all: there is nothing to resolve and no CA bundle, so
+		// the condition should be cleared. Treat as resolved with no CA bundle.
+		return nil, true
+	}
+	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
+	if err != nil || oidcCfg == nil {
+		return nil, false
+	}
+	if oidcCfg.Spec.Type != mcpv1beta1.MCPOIDCConfigTypeInline || oidcCfg.Spec.Inline == nil {
+		return nil, true
+	}
+	return oidcCfg.Spec.Inline.CABundleRef, true
+}
+
+// setRemoteProxyCABundleRefCondition sets the CA bundle ref validation condition on the proxy.
+func setRemoteProxyCABundleRefCondition(
+	proxy *mcpv1beta1.MCPRemoteProxy, status metav1.ConditionStatus, reason, message string,
+) {
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyCABundleRefValidated,
+		Status:             status,
+		Reason:             reason,
+		Message:            message,
+		ObservedGeneration: proxy.Generation,
+	})
+}
+
+// patchCABundleStatus applies the CA bundle condition mutation via MutateAndPatchStatus
+// (diff-only merge patch, skipped when nothing changed). The error is logged and
+// swallowed: the CABundleRefValidated condition is advisory, and a failed write is
+// healed on the next reconcile rather than blocking the reconcile's objective.
+func (r *MCPRemoteProxyReconciler) patchCABundleStatus(
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, mutate func(*mcpv1beta1.MCPRemoteProxy),
+) {
+	if err := ctrlutil.MutateAndPatchStatus(ctx, r.Client, proxy, mutate); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to update MCPRemoteProxy status after CABundleRef validation")
+	}
+}
+
 // validateAuthzPrimaryUpstreamProviderIgnored surfaces an advisory condition
 // when spec.authzConfig.inline.primaryUpstreamProvider is set on an
 // MCPRemoteProxy. The proxy has no embedded auth server, so the field has no
@@ -1091,7 +1218,7 @@ func (r *MCPRemoteProxyReconciler) validateGroupRef(ctx context.Context, proxy *
 // Mirrors the validateGroupRef convention: this only sets/removes the
 // condition; the caller is responsible for persisting status.
 func (*MCPRemoteProxyReconciler) validateAuthzPrimaryUpstreamProviderIgnored(proxy *mcpv1beta1.MCPRemoteProxy) {
-	provider := proxy.Spec.AuthzConfig.ExplicitPrimaryUpstreamProvider()
+	provider := proxy.Spec.AuthzConfig.DeprecatedInlinePrimaryUpstreamProvider()
 	conditionType := mcpv1beta1.ConditionTypeAuthzPrimaryUpstreamProviderIgnored
 	if provider == "" {
 		meta.RemoveStatusCondition(&proxy.Status.Conditions, conditionType)
@@ -1105,6 +1232,40 @@ func (*MCPRemoteProxyReconciler) validateAuthzPrimaryUpstreamProviderIgnored(pro
 			"the field only takes effect on VirtualMCPServer with an embedded auth server", provider),
 		ObservedGeneration: proxy.Generation,
 	})
+}
+
+// validateSessionStorageForReplicas surfaces a SessionStorageWarning condition
+// when replicas > 1 but session storage is not configured with the Redis
+// backend. Reconciliation continues regardless; this is advisory only.
+// Mirrors the MCPServer and VirtualMCPServer validators so the condition is
+// consistent across all types that share the replicas + sessionStorage pair.
+// The caller is responsible for persisting status.
+func (*MCPRemoteProxyReconciler) validateSessionStorageForReplicas(proxy *mcpv1beta1.MCPRemoteProxy) {
+	condition := func() metav1.Condition {
+		if proxy.Spec.Replicas == nil || *proxy.Spec.Replicas <= 1 {
+			return metav1.Condition{
+				Status:  metav1.ConditionFalse,
+				Reason:  mcpv1beta1.ConditionReasonSessionStorageNotApplicable,
+				Message: "session storage warning is not active",
+			}
+		}
+		if proxy.Spec.SessionStorage == nil ||
+			proxy.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis {
+			return metav1.Condition{
+				Status:  metav1.ConditionTrue,
+				Reason:  mcpv1beta1.ConditionReasonSessionStorageMissing,
+				Message: "replicas > 1 but sessionStorage.provider is not redis; sessions are not shared across replicas",
+			}
+		}
+		return metav1.Condition{
+			Status:  metav1.ConditionFalse,
+			Reason:  mcpv1beta1.ConditionReasonSessionStorageConfigured,
+			Message: "Redis session storage is configured",
+		}
+	}()
+	condition.Type = mcpv1beta1.ConditionSessionStorageWarning
+	condition.ObservedGeneration = proxy.Generation
+	meta.SetStatusCondition(&proxy.Status.Conditions, condition)
 }
 
 // ensureRBACResources ensures that the RBAC resources are in place for the remote proxy.
@@ -1300,6 +1461,15 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
+	// Check if spec.replicas has changed. Only compare when spec.replicas is
+	// non-nil; nil means hands-off mode (HPA or another external controller
+	// manages replicas) and the live count is authoritative.
+	if proxy.Spec.Replicas != nil {
+		if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != *proxy.Spec.Replicas {
+			return true
+		}
+	}
+
 	return false
 }
 
@@ -1475,11 +1645,15 @@ func (*MCPRemoteProxyReconciler) serviceNeedsUpdate(service *corev1.Service, pro
 		}
 	}
 
-	if !maps.Equal(service.Labels, expectedLabels) {
+	// Subset check rather than exact equality: the Service is co-owned by external
+	// controllers (e.g. GKE NEG/Gateway writes cloud.google.com/* annotations), so only
+	// the operator-owned keys must match. maps.Equal would treat those external
+	// annotations as drift and hot-loop Update against the concurrent writer.
+	if !ctrlutil.MapIsSubset(expectedLabels, service.Labels) {
 		return true
 	}
 
-	if !maps.Equal(service.Annotations, expectedAnnotations) {
+	if !ctrlutil.MapIsSubset(expectedAnnotations, service.Annotations) {
 		return true
 	}
 
@@ -1539,6 +1713,152 @@ func (r *MCPRemoteProxyReconciler) mapTelemetryConfigToMCPRemoteProxy(
 	for _, proxy := range proxyList.Items {
 		if proxy.Spec.TelemetryConfigRef != nil &&
 			proxy.Spec.TelemetryConfigRef.Name == telemetryConfig.Name {
+			requests = append(requests, reconcile.Request{
+				NamespacedName: types.NamespacedName{
+					Name:      proxy.Name,
+					Namespace: proxy.Namespace,
+				},
+			})
+		}
+	}
+
+	return requests
+}
+
+// handleAuthzConfig validates the referenced MCPAuthzConfig, tracks its hash on
+// the MCPRemoteProxy status, and sets the AuthzConfigRefValidated condition. When
+// the ref is cleared it removes both the hash and the condition so a stale "valid"
+// signal does not linger. ReferencingWorkloads on the MCPAuthzConfig is owned by
+// the MCPAuthzConfig controller (#5511); this controller never writes it.
+func (r *MCPRemoteProxyReconciler) handleAuthzConfig(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
+	if proxy.Spec.AuthzConfigRef == nil {
+		// No MCPAuthzConfig referenced: clear any stored hash and remove the
+		// condition so it does not remain stale-True after the ref is removed.
+		changed := false
+		if proxy.Status.AuthzConfigHash != "" {
+			proxy.Status.AuthzConfigHash = ""
+			changed = true
+		}
+		if meta.RemoveStatusCondition(&proxy.Status.Conditions, mcpv1beta1.ConditionAuthzConfigRefValidated) {
+			changed = true
+		}
+		if changed {
+			if err := r.Status().Update(ctx, proxy); err != nil {
+				return fmt.Errorf("failed to clear MCPAuthzConfig hash from MCPRemoteProxy status: %w", err)
+			}
+		}
+		return nil
+	}
+
+	authzConfig, err := r.fetchAndValidateAuthzConfig(ctx, proxy)
+	if err != nil {
+		return err
+	}
+
+	prevCondition := meta.FindStatusCondition(proxy.Status.Conditions, mcpv1beta1.ConditionAuthzConfigRefValidated)
+	needsUpdate := prevCondition == nil || prevCondition.Status != metav1.ConditionTrue
+
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionAuthzConfigRefValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonAuthzConfigRefValid,
+		Message:            fmt.Sprintf("MCPAuthzConfig %s is valid and ready", proxy.Spec.AuthzConfigRef.Name),
+		ObservedGeneration: proxy.Generation,
+	})
+
+	if proxy.Status.AuthzConfigHash != authzConfig.Status.ConfigHash {
+		ctxLogger := log.FromContext(ctx)
+		ctxLogger.Info("MCPAuthzConfig has changed, updating MCPRemoteProxy",
+			"proxy", proxy.Name,
+			"authzConfig", authzConfig.Name,
+			"oldHash", proxy.Status.AuthzConfigHash,
+			"newHash", authzConfig.Status.ConfigHash)
+		proxy.Status.AuthzConfigHash = authzConfig.Status.ConfigHash
+		needsUpdate = true
+	}
+
+	if needsUpdate {
+		if err := r.Status().Update(ctx, proxy); err != nil {
+			return fmt.Errorf("failed to update MCPRemoteProxy status after validating MCPAuthzConfig: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// fetchAndValidateAuthzConfig fetches the referenced MCPAuthzConfig, validates it
+// is ready, and sets the appropriate failure condition on the MCPRemoteProxy if not.
+func (r *MCPRemoteProxyReconciler) fetchAndValidateAuthzConfig(
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
+) (*mcpv1beta1.MCPAuthzConfig, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	authzConfig, err := ctrlutil.GetAuthzConfigForWorkload(ctx, r.Client, proxy.Namespace, proxy.Spec.AuthzConfigRef)
+	if err != nil {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionAuthzConfigRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonAuthzConfigRefNotFound,
+			Message:            fmt.Sprintf("MCPAuthzConfig %s not found: %v", proxy.Spec.AuthzConfigRef.Name, err),
+			ObservedGeneration: proxy.Generation,
+		})
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update status after MCPAuthzConfig lookup error")
+		}
+		return nil, err
+	}
+
+	if authzConfig == nil {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionAuthzConfigRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonAuthzConfigRefNotFound,
+			Message:            fmt.Sprintf("MCPAuthzConfig %s not found", proxy.Spec.AuthzConfigRef.Name),
+			ObservedGeneration: proxy.Generation,
+		})
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update status after MCPAuthzConfig not found")
+		}
+		return nil, fmt.Errorf("MCPAuthzConfig %s not found", proxy.Spec.AuthzConfigRef.Name)
+	}
+
+	if err := ctrlutil.ValidateAuthzConfigReady(authzConfig); err != nil {
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionAuthzConfigRefValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonAuthzConfigRefNotValid,
+			Message:            fmt.Sprintf("MCPAuthzConfig %s is not valid: %v", proxy.Spec.AuthzConfigRef.Name, err),
+			ObservedGeneration: proxy.Generation,
+		})
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update status after MCPAuthzConfig validation check")
+		}
+		return nil, err
+	}
+
+	return authzConfig, nil
+}
+
+// mapAuthzConfigToMCPRemoteProxy maps MCPAuthzConfig changes to MCPRemoteProxy reconciliation requests.
+// It finds all MCPRemoteProxies that reference the changed MCPAuthzConfig and enqueues them.
+func (r *MCPRemoteProxyReconciler) mapAuthzConfigToMCPRemoteProxy(
+	ctx context.Context, obj client.Object,
+) []reconcile.Request {
+	authzConfig, ok := obj.(*mcpv1beta1.MCPAuthzConfig)
+	if !ok {
+		return nil
+	}
+
+	proxyList := &mcpv1beta1.MCPRemoteProxyList{}
+	if err := r.List(ctx, proxyList, client.InNamespace(authzConfig.Namespace)); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to list MCPRemoteProxies for MCPAuthzConfig watch")
+		return nil
+	}
+
+	var requests []reconcile.Request
+	for _, proxy := range proxyList.Items {
+		if proxy.Spec.AuthzConfigRef != nil &&
+			proxy.Spec.AuthzConfigRef.Name == authzConfig.Name {
 			requests = append(requests, reconcile.Request{
 				NamespacedName: types.NamespacedName{
 					Name:      proxy.Name,
@@ -1634,6 +1954,10 @@ func (r *MCPRemoteProxyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		Watches(
 			&mcpv1beta1.MCPTelemetryConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.mapTelemetryConfigToMCPRemoteProxy),
+		).
+		Watches(
+			&mcpv1beta1.MCPAuthzConfig{},
+			handler.EnqueueRequestsFromMapFunc(r.mapAuthzConfigToMCPRemoteProxy),
 		).
 		Complete(r)
 }

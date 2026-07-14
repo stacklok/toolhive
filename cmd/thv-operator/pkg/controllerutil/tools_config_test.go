@@ -9,15 +9,15 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestGetToolConfigForMCPServer(t *testing.T) {
@@ -32,32 +32,18 @@ func TestGetToolConfigForMCPServer(t *testing.T) {
 	}{
 		{
 			name: "mcpserver without toolconfig ref",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+			),
 			expectConfig: false,
 			expectError:  true, // Changed to expect an error when no ToolConfigRef is present
 		},
 		{
 			name: "mcpserver with existing toolconfig",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-						Name: "test-config",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithToolConfigRef("test-config"),
+			),
 			existingConfig: &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
@@ -72,18 +58,10 @@ func TestGetToolConfigForMCPServer(t *testing.T) {
 		},
 		{
 			name: "mcpserver with non-existent toolconfig",
-			mcpServer: &mcpv1beta1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1beta1.MCPServerSpec{
-					Image: "test-image",
-					ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-						Name: "non-existent",
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithToolConfigRef("non-existent"),
+			),
 			expectConfig: false,
 			expectError:  true,
 		},
@@ -95,8 +73,7 @@ func TestGetToolConfigForMCPServer(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := []client.Object{}
 			if tt.existingConfig != nil {
@@ -150,21 +127,12 @@ func TestGetToolConfigForMCPServer_ErrorScenarios(t *testing.T) {
 		t.Parallel()
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
-		mcpServer := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-server",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "missing-config",
-				},
-			},
-		}
+		mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("missing-config"),
+		)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
@@ -182,21 +150,12 @@ func TestGetToolConfigForMCPServer_ErrorScenarios(t *testing.T) {
 
 		ctx := t.Context()
 
-		scheme := runtime.NewScheme()
-		require.NoError(t, mcpv1beta1.AddToScheme(scheme))
+		scheme := testutil.NewScheme(t)
 
-		mcpServer := &mcpv1beta1.MCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "test-server",
-				Namespace: "default",
-			},
-			Spec: mcpv1beta1.MCPServerSpec{
-				Image: "test-image",
-				ToolConfigRef: &mcpv1beta1.ToolConfigRef{
-					Name: "test-config",
-				},
-			},
-		}
+		mcpServer := v1beta1test.NewMCPServer("test-server", "default",
+			v1beta1test.WithImage("test-image"),
+			v1beta1test.WithToolConfigRef("test-config"),
+		)
 
 		// Create a client that returns a generic error
 		fakeClient := &errorGetClient{

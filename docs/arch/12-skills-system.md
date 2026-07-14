@@ -112,7 +112,7 @@ Instructions for how the AI assistant should perform code reviews...
 | `toolhive.requires` | No | OCI references for skill dependencies |
 | `license` | No | SPDX license identifier |
 | `compatibility` | No | Client compatibility string (max 500 chars) |
-| `metadata` | No | Arbitrary key-value pairs |
+| `metadata` | No | Arbitrary string-keyed, string-valued metadata |
 
 **Implementation:** `pkg/skills/types.go` (SkillFrontmatter), `pkg/skills/parser.go`, `pkg/skills/validator.go`
 
@@ -175,7 +175,7 @@ thv skill build ./my-skill/ --tag v1.0.0
 3. Package all files into a tar.gz OCI layer
 4. Store in the local OCI store with the specified tag
 
-**Implementation:** `pkg/skills/skillsvc/skillsvc.go` (Build), `toolhive-core/oci/skills` (SkillPackager)
+**Implementation:** `pkg/skills/skillsvc/build.go` (Build), `toolhive-core/oci/skills` (SkillPackager)
 
 ### 3. Publishing
 
@@ -185,7 +185,7 @@ Push a locally-built artifact to a remote OCI registry:
 thv skill push ghcr.io/org/my-skill:v1.0.0
 ```
 
-**Implementation:** `pkg/skills/skillsvc/skillsvc.go` (Push), `toolhive-core/oci/skills` (RegistryClient)
+**Implementation:** `pkg/skills/skillsvc/build.go` (Push), `toolhive-core/oci/skills` (RegistryClient)
 
 ### 4. Installation
 
@@ -244,9 +244,9 @@ flowchart TD
 
 3. **Supply chain validation**: For OCI installs, the skill name in the artifact must match the repository name in the reference.
 
-4. **Client targeting**: When no `--clients` flag is provided, all skill-supporting clients are targeted by default. Specify `--clients claude-code` to target a particular client.
+4. **Client targeting**: When no `--clients` flag is provided, all skill-supporting clients detected on the host are targeted by default. Specify `--clients claude-code` to target a particular client.
 
-**Implementation:** `pkg/skills/skillsvc/skillsvc.go` (Install)
+**Implementation:** `pkg/skills/skillsvc/install.go` (Install)
 
 ### 5. Uninstallation
 
@@ -256,7 +256,7 @@ thv skill uninstall code-review
 
 Removes the skill files from the filesystem, deletes the database record, and removes the skill from all groups.
 
-**Implementation:** `pkg/skills/skillsvc/skillsvc.go` (Uninstall), `pkg/groups/skills.go` (RemoveSkillFromAllGroups)
+**Implementation:** `pkg/skills/skillsvc/uninstall.go` (Uninstall), `pkg/groups/skills.go` (RemoveSkillFromAllGroups)
 
 ## Git-Based Skill Resolution
 
@@ -272,7 +272,7 @@ git://github.com/org/repo@main#skills/my-skill  # Branch + subdirectory
 **Resolution process:**
 1. Parse the git reference (host, repo, ref, path)
 2. Resolve authentication (`GITHUB_TOKEN` for github.com, `GITLAB_TOKEN` for gitlab.com — both host-scoped to prevent credential exfiltration; `GIT_TOKEN` as an unscoped fallback sent to any host)
-3. Clone the repository (2-minute timeout, shallow clone)
+3. Clone the repository (2-minute timeout; shallow clone when a branch or tag is specified)
 4. Extract the skill directory files
 5. Validate and install as normal
 
@@ -282,7 +282,7 @@ git://github.com/org/repo@main#skills/my-skill  # Branch + subdirectory
 
 ## Storage
 
-Skill installation records are persisted in SQLite across four tables. The `entries` table is a shared parent for all entry types (skills share it with future entry kinds); `installed_skills` holds skill-specific columns and references `entries` via a foreign key; `oci_tags` caches OCI reference-to-digest mappings for upgrade detection and deduplication:
+Skill installation records are persisted in SQLite across four tables. The `entries` table is a shared parent for all entry types (skills share it with future entry kinds); `installed_skills` holds skill-specific columns and references `entries` via a foreign key; `oci_tags` is reserved for caching OCI reference-to-digest mappings but is not currently populated:
 
 ```
 entries table
@@ -317,7 +317,7 @@ skill_dependencies table
 ├── dep_digest          (TEXT)
 └── PRIMARY KEY(installed_skill_id, dep_reference)
 
-oci_tags table
+oci_tags table (reserved; not currently populated)
 ├── reference  (TEXT, PRIMARY KEY — OCI reference string)
 └── digest     (TEXT NOT NULL — content digest)
 ```
@@ -341,6 +341,7 @@ oci_tags table
 | `POST` | `/push` | Push built skill to registry |
 | `GET` | `/builds` | List local builds |
 | `DELETE` | `/builds/{tag}` | Delete a local build |
+| `GET` | `/content` | Get a skill's SKILL.md body and file listing for a reference |
 
 **Implementation:** `pkg/api/v1/skills.go`
 
@@ -408,7 +409,7 @@ The skills system applies defense-in-depth across multiple layers:
 - Resolves symlinks in parent components before applying depth checks
 
 ### Supply Chain
-- OCI artifact skill name must match repository name in the reference
+- OCI artifact skill name must match the last path component of the OCI repository
 - Git authentication is host-scoped (GitHub token only sent to github.com)
 - SSRF prevention: rejects localhost and private IPs in git references
 
@@ -441,7 +442,7 @@ ToolHive owns the installation lifecycle, scoping model, CLI/API interfaces, and
 |---|---|
 | Type definitions | `pkg/skills/types.go` |
 | Service interface | `pkg/skills/service.go` |
-| Service implementation | `pkg/skills/skillsvc/skillsvc.go` |
+| Service implementation | `pkg/skills/skillsvc/` |
 | Options / DTOs | `pkg/skills/options.go` |
 | Validation | `pkg/skills/validator.go` |
 | Parsing | `pkg/skills/parser.go` |
@@ -461,3 +462,4 @@ ToolHive owns the installation lifecycle, scoping model, CLI/API interfaces, and
 - [Registry System](06-registry-system.md) - Registry architecture shared by skills and servers
 - [Groups](07-groups.md) - Group concept used to organize skills and workloads
 - [Architecture Overview](00-overview.md) - Platform overview
+- [Plugins System](14-plugins-system.md) - Sibling distribution system (OCI artifacts, multi-client install)

@@ -6,6 +6,7 @@
 package cache
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"reflect"
@@ -33,8 +34,8 @@ var ErrExpired = errors.New("cache entry expired")
 type ValidatingCache[K comparable, V any] struct {
 	lruCache *lru.Cache[K, V]
 	flight   singleflight.Group
-	load     func(key K) (V, error)
-	check    func(key K, val V) error
+	load     func(ctx context.Context, key K) (V, error)
+	check    func(ctx context.Context, key K, val V) error
 	onEvict  func(K, V)
 	// mu serializes Set against the conditional eviction in getHit.
 	// check() runs outside the lock to avoid holding it during I/O; the lock
@@ -56,8 +57,8 @@ type ValidatingCache[K comparable, V any] struct {
 // onEvict is called after any eviction (LRU or expiry); it may be nil.
 func New[K comparable, V any](
 	capacity int,
-	load func(K) (V, error),
-	check func(K, V) error,
+	load func(context.Context, K) (V, error),
+	check func(context.Context, K, V) error,
 	onEvict func(K, V),
 ) *ValidatingCache[K, V] {
 	if capacity < 1 {
@@ -88,8 +89,8 @@ func New[K comparable, V any](
 // If the entry has definitively expired it is evicted and (zero, false) is
 // returned. Transient check errors leave the entry in place and return the
 // cached value.
-func (c *ValidatingCache[K, V]) getHit(key K, val V) (V, bool) {
-	if err := c.check(key, val); err != nil {
+func (c *ValidatingCache[K, V]) getHit(ctx context.Context, key K, val V) (V, bool) {
+	if err := c.check(ctx, key, val); err != nil {
 		if errors.Is(err, ErrExpired) {
 			// check() ran outside the lock to avoid holding it during I/O.
 			// Re-verify under the lock that the entry hasn't been replaced by a
@@ -113,6 +114,10 @@ func (c *ValidatingCache[K, V]) getHit(key K, val V) (V, bool) {
 // group so at most one operation executes concurrently per key. Concurrent
 // callers for the same key share the result.
 //
+// ctx is forwarded to the load and check callbacks. When concurrent calls for
+// the same key are coalesced by singleflight, only the first caller's context
+// is forwarded; later callers' contexts are not used.
+//
 // On a cache hit the entry's liveness is validated via the check function
 // provided to New: ErrExpired evicts the entry and falls through to load;
 // transient errors return the cached value unchanged. On a cache miss, load
@@ -121,7 +126,7 @@ func (c *ValidatingCache[K, V]) getHit(key K, val V) (V, bool) {
 // The returned bool is false whenever the value is unavailable — either
 // because load returned an error or because the key does not exist in the
 // backing store. Callers cannot distinguish these two cases.
-func (c *ValidatingCache[K, V]) Get(key K) (V, bool) {
+func (c *ValidatingCache[K, V]) Get(ctx context.Context, key K) (V, bool) {
 	type result struct{ v V }
 	// fmt.Sprint(key) is the singleflight key. For string keys this is
 	// exact. For other types, distinct values with identical string
@@ -130,7 +135,7 @@ func (c *ValidatingCache[K, V]) Get(key K) (V, bool) {
 	raw, err, _ := c.flight.Do(fmt.Sprint(key), func() (any, error) {
 		// Cache hit path: validate liveness.
 		if val, ok := c.lruCache.Get(key); ok {
-			v, alive := c.getHit(key, val)
+			v, alive := c.getHit(ctx, key, val)
 			if alive {
 				return result{v: v}, nil
 			}
@@ -138,7 +143,7 @@ func (c *ValidatingCache[K, V]) Get(key K) (V, bool) {
 		}
 
 		// Cache miss (or expired): load the value and store it.
-		v, loadErr := c.load(key)
+		v, loadErr := c.load(ctx, key)
 		if loadErr != nil {
 			return nil, loadErr
 		}

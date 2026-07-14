@@ -4,6 +4,8 @@ kind: CustomResourceDefinition
 metadata:
   annotations:
     controller-gen.kubebuilder.io/version: v0.17.3
+  labels:
+    toolhive.stacklok.dev/auto-migrate-storage-version: "true"
   name: mcpremoteproxies.toolhive.stacklok.dev
 spec:
   group: toolhive.stacklok.dev
@@ -95,8 +97,9 @@ spec:
                 - name
                 type: object
               authzConfig:
-                description: AuthzConfig defines authorization policy configuration
-                  for the proxy
+                description: |-
+                  AuthzConfig defines authorization policy configuration for the proxy.
+                  AuthzConfig and AuthzConfigRef are mutually exclusive.
                 properties:
                   configMap:
                     description: |-
@@ -114,6 +117,28 @@ spec:
                     required:
                     - name
                     type: object
+                  groupClaimName:
+                    description: |-
+                      GroupClaimName is the JWT claim key that contains group membership for the
+                      principal. When set, takes priority over the well-known defaults
+                      ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                      groups under a URI-style claim (e.g. "https://example.com/groups"). When
+                      Type is "configMap", a group_claim_name entry in the referenced ConfigMap
+                      is overridden by this field if both are set.
+                    maxLength: 253
+                    type: string
+                  groupEntityType:
+                    description: |-
+                      GroupEntityType is the Cedar entity type name used for principal parent
+                      UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                      empty. Must match the entity type used in the static entity store for
+                      transitive `in` checks (e.g. `ClaimGroup → PlatformRole`) to resolve.
+                      Namespaced names (`Foo::Bar`) are not yet supported. When Type is
+                      "configMap", a group_entity_type entry in the referenced ConfigMap is
+                      overridden by this field if both are set.
+                    maxLength: 63
+                    pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                    type: string
                   inline:
                     description: |-
                       Inline contains direct authorization configuration
@@ -121,8 +146,10 @@ spec:
                     properties:
                       entitiesJson:
                         default: '[]'
-                        description: EntitiesJSON is a JSON string representing Cedar
-                          entities
+                        description: |-
+                          EntitiesJSON is a JSON string representing Cedar entities. Required when
+                          transitive policies (e.g. `ClaimGroup → PlatformRole`) need a static
+                          entity store; defaults to "[]".
                         type: string
                       policies:
                         description: Policies is a list of Cedar policy strings
@@ -133,17 +160,20 @@ spec:
                         x-kubernetes-list-type: atomic
                       primaryUpstreamProvider:
                         description: |-
-                          PrimaryUpstreamProvider names the upstream IDP whose access token's claims
-                          Cedar should evaluate. Currently honored only when the parent
-                          AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
-                          this in a future release (see #5208). Only meaningful for VirtualMCPServer
-                          with an embedded auth server. When empty and an embedded auth server has
-                          upstreams configured, the controller defaults to the first upstream
-                          provider. The name must match one of the upstreams declared on
-                          spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
-                          rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
-                          have no embedded auth server; setting this field on those CRs surfaces an
-                          AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+                          PrimaryUpstreamProvider names the upstream IDP whose access token's
+                          claims Cedar should evaluate.
+
+                          Deprecated: on VirtualMCPServer this field has moved to
+                          spec.authServerConfig.primaryUpstreamProvider. The old location is
+                          still read for one release for backward compatibility; the
+                          VirtualMCPServer controller emits an AuthzPrimaryUpstreamProviderDeprecated
+                          Warning event whenever it is consumed, and removal is planned for the
+                          release after the deprecation cycle.
+
+                          On MCPServer and MCPRemoteProxy this field has always been a structural
+                          no-op (those CRDs do not run an embedded auth server). Setting it
+                          continues to surface the AuthzPrimaryUpstreamProviderIgnored advisory
+                          condition; the deprecation does not change that behaviour.
                         maxLength: 63
                         minLength: 1
                         pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
@@ -151,6 +181,15 @@ spec:
                     required:
                     - policies
                     type: object
+                  roleClaimName:
+                    description: |-
+                      RoleClaimName is the JWT claim key that contains role membership for the
+                      principal. When set, the claim is extracted separately from GroupClaimName
+                      and both are mapped to the configured GroupEntityType. When Type is
+                      "configMap", a role_claim_name entry in the referenced ConfigMap is
+                      overridden by this field if both are set.
+                    maxLength: 253
+                    type: string
                   type:
                     default: configMap
                     description: Type is the type of authorization configuration
@@ -168,6 +207,20 @@ spec:
                 - message: inline must be set when type is 'inline', and must not
                     be set otherwise
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+              authzConfigRef:
+                description: |-
+                  AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                  The referenced MCPAuthzConfig must exist in the same namespace as this MCPRemoteProxy.
+                  Mutually exclusive with authzConfig.
+                properties:
+                  name:
+                    description: Name is the name of the MCPAuthzConfig resource in
+                      the same namespace.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               endpointPrefix:
                 description: |-
                   EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
@@ -253,6 +306,12 @@ spec:
                   The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
                   Per-server overrides (audience, scopes) are specified here; shared provider config
                   lives in the MCPOIDCConfig resource.
+
+                  SECURITY: if this field is omitted and no other authentication source is configured,
+                  the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and
+                  forwards it to the remote MCP server under a synthetic local-user identity, with no
+                  token or credential check. Set this field to enforce identity-based access control
+                  per request.
                 properties:
                   audience:
                     description: |-
@@ -294,6 +353,19 @@ spec:
                 description: RemoteURL is the URL of the remote MCP server to proxy
                 pattern: ^https?://
                 type: string
+              replicas:
+                description: |-
+                  Replicas is the desired number of proxy pod replicas.
+                  MCPRemoteProxy creates a single Deployment for the proxy process, so there
+                  is only one replicas field (mirrors VirtualMCPServer.spec.replicas).
+                  When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+                  management to an HPA or other external controller.
+                  When set above 1, also configure sessionStorage with the redis provider and
+                  sessionAffinity: "None" so sessions resolve across replicas; otherwise a
+                  SessionStorageWarning condition is surfaced on the resource status.
+                format: int32
+                minimum: 0
+                type: integer
               resourceOverrides:
                 description: ResourceOverrides allows overriding annotations and labels
                   for resources created by the operator
@@ -431,10 +503,78 @@ spec:
                   SessionAffinity controls whether the Service routes repeated client connections to the same pod.
                   MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
                   Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+
+                  Interaction with sessionStorage: when running multiple replicas with
+                  sessionStorage.provider "redis", set this to "None" so requests are
+                  distributed across replicas and sessions resolve via the shared store.
+                  Conversely, "None" without Redis-backed sessionStorage breaks session
+                  continuity — any request landing on a different pod fails with
+                  "Session not found".
                 enum:
                 - ClientIP
                 - None
                 type: string
+              sessionStorage:
+                description: |-
+                  SessionStorage configures session storage for stateful horizontal scaling.
+                  When nil, no session storage is configured and the proxy falls back to
+                  pod-local in-memory session state — incompatible with multi-replica
+                  deployments behind load balancers that don't preserve client-IP affinity
+                  (e.g. AWS ALB across multiple AZs).
+
+                  The transparent proxy validates `Mcp-Session-Id` against this store on
+                  every non-initialize request (see pkg/transport/proxy/transparent/
+                  transparent_proxy.go) and rewrites client-facing session IDs to backend
+                  session IDs using session metadata. Both lookups require shared state
+                  across replicas.
+
+                  When using the Redis provider, also set sessionAffinity to "None" so the
+                  Service routes requests round-robin and all replicas rely on the shared
+                  session store rather than pod-local state.
+
+                  Mirrors MCPServer.spec.sessionStorage and VirtualMCPServer.spec.sessionStorage.
+                properties:
+                  address:
+                    description: Address is the Redis server address (required when
+                      provider is redis)
+                    minLength: 1
+                    type: string
+                  db:
+                    default: 0
+                    description: DB is the Redis database number
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  keyPrefix:
+                    description: KeyPrefix is an optional prefix for all Redis keys
+                      used by ToolHive
+                    type: string
+                  passwordRef:
+                    description: PasswordRef is a reference to a Secret key containing
+                      the Redis password
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  provider:
+                    description: Provider is the session storage backend type
+                    enum:
+                    - memory
+                    - redis
+                    type: string
+                required:
+                - provider
+                type: object
+                x-kubernetes-validations:
+                - message: address is required
+                  rule: 'self.provider == ''redis'' ? has(self.address) : true'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
@@ -487,6 +627,10 @@ spec:
             required:
             - remoteUrl
             type: object
+            x-kubernetes-validations:
+            - message: authzConfig and authzConfigRef are mutually exclusive; use
+                authzConfigRef to reference a shared MCPAuthzConfig
+              rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
           status:
             description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
             properties:
@@ -494,6 +638,10 @@ spec:
                 description: |-
                   AuthServerConfigHash is the hash of the referenced authServerRef spec,
                   used to detect configuration changes and trigger reconciliation.
+                type: string
+              authzConfigHash:
+                description: AuthzConfigHash is the hash of the referenced MCPAuthzConfig
+                  spec for change detection
                 type: string
               conditions:
                 description: Conditions represent the latest available observations
@@ -678,8 +826,9 @@ spec:
                 - name
                 type: object
               authzConfig:
-                description: AuthzConfig defines authorization policy configuration
-                  for the proxy
+                description: |-
+                  AuthzConfig defines authorization policy configuration for the proxy.
+                  AuthzConfig and AuthzConfigRef are mutually exclusive.
                 properties:
                   configMap:
                     description: |-
@@ -697,6 +846,28 @@ spec:
                     required:
                     - name
                     type: object
+                  groupClaimName:
+                    description: |-
+                      GroupClaimName is the JWT claim key that contains group membership for the
+                      principal. When set, takes priority over the well-known defaults
+                      ("groups", "roles", "cognito:groups"). Use this for IDPs that place
+                      groups under a URI-style claim (e.g. "https://example.com/groups"). When
+                      Type is "configMap", a group_claim_name entry in the referenced ConfigMap
+                      is overridden by this field if both are set.
+                    maxLength: 253
+                    type: string
+                  groupEntityType:
+                    description: |-
+                      GroupEntityType is the Cedar entity type name used for principal parent
+                      UIDs synthesised from JWT group/role claims. Defaults to "THVGroup" when
+                      empty. Must match the entity type used in the static entity store for
+                      transitive `in` checks (e.g. `ClaimGroup → PlatformRole`) to resolve.
+                      Namespaced names (`Foo::Bar`) are not yet supported. When Type is
+                      "configMap", a group_entity_type entry in the referenced ConfigMap is
+                      overridden by this field if both are set.
+                    maxLength: 63
+                    pattern: ^[A-Za-z_][A-Za-z0-9_]*$
+                    type: string
                   inline:
                     description: |-
                       Inline contains direct authorization configuration
@@ -704,8 +875,10 @@ spec:
                     properties:
                       entitiesJson:
                         default: '[]'
-                        description: EntitiesJSON is a JSON string representing Cedar
-                          entities
+                        description: |-
+                          EntitiesJSON is a JSON string representing Cedar entities. Required when
+                          transitive policies (e.g. `ClaimGroup → PlatformRole`) need a static
+                          entity store; defaults to "[]".
                         type: string
                       policies:
                         description: Policies is a list of Cedar policy strings
@@ -716,17 +889,20 @@ spec:
                         x-kubernetes-list-type: atomic
                       primaryUpstreamProvider:
                         description: |-
-                          PrimaryUpstreamProvider names the upstream IDP whose access token's claims
-                          Cedar should evaluate. Currently honored only when the parent
-                          AuthzConfigRef.Type is "inline"; configMap-sourced policies will support
-                          this in a future release (see #5208). Only meaningful for VirtualMCPServer
-                          with an embedded auth server. When empty and an embedded auth server has
-                          upstreams configured, the controller defaults to the first upstream
-                          provider. The name must match one of the upstreams declared on
-                          spec.authServerConfig.upstreamProviders; otherwise the VirtualMCPServer is
-                          rejected with AuthServerConfigValidated=False. MCPServer and MCPRemoteProxy
-                          have no embedded auth server; setting this field on those CRs surfaces an
-                          AuthzPrimaryUpstreamProviderIgnored advisory condition on the resource.
+                          PrimaryUpstreamProvider names the upstream IDP whose access token's
+                          claims Cedar should evaluate.
+
+                          Deprecated: on VirtualMCPServer this field has moved to
+                          spec.authServerConfig.primaryUpstreamProvider. The old location is
+                          still read for one release for backward compatibility; the
+                          VirtualMCPServer controller emits an AuthzPrimaryUpstreamProviderDeprecated
+                          Warning event whenever it is consumed, and removal is planned for the
+                          release after the deprecation cycle.
+
+                          On MCPServer and MCPRemoteProxy this field has always been a structural
+                          no-op (those CRDs do not run an embedded auth server). Setting it
+                          continues to surface the AuthzPrimaryUpstreamProviderIgnored advisory
+                          condition; the deprecation does not change that behaviour.
                         maxLength: 63
                         minLength: 1
                         pattern: ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$
@@ -734,6 +910,15 @@ spec:
                     required:
                     - policies
                     type: object
+                  roleClaimName:
+                    description: |-
+                      RoleClaimName is the JWT claim key that contains role membership for the
+                      principal. When set, the claim is extracted separately from GroupClaimName
+                      and both are mapped to the configured GroupEntityType. When Type is
+                      "configMap", a role_claim_name entry in the referenced ConfigMap is
+                      overridden by this field if both are set.
+                    maxLength: 253
+                    type: string
                   type:
                     default: configMap
                     description: Type is the type of authorization configuration
@@ -751,6 +936,20 @@ spec:
                 - message: inline must be set when type is 'inline', and must not
                     be set otherwise
                   rule: 'self.type == ''inline'' ? has(self.inline) : !has(self.inline)'
+              authzConfigRef:
+                description: |-
+                  AuthzConfigRef references a shared MCPAuthzConfig resource for authorization.
+                  The referenced MCPAuthzConfig must exist in the same namespace as this MCPRemoteProxy.
+                  Mutually exclusive with authzConfig.
+                properties:
+                  name:
+                    description: Name is the name of the MCPAuthzConfig resource in
+                      the same namespace.
+                    minLength: 1
+                    type: string
+                required:
+                - name
+                type: object
               endpointPrefix:
                 description: |-
                   EndpointPrefix is the path prefix to prepend to SSE endpoint URLs.
@@ -836,6 +1035,12 @@ spec:
                   The referenced MCPOIDCConfig must exist in the same namespace as this MCPRemoteProxy.
                   Per-server overrides (audience, scopes) are specified here; shared provider config
                   lives in the MCPOIDCConfig resource.
+
+                  SECURITY: if this field is omitted and no other authentication source is configured,
+                  the proxy runs UNAUTHENTICATED. It accepts every request that can reach its port and
+                  forwards it to the remote MCP server under a synthetic local-user identity, with no
+                  token or credential check. Set this field to enforce identity-based access control
+                  per request.
                 properties:
                   audience:
                     description: |-
@@ -877,6 +1082,19 @@ spec:
                 description: RemoteURL is the URL of the remote MCP server to proxy
                 pattern: ^https?://
                 type: string
+              replicas:
+                description: |-
+                  Replicas is the desired number of proxy pod replicas.
+                  MCPRemoteProxy creates a single Deployment for the proxy process, so there
+                  is only one replicas field (mirrors VirtualMCPServer.spec.replicas).
+                  When nil, the operator does not set Deployment.Spec.Replicas, leaving replica
+                  management to an HPA or other external controller.
+                  When set above 1, also configure sessionStorage with the redis provider and
+                  sessionAffinity: "None" so sessions resolve across replicas; otherwise a
+                  SessionStorageWarning condition is surfaced on the resource status.
+                format: int32
+                minimum: 0
+                type: integer
               resourceOverrides:
                 description: ResourceOverrides allows overriding annotations and labels
                   for resources created by the operator
@@ -1014,10 +1232,78 @@ spec:
                   SessionAffinity controls whether the Service routes repeated client connections to the same pod.
                   MCP protocols (SSE, streamable-http) are stateful, so ClientIP is the default.
                   Set to "None" for stateless servers or when using an external load balancer with its own affinity.
+
+                  Interaction with sessionStorage: when running multiple replicas with
+                  sessionStorage.provider "redis", set this to "None" so requests are
+                  distributed across replicas and sessions resolve via the shared store.
+                  Conversely, "None" without Redis-backed sessionStorage breaks session
+                  continuity — any request landing on a different pod fails with
+                  "Session not found".
                 enum:
                 - ClientIP
                 - None
                 type: string
+              sessionStorage:
+                description: |-
+                  SessionStorage configures session storage for stateful horizontal scaling.
+                  When nil, no session storage is configured and the proxy falls back to
+                  pod-local in-memory session state — incompatible with multi-replica
+                  deployments behind load balancers that don't preserve client-IP affinity
+                  (e.g. AWS ALB across multiple AZs).
+
+                  The transparent proxy validates `Mcp-Session-Id` against this store on
+                  every non-initialize request (see pkg/transport/proxy/transparent/
+                  transparent_proxy.go) and rewrites client-facing session IDs to backend
+                  session IDs using session metadata. Both lookups require shared state
+                  across replicas.
+
+                  When using the Redis provider, also set sessionAffinity to "None" so the
+                  Service routes requests round-robin and all replicas rely on the shared
+                  session store rather than pod-local state.
+
+                  Mirrors MCPServer.spec.sessionStorage and VirtualMCPServer.spec.sessionStorage.
+                properties:
+                  address:
+                    description: Address is the Redis server address (required when
+                      provider is redis)
+                    minLength: 1
+                    type: string
+                  db:
+                    default: 0
+                    description: DB is the Redis database number
+                    format: int32
+                    minimum: 0
+                    type: integer
+                  keyPrefix:
+                    description: KeyPrefix is an optional prefix for all Redis keys
+                      used by ToolHive
+                    type: string
+                  passwordRef:
+                    description: PasswordRef is a reference to a Secret key containing
+                      the Redis password
+                    properties:
+                      key:
+                        description: Key is the key within the secret
+                        type: string
+                      name:
+                        description: Name is the name of the secret
+                        type: string
+                    required:
+                    - key
+                    - name
+                    type: object
+                  provider:
+                    description: Provider is the session storage backend type
+                    enum:
+                    - memory
+                    - redis
+                    type: string
+                required:
+                - provider
+                type: object
+                x-kubernetes-validations:
+                - message: address is required
+                  rule: 'self.provider == ''redis'' ? has(self.address) : true'
               telemetryConfigRef:
                 description: |-
                   TelemetryConfigRef references an MCPTelemetryConfig resource for shared telemetry configuration.
@@ -1070,6 +1356,10 @@ spec:
             required:
             - remoteUrl
             type: object
+            x-kubernetes-validations:
+            - message: authzConfig and authzConfigRef are mutually exclusive; use
+                authzConfigRef to reference a shared MCPAuthzConfig
+              rule: '!(has(self.authzConfig) && has(self.authzConfigRef))'
           status:
             description: MCPRemoteProxyStatus defines the observed state of MCPRemoteProxy
             properties:
@@ -1077,6 +1367,10 @@ spec:
                 description: |-
                   AuthServerConfigHash is the hash of the referenced authServerRef spec,
                   used to detect configuration changes and trigger reconciliation.
+                type: string
+              authzConfigHash:
+                description: AuthzConfigHash is the hash of the referenced MCPAuthzConfig
+                  spec for change detection
                 type: string
               conditions:
                 description: Conditions represent the latest available observations

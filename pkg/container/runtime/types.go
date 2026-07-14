@@ -44,6 +44,13 @@ const (
 	// WorkloadStatusUnauthenticated indicates that the workload is running but
 	// cannot authenticate with the remote MCP server (e.g., expired refresh token).
 	WorkloadStatusUnauthenticated WorkloadStatus = "unauthenticated"
+	// WorkloadStatusAuthRetrying indicates that background authentication
+	// refresh is failing transiently and the monitor is still retrying.
+	// The workload may recover on its own (→ Running) or be marked
+	// unauthenticated when the configured ceiling is exceeded
+	// (→ Unauthenticated). Hot requests fail fast with 503+Retry-After
+	// while in this state.
+	WorkloadStatusAuthRetrying WorkloadStatus = "auth_retrying"
 	// WorkloadStatusPolicyStopped indicates that the workload was stopped by
 	// policy enforcement. The StatusContext field carries the human-readable reason.
 	WorkloadStatusPolicyStopped WorkloadStatus = "policy_stopped"
@@ -276,6 +283,8 @@ type DeployWorkloadOptions struct {
 	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
 	// blocked by default in the egress proxy even when InsecureAllowAll is set.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateway access is port-independent: it ignores the permission profile's
+	// allowed ports, so once enabled the gateway is reachable on any port.
 	AllowDockerGateway bool
 
 	// RunConfigMCPServerGeneration is the monotonic version stamp from the source RunConfig

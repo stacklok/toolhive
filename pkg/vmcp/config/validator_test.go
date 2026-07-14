@@ -327,6 +327,125 @@ func TestValidator_ValidateOutgoingAuth(t *testing.T) {
 			},
 			wantErr: false, // V-02 handles provider name resolution
 		},
+		{
+			name: "valid xaa backend",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							IDPTokenURL:    "https://idp.example.com/token",
+							TargetTokenURL: "https://target.example.com/token",
+							TargetAudience: "https://target.example.com",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
+		{
+			name: "xaa nil config",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA:  nil,
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "xaa requires XAA configuration",
+		},
+		{
+			name: "xaa missing idpTokenUrl",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							TargetTokenURL: "https://target.example.com/token",
+							TargetAudience: "https://target.example.com",
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "xaa requires idpTokenUrl field",
+		},
+		{
+			name: "xaa missing targetTokenUrl",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							IDPTokenURL:    "https://idp.example.com/token",
+							TargetAudience: "https://target.example.com",
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "xaa requires targetTokenUrl field",
+		},
+		{
+			name: "xaa missing targetAudience",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							IDPTokenURL:    "https://idp.example.com/token",
+							TargetTokenURL: "https://target.example.com/token",
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "xaa requires targetAudience field",
+		},
+		{
+			name: "xaa unsupported subjectTokenType",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							IDPTokenURL:      "https://idp.example.com/token",
+							TargetTokenURL:   "https://target.example.com/token",
+							TargetAudience:   "https://target.example.com",
+							SubjectTokenType: "urn:ietf:params:oauth:token-type:access_token",
+						},
+					},
+				},
+			},
+			wantErr: true,
+			errMsg:  "xaa: unsupported subjectTokenType",
+		},
+		{
+			name: "xaa valid subjectTokenType id_token",
+			auth: &OutgoingAuthConfig{
+				Source: "inline",
+				Backends: map[string]*authtypes.BackendAuthStrategy{
+					"target": {
+						Type: authtypes.StrategyTypeXAA,
+						XAA: &authtypes.XAAConfig{
+							IDPTokenURL:      "https://idp.example.com/token",
+							TargetTokenURL:   "https://target.example.com/token",
+							TargetAudience:   "https://target.example.com",
+							SubjectTokenType: "urn:ietf:params:oauth:token-type:id_token",
+						},
+					},
+				},
+			},
+			wantErr: false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1164,6 +1283,87 @@ func TestValidateAuthServerIntegration(t *testing.T) {
 				if !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("ValidateAuthServerIntegration() error message = %v, want to contain %v", err.Error(), tt.errMsg)
 				}
+			}
+		})
+	}
+}
+
+func TestValidator_ValidatePassthroughHeaders(t *testing.T) {
+	t.Parallel()
+
+	// validBaseConfig returns a minimally-valid Config so that only
+	// passthroughHeaders validation is under test.
+	validBaseConfig := func(headers []string) *Config {
+		return &Config{
+			Name:  "test-vmcp",
+			Group: "test-group",
+			IncomingAuth: &IncomingAuthConfig{
+				Type: "anonymous",
+			},
+			OutgoingAuth: &OutgoingAuthConfig{
+				Source: "inline",
+			},
+			Aggregation: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PrefixFormat: "{workload}_",
+				},
+			},
+			PassthroughHeaders: headers,
+		}
+	}
+
+	tests := []struct {
+		name    string
+		headers []string
+		wantErr bool
+		errMsg  string
+	}{
+		{
+			// nil and []string{} both produce zero iterations in range — same code path.
+			name:    "nil slice is valid",
+			headers: nil,
+			wantErr: false,
+		},
+		{
+			name:    "valid header names",
+			headers: []string{"x-env", "x-litellm-api-key"},
+			wantErr: false,
+		},
+		{
+			// Restricted-header check uses middleware.RestrictedHeaders[canonical]; one
+			// case covers the branch. Canonicalization (e.g. "x-forwarded-for" → canonical)
+			// is verified by TestCaptureForwardedHeadersMiddleware.
+			name:    "X-Forwarded-For is restricted",
+			headers: []string{"X-Forwarded-For"},
+			wantErr: true,
+			errMsg:  "X-Forwarded-For",
+		},
+		{
+			name:    "empty string header name is rejected",
+			headers: []string{""},
+			wantErr: true,
+			errMsg:  "passthroughHeaders",
+		},
+		{
+			name:    "header name with CRLF injection is rejected",
+			headers: []string{"X-My-Header\r\nX-Injected: evil"},
+			wantErr: true,
+			errMsg:  "passthroughHeaders",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			v := NewValidator()
+			err := v.Validate(validBaseConfig(tt.headers))
+
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errMsg)
+			} else {
+				require.NoError(t, err)
 			}
 		})
 	}

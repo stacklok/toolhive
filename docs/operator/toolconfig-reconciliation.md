@@ -34,12 +34,15 @@ Benefits:
 
 ### 3. Automatic MCPServer Reconciliation
 
-When a MCPToolConfig changes, all referencing MCPServers are automatically reconciled:
+When a MCPToolConfig changes, the MCPToolConfig controller updates its own status.
+The MCPServer controller watches MCPToolConfig events and queues referencing
+MCPServers for reconciliation:
 
 1. **MCPToolConfig Update**: When the MCPToolConfig spec changes, a new hash is calculated
-2. **Hash Comparison**: The new hash is compared with the stored hash in the status
-3. **MCPServer Notification**: If the hash differs, all referencing MCPServers are queued for reconciliation
-4. **Configuration Propagation**: Each MCPServer fetches the updated MCPToolConfig and applies the new configuration
+2. **Hash Comparison**: The new hash is compared with the stored hash in the MCPToolConfig status
+3. **Status Update**: If the hash differs, the MCPToolConfig controller updates `Status.ConfigHash`
+4. **Consumer Watch**: The MCPServer controller's MCPToolConfig watch maps the changed config to referencing MCPServers and queues them
+5. **Configuration Propagation**: Each MCPServer fetches the updated MCPToolConfig and applies the new configuration
 
 ## Reconciliation Flow
 
@@ -52,11 +55,12 @@ graph TD
     C --> D[Requeue]
     B -->|Yes| E[Calculate Config Hash]
     E --> F{Hash Changed?}
-    F -->|Yes| G[Update Status Hash]
-    G --> H[Find Referencing MCPServers]
-    F -->|No| H
-    H --> I[Update Status.ReferencingServers]
-    I --> J[Trigger MCPServer Reconciliation]
+    F -->|Yes| G[Update ConfigHash and ReferencingWorkloads Status]
+    G --> H[MCPToolConfig Watch Event]
+    H --> I[MCPServer Watch Maps Referencing Servers]
+    I --> J[Enqueue MCPServer Reconciliation]
+    F -->|No| K[Refresh ReferencingWorkloads]
+    K --> L[Update Status.ReferencingWorkloads]
 ```
 
 ### Deletion Flow
@@ -118,11 +122,20 @@ if toolConfig != nil {
 
 ```go
 type MCPToolConfigStatus struct {
+    // Conditions represent the latest observations of this config
+    Conditions []metav1.Condition `json:"conditions,omitempty"`
+
+    // ObservedGeneration is the most recent generation observed
+    ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+
     // ConfigHash is the hash of the current configuration
     ConfigHash string `json:"configHash,omitempty"`
-    
-    // ReferencingServers lists MCPServers using this config
-    ReferencingServers []string `json:"referencingServers,omitempty"`
+
+    // ReferenceCount is the number of workloads using this config
+    ReferenceCount int32 `json:"referenceCount,omitempty"`
+
+    // ReferencingWorkloads lists workloads using this config
+    ReferencingWorkloads []WorkloadReference `json:"referencingWorkloads,omitempty"`
 }
 ```
 
@@ -166,7 +179,7 @@ The implementation includes comprehensive tests with high coverage:
 - **Reconcile**: 82.9% coverage
 - **calculateConfigHash**: 100% coverage
 - **handleDeletion**: 85.7% coverage
-- **findReferencingMCPServers**: 100% coverage
+- **findReferencingWorkloads**: 100% coverage
 - **GetToolConfigForMCPServer**: 100% coverage
 
 Tests cover:

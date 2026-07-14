@@ -492,6 +492,95 @@ func TestResolveDCRCredentials_SynthesisedRegistrationEndpoint(t *testing.T) {
 	assert.Equal(t, "/register", gotPath)
 }
 
+// TestResolveDCRCredentials_CodeChallengeMethodsSupportedFieldEnablesPublicClient
+// pins the dcr.Request.CodeChallengeMethodsSupported field on the
+// RegistrationEndpoint-direct branch. Without a DiscoveryURL the resolver
+// cannot reach the S256 PKCE gate via a metadata fetch; the caller must
+// supply code_challenge_methods_supported so the gate has an input. This is
+// the path exercised when resolveDCRCredentials pre-fetches AS metadata and
+// forwards the field to the resolver (see resolveDCRCredentials in
+// pkg/auth/discovery, introduced to fix #5356).
+func TestResolveDCRCredentials_CodeChallengeMethodsSupportedFieldEnablesPublicClient(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                          string
+		codeChallengeMethodsSupported []string
+		publicClient                  bool
+		wantErr                       bool
+		wantErrContains               string
+	}{
+		{
+			name:                          "S256 in field allows public client registration",
+			codeChallengeMethodsSupported: []string{"S256"},
+			publicClient:                  true,
+		},
+		{
+			name:                          "plain-only in field rejects public client",
+			codeChallengeMethodsSupported: []string{"plain"},
+			publicClient:                  true,
+			wantErr:                       true,
+			wantErrContains:               "S256",
+		},
+		{
+			name:                          "field absent rejects public client",
+			codeChallengeMethodsSupported: nil,
+			publicClient:                  true,
+			wantErr:                       true,
+			wantErrContains:               "S256",
+		},
+		{
+			name:                          "field absent ok for confidential client",
+			codeChallengeMethodsSupported: nil,
+			publicClient:                  false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var registrationHits int32
+			mux := http.NewServeMux()
+			mux.HandleFunc("/register", func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				_ = r.Body.Close()
+				_ = body
+				atomic.AddInt32(&registrationHits, 1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"client_id":"field-supplied-client"}`))
+			})
+			server := httptest.NewServer(mux)
+			t.Cleanup(server.Close)
+
+			cache := newMemoryDCRStore(t)
+			req := &Request{
+				Issuer:                        server.URL,
+				AuthorizationEndpoint:         server.URL + "/authorize",
+				TokenEndpoint:                 server.URL + "/token",
+				Scopes:                        []string{"openid"},
+				RegistrationEndpoint:          server.URL + "/register",
+				CodeChallengeMethodsSupported: tc.codeChallengeMethodsSupported,
+				PublicClient:                  tc.publicClient,
+			}
+
+			_, err := ResolveCredentials(context.Background(), req, cache)
+			if tc.wantErr {
+				require.Error(t, err)
+				if tc.wantErrContains != "" {
+					assert.Contains(t, err.Error(), tc.wantErrContains)
+				}
+				assert.EqualValues(t, 0, atomic.LoadInt32(&registrationHits),
+					"registration endpoint must not be contacted when S256 gate fails")
+				return
+			}
+			require.NoError(t, err)
+			assert.EqualValues(t, 1, atomic.LoadInt32(&registrationHits))
+		})
+	}
+}
+
 func TestResolveDCRCredentials_RegistrationEndpointDirectBypassesDiscovery(t *testing.T) {
 	t.Parallel()
 
@@ -872,6 +961,41 @@ func TestDeriveExpectedIssuerFromDiscoveryURL(t *testing.T) {
 			name:         "oidc well-known suffix with tenant path prefix",
 			discoveryURL: "https://idp.example.com/tenants/acme/.well-known/openid-configuration",
 			want:         "https://idp.example.com/tenants/acme",
+		},
+		{
+			// RFC 8414 §3.1 path-insertion: well-known segment between host
+			// and tenant path. Issuer reconstructed as origin + tenant path.
+			// Matches the shape served by Datadog's MCP authorization server
+			// (mcp.us5.datadoghq.com) and any other provider with a path-
+			// component issuer that follows the RFC literally.
+			name:         "oauth well-known path-insertion (RFC 8414 §3.1)",
+			discoveryURL: "https://mcp.us5.datadoghq.com/.well-known/oauth-authorization-server/v1/mcp",
+			want:         "https://mcp.us5.datadoghq.com/v1/mcp",
+		},
+		{
+			name:         "oauth well-known path-insertion with multi-segment tenant",
+			discoveryURL: "https://idp.example.com/.well-known/oauth-authorization-server/tenants/acme",
+			want:         "https://idp.example.com/tenants/acme",
+		},
+		{
+			name:         "oidc well-known path-insertion",
+			discoveryURL: "https://idp.example.com/.well-known/openid-configuration/tenants/acme",
+			want:         "https://idp.example.com/tenants/acme",
+		},
+		{
+			// Trailing-slash edge case: hits the HasPrefix arm (path doesn't end
+			// at the bare suffix) but has no tenant after it. Without the empty-
+			// path normalisation, TrimPrefix would leave a stray "/" and produce
+			// a spurious "https://host/" that fails the RFC 8414 §3.3 byte
+			// equality check.
+			name:         "oauth well-known with trailing slash normalises to origin",
+			discoveryURL: "https://mcp.example.com/.well-known/oauth-authorization-server/",
+			want:         "https://mcp.example.com",
+		},
+		{
+			name:         "oidc well-known with trailing slash normalises to origin",
+			discoveryURL: "https://idp.example.com/.well-known/openid-configuration/",
+			want:         "https://idp.example.com",
 		},
 		{
 			name:         "non-well-known path falls back to origin",

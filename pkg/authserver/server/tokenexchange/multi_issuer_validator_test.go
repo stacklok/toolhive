@@ -105,7 +105,8 @@ func newMultiValidator(
 	selfValidator, err := NewSelfIssuedTokenValidator(selfJWKS.jwks, testIssuer, []string{testIssuer})
 	require.NoError(t, err)
 
-	v := NewMultiIssuerTokenValidator(selfValidator, testIssuer, trustedIssuers)
+	v, err := NewMultiIssuerTokenValidator(selfValidator, testIssuer, trustedIssuers)
+	require.NoError(t, err)
 	v.insecureSkipJWKSURLValidation = true // Allow HTTP test servers
 	return v
 }

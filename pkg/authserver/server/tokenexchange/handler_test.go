@@ -258,7 +258,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			},
 			lifespan:     15 * time.Minute,
 			wantErr:      true,
-			wantFositeIs: fosite.ErrInvalidGrant,
+			wantFositeIs: fosite.ErrInvalidRequest,
 			hintContains: "subject token is invalid",
 		},
 		{

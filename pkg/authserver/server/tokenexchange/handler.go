@@ -115,7 +115,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 			"error", err,
 			"actor", actorID,
 		)
-		return errorsx.WithStack(fosite.ErrInvalidGrant.WithHint(
+		return errorsx.WithStack(fosite.ErrInvalidRequest.WithHint(
 			"The subject token is invalid or could not be verified."))
 	}
 

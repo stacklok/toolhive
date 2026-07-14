@@ -1034,6 +1034,13 @@
                     "builder_image": {
                         "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
                         "type": "string"
+                    },
+                    "runtime_env": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "RuntimeEnv contains environment variables to inject into the Dockerfile's\nfinal runtime stage. Unlike BuildEnv (pkg/container/templates.TemplateData.BuildEnv),\nwhich only affects the builder stage, these variables are baked into the\nshipped image and are present in the running container's process\nenvironment at startup. Use this for values a packaged MCP server reads at\nprocess start (e.g. feature flags, cache backend selection), not for\nbuild-time package manager configuration.\nKeys must be uppercase with underscores, values are validated for safety.",
+                        "type": "object"
                     }
                 },
                 "type": "object"

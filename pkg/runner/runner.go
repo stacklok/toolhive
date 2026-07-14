@@ -895,6 +895,9 @@ func (r *Runner) persistClientCredentials(
 		return fmt.Errorf("failed to save config with client credentials: %w", err)
 	}
 
+	// The auth handler keeps the RemoteAuthConfig pointer it was constructed
+	// with. Renewal reuses existing secret refs and refreshes the handler's
+	// in-memory expiry/URI separately; this swap keeps the runner view current.
 	r.Config.RemoteAuthConfig = &updatedRemoteAuthConfig
 
 	slog.Debug("Stored DCR client credentials", "client_id", clientID,

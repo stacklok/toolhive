@@ -101,6 +101,8 @@ func (h *Handler) renewClientSecret(ctx context.Context) error {
 	// Build the update request body with the current client metadata.
 	// Per RFC 7592 §2.2, the request MUST include all client metadata fields
 	// that were provided during the initial registration.
+	// ToolHive's CLI DCR flow registers this fixed metadata set; if future DCR
+	// callers support custom metadata, persist and replay those original values.
 	updateReq := clientUpdateRequest{
 		ClientID:                h.config.CachedClientID,
 		ClientName:              oauthproto.ToolHiveMCPClientName,

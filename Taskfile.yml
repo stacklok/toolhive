@@ -17,8 +17,13 @@ tasks:
 
   swagger-install:
     desc: Install the swag tool for OpenAPI/Swagger generation
+    vars:
+      # Pinned to the version already resolved in go.mod, so `task docs` always
+      # uses the same generator instead of drifting to whatever @latest is that day.
+      SWAG_VERSION:
+        sh: go list -m github.com/swaggo/swag/v2 | awk '{print $2}'
     cmds:
-      - go install github.com/swaggo/swag/v2/cmd/swag@latest
+      - go install github.com/swaggo/swag/v2/cmd/swag@{{.SWAG_VERSION}}
 
   helm-docs:
     desc: Generate Helm chart documentation

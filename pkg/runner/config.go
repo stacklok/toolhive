@@ -394,7 +394,33 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	// Normalize proxyMode so pre-existing configs always reflect the effective protocol
 	config.NormalizeProxyMode()
 
+	// Self-heal legacy on-disk configs that persisted isolate_network=true with a
+	// non-bridge network mode. Isolation is only enforceable in bridge mode, so
+	// reflect reality in memory for status/list. See issue #5775.
+	degradeNetworkIsolation(&config)
+
 	return &config, nil
+}
+
+// degradeNetworkIsolation drops network isolation from a loaded config when its
+// resolved network mode cannot enforce it, so status/list reflect reality.
+func degradeNetworkIsolation(config *RunConfig) {
+	if !config.IsolateNetwork {
+		return
+	}
+	mode := ""
+	if config.PermissionProfile != nil && config.PermissionProfile.Network != nil {
+		mode = config.PermissionProfile.Network.Mode
+	}
+	if networking.IsBridgeMode(mode) {
+		return
+	}
+	config.IsolateNetwork = false
+	if mode == "none" {
+		slog.Debug(networking.NetworkIsolationNoneRedundantMsg, "network_mode", mode)
+		return
+	}
+	slog.Warn(networking.NetworkIsolationHostDroppedMsg, "network_mode", mode)
 }
 
 // migrateOAuthClientSecret migrates plain text OAuth client secrets to CLI format

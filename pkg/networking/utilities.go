@@ -282,6 +282,30 @@ func IsLoopbackHost(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// Network isolation log messages. Network isolation is only functional in bridge
+// mode; host/none/custom network modes bypass the isolation sidecars entirely, so
+// isolation must be dropped for them. These constants are shared across the config
+// build, config load, and deploy paths so the wording cannot drift.
+const (
+	// NetworkIsolationHostDroppedMsg is logged at WARN when isolation was requested
+	// but is dropped because the network mode (host/custom) cannot enforce it.
+	// Dropping isolation here is a real reduction in confinement.
+	NetworkIsolationHostDroppedMsg = "network isolation is not enforced with host/custom networking; " +
+		"disabling isolation for this workload (pass --isolate-network=false to opt out explicitly and silence this warning)"
+	// NetworkIsolationNoneRedundantMsg is logged at DEBUG when isolation is dropped
+	// for the "none" network mode, where it is merely redundant (already maximally confined).
+	NetworkIsolationNoneRedundantMsg = "network isolation is redundant with none networking; " +
+		"disabling isolation for this workload"
+)
+
+// IsBridgeMode reports whether the given network mode is a bridge-style mode
+// (""/"bridge"/"default"). Network isolation is only functional in bridge mode:
+// it builds a per-workload internal network plus DNS/egress/ingress sidecars, and
+// host/none/custom modes bypass those sidecars entirely.
+func IsBridgeMode(mode string) bool {
+	return mode == "" || mode == "bridge" || mode == "default"
+}
+
 // IsURL checks if the input is a valid HTTP or HTTPS URL
 func IsURL(input string) bool {
 	parsedURL, err := url.Parse(input)

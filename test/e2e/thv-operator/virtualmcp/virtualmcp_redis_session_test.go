@@ -645,8 +645,17 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			defer cleanupB()
 
 			ginkgo.By("Initializing a session on pod A")
-			clientA, err := CreateInitializedMCPClient(int32(localPortA), "e2e-redis-term-test", 30*time.Second)
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
+			var clientA *InitializedMCPClient
+			gomega.Eventually(func() error {
+				if clientA != nil {
+					clientA.Cancel()
+					clientA = nil
+				}
+				var initErr error
+				clientA, initErr = CreateInitializedMCPClient(int32(localPortA), "e2e-redis-term-test", 30*time.Second)
+				return initErr
+			}, timeout, pollInterval).Should(gomega.Succeed(),
+				"pod A should accept session initialization once backend routing is ready")
 			sessionID := clientA.Client.GetSessionId()
 			gomega.Expect(sessionID).NotTo(gomega.BeEmpty(), "session ID must be assigned after Initialize")
 

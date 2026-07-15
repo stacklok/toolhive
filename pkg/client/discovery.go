@@ -19,11 +19,12 @@ import (
 //
 //nolint:revive // ClientManager is intentionally named to avoid conflict with existing Manager interface
 type ClientManager struct {
-	homeDir            string
-	groupManager       groups.Manager
-	clientIntegrations []clientAppConfig
-	configProvider     config.Provider
-	lookPath           func(string) (string, error)
+	homeDir               string
+	groupManager          groups.Manager
+	clientIntegrations    []clientAppConfig
+	configProvider        config.Provider
+	lookPath              func(string) (string, error)
+	codexDesktopInstalled func() (bool, error)
 }
 
 // HomeDir returns the home directory this ClientManager is rooted at. Exported
@@ -48,15 +49,17 @@ func NewClientManager() (*ClientManager, error) {
 	}
 
 	return &ClientManager{
-		homeDir:            home,
-		groupManager:       groupManager,
-		clientIntegrations: supportedClientIntegrations,
-		configProvider:     config.NewDefaultProvider(),
-		lookPath:           exec.LookPath,
+		homeDir:               home,
+		groupManager:          groupManager,
+		clientIntegrations:    supportedClientIntegrations,
+		configProvider:        config.NewDefaultProvider(),
+		lookPath:              exec.LookPath,
+		codexDesktopInstalled: newCodexDesktopDetector(home, runtime.GOOS).installed,
 	}, nil
 }
 
-// NewTestClientManager creates a new ClientManager with test dependencies
+// NewTestClientManager creates a ClientManager with test dependencies. Native
+// Codex desktop detection is intentionally omitted to keep tests deterministic.
 func NewTestClientManager(
 	homeDir string,
 	groupManager groups.Manager,

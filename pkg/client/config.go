@@ -85,7 +85,7 @@ const (
 	VSCodeServer ClientApp = "vscode-server"
 	// MistralVibe represents the Mistral Vibe IDE.
 	MistralVibe ClientApp = "mistral-vibe"
-	// Codex represents the OpenAI Codex CLI.
+	// Codex represents the OpenAI Codex CLI and desktop app.
 	Codex ClientApp = "codex"
 	// KimiCli represents the Kimi Code CLI.
 	KimiCli ClientApp = "kimi-cli"
@@ -245,8 +245,8 @@ type clientAppConfig struct {
 	// If nil or missing an entry for the current OS, no prefix is added.
 	PluginsPlatformPrefix map[Platform][]string
 	// LLM gateway configuration ─────────────────────────────────────────────
-	// LLMGatewayMode is "direct" (token-helper) or "proxy" (static key via
-	// localhost reverse proxy), or "" when the tool has no LLM gateway support.
+	// LLMGatewayMode identifies the gateway integration strategy (direct token
+	// helper, proxy, credential helper, or Codex auth), or "" when unsupported.
 	LLMGatewayMode string
 	// LLMBinaryName is the executable name looked up via exec.LookPath to
 	// confirm the tool is actually installed (not just a leftover config

@@ -261,7 +261,8 @@ func (cm *ClientManager) IsManaged(clientType ClientApp) bool {
 	return cfg != nil && managedProfilePresent(cfg.LLMManagedProfileDomain)
 }
 
-// LLMGatewayModeFor returns "direct", "proxy", or "" for the given client.
+// LLMGatewayModeFor returns the client's configured gateway integration mode,
+// or "" when the client is unknown or does not support an LLM gateway.
 func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 	cfg := cm.lookupClientAppConfig(clientType)
 	if cfg == nil {
@@ -271,17 +272,22 @@ func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 }
 
 // DetectedLLMGatewayClients returns the subset of LLM-gateway-capable clients
-// that are installed on this machine. A client is considered installed when:
-//  1. Its settings directory exists on disk.
-//  2. If LLMBinaryName is set, the binary is also present on $PATH.
+// that are installed on this machine. Most clients require their settings
+// directory and, when configured, their binary on $PATH. Codex is also detected
+// when its desktop app is installed on macOS or Windows; CLI and desktop
+// evidence still produce one canonical Codex result.
 //
-// The binary check prevents false positives from leftover config directories
-// (e.g. ~/.claude or ~/.gemini) that remain after a tool is uninstalled.
+// Requiring both CLI signals prevents false positives from leftover config
+// directories (e.g. ~/.claude or ~/.gemini) after a tool is uninstalled.
 func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
 	var result []ClientApp
 	for i := range cm.clientIntegrations {
 		cfg := &cm.clientIntegrations[i]
 		if cfg.LLMGatewayMode == "" {
+			continue
+		}
+		if cfg.ClientType == Codex && cm.isCodexInstalled(cfg) {
+			result = append(result, cfg.ClientType)
 			continue
 		}
 		// Detection directory: for GUI apps whose settings directory does not
@@ -305,6 +311,25 @@ func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
 		result = append(result, cfg.ClientType)
 	}
 	return result
+}
+
+func (cm *ClientManager) isCodexInstalled(cfg *clientAppConfig) bool {
+	settingsDirExists := func() bool {
+		_, err := os.Stat(filepath.Dir(cm.buildLLMSettingsPath(cfg)))
+		return err == nil
+	}()
+	cliInstalled := settingsDirExists && cfg.LLMBinaryName != "" && cm.lookPath != nil && func() bool {
+		_, err := cm.lookPath(cfg.LLMBinaryName)
+		return err == nil
+	}()
+	if cliInstalled {
+		return true
+	}
+	if cm.codexDesktopInstalled == nil {
+		return false
+	}
+	desktopInstalled, err := cm.codexDesktopInstalled()
+	return err == nil && desktopInstalled
 }
 
 // buildLLMSettingsPath resolves the absolute path to the LLM settings file

@@ -48,6 +48,8 @@ type MCPRemoteProxyReconciler struct {
 	ImagePullSecretsDefaults imagepullsecrets.Defaults
 }
 
+var errInvalidMCPRemoteProxyPodTemplateSpec = stderrors.New("invalid MCPRemoteProxy PodTemplateSpec")
+
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpremoteproxies/status,verbs=get;update;patch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcptoolconfigs,verbs=get;list;watch
@@ -83,6 +85,9 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Validate and handle configurations
 	if err := r.validateAndHandleConfigs(ctx, proxy); err != nil {
+		if stderrors.Is(err, errInvalidMCPRemoteProxyPodTemplateSpec) {
+			return ctrl.Result{}, nil
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -104,20 +109,7 @@ func (r *MCPRemoteProxyReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy) error {
 	ctxLogger := log.FromContext(ctx)
 
-	// Validate the spec
-	if err := r.validateSpec(ctx, proxy); err != nil {
-		ctxLogger.Error(err, "MCPRemoteProxy spec validation failed")
-		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
-		proxy.Status.Message = fmt.Sprintf("Validation failed: %v", err)
-		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
-			Type:    mcpv1beta1.ConditionTypeAuthConfigured,
-			Status:  metav1.ConditionFalse,
-			Reason:  mcpv1beta1.ConditionReasonAuthInvalid,
-			Message: err.Error(),
-		})
-		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
-			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after validation error")
-		}
+	if err := r.validateSpecAndPodTemplate(ctx, proxy); err != nil {
 		return err
 	}
 
@@ -194,6 +186,94 @@ func (r *MCPRemoteProxyReconciler) validateAndHandleConfigs(ctx context.Context,
 	}
 
 	return nil
+}
+
+func (r *MCPRemoteProxyReconciler) validateSpecAndPodTemplate(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) error {
+	ctxLogger := log.FromContext(ctx)
+
+	if err := r.validateSpec(ctx, proxy); err != nil {
+		ctxLogger.Error(err, "MCPRemoteProxy spec validation failed")
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Message = fmt.Sprintf("Validation failed: %v", err)
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:    mcpv1beta1.ConditionTypeAuthConfigured,
+			Status:  metav1.ConditionFalse,
+			Reason:  mcpv1beta1.ConditionReasonAuthInvalid,
+			Message: err.Error(),
+		})
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status after validation error")
+		}
+		return err
+	}
+
+	if !r.validateAndUpdatePodTemplateStatus(ctx, proxy) {
+		return errInvalidMCPRemoteProxyPodTemplateSpec
+	}
+
+	return nil
+}
+
+// validateAndUpdatePodTemplateStatus validates the PodTemplateSpec and updates status conditions.
+// It returns false when the PodTemplateSpec is invalid and reconciliation should stop until the user fixes it.
+func (r *MCPRemoteProxyReconciler) validateAndUpdatePodTemplateStatus(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) bool {
+	ctxLogger := log.FromContext(ctx)
+
+	if proxy.Spec.PodTemplateSpec == nil || proxy.Spec.PodTemplateSpec.Raw == nil {
+		return true
+	}
+
+	_, err := ctrlutil.NewPodTemplateSpecBuilder(proxy.Spec.PodTemplateSpec, mcpRemoteProxyContainerName)
+	if err != nil {
+		if r.Recorder != nil {
+			r.Recorder.Eventf(proxy, nil, corev1.EventTypeWarning, "InvalidPodTemplateSpec", "ValidatePodTemplateSpec",
+				"Failed to parse PodTemplateSpec: %v. Deployment blocked until PodTemplateSpec is fixed.", err)
+		}
+
+		proxy.Status.Phase = mcpv1beta1.MCPRemoteProxyPhaseFailed
+		proxy.Status.Message = fmt.Sprintf("Invalid PodTemplateSpec: %v", err)
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyPodTemplateValid,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: proxy.Generation,
+			Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyPodTemplateInvalid,
+			Message:            fmt.Sprintf("Failed to parse PodTemplateSpec: %v. Deployment blocked until fixed.", err),
+		})
+		meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeReady,
+			Status:             metav1.ConditionFalse,
+			ObservedGeneration: proxy.Generation,
+			Reason:             mcpv1beta1.ConditionReasonDeploymentNotReady,
+			Message:            fmt.Sprintf("Invalid PodTemplateSpec: %v", err),
+		})
+
+		if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+			ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status with PodTemplateSpec validation")
+			return false
+		}
+
+		ctxLogger.Error(err, "PodTemplateSpec validation failed")
+		return false
+	}
+
+	meta.SetStatusCondition(&proxy.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeMCPRemoteProxyPodTemplateValid,
+		Status:             metav1.ConditionTrue,
+		ObservedGeneration: proxy.Generation,
+		Reason:             mcpv1beta1.ConditionReasonMCPRemoteProxyPodTemplateValid,
+		Message:            "PodTemplateSpec is valid",
+	})
+	if statusErr := r.Status().Update(ctx, proxy); statusErr != nil {
+		ctxLogger.Error(statusErr, "Failed to update MCPRemoteProxy status with PodTemplateSpec validation")
+	}
+
+	return true
 }
 
 // ensureAllResources ensures all Kubernetes resources for the proxy
@@ -327,6 +407,11 @@ func (r *MCPRemoteProxyReconciler) ensureDeployment(
 		deployment.Spec.Template = newDeployment.Spec.Template
 		deployment.Labels = newDeployment.Labels
 		deployment.Annotations = ctrlutil.MergeAnnotations(newDeployment.Annotations, deployment.Annotations)
+
+		if proxy.Spec.PodTemplateSpec == nil || len(proxy.Spec.PodTemplateSpec.Raw) == 0 {
+			delete(deployment.Annotations, podTemplateSpecHashAnnotation)
+		}
+
 		if newDeployment.Spec.Replicas != nil {
 			deployment.Spec.Replicas = newDeployment.Spec.Replicas
 		}
@@ -1445,7 +1530,7 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	if r.containerNeedsUpdate(ctx, deployment, proxy) {
+	if r.containerNeedsUpdate(ctx, deployment, proxy, runConfigChecksum) {
 		return true
 	}
 
@@ -1457,7 +1542,11 @@ func (r *MCPRemoteProxyReconciler) deploymentNeedsUpdate(
 		return true
 	}
 
-	if r.podSpecNeedsUpdate(deployment, proxy) {
+	if r.podTemplateSpecNeedsUpdate(ctx, deployment, proxy) {
+		return true
+	}
+
+	if r.podSpecNeedsUpdate(ctx, deployment, proxy, runConfigChecksum) {
 		return true
 	}
 
@@ -1481,11 +1570,45 @@ func (r *MCPRemoteProxyReconciler) containerNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
 	proxy *mcpv1beta1.MCPRemoteProxy,
+	runConfigChecksum string,
 ) bool {
 	if deployment == nil || proxy == nil || len(deployment.Spec.Template.Spec.Containers) == 0 {
 		return true
 	}
 
+	if proxy.Spec.PodTemplateSpec != nil && len(proxy.Spec.PodTemplateSpec.Raw) > 0 {
+		return r.containerNeedsUpdateWithPodTemplate(ctx, deployment, proxy, runConfigChecksum)
+	}
+
+	return r.generatedContainerNeedsUpdate(ctx, deployment, proxy)
+}
+
+func (r *MCPRemoteProxyReconciler) containerNeedsUpdateWithPodTemplate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	runConfigChecksum string,
+) bool {
+	expectedDeployment := r.deploymentForMCPRemoteProxy(ctx, proxy, runConfigChecksum)
+	if expectedDeployment == nil {
+		return true
+	}
+	currentContainer, ok := findContainerByName(deployment.Spec.Template.Spec.Containers, mcpRemoteProxyContainerName)
+	if !ok {
+		return true
+	}
+	expectedContainer, ok := findContainerByName(expectedDeployment.Spec.Template.Spec.Containers, mcpRemoteProxyContainerName)
+	if !ok {
+		return true
+	}
+	return remoteProxyContainerFieldsNeedUpdate(currentContainer, expectedContainer)
+}
+
+func (r *MCPRemoteProxyReconciler) generatedContainerNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) bool {
 	container := deployment.Spec.Template.Spec.Containers[0]
 
 	// Check if runner image has changed
@@ -1523,13 +1646,39 @@ func (r *MCPRemoteProxyReconciler) containerNeedsUpdate(
 	}
 
 	// Check if service account has changed
-	expectedServiceAccountName := proxyRunnerServiceAccountNameForRemoteProxy(proxy.Name)
+	expectedServiceAccountName := serviceAccountNameForRemoteProxy(proxy)
 	currentServiceAccountName := deployment.Spec.Template.Spec.ServiceAccountName
 	if currentServiceAccountName != "" && currentServiceAccountName != expectedServiceAccountName {
 		return true
 	}
 
 	return false
+}
+
+func findContainerByName(containers []corev1.Container, name string) (*corev1.Container, bool) {
+	for i := range containers {
+		if containers[i].Name == name {
+			return &containers[i], true
+		}
+	}
+	return nil, false
+}
+
+func remoteProxyContainerFieldsNeedUpdate(current, expected *corev1.Container) bool {
+	if current == nil || expected == nil {
+		return true
+	}
+
+	return current.Image != expected.Image ||
+		!equality.Semantic.DeepEqual(current.Args, expected.Args) ||
+		!equality.Semantic.DeepEqual(current.Env, expected.Env) ||
+		!equality.Semantic.DeepEqual(current.VolumeMounts, expected.VolumeMounts) ||
+		!equality.Semantic.DeepEqual(current.Resources, expected.Resources) ||
+		!equality.Semantic.DeepEqual(current.Ports, expected.Ports) ||
+		!equality.Semantic.DeepEqual(current.StartupProbe, expected.StartupProbe) ||
+		!equality.Semantic.DeepEqual(current.LivenessProbe, expected.LivenessProbe) ||
+		!equality.Semantic.DeepEqual(current.ReadinessProbe, expected.ReadinessProbe) ||
+		!equality.Semantic.DeepEqual(current.SecurityContext, expected.SecurityContext)
 }
 
 // deploymentMetadataNeedsUpdate checks if deployment-level metadata has changed.
@@ -1588,6 +1737,11 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 		labelsForMCPRemoteProxy(proxy.Name), proxy, runConfigChecksum,
 	)
 
+	if proxy.Spec.PodTemplateSpec != nil && len(proxy.Spec.PodTemplateSpec.Raw) > 0 {
+		return !ctrlutil.MapIsSubset(expectedPodTemplateLabels, deployment.Spec.Template.Labels) ||
+			!ctrlutil.MapIsSubset(expectedPodTemplateAnnotations, deployment.Spec.Template.Annotations)
+	}
+
 	if !maps.Equal(deployment.Spec.Template.Labels, expectedPodTemplateLabels) {
 		return true
 	}
@@ -1599,6 +1753,29 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 	return false
 }
 
+// podTemplateSpecNeedsUpdate checks whether the user-provided PodTemplateSpec raw input changed.
+func (*MCPRemoteProxyReconciler) podTemplateSpecNeedsUpdate(
+	ctx context.Context,
+	deployment *appsv1.Deployment,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+) bool {
+	if deployment == nil || proxy == nil {
+		return true
+	}
+
+	if proxy.Spec.PodTemplateSpec == nil || proxy.Spec.PodTemplateSpec.Raw == nil {
+		_, hadPrevious := deployment.Annotations[podTemplateSpecHashAnnotation]
+		return hadPrevious
+	}
+
+	expectedHash, err := checksum.HashRawJSON(proxy.Spec.PodTemplateSpec.Raw)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "Failed to hash PodTemplateSpec, assuming update needed")
+		return true
+	}
+	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash
+}
+
 // podSpecNeedsUpdate checks if pod-level fields (not container fields) have drifted.
 //
 // Currently compares ImagePullSecrets — the merge of cluster-wide chart
@@ -1606,12 +1783,29 @@ func (r *MCPRemoteProxyReconciler) podTemplateMetadataNeedsUpdate(
 // equality.Semantic.DeepEqual so nil and empty slices are treated as equal,
 // which matches Kubernetes' own serialization semantics.
 func (r *MCPRemoteProxyReconciler) podSpecNeedsUpdate(
+	ctx context.Context,
 	deployment *appsv1.Deployment,
 	proxy *mcpv1beta1.MCPRemoteProxy,
+	runConfigChecksum string,
 ) bool {
+	if proxy.Spec.PodTemplateSpec != nil && len(proxy.Spec.PodTemplateSpec.Raw) > 0 {
+		expectedDeployment := r.deploymentForMCPRemoteProxy(ctx, proxy, runConfigChecksum)
+		if expectedDeployment == nil {
+			return true
+		}
+		return deployment.Spec.Template.Spec.ServiceAccountName != expectedDeployment.Spec.Template.Spec.ServiceAccountName ||
+			!equality.Semantic.DeepEqual(
+				deployment.Spec.Template.Spec.ImagePullSecrets,
+				expectedDeployment.Spec.Template.Spec.ImagePullSecrets,
+			)
+	}
+
+	if deployment.Spec.Template.Spec.ServiceAccountName != serviceAccountNameForRemoteProxy(proxy) {
+		return true
+	}
+
 	expected := r.imagePullSecretsForRemoteProxy(proxy)
-	current := deployment.Spec.Template.Spec.ImagePullSecrets
-	return !equality.Semantic.DeepEqual(current, expected)
+	return !equality.Semantic.DeepEqual(deployment.Spec.Template.Spec.ImagePullSecrets, expected)
 }
 
 // serviceNeedsUpdate checks if the service needs to be updated

@@ -193,6 +193,12 @@ func NewListToolsMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewa
 
 			// Call the next handler
 			next.ServeHTTP(rw, r)
+
+			// Explicitly drain our buffered writer after the handler returns. An inner
+			// buffering middleware (e.g. authz's response filter) may write the final
+			// body into our buffer during its own post-ServeHTTP flush; without this
+			// call that body is stranded and the client gets a 0-byte response. See #5797.
+			rw.Flush()
 		})
 	}, nil
 }

@@ -273,6 +273,53 @@ func TestBuildFullRunConfig_AppliesOtelFromConfig(t *testing.T) {
 		"MetricsEnabled must default to true when config does not set it, matching CLI behavior")
 }
 
+// TestBuildFullRunConfig_ThreadsAllowDockerGateway verifies that the
+// allow_docker_gateway request field reaches the resulting RunConfig, since
+// the CLI already exposes --allow-docker-gateway but the API previously
+// dropped the value on the floor.
+func TestBuildFullRunConfig_ThreadsAllowDockerGateway(t *testing.T) {
+	t.Parallel()
+
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	mockGroupManager := groupsmocks.NewMockManager(ctrl)
+	mockGroupManager.EXPECT().Exists(gomock.Any(), "default").Return(true, nil)
+
+	const testImage = "test-image"
+
+	mockRetriever := func(
+		_ context.Context,
+		_ string, _ string, _ string, _ string,
+		_ *templates.RuntimeConfig,
+	) (string, regtypes.ServerMetadata, error) {
+		return testImage, &regtypes.ImageMetadata{Image: testImage}, nil
+	}
+
+	configPath := t.TempDir() + "/config.yaml"
+	provider := config.NewPathProvider(configPath)
+
+	service := &WorkloadService{
+		groupManager:      mockGroupManager,
+		imageRetriever:    mockRetriever,
+		imagePuller:       func(_ context.Context, _ string) error { return nil },
+		configProvider:    provider,
+		imageVerification: retriever.VerifyImageWarn,
+	}
+
+	req := &createRequest{
+		Name: "testserver",
+		updateRequest: updateRequest{
+			Image:              testImage,
+			AllowDockerGateway: true,
+		},
+	}
+
+	runConfig, err := service.BuildFullRunConfig(context.Background(), req, 0)
+	require.NoError(t, err)
+	assert.True(t, runConfig.AllowDockerGateway)
+}
+
 // TestBuildFullRunConfig_NoOtelConfigLeavesTelemetryNil verifies that when no
 // OpenTelemetry config is set, the RunConfig's TelemetryConfig remains nil —
 // the API path does not invent an endpoint.

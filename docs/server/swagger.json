@@ -2736,6 +2736,10 @@
             "pkg_api_v1.createRequest": {
                 "description": "Request to create a new workload",
                 "properties": {
+                    "allow_docker_gateway": {
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "type": "boolean"
+                    },
                     "authz_config": {
                         "description": "Authorization configuration",
                         "type": "string"
@@ -3422,6 +3426,10 @@
             "pkg_api_v1.updateRequest": {
                 "description": "Request to update an existing workload (name cannot be changed)",
                 "properties": {
+                    "allow_docker_gateway": {
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "type": "boolean"
+                    },
                     "authz_config": {
                         "description": "Authorization configuration",
                         "type": "string"

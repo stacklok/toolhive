@@ -2585,6 +2585,13 @@ components:
     pkg_api_v1.createRequest:
       description: Request to create a new workload
       properties:
+        allow_docker_gateway:
+          description: |-
+            Whether to permit outbound connections to Docker gateway addresses
+            (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+            blocked by default in the egress proxy even when network isolation is on.
+            Only applicable to Docker deployments with network isolation enabled.
+          type: boolean
         authz_config:
           description: Authorization configuration
           type: string
@@ -3117,6 +3124,13 @@ components:
     pkg_api_v1.updateRequest:
       description: Request to update an existing workload (name cannot be changed)
       properties:
+        allow_docker_gateway:
+          description: |-
+            Whether to permit outbound connections to Docker gateway addresses
+            (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+            blocked by default in the egress proxy even when network isolation is on.
+            Only applicable to Docker deployments with network isolation enabled.
+          type: boolean
         authz_config:
           description: Authorization configuration
           type: string

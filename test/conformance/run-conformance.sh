@@ -1,0 +1,96 @@
+#!/bin/bash
+# Run the MCP conformance suite against a ToolHive deployment.
+#
+# Packages the conformance repo's reference server (examples/servers/typescript)
+# dynamically at a pinned version, runs it through `thv run` (streamable-http),
+# and points `npx @modelcontextprotocol/conformance` at the proxied endpoint.
+#
+# A single CONFORMANCE_VERSION pins both the npm tool and the git server source
+# (repo tags vX.Y.Z map 1:1 to npm versions), keeping fixtures and tool in sync.
+#
+# Env:
+#   CONFORMANCE_VERSION  conformance tool + server version   (default: 0.1.16)
+#   CONFORMANCE_SUITE    suite to run: active|all|pending    (default: active)
+#   THV_BINARY           path to the thv binary              (default: thv)
+set -euo pipefail
+
+CONFORMANCE_VERSION="${CONFORMANCE_VERSION:-0.1.16}"
+CONFORMANCE_SUITE="${CONFORMANCE_SUITE:-active}"
+THV_BINARY="${THV_BINARY:-thv}"
+SERVER_NAME="conf-sut-ci"
+IMAGE="mcp-conformance-server:ci"
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+RESULTS_DIR="${SCRIPT_DIR}/results"
+EXPECTED_FAILURES="${SCRIPT_DIR}/expected-failures.yaml"
+
+# thv proxying to a container is a local-only, trusted-dev workflow.
+export TOOLHIVE_DEV=true
+export TOOLHIVE_SKIP_DESKTOP_CHECK=1
+
+CLONE_DIR=""
+cleanup() {
+  "${THV_BINARY}" rm "${SERVER_NAME}" >/dev/null 2>&1 || true
+  [ -n "${CLONE_DIR}" ] && rm -rf "${CLONE_DIR}" || true
+}
+trap cleanup EXIT
+
+echo "==> Cloning conformance repo v${CONFORMANCE_VERSION}"
+CLONE_DIR="$(mktemp -d)"
+for attempt in 1 2 3; do
+  if git clone --depth 1 --branch "v${CONFORMANCE_VERSION}" \
+      https://github.com/modelcontextprotocol/conformance "${CLONE_DIR}/repo"; then
+    break
+  fi
+  echo "clone attempt ${attempt} failed; retrying..." >&2
+  rm -rf "${CLONE_DIR}/repo"
+  sleep 5
+  [ "${attempt}" = 3 ] && { echo "ERROR: could not clone conformance repo" >&2; exit 1; }
+done
+
+SERVER_DIR="${CLONE_DIR}/repo/examples/servers/typescript"
+if [ ! -f "${SERVER_DIR}/everything-server.ts" ]; then
+  echo "ERROR: reference server not found at ${SERVER_DIR}" >&2
+  exit 1
+fi
+
+echo "==> Building reference server image"
+cp "${SCRIPT_DIR}/Dockerfile" "${SERVER_DIR}/Dockerfile"
+docker build -t "${IMAGE}" "${SERVER_DIR}"
+
+echo "==> Starting server through ToolHive"
+"${THV_BINARY}" rm -f "${SERVER_NAME}" >/dev/null 2>&1 || true
+"${THV_BINARY}" run "${IMAGE}" \
+  --transport streamable-http --target-port 3000 --name "${SERVER_NAME}"
+
+echo "==> Resolving proxy URL"
+URL=""
+for _ in $(seq 1 30); do
+  URL="$("${THV_BINARY}" list --format json 2>/dev/null \
+    | python3 -c "import sys,json;   d=json.load(sys.stdin)
+print(next((w['url'] for w in d if w.get('name')=='${SERVER_NAME}' and w.get('status')=='running' and w.get('url')), ''))" \
+    2>/dev/null || true)"
+  [ -n "${URL}" ] && break
+  sleep 2
+done
+[ -z "${URL}" ] && { echo "ERROR: could not resolve ${SERVER_NAME} URL" >&2; "${THV_BINARY}" list || true; exit 1; }
+echo "    URL: ${URL}"
+
+echo "==> Waiting for endpoint to be ready"
+for _ in $(seq 1 30); do
+  code="$(curl -s -o /dev/null -w '%{http_code}' "${URL}" -X POST \
+    -H 'content-type: application/json' \
+    -H 'accept: application/json, text/event-stream' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"probe","version":"1"}}}' || true)"
+  [ "${code}" = "200" ] && break
+  sleep 2
+done
+[ "${code}" = "200" ] || { echo "ERROR: endpoint never became ready (last HTTP ${code})" >&2; exit 1; }
+
+echo "==> Running conformance suite (${CONFORMANCE_SUITE})"
+rm -rf "${RESULTS_DIR}"
+npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
+  --url "${URL}" \
+  --suite "${CONFORMANCE_SUITE}" \
+  --expected-failures "${EXPECTED_FAILURES}" \
+  -o "${RESULTS_DIR}"

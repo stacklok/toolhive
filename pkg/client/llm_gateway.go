@@ -6,6 +6,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -273,9 +274,10 @@ func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
 
 // DetectedLLMGatewayClients returns the subset of LLM-gateway-capable clients
 // that are installed on this machine. Most clients require their settings
-// directory and, when configured, their binary on $PATH. Codex is also detected
-// when its desktop app is installed on macOS or Windows; CLI and desktop
-// evidence still produce one canonical Codex result.
+// directory and, when configured, their binary on $PATH. A client with an
+// LLMInstalledDetector hook (e.g. Codex's desktop app) is also detected when
+// the hook returns true; CLI and desktop evidence still produce one canonical
+// result.
 //
 // Requiring both CLI signals prevents false positives from leftover config
 // directories (e.g. ~/.claude or ~/.gemini) after a tool is uninstalled.
@@ -286,50 +288,61 @@ func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
 		if cfg.LLMGatewayMode == "" {
 			continue
 		}
-		if cfg.ClientType == Codex && cm.isCodexInstalled(cfg) {
+		if cm.isClientInstalled(cfg) {
 			result = append(result, cfg.ClientType)
-			continue
 		}
-		// Detection directory: for GUI apps whose settings directory does not
-		// exist until first configured (e.g. Claude Desktop's configLibrary),
-		// LLMDetectRelPath points at a directory that exists once the app is
-		// installed. Otherwise fall back to the settings directory.
-		detectDir := func() string {
-			if cfg.LLMDetectRelPath != nil {
-				return buildConfigFilePath("", cfg.LLMDetectRelPath, cfg.LLMDetectPlatformPrefix, []string{cm.homeDir})
-			}
-			return filepath.Dir(cm.buildLLMSettingsPath(cfg))
-		}()
-		if _, err := os.Stat(detectDir); err != nil {
-			continue
-		}
-		if cfg.LLMBinaryName != "" {
-			if _, err := cm.lookPath(cfg.LLMBinaryName); err != nil {
-				continue
-			}
-		}
-		result = append(result, cfg.ClientType)
 	}
 	return result
 }
 
-func (cm *ClientManager) isCodexInstalled(cfg *clientAppConfig) bool {
-	settingsDirExists := func() bool {
-		_, err := os.Stat(filepath.Dir(cm.buildLLMSettingsPath(cfg)))
-		return err == nil
-	}()
-	cliInstalled := settingsDirExists && cfg.LLMBinaryName != "" && cm.lookPath != nil && func() bool {
-		_, err := cm.lookPath(cfg.LLMBinaryName)
-		return err == nil
-	}()
-	if cliInstalled {
+// isClientInstalled reports whether a single LLM-gateway-capable client appears
+// to be installed. The shared check (settings/detection directory exists and,
+// when configured, the binary is on $PATH) is augmented by an optional
+// per-client LLMInstalledDetector hook (e.g. Codex desktop app detection).
+func (cm *ClientManager) isClientInstalled(cfg *clientAppConfig) bool {
+	if cm.sharedCLIDetection(cfg) {
 		return true
 	}
-	if cm.codexDesktopInstalled == nil {
+	if cfg.LLMInstalledDetector == nil {
 		return false
 	}
-	desktopInstalled, err := cm.codexDesktopInstalled()
-	return err == nil && desktopInstalled
+	installed, err := cfg.LLMInstalledDetector()
+	if err != nil {
+		// Log the detector failure so it's distinguishable from "not installed"
+		// rather than silently treating a detection error as absence.
+		slog.Warn("LLM client detection hook failed",
+			"client", cfg.ClientType, "error", err)
+		return false
+	}
+	return installed
+}
+
+// sharedCLIDetection implements the generic CLI detection shared by all
+// LLM-gateway-capable clients: the detection directory (or settings directory)
+// must exist, and when LLMBinaryName is set the binary must be found on $PATH.
+func (cm *ClientManager) sharedCLIDetection(cfg *clientAppConfig) bool {
+	// Detection directory: for GUI apps whose settings directory does not
+	// exist until first configured (e.g. Claude Desktop's configLibrary),
+	// LLMDetectRelPath points at a directory that exists once the app is
+	// installed. Otherwise fall back to the settings directory.
+	detectDir := func() string {
+		if cfg.LLMDetectRelPath != nil {
+			return buildConfigFilePath("", cfg.LLMDetectRelPath, cfg.LLMDetectPlatformPrefix, []string{cm.homeDir})
+		}
+		return filepath.Dir(cm.buildLLMSettingsPath(cfg))
+	}()
+	if _, err := os.Stat(detectDir); err != nil {
+		return false
+	}
+	if cfg.LLMBinaryName != "" {
+		if cm.lookPath == nil {
+			return false
+		}
+		if _, err := cm.lookPath(cfg.LLMBinaryName); err != nil {
+			return false
+		}
+	}
+	return true
 }
 
 // buildLLMSettingsPath resolves the absolute path to the LLM settings file

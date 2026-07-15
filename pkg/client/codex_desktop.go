@@ -6,6 +6,7 @@ package client
 import (
 	"bytes"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -16,6 +17,10 @@ const (
 	codexWindowsPackageFamily = "OpenAI.Codex_2p2nqsd0c76g0"
 	codexWindowsPackageName   = "OpenAI.Codex"
 	codexWindowsInstalledMark = "installed"
+	// plutilPath is the absolute path to plutil on macOS. Using the absolute
+	// path avoids PATH-resolution failures in stripped-environment contexts
+	// (launchd jobs, sandboxes, CI) where /usr/bin is not on $PATH.
+	plutilPath = "/usr/bin/plutil"
 )
 
 type codexDesktopDetector struct {
@@ -31,7 +36,10 @@ func newCodexDesktopDetector(homeDir, goos string) codexDesktopDetector {
 		goos:    goos,
 		stat:    os.Stat,
 		command: func(name string, args ...string) ([]byte, error) {
-			return exec.Command(name, args...).Output() // #nosec G204 -- name and args are fixed below
+			// #nosec G204 -- the command name is a fixed compile-time literal
+			// ("plutil" or "powershell.exe"); args include derived file paths
+			// from os.UserHomeDir, not user input.
+			return exec.Command(name, args...).Output()
 		},
 	}
 }
@@ -55,8 +63,13 @@ func (d codexDesktopDetector) installedOnDarwin() (bool, error) {
 			if _, err := d.stat(infoPlist); err != nil {
 				continue
 			}
-			output, err := d.command("plutil", "-extract", "CFBundleIdentifier", "raw", "-o", "-", infoPlist)
+			output, err := d.command(plutilPath, "-extract", "CFBundleIdentifier", "raw", "-o", "-", infoPlist)
 			if err != nil {
+				// Log the plutil failure so it's distinguishable from "app absent."
+				// A failure here means the plist exists but its bundle identifier
+				// could not be extracted (e.g. plist corruption or plutil error).
+				slog.Warn("failed to extract CFBundleIdentifier from Codex app plist",
+					"app", appName, "plist", infoPlist, "error", err)
 				continue
 			}
 			if string(bytes.TrimSpace(output)) == codexBundleIdentifier {

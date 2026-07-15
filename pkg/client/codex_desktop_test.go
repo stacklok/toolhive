@@ -72,7 +72,7 @@ func TestCodexDesktopDetectorDarwin(t *testing.T) {
 					return nil, os.ErrNotExist
 				},
 				command: func(name string, args ...string) ([]byte, error) {
-					assert.Equal(t, "plutil", name)
+					assert.Equal(t, plutilPath, name)
 					assert.Equal(t, []string{"-extract", "CFBundleIdentifier", "raw", "-o", "-", plist}, args)
 					return []byte(tt.bundleID + "\n"), tt.commandErr
 				},

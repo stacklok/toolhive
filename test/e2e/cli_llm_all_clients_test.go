@@ -1103,8 +1103,9 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				_, err = os.Stat(filepath.Join(binDir, "codex"))
 				Expect(os.IsNotExist(err)).To(BeTrue(), "no fake codex binary should exist")
 
-				// Keep system tools such as plutil available while excluding user-level
-				// package-manager paths that may contain a real Codex CLI.
+				// plutil is invoked by absolute path (/usr/bin/plutil) so it does
+				// not need to be on $PATH. The PATH is still restricted to exclude
+				// user-level package-manager paths that may contain a real Codex CLI.
 				appOnlyTHVCmd := func(args ...string) *e2e.THVCommand {
 					return thvCmd(args...).WithEnv("PATH=" + binDir + ":/usr/bin:/bin")
 				}

@@ -480,6 +480,9 @@ func TestDetectedLLMGatewayClients_Codex(t *testing.T) {
 				LLMSettingsFile:    "config.toml",
 				LLMSettingsRelPath: []string{".codex"},
 			}}
+			if !tt.nilDetector {
+				cfgs[0].LLMInstalledDetector = func() (bool, error) { return tt.desktop, tt.detectorErr }
+			}
 			if tt.configDir {
 				require.NoError(t, os.MkdirAll(filepath.Join(home, ".codex"), 0o700))
 			}
@@ -489,9 +492,6 @@ func TestDetectedLLMGatewayClients_Codex(t *testing.T) {
 					return "/bin/codex", nil
 				}
 				return "", os.ErrNotExist
-			}
-			if !tt.nilDetector {
-				cm.codexDesktopInstalled = func() (bool, error) { return tt.desktop, tt.detectorErr }
 			}
 
 			detected := cm.DetectedLLMGatewayClients()

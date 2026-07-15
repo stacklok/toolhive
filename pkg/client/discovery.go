@@ -19,12 +19,11 @@ import (
 //
 //nolint:revive // ClientManager is intentionally named to avoid conflict with existing Manager interface
 type ClientManager struct {
-	homeDir               string
-	groupManager          groups.Manager
-	clientIntegrations    []clientAppConfig
-	configProvider        config.Provider
-	lookPath              func(string) (string, error)
-	codexDesktopInstalled func() (bool, error)
+	homeDir            string
+	groupManager       groups.Manager
+	clientIntegrations []clientAppConfig
+	configProvider     config.Provider
+	lookPath           func(string) (string, error)
 }
 
 // HomeDir returns the home directory this ClientManager is rooted at. Exported
@@ -48,13 +47,24 @@ func NewClientManager() (*ClientManager, error) {
 		groupManager = nil
 	}
 
+	// Copy the static integration list so we can wire per-client detectors
+	// without mutating the shared supportedClientIntegrations slice.
+	integrations := make([]clientAppConfig, len(supportedClientIntegrations))
+	copy(integrations, supportedClientIntegrations)
+	codexDetector := newCodexDesktopDetector(home, runtime.GOOS).installed
+	for i := range integrations {
+		if integrations[i].ClientType == Codex {
+			integrations[i].LLMInstalledDetector = codexDetector
+			break
+		}
+	}
+
 	return &ClientManager{
-		homeDir:               home,
-		groupManager:          groupManager,
-		clientIntegrations:    supportedClientIntegrations,
-		configProvider:        config.NewDefaultProvider(),
-		lookPath:              exec.LookPath,
-		codexDesktopInstalled: newCodexDesktopDetector(home, runtime.GOOS).installed,
+		homeDir:            home,
+		groupManager:       groupManager,
+		clientIntegrations: integrations,
+		configProvider:     config.NewDefaultProvider(),
+		lookPath:           exec.LookPath,
 	}, nil
 }
 

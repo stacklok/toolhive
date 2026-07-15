@@ -286,6 +286,13 @@ type clientAppConfig struct {
 	// LLMSettingsRelPath / LLMSettingsPlatformPrefix.
 	LLMDetectRelPath        []string
 	LLMDetectPlatformPrefix map[Platform][]string
+	// LLMInstalledDetector is an optional per-client detection hook that runs
+	// in addition to the shared settings-dir + binary-on-PATH check. Used by
+	// clients that have installation evidence beyond the CLI (e.g. Codex's
+	// desktop app). When set, the client is considered installed if either
+	// the shared check or this hook returns true. The hook must be set at
+	// construction time (NewClientManager), not in static config.
+	LLMInstalledDetector func() (bool, error)
 	// LLMManagedProfileDomain is the macOS managed-preferences plist domain
 	// (e.g. "com.anthropic.claudefordesktop.plist") that, when present, overrides
 	// the client's local config. Setup warns when detected. Empty when the client

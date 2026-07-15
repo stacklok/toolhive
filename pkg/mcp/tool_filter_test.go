@@ -1569,3 +1569,47 @@ func TestNewListToolsMappingMiddleware_FlushesStrandedBuffer(t *testing.T) {
 	assert.Contains(t, recorder.Body.String(), "tool1")
 	assert.NotContains(t, recorder.Body.String(), "tool2")
 }
+
+// TestNewListToolsMappingMiddleware_TerminalDrainPassesThroughUnsupportedContentType
+// is a regression test for a follow-up to #5797/#5809: the terminal drain added
+// to flush a stranded buffer must not discard a body it doesn't know how to
+// process. An inner handler that fails with a plain-text error (e.g.
+// http.Error, which sets "text/plain; charset=utf-8") is neither
+// application/json nor text/event-stream, so processBuffer() rejects it with
+// an "unsupported mime type" error. Before this fix, that error path wrote an
+// empty buffer to the client and discarded the original error body.
+func TestNewListToolsMappingMiddleware_TerminalDrainPassesThroughUnsupportedContentType(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+	require.NoError(t, err)
+
+	tests := []struct {
+		name       string
+		statusCode int
+	}{
+		{name: "4xx body", statusCode: http.StatusBadRequest},
+		{name: "5xx body", statusCode: http.StatusInternalServerError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				http.Error(w, "backend unavailable", tt.statusCode)
+			})
+
+			handler := middleware(inner)
+
+			req := httptest.NewRequest(http.MethodPost, "/", nil)
+			recorder := httptest.NewRecorder()
+
+			handler.ServeHTTP(recorder, req)
+
+			assert.Equal(t, tt.statusCode, recorder.Code)
+			assert.Contains(t, recorder.Body.String(), "backend unavailable",
+				"the original error body must reach the client unchanged")
+		})
+	}
+}

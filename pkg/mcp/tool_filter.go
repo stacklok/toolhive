@@ -198,7 +198,11 @@ func NewListToolsMappingMiddleware(opts ...ToolMiddlewareOption) (types.Middlewa
 			// buffering middleware (e.g. authz's response filter) may write the final
 			// body into our buffer during its own post-ServeHTTP flush; without this
 			// call that body is stranded and the client gets a 0-byte response. See #5797.
-			rw.Flush()
+			//
+			// This is the terminal drain, not a streaming Flush: there is no more data
+			// coming, so a body we can't process (wrong/missing content type, malformed
+			// tools list) is written through unchanged rather than dropped. See #5809 (review).
+			rw.finish()
 		})
 	}, nil
 }
@@ -339,41 +343,83 @@ func (rw *toolFilterWriter) Write(data []byte) (int, error) {
 	return len(data), nil
 }
 
-// Flush processes any remaining buffered data and writes it to the underlying ResponseWriter
+// Flush processes any remaining buffered data, writes it to the underlying
+// ResponseWriter, and forwards the flush downstream. This is the interim/
+// streaming path: a downstream handler or reverse proxy may call this
+// mid-response, so an incomplete SSE event or partial JSON body is left
+// buffered for a later call to complete. Use finish() for the one-time
+// terminal drain after the wrapped handler has returned.
 func (rw *toolFilterWriter) Flush() {
-	if len(rw.buffer) > 0 {
-		mimeType := strings.Split(rw.ResponseWriter.Header().Get("Content-Type"), ";")[0]
-
-		if mimeType == "" {
-			_, err := rw.ResponseWriter.Write(rw.buffer)
-			if err != nil {
-				slog.Error("error writing buffer", "error", err)
-			}
-			rw.buffer = rw.buffer[:0] // Reset buffer
-			return
-		}
-
-		var b bytes.Buffer
-		err := processBuffer(rw.config, rw.buffer, mimeType, &b)
-		if errors.Is(err, errKeepBuffering) {
-			slog.Debug("keep buffering", "buffered_bytes", len(rw.buffer))
-			return
-		}
-		if err != nil {
-			slog.Error("error flushing response", "error", err)
-		}
-
-		slog.Debug("flushing buffer", "bytes", len(b.Bytes()))
-		_, err = rw.ResponseWriter.Write(b.Bytes())
-		if err != nil {
-			slog.Error("error writing buffer", "error", err)
-		}
-		rw.buffer = rw.buffer[:0] // Reset buffer
-	}
+	rw.drainBuffer(false)
 
 	if flusher, ok := rw.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
+}
+
+// finish performs the terminal drain of any remaining buffered data after the
+// wrapped handler has returned. Unlike Flush, there is no more data coming:
+// a body that can't be processed -- an unsupported/missing Content-Type, or a
+// malformed tools list -- is written through unchanged instead of being held
+// forever (stranding it) or discarded (losing it). It does not forward a
+// transport flush, since returning from ServeHTTP already completes the
+// response.
+func (rw *toolFilterWriter) finish() {
+	rw.drainBuffer(true)
+}
+
+// drainBuffer processes the buffered response body according to its MIME
+// type and writes the result to the underlying ResponseWriter.
+//
+// When terminal is false (Flush, mid-stream), a body that processBuffer
+// reports as incomplete is left buffered for a later call. When terminal is
+// true (finish, called once ServeHTTP has returned), there won't be a later
+// call, so any body that can't be processed -- because its MIME type isn't
+// recognized, or because processing itself failed -- is written through
+// unchanged rather than dropped.
+func (rw *toolFilterWriter) drainBuffer(terminal bool) {
+	if len(rw.buffer) == 0 {
+		return
+	}
+
+	mimeType := strings.Split(rw.ResponseWriter.Header().Get("Content-Type"), ";")[0]
+
+	if mimeType == "" {
+		rw.writeBuffer(rw.buffer)
+		return
+	}
+
+	var b bytes.Buffer
+	err := processBuffer(rw.config, rw.buffer, mimeType, &b)
+	if errors.Is(err, errKeepBuffering) {
+		if !terminal {
+			slog.Debug("keep buffering", "buffered_bytes", len(rw.buffer))
+			return
+		}
+		slog.Warn("response ended with an incomplete buffered body; writing it through unchanged",
+			"buffered_bytes", len(rw.buffer))
+		rw.writeBuffer(rw.buffer)
+		return
+	}
+	if err != nil {
+		slog.Error("error processing buffered response; writing it through unchanged", "error", err)
+		rw.writeBuffer(rw.buffer)
+		return
+	}
+
+	slog.Debug("flushing buffer", "bytes", len(b.Bytes()))
+	rw.writeBuffer(b.Bytes())
+}
+
+// writeBuffer writes data to the underlying ResponseWriter and resets rw.buffer.
+// data is expected to be either rw.buffer itself or a value derived from it, so
+// resetting after the write is always correct.
+func (rw *toolFilterWriter) writeBuffer(data []byte) {
+	_, err := rw.ResponseWriter.Write(data)
+	if err != nil {
+		slog.Error("error writing buffer", "error", err)
+	}
+	rw.buffer = rw.buffer[:0] // Reset buffer
 }
 
 type toolsListResponse struct {

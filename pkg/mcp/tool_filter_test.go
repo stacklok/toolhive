@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -1184,7 +1185,7 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 				},
 			},
 			expectWrite: true,
-			expectReset: false, // Buffer is not reset when no content type
+			expectReset: true,
 		},
 		{
 			name:        "with status code - should set header and write",
@@ -1250,6 +1251,35 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestToolFilterWriter_Flush_NoContentTypeDoesNotDuplicateOnRepeatedFlush is a
+// regression test: the no-content-type branch of Flush() used to skip resetting
+// the buffer, so a second Flush() call (e.g. the post-ServeHTTP drain added for
+// #5797, on top of a downstream flush) would rewrite the same bytes again.
+func TestToolFilterWriter_Flush_NoContentTypeDoesNotDuplicateOnRepeatedFlush(t *testing.T) {
+	t.Parallel()
+
+	mockWriter := &mockResponseWriter{
+		headers: make(http.Header),
+		buffer:  &bytes.Buffer{},
+	}
+
+	rw := &toolFilterWriter{
+		ResponseWriter: mockWriter,
+		buffer:         []byte{},
+		config:         &toolMiddlewareConfig{},
+	}
+
+	data := []byte(`{"test":"data"}`)
+	written, err := rw.Write(data)
+	require.NoError(t, err)
+	assert.Equal(t, len(data), written)
+
+	rw.Flush()
+	rw.Flush()
+
+	assert.Equal(t, string(data), mockWriter.buffer.String(), "second flush should not rewrite already-flushed bytes")
 }
 
 // TestToolFilterWriter_WriteHeader verifies that Content-Length is stripped
@@ -1499,4 +1529,43 @@ func TestWithToolsOverride(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestNewListToolsMappingMiddleware_FlushesStrandedBuffer is a regression test for #5797.
+//
+// An inner handler (e.g. authz's response filtering writer) may write the final
+// response body into our buffer during its own post-ServeHTTP flush, i.e. after
+// next.ServeHTTP has already returned to us but without calling our Flush(). If
+// the middleware doesn't explicitly flush its own writer after next.ServeHTTP
+// returns, that body is stranded in the buffer and never reaches the client.
+func TestNewListToolsMappingMiddleware_FlushesStrandedBuffer(t *testing.T) {
+	t.Parallel()
+
+	middleware, err := NewListToolsMappingMiddleware(WithToolsFilter("tool1"))
+	require.NoError(t, err)
+
+	body := `{"jsonrpc":"2.0","id":1,"result":{"tools":[` +
+		`{"name":"tool1","description":"desc1"},` +
+		`{"name":"tool2","description":"desc2"}]}}`
+
+	// Mimics an inner buffering middleware (e.g. authz's FlushAndFilter) that
+	// writes the response body directly into the wrapped writer without ever
+	// calling Flush() on it itself.
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, writeErr := w.Write([]byte(body))
+		require.NoError(t, writeErr)
+	})
+
+	handler := middleware(inner)
+
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	recorder := httptest.NewRecorder()
+
+	handler.ServeHTTP(recorder, req)
+
+	assert.NotEmpty(t, recorder.Body.String())
+	assert.Contains(t, recorder.Body.String(), "tool1")
+	assert.NotContains(t, recorder.Body.String(), "tool2")
 }

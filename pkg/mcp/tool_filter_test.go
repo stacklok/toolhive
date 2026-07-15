@@ -1185,7 +1185,7 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 				},
 			},
 			expectWrite: true,
-			expectReset: false, // Buffer is not reset when no content type
+			expectReset: true,
 		},
 		{
 			name:        "with status code - should set header and write",
@@ -1251,6 +1251,35 @@ func TestToolFilterWriter_Flush(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestToolFilterWriter_Flush_NoContentTypeDoesNotDuplicateOnRepeatedFlush is a
+// regression test: the no-content-type branch of Flush() used to skip resetting
+// the buffer, so a second Flush() call (e.g. the post-ServeHTTP drain added for
+// #5797, on top of a downstream flush) would rewrite the same bytes again.
+func TestToolFilterWriter_Flush_NoContentTypeDoesNotDuplicateOnRepeatedFlush(t *testing.T) {
+	t.Parallel()
+
+	mockWriter := &mockResponseWriter{
+		headers: make(http.Header),
+		buffer:  &bytes.Buffer{},
+	}
+
+	rw := &toolFilterWriter{
+		ResponseWriter: mockWriter,
+		buffer:         []byte{},
+		config:         &toolMiddlewareConfig{},
+	}
+
+	data := []byte(`{"test":"data"}`)
+	written, err := rw.Write(data)
+	require.NoError(t, err)
+	assert.Equal(t, len(data), written)
+
+	rw.Flush()
+	rw.Flush()
+
+	assert.Equal(t, string(data), mockWriter.buffer.String(), "second flush should not rewrite already-flushed bytes")
 }
 
 // TestToolFilterWriter_WriteHeader verifies that Content-Length is stripped

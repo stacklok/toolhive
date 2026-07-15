@@ -349,6 +349,7 @@ func (rw *toolFilterWriter) Flush() {
 			if err != nil {
 				slog.Error("error writing buffer", "error", err)
 			}
+			rw.buffer = rw.buffer[:0] // Reset buffer
 			return
 		}
 

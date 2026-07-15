@@ -28,7 +28,7 @@ const testAgentClientID = "devops-agent"
 func newTestHandler(t *testing.T, tj *testJWKS, delegationLifespan time.Duration) *Handler {
 	t.Helper()
 
-	validator, err := NewSubjectTokenValidator(tj.jwks, testIssuer)
+	validator, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
 	require.NoError(t, err)
 
 	return &Handler{
@@ -430,6 +430,58 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			},
 		},
 		{
+			name:   "subject token with no may_act and no client_id rejected",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				extra := map[string]interface{}{
+					"name":  "Test User",
+					"email": "test@example.com",
+				}
+				token := tj.signToken(t, validClaims(), extra)
+				return url.Values{
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
+					"subject_token":      {token},
+					"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				}
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidGrant,
+			hintContains: "no verifiable client binding",
+		},
+		{
+			name:   "subject token's own act claim is nested under the new act claim",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["act"] = map[string]interface{}{"sub": "original-agent"}
+				token := tj.signToken(t, validClaims(), extra)
+				return url.Values{
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
+					"subject_token":      {token},
+					"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				}
+			},
+			lifespan: 15 * time.Minute,
+			check: func(t *testing.T, req *fosite.AccessRequest) {
+				t.Helper()
+				sess, ok := req.GetSession().(*session.Session)
+				require.True(t, ok, "session should be *session.Session")
+				actClaim, exists := sess.JWTClaims.Extra["act"]
+				require.True(t, exists, "act claim must be present")
+				actMap, ok := actClaim.(map[string]interface{})
+				require.True(t, ok, "act claim must be a map")
+				assert.Equal(t, testAgentClientID, actMap["sub"])
+				priorAct, ok := actMap["act"].(map[string]interface{})
+				require.True(t, ok, "prior act claim should be nested under the new act claim")
+				assert.Equal(t, "original-agent", priorAct["sub"])
+			},
+		},
+		{
 			name: "requested audience not allowed by client",
 			ctx:  func(_ *testing.T) context.Context { return context.Background() },
 			client: func() *fosite.DefaultClient {
@@ -560,6 +612,61 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 	}
 }
 
+func TestTokenExchangeHandler_DefaultAudience(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+
+	tests := []struct {
+		name             string
+		allowedAudiences []string
+		wantErr          bool
+		wantAudience     string
+	}{
+		{
+			name:             "single allowed audience defaults when none requested",
+			allowedAudiences: []string{testIssuer},
+			wantAudience:     testIssuer,
+		},
+		{
+			name:             "no allowed audiences configured rejects the request",
+			allowedAudiences: nil,
+			wantErr:          true,
+		},
+		{
+			name:             "multiple allowed audiences rejects the ambiguous request",
+			allowedAudiences: []string{testIssuer, "https://other.example.com"},
+			wantErr:          true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// newTestHandler wires the subject-token validator's allowed
+			// audiences to testIssuer regardless of tt.allowedAudiences —
+			// that governs the subject token's own "aud" claim, a separate
+			// concern from the delegated token's audience under test here.
+			h := newTestHandler(t, tj, 15*time.Minute)
+			h.allowedAudiences = tt.allowedAudiences
+
+			req := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
+			err := h.HandleTokenEndpointRequest(context.Background(), req)
+
+			if tt.wantErr {
+				require.Error(t, err)
+				var rfcErr *fosite.RFC6749Error
+				require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
+				assert.Contains(t, rfcErr.Reason(), "unambiguous default audience")
+				return
+			}
+			require.NoError(t, err)
+			assert.Contains(t, req.GetGrantedAudience(), tt.wantAudience)
+		})
+	}
+}
+
 // mockConfig implements the tokenExchangeConfig interface for testing.
 type mockConfig struct {
 	scopeStrategy    fosite.ScopeStrategy
@@ -588,7 +695,7 @@ type mockAccessTokenStrategy struct {
 	generateErr error
 }
 
-func (m *mockAccessTokenStrategy) AccessTokenSignature(_ context.Context, token string) string {
+func (*mockAccessTokenStrategy) AccessTokenSignature(_ context.Context, token string) string {
 	return "sig-" + token
 }
 
@@ -599,16 +706,16 @@ func (m *mockAccessTokenStrategy) GenerateAccessToken(_ context.Context, _ fosit
 	return "test-access-token", "test-signature", nil
 }
 
-func (m *mockAccessTokenStrategy) ValidateAccessToken(_ context.Context, _ fosite.Requester, _ string) error {
+func (*mockAccessTokenStrategy) ValidateAccessToken(_ context.Context, _ fosite.Requester, _ string) error {
 	return nil
 }
 
 // mockAccessTokenStorage is a minimal oauth2.AccessTokenStorage that records
 // the persisted session signature and never fails.
 type mockAccessTokenStorage struct {
-	createdSig   string
-	createErr    error
-	createdReqs  []fosite.Requester
+	createdSig  string
+	createErr   error
+	createdReqs []fosite.Requester
 }
 
 func (m *mockAccessTokenStorage) CreateAccessTokenSession(_ context.Context, signature string, req fosite.Requester) error {
@@ -620,11 +727,11 @@ func (m *mockAccessTokenStorage) CreateAccessTokenSession(_ context.Context, sig
 	return nil
 }
 
-func (m *mockAccessTokenStorage) GetAccessTokenSession(_ context.Context, _ string, _ fosite.Session) (fosite.Requester, error) {
+func (*mockAccessTokenStorage) GetAccessTokenSession(_ context.Context, _ string, _ fosite.Session) (fosite.Requester, error) {
 	return nil, fosite.ErrNotFound
 }
 
-func (m *mockAccessTokenStorage) DeleteAccessTokenSession(_ context.Context, _ string) error {
+func (*mockAccessTokenStorage) DeleteAccessTokenSession(_ context.Context, _ string) error {
 	return nil
 }
 
@@ -651,11 +758,15 @@ func (m *mockHandleHelperConfig) GetRefreshTokenLifespan(_ context.Context) time
 
 // newTestHandlerWithHelper builds a Handler wired with a real oauth2.HandleHelper
 // backed by mock strategy/storage, enabling PopulateTokenEndpointResponse tests.
-func newTestHandlerWithHelper(t *testing.T, tj *testJWKS, delegationLifespan, accessLifespan time.Duration,
+// The delegation lifespan is fixed at 15 minutes; only accessLifespan varies
+// across callers.
+func newTestHandlerWithHelper(t *testing.T, tj *testJWKS, accessLifespan time.Duration,
 	strategy *mockAccessTokenStrategy, storage *mockAccessTokenStorage) *Handler {
 	t.Helper()
 
-	validator, err := NewSubjectTokenValidator(tj.jwks, testIssuer)
+	const delegationLifespan = 15 * time.Minute
+
+	validator, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
 	require.NoError(t, err)
 
 	cfg := &mockConfig{
@@ -689,7 +800,7 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 
 		strategy := &mockAccessTokenStrategy{}
 		storage := &mockAccessTokenStorage{}
-		h := newTestHandlerWithHelper(t, tj, 15*time.Minute, 15*time.Minute, strategy, storage)
+		h := newTestHandlerWithHelper(t, tj, 15*time.Minute, strategy, storage)
 
 		req := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
 		// Override grant type so CanHandleTokenEndpointRequest returns false.
@@ -711,7 +822,7 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 
 		strategy := &mockAccessTokenStrategy{}
 		storage := &mockAccessTokenStorage{}
-		h := newTestHandlerWithHelper(t, tj, 15*time.Minute, 15*time.Minute, strategy, storage)
+		h := newTestHandlerWithHelper(t, tj, 15*time.Minute, strategy, storage)
 
 		// Client is allowed client_credentials only, not token-exchange.
 		client := defaultClient()
@@ -737,7 +848,7 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		storage := &mockAccessTokenStorage{}
 		// Access token lifespan larger than the delegation lifespan so the
 		// session expiry (capped at delegation lifespan) is the binding lifetime.
-		h := newTestHandlerWithHelper(t, tj, 15*time.Minute, time.Hour, strategy, storage)
+		h := newTestHandlerWithHelper(t, tj, time.Hour, strategy, storage)
 
 		req := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
 		require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
@@ -763,7 +874,7 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		// Subject token expires in 5 minutes; delegation max is 15; access
 		// token lifespan default is 1h. The effective issued lifetime must be
 		// capped at the subject token's remaining life (~5 minutes).
-		h := newTestHandlerWithHelper(t, tj, 15*time.Minute, time.Hour, strategy, storage)
+		h := newTestHandlerWithHelper(t, tj, time.Hour, strategy, storage)
 
 		claims := validClaims()
 		claims.Expiry = jwt.NewNumericDate(time.Now().Add(5 * time.Minute))
@@ -799,9 +910,9 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		default:
 			t.Fatalf("unexpected expires_in type %T: %v", expiresIn, expiresIn)
 		}
-		assert.Greater(t, secs, int64((4*time.Minute).Seconds()),
+		assert.Greater(t, secs, int64((4 * time.Minute).Seconds()),
 			"expires_in should be capped near subject token remaining (~5m), got %d", secs)
-		assert.Less(t, secs, int64((6*time.Minute).Seconds()),
+		assert.Less(t, secs, int64((6 * time.Minute).Seconds()),
 			"expires_in should be capped near subject token remaining (~5m), got %d", secs)
 	})
 
@@ -812,7 +923,7 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 			generateErr: errors.New("strategy failure"),
 		}
 		storage := &mockAccessTokenStorage{}
-		h := newTestHandlerWithHelper(t, tj, 15*time.Minute, time.Hour, strategy, storage)
+		h := newTestHandlerWithHelper(t, tj, time.Hour, strategy, storage)
 
 		req := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
 		require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
@@ -826,6 +937,32 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		assert.Empty(t, storage.createdSig)
 	})
 
+	t.Run("stale session expiry fails closed instead of falling back to full lifespan", func(t *testing.T) {
+		t.Parallel()
+
+		strategy := &mockAccessTokenStrategy{}
+		storage := &mockAccessTokenStorage{}
+		h := newTestHandlerWithHelper(t, tj, time.Hour, strategy, storage)
+
+		req := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
+		require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))
+
+		// Simulate the narrow window where the session's bound expiry (set by
+		// HandleTokenEndpointRequest) elapses before PopulateTokenEndpointResponse runs.
+		sess, ok := req.GetSession().(*session.Session)
+		require.True(t, ok)
+		sess.SetExpiresAt(fosite.AccessToken, time.Now().Add(-time.Second))
+
+		responder := fosite.NewAccessResponse()
+		err := h.PopulateTokenEndpointResponse(context.Background(), req, responder)
+
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, fosite.ErrInvalidGrant),
+			"expected ErrInvalidGrant, got: %v", err)
+		assert.Empty(t, responder.GetAccessToken())
+		assert.Empty(t, storage.createdSig)
+	})
+
 	t.Run("AccessTokenStorage error propagates", func(t *testing.T) {
 		t.Parallel()
 
@@ -833,7 +970,7 @@ func TestTokenExchangeHandler_PopulateTokenEndpointResponse(t *testing.T) {
 		storage := &mockAccessTokenStorage{
 			createErr: errors.New("storage failure"),
 		}
-		h := newTestHandlerWithHelper(t, tj, 15*time.Minute, time.Hour, strategy, storage)
+		h := newTestHandlerWithHelper(t, tj, time.Hour, strategy, storage)
 
 		req := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
 		require.NoError(t, h.HandleTokenEndpointRequest(context.Background(), req))

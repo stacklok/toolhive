@@ -16,9 +16,14 @@ import (
 // Factory returns a server.Factory that creates a token exchange Handler.
 // The delegationLifespan parameter sets the maximum lifetime for delegated tokens;
 // the actual lifetime is the minimum of this value and the subject token's remaining lifetime.
-func Factory(delegationLifespan time.Duration) server.Factory {
+// Returns an error if delegationLifespan is not positive, since a zero or negative
+// value would produce delegated tokens with an expiry already in the past.
+func Factory(delegationLifespan time.Duration) (server.Factory, error) {
+	if delegationLifespan <= 0 {
+		return nil, fmt.Errorf("tokenexchange: delegationLifespan must be positive, got %v", delegationLifespan)
+	}
 	return func(config *server.AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error) {
-		validator, err := NewSubjectTokenValidator(config.SigningJWKS, config.GetAccessTokenIssuer())
+		validator, err := NewSubjectTokenValidator(config.PublicJWKS(), config.GetAccessTokenIssuer(), config.AllowedAudiences)
 		if err != nil {
 			return nil, fmt.Errorf("tokenexchange: failed to create subject token validator: %w", err)
 		}
@@ -45,5 +50,5 @@ func Factory(delegationLifespan time.Duration) server.Factory {
 			config:             config.Config,
 			allowedAudiences:   config.AllowedAudiences,
 		}, nil
-	}
+	}, nil
 }

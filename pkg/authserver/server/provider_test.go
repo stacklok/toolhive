@@ -564,7 +564,7 @@ func (*mockTokenIntrospector) IntrospectToken(_ context.Context, _ string, _ fos
 // mockRevocationHandler implements fosite.RevocationHandler for testing.
 type mockRevocationHandler struct{}
 
-func (*mockRevocationHandler) RevokeToken(_ context.Context, _ string, _ string, _ fosite.Client) error {
+func (*mockRevocationHandler) RevokeToken(_ context.Context, _ string, _ fosite.TokenType, _ fosite.Client) error {
 	return nil
 }
 
@@ -660,7 +660,7 @@ func TestNewAuthorizationServer(t *testing.T) {
 		require.NotNil(t, provider)
 	})
 
-	t.Run("handles factory returning non-handler type", func(t *testing.T) {
+	t.Run("errors on factory returning non-handler type", func(t *testing.T) {
 		t.Parallel()
 
 		factory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) (any, error) {
@@ -668,7 +668,8 @@ func TestNewAuthorizationServer(t *testing.T) {
 		}
 
 		provider, err := NewAuthorizationServer(createConfig(t), storage, nil, factory)
-		require.NoError(t, err)
-		require.NotNil(t, provider)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "string")
+		require.Nil(t, provider)
 	})
 }

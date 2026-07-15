@@ -283,24 +283,35 @@ func NewAuthorizationServer(
 			return nil, fmt.Errorf("authorization server factory failed: %w", err)
 		}
 
+		var matched bool
+
 		if ah, ok := result.(fosite.AuthorizeEndpointHandler); ok {
 			fositeConfig.AuthorizeEndpointHandlers.Append(ah)
+			matched = true
 		}
 
 		if th, ok := result.(fosite.TokenEndpointHandler); ok {
 			fositeConfig.TokenEndpointHandlers.Append(th)
+			matched = true
 		}
 
 		if ti, ok := result.(fosite.TokenIntrospector); ok {
 			fositeConfig.TokenIntrospectionHandlers.Append(ti)
+			matched = true
 		}
 
 		if rh, ok := result.(fosite.RevocationHandler); ok {
 			fositeConfig.RevocationHandlers.Append(rh)
+			matched = true
 		}
 
 		if ph, ok := result.(fosite.PushedAuthorizeEndpointHandler); ok {
 			fositeConfig.PushedAuthorizeEndpointHandlers.Append(ph)
+			matched = true
+		}
+
+		if result != nil && !matched {
+			return nil, fmt.Errorf("authorization server factory returned unrecognized handler type %T", result)
 		}
 	}
 

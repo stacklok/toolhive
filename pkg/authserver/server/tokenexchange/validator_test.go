@@ -48,6 +48,12 @@ func newTestJWKS(t *testing.T) *testJWKS {
 	}
 }
 
+// publicJWKS returns the public-only JWKS, mirroring how Factory constructs
+// the validator from AuthorizationServerConfig.PublicJWKS().
+func (tj *testJWKS) publicJWKS() *jose.JSONWebKeySet {
+	return &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{tj.jwk.Public()}}
+}
+
 // signToken creates a signed JWT with the given claims using the test JWKS key.
 func (tj *testJWKS) signToken(t *testing.T, claims jwt.Claims, extraClaims map[string]interface{}) string {
 	t.Helper()
@@ -100,21 +106,21 @@ func TestSubjectTokenValidator_NewValidation(t *testing.T) {
 
 	t.Run("nil JWKS returns error", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewSubjectTokenValidator(nil, testIssuer)
+		_, err := NewSubjectTokenValidator(nil, testIssuer, []string{testIssuer})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "JWKS must not be nil")
 	})
 
 	t.Run("empty issuer returns error", func(t *testing.T) {
 		t.Parallel()
-		_, err := NewSubjectTokenValidator(tj.jwks, "")
+		_, err := NewSubjectTokenValidator(tj.publicJWKS(), "", []string{testIssuer})
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "issuer must not be empty")
 	})
 
 	t.Run("valid params succeed", func(t *testing.T) {
 		t.Parallel()
-		v, err := NewSubjectTokenValidator(tj.jwks, testIssuer)
+		v, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 		assert.NotNil(t, v)
 	})
@@ -296,7 +302,7 @@ func TestSubjectTokenValidator_Validate(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			validator, err := NewSubjectTokenValidator(tj.jwks, testIssuer)
+			validator, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, []string{testIssuer})
 			require.NoError(t, err)
 			rawToken := tt.token(t)
 
@@ -318,18 +324,84 @@ func TestSubjectTokenValidator_Validate(t *testing.T) {
 	}
 }
 
-// newECDSAJWK generates a fresh ECDSA P-256 key with the given key ID.
-func newECDSAJWK(t *testing.T, kid string) (*ecdsa.PrivateKey, jose.JSONWebKey) {
+func TestSubjectTokenValidator_AudienceValidation(t *testing.T) {
+	t.Parallel()
+
+	tj := newTestJWKS(t)
+
+	tests := []struct {
+		name             string
+		allowedAudiences []string
+		tokenAudience    jwt.Audience
+		wantErr          bool
+	}{
+		{
+			name:             "empty allowedAudiences rejects even a matching-looking token",
+			allowedAudiences: nil,
+			tokenAudience:    jwt.Audience{testIssuer},
+			wantErr:          true,
+		},
+		{
+			name:             "token audience intersects allowedAudiences",
+			allowedAudiences: []string{"https://other.example.com", testIssuer},
+			tokenAudience:    jwt.Audience{testIssuer},
+			wantErr:          false,
+		},
+		{
+			name:             "token audience does not intersect allowedAudiences",
+			allowedAudiences: []string{"https://other.example.com"},
+			tokenAudience:    jwt.Audience{testIssuer},
+			wantErr:          true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			validator, err := NewSubjectTokenValidator(tj.publicJWKS(), testIssuer, tt.allowedAudiences)
+			require.NoError(t, err)
+
+			claims := validClaims()
+			claims.Audience = tt.tokenAudience
+			rawToken := tj.signToken(t, claims, nil)
+
+			result, err := validator.Validate(context.Background(), rawToken)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "claims validation failed")
+				assert.Nil(t, result)
+				return
+			}
+			require.NoError(t, err)
+			require.NotNil(t, result)
+		})
+	}
+}
+
+// newECDSAJWK generates a fresh ECDSA P-256 key with the given key ID. The
+// returned JWK carries the private key (in its Key field), so it can be used
+// directly for both signing (signWithJWK) and JWKS construction.
+func newECDSAJWK(t *testing.T, kid string) jose.JSONWebKey {
 	t.Helper()
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(t, err)
-	jwk := jose.JSONWebKey{
+	return jose.JSONWebKey{
 		Key:       privateKey,
 		KeyID:     kid,
 		Algorithm: string(jose.ES256),
 		Use:       "sig",
 	}
-	return privateKey, jwk
+}
+
+// publicJWKSOf builds a JWKS containing only the public portion of each key,
+// mirroring how Factory constructs the validator from PublicJWKS().
+func publicJWKSOf(keys ...jose.JSONWebKey) *jose.JSONWebKeySet {
+	public := make([]jose.JSONWebKey, len(keys))
+	for i, k := range keys {
+		public[i] = k.Public()
+	}
+	return &jose.JSONWebKeySet{Keys: public}
 }
 
 // signWithJWK signs claims with the given signing key (no extra claims).
@@ -351,11 +423,11 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 	t.Run("token verified with kid-matched key", func(t *testing.T) {
 		t.Parallel()
 
-		_, jwk1 := newECDSAJWK(t, "test-key-1")
-		_, jwk2 := newECDSAJWK(t, "test-key-2")
-		jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk1, jwk2}}
+		jwk1 := newECDSAJWK(t, "test-key-1")
+		jwk2 := newECDSAJWK(t, "test-key-2")
+		jwks := publicJWKSOf(jwk1, jwk2)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer)
+		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		rawToken := signWithJWK(t, jwk2, jose.ES256, validClaims())
@@ -369,11 +441,11 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 	t.Run("token verified by full iteration when kid absent", func(t *testing.T) {
 		t.Parallel()
 
-		_, jwk1 := newECDSAJWK(t, "test-key-1")
-		_, jwk2 := newECDSAJWK(t, "test-key-2")
-		jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk1, jwk2}}
+		jwk1 := newECDSAJWK(t, "test-key-1")
+		jwk2 := newECDSAJWK(t, "test-key-2")
+		jwks := publicJWKSOf(jwk1, jwk2)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer)
+		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		// Sign with jwk1 (whose public half is in the JWKS) but omit the kid
@@ -392,14 +464,14 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 	t.Run("token signed with different key in JWKS fails", func(t *testing.T) {
 		t.Parallel()
 
-		_, jwk1 := newECDSAJWK(t, "test-key-1")
-		jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{jwk1}}
+		jwk1 := newECDSAJWK(t, "test-key-1")
+		jwks := publicJWKSOf(jwk1)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer)
+		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		// Key B is not in the JWKS.
-		_, otherJWK := newECDSAJWK(t, "other-key")
+		otherJWK := newECDSAJWK(t, "other-key")
 		rawToken := signWithJWK(t, otherJWK, jose.ES256, validClaims())
 
 		result, err := validator.Validate(context.Background(), rawToken)
@@ -419,9 +491,9 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 			Algorithm: string(jose.RS256),
 			Use:       "sig",
 		}
-		jwks := &jose.JSONWebKeySet{Keys: []jose.JSONWebKey{rsaJWK}}
+		jwks := publicJWKSOf(rsaJWK)
 
-		validator, err := NewSubjectTokenValidator(jwks, testIssuer)
+		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
 		require.NoError(t, err)
 
 		rawToken := signWithJWK(t, rsaJWK, jose.RS256, validClaims())

@@ -9,6 +9,7 @@ package tokenexchange
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/go-jose/go-jose/v4"
@@ -69,17 +70,22 @@ type MayActClaim struct {
 // It verifies that the token was issued by this authorization server by checking
 // the signature against the server's own JWKS, and validates standard JWT claims.
 type SubjectTokenValidator struct {
-	jwks   *jose.JSONWebKeySet
-	issuer string
+	publicJWKS       *jose.JSONWebKeySet
+	issuer           string
+	allowedAudiences []string
 }
 
 // NewSubjectTokenValidator creates a new validator for subject tokens.
-// The jwks parameter must be non-nil and contain the authorization server's
-// signing keys (private keys are accepted; only the public portion is used
-// for verification). The issuer parameter is the expected "iss" claim value
-// and is also used as the expected audience, since tokens issued by this
-// server are intended for this server during token exchange.
-func NewSubjectTokenValidator(jwks *jose.JSONWebKeySet, issuer string) (*SubjectTokenValidator, error) {
+// The jwks parameter must be non-nil and contain only the authorization server's
+// public signing keys (e.g. AuthorizationServerConfig.PublicJWKS) — the validator
+// only ever verifies signatures, so it must not be handed private key material.
+// The issuer parameter is the expected "iss" claim value. allowedAudiences is the
+// set of audiences this server accepts in a subject token's "aud" claim; per the
+// same secure default as AuthorizationServerConfig.AllowedAudiences, an empty
+// allowedAudiences rejects every subject token rather than skipping the check.
+func NewSubjectTokenValidator(
+	jwks *jose.JSONWebKeySet, issuer string, allowedAudiences []string,
+) (*SubjectTokenValidator, error) {
 	if jwks == nil {
 		return nil, fmt.Errorf("JWKS must not be nil")
 	}
@@ -87,8 +93,9 @@ func NewSubjectTokenValidator(jwks *jose.JSONWebKeySet, issuer string) (*Subject
 		return nil, fmt.Errorf("issuer must not be empty")
 	}
 	return &SubjectTokenValidator{
-		jwks:   jwks,
-		issuer: issuer,
+		publicJWKS:       jwks,
+		issuer:           issuer,
+		allowedAudiences: allowedAudiences,
 	}, nil
 }
 
@@ -102,23 +109,27 @@ func (v *SubjectTokenValidator) Validate(_ context.Context, rawToken string) (*V
 		return nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
 	}
 
-	// Extract public keys from the JWKS for signature verification.
-	publicJWKS := v.publicKeys()
-
 	// Try each key in the JWKS until one verifies the signature.
 	var standardClaims jwt.Claims
 	var extraClaims map[string]interface{}
 
-	if err := verifySignature(parsedToken, publicJWKS, &standardClaims, &extraClaims); err != nil {
+	if err := verifySignature(parsedToken, v.publicJWKS, &standardClaims, &extraClaims); err != nil {
 		return nil, err
 	}
 
-	// Validate standard claims: issuer, audience, and expiry.
+	// Validate issuer and expiry. Audience is intentionally excluded from
+	// jwt.Expected here — go-jose's AnyAudience check is skipped entirely when
+	// empty, which is the opposite of this server's secure default (empty
+	// AllowedAudiences means no audience is permitted). Audience is checked
+	// explicitly below so an empty allowlist fails closed.
 	expected := jwt.Expected{
-		Issuer:      v.issuer,
-		AnyAudience: jwt.Audience{v.issuer},
+		Issuer: v.issuer,
 	}
 	if err := standardClaims.ValidateWithLeeway(expected, 0); err != nil {
+		return nil, fmt.Errorf("subject token claims validation failed: %w", err)
+	}
+
+	if err := validateAudience(standardClaims.Audience, v.allowedAudiences); err != nil {
 		return nil, fmt.Errorf("subject token claims validation failed: %w", err)
 	}
 
@@ -171,11 +182,11 @@ func verifySignature(
 	var lastErr error
 	for _, key := range candidates {
 		*extraClaims = make(map[string]interface{})
-		if err := token.Claims(key, standardClaims, extraClaims); err == nil {
+		err := token.Claims(key, standardClaims, extraClaims)
+		if err == nil {
 			return nil
-		} else {
-			lastErr = err
 		}
+		lastErr = err
 	}
 	if lastErr != nil {
 		return fmt.Errorf("subject token signature verification failed: %w", lastErr)
@@ -183,15 +194,20 @@ func verifySignature(
 	return fmt.Errorf("subject token signature verification failed: no keys in JWKS")
 }
 
-// publicKeys extracts the public key portion of each key in the JWKS.
-func (v *SubjectTokenValidator) publicKeys() *jose.JSONWebKeySet {
-	result := &jose.JSONWebKeySet{
-		Keys: make([]jose.JSONWebKey, 0, len(v.jwks.Keys)),
+// validateAudience checks that tokenAudience intersects allowedAudiences.
+// Per this server's secure default (see AuthorizationServerConfig.AllowedAudiences),
+// an empty allowedAudiences means no audience is permitted, so the check fails
+// closed rather than skipping validation.
+func validateAudience(tokenAudience jwt.Audience, allowedAudiences []string) error {
+	if len(allowedAudiences) == 0 {
+		return fmt.Errorf("no audiences are configured on this server")
 	}
-	for _, key := range v.jwks.Keys {
-		result.Keys = append(result.Keys, key.Public())
+	for _, aud := range tokenAudience {
+		if slices.Contains(allowedAudiences, aud) {
+			return nil
+		}
 	}
-	return result
+	return fmt.Errorf("token audience %v does not match any allowed audience", []string(tokenAudience))
 }
 
 // buildValidatedClaims constructs a ValidatedClaims from standard and extra claims.
@@ -218,35 +234,43 @@ func buildValidatedClaims(
 	// Standard JWT registered claims are filtered out since they are already
 	// captured in the structured fields above.
 	for k, val := range extra {
-		switch k {
-		case "name":
-			if s, ok := val.(string); ok {
-				vc.Name = s
-			}
-		case "email":
-			if s, ok := val.(string); ok {
-				vc.Email = s
-			}
-		case "client_id":
-			if s, ok := val.(string); ok {
-				vc.ClientID = s
-			}
-		case "scope":
-			if s, ok := val.(string); ok {
-				vc.Scopes = s
-			}
-		case "may_act":
-			if m, ok := val.(map[string]interface{}); ok {
-				if s, ok := m["sub"].(string); ok {
-					vc.MayAct = &MayActClaim{Sub: s}
-				}
-			}
-		case "sub", "iss", "aud", "exp", "iat", "nbf", "jti":
-			// Skip registered JWT claims — already in structured fields.
-		default:
-			vc.Extra[k] = val
-		}
+		assignClaim(vc, k, val)
 	}
 
 	return vc
+}
+
+// assignClaim routes one non-standard JWT claim onto its structured
+// ValidatedClaims field, or into Extra if it isn't a well-known claim.
+// Registered JWT claims (sub, iss, aud, exp, iat, nbf, jti) are dropped —
+// they're already captured in buildValidatedClaims's structured fields.
+func assignClaim(vc *ValidatedClaims, key string, val interface{}) {
+	switch key {
+	case "name":
+		if s, ok := val.(string); ok {
+			vc.Name = s
+		}
+	case "email":
+		if s, ok := val.(string); ok {
+			vc.Email = s
+		}
+	case "client_id":
+		if s, ok := val.(string); ok {
+			vc.ClientID = s
+		}
+	case "scope":
+		if s, ok := val.(string); ok {
+			vc.Scopes = s
+		}
+	case "may_act":
+		if m, ok := val.(map[string]interface{}); ok {
+			if s, ok := m["sub"].(string); ok {
+				vc.MayAct = &MayActClaim{Sub: s}
+			}
+		}
+	case "sub", "iss", "aud", "exp", "iat", "nbf", "jti":
+		// Skip registered JWT claims — already in structured fields.
+	default:
+		vc.Extra[key] = val
+	}
 }

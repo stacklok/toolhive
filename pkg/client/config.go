@@ -85,7 +85,7 @@ const (
 	VSCodeServer ClientApp = "vscode-server"
 	// MistralVibe represents the Mistral Vibe IDE.
 	MistralVibe ClientApp = "mistral-vibe"
-	// Codex represents the OpenAI Codex CLI.
+	// Codex represents the OpenAI Codex CLI and desktop app.
 	Codex ClientApp = "codex"
 	// KimiCli represents the Kimi Code CLI.
 	KimiCli ClientApp = "kimi-cli"
@@ -245,8 +245,8 @@ type clientAppConfig struct {
 	// If nil or missing an entry for the current OS, no prefix is added.
 	PluginsPlatformPrefix map[Platform][]string
 	// LLM gateway configuration ─────────────────────────────────────────────
-	// LLMGatewayMode is "direct" (token-helper) or "proxy" (static key via
-	// localhost reverse proxy), or "" when the tool has no LLM gateway support.
+	// LLMGatewayMode identifies the gateway integration strategy (direct token
+	// helper, proxy, credential helper, or Codex auth), or "" when unsupported.
 	LLMGatewayMode string
 	// LLMBinaryName is the executable name looked up via exec.LookPath to
 	// confirm the tool is actually installed (not just a leftover config
@@ -286,6 +286,13 @@ type clientAppConfig struct {
 	// LLMSettingsRelPath / LLMSettingsPlatformPrefix.
 	LLMDetectRelPath        []string
 	LLMDetectPlatformPrefix map[Platform][]string
+	// LLMInstalledDetector is an optional per-client detection hook that runs
+	// in addition to the shared settings-dir + binary-on-PATH check. Used by
+	// clients that have installation evidence beyond the CLI (e.g. Codex's
+	// desktop app). When set, the client is considered installed if either
+	// the shared check or this hook returns true. The hook must be set at
+	// construction time (NewClientManager), not in static config.
+	LLMInstalledDetector func() (bool, error)
 	// LLMManagedProfileDomain is the macOS managed-preferences plist domain
 	// (e.g. "com.anthropic.claudefordesktop.plist") that, when present, overrides
 	// the client's local config. Setup warns when detected. Empty when the client

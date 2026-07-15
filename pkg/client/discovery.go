@@ -47,16 +47,29 @@ func NewClientManager() (*ClientManager, error) {
 		groupManager = nil
 	}
 
+	// Copy the static integration list so we can wire per-client detectors
+	// without mutating the shared supportedClientIntegrations slice.
+	integrations := make([]clientAppConfig, len(supportedClientIntegrations))
+	copy(integrations, supportedClientIntegrations)
+	codexDetector := newCodexDesktopDetector(home, runtime.GOOS).installed
+	for i := range integrations {
+		if integrations[i].ClientType == Codex {
+			integrations[i].LLMInstalledDetector = codexDetector
+			break
+		}
+	}
+
 	return &ClientManager{
 		homeDir:            home,
 		groupManager:       groupManager,
-		clientIntegrations: supportedClientIntegrations,
+		clientIntegrations: integrations,
 		configProvider:     config.NewDefaultProvider(),
 		lookPath:           exec.LookPath,
 	}, nil
 }
 
-// NewTestClientManager creates a new ClientManager with test dependencies
+// NewTestClientManager creates a ClientManager with test dependencies. Native
+// Codex desktop detection is intentionally omitted to keep tests deterministic.
 func NewTestClientManager(
 	homeDir string,
 	groupManager groups.Manager,

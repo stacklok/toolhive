@@ -5,6 +5,7 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -447,6 +448,62 @@ func TestConfigureLLMGateway_ProxyMode(t *testing.T) {
 
 // ── DetectedLLMGatewayClients ─────────────────────────────────────────────────
 
+func TestDetectedLLMGatewayClients_Codex(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		configDir   bool
+		binary      bool
+		desktop     bool
+		detectorErr error
+		nilDetector bool
+		want        bool
+	}{
+		{name: "CLI only", configDir: true, binary: true, want: true},
+		{name: "app only without config directory or PATH", desktop: true, want: true},
+		{name: "CLI and app append once", configDir: true, binary: true, desktop: true, want: true},
+		{name: "stale settings only", configDir: true},
+		{name: "no CLI or desktop evidence"},
+		{name: "nil desktop detector is not detected", nilDetector: true},
+		{name: "detector failure is not detected", detectorErr: errors.New("query failed")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			cfgs := []clientAppConfig{{
+				ClientType:         Codex,
+				LLMGatewayMode:     llmgateway.ModeCodexAuth,
+				LLMBinaryName:      "codex",
+				LLMSettingsFile:    "config.toml",
+				LLMSettingsRelPath: []string{".codex"},
+			}}
+			if !tt.nilDetector {
+				cfgs[0].LLMInstalledDetector = func() (bool, error) { return tt.desktop, tt.detectorErr }
+			}
+			if tt.configDir {
+				require.NoError(t, os.MkdirAll(filepath.Join(home, ".codex"), 0o700))
+			}
+			cm := NewTestClientManager(home, nil, cfgs, nil)
+			cm.lookPath = func(_ string) (string, error) {
+				if tt.binary {
+					return "/bin/codex", nil
+				}
+				return "", os.ErrNotExist
+			}
+
+			detected := cm.DetectedLLMGatewayClients()
+			if tt.want {
+				require.Equal(t, []ClientApp{Codex}, detected)
+			} else {
+				assert.Empty(t, detected)
+			}
+		})
+	}
+}
+
 // TestDetectedLLMGatewayClients_DirOnly verifies that a client without a
 // BinaryName set is detected based solely on the settings directory existing.
 func TestDetectedLLMGatewayClients_DirOnly(t *testing.T) {
@@ -561,6 +618,7 @@ func TestRealClientConfigs_LLMBinaryNames(t *testing.T) {
 		Cursor:        "cursor",
 		ClaudeCode:    "claude",
 		GeminiCli:     "gemini",
+		Codex:         "codex",
 		// Tools without a binary check (dir-only detection) are omitted.
 	}
 

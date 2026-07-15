@@ -27,9 +27,13 @@ which also calls "thv llm token". It reads its configuration only at launch, so
 fully quit and relaunch it after setup. Pass --models to list the models it
 should offer until the gateway serves model discovery itself.
 
-Codex is configured with a custom model_provider in ~/.codex/config.toml whose
-auth command invokes "thv llm token" directly (no shell), keeping the existing
-model_providers and mcp_servers entries in that file untouched.
+Codex CLI and the ChatGPT desktop app use the same user configuration:
+~/.codex/config.toml by default, or %USERPROFILE%\.codex\config.toml on Windows.
+ToolHive adds a custom model_provider whose auth command invokes "thv llm token"
+directly (no shell), keeping existing model_providers and mcp_servers entries
+untouched. Desktop app detection is supported on macOS and Windows; the canonical
+--client target remains "codex". If the desktop app is running, fully quit and
+reopen it after setup.
 
 Proxy-mode tools (Cursor, VS Code, Xcode) are configured to send requests to
 the localhost reverse proxy started by "thv llm proxy start".
@@ -53,7 +57,7 @@ thv llm setup [flags]
       --anthropic-path-prefix string   Path prefix appended to the gateway URL when writing ANTHROPIC_BASE_URL for direct-mode tools (e.g. /anthropic). When omitted, the gateway is probed automatically.
       --audience string                OIDC audience (optional)
       --callback-port int              OIDC callback port (omit to keep current; default: ephemeral)
-      --client string                  Configure only this AI tool by name (e.g. claude-code, cursor). Omit to configure all detected tools.
+      --client string                  Configure only this AI tool by name (e.g. claude-code, cursor, codex). Omit to configure all detected tools.
       --client-id string               OIDC client ID
       --gateway-url string             LLM gateway base URL (must use HTTPS)
   -h, --help                           help for setup

@@ -416,7 +416,7 @@
                         "type": "object"
                     },
                     "allow_private_ips": {
-                        "description": "AllowPrivateIPs permits the upstream provider's HTTP client to connect to\nprivate IP ranges (RFC-1918, link-local). Use only when the upstream is\nhosted inside the same cluster and has no public endpoint. HTTP-scheme\nrestrictions are unchanged — HTTPS is still required for non-localhost hosts.\nDefaults to false.",
+                        "description": "AllowPrivateIPs permits the upstream provider's HTTP client to connect to\nprivate IP ranges (RFC-1918, link-local). When DCRConfig is set, this\nalso gates the DCR discovery and registration calls made on this\nupstream's behalf (see pkg/authserver/runner/dcr_adapter.go), so a\nsingle flag covers the whole upstream rather than needing a separate\nDCR-specific setting. Use only when the upstream is hosted inside the\nsame cluster and has no public endpoint. HTTP-scheme restrictions are\nunchanged — HTTPS is still required for non-localhost hosts. Defaults\nto false.",
                         "type": "boolean"
                     },
                     "authorization_endpoint": {

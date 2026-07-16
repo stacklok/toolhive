@@ -33,6 +33,75 @@ func TestNewHttpClientBuilder(t *testing.T) {
 	assert.False(t, builder.allowPrivate)
 }
 
+func TestNewHostScopedClientBuilder(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		host              string
+		allowPrivateIPs   bool
+		insecureAllowHTTP bool
+		wantAllowPrivate  bool
+		wantInsecureHTTP  bool
+	}{
+		{
+			name: "external host, guarded by default",
+			host: "idp.example.com",
+		},
+		{
+			name:             "external host, allowPrivateIPs widens only the private-IP gate",
+			host:             "idp.example.com",
+			allowPrivateIPs:  true,
+			wantAllowPrivate: true,
+			wantInsecureHTTP: false,
+		},
+		{
+			name:              "external host, insecureAllowHTTP widens both gates",
+			host:              "idp.example.com",
+			insecureAllowHTTP: true,
+			wantAllowPrivate:  true,
+			wantInsecureHTTP:  true,
+		},
+		{
+			name:             "loopback host is exempted from both gates regardless of flags",
+			host:             "127.0.0.1:8443",
+			wantAllowPrivate: true,
+			wantInsecureHTTP: true,
+		},
+		{
+			name:             "loopback host stays exempted even with allowPrivateIPs also set",
+			host:             "localhost",
+			allowPrivateIPs:  true,
+			wantAllowPrivate: true,
+			wantInsecureHTTP: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			builder := NewHostScopedClientBuilder(tt.host, tt.allowPrivateIPs, tt.insecureAllowHTTP)
+
+			assert.Equal(t, tt.wantAllowPrivate, builder.allowPrivate, "allowPrivate mismatch")
+			assert.Equal(t, tt.wantInsecureHTTP, builder.insecureAllowHTTP, "insecureAllowHTTP mismatch")
+		})
+	}
+}
+
+// TestNewHostScopedClientBuilder_InsecureDisableURLValidationEnvVar pins that
+// the env var widens both gates the same way a loopback host does. Kept as a
+// standalone test (not a table case) because t.Setenv is incompatible with
+// t.Parallel.
+func TestNewHostScopedClientBuilder_InsecureDisableURLValidationEnvVar(t *testing.T) {
+	t.Setenv("INSECURE_DISABLE_URL_VALIDATION", "true")
+
+	builder := NewHostScopedClientBuilder("idp.example.com", false, false)
+
+	assert.True(t, builder.allowPrivate, "env var must widen the private-IP gate")
+	assert.True(t, builder.insecureAllowHTTP, "env var must widen the HTTP scheme gate")
+}
+
 func TestHttpClientBuilder_WithCABundle(t *testing.T) {
 	t.Parallel()
 

@@ -1324,8 +1324,9 @@ func TestHandleDynamicRegistration_MissingRegistrationEndpoint(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	config := &OAuthFlowConfig{
-		Scopes:       []string{"openid", "profile"},
-		CallbackPort: 8765,
+		Scopes:          []string{"openid", "profile"},
+		CallbackPort:    8765,
+		AllowPrivateIPs: true, // loopback test server; guard would otherwise refuse to dial it
 	}
 
 	err := handleDynamicRegistration(context.Background(), server.URL, config)

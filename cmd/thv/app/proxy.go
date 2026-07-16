@@ -391,15 +391,16 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 		}
 
 		flowConfig := &discovery.OAuthFlowConfig{
-			ClientID:       remoteAuthFlags.RemoteAuthClientID,
-			ClientSecret:   clientSecret,
-			AuthorizeURL:   remoteAuthFlags.RemoteAuthAuthorizeURL,
-			TokenURL:       remoteAuthFlags.RemoteAuthTokenURL,
-			Scopes:         remoteAuthFlags.RemoteAuthScopes,
-			CallbackPort:   remoteAuthFlags.RemoteAuthCallbackPort,
-			Timeout:        remoteAuthFlags.RemoteAuthTimeout,
-			SkipBrowser:    remoteAuthFlags.RemoteAuthSkipBrowser,
-			ScopeParamName: remoteAuthFlags.RemoteAuthScopeParamName,
+			ClientID:        remoteAuthFlags.RemoteAuthClientID,
+			ClientSecret:    clientSecret,
+			AuthorizeURL:    remoteAuthFlags.RemoteAuthAuthorizeURL,
+			TokenURL:        remoteAuthFlags.RemoteAuthTokenURL,
+			Scopes:          remoteAuthFlags.RemoteAuthScopes,
+			CallbackPort:    remoteAuthFlags.RemoteAuthCallbackPort,
+			Timeout:         remoteAuthFlags.RemoteAuthTimeout,
+			SkipBrowser:     remoteAuthFlags.RemoteAuthSkipBrowser,
+			ScopeParamName:  remoteAuthFlags.RemoteAuthScopeParamName,
+			AllowPrivateIPs: networking.TargetIsPrivate(ctx, proxyTargetURI),
 		}
 
 		result, err := discovery.PerformOAuthFlow(ctx, remoteAuthFlags.RemoteAuthIssuer, flowConfig)
@@ -422,15 +423,16 @@ func handleOutgoingAuthentication(ctx context.Context) (*discovery.OAuthFlowResu
 
 		// Perform OAuth flow with discovered configuration
 		flowConfig := &discovery.OAuthFlowConfig{
-			ClientID:       remoteAuthFlags.RemoteAuthClientID,
-			ClientSecret:   clientSecret,
-			AuthorizeURL:   remoteAuthFlags.RemoteAuthAuthorizeURL,
-			TokenURL:       remoteAuthFlags.RemoteAuthTokenURL,
-			Scopes:         remoteAuthFlags.RemoteAuthScopes,
-			CallbackPort:   remoteAuthFlags.RemoteAuthCallbackPort,
-			Timeout:        remoteAuthFlags.RemoteAuthTimeout,
-			SkipBrowser:    remoteAuthFlags.RemoteAuthSkipBrowser,
-			ScopeParamName: remoteAuthFlags.RemoteAuthScopeParamName,
+			ClientID:        remoteAuthFlags.RemoteAuthClientID,
+			ClientSecret:    clientSecret,
+			AuthorizeURL:    remoteAuthFlags.RemoteAuthAuthorizeURL,
+			TokenURL:        remoteAuthFlags.RemoteAuthTokenURL,
+			Scopes:          remoteAuthFlags.RemoteAuthScopes,
+			CallbackPort:    remoteAuthFlags.RemoteAuthCallbackPort,
+			Timeout:         remoteAuthFlags.RemoteAuthTimeout,
+			SkipBrowser:     remoteAuthFlags.RemoteAuthSkipBrowser,
+			ScopeParamName:  remoteAuthFlags.RemoteAuthScopeParamName,
+			AllowPrivateIPs: networking.TargetIsPrivate(ctx, proxyTargetURI),
 		}
 
 		result, err := discovery.PerformOAuthFlow(ctx, authInfo.Realm, flowConfig)

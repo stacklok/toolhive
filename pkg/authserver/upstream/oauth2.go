@@ -28,7 +28,6 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -830,12 +829,20 @@ func formatOAuth2Error(err error, prefix string) error {
 // allowPrivateIPs widens only the private-IP gate: it permits connections to
 // RFC-1918/link-local addresses (e.g. in-cluster providers) without enabling
 // the HTTP scheme for non-localhost hosts.
+//
+// The host-scoped guard policy lives in networking.NewHostScopedClientBuilder
+// so this provider path and the DCR resolver share one implementation.
+//
+// Unlike the DCR resolver's guarded client, this one deliberately leaves
+// keep-alive enabled: the returned client is stored on BaseOAuth2Provider and
+// reused for many token-refresh/userinfo calls over the provider's lifetime
+// against a single operator-configured host, so disabling keep-alive here
+// would pay a fresh TCP+TLS handshake on every call. This trades a narrower
+// window — a DNS change for that fixed host between connection reuses is not
+// re-checked mid-lifetime — for avoiding that cost on a hot path; the DCR
+// resolver's per-request-host, low-frequency calls don't have the same
+// trade-off, hence the difference. If this provider's threat model changes
+// (e.g. it starts dialing caller-varying hosts), revisit this decision.
 func newHTTPClientForHost(host string, allowPrivateIPs, insecureAllowHTTP bool) (*http.Client, error) {
-	allowInsecure := networking.IsLocalhost(host) ||
-		insecureAllowHTTP ||
-		strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
-	return networking.NewHttpClientBuilder().
-		WithInsecureAllowHTTP(allowInsecure).
-		WithPrivateIPs(allowInsecure || allowPrivateIPs).
-		Build()
+	return networking.NewHostScopedClientBuilder(host, allowPrivateIPs, insecureAllowHTTP).Build()
 }

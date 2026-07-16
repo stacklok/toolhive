@@ -22,6 +22,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -569,6 +570,235 @@ func TestResolveDCRCredentials_DoesNotForwardBearerOnRedirect(t *testing.T) {
 	assert.EqualValues(t, 0, atomic.LoadInt32(&foreignHits),
 		"foreign origin must receive zero requests; got %v Authorization headers: %v",
 		atomic.LoadInt32(&foreignHits), foreignAuthHeaders)
+}
+
+// TestResolveDCRCredentials_BlocksPrivateIPTargets pins the CWE-918 SSRF guard
+// added for issue #5825: both of the resolver's outbound calls — the discovery
+// fetch and the registration POST — are dialed through a private-IP-guarded
+// client, so a registration endpoint that resolves to a private or link-local
+// address is refused at connect time. The guard fires before any bytes leave
+// the host, so these cases need no live server behind the private target.
+// AllowPrivateIPs defaults to false; loopback stays permitted for development.
+func TestResolveDCRCredentials_BlocksPrivateIPTargets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		newReq func(t *testing.T) *Request
+	}{
+		{
+			// Direct RegistrationEndpoint branch: an operator-configured
+			// endpoint that resolves (or rebinds) to an RFC-1918 address.
+			name: "direct registration endpoint on a private IP",
+			newReq: func(_ *testing.T) *Request {
+				// Issuer is unique per test: the process-global dcrFlight
+				// singleflight keys on (Issuer, RedirectURI, ScopesHash), so a
+				// shared synthetic issuer would coalesce this call with another
+				// parallel test and return that test's result.
+				return &Request{
+					Issuer:               "https://block-direct.example.test",
+					Scopes:               []string{"openid"},
+					RegistrationEndpoint: "https://10.255.255.1/register",
+				}
+			},
+		},
+		{
+			// Discovery-indirection branch: the discovery document is served
+			// from an allowed (loopback) host, but it points
+			// registration_endpoint at a link-local metadata address the
+			// metadata itself controls. HTTPS so it clears scheme validation
+			// and reaches the guarded dial.
+			name: "registration endpoint from discovery on a link-local IP",
+			newReq: func(t *testing.T) *Request {
+				t.Helper()
+				mux := http.NewServeMux()
+				var server *httptest.Server
+				mux.HandleFunc("/.well-known/oauth-authorization-server",
+					func(w http.ResponseWriter, _ *http.Request) {
+						w.Header().Set("Content-Type", "application/json")
+						_ = json.NewEncoder(w).Encode(oauthproto.AuthorizationServerMetadata{
+							Issuer:                server.URL,
+							AuthorizationEndpoint: server.URL + "/authorize",
+							TokenEndpoint:         server.URL + "/token",
+							JWKSURI:               server.URL + "/jwks",
+							RegistrationEndpoint:  "https://169.254.169.254/register",
+						})
+					})
+				server = httptest.NewServer(mux)
+				t.Cleanup(server.Close)
+				return &Request{
+					Issuer:       server.URL,
+					Scopes:       []string{"openid"},
+					DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+				}
+			},
+		},
+		{
+			// Discovery-fetch branch itself: DiscoveryURL points directly at a
+			// private IP, so the *discovery* client's own dial guard
+			// (newGuardedDCRClient(discoveryHost, ...) in resolveDCREndpoints)
+			// must refuse it. The two cases above only prove the guard on the
+			// registration client; this proves it on the discovery client. No
+			// live server is needed — the guard fires before any request is
+			// sent, and deriveExpectedIssuerFromDiscoveryURL resolves the
+			// issuer from the URL string alone.
+			name: "discovery URL itself on a private IP",
+			newReq: func(_ *testing.T) *Request {
+				return &Request{
+					Issuer:       "https://block-discovery.example.test",
+					Scopes:       []string{"openid"},
+					DiscoveryURL: "https://10.255.255.1/.well-known/oauth-authorization-server",
+				}
+			},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := ResolveCredentials(context.Background(), tc.newReq(t), newMemoryDCRStore(t))
+			require.Error(t, err)
+			assert.ErrorContains(t, err, networking.ErrPrivateIpAddress,
+				"a private/link-local registration target must be refused at connect time")
+		})
+	}
+}
+
+// TestResolveDCRCredentials_AllowPrivateIPsHonored proves req.AllowPrivateIPs
+// is threaded through to the guarded client: with it set, the resolver dials
+// the private target instead of refusing it at the guard. The target is a
+// non-routable RFC 5737 documentation address (TEST-NET-1), so the dial fails
+// with a network error rather than the guard error — and can never reach a
+// real host.
+func TestResolveDCRCredentials_AllowPrivateIPsHonored(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	// Issuer is unique per test so the process-global dcrFlight singleflight
+	// (keyed on Issuer, RedirectURI, ScopesHash) cannot coalesce this call
+	// with another parallel test and hand back that test's result.
+	req := &Request{
+		Issuer:               "https://allow-private.example.test",
+		Scopes:               []string{"openid"},
+		RegistrationEndpoint: "https://192.0.2.1/register",
+		AllowPrivateIPs:      true,
+	}
+
+	_, err := ResolveCredentials(ctx, req, newMemoryDCRStore(t))
+	require.Error(t, err, "the dead documentation address cannot complete registration")
+	assert.NotContains(t, err.Error(), networking.ErrPrivateIpAddress,
+		"AllowPrivateIPs=true must lift the guard so the dial is attempted, not refused")
+}
+
+// TestResolveDCRCredentials_AllowPrivateIPsHonoredViaDiscovery proves
+// req.AllowPrivateIPs also lifts the guard on the discovery-indirection
+// path — not just the direct RegistrationEndpoint branch covered by
+// TestResolveDCRCredentials_AllowPrivateIPsHonored above: with it set, a
+// registration_endpoint the discovery document points at a private IP is
+// dialed instead of refused at the guard.
+func TestResolveDCRCredentials_AllowPrivateIPsHonoredViaDiscovery(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	mux := http.NewServeMux()
+	var server *httptest.Server
+	mux.HandleFunc("/.well-known/oauth-authorization-server",
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(oauthproto.AuthorizationServerMetadata{
+				Issuer:                server.URL,
+				AuthorizationEndpoint: server.URL + "/authorize",
+				TokenEndpoint:         server.URL + "/token",
+				JWKSURI:               server.URL + "/jwks",
+				// Non-routable RFC 5737 documentation address (TEST-NET-1): the
+				// dial fails with a network error rather than reaching a real
+				// host, same as TestResolveDCRCredentials_AllowPrivateIPsHonored.
+				RegistrationEndpoint: "https://192.0.2.1/register",
+			})
+		})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	req := &Request{
+		Issuer:          server.URL,
+		Scopes:          []string{"openid"},
+		DiscoveryURL:    server.URL + "/.well-known/oauth-authorization-server",
+		AllowPrivateIPs: true,
+	}
+
+	_, err := ResolveCredentials(ctx, req, newMemoryDCRStore(t))
+	require.Error(t, err, "the dead documentation address cannot complete registration")
+	assert.NotContains(t, err.Error(), networking.ErrPrivateIpAddress,
+		"AllowPrivateIPs=true must lift the guard on the discovery-indirection path too")
+}
+
+// TestResolveDCRCredentials_DiscoveryRefusesCrossHostRedirect pins that the
+// discovery fetch installs SameHostRedirectPolicy: a discovery endpoint that
+// 30x-redirects to a different host must not be followed, so a malicious
+// upstream cannot walk the metadata fetch onto an unintended origin (CWE-918).
+// A different port counts as a different host, so two loopback httptest servers
+// suffice.
+func TestResolveDCRCredentials_DiscoveryRefusesCrossHostRedirect(t *testing.T) {
+	t.Parallel()
+
+	var foreignHits int32
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&foreignHits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(foreign.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, foreign.URL+"/.well-known/oauth-authorization-server", http.StatusFound)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	req := &Request{
+		Issuer:       server.URL,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+	}
+
+	_, err := ResolveCredentials(context.Background(), req, newMemoryDCRStore(t))
+	require.Error(t, err, "discovery must fail when the endpoint redirects cross-host")
+	assert.EqualValues(t, 0, atomic.LoadInt32(&foreignHits),
+		"the discovery client must not follow a cross-host redirect")
+}
+
+func TestHostFromURL(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		rawURL  string
+		want    string
+		wantErr bool
+	}{
+		{name: "https with port", rawURL: "https://idp.example.com:8443/register", want: "idp.example.com:8443"},
+		{name: "https without port", rawURL: "https://idp.example.com/register", want: "idp.example.com"},
+		{name: "loopback with port", rawURL: "http://127.0.0.1:5000/register", want: "127.0.0.1:5000"},
+		{name: "missing host", rawURL: "/register", wantErr: true},
+		{name: "malformed url", rawURL: "://bad", wantErr: true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := hostFromURL(tc.rawURL)
+			if tc.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tc.want, got)
+		})
+	}
 }
 
 func TestResolveDCRCredentials_AuthMethodPreference(t *testing.T) {

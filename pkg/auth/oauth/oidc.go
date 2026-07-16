@@ -20,9 +20,18 @@ import (
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
-// DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer
-func DiscoverOIDCEndpoints(ctx context.Context, issuer string) (*oauthproto.OIDCDiscoveryDocument, error) {
-	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, false)
+// DiscoverOIDCEndpoints discovers OAuth endpoints from an OIDC issuer.
+//
+// issuer originates from untrusted remote-server discovery in some callers
+// (e.g. the CLI DCR flow's well-known fallback) and from an operator-supplied
+// flag in others; blockPrivateIPs lets each caller apply its own SSRF policy
+// (CWE-918) rather than this function silently choosing one for everyone.
+func DiscoverOIDCEndpoints(
+	ctx context.Context,
+	issuer string,
+	blockPrivateIPs bool,
+) (*oauthproto.OIDCDiscoveryDocument, error) {
+	return discoverOIDCEndpointsWithClient(ctx, issuer, nil, false, blockPrivateIPs)
 }
 
 // DiscoverActualIssuer discovers the actual issuer from a URL that might be different from the issuer itself
@@ -41,17 +50,18 @@ func DiscoverActualIssuer(
 	return discoverOIDCEndpointsWithClientAndValidation(ctx, metadataURL, nil, false, false, blockPrivateIPs)
 }
 
-// discoverOIDCEndpointsWithClient discovers OAuth endpoints from an OIDC issuer with a custom HTTP client (private for testing)
+// discoverOIDCEndpointsWithClient discovers OAuth endpoints from an OIDC
+// issuer with a custom HTTP client (private for testing). blockPrivateIPs is
+// only consulted when client is nil — a caller-supplied client carries its
+// own dial policy.
 func discoverOIDCEndpointsWithClient(
 	ctx context.Context,
 	issuer string,
 	client networking.HTTPClient,
 	insecureAllowHTTP bool,
+	blockPrivateIPs bool,
 ) (*oauthproto.OIDCDiscoveryDocument, error) {
-	// A caller-supplied client carries its own dial policy; the default-client
-	// private-IP guard only applies when client is nil, so blockPrivateIPs is
-	// irrelevant here.
-	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true, insecureAllowHTTP, false)
+	return discoverOIDCEndpointsWithClientAndValidation(ctx, issuer, client, true, insecureAllowHTTP, blockPrivateIPs)
 }
 
 // discoverOIDCEndpointsWithClientAndValidation discovers OAuth endpoints with optional issuer validation
@@ -242,8 +252,10 @@ func createOAuthConfigFromOIDCWithClient(
 	resource string,
 	client networking.HTTPClient,
 ) (*Config, error) {
-	// Discover OIDC endpoints (insecureAllowHTTP is false for OAuth config creation)
-	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false)
+	// Discover OIDC endpoints (insecureAllowHTTP is false for OAuth config creation).
+	// blockPrivateIPs=false here preserves this call path's existing behavior;
+	// it is unrelated to the CLI DCR fallback fixed in DiscoverOIDCEndpoints.
+	doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover OIDC endpoints: %w", err)
 	}

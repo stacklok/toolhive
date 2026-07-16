@@ -519,6 +519,16 @@ type OAuthFlowConfig struct {
 	Resource             string // RFC 8707 resource indicator (optional)
 	OAuthParams          map[string]string
 	ScopeParamName       string // Override scope query parameter name (e.g., "user_scope" for Slack)
+
+	// AllowPrivateIPs permits the Dynamic Client Registration calls (discovery
+	// fetch and registration POST) to reach private/loopback/link-local
+	// addresses. Callers set it from networking.TargetIsPrivate on the remote
+	// target: when ToolHive is pointed at a private remote the upstream IdP may
+	// legitimately be private too, so its DCR calls must be allowed; otherwise
+	// they are guarded to contain SSRF (CWE-918). This mirrors the
+	// blockPrivateIPs decision the flow already applies to its other discovery
+	// fetches. Defaults to false (guarded).
+	AllowPrivateIPs bool
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -722,6 +732,11 @@ func resolveDCRCredentials(
 		AuthorizationEndpoint: discoveredDoc.AuthorizationEndpoint,
 		TokenEndpoint:         discoveredDoc.TokenEndpoint,
 		PublicClient:          true,
+		// Carry the flow's private-IP decision so DCR shares the same SSRF
+		// posture as the flow's other discovery fetches; without this the DCR
+		// calls would always be guarded and a legitimately private upstream
+		// would be refused. See OAuthFlowConfig.AllowPrivateIPs.
+		AllowPrivateIPs: config.AllowPrivateIPs,
 	}
 
 	// Fetch AS metadata using the multi-URL fallback so non-root issuers
@@ -730,7 +745,26 @@ func resolveDCRCredentials(
 	// defence-in-depth for a future refactor that produces an empty-issuer
 	// doc and preserves the pre-existing RegistrationEndpoint-direct path.
 	if discoveredDoc.Issuer != "" {
-		fullMeta, metaErr := oauthproto.FetchAuthorizationServerMetadata(ctx, discoveredDoc.Issuer, nil)
+		// Guard this fetch the same way pkg/auth/dcr's own outbound calls are
+		// guarded (CWE-918): discoveredDoc.Issuer can be untrusted server input
+		// on some discovery branches (see discoverIssuerAndScopes in
+		// pkg/auth/remote/handler.go), so a nil client here would reopen the
+		// discovery-indirection and DNS-rebinding vectors this PR closes
+		// elsewhere. See networking.NewHostScopedClientBuilder for the guard
+		// policy and pkg/auth/dcr's newGuardedDCRClient for the same pattern.
+		metaHost, parseErr := url.Parse(discoveredDoc.Issuer)
+		if parseErr != nil {
+			return nil, fmt.Errorf("dynamic client registration failed: parse issuer for http client: %w", parseErr)
+		}
+		metaClient, clientErr := networking.NewHostScopedClientBuilder(metaHost.Host, config.AllowPrivateIPs, false).
+			WithDisableKeepAlives(true).
+			Build()
+		if clientErr != nil {
+			return nil, fmt.Errorf("dynamic client registration failed: build metadata http client: %w", clientErr)
+		}
+		metaClient.CheckRedirect = networking.SameHostRedirectPolicy()
+
+		fullMeta, metaErr := oauthproto.FetchAuthorizationServerMetadata(ctx, discoveredDoc.Issuer, metaClient)
 		if metaErr != nil && !errors.Is(metaErr, oauthproto.ErrRegistrationEndpointMissing) {
 			return nil, fmt.Errorf("dynamic client registration failed: discover authorization server metadata: %w", metaErr)
 		}
@@ -812,8 +846,10 @@ func getDiscoveryDocument(
 		}, nil
 	}
 
-	// Fall back to discovering endpoints
-	return oauth.DiscoverOIDCEndpoints(ctx, issuer)
+	// Fall back to discovering endpoints. This fetch precedes the DCR
+	// registration this function's callers are about to perform, so it shares
+	// the same private-IP policy (CWE-918) rather than defaulting to unguarded.
+	return oauth.DiscoverOIDCEndpoints(ctx, issuer, !config.AllowPrivateIPs)
 }
 
 // createOAuthConfig creates the OAuth configuration based on available endpoints

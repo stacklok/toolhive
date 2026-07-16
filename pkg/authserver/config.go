@@ -394,10 +394,14 @@ type OAuth2UpstreamRunConfig struct {
 	DCRConfig *DCRUpstreamConfig `json:"dcr_config,omitempty" yaml:"dcr_config,omitempty"`
 
 	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
-	// private IP ranges (RFC-1918, link-local). Use only when the upstream is
-	// hosted inside the same cluster and has no public endpoint. HTTP-scheme
-	// restrictions are unchanged — HTTPS is still required for non-localhost hosts.
-	// Defaults to false.
+	// private IP ranges (RFC-1918, link-local). When DCRConfig is set, this
+	// also gates the DCR discovery and registration calls made on this
+	// upstream's behalf (see pkg/authserver/runner/dcr_adapter.go), so a
+	// single flag covers the whole upstream rather than needing a separate
+	// DCR-specific setting. Use only when the upstream is hosted inside the
+	// same cluster and has no public endpoint. HTTP-scheme restrictions are
+	// unchanged — HTTPS is still required for non-localhost hosts. Defaults
+	// to false.
 	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
 
 	// InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs

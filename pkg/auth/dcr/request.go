@@ -138,4 +138,16 @@ type Request struct {
 	// code_challenge_methods_supported the S256 gate cannot be evaluated,
 	// so the resolver refuses to register as a public client.
 	PublicClient bool
+
+	// AllowPrivateIPs permits both of the resolver's outbound calls — the
+	// discovery fetch to DiscoveryURL and the registration POST to the
+	// resolved registration endpoint — to connect to private IP ranges.
+	// See networking.NewHostScopedClientBuilder for the CWE-918 guard policy
+	// this widens (loopback exemption, dial-time re-check, etc.). Set this to
+	// true only when the upstream authorization server is reachable solely
+	// over a private address (e.g. an in-cluster IdP with no public
+	// endpoint); defaults to false. Mirrors the AllowPrivateIPs posture
+	// already carried by the OAuth2 and OIDC upstream configs so a DCR
+	// upstream is not the one outbound-facing path without an SSRF guard.
+	AllowPrivateIPs bool
 }

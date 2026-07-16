@@ -113,8 +113,12 @@ func redisProviderKey(prefix, providerID, providerSubject string) string {
 // consumer's Issuer and RedirectURI but differ only by their authorization
 // server no longer map to the same Redis key. Adding it changes the key
 // format, so entries written by an older binary (without the segment) will
-// miss on lookup and be harmlessly re-registered under the new key; the
-// stale rows expire via their existing TTL or can be cleared manually.
+// miss on lookup and be harmlessly re-registered under the new key. Orphaned
+// old rows self-evict only when the upstream asserted an RFC 7591 §3.2.1
+// client_secret_expires_at (StoreDCRCredentials sets a matching Redis TTL for
+// those); entries for non-expiring secrets — the common §3.2.1 "never" case —
+// carry no TTL and persist indefinitely, so they require manual cleanup.
+// There is no automated one-shot migration for this key-format change today.
 //
 // The public-vs-confidential client distinction is intentionally NOT
 // encoded here — see DCRKey's doc for the rationale. Today's two consumers

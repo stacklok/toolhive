@@ -1871,7 +1871,7 @@ func TestMemoryStorage_DCRCredentials_NotFound(t *testing.T) {
 
 // TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected pins the
 // fail-loud-on-invalid-input contract: nil creds, an unpopulated Key
-// (empty Issuer, RedirectURI, or ScopesHash), and missing RFC 7591
+// (empty Issuer, UpstreamID, RedirectURI, or ScopesHash), and missing RFC 7591
 // mandatory response fields (ClientID, AuthorizationEndpoint,
 // TokenEndpoint) must be rejected with fosite.ErrInvalidRequest rather
 // than producing a working-looking write that fails downstream at the

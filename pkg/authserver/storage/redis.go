@@ -1378,7 +1378,7 @@ func (s *RedisStorage) StoreDCRCredentials(ctx context.Context, creds *DCRCreden
 // Returns ErrNotFound (wrapped) when no entry exists. The returned value is a
 // fresh struct decoded from JSON, which acts as a defensive copy.
 //
-// An unpopulated key (empty Issuer, RedirectURI, or ScopesHash) cannot match
+// An unpopulated key (empty Issuer, UpstreamID, RedirectURI, or ScopesHash) cannot match
 // any stored row because StoreDCRCredentials rejects such keys, so a Get
 // against one is a normal miss — ErrNotFound — matching
 // MemoryStorage.GetDCRCredentials and the DCRCredentialStore interface contract.

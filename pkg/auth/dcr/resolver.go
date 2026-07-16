@@ -943,10 +943,12 @@ func resolveDCREndpoints(
 // collide. This is intentional: UpstreamID names the authorization server
 // (aligned with the RFC 8414 §3.3 issuer used for metadata verification), so
 // two configs that resolve to the same issuer are the same AS and correctly
-// share one registration. The collision only surfaces for the nonstandard
-// case of one issuer serving distinct registration endpoints under custom
-// paths; if the two upstreams instead declared different issuers, at least
-// one would fail §3.3 verification loudly rather than reuse credentials.
+// share one registration. The collision is therefore confined to the
+// nonstandard case where a single issuer serves distinct registration
+// endpoints under custom (non-well-known) discovery paths: both upstreams
+// resolve to that one issuer, so their UpstreamIDs match. Upstreams that
+// resolve to different issuers derive different UpstreamIDs and never collide
+// — the key itself keeps them apart, independent of §3.3 verification.
 func resolveUpstreamKeyIdentity(req *Request) (string, error) {
 	if req.RegistrationEndpoint != "" {
 		return req.RegistrationEndpoint, nil

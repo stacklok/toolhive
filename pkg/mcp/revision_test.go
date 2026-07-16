@@ -1,0 +1,302 @@
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package mcp
+
+import (
+	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+)
+
+var _ CodedError = (*HeaderMismatchError)(nil)
+var _ CodedError = (*UnsupportedVersionError)(nil)
+var _ CodedError = (*MissingClientCapabilityError)(nil)
+var _ CodedError = (*MissingModernMetadataError)(nil)
+
+func validModernMeta() map[string]any {
+	return map[string]any{
+		metaKeyProtocolVersion:    MCPVersionModern,
+		metaKeyClientInfo:         map[string]any{"name": "test-client", "version": "1.0.0"},
+		metaKeyClientCapabilities: map[string]any{},
+	}
+}
+
+func TestClassifyRevision(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		method      string
+		meta        map[string]any
+		protoHeader string
+		expectedRev Revision
+		checkErr    func(t *testing.T, err error)
+	}{
+		{
+			name:        "modern: valid meta, no header",
+			method:      "tools/call",
+			meta:        validModernMeta(),
+			protoHeader: "",
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:        "modern: valid meta, matching header",
+			method:      "tools/call",
+			meta:        validModernMeta(),
+			protoHeader: MCPVersionModern,
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:        "modern: mismatched header",
+			method:      "tools/call",
+			meta:        validModernMeta(),
+			protoHeader: "2025-11-25",
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var mismatchErr *HeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
+				assert.Equal(t, int64(-32020), mismatchErr.Code())
+				assert.Equal(t, "2025-11-25", mismatchErr.Header)
+				assert.Equal(t, MCPVersionModern, mismatchErr.Body)
+				assert.Equal(t, map[string]any{"header": "2025-11-25", "body": MCPVersionModern}, mismatchErr.Data())
+			},
+		},
+		{
+			name:   "modern: unsupported future body version",
+			method: "tools/call",
+			meta: map[string]any{
+				metaKeyProtocolVersion: "2099-01-01",
+			},
+			protoHeader: "",
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var unsupportedErr *UnsupportedVersionError
+				require.ErrorAs(t, err, &unsupportedErr)
+				assert.Equal(t, int64(-32022), unsupportedErr.Code())
+				data := unsupportedErr.Data()
+				assert.Equal(t, "2099-01-01", data["requested"])
+				assert.Equal(t, []string{MCPVersionModern}, data["supported"])
+			},
+		},
+		{
+			name:        "modern header but meta absent entirely",
+			method:      "tools/call",
+			meta:        nil,
+			protoHeader: MCPVersionModern,
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var missingMetaErr *MissingModernMetadataError
+				require.ErrorAs(t, err, &missingMetaErr)
+				assert.Equal(t, int64(-32602), missingMetaErr.Code())
+				assert.Equal(t, MCPVersionModern, missingMetaErr.Header)
+			},
+		},
+		{
+			name:        "modern header but meta missing protocol version key",
+			method:      "tools/call",
+			meta:        map[string]any{"other": "value"},
+			protoHeader: MCPVersionModern,
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				var missingMetaErr *MissingModernMetadataError
+				require.ErrorAs(t, err, &missingMetaErr)
+			},
+		},
+		{
+			name:        "modern header but body version wrong-typed",
+			method:      "tools/call",
+			meta:        map[string]any{metaKeyProtocolVersion: 42},
+			protoHeader: MCPVersionModern,
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				var missingMetaErr *MissingModernMetadataError
+				require.ErrorAs(t, err, &missingMetaErr)
+			},
+		},
+		{
+			name:        "modern header but body version empty string",
+			method:      "tools/call",
+			meta:        map[string]any{metaKeyProtocolVersion: ""},
+			protoHeader: MCPVersionModern,
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				var missingMetaErr *MissingModernMetadataError
+				require.ErrorAs(t, err, &missingMetaErr)
+			},
+		},
+		{
+			name:   "modern: clientInfo omitted is valid",
+			method: "tools/call",
+			meta: map[string]any{
+				metaKeyProtocolVersion:    MCPVersionModern,
+				metaKeyClientCapabilities: map[string]any{},
+			},
+			protoHeader: "",
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:   "modern: missing clientCapabilities",
+			method: "tools/call",
+			meta: map[string]any{
+				metaKeyProtocolVersion: MCPVersionModern,
+				metaKeyClientInfo:      map[string]any{"name": "test-client"},
+			},
+			protoHeader: "",
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var missingCapErr *MissingClientCapabilityError
+				require.ErrorAs(t, err, &missingCapErr)
+				assert.Equal(t, int64(-32021), missingCapErr.Code())
+			},
+		},
+		{
+			name:        "legacy: absent meta",
+			method:      "tools/call",
+			meta:        nil,
+			protoHeader: "",
+			expectedRev: RevisionLegacy,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:        "legacy: meta missing protocol version key",
+			method:      "tools/call",
+			meta:        map[string]any{"other": "value"},
+			protoHeader: "",
+			expectedRev: RevisionLegacy,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:        "legacy: unrecognized header version, no reserved meta key",
+			method:      "tools/call",
+			meta:        map[string]any{"other": "value"},
+			protoHeader: "2099-01-01",
+			expectedRev: RevisionLegacy,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:        "modern signal: reserved protocolVersion key wrong-typed",
+			method:      "tools/call",
+			meta:        map[string]any{metaKeyProtocolVersion: 42},
+			protoHeader: "",
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var missingMetaErr *MissingModernMetadataError
+				require.ErrorAs(t, err, &missingMetaErr)
+				assert.Equal(t, int64(-32602), missingMetaErr.Code())
+			},
+		},
+		{
+			name:        "modern signal: reserved protocolVersion key empty string",
+			method:      "tools/call",
+			meta:        map[string]any{metaKeyProtocolVersion: ""},
+			protoHeader: "",
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var missingMetaErr *MissingModernMetadataError
+				require.ErrorAs(t, err, &missingMetaErr)
+				assert.Equal(t, int64(-32602), missingMetaErr.Code())
+			},
+		},
+		{
+			name:        "modern signal via clientCapabilities key, no protocolVersion",
+			method:      "tools/call",
+			meta:        map[string]any{metaKeyClientCapabilities: map[string]any{}},
+			protoHeader: "",
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var missingMetaErr *MissingModernMetadataError
+				require.ErrorAs(t, err, &missingMetaErr)
+				assert.Equal(t, int64(-32602), missingMetaErr.Code())
+			},
+		},
+		{
+			name:   "modern signal via clientInfo key, broken protocolVersion",
+			method: "tools/call",
+			meta: map[string]any{
+				metaKeyClientInfo:      map[string]any{"name": "test-client"},
+				metaKeyProtocolVersion: "",
+			},
+			protoHeader: "",
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var missingMetaErr *MissingModernMetadataError
+				require.ErrorAs(t, err, &missingMetaErr)
+				assert.Equal(t, int64(-32602), missingMetaErr.Code())
+			},
+		},
+		{
+			name:        "legacy: initialize with nil meta",
+			method:      "initialize",
+			meta:        nil,
+			protoHeader: "",
+			expectedRev: RevisionLegacy,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+		{
+			name:        "legacy: initialize wins over spoofed modern meta and header",
+			method:      "initialize",
+			meta:        validModernMeta(),
+			protoHeader: MCPVersionModern,
+			expectedRev: RevisionLegacy,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.NoError(t, err)
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			rev, err := ClassifyRevision(tt.method, tt.meta, tt.protoHeader)
+
+			assert.Equal(t, tt.expectedRev, rev)
+			tt.checkErr(t, err)
+		})
+	}
+}

@@ -462,6 +462,7 @@ func registerAndCache(
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 	slog.Debug("dcr: registered new client",
 		"local_issuer", req.Issuer,
+		"upstream_id", key.UpstreamID,
 		"redirect_uri", redirectURI,
 		"client_id", resolution.ClientID,
 	)
@@ -675,6 +676,7 @@ func lookupCachedResolution(
 		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 		slog.Debug("dcr: cache hit ignored; cached secret expired per upstream client_secret_expires_at",
 			"local_issuer", localIssuer,
+			"upstream_id", key.UpstreamID,
 			"redirect_uri", redirectURI,
 			"client_id", cached.ClientID,
 			"client_secret_expires_at", cached.ClientSecretExpiresAt.UTC().Format(time.RFC3339),
@@ -688,6 +690,7 @@ func lookupCachedResolution(
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 	slog.Debug("dcr: cache hit",
 		"local_issuer", localIssuer,
+		"upstream_id", key.UpstreamID,
 		"redirect_uri", redirectURI,
 		"client_id", cached.ClientID,
 		"dcr_age_days", ageDays,
@@ -700,6 +703,7 @@ func lookupCachedResolution(
 				"consider rotating the registration via RFC 7592 deregistration "+
 				"and re-registering at next startup",
 			"local_issuer", localIssuer,
+			"upstream_id", key.UpstreamID,
 			"redirect_uri", redirectURI,
 			"client_id", cached.ClientID,
 			"dcr_age_days", ageDays,

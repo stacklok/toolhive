@@ -144,11 +144,15 @@ func Setup(
 
 	configured, err := configureDetectedTools(
 		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand,
-		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, models,
+		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, models, llmCfg.Bedrock,
 	)
 	if err != nil {
 		return err
 	}
+
+	// Bedrock-compat only affects Claude Code. If it was requested but Claude Code
+	// was not among the configured tools, the flag had no effect — say so.
+	warnBedrockNoEffect(errOut, llmCfg.Bedrock.Compat, configured)
 
 	warnTLSSkipVerify(errOut, llmCfg.TLSSkipVerify, configured)
 	warnCredentialHelperTools(out, errOut, gm, configured)
@@ -349,6 +353,58 @@ func filterDetectedClients(detected []string, targetClient string) ([]string, er
 	return nil, fmt.Errorf("client %q is not installed or not detected", targetClient)
 }
 
+// claudeCodeClient is the canonical client identifier for Claude Code. Declared
+// here as a string literal because pkg/llm does not import pkg/client (which
+// owns the ClientApp constant) to avoid an import cycle.
+const claudeCodeClient = "claude-code"
+
+// Default Bedrock inference-profile model IDs written for Claude Code in
+// bedrock-compat mode when --models does not override a tier. These track the
+// current generation and are expected to be bumped periodically; users override
+// per tier via --models.
+const (
+	defaultBedrockHaikuModel  = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+	defaultBedrockOpusModel   = "us.anthropic.claude-opus-4-8"
+	defaultBedrockSonnetModel = "us.anthropic.claude-sonnet-5"
+)
+
+// resolveBedrockModels maps optional override model IDs onto Claude Code's three
+// tiers, starting from the built-in defaults. Each override is assigned to a tier
+// by matching "haiku", "opus", or "sonnet" (case-insensitive) as a substring of
+// the ID; overrides matching no tier are returned in unmatched for the caller to
+// warn about. When enable1M is true, the "[1m]" suffix is appended to the opus
+// and sonnet IDs (never haiku, which has a 200K context window) to opt into the
+// 1M context window on Bedrock.
+func resolveBedrockModels(models []string, enable1M bool) (haiku, opus, sonnet string, unmatched []string) {
+	haiku, opus, sonnet = defaultBedrockHaikuModel, defaultBedrockOpusModel, defaultBedrockSonnetModel
+	for _, m := range models {
+		switch lower := strings.ToLower(m); {
+		case strings.Contains(lower, "haiku"):
+			haiku = m
+		case strings.Contains(lower, "opus"):
+			opus = m
+		case strings.Contains(lower, "sonnet"):
+			sonnet = m
+		default:
+			unmatched = append(unmatched, m)
+		}
+	}
+	if enable1M {
+		opus += "[1m]"
+		sonnet += "[1m]"
+	}
+	return haiku, opus, sonnet, unmatched
+}
+
+// warnBedrockNoEffect warns when bedrock-compat was requested but Claude Code
+// was not among the configured tools, so the flag had no effect.
+func warnBedrockNoEffect(errOut io.Writer, compat bool, configured []ToolConfig) {
+	if compat && !isTarget(configured, claudeCodeClient) {
+		_, _ = fmt.Fprintln(errOut,
+			"Warning: --bedrock-compat was set but Claude Code was not configured; the flag had no effect.")
+	}
+}
+
 // configureDetectedTools patches each detected tool's config file and returns
 // the list of successfully configured tools. An error is returned only when no
 // tool was configured successfully.
@@ -361,6 +417,7 @@ func configureDetectedTools(
 	tlsSkipVerify bool,
 	anthropicPathPrefix string,
 	models []string,
+	bedrock BedrockConfig,
 ) ([]ToolConfig, error) {
 	var configured []ToolConfig
 	for _, clientType := range detected {
@@ -389,6 +446,23 @@ func configureDetectedTools(
 			TLSSkipVerify:      tlsSkipVerify,
 			Models:             models,
 		}
+
+		// Bedrock-compat applies only to Claude Code: it disables the experimental
+		// anthropic-beta headers Bedrock rejects and pins per-tier Bedrock model
+		// IDs. Resolve defaults, tier mapping, and the optional [1m] suffix here so
+		// pkg/client only writes the resolved values.
+		if bedrock.Compat && clientType == claudeCodeClient {
+			haiku, opus, sonnet, unmatched := resolveBedrockModels(bedrock.Models, bedrock.Enable1M)
+			applyCfg.BedrockCompat = true
+			applyCfg.BedrockHaikuModel = haiku
+			applyCfg.BedrockOpusModel = opus
+			applyCfg.BedrockSonnetModel = sonnet
+			for _, m := range unmatched {
+				_, _ = fmt.Fprintf(errOut,
+					"Warning: --models entry %q did not match a tier (expected haiku/opus/sonnet in the ID); ignored\n", m)
+			}
+		}
+
 		configPath, err := gm.ConfigureLLMGateway(clientType, applyCfg)
 		if err != nil {
 			_, _ = fmt.Fprintf(errOut, "Warning: failed to configure %s: %v\n", clientType, err)

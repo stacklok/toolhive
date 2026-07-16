@@ -20,6 +20,116 @@ import (
 	secretsmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
 
+// ── resolveBedrockModels ──────────────────────────────────────────────────────
+
+func TestResolveBedrockModels(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		models        []string
+		enable1M      bool
+		wantHaiku     string
+		wantOpus      string
+		wantSonnet    string
+		wantUnmatched []string
+	}{
+		{
+			name:       "defaults when no overrides",
+			wantHaiku:  defaultBedrockHaikuModel,
+			wantOpus:   defaultBedrockOpusModel,
+			wantSonnet: defaultBedrockSonnetModel,
+		},
+		{
+			name:       "override each tier by substring",
+			models:     []string{"us.anthropic.claude-haiku-x", "us.anthropic.claude-opus-x", "us.anthropic.claude-sonnet-x"},
+			wantHaiku:  "us.anthropic.claude-haiku-x",
+			wantOpus:   "us.anthropic.claude-opus-x",
+			wantSonnet: "us.anthropic.claude-sonnet-x",
+		},
+		{
+			name:       "enable1M appends [1m] to opus and sonnet only",
+			enable1M:   true,
+			wantHaiku:  defaultBedrockHaikuModel,
+			wantOpus:   defaultBedrockOpusModel + "[1m]",
+			wantSonnet: defaultBedrockSonnetModel + "[1m]",
+		},
+		{
+			name:          "unmatched entry is reported and ignored",
+			models:        []string{"us.anthropic.claude-opus-x", "some-random-model"},
+			wantHaiku:     defaultBedrockHaikuModel,
+			wantOpus:      "us.anthropic.claude-opus-x",
+			wantSonnet:    defaultBedrockSonnetModel,
+			wantUnmatched: []string{"some-random-model"},
+		},
+		{
+			name:       "matching is case-insensitive",
+			models:     []string{"US.ANTHROPIC.CLAUDE-OPUS-X"},
+			wantHaiku:  defaultBedrockHaikuModel,
+			wantOpus:   "US.ANTHROPIC.CLAUDE-OPUS-X",
+			wantSonnet: defaultBedrockSonnetModel,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			haiku, opus, sonnet, unmatched := resolveBedrockModels(tt.models, tt.enable1M)
+			assert.Equal(t, tt.wantHaiku, haiku)
+			assert.Equal(t, tt.wantOpus, opus)
+			assert.Equal(t, tt.wantSonnet, sonnet)
+			assert.Equal(t, tt.wantUnmatched, unmatched)
+		})
+	}
+}
+
+// TestConfigureDetectedTools_BedrockClaudeCode verifies that bedrock-compat
+// populates the ApplyConfig bedrock fields for claude-code (with defaults) and
+// leaves them untouched for a non-claude-code client.
+func TestConfigureDetectedTools_BedrockClaudeCode(t *testing.T) {
+	t.Parallel()
+
+	gm := &capturingGatewayManager{mode: "direct"}
+	var out, errOut bytes.Buffer
+
+	_, err := configureDetectedTools(
+		&out, &errOut, gm,
+		[]string{"claude-code"},
+		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
+		false, "/anthropic", nil,
+		BedrockConfig{Compat: true, Enable1M: true},
+	)
+	require.NoError(t, err)
+	require.Len(t, gm.applied, 1)
+
+	got := gm.applied[0]
+	assert.True(t, got.BedrockCompat)
+	assert.Equal(t, defaultBedrockHaikuModel, got.BedrockHaikuModel)
+	assert.Equal(t, defaultBedrockOpusModel+"[1m]", got.BedrockOpusModel)
+	assert.Equal(t, defaultBedrockSonnetModel+"[1m]", got.BedrockSonnetModel)
+}
+
+func TestConfigureDetectedTools_BedrockSkippedForNonClaudeCode(t *testing.T) {
+	t.Parallel()
+
+	gm := &capturingGatewayManager{mode: "proxy"}
+	var out, errOut bytes.Buffer
+
+	_, err := configureDetectedTools(
+		&out, &errOut, gm,
+		[]string{"cursor"},
+		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
+		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
+		false, "", nil,
+		BedrockConfig{Compat: true},
+	)
+	require.NoError(t, err)
+	require.Len(t, gm.applied, 1)
+	assert.False(t, gm.applied[0].BedrockCompat)
+	assert.Empty(t, gm.applied[0].BedrockOpusModel)
+}
+
 // ── mergeToolConfigs ──────────────────────────────────────────────────────────
 
 func TestMergeToolConfigs_EmptyExisting(t *testing.T) {
@@ -299,6 +409,7 @@ func TestConfigureDetectedTools_PathPrefixAppendedForDirectMode(t *testing.T) {
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "/anthropic", nil,
+		BedrockConfig{},
 	)
 	require.NoError(t, err)
 	require.Len(t, gm.applied, 1)
@@ -320,6 +431,7 @@ func TestConfigureDetectedTools_NoPrefixWhenEmpty(t *testing.T) {
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "", nil, // no prefix
+		BedrockConfig{},
 	)
 	require.NoError(t, err)
 	require.Len(t, gm.applied, 1)
@@ -340,6 +452,7 @@ func TestConfigureDetectedTools_PrefixNotAppliedForProxyMode(t *testing.T) {
 		"https://gw.example.com", "http://localhost:14000/v1", `"thv" llm token`,
 		"/usr/local/bin/thv", []string{"llm", "token", "--skip-browser"},
 		false, "/anthropic", nil,
+		BedrockConfig{},
 	)
 	require.NoError(t, err)
 	require.Len(t, gm.applied, 1)

@@ -390,8 +390,32 @@ func resolveApplyConfigField(valueField string, cfg llmgateway.ApplyConfig) (str
 		}
 		return "", true
 	default:
+		return resolveBedrockField(valueField, cfg)
+	}
+}
+
+// resolveBedrockField resolves the Claude Code bedrock-compat ValueFields. The
+// values are written only in bedrock-compat mode; otherwise they resolve to ""
+// so their ClearWhenEmpty key specs remove the key. Returns (_, false) for any
+// non-bedrock field so the caller can report an unknown ValueField.
+func resolveBedrockField(valueField string, cfg llmgateway.ApplyConfig) (string, bool) {
+	var v string
+	switch valueField {
+	case "BedrockDisableExperimentalBetas":
+		v = "1"
+	case "BedrockHaikuModel":
+		v = cfg.BedrockHaikuModel
+	case "BedrockOpusModel":
+		v = cfg.BedrockOpusModel
+	case "BedrockSonnetModel":
+		v = cfg.BedrockSonnetModel
+	default:
 		return "", false
 	}
+	if !cfg.BedrockCompat {
+		return "", true
+	}
+	return v, true
 }
 
 // llmValueForSpec returns the config value for a settings-file key spec.

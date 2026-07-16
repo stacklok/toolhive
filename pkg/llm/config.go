@@ -25,11 +25,31 @@ type OIDCConfig = pkgoidc.ClientConfig
 // Config holds all LLM gateway settings persisted under the llm: key in
 // ToolHive's config.yaml.
 type Config struct {
-	GatewayURL      string       `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
-	TLSSkipVerify   bool         `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
-	OIDC            OIDCConfig   `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
-	Proxy           ProxyConfig  `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
-	ConfiguredTools []ToolConfig `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`
+	GatewayURL      string        `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
+	TLSSkipVerify   bool          `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
+	OIDC            OIDCConfig    `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
+	Proxy           ProxyConfig   `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
+	Bedrock         BedrockConfig `yaml:"bedrock,omitempty"           json:"bedrock,omitempty"`
+	ConfiguredTools []ToolConfig  `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`
+}
+
+// BedrockConfig holds settings for configuring Claude Code to reach an LLM
+// gateway that forwards to AWS Bedrock. It is persisted so that a later plain
+// "thv llm setup" re-applies these settings rather than silently clearing them.
+type BedrockConfig struct {
+	// Compat, when true, writes CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 and the
+	// per-tier Bedrock model IDs into Claude Code's settings.json. Bedrock rejects
+	// Claude Code's experimental anthropic-beta headers, so this is required for a
+	// Bedrock-backed gateway.
+	Compat bool `yaml:"compat,omitempty" json:"compat,omitempty"`
+	// Enable1M appends the "[1m]" suffix to the opus and sonnet model IDs to opt
+	// into the 1M-token context window on Bedrock (never haiku, which is 200K).
+	// Off by default: 1M-on-Bedrock is a version-dependent Claude Code behavior.
+	Enable1M bool `yaml:"enable_1m,omitempty" json:"enable_1m,omitempty"`
+	// Models are optional Bedrock model IDs that override the built-in defaults.
+	// Each entry is mapped to a tier (haiku/opus/sonnet) by matching that word as
+	// a substring of the ID; entries that match no tier are ignored with a warning.
+	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
 }
 
 // ProxyConfig holds configuration for the localhost reverse proxy.

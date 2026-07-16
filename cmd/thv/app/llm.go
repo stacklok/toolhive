@@ -80,6 +80,9 @@ func newConfigSetCommand() *cobra.Command {
 	var (
 		opts          llm.SetOptions
 		tlsSkipVerify bool
+		bedrockCompat bool
+		enable1M      bool
+		models        []string
 	)
 
 	cmd := &cobra.Command{
@@ -97,6 +100,15 @@ Example:
 			if cmd.Flags().Changed("tls-skip-verify") {
 				opts.TLSSkipVerify = &tlsSkipVerify
 			}
+			if cmd.Flags().Changed("bedrock-compat") {
+				opts.BedrockCompat = &bedrockCompat
+			}
+			if cmd.Flags().Changed("enable-1m") {
+				opts.Enable1M = &enable1M
+			}
+			if cmd.Flags().Changed("models") {
+				opts.Models = models
+			}
 			return config.UpdateConfig(func(c *config.Config) error {
 				return c.LLM.SetFields(opts)
 			})
@@ -111,6 +123,15 @@ Example:
 	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
 	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
 		"Skip TLS certificate verification for the upstream gateway (local dev only; use --tls-skip-verify=false to clear)")
+	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
+		"Persist Bedrock compatibility for Claude Code (CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 + per-tier "+
+			"Bedrock model IDs). Applied by \"thv llm setup\". Use --bedrock-compat=false to clear.")
+	cmd.Flags().BoolVar(&enable1M, "enable-1m", false,
+		"With Bedrock compat, opt into the 1M context window by appending [1m] to opus/sonnet model IDs.")
+	cmd.Flags().StringSliceVar(&models, "models", nil,
+		"Override the default Bedrock model IDs, comma-separated or by repeating the flag, e.g. "+
+			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. Each ID is mapped to a "+
+			"Claude Code tier by matching 'haiku', 'opus', or 'sonnet' in the ID.")
 
 	return cmd
 }
@@ -224,6 +245,8 @@ func newLLMSetupCommand() *cobra.Command {
 	var (
 		opts                llm.SetOptions
 		tlsSkipVerify       bool
+		bedrockCompat       bool
+		enable1M            bool
 		targetClient        string
 		anthropicPathPrefix string
 		lazy                bool
@@ -264,11 +287,30 @@ Inline flags (--gateway-url, --issuer, --client-id, etc.) are applied for this
 run and persisted to config only after login and tool patching succeed. This
 lets you combine "config set" and "setup" into a single command.
 
+For a gateway that forwards to AWS Bedrock, add --bedrock-compat to configure
+Claude Code with CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 and per-tier Bedrock
+model IDs (override with --models; add --enable-1m for the 1M context window on
+opus/sonnet). The setting is persisted and only affects Claude Code. To add it to
+an already-configured Claude Code, re-run:
+
+  thv llm setup --client claude-code --bedrock-compat
+
+Re-running is idempotent and uses the cached token (no browser prompt).
+
 Run "thv llm teardown" to revert all changes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if cmd.Flags().Changed("tls-skip-verify") {
 				opts.TLSSkipVerify = &tlsSkipVerify
+			}
+			if cmd.Flags().Changed("bedrock-compat") {
+				opts.BedrockCompat = &bedrockCompat
+			}
+			if cmd.Flags().Changed("enable-1m") {
+				opts.Enable1M = &enable1M
+			}
+			if cmd.Flags().Changed("models") {
+				opts.Models = models
 			}
 			cm, err := client.NewClientManager()
 			if err != nil {
@@ -307,8 +349,20 @@ Run "thv llm teardown" to revert all changes.`,
 			"Useful for unattended provisioning (e.g. an MDM profile).")
 	cmd.Flags().BoolVar(&skipBrowser, "skip-browser", false, skipBrowserFlagUsage)
 	cmd.Flags().StringSliceVar(&models, "models", nil,
-		"Explicit model IDs to expose to credential-helper clients (Claude Desktop's inferenceModels). "+
-			"Repeat or comma-separate. Omit to rely on the gateway's own model discovery once it is available.")
+		"Model IDs to configure, comma-separated or by repeating the flag, e.g. "+
+			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. "+
+			"For credential-helper clients (Claude Desktop) these become inferenceModels. "+
+			"With --bedrock-compat, each ID is also mapped to a Claude Code tier by matching "+
+			"'haiku', 'opus', or 'sonnet' in the ID (IDs matching no tier are ignored with a "+
+			"warning). Omit to use the built-in Bedrock defaults / gateway model discovery.")
+	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
+		"Configure Claude Code for a gateway that forwards to AWS Bedrock: write "+
+			"CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 (Bedrock rejects the experimental anthropic-beta headers) "+
+			"and pin per-tier Bedrock model IDs (override with --models). Persisted, so a later plain "+
+			"\"thv llm setup\" keeps it; clear with --bedrock-compat=false. Only affects Claude Code.")
+	cmd.Flags().BoolVar(&enable1M, "enable-1m", false,
+		"With --bedrock-compat, append the [1m] suffix to the opus and sonnet model IDs to opt into the "+
+			"1M-token context window on Bedrock (never haiku, which is 200K). Off by default.")
 
 	return cmd
 }

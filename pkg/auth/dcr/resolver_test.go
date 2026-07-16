@@ -446,6 +446,41 @@ func TestResolveDCRCredentials_AllowPrivateIPsHonored(t *testing.T) {
 		"AllowPrivateIPs=true must lift the guard so the dial is attempted, not refused")
 }
 
+// TestResolveDCRCredentials_DiscoveryRefusesCrossHostRedirect pins that the
+// discovery fetch installs SameHostRedirectPolicy: a discovery endpoint that
+// 30x-redirects to a different host must not be followed, so a malicious
+// upstream cannot walk the metadata fetch onto an unintended origin (CWE-918).
+// A different port counts as a different host, so two loopback httptest servers
+// suffice.
+func TestResolveDCRCredentials_DiscoveryRefusesCrossHostRedirect(t *testing.T) {
+	t.Parallel()
+
+	var foreignHits int32
+	foreign := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		atomic.AddInt32(&foreignHits, 1)
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(foreign.Close)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/oauth-authorization-server", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, foreign.URL+"/.well-known/oauth-authorization-server", http.StatusFound)
+	})
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	req := &Request{
+		Issuer:       server.URL,
+		Scopes:       []string{"openid"},
+		DiscoveryURL: server.URL + "/.well-known/oauth-authorization-server",
+	}
+
+	_, err := ResolveCredentials(context.Background(), req, newMemoryDCRStore(t))
+	require.Error(t, err, "discovery must fail when the endpoint redirects cross-host")
+	assert.EqualValues(t, 0, atomic.LoadInt32(&foreignHits),
+		"the discovery client must not follow a cross-host redirect")
+}
+
 func TestHostFromURL(t *testing.T) {
 	t.Parallel()
 

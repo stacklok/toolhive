@@ -907,6 +907,15 @@ func resolveDCREndpoints(
 	if err != nil {
 		return nil, fmt.Errorf("dcr: build discovery http client: %w", err)
 	}
+	// The discovery URL is operator-configured, but the document it returns —
+	// and any 30x the upstream serves in response — is upstream-controlled.
+	// Restrict the fetch to same-host redirects so a malicious redirect cannot
+	// walk the request onto another host (CWE-918); this matters even when the
+	// dial guard is relaxed for a loopback discovery host. The registration
+	// client refuses redirects outright because it carries the bearer token;
+	// the discovery GET carries no secret, so same-host redirects are allowed —
+	// matching the CLI discovery clients in pkg/auth/discovery.
+	discoveryClient.CheckRedirect = networking.SameHostRedirectPolicy()
 
 	metadata, err := oauthproto.FetchAuthorizationServerMetadataFromURL(ctx, req.DiscoveryURL, upstreamIssuer, discoveryClient)
 	return endpointsFromMetadata(metadata, err, upstreamIssuer)
@@ -1339,6 +1348,12 @@ func newDCRHTTPClient(initialAccessToken, registrationEndpoint string, allowPriv
 // The builder's 30 s overall / 10 s TLS / 10 s response-header default
 // timeouts match the bounds previously sourced from
 // oauthproto.NewDefaultDCRClient.
+//
+// The returned client has no CheckRedirect policy; each caller layers its own
+// (the registration client refuses all redirects to protect the bearer token;
+// the discovery client restricts them to the same host). The dial guard alone
+// does not stop a redirect to a different public host, so the redirect policy
+// is a required complement, not an optional one.
 func newGuardedDCRClient(host string, allowPrivateIPs bool) (*http.Client, error) {
 	return networking.NewHostScopedClientBuilder(host, allowPrivateIPs, false).
 		WithDisableKeepAlives(true).

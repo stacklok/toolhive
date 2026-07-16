@@ -519,6 +519,16 @@ type OAuthFlowConfig struct {
 	Resource             string // RFC 8707 resource indicator (optional)
 	OAuthParams          map[string]string
 	ScopeParamName       string // Override scope query parameter name (e.g., "user_scope" for Slack)
+
+	// AllowPrivateIPs permits the Dynamic Client Registration calls (discovery
+	// fetch and registration POST) to reach private/loopback/link-local
+	// addresses. Callers set it from networking.TargetIsPrivate on the remote
+	// target: when ToolHive is pointed at a private remote the upstream IdP may
+	// legitimately be private too, so its DCR calls must be allowed; otherwise
+	// they are guarded to contain SSRF (CWE-918). This mirrors the
+	// blockPrivateIPs decision the flow already applies to its other discovery
+	// fetches. Defaults to false (guarded).
+	AllowPrivateIPs bool
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -720,6 +730,11 @@ func resolveDCRCredentials(
 		AuthorizationEndpoint: discoveredDoc.AuthorizationEndpoint,
 		TokenEndpoint:         discoveredDoc.TokenEndpoint,
 		PublicClient:          true,
+		// Carry the flow's private-IP decision so DCR shares the same SSRF
+		// posture as the flow's other discovery fetches; without this the DCR
+		// calls would always be guarded and a legitimately private upstream
+		// would be refused. See OAuthFlowConfig.AllowPrivateIPs.
+		AllowPrivateIPs: config.AllowPrivateIPs,
 	}
 
 	// Fetch AS metadata using the multi-URL fallback so non-root issuers

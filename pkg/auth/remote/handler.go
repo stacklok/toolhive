@@ -103,8 +103,11 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 		}
 	}
 
-	// Priority 3: Fresh OAuth authentication flow
-	return h.performOAuthFlow(ctx, issuer, scopes, authServerInfo)
+	// Priority 3: Fresh OAuth authentication flow. Pass the same target-private
+	// decision the discovery fetches use so DCR (discovery + registration) is
+	// allowed to reach a private upstream only when the operator-configured
+	// remote is itself private, and guarded otherwise (CWE-918).
+	return h.performOAuthFlow(ctx, issuer, scopes, authServerInfo, networking.TargetIsPrivate(ctx, remoteURL))
 }
 
 // validateBearerRequirement checks if Bearer auth is required without OAuth fallback
@@ -132,6 +135,7 @@ func (h *Handler) performOAuthFlow(
 	issuer string,
 	scopes []string,
 	authServerInfo *discovery.AuthServerInfo,
+	allowPrivateIPs bool,
 ) (oauth2.TokenSource, error) {
 	slog.Debug("Starting OAuth authentication flow", "issuer", issuer)
 
@@ -139,7 +143,7 @@ func (h *Handler) performOAuthFlow(
 	// Priority 1: Pre-configured credentials — set by buildOAuthFlowConfig from h.config.ClientID/ClientSecret.
 	// Priority 2: CIMD — AS advertises support and no credentials are set; use metadata URL as client_id.
 	// Priority 3: DCR — PerformOAuthFlow handles this when ClientID is still empty after the above.
-	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo)
+	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo, allowPrivateIPs)
 	if shouldUseCIMD(authServerInfo, flowConfig) {
 		flowConfig.ClientID = oauthproto.ToolHiveClientMetadataDocumentURL
 		slog.Debug("Using CIMD client_id", "url", oauthproto.ToolHiveClientMetadataDocumentURL)
@@ -162,19 +166,24 @@ func (h *Handler) performOAuthFlow(
 }
 
 // buildOAuthFlowConfig creates the OAuth flow configuration
-func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discovery.AuthServerInfo) *discovery.OAuthFlowConfig {
+func (h *Handler) buildOAuthFlowConfig(
+	scopes []string,
+	authServerInfo *discovery.AuthServerInfo,
+	allowPrivateIPs bool,
+) *discovery.OAuthFlowConfig {
 	flowConfig := &discovery.OAuthFlowConfig{
-		ClientID:       h.config.ClientID,
-		ClientSecret:   h.config.ClientSecret,
-		AuthorizeURL:   h.config.AuthorizeURL,
-		TokenURL:       h.config.TokenURL,
-		Scopes:         scopes,
-		CallbackPort:   h.config.CallbackPort,
-		Timeout:        h.config.Timeout,
-		SkipBrowser:    h.config.SkipBrowser,
-		Resource:       h.config.Resource,
-		OAuthParams:    h.config.OAuthParams,
-		ScopeParamName: h.config.ScopeParamName,
+		ClientID:        h.config.ClientID,
+		ClientSecret:    h.config.ClientSecret,
+		AuthorizeURL:    h.config.AuthorizeURL,
+		TokenURL:        h.config.TokenURL,
+		Scopes:          scopes,
+		CallbackPort:    h.config.CallbackPort,
+		Timeout:         h.config.Timeout,
+		SkipBrowser:     h.config.SkipBrowser,
+		Resource:        h.config.Resource,
+		OAuthParams:     h.config.OAuthParams,
+		ScopeParamName:  h.config.ScopeParamName,
+		AllowPrivateIPs: allowPrivateIPs,
 	}
 
 	// If we have discovered endpoints from the authorization server metadata,

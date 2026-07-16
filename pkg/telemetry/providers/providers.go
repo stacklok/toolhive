@@ -28,6 +28,11 @@ type Config struct {
 	ServiceName    string // ServiceName identifies the service for telemetry data
 	ServiceVersion string // ServiceVersion identifies the service version for telemetry data
 
+	// StacklokComponent is the emitter-ownership component identity (RFC D8),
+	// set on the OTel resource as stacklok.component and promoted to the
+	// stacklok_component per-series label. Defaults to ComponentToolhive when empty.
+	StacklokComponent string
+
 	// OTLP configuration
 	OTLPEndpoint   string            // OTLPEndpoint is the OTLP collector endpoint (e.g., "localhost:4318")
 	Headers        map[string]string // Headers are additional headers to send with OTLP requests
@@ -72,6 +77,15 @@ func WithServiceVersion(serviceVersion string) ProviderOption {
 			return fmt.Errorf("service version cannot be empty")
 		}
 		config.ServiceVersion = serviceVersion
+		return nil
+	}
+}
+
+// WithStacklokComponent sets the emitter-ownership component identity (RFC D8).
+// When empty, NewCompositeProvider defaults it to ComponentToolhive.
+func WithStacklokComponent(component string) ProviderOption {
+	return func(config *Config) error {
+		config.StacklokComponent = component
 		return nil
 	}
 }
@@ -183,6 +197,19 @@ func NewCompositeProvider(
 		semconv.ServiceName(config.ServiceName),
 		semconv.ServiceVersion(config.ServiceVersion),
 	}
+
+	// Emitter-ownership attributes (RFC D8). These land in the target_info gauge
+	// by default; the Prometheus exporter promotes them to per-series labels via
+	// WithResourceAsConstantLabels. product is constant across services; component
+	// defaults to the ToolHive proxy/API identity unless a caller (e.g. vMCP) overrides it.
+	component := config.StacklokComponent
+	if component == "" {
+		component = ComponentToolhive
+	}
+	baseAttrs = append(baseAttrs,
+		attribute.String(AttrStacklokComponent, component),
+		attribute.String(AttrStacklokProduct, ProductStacklokEnterprise),
+	)
 
 	// Add custom attributes from CLI flags
 	if len(config.CustomAttributes) > 0 {

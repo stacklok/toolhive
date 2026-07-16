@@ -146,6 +146,10 @@ func (s *UnifiedMeterStrategy) CreateMeterProvider(
 		promConfig := prometheus.Config{
 			EnableMetricsPath:     true,
 			IncludeRuntimeMetrics: true,
+			// Promote only the two emitter-ownership attributes to per-series labels
+			// (RFC D8); never the whole resource — that would leak host.*/process.*/env
+			// attributes onto every series and blow up cardinality.
+			ResourceAsConstantLabels: stacklokResourceLabelFilter(),
 		}
 		reader, handler, err := prometheus.NewReader(promConfig)
 		if err != nil {

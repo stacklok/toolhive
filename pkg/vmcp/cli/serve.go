@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/migration"
 	"github.com/stacklok/toolhive/pkg/telemetry"
+	"github.com/stacklok/toolhive/pkg/telemetry/providers"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
@@ -190,7 +191,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// If telemetry is configured, create the provider early so aggregator can use it.
 	var telemetryProvider *telemetry.Provider
 	if vmcpCfg.Telemetry != nil {
-		telemetryProvider, err = telemetry.NewProvider(ctx, *vmcpCfg.Telemetry)
+		telemetryProvider, err = telemetry.NewProvider(ctx, *vmcpCfg.Telemetry,
+			telemetry.WithStacklokComponent(providers.ComponentVMCP))
 		if err != nil {
 			return fmt.Errorf("failed to create telemetry provider: %w", err)
 		}

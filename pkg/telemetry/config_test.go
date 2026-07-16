@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -270,6 +271,62 @@ func TestProvider_Middleware(t *testing.T) {
 
 	wrappedHandler := middleware(testHandler)
 	assert.NotNil(t, wrappedHandler)
+}
+
+// TestNewProvider_StacklokComponentLabel verifies WithStacklokComponent threads
+// through NewProvider so the emitted series carry the RFC D8 ownership labels,
+// defaulting to "toolhive" when the option is omitted.
+func TestNewProvider_StacklokComponentLabel(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		opts          []Option
+		wantComponent string
+	}{
+		{name: "default is toolhive", opts: nil, wantComponent: "toolhive"},
+		{name: "vmcp override", opts: []Option{WithStacklokComponent("vmcp")}, wantComponent: "vmcp"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			config := Config{
+				ServiceName:                 "test-service",
+				ServiceVersion:              "1.0.0",
+				SamplingRate:                "0.1",
+				Headers:                     make(map[string]string),
+				EnablePrometheusMetricsPath: true,
+			}
+
+			provider, err := NewProvider(ctx, config, tt.opts...)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = provider.Shutdown(ctx) })
+
+			counter, err := provider.MeterProvider().Meter("test").Int64Counter("component_label_test")
+			require.NoError(t, err)
+			counter.Add(ctx, 1)
+
+			handler := provider.PrometheusHandler()
+			require.NotNil(t, handler)
+			req := httptest.NewRequest("GET", "/metrics", nil)
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			require.Equal(t, http.StatusOK, rec.Code)
+
+			var line string
+			for l := range strings.SplitSeq(rec.Body.String(), "\n") {
+				if strings.HasPrefix(l, "component_label_test_total") {
+					line = l
+					break
+				}
+			}
+			require.NotEmpty(t, line, "expected component_label_test_total series")
+			assert.Contains(t, line, `stacklok_component="`+tt.wantComponent+`"`)
+			assert.Contains(t, line, `stacklok_product="stacklok-enterprise"`)
+		})
+	}
 }
 
 // TestProvider_ShutdownTimeout tests provider shutdown with timeout

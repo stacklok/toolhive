@@ -11,6 +11,7 @@ import (
 	promclient "github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/collectors"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/prometheus"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
@@ -21,6 +22,11 @@ type Config struct {
 	EnableMetricsPath bool
 	// IncludeRuntimeMetrics adds Go runtime metrics to the registry
 	IncludeRuntimeMetrics bool
+	// ResourceAsConstantLabels, when non-nil, promotes the resource attributes it
+	// admits to constant per-series labels (RFC D8). Use an allow-keys filter so
+	// only the intended keys are promoted — promoting the whole resource would pull
+	// host.*/process.*/env attributes onto every series and blow up cardinality.
+	ResourceAsConstantLabels attribute.Filter
 }
 
 // NewReader creates a Prometheus metric reader and HTTP handler for use in a unified meter provider
@@ -39,7 +45,11 @@ func NewReader(config Config) (sdkmetric.Reader, http.Handler, error) {
 	}
 
 	// Create the Prometheus exporter (which is also a Reader)
-	exporter, err := prometheus.New(prometheus.WithRegisterer(registry))
+	opts := []prometheus.Option{prometheus.WithRegisterer(registry)}
+	if config.ResourceAsConstantLabels != nil {
+		opts = append(opts, prometheus.WithResourceAsConstantLabels(config.ResourceAsConstantLabels))
+	}
+	exporter, err := prometheus.New(opts...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to create prometheus exporter: %w", err)
 	}

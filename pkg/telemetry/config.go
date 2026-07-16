@@ -235,6 +235,39 @@ func ResolveServiceName(config *Config, serverName string) {
 	}
 }
 
+// Option customizes provider construction beyond the serialized Config. It
+// carries runtime-only settings that must not be part of the CRD/config surface
+// (e.g. the emitter-ownership component identity, determined by which surface is
+// running rather than by user configuration).
+type Option func(*providerOptions)
+
+// providerOptions holds resolved Option values consumed by NewProvider.
+type providerOptions struct {
+	// stacklokComponent overrides the RFC D8 stacklok.component value. Empty means
+	// default to the ToolHive proxy/API identity (providers.ComponentToolhive).
+	stacklokComponent string
+	// extraProcessors are additional OTEL span processors (e.g. a Sentry bridge)
+	// registered alongside the globally-registered ones.
+	extraProcessors []sdktrace.SpanProcessor
+}
+
+// WithStacklokComponent sets the RFC D8 emitter-ownership component identity.
+// vMCP surfaces pass providers.ComponentVMCP; proxy/API surfaces omit it and
+// default to providers.ComponentToolhive.
+func WithStacklokComponent(component string) Option {
+	return func(o *providerOptions) {
+		o.stacklokComponent = component
+	}
+}
+
+// WithSpanProcessors registers additional OTEL span processors (e.g. a Sentry
+// bridge) alongside any globally-registered processors.
+func WithSpanProcessors(processors ...sdktrace.SpanProcessor) Option {
+	return func(o *providerOptions) {
+		o.extraProcessors = append(o.extraProcessors, processors...)
+	}
+}
+
 // Provider encapsulates OpenTelemetry providers and configuration.
 type Provider struct {
 	config            Config
@@ -245,11 +278,18 @@ type Provider struct {
 }
 
 // NewProvider creates a new OpenTelemetry provider with the given configuration.
-// Optional extra span processors (e.g. a Sentry bridge) can be registered via extraProcessors.
-func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace.SpanProcessor) (*Provider, error) {
+// Optional Options customize runtime-only settings not carried on Config, such as
+// the RFC D8 emitter-ownership component (WithStacklokComponent) and extra span
+// processors (WithSpanProcessors, e.g. a Sentry bridge).
+func NewProvider(ctx context.Context, config Config, opts ...Option) (*Provider, error) {
 	// Validate configuration
 	if err := validateOtelConfig(config); err != nil {
 		return nil, err
+	}
+
+	options := providerOptions{}
+	for _, opt := range opts {
+		opt(&options)
 	}
 
 	// Always use the current binary version so that restarts and exports
@@ -263,6 +303,7 @@ func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace
 	telemetryOptions := []providers.ProviderOption{
 		providers.WithServiceName(config.ServiceName),
 		providers.WithServiceVersion(serviceVersion),
+		providers.WithStacklokComponent(options.stacklokComponent),
 		providers.WithOTLPEndpoint(config.Endpoint),
 		providers.WithHeaders(config.Headers),
 		providers.WithInsecure(config.Insecure),
@@ -276,7 +317,7 @@ func NewProvider(ctx context.Context, config Config, extraProcessors ...sdktrace
 
 	// Merge globally registered processors (self-registered by integrations such
 	// as a Sentry bridge) with any explicitly passed ones.
-	allProcessors := append(registeredSpanProcessors(), extraProcessors...)
+	allProcessors := append(registeredSpanProcessors(), options.extraProcessors...)
 	if len(allProcessors) > 0 {
 		telemetryOptions = append(telemetryOptions, providers.WithExtraSpanProcessors(allProcessors...))
 	}

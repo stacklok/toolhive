@@ -15,19 +15,14 @@ import (
 // TestRegression_InitializeAdvertisesToolsAndResourcesCapabilities pins the
 // capabilities advertised in the initialize response on the Serve path.
 //
-// OBSERVED BEHAVIOR (go-sdk bridge): the initialize response advertises only
-// {"logging":{}} — it does NOT advertise tools/resources capabilities, even when
-// the core supplies tools and resources. This differs from mcp-go, which
-// advertises tools/resources in initialize. The go-sdk server advertises a
-// static, server-level capability set (logging only on the Serve path, which
-// starts with WithToolCapabilities(false)/WithResourceCapabilities(false));
-// per-session tool/resource overlays installed by the OnRegisterSession hook do
-// not change the advertised capabilities in the initialize response.
+// BEHAVIOR (go-sdk bridge, toolhive-core v0.0.28): the initialize response
+// advertises tools and resources capabilities alongside logging, matching
+// mcp-go. Earlier releases advertised only {"logging":{}} on the Serve path;
+// v0.0.28 surfaces the tool/resource capabilities in the initialize response.
 //
-// This test pins that observed behavior so a future change to the bridge (e.g.
-// advertising tools/resources once a session's overlay is populated) is a
-// deliberate, visible flip rather than a silent drift. It asserts on the RAW
-// initialize response body parsed with encoding/json — not tools/list.
+// This test pins that behavior so a future regression is a deliberate, visible
+// flip rather than a silent drift. It asserts on the RAW initialize response
+// body parsed with encoding/json — not tools/list.
 func TestRegression_InitializeAdvertisesToolsAndResourcesCapabilities(t *testing.T) {
 	t.Parallel()
 
@@ -57,15 +52,14 @@ func TestRegression_InitializeAdvertisesToolsAndResourcesCapabilities(t *testing
 	capabilities, ok := result["capabilities"].(map[string]any)
 	require.True(t, ok, "result.capabilities must be present; result: %v", result)
 
-	// Pin the observed go-sdk-bridge behavior: only logging is advertised in
-	// initialize on the Serve path. tools/resources are NOT advertised here (they
-	// are discoverable via tools/list/resources/list once the session is
-	// registered). If the bridge is updated to advertise them, flip these
-	// assertions to assert non-nil tools/resources.
+	// As of toolhive-core v0.0.28 the go-sdk bridge advertises tools and
+	// resources capabilities in the initialize response on the Serve path
+	// (alongside logging). This pins that behavior so a future regression is a
+	// deliberate, visible flip.
 	assert.Contains(t, capabilities, "logging",
 		"logging capability must be advertised; got %v", capabilities)
-	assert.NotContains(t, capabilities, "tools",
-		"tools capability is NOT advertised in initialize on the Serve path (go-sdk bridge); got %v", capabilities)
-	assert.NotContains(t, capabilities, "resources",
-		"resources capability is NOT advertised in initialize on the Serve path (go-sdk bridge); got %v", capabilities)
+	assert.Contains(t, capabilities, "tools",
+		"tools capability must be advertised in initialize on the Serve path; got %v", capabilities)
+	assert.Contains(t, capabilities, "resources",
+		"resources capability must be advertised in initialize on the Serve path; got %v", capabilities)
 }

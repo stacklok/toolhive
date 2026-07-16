@@ -80,18 +80,13 @@ func TestRegression_ToolSchemaWithTypeObject_ProjectedIntact(t *testing.T) {
 		"the top-level type must remain \"object\"; got %v", inputSchema)
 }
 
-// TestRegression_ToolSchemaWithoutTypeObject_NormalizedToEmptyObject pins the
-// go-sdk bridge's normalization of a schema that omits the top-level
-// "type":"object". normalizeObjectSchema (in the mcpcompat server bridge)
-// REPLACES any non-object-typed schema with {"type":"object"}, dropping
-// properties/required. This is a known schema-fidelity gap versus mcp-go (which
-// projected such schemas verbatim).
-//
-// This test pins the CURRENT behavior so a future fix to normalizeObjectSchema
-// (e.g. preserving properties when type is absent) is a deliberate, visible
-// flip. When that fix lands, replace this test's assertions with an
-// integrity check mirroring TestRegression_ToolSchemaWithTypeObject_ProjectedIntact.
-func TestRegression_ToolSchemaWithoutTypeObject_NormalizedToEmptyObject(t *testing.T) {
+// TestRegression_ToolSchemaWithoutTypeObject_ProjectedIntact guards the go-sdk
+// bridge's handling of a schema that omits the top-level "type":"object".
+// Earlier mcpcompat releases dropped properties/required for such schemas (a
+// fidelity gap versus mcp-go); as of toolhive-core v0.0.28 normalizeObjectSchema
+// preserves them and supplies the missing "type":"object". This test now pins
+// that intact projection so any future regression is a deliberate, visible flip.
+func TestRegression_ToolSchemaWithoutTypeObject_ProjectedIntact(t *testing.T) {
 	t.Parallel()
 
 	originalSchema := map[string]any{
@@ -140,13 +135,12 @@ func TestRegression_ToolSchemaWithoutTypeObject_NormalizedToEmptyObject(t *testi
 	inputSchema, ok := found["inputSchema"].(map[string]any)
 	require.True(t, ok, "inputSchema must be an object; tool: %v", found)
 
-	// Pin the current (lossy) normalization: a schema without a top-level
-	// "type":"object" is replaced with the empty object schema, dropping
-	// properties and required. This documents the fidelity gap.
-	assert.Equal(t, map[string]any{"type": "object"}, inputSchema,
-		"a non-object-typed schema is normalized to {\"type\":\"object\"} (fidelity gap); got %v", inputSchema)
-	assert.NotContains(t, inputSchema, "properties",
-		"properties are dropped by the normalization; got %v", inputSchema)
-	assert.NotContains(t, inputSchema, "required",
-		"required is dropped by the normalization; got %v", inputSchema)
+	// The schema is projected intact: properties and required are preserved and
+	// the missing top-level "type":"object" is supplied (toolhive-core v0.0.28).
+	assert.Equal(t, "object", inputSchema["type"],
+		"a missing top-level type must be supplied as \"object\"; got %v", inputSchema)
+	assert.Equal(t, originalSchema["properties"], inputSchema["properties"],
+		"properties must be preserved; got %v", inputSchema)
+	assert.Equal(t, originalSchema["required"], inputSchema["required"],
+		"required must be preserved; got %v", inputSchema)
 }

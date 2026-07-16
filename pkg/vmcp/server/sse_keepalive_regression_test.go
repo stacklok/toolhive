@@ -51,6 +51,7 @@ func TestRegression_SSEKeepAlive_PeriodicBytesOnIdleStream(t *testing.T) {
 		srv.mcpServer,
 		server.WithEndpointPath("/mcp"),
 		server.WithSessionIdManager(srv.vmcpSessionMgr),
+		server.WithHeartbeatInterval(100*time.Millisecond),
 	)
 	ts := httptest.NewServer(streamable)
 	t.Cleanup(ts.Close)

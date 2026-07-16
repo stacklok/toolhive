@@ -1862,6 +1862,10 @@ const docTemplate = `{
                         "description": "EnablePrometheusMetricsPath controls whether to expose Prometheus-style /metrics endpoint.\nThe metrics are served on the main transport port at /metrics.\nThis is separate from OTLP metrics which are sent to the Endpoint.\n+kubebuilder:default=false\n+optional",
                         "type": "boolean"
                     },
+                    "enableUserIDAttribute": {
+                        "description": "EnableUserIDAttribute controls whether the authenticated subject is emitted\nas the OTEL \"user.id\" span attribute on the inbound MCP server span.\nWhen false (the default), no user attribution lands on spans and behavior is\nunchanged. When true, \"user.id\" is set from the authenticated identity's\nSubject only when an identity is present on the request context, so\nanonymous requests are unaffected.\n\nDefaults to false because the subject can be personally- or\ntenant-identifying. The attribute is high-cardinality and is intentionally\nnever added to any metric instrument.\n+kubebuilder:default=false\n+optional",
+                        "type": "boolean"
+                    },
                     "endpoint": {
                         "description": "Endpoint is the OTLP endpoint URL\n+optional",
                         "type": "string"

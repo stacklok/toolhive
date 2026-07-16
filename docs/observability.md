@@ -109,6 +109,7 @@ maintaining the modular architecture of ToolHive's middleware system.
 | `--otel-env-vars` | string[] | `nil` | Environment variables to include in spans (comma-separated) |
 | `--otel-custom-attributes` | string | `""` | Custom resource attributes (`key1=value1,key2=value2`) |
 | `--otel-use-legacy-attributes` | bool | `true` | Emit legacy attribute names alongside new OTEL semantic convention names |
+| `--otel-enable-user-id-attribute` | bool | `false` | Emit the authenticated subject as the `user.id` span attribute on the MCP server span. Opt-in; may expose personally- or tenant-identifying data |
 
 ### Configuration File
 
@@ -123,6 +124,9 @@ otel:
     - DEPLOYMENT_ENV
   insecure: true
   use-legacy-attributes: false
+  # Opt-in: attach the authenticated subject as the user.id span attribute.
+  # Default false; see "User Attribution" below for the PII consideration.
+  enable-user-id-attribute: false
 ```
 
 CLI flags take precedence over configuration file values when explicitly set.
@@ -379,6 +383,29 @@ The `mcp.resource.uri` attribute is set only for the following methods:
 | `mcp.protocol.version` | string | `MCP-Protocol-Version` header present | MCP protocol version |
 | `client.address` | string | Remote address available | Client IP address |
 | `client.port` | int | Port parseable from remote address | Client port |
+
+### User Attribution Attribute (opt-in)
+
+| Attribute | Type | Condition | Description |
+|-----------|------|-----------|-------------|
+| `user.id` | string | `enableUserIDAttribute` is true **and** an authenticated identity is present | The authenticated subject (OIDC `sub`) of the caller |
+
+`user.id` is **opt-in and default-off**. Enable it with the
+`--otel-enable-user-id-attribute` CLI flag, the `enable-user-id-attribute`
+config-file field, or the `enableUserIDAttribute` field on
+`MCPTelemetryConfig` / inline telemetry config.
+
+When the feature is disabled (the default), no user attribution is added to any
+span and behavior is unchanged. When enabled, the attribute is set from the
+authenticated identity's `Subject` only when an identity is present on the
+request context, so anonymous/unauthenticated requests are unaffected.
+
+> **Privacy note:** The subject can be personally- or tenant-identifying. For
+> this reason the feature defaults to off, and `user.id` is intentionally
+> **never** added to any metric instrument (it is high-cardinality). Enable it
+> only where capturing per-user attribution in traces is acceptable for your
+> privacy posture. Pseudonymization, if desired, belongs in a downstream
+> collector/processor.
 
 ### Error Attributes
 

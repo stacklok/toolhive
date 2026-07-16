@@ -92,6 +92,15 @@ type MCPTelemetryOTelConfig struct {
 	// +optional
 	UseLegacyAttributes bool `json:"useLegacyAttributes"`
 
+	// EnableUserIDAttribute controls whether the authenticated subject is emitted as the
+	// OTEL "user.id" span attribute on the inbound MCP server span. Defaults to false because
+	// the subject can be personally- or tenant-identifying. When enabled, the attribute is only
+	// set when an authenticated identity is present on the request context, so anonymous requests
+	// are unaffected. The attribute is high-cardinality and is never added to any metric instrument.
+	// +kubebuilder:default=false
+	// +optional
+	EnableUserIDAttribute bool `json:"enableUserIDAttribute,omitempty"`
+
 	// CABundleRef references a ConfigMap containing a CA certificate bundle for the OTLP endpoint.
 	// When specified, the operator mounts the ConfigMap into the proxyrunner pod and configures
 	// the OTLP exporters to trust the custom CA. This is useful when the OTLP collector uses

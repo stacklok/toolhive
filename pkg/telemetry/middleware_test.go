@@ -26,6 +26,7 @@ import (
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/auth"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/transport/types/mocks"
@@ -2398,4 +2399,137 @@ func TestRecordSSEConnection_DualEmission(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestHTTPMiddleware_UserIDAttribute verifies the opt-in, default-off "user.id"
+// span attribute behavior:
+//   - disabled (default): no user.id even when an identity is present,
+//   - enabled with an identity: user.id set from the authenticated Subject,
+//   - enabled without an identity (anonymous): no user.id.
+func TestHTTPMiddleware_UserIDAttribute(t *testing.T) {
+	t.Parallel()
+
+	const subject = "user-123"
+
+	tests := []struct {
+		name        string
+		enabled     bool
+		withIdent   bool
+		identity    *auth.Identity
+		wantPresent bool
+		wantValue   string
+	}{
+		{
+			name:        "disabled by default - no user.id even with identity",
+			enabled:     false,
+			withIdent:   true,
+			identity:    &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: subject}},
+			wantPresent: false,
+		},
+		{
+			name:        "enabled with identity - user.id set from Subject",
+			enabled:     true,
+			withIdent:   true,
+			identity:    &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: subject}},
+			wantPresent: true,
+			wantValue:   subject,
+		},
+		{
+			name:        "enabled without identity (anonymous) - no user.id",
+			enabled:     true,
+			withIdent:   false,
+			wantPresent: false,
+		},
+		{
+			name:        "enabled with identity but empty Subject - no user.id",
+			enabled:     true,
+			withIdent:   true,
+			identity:    &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: ""}},
+			wantPresent: false,
+		},
+		{
+			name:        "enabled with nil identity stored - no user.id",
+			enabled:     true,
+			withIdent:   false,
+			wantPresent: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			middleware := &HTTPMiddleware{
+				config:     Config{EnableUserIDAttribute: tt.enabled},
+				serverName: "github",
+				transport:  "stdio",
+			}
+
+			ctx := context.Background()
+			if tt.withIdent {
+				ctx = auth.WithIdentity(ctx, tt.identity)
+			}
+
+			span := &mockSpan{attributes: make(map[string]interface{})}
+			middleware.addUserIDAttribute(ctx, span)
+
+			if tt.wantPresent {
+				require.Contains(t, span.attributes, "user.id")
+				assert.Equal(t, tt.wantValue, span.attributes["user.id"])
+			} else {
+				assert.NotContains(t, span.attributes, "user.id")
+			}
+		})
+	}
+}
+
+// TestHTTPMiddleware_UserIDAttribute_ViaAddMCPAttributes verifies the attribute
+// is wired through the real addMCPAttributes path (identity present vs absent),
+// and that it stays absent when the feature is off.
+func TestHTTPMiddleware_UserIDAttribute_ViaAddMCPAttributes(t *testing.T) {
+	t.Parallel()
+
+	newReqCtx := func(t *testing.T, ident *auth.Identity) (*http.Request, context.Context) {
+		t.Helper()
+		req := httptest.NewRequest("POST", "/messages", nil)
+		mcpRequest := &mcpparser.ParsedMCPRequest{
+			Method:    "tools/call",
+			ID:        "req-1",
+			IsRequest: true,
+		}
+		ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, mcpRequest)
+		if ident != nil {
+			ctx = auth.WithIdentity(ctx, ident)
+		}
+		return req, ctx
+	}
+
+	t.Run("off - identity present but no user.id", func(t *testing.T) {
+		t.Parallel()
+		mw := &HTTPMiddleware{config: Config{EnableUserIDAttribute: false}, serverName: "github", transport: "stdio"}
+		req, ctx := newReqCtx(t, &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}})
+		span := &mockSpan{attributes: make(map[string]interface{})}
+		mw.addMCPAttributes(ctx, span, req)
+		assert.NotContains(t, span.attributes, "user.id")
+		// Sanity: standard MCP attributes are still emitted.
+		assert.Contains(t, span.attributes, "mcp.method.name")
+	})
+
+	t.Run("on - identity present sets user.id", func(t *testing.T) {
+		t.Parallel()
+		mw := &HTTPMiddleware{config: Config{EnableUserIDAttribute: true}, serverName: "github", transport: "stdio"}
+		req, ctx := newReqCtx(t, &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}})
+		span := &mockSpan{attributes: make(map[string]interface{})}
+		mw.addMCPAttributes(ctx, span, req)
+		assert.Equal(t, "alice", span.attributes["user.id"])
+	})
+
+	t.Run("on - no identity (anonymous request) leaves user.id absent", func(t *testing.T) {
+		t.Parallel()
+		mw := &HTTPMiddleware{config: Config{EnableUserIDAttribute: true}, serverName: "github", transport: "stdio"}
+		req, ctx := newReqCtx(t, nil)
+		span := &mockSpan{attributes: make(map[string]interface{})}
+		mw.addMCPAttributes(ctx, span, req)
+		assert.NotContains(t, span.attributes, "user.id")
+	})
 }

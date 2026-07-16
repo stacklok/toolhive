@@ -53,6 +53,18 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 	// Discovery and capability methods - always allowed
 	"features/list": {Feature: "", Operation: authorizers.MCPOperationList}, // Capability discovery
 	"roots/list":    {Feature: "", Operation: ""},                           // Root directory discovery
+	// server/discover is Modern capability discovery (the Modern revision has no initialize handshake).
+	"server/discover": {Feature: "", Operation: ""},
+
+	// Subscriptions - always allowed for now. This method carries no single resource
+	// identifier the parser extracts (params are a notification-type filter with an
+	// optional resourceSubscriptions array), so routing it through Cedar with an empty
+	// ResourceID would risk matching a broad allow rule. Notification delivery and
+	// per-resource authorization of resourceSubscriptions URIs are future work.
+	//
+	// TODO(#5755): when subscription notification delivery is implemented, replace this
+	// always-allowed entry with real per-resource authorization of resourceSubscriptions URIs.
+	"subscriptions/listen": {Feature: "", Operation: ""},
 
 	// Logging and client preferences - always allowed
 	"logging/setLevel": {Feature: "", Operation: ""}, // Client preference for server logging

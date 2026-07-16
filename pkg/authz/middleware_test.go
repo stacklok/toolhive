@@ -331,6 +331,28 @@ func TestMiddleware(t *testing.T) {
 			expectAuthorized: false,
 		},
 		{
+			name:   "Server discover is always allowed",
+			method: "server/discover",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
+			name:   "Subscriptions listen is always allowed",
+			method: "subscriptions/listen",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
 			name:   "Sampling createMessage is denied by default (security-sensitive)",
 			method: "sampling/createMessage",
 			params: map[string]interface{}{
@@ -432,6 +454,17 @@ func TestMiddleware(t *testing.T) {
 			assert.Equal(t, tc.expectAuthorized, handlerCalled, "Handler called status does not match expected")
 		})
 	}
+}
+
+// TestSubscriptionsListenIsAllowlistedPendingDelivery guards a deliberate, temporary
+// exception: subscriptions/listen is always-allowed only because notification delivery
+// for it is not yet implemented, so it exposes no data. When delivery lands, this entry
+// must become a real Feature/Operation with per-resource authorization of
+// resourceSubscriptions URIs (see TODO(#5755) in MCPMethodToFeatureOperation) — this test
+// should fail at that point as a reminder to update it deliberately.
+func TestSubscriptionsListenIsAllowlistedPendingDelivery(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, featureOperation{}, MCPMethodToFeatureOperation["subscriptions/listen"])
 }
 
 // TestMiddlewareWithGETRequest tests that the middleware doesn't panic with GET requests.

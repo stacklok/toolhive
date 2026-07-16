@@ -161,6 +161,14 @@ type DCRKey struct {
 	// endpoint URL when the consumer configured one directly. It is derived
 	// by the dcr resolver from the Request; do not hand-build it at call
 	// sites.
+	//
+	// On the discovery-URL path this is the derived issuer, so it identifies
+	// the authorization server rather than the exact discovery URL: two
+	// configs that resolve to the same issuer intentionally share one
+	// registration. It does not fully disambiguate the nonstandard case of a
+	// single issuer exposing distinct registration endpoints under custom
+	// (non-well-known) discovery paths — see resolveUpstreamKeyIdentity in
+	// pkg/auth/dcr for the full rationale.
 	UpstreamID string
 
 	// RedirectURI is the redirect URI registered with the upstream

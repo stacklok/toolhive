@@ -933,6 +933,20 @@ func resolveDCREndpoints(
 // keeps the cache-hit path free of I/O; a malformed DiscoveryURL that fails
 // here could never have produced a stored entry to hit anyway, because a
 // successful registration requires the same derivation to succeed first.
+//
+// Residual limitation: on the DiscoveryURL branch the identity is the derived
+// upstream *issuer*, not the discovery URL. For a custom (non-well-known)
+// discovery URL, deriveExpectedIssuerFromDiscoveryURL falls back to the bare
+// origin and discards the path, so two upstreams on the same host with
+// distinct custom metadata paths, the same scopes, and both declaring that
+// origin as their metadata "issuer" derive the same UpstreamID and still
+// collide. This is intentional: UpstreamID names the authorization server
+// (aligned with the RFC 8414 §3.3 issuer used for metadata verification), so
+// two configs that resolve to the same issuer are the same AS and correctly
+// share one registration. The collision only surfaces for the nonstandard
+// case of one issuer serving distinct registration endpoints under custom
+// paths; if the two upstreams instead declared different issuers, at least
+// one would fail §3.3 verification loudly rather than reuse credentials.
 func resolveUpstreamKeyIdentity(req *Request) (string, error) {
 	if req.RegistrationEndpoint != "" {
 		return req.RegistrationEndpoint, nil

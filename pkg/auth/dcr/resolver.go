@@ -1339,7 +1339,7 @@ func newDCRHTTPClient(initialAccessToken, registrationEndpoint string, allowPriv
 // of the resolver's outbound calls — the discovery fetch and the registration
 // POST. See networking.NewHostScopedClientBuilder for the CWE-918 guard policy
 // this applies (allowPrivateIPs semantics, loopback exemption, HTTPS
-// enforcement). Keep-alives are disabled so the dial-time check re-runs on
+// enforcement). Keep-alive is disabled so the dial-time check re-runs on
 // every request rather than being bypassed by a pooled connection.
 //
 // The returned client has no CheckRedirect policy: each caller layers its own

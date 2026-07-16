@@ -834,9 +834,9 @@ func formatOAuth2Error(err error, prefix string) error {
 // so this provider path and the DCR resolver share one implementation.
 //
 // Unlike the DCR resolver's guarded client, this one deliberately leaves
-// keep-alives enabled: the returned client is stored on BaseOAuth2Provider and
+// keep-alive enabled: the returned client is stored on BaseOAuth2Provider and
 // reused for many token-refresh/userinfo calls over the provider's lifetime
-// against a single operator-configured host, so disabling keep-alives here
+// against a single operator-configured host, so disabling keep-alive here
 // would pay a fresh TCP+TLS handshake on every call. This trades a narrower
 // window — a DNS change for that fixed host between connection reuses is not
 // re-checked mid-lifetime — for avoiding that cost on a hot path; the DCR

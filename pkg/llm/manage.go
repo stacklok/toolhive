@@ -38,6 +38,15 @@ func (c *Config) SetFields(opts SetOptions) error {
 	if opts.TLSSkipVerify != nil {
 		c.TLSSkipVerify = *opts.TLSSkipVerify
 	}
+	if opts.BedrockCompat != nil {
+		c.Bedrock.Compat = *opts.BedrockCompat
+	}
+	if opts.Enable1M != nil {
+		c.Bedrock.Enable1M = *opts.Enable1M
+	}
+	if opts.Models != nil {
+		c.Models = opts.Models
+	}
 
 	if !c.IsConfigured() {
 		return c.ValidatePartial()
@@ -57,6 +66,13 @@ type SetOptions struct {
 	ProxyPort     int
 	CallbackPort  int
 	TLSSkipVerify *bool // nil = not provided; &false = explicitly disable
+	// BedrockCompat and Enable1M use pointers so false can be distinguished from
+	// "not provided" (enabling explicit clear via config set). See BedrockConfig.
+	BedrockCompat *bool
+	Enable1M      *bool
+	// Models sets the persisted model IDs (Config.Models). nil = not provided
+	// (leave existing config unchanged); an empty non-nil slice clears them.
+	Models []string
 }
 
 // DeleteCachedTokens removes all cached OIDC tokens stored under the LLM
@@ -108,6 +124,13 @@ func (c *Config) Show(w io.Writer) error {
 	writef("Scopes:          %v\n", c.OIDC.EffectiveScopes())
 	if c.TLSSkipVerify {
 		writef("TLS Skip Verify: true (WARNING: certificate verification disabled)\n")
+	}
+	if len(c.Models) > 0 {
+		writef("Models:          %v\n", c.Models)
+	}
+	if c.Bedrock.Compat {
+		writef("Bedrock compat:  true (CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1)\n")
+		writef("  1M context:    %t\n", c.Bedrock.Enable1M)
 	}
 	if len(c.ConfiguredTools) > 0 {
 		writef("Configured tools:\n")

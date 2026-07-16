@@ -1640,6 +1640,7 @@ func TestBuildUpstreamConfigs_DCR(t *testing.T) {
 		redirectURI := server.URL + "/oauth/callback"
 		key := storage.DCRKey{
 			Issuer:      server.URL,
+			UpstreamID:  server.URL,
 			RedirectURI: redirectURI,
 			ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 		}
@@ -1781,6 +1782,7 @@ func TestNewEmbeddedAuthServer_DCRBoot(t *testing.T) {
 	redirectURI := server.URL + "/oauth/callback"
 	key := storage.DCRKey{
 		Issuer:      server.URL,
+		UpstreamID:  server.URL,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}
@@ -1961,6 +1963,7 @@ func TestEmbeddedAuthServer_DCRStorePersistsAcrossClose(t *testing.T) {
 	redirectURI := server.URL + "/oauth/callback"
 	key := storage.DCRKey{
 		Issuer:      server.URL,
+		UpstreamID:  server.URL,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash([]string{"openid", "profile"}),
 	}

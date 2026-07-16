@@ -1462,8 +1462,8 @@ func TestIntegration_DCRCredentials_RoundTrip(t *testing.T) {
 
 func TestIntegration_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
 	withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
-		mkKey := func(issuer, redirect string, scopes []string) DCRKey {
-			return DCRKey{Issuer: issuer, RedirectURI: redirect, ScopesHash: ScopesHash(scopes)}
+		mkKey := func(issuer, upstreamID, redirect string, scopes []string) DCRKey {
+			return DCRKey{Issuer: issuer, UpstreamID: upstreamID, RedirectURI: redirect, ScopesHash: ScopesHash(scopes)}
 		}
 		mk := func(key DCRKey, clientID string) *DCRCredentials {
 			return &DCRCredentials{
@@ -1474,10 +1474,13 @@ func TestIntegration_DCRCredentials_DistinctKeysCoexist(t *testing.T) {
 			}
 		}
 		entries := []*DCRCredentials{
-			mk(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid"}), "a"),
-			mk(mkKey("https://idp-b.example.com", "https://x/cb", []string{"openid"}), "b"),
-			mk(mkKey("https://idp-a.example.com", "https://y/cb", []string{"openid"}), "c"),
-			mk(mkKey("https://idp-a.example.com", "https://x/cb", []string{"openid", "email"}), "d"),
+			mk(mkKey("https://idp-a.example.com", "https://up-a", "https://x/cb", []string{"openid"}), "a"),
+			mk(mkKey("https://idp-b.example.com", "https://up-a", "https://x/cb", []string{"openid"}), "b"),
+			mk(mkKey("https://idp-a.example.com", "https://up-a", "https://y/cb", []string{"openid"}), "c"),
+			mk(mkKey("https://idp-a.example.com", "https://up-a", "https://x/cb", []string{"openid", "email"}), "d"),
+			// Differs from entry "a" only by UpstreamID — the two-upstreams-in-
+			// one-authserver shape that collided before #5823.
+			mk(mkKey("https://idp-a.example.com", "https://up-b", "https://x/cb", []string{"openid"}), "e"),
 		}
 		for _, e := range entries {
 			require.NoError(t, s.StoreDCRCredentials(ctx, e))

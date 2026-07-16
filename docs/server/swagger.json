@@ -2353,13 +2353,13 @@
                         "uniqueItems": false
                     },
                     "registryBaseUrl": {
-                        "description": "RegistryBaseURL is the base URL of the package registry (used by npm, pypi, nuget; not used by oci, mcpb)",
+                        "description": "RegistryBaseURL is the base URL of the package registry (used by npm, pypi, nuget, cargo; not used by oci, mcpb)",
                         "example": "https://registry.npmjs.org",
                         "format": "uri",
                         "type": "string"
                     },
                     "registryType": {
-                        "description": "RegistryType indicates how to download packages (e.g., \"npm\", \"pypi\", \"oci\", \"nuget\", \"mcpb\")",
+                        "description": "RegistryType indicates how to download packages (e.g., \"npm\", \"pypi\", \"cargo\", \"oci\", \"nuget\", \"mcpb\")",
                         "example": "npm",
                         "minLength": 1,
                         "type": "string"

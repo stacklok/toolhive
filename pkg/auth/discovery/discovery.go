@@ -707,12 +707,14 @@ func resolveDCRCredentials(
 	// dcr.Request.Issuer carries the caller's logical scope for cache
 	// keying. The CLI flow has no separate logical issuer of its own, so
 	// it deliberately reuses the upstream's issuer URL here. This is
-	// safe because the resolver's cache key is (Issuer, RedirectURI,
-	// ScopesHash) and the CLI always supplies an explicit loopback
-	// RedirectURI per RFC 8252 §7.3 — even if a future embedded-authserver
-	// upstream happened to share Issuer with a CLI invocation, the
-	// distinct RedirectURI keeps the cache keys apart. See the Issuer
-	// field doc on dcr.Request for the wider semantics.
+	// safe because the resolver's cache key is (Issuer, UpstreamID,
+	// RedirectURI, ScopesHash) and the CLI always supplies an explicit
+	// loopback RedirectURI per RFC 8252 §7.3 — even if a future
+	// embedded-authserver upstream happened to share Issuer with a CLI
+	// invocation, the distinct RedirectURI keeps the cache keys apart.
+	// UpstreamID (derived by the resolver from the RegistrationEndpoint set
+	// below, or a DiscoveryURL) further distinguishes distinct upstreams.
+	// See the Issuer field doc on dcr.Request for the wider semantics.
 	req := &dcr.Request{
 		Issuer:                issuer,
 		RedirectURI:           redirectURI,

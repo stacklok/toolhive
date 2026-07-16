@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	"github.com/stacklok/toolhive/pkg/secrets"
@@ -159,6 +161,52 @@ func TestConfig_SetFields(t *testing.T) {
 }
 
 func boolPtr(b bool) *bool { return &b }
+
+// ── SetFields (Bedrock) ──────────────────────────────────────────────────────
+
+func TestConfig_SetFields_Bedrock(t *testing.T) {
+	t.Parallel()
+
+	base := func() Config {
+		return Config{
+			GatewayURL: "https://gw.example.com",
+			OIDC:       OIDCConfig{Issuer: "https://auth.example.com", ClientID: "c"},
+		}
+	}
+
+	t.Run("compat, enable1M, and models are set and persisted", func(t *testing.T) {
+		t.Parallel()
+		cfg := base()
+		require.NoError(t, cfg.SetFields(SetOptions{
+			BedrockCompat: boolPtr(true),
+			Enable1M:      boolPtr(true),
+			Models:        []string{"us.anthropic.claude-opus-x"},
+		}))
+		assert.True(t, cfg.Bedrock.Compat)
+		assert.True(t, cfg.Bedrock.Enable1M)
+		// Models is persisted at the top level (single source of truth), not under Bedrock.
+		assert.Equal(t, []string{"us.anthropic.claude-opus-x"}, cfg.Models)
+	})
+
+	t.Run("nil pointers leave existing values unchanged", func(t *testing.T) {
+		t.Parallel()
+		cfg := base()
+		cfg.Bedrock = BedrockConfig{Compat: true, Enable1M: true}
+		cfg.Models = []string{"m"}
+		require.NoError(t, cfg.SetFields(SetOptions{}))
+		assert.True(t, cfg.Bedrock.Compat)
+		assert.True(t, cfg.Bedrock.Enable1M)
+		assert.Equal(t, []string{"m"}, cfg.Models)
+	})
+
+	t.Run("false pointer clears compat", func(t *testing.T) {
+		t.Parallel()
+		cfg := base()
+		cfg.Bedrock.Compat = true
+		require.NoError(t, cfg.SetFields(SetOptions{BedrockCompat: boolPtr(false)}))
+		assert.False(t, cfg.Bedrock.Compat)
+	})
+}
 
 // ── DeleteCachedTokens ───────────────────────────────────────────────────────
 

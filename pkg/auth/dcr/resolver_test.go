@@ -405,6 +405,24 @@ func TestResolveDCRCredentials_BlocksPrivateIPTargets(t *testing.T) {
 				}
 			},
 		},
+		{
+			// Discovery-fetch branch itself: DiscoveryURL points directly at a
+			// private IP, so the *discovery* client's own dial guard
+			// (newGuardedDCRClient(discoveryHost, ...) in resolveDCREndpoints)
+			// must refuse it. The two cases above only prove the guard on the
+			// registration client; this proves it on the discovery client. No
+			// live server is needed — the guard fires before any request is
+			// sent, and deriveExpectedIssuerFromDiscoveryURL resolves the
+			// issuer from the URL string alone.
+			name: "discovery URL itself on a private IP",
+			newReq: func(_ *testing.T) *Request {
+				return &Request{
+					Issuer:       "https://block-discovery.example.test",
+					Scopes:       []string{"openid"},
+					DiscoveryURL: "https://10.255.255.1/.well-known/oauth-authorization-server",
+				}
+			},
+		},
 	}
 
 	for _, tc := range tests {
@@ -444,6 +462,50 @@ func TestResolveDCRCredentials_AllowPrivateIPsHonored(t *testing.T) {
 	require.Error(t, err, "the dead documentation address cannot complete registration")
 	assert.NotContains(t, err.Error(), networking.ErrPrivateIpAddress,
 		"AllowPrivateIPs=true must lift the guard so the dial is attempted, not refused")
+}
+
+// TestResolveDCRCredentials_AllowPrivateIPsHonoredViaDiscovery proves
+// req.AllowPrivateIPs also lifts the guard on the discovery-indirection
+// path — not just the direct RegistrationEndpoint branch covered by
+// TestResolveDCRCredentials_AllowPrivateIPsHonored above: with it set, a
+// registration_endpoint the discovery document points at a private IP is
+// dialed instead of refused at the guard.
+func TestResolveDCRCredentials_AllowPrivateIPsHonoredViaDiscovery(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	mux := http.NewServeMux()
+	var server *httptest.Server
+	mux.HandleFunc("/.well-known/oauth-authorization-server",
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(oauthproto.AuthorizationServerMetadata{
+				Issuer:                server.URL,
+				AuthorizationEndpoint: server.URL + "/authorize",
+				TokenEndpoint:         server.URL + "/token",
+				JWKSURI:               server.URL + "/jwks",
+				// Non-routable RFC 5737 documentation address (TEST-NET-1): the
+				// dial fails with a network error rather than reaching a real
+				// host, same as TestResolveDCRCredentials_AllowPrivateIPsHonored.
+				RegistrationEndpoint: "https://192.0.2.1/register",
+			})
+		})
+	server = httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+
+	req := &Request{
+		Issuer:          server.URL,
+		Scopes:          []string{"openid"},
+		DiscoveryURL:    server.URL + "/.well-known/oauth-authorization-server",
+		AllowPrivateIPs: true,
+	}
+
+	_, err := ResolveCredentials(ctx, req, newMemoryDCRStore(t))
+	require.Error(t, err, "the dead documentation address cannot complete registration")
+	assert.NotContains(t, err.Error(), networking.ErrPrivateIpAddress,
+		"AllowPrivateIPs=true must lift the guard on the discovery-indirection path too")
 }
 
 // TestResolveDCRCredentials_DiscoveryRefusesCrossHostRedirect pins that the

@@ -244,6 +244,32 @@ func TestHandleDynamicRegistration_MetadataRefetchBlocksPrivateIP(t *testing.T) 
 		"the metadata re-fetch must be guarded the same as the resolver's own outbound calls")
 }
 
+// TestHandleDynamicRegistration_MetadataRefetchAllowPrivateIPsHonored proves
+// OAuthFlowConfig.AllowPrivateIPs lifts the guard on the same metadata
+// re-fetch pinned as blocked-by-default above. The target is a non-routable
+// RFC 5737 documentation address (TEST-NET-1), so the dial fails with a
+// network error rather than the guard error — and can never reach a real host.
+func TestHandleDynamicRegistration_MetadataRefetchAllowPrivateIPsHonored(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	config := &OAuthFlowConfig{
+		Scopes:               []string{"openid", "profile"},
+		CallbackPort:         8765,
+		AuthorizeURL:         "https://192.0.2.1/authorize",
+		TokenURL:             "https://192.0.2.1/token",
+		RegistrationEndpoint: "https://192.0.2.1/register",
+		AllowPrivateIPs:      true,
+	}
+
+	err := handleDynamicRegistration(ctx, "https://192.0.2.1", config)
+	require.Error(t, err, "the dead documentation address cannot complete registration")
+	assert.NotContains(t, err.Error(), networking.ErrPrivateIpAddress,
+		"AllowPrivateIPs=true must lift the guard on the metadata re-fetch")
+}
+
 // TestHandleDynamicRegistration_InheritsSingleflightDedup verifies that
 // N concurrent handleDynamicRegistration calls for the same (issuer,
 // scopes, redirectURI) tuple coalesce into exactly one upstream /register

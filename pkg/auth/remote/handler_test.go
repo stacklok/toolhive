@@ -1011,3 +1011,21 @@ func TestResolveClientCredentials(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildOAuthFlowConfig_ThreadsAllowPrivateIPs pins that performOAuthFlow's
+// allowPrivateIPs parameter reaches the built OAuthFlowConfig. Without this,
+// a future refactor could silently drop the SSRF-guard decision computed in
+// Authenticate/discoverIssuerAndScopes without any test failing.
+func TestBuildOAuthFlowConfig_ThreadsAllowPrivateIPs(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{config: &Config{}}
+
+	flowConfig := h.buildOAuthFlowConfig([]string{"openid"}, nil, true)
+	assert.True(t, flowConfig.AllowPrivateIPs,
+		"allowPrivateIPs=true must reach OAuthFlowConfig.AllowPrivateIPs")
+
+	flowConfig = h.buildOAuthFlowConfig([]string{"openid"}, nil, false)
+	assert.False(t, flowConfig.AllowPrivateIPs,
+		"allowPrivateIPs=false must reach OAuthFlowConfig.AllowPrivateIPs")
+}

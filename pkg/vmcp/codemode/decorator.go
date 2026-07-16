@@ -204,6 +204,24 @@ func (d *decorator) CallTool(
 	return fromMCPResult(result), nil
 }
 
+// CheckToolCall admits execute_tool_script without consulting inner admission and
+// delegates every other name to inner. This mirrors the CallTool override's guard:
+// execute_tool_script is NOT represented in the core admission seam (a Cedar policy
+// cannot allow/deny code mode per-principal — see the decorator's authorization
+// contract), so a promoted CheckToolCall would hit inner, find the name absent from
+// the advertised set, and fail the stub-tool admission under any permit-list policy —
+// causing a pre-dispatch gate to 403 every code-mode call. Admitting it here is safe
+// precisely because the feature flag is the grant and each inner tool call the script
+// makes is re-authorized by its real name through inner.CallTool.
+func (d *decorator) CheckToolCall(
+	ctx context.Context, identity *auth.Identity, name string, args map[string]any,
+) error {
+	if name == script.ExecuteToolScriptName {
+		return nil
+	}
+	return d.VMCP.CheckToolCall(ctx, identity, name, args)
+}
+
 // virtualTool builds the execute_tool_script definition whose description enumerates the
 // callable tools (everything in innerTools except the virtual tool itself).
 func virtualTool(innerTools []vmcp.Tool) vmcp.Tool {
@@ -251,7 +269,7 @@ func (d *decorator) bindTools(identity *auth.Identity, tools []vmcp.Tool) []scri
 					// which are denied. (The admission filter already excludes denied tools
 					// from the bound set; this guards the narrower allow-list/deny-call gap.)
 					if errors.Is(err, vmcp.ErrAuthorizationFailed) {
-						return nil, errors.New("tool call denied by authorization policy")
+						return nil, errors.New(vmcp.DenyMessageToolCall)
 					}
 					return nil, err
 				}

@@ -68,6 +68,25 @@ var (
 	ErrToolNameConflict = errors.New("tool name conflict")
 )
 
+// Authorization-denial messages, one per admission kind.
+//
+// These are kind-only: each names the capability class, never the specific
+// tool/resource/prompt or whether it is advertised vs. nonexistent, so a denial
+// can never be used to enumerate what exists (the "no oracle" property). They
+// live here at the domain root and are referenced by every site that emits a
+// denial — conversion.ErrorToToolResult, the Serve resources/read handler, the
+// codemode script closure, and the pre-dispatch call gate — so a denial has one
+// wording per kind by reference, not by copied literals that can silently drift
+// apart. Test assertions deliberately keep the literal to pin the exact wording.
+const (
+	// DenyMessageToolCall is emitted when a tools/call is denied by policy.
+	DenyMessageToolCall = "call denied by authorization policy"
+	// DenyMessageResourceRead is emitted when a resources/read is denied by policy.
+	DenyMessageResourceRead = "read denied by authorization policy"
+	// DenyMessagePromptGet is emitted when a prompts/get is denied by policy.
+	DenyMessagePromptGet = "prompt denied by authorization policy"
+)
+
 // Error Categorization Helpers
 //
 // These functions categorize errors by examining error message strings.

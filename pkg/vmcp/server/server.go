@@ -276,6 +276,14 @@ type Server struct {
 	// server (BackendHealth keeps a defensive nil guard regardless).
 	core core.VMCP
 
+	// authzGateEnabled installs the pre-dispatch authorization CallGate in Handler.
+	// Authz is core-owned and stripped from the transport ServerConfig (see
+	// deriveServerConfig / buildServeConfig), so it never reaches s.config; New —
+	// the only composition path that knows the authz config — sets this flag from
+	// cfg.Authz != nil after Serve builds the Server. It stays false for direct-Serve
+	// callers, which have no way to configure authorization and run allow-all cores.
+	authzGateEnabled bool
+
 	// optimizerFactory builds a per-session optimizer over the core's advertised
 	// tools. Set only when the optimizer is enabled (nil otherwise). When non-nil,
 	// session registration advertises find_tool/
@@ -497,6 +505,11 @@ func New(
 		return nil, err
 	}
 
+	// Enable the pre-dispatch authorization gate when Cedar policies are configured.
+	// Authz is core-owned and not carried on the transport ServerConfig Serve builds
+	// from, so New — which holds cfg.Authz — sets the flag here (see Server.authzGateEnabled).
+	srv.authzGateEnabled = cfg.Authz != nil
+
 	// Bind the elicitation adapter to the SDK server Serve built so composite-workflow
 	// elicitation reaches the same mcp-go server that serves client traffic.
 	elicitation.bind(NewSDKElicitationAdapter(srv.MCPServer()))
@@ -516,13 +529,21 @@ func New(
 // All returned handlers share the same underlying MCPServer and SessionManager,
 // so callers should not serve concurrent traffic through multiple handlers.
 func (s *Server) Handler(_ context.Context) (http.Handler, error) {
-	// Create Streamable HTTP server with ToolHive session management
-	streamableServer := server.NewStreamableHTTPServer(
-		s.mcpServer,
+	// Create Streamable HTTP server with ToolHive session management.
+	streamableOpts := []server.StreamableHTTPOption{
 		server.WithEndpointPath(s.config.EndpointPath),
 		server.WithSessionIdManager(s.vmcpSessionMgr),
 		server.WithHeartbeatInterval(heartbeatInterval(s.config.HeartbeatInterval)),
-	)
+	}
+	// Install the pre-dispatch authorization gate only when authz is configured
+	// (allow-all otherwise, matching the core admission seam's guard). The gate
+	// re-runs the core admission decision for gated methods so a denied tools/call,
+	// resources/read, or prompts/get is rejected as HTTP 403 + JSON-RPC 403 before
+	// the SDK dispatches it, instead of the SDK's 200 result.
+	if s.authzGateEnabled {
+		streamableOpts = append(streamableOpts, server.WithCallGate(s.authzCallGate()))
+	}
+	streamableServer := server.NewStreamableHTTPServer(s.mcpServer, streamableOpts...)
 
 	// Create HTTP mux with separated authenticated and unauthenticated routes
 	mux := http.NewServeMux()
@@ -575,6 +596,13 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	// removed: every caller now routes through Serve, so authorization is enforced by the
 	// core admission seam (#5438) and capability/health filtering by the core, rather than
 	// by HTTP middleware.
+	//
+	// Authorization additionally runs a pre-dispatch CallGate INSIDE the streamable
+	// server (installed above only when Authz is configured): it re-runs the core
+	// admission decision for tools/call, resources/read, and prompts/get and rejects a
+	// denial as HTTP 403 + JSON-RPC 403 before dispatch. The gate sits before session
+	// validation (403-before-404) and inside the audit middleware, so a denied call is
+	// audited with outcome "denied". See call_gate.go.
 
 	var mcpHandler http.Handler = streamableServer
 

@@ -22,7 +22,7 @@ func ErrorToToolResult(err error) *sdkmcp.CallToolResult {
 		return CodedErrorResult(err, coded)
 	}
 	if errors.Is(err, vmcp.ErrAuthorizationFailed) {
-		return sdkmcp.NewToolResultError("call denied by authorization policy")
+		return sdkmcp.NewToolResultError(vmcp.DenyMessageToolCall)
 	}
 	return sdkmcp.NewToolResultError(err.Error())
 }

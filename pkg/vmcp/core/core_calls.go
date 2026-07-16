@@ -42,28 +42,8 @@ func (c *coreVMCP) CallTool(
 		return nil, err
 	}
 
-	// Admission deny: enforce the same decision ListTools filters on, sourcing the
-	// tool's annotations from the advertised set (mirroring the annotation cache the
-	// HTTP middleware populates from tools/list) so annotation-gated policies
-	// evaluate. advertisedTools includes composites, so their annotations are sourced
-	// too. A name absent from the advertised set carries no annotations, so an
-	// annotation-gated decision evaluates with no hints (and may deny). In normal
-	// operation the advertised set and the routing table are derived from the same
-	// aggregation, so this only arises if they diverge.
-	tool := findAdvertisedTool(c.advertisedTools(agg), name)
-	if tool == nil {
-		tool = &vmcp.Tool{Name: name}
-	}
-	// An authorizer ERROR is treated as a denial (fail closed), classified as
-	// ErrAuthorizationFailed so the Serve adapter can distinguish it from a transport
-	// failure via errors.Is — mirroring the live authorizeAndServe, which routes both
-	// err and !authorized to the unauthorized response. The underlying error is
-	// preserved in the chain for server-side diagnostics; Serve decides what reaches
-	// the client.
-	if allowed, err := c.admission.AllowToolCall(ctx, identity, tool, argsCopy); err != nil {
-		return nil, fmt.Errorf("%w: tool %q: %w", vmcp.ErrAuthorizationFailed, name, err)
-	} else if !allowed {
-		return nil, fmt.Errorf("%w: tool %q", vmcp.ErrAuthorizationFailed, name)
+	if err := c.authorizeToolCall(ctx, identity, name, argsCopy, agg); err != nil {
+		return nil, err
 	}
 
 	// Composite tool: execute only when the workflow is actually advertised in the
@@ -102,13 +82,8 @@ func (c *coreVMCP) ReadResource(
 		return nil, err
 	}
 
-	// Admission deny: mirror ListResources' filter for the single read. Resources
-	// carry no annotations, so the URI alone identifies the decision. An authorizer
-	// error fails closed, classified as ErrAuthorizationFailed (see CallTool).
-	if allowed, err := c.admission.AllowResourceRead(ctx, identity, &vmcp.Resource{URI: uri}); err != nil {
-		return nil, fmt.Errorf("%w: resource %q: %w", vmcp.ErrAuthorizationFailed, uri, err)
-	} else if !allowed {
-		return nil, fmt.Errorf("%w: resource %q", vmcp.ErrAuthorizationFailed, uri)
+	if err := c.authorizeResourceRead(ctx, identity, uri); err != nil {
+		return nil, err
 	}
 
 	target, err := router.NewSessionRouter(agg.RoutingTable).RouteResource(ctx, uri)
@@ -138,13 +113,8 @@ func (c *coreVMCP) GetPrompt(
 		return nil, err
 	}
 
-	// Admission deny: mirror ListPrompts' filter for the single get. Prompts carry
-	// no annotations, so the name alone identifies the decision. An authorizer error
-	// fails closed, classified as ErrAuthorizationFailed (see CallTool).
-	if allowed, err := c.admission.AllowPromptGet(ctx, identity, &vmcp.Prompt{Name: name}); err != nil {
-		return nil, fmt.Errorf("%w: prompt %q: %w", vmcp.ErrAuthorizationFailed, name, err)
-	} else if !allowed {
-		return nil, fmt.Errorf("%w: prompt %q", vmcp.ErrAuthorizationFailed, name)
+	if err := c.authorizePromptGet(ctx, identity, name); err != nil {
+		return nil, err
 	}
 
 	target, err := router.NewSessionRouter(agg.RoutingTable).RoutePrompt(ctx, name)

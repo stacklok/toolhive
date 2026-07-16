@@ -106,6 +106,29 @@ type VMCP interface {
 	// unadvertised name. Applies the same admission filter as ListPrompts.
 	LookupPrompt(ctx context.Context, identity *auth.Identity, name string) (*vmcp.Prompt, error)
 
+	// CheckToolCall runs the CALL-side admission decision for the named tool
+	// WITHOUT invoking it: it returns nil when identity is allowed to call name
+	// with args, and an error wrapping [vmcp.ErrAuthorizationFailed] on deny AND on
+	// an authorizer error (fail closed). It shares the exact admission block CallTool
+	// runs, so a pre-flight check and the call can never drift.
+	//
+	// Unlike LookupTool (list-side, no args), this is the call-side decision: it
+	// evaluates argument-conditional policies with the real args. identity is never
+	// logged. See ListTools for the nil/anonymous semantics.
+	CheckToolCall(ctx context.Context, identity *auth.Identity, name string, args map[string]any) error
+
+	// CheckResourceRead runs the read-side admission decision for uri WITHOUT
+	// reading it. Same contract as CheckToolCall: nil when allowed, an error
+	// wrapping [vmcp.ErrAuthorizationFailed] on deny or authorizer error (fail
+	// closed). Shares ReadResource's admission block.
+	CheckResourceRead(ctx context.Context, identity *auth.Identity, uri string) error
+
+	// CheckPromptGet runs the get-side admission decision for the named prompt
+	// WITHOUT retrieving it. Same contract as CheckToolCall: nil when allowed, an
+	// error wrapping [vmcp.ErrAuthorizationFailed] on deny or authorizer error (fail
+	// closed). Shares GetPrompt's admission block.
+	CheckPromptGet(ctx context.Context, identity *auth.Identity, name string) error
+
 	// ListBackends returns the backends visible to identity, scoped to the gateway's
 	// group (groupRef always applies; the BackendRegistry is the group-scoped source).
 	//

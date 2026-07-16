@@ -188,6 +188,18 @@ func (*fakeCore) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Pr
 	return nil, vmcp.ErrNotFound
 }
 
+// Check* mirror the Call*/Read* error injection so a pre-flight gate over this fake
+// sees the same allow/deny the call path would.
+func (f *fakeCore) CheckToolCall(context.Context, *auth.Identity, string, map[string]any) error {
+	return f.callErr
+}
+
+func (f *fakeCore) CheckResourceRead(context.Context, *auth.Identity, string) error {
+	return f.readErr
+}
+
+func (*fakeCore) CheckPromptGet(context.Context, *auth.Identity, string) error { return nil }
+
 func (*fakeCore) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
 	return nil, nil
 }

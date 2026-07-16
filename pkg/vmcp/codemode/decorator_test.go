@@ -27,6 +27,11 @@ type fakeCore struct {
 	lookupTool func(ctx context.Context, id *auth.Identity, name string) (*vmcp.Tool, error)
 	callTool   func(ctx context.Context, id *auth.Identity, name string,
 		args, meta map[string]any) (*vmcp.ToolCallResult, error)
+	checkTool func(ctx context.Context, id *auth.Identity, name string, args map[string]any) error
+}
+
+func (f *fakeCore) CheckToolCall(ctx context.Context, id *auth.Identity, name string, args map[string]any) error {
+	return f.checkTool(ctx, id, name, args)
 }
 
 func (f *fakeCore) ListTools(ctx context.Context, id *auth.Identity) ([]vmcp.Tool, error) {
@@ -352,4 +357,27 @@ func TestCallTool_ToolCallTimeout(t *testing.T) {
 	res, err := d.CallTool(context.Background(), nil, script.ExecuteToolScriptName, args, nil)
 	require.NoError(t, err)
 	assert.True(t, res.IsError, "a tool call exceeding ToolCallTimeout must fail the script")
+}
+
+// TestCheckToolCall_AdmitsScriptTool_DelegatesRest verifies the pre-flight gate
+// override: execute_tool_script is admitted WITHOUT consulting inner admission
+// (even under a deny-all inner), so a pre-dispatch gate never 403s a code-mode call;
+// every other name delegates to inner, so a denied tool stays denied.
+func TestCheckToolCall_AdmitsScriptTool_DelegatesRest(t *testing.T) {
+	t.Parallel()
+
+	denyAll := errors.New("denied by policy")
+	inner := echoBackend()
+	inner.checkTool = func(_ context.Context, _ *auth.Identity, _ string, _ map[string]any) error {
+		return denyAll
+	}
+	d := NewDecorator(inner, nil)
+
+	// execute_tool_script is admitted despite the deny-all inner.
+	require.NoError(t, d.CheckToolCall(context.Background(), nil, script.ExecuteToolScriptName, nil),
+		"the code-mode meta-tool must be admitted by the pre-flight gate (feature flag is the grant)")
+
+	// Every other name delegates to inner, so the deny is preserved.
+	err := d.CheckToolCall(context.Background(), nil, "echo", nil)
+	assert.ErrorIs(t, err, denyAll, "a non-meta tool must delegate to inner admission")
 }

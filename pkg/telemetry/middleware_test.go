@@ -1720,6 +1720,68 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 			},
 		},
 		{
+			name: "addMethodSpecificAttributes - Modern clientInfo sets mcp.client.name on non-initialize span",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				parsedMCP := &mcpparser.ParsedMCPRequest{
+					Method:     "tools/call",
+					ResourceID: "github_search",
+					ClientInfo: map[string]interface{}{"name": "acme-client", "version": "1.0"},
+				}
+
+				middleware.addMethodSpecificAttributes(span, parsedMCP)
+
+				assert.Equal(t, "acme-client", span.attributes["mcp.client.name"])
+			},
+		},
+		{
+			name: "addMethodSpecificAttributes - nil ClientInfo on non-initialize method sets nothing (Legacy no-op)",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				parsedMCP := &mcpparser.ParsedMCPRequest{
+					Method: "tools/list",
+				}
+
+				middleware.addMethodSpecificAttributes(span, parsedMCP)
+
+				assert.NotContains(t, span.attributes, "mcp.client.name")
+			},
+		},
+		{
+			name: "addMethodSpecificAttributes - Legacy initialize still sets mcp.client.name from ResourceID",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				parsedMCP := &mcpparser.ParsedMCPRequest{
+					Method:     "initialize",
+					ResourceID: "legacy-client",
+				}
+
+				middleware.addMethodSpecificAttributes(span, parsedMCP)
+
+				assert.Equal(t, "legacy-client", span.attributes["mcp.client.name"])
+			},
+		},
+		{
+			name: "addMethodSpecificAttributes - ClientInfo present but name missing or non-string sets nothing, no panic",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				parsedMCP := &mcpparser.ParsedMCPRequest{
+					Method:     "tools/call",
+					ClientInfo: map[string]interface{}{"version": "1.0"},
+				}
+				assert.NotPanics(t, func() {
+					middleware.addMethodSpecificAttributes(span, parsedMCP)
+				})
+				assert.NotContains(t, span.attributes, "mcp.client.name")
+
+				parsedMCP.ClientInfo = map[string]interface{}{"name": 42}
+				assert.NotPanics(t, func() {
+					middleware.addMethodSpecificAttributes(span, parsedMCP)
+				})
+				assert.NotContains(t, span.attributes, "mcp.client.name")
+			},
+		},
+		{
 			name: "finalizeSpan - new response names, no legacy",
 			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
 				t.Helper()

@@ -34,12 +34,12 @@
 // # Concurrency
 //
 // The package maintains a process-global singleflight keyed on the tuple
-// (issuer, redirectURI, scopesHash) so concurrent ResolveCredentials calls
-// across all consumers in a single process coalesce when their cache keys
-// match. Consumers that share any of those three values will share a flight
-// — the deduplication is a feature for the embedded authserver but means
-// callers cannot assume per-call-site flight isolation. See the dcrFlight
-// doc comment below for the rationale.
+// (issuer, upstreamID, redirectURI, scopesHash) so concurrent
+// ResolveCredentials calls across all consumers in a single process
+// coalesce when their cache keys match. Consumers that share all four
+// values will share a flight — the deduplication is a feature for the
+// embedded authserver but means callers cannot assume per-call-site flight
+// isolation. See the dcrFlight doc comment below for the rationale.
 //
 // See issue #5145 for the design discussion that motivated lifting this out
 // of pkg/authserver/runner.
@@ -88,8 +88,9 @@ import (
 //
 // Cross-consumer caveat: because dcrFlight is package-global, two
 // consumers that happen to construct identical Keys (same issuer, same
-// redirect URI, same scopes hash) will share a single in-flight
-// registration even if they semantically want different client profiles.
+// upstream ID, same redirect URI, same scopes hash) will share a single
+// in-flight registration even if they semantically want different client
+// profiles.
 // The two current call sites do not collide by construction — the embedded
 // authserver's redirect URI lives on the AS origin, and the CLI flow's
 // redirect URI lives on a loopback (http://localhost:{port}/callback per
@@ -103,13 +104,30 @@ import (
 var dcrFlight singleflight.Group
 
 // flightKeyOf canonicalises a Key into the singleflight string used by
-// dcrFlight. The "\n" separator is safe because newline is not a valid
-// byte in any of the three components: URI reference characters in
-// Issuer and RedirectURI (RFC 3986 §2), and hex digits in ScopesHash
-// (the form storage.ScopesHash always emits). Exposed as a function so
-// tests and future inspection helpers can compute the exact key the
-// resolver would route through dcrFlight without re-implementing the
-// concatenation.
+// dcrFlight. Each field is length-prefixed (the same scheme redisDCRKey
+// uses in pkg/authserver/storage) so the key is unambiguous regardless of
+// field contents; ScopesHash is a SHA-256 hex digest with no colons, so it
+// is appended without a prefix, exactly as redisDCRKey does. Exposed as a
+// function so tests and future inspection helpers can compute the exact key
+// the resolver would route through dcrFlight without re-implementing the
+// encoding.
+//
+// Length-prefixing rather than a "separator byte that never appears":
+// UpstreamID is NOT guaranteed to be a clean URL when this key is built. On
+// the CLI/remote path it is req.RegistrationEndpoint copied verbatim from
+// the upstream's discovery-document JSON, and validateUpstreamEndpointURL
+// does not run until later, inside the singleflight body
+// (resolveDCREndpoints) — after this key already exists. A newline (or any
+// byte) in a discovery-supplied registration_endpoint would therefore reach
+// a naive "\n"-joined key, where a crafted value could byte-collide with a
+// concurrently-registering upstream and, as the singleflight follower,
+// observe that upstream's Resolution. Length-prefixing removes the
+// assumption entirely and aligns the flight key with the persisted DCRKey.
+//
+// UpstreamID keeps two upstreams that share Issuer, RedirectURI, and
+// scopes from coalescing into a single flight (issue #5823) — the same
+// distinction the persisted DCRKey draws, so the singleflight and cache
+// layers stay aligned.
 //
 // PublicClient is intentionally NOT part of the flight key — the
 // dcrFlight doc above explains why: today's two consumers register on
@@ -119,7 +137,11 @@ var dcrFlight singleflight.Group
 // DCRKey from cross-profile coalescence; the two layers are aligned
 // rather than asymmetric.
 func flightKeyOf(key Key) string {
-	return key.Issuer + "\n" + key.RedirectURI + "\n" + key.ScopesHash
+	return fmt.Sprintf("%d:%s:%d:%s:%d:%s:%s",
+		len(key.Issuer), key.Issuer,
+		len(key.UpstreamID), key.UpstreamID,
+		len(key.RedirectURI), key.RedirectURI,
+		key.ScopesHash)
 }
 
 // defaultUpstreamRedirectPath is the redirect path derived from the issuer
@@ -235,6 +257,7 @@ type Resolution struct {
 const (
 	dcrStepValidate         = "validate"
 	dcrStepResolveRedirect  = "resolve_redirect_uri"
+	dcrStepResolveUpstream  = "resolve_upstream_id"
 	dcrStepCacheRead        = "cache_read"
 	dcrStepMetadata         = "metadata_discovery"
 	dcrStepSelectAuthMethod = "select_auth_method"
@@ -326,9 +349,19 @@ func ResolveCredentials(
 			fmt.Errorf("resolve redirect uri: %w", err))
 	}
 
+	// Identify the upstream authorization server so two upstreams that share
+	// req.Issuer, redirectURI, and scopes — the common case within a single
+	// embedded authserver — do not collide on one cache entry (issue #5823).
+	upstreamID, err := resolveUpstreamKeyIdentity(req)
+	if err != nil {
+		return nil, newDCRStepError(dcrStepResolveUpstream, req.Issuer, redirectURI,
+			fmt.Errorf("resolve upstream identity: %w", err))
+	}
+
 	scopes := slices.Clone(req.Scopes)
 	key := Key{
 		Issuer:      req.Issuer,
+		UpstreamID:  upstreamID,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash(scopes),
 	}
@@ -445,6 +478,7 @@ func registerAndCache(
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 	slog.Debug("dcr: registered new client",
 		"local_issuer", req.Issuer,
+		"upstream_id", key.UpstreamID,
 		"redirect_uri", redirectURI,
 		"client_id", resolution.ClientID,
 	)
@@ -658,6 +692,7 @@ func lookupCachedResolution(
 		//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 		slog.Debug("dcr: cache hit ignored; cached secret expired per upstream client_secret_expires_at",
 			"local_issuer", localIssuer,
+			"upstream_id", key.UpstreamID,
 			"redirect_uri", redirectURI,
 			"client_id", cached.ClientID,
 			"client_secret_expires_at", cached.ClientSecretExpiresAt.UTC().Format(time.RFC3339),
@@ -671,6 +706,7 @@ func lookupCachedResolution(
 	//nolint:gosec // G706: client_id is public metadata per RFC 7591.
 	slog.Debug("dcr: cache hit",
 		"local_issuer", localIssuer,
+		"upstream_id", key.UpstreamID,
 		"redirect_uri", redirectURI,
 		"client_id", cached.ClientID,
 		"dcr_age_days", ageDays,
@@ -683,6 +719,7 @@ func lookupCachedResolution(
 				"consider rotating the registration via RFC 7592 deregistration "+
 				"and re-registering at next startup",
 			"local_issuer", localIssuer,
+			"upstream_id", key.UpstreamID,
 			"redirect_uri", redirectURI,
 			"client_id", cached.ClientID,
 			"dcr_age_days", ageDays,
@@ -893,6 +930,50 @@ func resolveDCREndpoints(
 
 	metadata, err := oauthproto.FetchAuthorizationServerMetadataFromURL(ctx, req.DiscoveryURL, upstreamIssuer, nil)
 	return endpointsFromMetadata(metadata, err, upstreamIssuer)
+}
+
+// resolveUpstreamKeyIdentity returns the stable identifier for the upstream
+// authorization server a registration is bound to, used as the
+// Key.UpstreamID cache component. It disambiguates upstreams that share the
+// caller's Issuer, RedirectURI, and scope set — the common case inside a
+// single embedded authserver — so they receive distinct dynamically-
+// registered clients instead of colliding on one cache entry (issue #5823).
+//
+// The identity source mirrors resolveDCREndpoints' own branch order so the
+// key names the exact server the client registers against:
+//
+//   - RegistrationEndpoint set: the registration endpoint URL itself.
+//   - DiscoveryURL set: the upstream issuer recovered from the discovery URL
+//     via deriveExpectedIssuerFromDiscoveryURL — the same value used for
+//     RFC 8414 §3.3 metadata verification.
+//
+// validateResolveInputs guarantees exactly one of the two is set, so the
+// final return is only reached on the DiscoveryURL branch. The derivation is
+// pure URL parsing (no network I/O), so computing it before the cache lookup
+// keeps the cache-hit path free of I/O; a malformed DiscoveryURL that fails
+// here could never have produced a stored entry to hit anyway, because a
+// successful registration requires the same derivation to succeed first.
+//
+// Residual limitation: on the DiscoveryURL branch the identity is the derived
+// upstream *issuer*, not the discovery URL. For a custom (non-well-known)
+// discovery URL, deriveExpectedIssuerFromDiscoveryURL falls back to the bare
+// origin and discards the path, so two upstreams on the same host with
+// distinct custom metadata paths, the same scopes, and both declaring that
+// origin as their metadata "issuer" derive the same UpstreamID and still
+// collide. This is intentional: UpstreamID names the authorization server
+// (aligned with the RFC 8414 §3.3 issuer used for metadata verification), so
+// two configs that resolve to the same issuer are the same AS and correctly
+// share one registration. The collision is therefore confined to the
+// nonstandard case where a single issuer serves distinct registration
+// endpoints under custom (non-well-known) discovery paths: both upstreams
+// resolve to that one issuer, so their UpstreamIDs match. Upstreams that
+// resolve to different issuers derive different UpstreamIDs and never collide
+// — the key itself keeps them apart, independent of §3.3 verification.
+func resolveUpstreamKeyIdentity(req *Request) (string, error) {
+	if req.RegistrationEndpoint != "" {
+		return req.RegistrationEndpoint, nil
+	}
+	return deriveExpectedIssuerFromDiscoveryURL(req.DiscoveryURL)
 }
 
 // deriveExpectedIssuerFromDiscoveryURL recovers the issuer identifier the

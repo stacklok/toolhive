@@ -34,12 +34,12 @@
 // # Concurrency
 //
 // The package maintains a process-global singleflight keyed on the tuple
-// (issuer, redirectURI, scopesHash) so concurrent ResolveCredentials calls
-// across all consumers in a single process coalesce when their cache keys
-// match. Consumers that share any of those three values will share a flight
-// — the deduplication is a feature for the embedded authserver but means
-// callers cannot assume per-call-site flight isolation. See the dcrFlight
-// doc comment below for the rationale.
+// (issuer, upstreamID, redirectURI, scopesHash) so concurrent
+// ResolveCredentials calls across all consumers in a single process
+// coalesce when their cache keys match. Consumers that share all four
+// values will share a flight — the deduplication is a feature for the
+// embedded authserver but means callers cannot assume per-call-site flight
+// isolation. See the dcrFlight doc comment below for the rationale.
 //
 // See issue #5145 for the design discussion that motivated lifting this out
 // of pkg/authserver/runner.
@@ -88,8 +88,9 @@ import (
 //
 // Cross-consumer caveat: because dcrFlight is package-global, two
 // consumers that happen to construct identical Keys (same issuer, same
-// redirect URI, same scopes hash) will share a single in-flight
-// registration even if they semantically want different client profiles.
+// upstream ID, same redirect URI, same scopes hash) will share a single
+// in-flight registration even if they semantically want different client
+// profiles.
 // The two current call sites do not collide by construction — the embedded
 // authserver's redirect URI lives on the AS origin, and the CLI flow's
 // redirect URI lives on a loopback (http://localhost:{port}/callback per
@@ -104,12 +105,17 @@ var dcrFlight singleflight.Group
 
 // flightKeyOf canonicalises a Key into the singleflight string used by
 // dcrFlight. The "\n" separator is safe because newline is not a valid
-// byte in any of the three components: URI reference characters in
-// Issuer and RedirectURI (RFC 3986 §2), and hex digits in ScopesHash
+// byte in any of the four components: URI reference characters in Issuer,
+// UpstreamID, and RedirectURI (RFC 3986 §2), and hex digits in ScopesHash
 // (the form storage.ScopesHash always emits). Exposed as a function so
 // tests and future inspection helpers can compute the exact key the
 // resolver would route through dcrFlight without re-implementing the
 // concatenation.
+//
+// UpstreamID keeps two upstreams that share Issuer, RedirectURI, and
+// scopes from coalescing into a single flight (issue #5823) — the same
+// distinction the persisted DCRKey draws, so the singleflight and cache
+// layers stay aligned.
 //
 // PublicClient is intentionally NOT part of the flight key — the
 // dcrFlight doc above explains why: today's two consumers register on
@@ -119,7 +125,7 @@ var dcrFlight singleflight.Group
 // DCRKey from cross-profile coalescence; the two layers are aligned
 // rather than asymmetric.
 func flightKeyOf(key Key) string {
-	return key.Issuer + "\n" + key.RedirectURI + "\n" + key.ScopesHash
+	return key.Issuer + "\n" + key.UpstreamID + "\n" + key.RedirectURI + "\n" + key.ScopesHash
 }
 
 // defaultUpstreamRedirectPath is the redirect path derived from the issuer
@@ -235,6 +241,7 @@ type Resolution struct {
 const (
 	dcrStepValidate         = "validate"
 	dcrStepResolveRedirect  = "resolve_redirect_uri"
+	dcrStepResolveUpstream  = "resolve_upstream_id"
 	dcrStepCacheRead        = "cache_read"
 	dcrStepMetadata         = "metadata_discovery"
 	dcrStepSelectAuthMethod = "select_auth_method"
@@ -326,9 +333,19 @@ func ResolveCredentials(
 			fmt.Errorf("resolve redirect uri: %w", err))
 	}
 
+	// Identify the upstream authorization server so two upstreams that share
+	// req.Issuer, redirectURI, and scopes — the common case within a single
+	// embedded authserver — do not collide on one cache entry (issue #5823).
+	upstreamID, err := resolveUpstreamKeyIdentity(req)
+	if err != nil {
+		return nil, newDCRStepError(dcrStepResolveUpstream, req.Issuer, redirectURI,
+			fmt.Errorf("resolve upstream identity: %w", err))
+	}
+
 	scopes := slices.Clone(req.Scopes)
 	key := Key{
 		Issuer:      req.Issuer,
+		UpstreamID:  upstreamID,
 		RedirectURI: redirectURI,
 		ScopesHash:  storage.ScopesHash(scopes),
 	}
@@ -893,6 +910,34 @@ func resolveDCREndpoints(
 
 	metadata, err := oauthproto.FetchAuthorizationServerMetadataFromURL(ctx, req.DiscoveryURL, upstreamIssuer, nil)
 	return endpointsFromMetadata(metadata, err, upstreamIssuer)
+}
+
+// resolveUpstreamKeyIdentity returns the stable identifier for the upstream
+// authorization server a registration is bound to, used as the
+// Key.UpstreamID cache component. It disambiguates upstreams that share the
+// caller's Issuer, RedirectURI, and scope set — the common case inside a
+// single embedded authserver — so they receive distinct dynamically-
+// registered clients instead of colliding on one cache entry (issue #5823).
+//
+// The identity source mirrors resolveDCREndpoints' own branch order so the
+// key names the exact server the client registers against:
+//
+//   - RegistrationEndpoint set: the registration endpoint URL itself.
+//   - DiscoveryURL set: the upstream issuer recovered from the discovery URL
+//     via deriveExpectedIssuerFromDiscoveryURL — the same value used for
+//     RFC 8414 §3.3 metadata verification.
+//
+// validateResolveInputs guarantees exactly one of the two is set, so the
+// final return is only reached on the DiscoveryURL branch. The derivation is
+// pure URL parsing (no network I/O), so computing it before the cache lookup
+// keeps the cache-hit path free of I/O; a malformed DiscoveryURL that fails
+// here could never have produced a stored entry to hit anyway, because a
+// successful registration requires the same derivation to succeed first.
+func resolveUpstreamKeyIdentity(req *Request) (string, error) {
+	if req.RegistrationEndpoint != "" {
+		return req.RegistrationEndpoint, nil
+	}
+	return deriveExpectedIssuerFromDiscoveryURL(req.DiscoveryURL)
 }
 
 // deriveExpectedIssuerFromDiscoveryURL recovers the issuer identifier the

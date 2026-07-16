@@ -171,6 +171,66 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
+// TestConfigureLLMGateway_ClaudeCodeBedrock verifies that BedrockCompat writes
+// CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 and the three per-tier model IDs into
+// Claude Code's settings.json, and that without BedrockCompat those keys are
+// absent (the ClearWhenEmpty behaviour), all against the real config table.
+func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
+	t.Parallel()
+
+	bedrockPointers := map[string]string{
+		"/env/CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+		"/env/ANTHROPIC_DEFAULT_HAIKU_MODEL":          "us.anthropic.claude-haiku-x",
+		"/env/ANTHROPIC_DEFAULT_OPUS_MODEL":           "us.anthropic.claude-opus-x[1m]",
+		"/env/ANTHROPIC_DEFAULT_SONNET_MODEL":         "us.anthropic.claude-sonnet-x[1m]",
+	}
+
+	t.Run("BedrockCompat writes keys", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+			GatewayURL:         "https://gw.example.com",
+			TokenHelperCommand: `"thv" llm token`,
+			BedrockCompat:      true,
+			BedrockHaikuModel:  "us.anthropic.claude-haiku-x",
+			BedrockOpusModel:   "us.anthropic.claude-opus-x[1m]",
+			BedrockSonnetModel: "us.anthropic.claude-sonnet-x[1m]",
+		})
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr, want := range bedrockPointers {
+			got, ok := jsonPointerGet(data, ptr)
+			assert.True(t, ok, "pointer %q missing", ptr)
+			assert.Equal(t, want, got, "wrong value at %q", ptr)
+		}
+	})
+
+	t.Run("without BedrockCompat keys are absent", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+			GatewayURL:         "https://gw.example.com",
+			TokenHelperCommand: `"thv" llm token`,
+		})
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr := range bedrockPointers {
+			_, ok := jsonPointerGet(data, ptr)
+			assert.False(t, ok, "pointer %q should be absent without BedrockCompat", ptr)
+		}
+	})
+}
+
 // newLLMManager builds a ClientManager with a single direct-mode LLM entry
 // whose settings dir is homeDir/<dir>.
 func newLLMManager(t *testing.T, clientType ClientApp, mode, dir string, ptrs, vals []string) (*ClientManager, string) {

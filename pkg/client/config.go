@@ -165,8 +165,10 @@ const (
 //   - ValueField names which ApplyConfig field to write. Valid values:
 //     "GatewayURL", "AnthropicBaseURL", "ProxyBaseURL", "ProxyOrigin",
 //     "TokenHelperCommand", "PlaceholderAPIKey", "ClaudeCodeHelperTTLMillis",
-//     "NodeTLSRejectUnauthorized". An unrecognised ValueField is a programming
-//     error and causes ConfigureLLMGateway to return an error.
+//     "NodeTLSRejectUnauthorized", "BedrockDisableExperimentalBetas",
+//     "BedrockHaikuModel", "BedrockOpusModel", "BedrockSonnetModel". An
+//     unrecognised ValueField is a programming error and causes
+//     ConfigureLLMGateway to return an error.
 //   - Literal is written verbatim into the settings key (e.g. a fixed auth
 //     type string). Use Literal instead of ValueField for constant values so
 //     that typos in ValueField are caught as errors rather than silently
@@ -180,7 +182,8 @@ type LLMGatewayKeySpec struct {
 	JSONPointer string // RFC 6901 path
 	// ValueField: "GatewayURL" | "AnthropicBaseURL" | "ProxyBaseURL" | "ProxyOrigin" |
 	// "TokenHelperCommand" | "PlaceholderAPIKey" | "ClaudeCodeHelperTTLMillis" |
-	// "NodeTLSRejectUnauthorized"
+	// "NodeTLSRejectUnauthorized" | "BedrockDisableExperimentalBetas" |
+	// "BedrockHaikuModel" | "BedrockOpusModel" | "BedrockSonnetModel"
 	ValueField     string
 	Literal        string // constant value written verbatim; mutually exclusive with ValueField
 	ClearWhenEmpty bool   // remove the key when the resolved value is empty (ignored for Literal)
@@ -555,6 +558,18 @@ var supportedClientIntegrations = []clientAppConfig{
 			// NODE_TLS_REJECT_UNAUTHORIZED is only written when --tls-skip-verify is set.
 			// ClearWhenEmpty ensures it is removed when the flag is later cleared.
 			{JSONPointer: "/env/NODE_TLS_REJECT_UNAUTHORIZED", ValueField: "NodeTLSRejectUnauthorized", ClearWhenEmpty: true},
+			// Bedrock-compat keys (written only with --bedrock-compat). Bedrock rejects
+			// Claude Code's experimental anthropic-beta headers, so betas are disabled;
+			// the per-tier model IDs pin Bedrock inference-profile IDs. All use
+			// ClearWhenEmpty so a non-Bedrock setup removes any stale keys.
+			{
+				JSONPointer:    "/env/CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS",
+				ValueField:     "BedrockDisableExperimentalBetas",
+				ClearWhenEmpty: true,
+			},
+			{JSONPointer: "/env/ANTHROPIC_DEFAULT_HAIKU_MODEL", ValueField: "BedrockHaikuModel", ClearWhenEmpty: true},
+			{JSONPointer: "/env/ANTHROPIC_DEFAULT_OPUS_MODEL", ValueField: "BedrockOpusModel", ClearWhenEmpty: true},
+			{JSONPointer: "/env/ANTHROPIC_DEFAULT_SONNET_MODEL", ValueField: "BedrockSonnetModel", ClearWhenEmpty: true},
 		},
 	},
 	{

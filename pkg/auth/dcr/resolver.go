@@ -1055,6 +1055,12 @@ func endpointsFromMetadata(
 			return nil, fmt.Errorf("synthesise registration endpoint: %w", err)
 		}
 		registrationEndpoint = synth
+	} else if err := validateUpstreamEndpointURL(registrationEndpoint, "registration_endpoint"); err != nil {
+		// Unlike the synthesised branch above, this value came straight from
+		// the discovery document — validate it the same as
+		// authorization_endpoint/token_endpoint rather than letting it reach
+		// hostFromURL unvalidated.
+		return nil, fmt.Errorf("dcr: discovered %w", err)
 	}
 
 	return &dcrEndpoints{
@@ -1363,10 +1369,13 @@ func newGuardedDCRClient(host string, allowPrivateIPs bool) (*http.Client, error
 // hostFromURL extracts the host[:port] component used to scope the guarded
 // HTTP client. Every URL reaching this helper has already passed
 // scheme-and-host validation at the resolver's entry points
-// (validateUpstreamEndpointURL for the registration endpoint,
-// FetchAuthorizationServerMetadataFromURL for the discovery URL), so a parse
-// failure or empty host here signals an internal inconsistency rather than
-// untrusted input.
+// (validateUpstreamEndpointURL for the registration endpoint — both the
+// caller-supplied case and the metadata-discovered case handled in
+// endpointsFromMetadata — and FetchAuthorizationServerMetadataFromURL for the
+// discovery URL; the synthesised-endpoint case derives its host from an
+// upstream issuer that already passed the RFC 8414 §3.3 issuer-match check),
+// so a parse failure or empty host here signals an internal inconsistency
+// rather than untrusted input.
 func hostFromURL(rawURL string) (string, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {

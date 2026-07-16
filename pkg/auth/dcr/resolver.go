@@ -104,13 +104,25 @@ import (
 var dcrFlight singleflight.Group
 
 // flightKeyOf canonicalises a Key into the singleflight string used by
-// dcrFlight. The "\n" separator is safe because newline is not a valid
-// byte in any of the four components: URI reference characters in Issuer,
-// UpstreamID, and RedirectURI (RFC 3986 §2), and hex digits in ScopesHash
-// (the form storage.ScopesHash always emits). Exposed as a function so
-// tests and future inspection helpers can compute the exact key the
-// resolver would route through dcrFlight without re-implementing the
-// concatenation.
+// dcrFlight. Each field is length-prefixed (the same scheme redisDCRKey
+// uses in pkg/authserver/storage) so the key is unambiguous regardless of
+// field contents; ScopesHash is a SHA-256 hex digest with no colons, so it
+// is appended without a prefix, exactly as redisDCRKey does. Exposed as a
+// function so tests and future inspection helpers can compute the exact key
+// the resolver would route through dcrFlight without re-implementing the
+// encoding.
+//
+// Length-prefixing rather than a "separator byte that never appears":
+// UpstreamID is NOT guaranteed to be a clean URL when this key is built. On
+// the CLI/remote path it is req.RegistrationEndpoint copied verbatim from
+// the upstream's discovery-document JSON, and validateUpstreamEndpointURL
+// does not run until later, inside the singleflight body
+// (resolveDCREndpoints) — after this key already exists. A newline (or any
+// byte) in a discovery-supplied registration_endpoint would therefore reach
+// a naive "\n"-joined key, where a crafted value could byte-collide with a
+// concurrently-registering upstream and, as the singleflight follower,
+// observe that upstream's Resolution. Length-prefixing removes the
+// assumption entirely and aligns the flight key with the persisted DCRKey.
 //
 // UpstreamID keeps two upstreams that share Issuer, RedirectURI, and
 // scopes from coalescing into a single flight (issue #5823) — the same
@@ -125,7 +137,11 @@ var dcrFlight singleflight.Group
 // DCRKey from cross-profile coalescence; the two layers are aligned
 // rather than asymmetric.
 func flightKeyOf(key Key) string {
-	return key.Issuer + "\n" + key.UpstreamID + "\n" + key.RedirectURI + "\n" + key.ScopesHash
+	return fmt.Sprintf("%d:%s:%d:%s:%d:%s:%s",
+		len(key.Issuer), key.Issuer,
+		len(key.UpstreamID), key.UpstreamID,
+		len(key.RedirectURI), key.RedirectURI,
+		key.ScopesHash)
 }
 
 // defaultUpstreamRedirectPath is the redirect path derived from the issuer

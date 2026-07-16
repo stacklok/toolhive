@@ -307,6 +307,89 @@ func TestResolveDCRCredentials_DistinctUpstreamsSameScopesDoNotCollide(t *testin
 	assert.Equal(t, "client-b", cachedB.ClientID)
 }
 
+// TestResolveDCRCredentials_ConcurrentDistinctUpstreamsBothRegister guards the
+// singleflight (flight-key) split, complementing the sequential
+// TestResolveDCRCredentials_DistinctUpstreamsSameScopesDoNotCollide which only
+// proves the persistent cache-key split. Two upstreams that share the caller's
+// Issuer, RedirectURI, and scopes but differ by UpstreamID must not coalesce
+// into one dcrFlight — each must register with its own AS. A barrier in the
+// registration handlers forces both calls to be in-flight simultaneously, so a
+// flight-key collision would surface as one call becoming the other's follower
+// (its registration count staying at zero).
+func TestResolveDCRCredentials_ConcurrentDistinctUpstreamsBothRegister(t *testing.T) {
+	t.Parallel()
+
+	// Barrier: release both registration handlers only once both have been
+	// entered, forcing genuine in-flight overlap. The timeout keeps the test
+	// fail-fast — if the two calls coalesced there would be only one handler
+	// to enter, so the sole handler proceeds after the wait and the reg-count
+	// assertions below catch the collision instead of the test hanging.
+	var regCountA, regCountB, arrivals int32
+	bothArrived := make(chan struct{})
+	barrier := func() {
+		if atomic.AddInt32(&arrivals, 1) == 2 {
+			close(bothArrived)
+		}
+		select {
+		case <-bothArrived:
+		case <-time.After(3 * time.Second):
+		}
+	}
+
+	serverA := newDCRTestServer(t, dcrTestHandlerConfig{
+		clientID:                          "client-a",
+		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+		scopesSupported:                   []string{"openid", "profile"},
+		observeRegistration:               func(*http.Request, []byte) { atomic.AddInt32(&regCountA, 1); barrier() },
+	})
+	serverB := newDCRTestServer(t, dcrTestHandlerConfig{
+		clientID:                          "client-b",
+		tokenEndpointAuthMethodsSupported: []string{"client_secret_basic"},
+		scopesSupported:                   []string{"openid", "profile"},
+		observeRegistration:               func(*http.Request, []byte) { atomic.AddInt32(&regCountB, 1); barrier() },
+	})
+
+	cache := newMemoryDCRStore(t)
+	const localIssuer = "https://authserver.example.com"
+	reqFor := func(discoveryHost string) *Request {
+		return &Request{
+			Issuer:       localIssuer,
+			Scopes:       []string{"openid", "profile"},
+			DiscoveryURL: discoveryHost + "/.well-known/oauth-authorization-server",
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	results := make([]*Resolution, 2)
+	errs := make([]error, 2)
+	go func() {
+		defer wg.Done()
+		results[0], errs[0] = ResolveCredentials(context.Background(), reqFor(serverA.URL), cache)
+	}()
+	go func() {
+		defer wg.Done()
+		results[1], errs[1] = ResolveCredentials(context.Background(), reqFor(serverB.URL), cache)
+	}()
+
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for concurrent ResolveCredentials calls; possible flight-key deadlock")
+	}
+
+	require.NoError(t, errs[0])
+	require.NoError(t, errs[1])
+	assert.Equal(t, "client-a", results[0].ClientID)
+	assert.Equal(t, "client-b", results[1].ClientID,
+		"each concurrent upstream must receive its own client, not the other flight's leader result")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&regCountA), "upstream A must register exactly once")
+	assert.Equal(t, int32(1), atomic.LoadInt32(&regCountB),
+		"upstream B must register exactly once; a flight-key collision would coalesce the two calls and leave this at zero")
+}
+
 // TestResolveDCRCredentials_DistinctRegistrationEndpointsDoNotCollide covers
 // the RegistrationEndpoint branch of resolveUpstreamKeyIdentity: two upstreams
 // configured with explicit (distinct) registration endpoints but the same

@@ -1337,25 +1337,12 @@ func newDCRHTTPClient(initialAccessToken, registrationEndpoint string, allowPriv
 
 // newGuardedDCRClient builds the private-IP-guarded *http.Client used for both
 // of the resolver's outbound calls — the discovery fetch and the registration
-// POST. It dials through networking's protected dialer so a host that resolves
-// to a private, loopback, or link-local address is refused at connect time
-// (CWE-918), closing both the discovery-indirection and DNS-rebinding SSRF
-// vectors: the check runs on the address actually dialed, after DNS
-// resolution, and — with keep-alives disabled — on every request rather than
-// being bypassed by a pooled connection.
+// POST. See networking.NewHostScopedClientBuilder for the CWE-918 guard policy
+// this applies (allowPrivateIPs semantics, loopback exemption, HTTPS
+// enforcement). Keep-alives are disabled so the dial-time check re-runs on
+// every request rather than being bypassed by a pooled connection.
 //
-// allowPrivateIPs widens only the private-IP gate (for an in-cluster upstream
-// reachable solely over an RFC-1918 address); loopback hosts remain permitted
-// for development regardless, matching networking.NewHostScopedClientBuilder
-// and the AllowPrivateIPs posture of the OAuth2/OIDC upstream configs. HTTP
-// scheme enforcement is left to the resolver's URL validation and the builder's
-// ValidatingTransport (HTTPS-except-loopback).
-//
-// The builder's 30 s overall / 10 s TLS / 10 s response-header default
-// timeouts match the bounds previously sourced from
-// oauthproto.NewDefaultDCRClient.
-//
-// The returned client has no CheckRedirect policy; each caller layers its own
+// The returned client has no CheckRedirect policy: each caller layers its own
 // (the registration client refuses all redirects to protect the bearer token;
 // the discovery client restricts them to the same host). The dial guard alone
 // does not stop a redirect to a different public host, so the redirect policy

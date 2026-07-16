@@ -26,13 +26,13 @@ func TestResolveBedrockModels(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name          string
-		models        []string
-		enable1M      bool
-		wantHaiku     string
-		wantOpus      string
-		wantSonnet    string
-		wantUnmatched []string
+		name         string
+		models       []string
+		enable1M     bool
+		wantHaiku    string
+		wantOpus     string
+		wantSonnet   string
+		wantWarnings []string
 	}{
 		{
 			name:       "defaults when no overrides",
@@ -55,12 +55,12 @@ func TestResolveBedrockModels(t *testing.T) {
 			wantSonnet: defaultBedrockSonnetModel + "[1m]",
 		},
 		{
-			name:          "unmatched entry is reported and ignored",
-			models:        []string{"us.anthropic.claude-opus-x", "some-random-model"},
-			wantHaiku:     defaultBedrockHaikuModel,
-			wantOpus:      "us.anthropic.claude-opus-x",
-			wantSonnet:    defaultBedrockSonnetModel,
-			wantUnmatched: []string{"some-random-model"},
+			name:         "unmatched entry is reported and ignored",
+			models:       []string{"us.anthropic.claude-opus-x", "some-random-model"},
+			wantHaiku:    defaultBedrockHaikuModel,
+			wantOpus:     "us.anthropic.claude-opus-x",
+			wantSonnet:   defaultBedrockSonnetModel,
+			wantWarnings: []string{`--models entry "some-random-model" did not match a tier (expected haiku/opus/sonnet in the ID); ignored`},
 		},
 		{
 			name:       "matching is case-insensitive",
@@ -69,16 +69,104 @@ func TestResolveBedrockModels(t *testing.T) {
 			wantOpus:   "US.ANTHROPIC.CLAUDE-OPUS-X",
 			wantSonnet: defaultBedrockSonnetModel,
 		},
+		{
+			name:       "duplicate-tier override reports the clobbered entry and last wins",
+			models:     []string{"us.anthropic.claude-sonnet-5", "us.anthropic.claude-sonnet-4-6"},
+			wantHaiku:  defaultBedrockHaikuModel,
+			wantOpus:   defaultBedrockOpusModel,
+			wantSonnet: "us.anthropic.claude-sonnet-4-6",
+			wantWarnings: []string{
+				`--models entry "us.anthropic.claude-sonnet-4-6" overrides "us.anthropic.claude-sonnet-5" for the sonnet tier; only the last is used`,
+			},
+		},
+		{
+			name:       "already-suffixed override is not doubled with enable1M",
+			models:     []string{"us.anthropic.claude-opus-4-8[1m]"},
+			enable1M:   true,
+			wantHaiku:  defaultBedrockHaikuModel,
+			wantOpus:   "us.anthropic.claude-opus-4-8[1m]",
+			wantSonnet: defaultBedrockSonnetModel + "[1m]",
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			haiku, opus, sonnet, unmatched := resolveBedrockModels(tt.models, tt.enable1M)
+			haiku, opus, sonnet, warnings := resolveBedrockModels(tt.models, tt.enable1M)
 			assert.Equal(t, tt.wantHaiku, haiku)
 			assert.Equal(t, tt.wantOpus, opus)
 			assert.Equal(t, tt.wantSonnet, sonnet)
-			assert.Equal(t, tt.wantUnmatched, unmatched)
+			assert.Equal(t, tt.wantWarnings, warnings)
+		})
+	}
+}
+
+// ── warnBedrockNoEffect ───────────────────────────────────────────────────────
+
+func TestWarnBedrockNoEffect(t *testing.T) {
+	t.Parallel()
+
+	claudeCode := []ToolConfig{{Tool: claudeCodeClient}}
+	cursorOnly := []ToolConfig{{Tool: "cursor"}}
+
+	tests := []struct {
+		name            string
+		opts            SetOptions // flags passed THIS run
+		effectiveCompat bool       // merged persisted + inline compat
+		configured      []ToolConfig
+		wantWarn        string // substring expected on stderr; "" means no output
+	}{
+		{
+			name:            "compat passed this run with claude-code configured is silent",
+			opts:            SetOptions{BedrockCompat: boolPtr(true)},
+			effectiveCompat: true,
+			configured:      claudeCode,
+		},
+		{
+			name:            "compat passed this run without claude-code warns",
+			opts:            SetOptions{BedrockCompat: boolPtr(true)},
+			effectiveCompat: true,
+			configured:      cursorOnly,
+			wantWarn:        "--bedrock-compat was set but Claude Code was not configured",
+		},
+		{
+			// Regression: bedrock-compat is persisted, so a later run that omits the
+			// flag must NOT warn even though effective compat is on and claude-code
+			// is not among the configured tools.
+			name:            "persisted compat, flag not passed this run, is silent",
+			opts:            SetOptions{},
+			effectiveCompat: true,
+			configured:      cursorOnly,
+		},
+		{
+			name:       "enable1M passed this run without compat warns",
+			opts:       SetOptions{Enable1M: boolPtr(true)},
+			configured: claudeCode,
+			wantWarn:   "--enable-1m has no effect without --bedrock-compat",
+		},
+		{
+			name:            "enable1M passed this run with effective compat is silent",
+			opts:            SetOptions{Enable1M: boolPtr(true)},
+			effectiveCompat: true,
+			configured:      claudeCode,
+		},
+		{
+			name:       "no bedrock flags this run is silent",
+			opts:       SetOptions{},
+			configured: claudeCode,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			var errOut bytes.Buffer
+			warnBedrockNoEffect(&errOut, tt.opts, tt.effectiveCompat, tt.configured)
+			if tt.wantWarn == "" {
+				assert.Empty(t, errOut.String())
+				return
+			}
+			assert.Contains(t, errOut.String(), tt.wantWarn)
 		})
 	}
 }
@@ -339,7 +427,7 @@ func TestSetup_Lazy_SkipsLoginAndPersistsTools(t *testing.T) {
 	// anthropicPathPrefixSet=true skips the network probe; lazy=true.
 	err := Setup(
 		context.Background(), &stdout, &stderr, gm, provider, login,
-		SetOptions{}, "", true, "", true, nil,
+		SetOptions{}, "", true, "", true,
 	)
 	require.NoError(t, err)
 
@@ -367,7 +455,7 @@ func TestSetup_NonLazy_InvokesLogin(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	err := Setup(
 		context.Background(), &stdout, &stderr, gm, provider, login,
-		SetOptions{}, "", true, "", false, nil,
+		SetOptions{}, "", true, "", false,
 	)
 	require.NoError(t, err)
 

@@ -72,7 +72,7 @@ func Setup(
 	ctx context.Context, out, errOut io.Writer,
 	gm GatewayManager, provider ConfigUpdater, login LoginFunc,
 	inlineOpts SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
-	lazy bool, models []string,
+	lazy bool,
 ) error {
 	llmCfg := provider.GetLLMConfig()
 
@@ -144,15 +144,19 @@ func Setup(
 
 	configured, err := configureDetectedTools(
 		out, errOut, gm, detected, llmCfg.GatewayURL, proxyBaseURL, tokenHelperCommand,
-		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, models, llmCfg.Bedrock,
+		tokenHelperPath, tokenHelperArgs, llmCfg.TLSSkipVerify, anthropicPrefix, llmCfg.Models, llmCfg.Bedrock,
 	)
 	if err != nil {
 		return err
 	}
 
-	// Bedrock-compat only affects Claude Code. If it was requested but Claude Code
-	// was not among the configured tools, the flag had no effect — say so.
-	warnBedrockNoEffect(errOut, llmCfg.Bedrock.Compat, configured)
+	// Warn about bedrock flags the user passed THIS run that had no effect:
+	// --bedrock-compat when Claude Code was not configured, and --enable-1m when
+	// bedrock-compat is off. Keyed off inlineOpts (not the merged config) because
+	// bedrock-compat is persisted — gating on llmCfg.Bedrock would nag on every
+	// later setup that omits claude-code. llmCfg.Bedrock.Compat is the effective
+	// (persisted + inline) compat state used for the --enable-1m check.
+	warnBedrockNoEffect(errOut, inlineOpts, llmCfg.Bedrock.Compat, configured)
 
 	warnTLSSkipVerify(errOut, llmCfg.TLSSkipVerify, configured)
 	warnCredentialHelperTools(out, errOut, gm, configured)
@@ -368,40 +372,84 @@ const (
 	defaultBedrockSonnetModel = "us.anthropic.claude-sonnet-5"
 )
 
+// oneMSuffix is the model-ID suffix that opts Bedrock opus/sonnet into the
+// 1M-token context window.
+const oneMSuffix = "[1m]"
+
 // resolveBedrockModels maps optional override model IDs onto Claude Code's three
 // tiers, starting from the built-in defaults. Each override is assigned to a tier
 // by matching "haiku", "opus", or "sonnet" (case-insensitive) as a substring of
-// the ID; overrides matching no tier are returned in unmatched for the caller to
-// warn about. When enable1M is true, the "[1m]" suffix is appended to the opus
-// and sonnet IDs (never haiku, which has a 200K context window) to opt into the
-// 1M context window on Bedrock.
-func resolveBedrockModels(models []string, enable1M bool) (haiku, opus, sonnet string, unmatched []string) {
+// the ID. When enable1M is true, the "[1m]" suffix is appended to the opus and
+// sonnet IDs (never haiku, which has a 200K context window) to opt into the 1M
+// context window on Bedrock; an override that already carries the suffix is left
+// as-is so it is not doubled.
+//
+// warnings collects the human-readable diagnostics for overrides that had no
+// (or a surprising) effect — an ID matching no tier, and a second ID clobbering
+// a tier an earlier ID already set — so the caller can surface them.
+func resolveBedrockModels(models []string, enable1M bool) (haiku, opus, sonnet string, warnings []string) {
 	haiku, opus, sonnet = defaultBedrockHaikuModel, defaultBedrockOpusModel, defaultBedrockSonnetModel
+	// Track which tiers an override has already claimed so a second override for
+	// the same tier is reported rather than silently winning last-write.
+	assigned := make(map[string]string, 3)
+	assign := func(tier string, dst *string, id string) {
+		if prev, ok := assigned[tier]; ok {
+			warnings = append(warnings, fmt.Sprintf(
+				"--models entry %q overrides %q for the %s tier; only the last is used", id, prev, tier))
+		}
+		assigned[tier] = id
+		*dst = id
+	}
 	for _, m := range models {
 		switch lower := strings.ToLower(m); {
 		case strings.Contains(lower, "haiku"):
-			haiku = m
+			assign("haiku", &haiku, m)
 		case strings.Contains(lower, "opus"):
-			opus = m
+			assign("opus", &opus, m)
 		case strings.Contains(lower, "sonnet"):
-			sonnet = m
+			assign("sonnet", &sonnet, m)
 		default:
-			unmatched = append(unmatched, m)
+			warnings = append(warnings, fmt.Sprintf(
+				"--models entry %q did not match a tier (expected haiku/opus/sonnet in the ID); ignored", m))
 		}
 	}
 	if enable1M {
-		opus += "[1m]"
-		sonnet += "[1m]"
+		opus = withOneMSuffix(opus)
+		sonnet = withOneMSuffix(sonnet)
 	}
-	return haiku, opus, sonnet, unmatched
+	return haiku, opus, sonnet, warnings
 }
 
-// warnBedrockNoEffect warns when bedrock-compat was requested but Claude Code
-// was not among the configured tools, so the flag had no effect.
-func warnBedrockNoEffect(errOut io.Writer, compat bool, configured []ToolConfig) {
-	if compat && !isTarget(configured, claudeCodeClient) {
+// withOneMSuffix appends the "[1m]" suffix unless id already ends with it, so a
+// user-supplied ID that already carries the suffix is not doubled into "[1m][1m]".
+func withOneMSuffix(id string) string {
+	if strings.HasSuffix(id, oneMSuffix) {
+		return id
+	}
+	return id + oneMSuffix
+}
+
+// warnBedrockNoEffect warns about Bedrock flags the user passed on THIS run that
+// had no effect. It keys off opts (the inline flags for this invocation), not the
+// persisted config, because bedrock-compat is sticky: warning off the merged state
+// would nag on every later setup that omits claude-code even though the flag was
+// not passed. effectiveCompat is the merged (persisted + inline) compat state, used
+// to decide whether an inline --enable-1m is inert.
+//
+// Two cases:
+//   - --bedrock-compat passed this run but Claude Code was not among the configured
+//     tools (the keys only attach to Claude Code), and
+//   - --enable-1m passed this run while compat is off (the 1M suffix rides the
+//     Bedrock model-ID path, so it is inert without compat) — otherwise a silent
+//     no-op.
+func warnBedrockNoEffect(errOut io.Writer, opts SetOptions, effectiveCompat bool, configured []ToolConfig) {
+	if opts.BedrockCompat != nil && *opts.BedrockCompat && !isTarget(configured, claudeCodeClient) {
 		_, _ = fmt.Fprintln(errOut,
 			"Warning: --bedrock-compat was set but Claude Code was not configured; the flag had no effect.")
+	}
+	if opts.Enable1M != nil && *opts.Enable1M && !effectiveCompat {
+		_, _ = fmt.Fprintln(errOut,
+			"Warning: --enable-1m has no effect without --bedrock-compat; it is ignored.")
 	}
 }
 
@@ -452,14 +500,13 @@ func configureDetectedTools(
 		// IDs. Resolve defaults, tier mapping, and the optional [1m] suffix here so
 		// pkg/client only writes the resolved values.
 		if bedrock.Compat && clientType == claudeCodeClient {
-			haiku, opus, sonnet, unmatched := resolveBedrockModels(bedrock.Models, bedrock.Enable1M)
+			haiku, opus, sonnet, warnings := resolveBedrockModels(models, bedrock.Enable1M)
 			applyCfg.BedrockCompat = true
 			applyCfg.BedrockHaikuModel = haiku
 			applyCfg.BedrockOpusModel = opus
 			applyCfg.BedrockSonnetModel = sonnet
-			for _, m := range unmatched {
-				_, _ = fmt.Fprintf(errOut,
-					"Warning: --models entry %q did not match a tier (expected haiku/opus/sonnet in the ID); ignored\n", m)
+			for _, w := range warnings {
+				_, _ = fmt.Fprintf(errOut, "Warning: %s\n", w)
 			}
 		}
 

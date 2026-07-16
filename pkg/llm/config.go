@@ -25,12 +25,19 @@ type OIDCConfig = pkgoidc.ClientConfig
 // Config holds all LLM gateway settings persisted under the llm: key in
 // ToolHive's config.yaml.
 type Config struct {
-	GatewayURL      string        `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
-	TLSSkipVerify   bool          `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
-	OIDC            OIDCConfig    `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
-	Proxy           ProxyConfig   `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
-	Bedrock         BedrockConfig `yaml:"bedrock,omitempty"           json:"bedrock,omitempty"`
-	ConfiguredTools []ToolConfig  `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`
+	GatewayURL    string        `yaml:"gateway_url,omitempty"       json:"gateway_url,omitempty"`
+	TLSSkipVerify bool          `yaml:"tls_skip_verify,omitempty"   json:"tls_skip_verify,omitempty"`
+	OIDC          OIDCConfig    `yaml:"oidc,omitempty"              json:"oidc,omitempty"`
+	Proxy         ProxyConfig   `yaml:"proxy,omitempty"             json:"proxy,omitempty"`
+	Bedrock       BedrockConfig `yaml:"bedrock,omitempty"           json:"bedrock,omitempty"`
+	// Models is the persisted, single source of truth for the model IDs applied
+	// during setup. It feeds two consumers: credential-helper clients (Claude
+	// Desktop) write it verbatim as inferenceModels, and — when Bedrock compat is
+	// on — each entry is also mapped to a Claude Code tier (see BedrockConfig).
+	// Persisting it here (rather than passing a transient flag value) keeps both
+	// consumers consistent on a later plain "thv llm setup".
+	Models          []string     `yaml:"models,omitempty"            json:"models,omitempty"`
+	ConfiguredTools []ToolConfig `yaml:"configured_tools,omitempty"  json:"configured_tools,omitempty"`
 }
 
 // BedrockConfig holds settings for configuring Claude Code to reach an LLM
@@ -46,10 +53,6 @@ type BedrockConfig struct {
 	// into the 1M-token context window on Bedrock (never haiku, which is 200K).
 	// Off by default: 1M-on-Bedrock is a version-dependent Claude Code behavior.
 	Enable1M bool `yaml:"enable_1m,omitempty" json:"enable_1m,omitempty"`
-	// Models are optional Bedrock model IDs that override the built-in defaults.
-	// Each entry is mapped to a tier (haiku/opus/sonnet) by matching that word as
-	// a substring of the ID; entries that match no tier are ignored with a warning.
-	Models []string `yaml:"models,omitempty" json:"models,omitempty"`
 }
 
 // ProxyConfig holds configuration for the localhost reverse proxy.

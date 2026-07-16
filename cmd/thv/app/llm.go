@@ -76,6 +76,39 @@ func newConfigCommand() *cobra.Command {
 	return cmd
 }
 
+// addLLMConnectionFlags registers the gateway connection flags shared by
+// "config set" and "setup" so the two commands stay in sync. It binds directly
+// into the caller's SetOptions.
+func addLLMConnectionFlags(cmd *cobra.Command, opts *llm.SetOptions) {
+	cmd.Flags().StringVar(&opts.GatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
+	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
+	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
+	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
+	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
+	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+}
+
+// applyChangedLLMFlags copies the *bool / []string flag values into opts only
+// when the user actually set them, so an unset flag leaves the persisted config
+// field unchanged (nil pointer = "not provided"). Shared by "config set" and
+// "setup" so both commands treat these flags identically.
+func applyChangedLLMFlags(
+	cmd *cobra.Command, opts *llm.SetOptions, tlsSkipVerify, bedrockCompat, enable1M bool, models []string,
+) {
+	if cmd.Flags().Changed("tls-skip-verify") {
+		opts.TLSSkipVerify = &tlsSkipVerify
+	}
+	if cmd.Flags().Changed("bedrock-compat") {
+		opts.BedrockCompat = &bedrockCompat
+	}
+	if cmd.Flags().Changed("enable-1m") {
+		opts.Enable1M = &enable1M
+	}
+	if cmd.Flags().Changed("models") {
+		opts.Models = models
+	}
+}
+
 func newConfigSetCommand() *cobra.Command {
 	var (
 		opts          llm.SetOptions
@@ -97,30 +130,14 @@ Example:
     --client-id my-client-id`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if cmd.Flags().Changed("tls-skip-verify") {
-				opts.TLSSkipVerify = &tlsSkipVerify
-			}
-			if cmd.Flags().Changed("bedrock-compat") {
-				opts.BedrockCompat = &bedrockCompat
-			}
-			if cmd.Flags().Changed("enable-1m") {
-				opts.Enable1M = &enable1M
-			}
-			if cmd.Flags().Changed("models") {
-				opts.Models = models
-			}
+			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, bedrockCompat, enable1M, models)
 			return config.UpdateConfig(func(c *config.Config) error {
 				return c.LLM.SetFields(opts)
 			})
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.GatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
-	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
-	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
-	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
-	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
-	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+	addLLMConnectionFlags(cmd, &opts)
 	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
 		"Skip TLS certificate verification for the upstream gateway (local dev only; use --tls-skip-verify=false to clear)")
 	cmd.Flags().BoolVar(&bedrockCompat, "bedrock-compat", false,
@@ -129,8 +146,9 @@ Example:
 	cmd.Flags().BoolVar(&enable1M, "enable-1m", false,
 		"With Bedrock compat, opt into the 1M context window by appending [1m] to opus/sonnet model IDs.")
 	cmd.Flags().StringSliceVar(&models, "models", nil,
-		"Override the default Bedrock model IDs, comma-separated or by repeating the flag, e.g. "+
-			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. Each ID is mapped to a "+
+		"Model IDs to persist and apply during \"thv llm setup\", comma-separated or by repeating the flag, e.g. "+
+			"--models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. Credential-helper clients "+
+			"(Claude Desktop) write these as inferenceModels; with Bedrock compat, each ID is also mapped to a "+
 			"Claude Code tier by matching 'haiku', 'opus', or 'sonnet' in the ID.")
 
 	return cmd
@@ -300,18 +318,7 @@ Re-running is idempotent and uses the cached token (no browser prompt).
 Run "thv llm teardown" to revert all changes.`,
 		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if cmd.Flags().Changed("tls-skip-verify") {
-				opts.TLSSkipVerify = &tlsSkipVerify
-			}
-			if cmd.Flags().Changed("bedrock-compat") {
-				opts.BedrockCompat = &bedrockCompat
-			}
-			if cmd.Flags().Changed("enable-1m") {
-				opts.Enable1M = &enable1M
-			}
-			if cmd.Flags().Changed("models") {
-				opts.Models = models
-			}
+			applyChangedLLMFlags(cmd, &opts, tlsSkipVerify, bedrockCompat, enable1M, models)
 			cm, err := client.NewClientManager()
 			if err != nil {
 				return fmt.Errorf("initializing client manager: %w", err)
@@ -322,17 +329,12 @@ Run "thv llm teardown" to revert all changes.`,
 			return runLLMSetup(
 				cmd.Context(), cmd.OutOrStdout(), cmd.ErrOrStderr(),
 				cm, config.NewDefaultProvider(), login, opts,
-				anthropicPathPrefix, cmd.Flags().Changed("anthropic-path-prefix"), targetClient, lazy, models,
+				anthropicPathPrefix, cmd.Flags().Changed("anthropic-path-prefix"), targetClient, lazy,
 			)
 		},
 	}
 
-	cmd.Flags().StringVar(&opts.GatewayURL, "gateway-url", "", "LLM gateway base URL (must use HTTPS)")
-	cmd.Flags().StringVar(&opts.Issuer, "issuer", "", "OIDC issuer URL")
-	cmd.Flags().StringVar(&opts.ClientID, "client-id", "", "OIDC client ID")
-	cmd.Flags().StringVar(&opts.Audience, "audience", "", "OIDC audience (optional)")
-	cmd.Flags().IntVar(&opts.ProxyPort, "proxy-port", 0, "Localhost proxy listen port (omit to keep current; default: 14000)")
-	cmd.Flags().IntVar(&opts.CallbackPort, "callback-port", 0, "OIDC callback port (omit to keep current; default: ephemeral)")
+	addLLMConnectionFlags(cmd, &opts)
 	cmd.Flags().BoolVar(&tlsSkipVerify, "tls-skip-verify", false,
 		"Skip TLS certificate verification for the upstream gateway (local dev only). "+
 			"For direct-mode tools (Claude Code, Gemini CLI) this sets NODE_TLS_REJECT_UNAUTHORIZED=0, "+
@@ -382,12 +384,12 @@ func runLLMSetup(
 	ctx context.Context, out, errOut io.Writer,
 	cm *client.ClientManager, provider config.Provider, login llm.LoginFunc,
 	inlineOpts llm.SetOptions, anthropicPathPrefix string, anthropicPathPrefixSet bool, targetClient string,
-	lazy bool, models []string,
+	lazy bool,
 ) error {
 	return llm.Setup(
 		ctx, out, errOut,
 		&clientManagerAdapter{cm}, &configUpdaterAdapter{provider}, login,
-		inlineOpts, anthropicPathPrefix, anthropicPathPrefixSet, targetClient, lazy, models,
+		inlineOpts, anthropicPathPrefix, anthropicPathPrefixSet, targetClient, lazy,
 	)
 }
 

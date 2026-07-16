@@ -38,7 +38,7 @@ thv llm config set [flags]
       --gateway-url string   LLM gateway base URL (must use HTTPS)
   -h, --help                 help for set
       --issuer string        OIDC issuer URL
-      --models strings       Override the default Bedrock model IDs, comma-separated or by repeating the flag, e.g. --models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. Each ID is mapped to a Claude Code tier by matching 'haiku', 'opus', or 'sonnet' in the ID.
+      --models strings       Model IDs to persist and apply during "thv llm setup", comma-separated or by repeating the flag, e.g. --models=us.anthropic.claude-opus-4-8,us.anthropic.claude-sonnet-5. Credential-helper clients (Claude Desktop) write these as inferenceModels; with Bedrock compat, each ID is also mapped to a Claude Code tier by matching 'haiku', 'opus', or 'sonnet' in the ID.
       --proxy-port int       Localhost proxy listen port (omit to keep current; default: 14000)
       --tls-skip-verify      Skip TLS certificate verification for the upstream gateway (local dev only; use --tls-skip-verify=false to clear)
 ```

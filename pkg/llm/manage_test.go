@@ -184,17 +184,19 @@ func TestConfig_SetFields_Bedrock(t *testing.T) {
 		}))
 		assert.True(t, cfg.Bedrock.Compat)
 		assert.True(t, cfg.Bedrock.Enable1M)
-		assert.Equal(t, []string{"us.anthropic.claude-opus-x"}, cfg.Bedrock.Models)
+		// Models is persisted at the top level (single source of truth), not under Bedrock.
+		assert.Equal(t, []string{"us.anthropic.claude-opus-x"}, cfg.Models)
 	})
 
-	t.Run("nil pointers leave existing bedrock values unchanged", func(t *testing.T) {
+	t.Run("nil pointers leave existing values unchanged", func(t *testing.T) {
 		t.Parallel()
 		cfg := base()
-		cfg.Bedrock = BedrockConfig{Compat: true, Enable1M: true, Models: []string{"m"}}
+		cfg.Bedrock = BedrockConfig{Compat: true, Enable1M: true}
+		cfg.Models = []string{"m"}
 		require.NoError(t, cfg.SetFields(SetOptions{}))
 		assert.True(t, cfg.Bedrock.Compat)
 		assert.True(t, cfg.Bedrock.Enable1M)
-		assert.Equal(t, []string{"m"}, cfg.Bedrock.Models)
+		assert.Equal(t, []string{"m"}, cfg.Models)
 	})
 
 	t.Run("false pointer clears compat", func(t *testing.T) {

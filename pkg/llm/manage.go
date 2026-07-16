@@ -45,7 +45,7 @@ func (c *Config) SetFields(opts SetOptions) error {
 		c.Bedrock.Enable1M = *opts.Enable1M
 	}
 	if opts.Models != nil {
-		c.Bedrock.Models = opts.Models
+		c.Models = opts.Models
 	}
 
 	if !c.IsConfigured() {
@@ -70,8 +70,8 @@ type SetOptions struct {
 	// "not provided" (enabling explicit clear via config set). See BedrockConfig.
 	BedrockCompat *bool
 	Enable1M      *bool
-	// Models overrides the default Bedrock model IDs. nil = not provided (leave
-	// existing config unchanged); an empty non-nil slice clears the override.
+	// Models sets the persisted model IDs (Config.Models). nil = not provided
+	// (leave existing config unchanged); an empty non-nil slice clears them.
 	Models []string
 }
 
@@ -125,12 +125,12 @@ func (c *Config) Show(w io.Writer) error {
 	if c.TLSSkipVerify {
 		writef("TLS Skip Verify: true (WARNING: certificate verification disabled)\n")
 	}
+	if len(c.Models) > 0 {
+		writef("Models:          %v\n", c.Models)
+	}
 	if c.Bedrock.Compat {
 		writef("Bedrock compat:  true (CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1)\n")
 		writef("  1M context:    %t\n", c.Bedrock.Enable1M)
-		if len(c.Bedrock.Models) > 0 {
-			writef("  Models:        %v\n", c.Bedrock.Models)
-		}
 	}
 	if len(c.ConfiguredTools) > 0 {
 		writef("Configured tools:\n")

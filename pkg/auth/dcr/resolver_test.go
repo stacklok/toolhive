@@ -1827,6 +1827,28 @@ func TestDcrStepError(t *testing.T) {
 		require.True(t, errors.As(err, &stepErr))
 		assert.Equal(t, dcrStepValidate, stepErr.Step)
 	})
+
+	t.Run("malformed DiscoveryURL fails at dcrStepResolveUpstream", func(t *testing.T) {
+		t.Parallel()
+
+		// A DiscoveryURL with no scheme/host passes validateResolveInputs
+		// (which only checks non-emptiness) and the Issuer-based redirect
+		// derivation, then fails in resolveUpstreamKeyIdentity —
+		// deriveExpectedIssuerFromDiscoveryURL rejects the missing origin.
+		// This is a new failure mode introduced with UpstreamID: a malformed
+		// DiscoveryURL now surfaces here rather than later in
+		// resolveDCREndpoints, so the step must be dcrStepResolveUpstream.
+		req := &Request{
+			Issuer:       "https://authserver.example.com",
+			Scopes:       []string{"openid"},
+			DiscoveryURL: "not-a-url",
+		}
+		_, err := ResolveCredentials(context.Background(), req, newMemoryDCRStore(t))
+		require.Error(t, err)
+		var stepErr *dcrStepError
+		require.True(t, errors.As(err, &stepErr))
+		assert.Equal(t, dcrStepResolveUpstream, stepErr.Step)
+	})
 }
 
 func TestSanitizeErrorForLog(t *testing.T) {

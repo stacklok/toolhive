@@ -2106,6 +2106,14 @@ func TestRedisDCRKey_Distinct(t *testing.T) {
 			b:    mk("a", "bcd", "https://x/cb", "h1"),
 		},
 		{
+			// UpstreamID also abuts RedirectURI; the length prefix must keep
+			// ("ab","cd") and ("a","bcd") distinct across the second new seam
+			// introduced by inserting UpstreamID between Issuer and RedirectURI.
+			name: "upstream_id-redirect_uri boundary collision (length-prefix property)",
+			a:    mk("https://idp.example.com", "ab", "cd", "h1"),
+			b:    mk("https://idp.example.com", "a", "bcd", "h1"),
+		},
+		{
 			// RedirectURI legitimately contains colons (e.g. ":443"). A plain
 			// "%s:%s:%s" key would be ambiguous; the length prefix is not.
 			name: "colons inside redirect_uri",

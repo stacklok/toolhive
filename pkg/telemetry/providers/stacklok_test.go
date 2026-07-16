@@ -96,17 +96,23 @@ func TestStacklokLabels_DoNotLeakUnrelatedResourceAttrs(t *testing.T) {
 
 	body := scrapePrometheus(t)
 
+	var counterLine string
 	for line := range strings.SplitSeq(body, "\n") {
-		if !strings.HasPrefix(line, "d8_test_counter_total") {
-			continue
+		if strings.HasPrefix(line, "d8_test_counter_total") {
+			counterLine = line
+			break
 		}
-		// The env-provided attribute must not have been promoted onto the series.
-		assert.NotContains(t, line, "leak-canary", "env resource attr leaked onto series")
-		assert.NotContains(t, line, "deployment_environment", "env resource attr key leaked onto series")
-		// Host/process attributes must not be promoted either.
-		assert.NotContains(t, line, "host_name")
-		assert.NotContains(t, line, "process_pid")
 	}
+	// Assert the inspected series exists so the guard below cannot pass vacuously
+	// if the metric is ever renamed or suppressed.
+	require.NotEmpty(t, counterLine, "expected d8_test_counter_total series in:\n%s", body)
+
+	// The env-provided attribute must not have been promoted onto the series.
+	assert.NotContains(t, counterLine, "leak-canary", "env resource attr leaked onto series")
+	assert.NotContains(t, counterLine, "deployment_environment", "env resource attr key leaked onto series")
+	// Host/process attributes must not be promoted either.
+	assert.NotContains(t, counterLine, "host_name")
+	assert.NotContains(t, counterLine, "process_pid")
 }
 
 func TestStacklokResourceLabelFilter_AdmitsExactlyTwoKeys(t *testing.T) {

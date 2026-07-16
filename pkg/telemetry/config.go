@@ -14,7 +14,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/propagation"
-	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/trace"
 
 	"github.com/stacklok/toolhive/pkg/telemetry/providers"
@@ -246,9 +245,6 @@ type providerOptions struct {
 	// stacklokComponent overrides the RFC D8 stacklok.component value. Empty means
 	// default to the ToolHive proxy/API identity (providers.ComponentToolhive).
 	stacklokComponent string
-	// extraProcessors are additional OTEL span processors (e.g. a Sentry bridge)
-	// registered alongside the globally-registered ones.
-	extraProcessors []sdktrace.SpanProcessor
 }
 
 // WithStacklokComponent sets the RFC D8 emitter-ownership component identity.
@@ -257,14 +253,6 @@ type providerOptions struct {
 func WithStacklokComponent(component string) Option {
 	return func(o *providerOptions) {
 		o.stacklokComponent = component
-	}
-}
-
-// WithSpanProcessors registers additional OTEL span processors (e.g. a Sentry
-// bridge) alongside any globally-registered processors.
-func WithSpanProcessors(processors ...sdktrace.SpanProcessor) Option {
-	return func(o *providerOptions) {
-		o.extraProcessors = append(o.extraProcessors, processors...)
 	}
 }
 
@@ -279,8 +267,7 @@ type Provider struct {
 
 // NewProvider creates a new OpenTelemetry provider with the given configuration.
 // Optional Options customize runtime-only settings not carried on Config, such as
-// the RFC D8 emitter-ownership component (WithStacklokComponent) and extra span
-// processors (WithSpanProcessors, e.g. a Sentry bridge).
+// the RFC D8 emitter-ownership component (WithStacklokComponent).
 func NewProvider(ctx context.Context, config Config, opts ...Option) (*Provider, error) {
 	// Validate configuration
 	if err := validateOtelConfig(config); err != nil {
@@ -315,10 +302,9 @@ func NewProvider(ctx context.Context, config Config, opts ...Option) (*Provider,
 		providers.WithCustomAttributes(config.CustomAttributes),
 	}
 
-	// Merge globally registered processors (self-registered by integrations such
-	// as a Sentry bridge) with any explicitly passed ones.
-	allProcessors := append(registeredSpanProcessors(), options.extraProcessors...)
-	if len(allProcessors) > 0 {
+	// Include globally registered span processors (self-registered by integrations
+	// such as a Sentry bridge).
+	if allProcessors := registeredSpanProcessors(); len(allProcessors) > 0 {
 		telemetryOptions = append(telemetryOptions, providers.WithExtraSpanProcessors(allProcessors...))
 	}
 

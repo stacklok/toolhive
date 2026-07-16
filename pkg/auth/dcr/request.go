@@ -132,4 +132,28 @@ type Request struct {
 	// code_challenge_methods_supported the S256 gate cannot be evaluated,
 	// so the resolver refuses to register as a public client.
 	PublicClient bool
+
+	// AllowPrivateIPs permits both of the resolver's outbound calls — the
+	// discovery fetch to DiscoveryURL and the registration POST to the
+	// resolved registration endpoint — to connect to private IP ranges
+	// (RFC-1918, loopback, link-local). Both calls are otherwise dialed
+	// through a private-IP-guarded client that refuses such addresses at
+	// connect time, closing the CWE-918 SSRF vectors that a DCR upstream
+	// would otherwise open: a discovery document that points
+	// registration_endpoint at an in-cluster service or a link-local
+	// metadata address, and DNS rebinding of an endpoint that was public
+	// when the caller validated it. Loopback hosts remain permitted for
+	// development/testing regardless of this flag; the check runs on the
+	// address actually dialed, after DNS resolution, so it also defends
+	// against rebinding.
+	//
+	// Set this to true only when the upstream authorization server is
+	// reachable solely over a private address (e.g. an in-cluster IdP with
+	// no public endpoint). HTTPS-scheme enforcement is unchanged — HTTPS is
+	// still required for non-loopback hosts. Defaults to false.
+	//
+	// Mirrors the AllowPrivateIPs posture already carried by the OAuth2 and
+	// OIDC upstream configs so a DCR upstream is not the one outbound-facing
+	// path without an SSRF guard.
+	AllowPrivateIPs bool
 }

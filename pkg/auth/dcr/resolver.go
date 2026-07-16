@@ -750,7 +750,10 @@ func performRegistration(
 	registrationEndpoint, redirectURI, authMethod string,
 	scopes []string,
 ) (*oauthproto.DynamicClientRegistrationResponse, error) {
-	httpClient := newDCRHTTPClient(req.InitialAccessToken)
+	httpClient, err := newDCRHTTPClient(req.InitialAccessToken, registrationEndpoint, req.AllowPrivateIPs)
+	if err != nil {
+		return nil, fmt.Errorf("dcr: build registration http client: %w", err)
+	}
 
 	clientName := req.ClientName
 	if clientName == "" {
@@ -891,7 +894,21 @@ func resolveDCREndpoints(
 		return nil, err
 	}
 
-	metadata, err := oauthproto.FetchAuthorizationServerMetadataFromURL(ctx, req.DiscoveryURL, upstreamIssuer, nil)
+	// Dial the discovery fetch through the private-IP-guarded client so a
+	// DiscoveryURL that resolves to a private/loopback/link-local address —
+	// or rebinds to one after the caller validated it — is refused at connect
+	// time (CWE-918). Guarded by default; req.AllowPrivateIPs opts in to
+	// private ranges for an in-cluster upstream.
+	discoveryHost, err := hostFromURL(req.DiscoveryURL)
+	if err != nil {
+		return nil, err
+	}
+	discoveryClient, err := newGuardedDCRClient(discoveryHost, req.AllowPrivateIPs)
+	if err != nil {
+		return nil, fmt.Errorf("dcr: build discovery http client: %w", err)
+	}
+
+	metadata, err := oauthproto.FetchAuthorizationServerMetadataFromURL(ctx, req.DiscoveryURL, upstreamIssuer, discoveryClient)
 	return endpointsFromMetadata(metadata, err, upstreamIssuer)
 }
 
@@ -1263,27 +1280,33 @@ var errDCRRedirectRefused = errors.New(
 		"to avoid forwarding the RFC 7591 initial access token to a foreign origin")
 
 // newDCRHTTPClient returns the http.Client to pass to
-// oauthproto.RegisterClientDynamically. The client always blocks HTTP
-// redirects so that an upstream cannot use a 30x to coerce us into
+// oauthproto.RegisterClientDynamically for a registration POST to
+// registrationEndpoint. The client dials through the private-IP-guarded
+// transport built by newGuardedDCRClient (CWE-918 SSRF protection) and always
+// blocks HTTP redirects so that an upstream cannot use a 30x to coerce us into
 // re-issuing the registration request (and any attached
 // Authorization: Bearer header) against a different origin. RFC 7591 §3
 // does not require redirect support, so refusing them is safe.
 //
-// When initialAccessToken is non-empty the client also wraps the canonical
-// DCR client's transport with a bearerTokenTransport that injects the
-// Authorization header. The combination of the bearer transport plus the
-// redirect block is what prevents the token-leak class of bug.
-//
-// The timeout policy is sourced from oauthproto.NewDefaultDCRClient so
-// future tightening of those bounds propagates automatically.
-func newDCRHTTPClient(initialAccessToken string) *http.Client {
-	client := oauthproto.NewDefaultDCRClient()
+// When initialAccessToken is non-empty the client also wraps the guarded
+// transport with a bearerTokenTransport that injects the Authorization header.
+// The combination of the bearer transport plus the redirect block is what
+// prevents the token-leak class of bug.
+func newDCRHTTPClient(initialAccessToken, registrationEndpoint string, allowPrivateIPs bool) (*http.Client, error) {
+	host, err := hostFromURL(registrationEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	client, err := newGuardedDCRClient(host, allowPrivateIPs)
+	if err != nil {
+		return nil, err
+	}
 	client.CheckRedirect = func(_ *http.Request, _ []*http.Request) error {
 		return errDCRRedirectRefused
 	}
 
 	if initialAccessToken == "" {
-		return client
+		return client, nil
 	}
 
 	next := client.Transport
@@ -1294,5 +1317,48 @@ func newDCRHTTPClient(initialAccessToken string) *http.Client {
 		token: initialAccessToken,
 		next:  next,
 	}
-	return client
+	return client, nil
+}
+
+// newGuardedDCRClient builds the private-IP-guarded *http.Client used for both
+// of the resolver's outbound calls — the discovery fetch and the registration
+// POST. It dials through networking's protected dialer so a host that resolves
+// to a private, loopback, or link-local address is refused at connect time
+// (CWE-918), closing both the discovery-indirection and DNS-rebinding SSRF
+// vectors: the check runs on the address actually dialed, after DNS
+// resolution, and — with keep-alives disabled — on every request rather than
+// being bypassed by a pooled connection.
+//
+// allowPrivateIPs widens only the private-IP gate (for an in-cluster upstream
+// reachable solely over an RFC-1918 address); loopback hosts remain permitted
+// for development regardless, matching networking.NewHostScopedClientBuilder
+// and the AllowPrivateIPs posture of the OAuth2/OIDC upstream configs. HTTP
+// scheme enforcement is left to the resolver's URL validation and the builder's
+// ValidatingTransport (HTTPS-except-loopback).
+//
+// The builder's 30 s overall / 10 s TLS / 10 s response-header default
+// timeouts match the bounds previously sourced from
+// oauthproto.NewDefaultDCRClient.
+func newGuardedDCRClient(host string, allowPrivateIPs bool) (*http.Client, error) {
+	return networking.NewHostScopedClientBuilder(host, allowPrivateIPs, false).
+		WithDisableKeepAlives(true).
+		Build()
+}
+
+// hostFromURL extracts the host[:port] component used to scope the guarded
+// HTTP client. Every URL reaching this helper has already passed
+// scheme-and-host validation at the resolver's entry points
+// (validateUpstreamEndpointURL for the registration endpoint,
+// FetchAuthorizationServerMetadataFromURL for the discovery URL), so a parse
+// failure or empty host here signals an internal inconsistency rather than
+// untrusted input.
+func hostFromURL(rawURL string) (string, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return "", fmt.Errorf("dcr: parse url for http client host: %w", err)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("dcr: url missing host: %q", rawURL)
+	}
+	return u.Host, nil
 }

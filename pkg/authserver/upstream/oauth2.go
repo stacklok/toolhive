@@ -28,7 +28,6 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
 
 	"golang.org/x/oauth2"
@@ -830,12 +829,9 @@ func formatOAuth2Error(err error, prefix string) error {
 // allowPrivateIPs widens only the private-IP gate: it permits connections to
 // RFC-1918/link-local addresses (e.g. in-cluster providers) without enabling
 // the HTTP scheme for non-localhost hosts.
+//
+// The host-scoped guard policy lives in networking.NewHostScopedClientBuilder
+// so this provider path and the DCR resolver share one implementation.
 func newHTTPClientForHost(host string, allowPrivateIPs, insecureAllowHTTP bool) (*http.Client, error) {
-	allowInsecure := networking.IsLocalhost(host) ||
-		insecureAllowHTTP ||
-		strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
-	return networking.NewHttpClientBuilder().
-		WithInsecureAllowHTTP(allowInsecure).
-		WithPrivateIPs(allowInsecure || allowPrivateIPs).
-		Build()
+	return networking.NewHostScopedClientBuilder(host, allowPrivateIPs, insecureAllowHTTP).Build()
 }

@@ -53,8 +53,12 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 	// Discovery and capability methods - always allowed
 	"features/list": {Feature: "", Operation: authorizers.MCPOperationList}, // Capability discovery
 	"roots/list":    {Feature: "", Operation: ""},                           // Root directory discovery
-	// server/discover is Modern capability discovery (the Modern revision has no initialize handshake).
-	"server/discover": {Feature: "", Operation: ""},
+
+	// server/discover is intentionally NOT allow-listed: it default-denies (403) for now.
+	// Its response enumerates tool/resource descriptors and would bypass
+	// ResponseFilteringWriter (which only filters tools/list, prompts/list, resources/list,
+	// and find_tool). When Modern serving is wired up (#5830), add it as allow +
+	// response-filter, not always-allowed.
 
 	// Subscriptions - always allowed for now. This method carries no single resource
 	// identifier the parser extracts (params are a notification-type filter with an

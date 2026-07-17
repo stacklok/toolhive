@@ -449,6 +449,7 @@ func TestMiddlewareFunc_HopByHopHeadersExcludedFromSignature(t *testing.T) {
 			},
 			excluded: []string{"connection"},
 			extraCheck: func(t *testing.T, r *http.Request, signedHeaders string) {
+				t.Helper()
 				require.Contains(t, signedHeaders, "x-amz-date",
 					"X-Amz-Date must be in SignedHeaders after ReverseProxy")
 				require.NotEmpty(t, r.Header.Get("X-Amz-Date"),
@@ -461,7 +462,8 @@ func TestMiddlewareFunc_HopByHopHeadersExcludedFromSignature(t *testing.T) {
 				r.Header.Set("Connection", "Authorization")
 			},
 			excluded: []string{"connection"},
-			extraCheck: func(t *testing.T, r *http.Request, signedHeaders string) {
+			extraCheck: func(t *testing.T, r *http.Request, _ string) {
+				t.Helper()
 				require.NotEmpty(t, r.Header.Get("Authorization"),
 					"Authorization must survive ReverseProxy")
 			},

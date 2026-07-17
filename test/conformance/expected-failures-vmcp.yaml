@@ -27,7 +27,11 @@ server:
   - tools-call-elicitation
   - elicitation-sep1034-defaults
   - elicitation-sep1330-enums
-  # Content-type / template handling gaps — likely real fixes (#5859).
+  # Embedded-resource decode bug (toolhive-core EmbeddedResource.UnmarshalJSON),
+  # fixed in core PR #173 — drops once that release is bumped in. Affects both the
+  # tool-call and prompt embedded-resource paths.
   - tools-call-mixed-content
   - tools-call-embedded-resource
+  - prompts-get-embedded-resource
+  # Resource templates not aggregated/served yet (#5859).
   - resources-templates-read

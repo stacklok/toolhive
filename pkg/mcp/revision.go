@@ -44,22 +44,31 @@ const metaKeyClientCapabilities = "io.modelcontextprotocol/clientCapabilities"
 var reservedModernMetaKeys = []string{metaKeyProtocolVersion, metaKeyClientInfo, metaKeyClientCapabilities}
 
 // The following JSON-RPC error codes are defined by the draft MCP spec
-// (schema/draft/schema.ts) for the stateless "Modern" revision. The go-sdk
-// keeps its equivalents unexported, so they are declared locally here rather
-// than imported.
+// (schema/draft/schema.ts) for the stateless "Modern" revision. They are
+// declared as local literals, matching this repo's existing convention for
+// JSON-RPC codes (e.g. streamable_proxy.go's -32603). The only SDK with
+// equivalents, modelcontextprotocol/go-sdk, is reachable solely as a
+// transitive dependency (via toolhive-core's mcpcompat) and is pinned to an
+// older draft snapshot (2026-06-30, CodeHeaderMismatch = -32001) with no
+// equivalents at all for the other two codes below, so importing it would
+// risk wiring in stale values. Revisit once the go-sdk dependency is bumped
+// to a revision that matches MCPVersionModern.
+//
+// These are exported so other packages (e.g. the HTTP layer) can reference
+// the same wire values instead of hardcoding or re-declaring them.
 const (
-	// jsonRPCCodeHeaderMismatch signals a mismatch between the MCP-Protocol-Version
+	// CodeHeaderMismatch signals a mismatch between the MCP-Protocol-Version
 	// header and the _meta protocol version (schema.ts HeaderMismatchError).
-	jsonRPCCodeHeaderMismatch int64 = -32020
-	// jsonRPCCodeMissingClientCapability signals that _meta is missing a client
+	CodeHeaderMismatch int64 = -32020
+	// CodeMissingClientCapability signals that _meta is missing a client
 	// capability required for the request (schema.ts MissingRequiredClientCapabilityError).
-	jsonRPCCodeMissingClientCapability int64 = -32021
-	// jsonRPCCodeUnsupportedProtocolVersion signals that the _meta protocol version
+	CodeMissingClientCapability int64 = -32021
+	// CodeUnsupportedProtocolVersion signals that the _meta protocol version
 	// is not one this server supports (schema.ts UnsupportedProtocolVersionError).
-	jsonRPCCodeUnsupportedProtocolVersion int64 = -32022
-	// jsonRPCCodeInvalidParams is the standard JSON-RPC Invalid Params code, used
+	CodeUnsupportedProtocolVersion int64 = -32022
+	// CodeInvalidParams is the standard JSON-RPC Invalid Params code, used
 	// as a fallback when the draft spec defines no dedicated code for the failure.
-	jsonRPCCodeInvalidParams int64 = -32602
+	CodeInvalidParams int64 = -32602
 )
 
 // HeaderMismatchError indicates the MCP-Protocol-Version HTTP header did not match
@@ -78,7 +87,7 @@ func (e *HeaderMismatchError) Error() string {
 }
 
 // Code implements CodedError.
-func (*HeaderMismatchError) Code() int64 { return jsonRPCCodeHeaderMismatch }
+func (*HeaderMismatchError) Code() int64 { return CodeHeaderMismatch }
 
 // Data implements CodedError.
 func (e *HeaderMismatchError) Data() map[string]any {
@@ -99,7 +108,7 @@ func (e *UnsupportedVersionError) Error() string {
 }
 
 // Code implements CodedError.
-func (*UnsupportedVersionError) Code() int64 { return jsonRPCCodeUnsupportedProtocolVersion }
+func (*UnsupportedVersionError) Code() int64 { return CodeUnsupportedProtocolVersion }
 
 // Data implements CodedError.
 func (e *UnsupportedVersionError) Data() map[string]any {
@@ -126,40 +135,31 @@ func (e *MissingClientCapabilityError) Error() string {
 }
 
 // Code implements CodedError.
-func (*MissingClientCapabilityError) Code() int64 { return jsonRPCCodeMissingClientCapability }
+func (*MissingClientCapabilityError) Code() int64 { return CodeMissingClientCapability }
 
 // Data implements CodedError.
 func (e *MissingClientCapabilityError) Data() map[string]any {
 	return map[string]any{"requiredCapabilities": e.RequiredCapabilities}
 }
 
-// MissingModernMetadataError indicates the request carried a Modern signal —
-// either the MCP-Protocol-Version header or one of the reserved
-// io.modelcontextprotocol/* _meta keys — but _meta carried no valid
-// protocolVersion. The draft spec defines no dedicated error code for this
+// MissingModernMetadataError indicates the request carried a Modern signal
+// via one of the reserved io.modelcontextprotocol/* _meta keys — with no
+// MCP-Protocol-Version header present at all — but _meta carried no valid
+// protocolVersion. (When a header IS present, a missing or invalid body
+// protocolVersion is a header/body mismatch instead; see HeaderMismatchError.)
+// The draft spec defines no dedicated error code for this reserved-key-only
 // case, so it falls back to the standard JSON-RPC Invalid Params code.
-type MissingModernMetadataError struct {
-	// Header is the MCP-Protocol-Version header value, when the header was (at
-	// least partly) the source of the Modern signal. Empty when the signal came
-	// only from a reserved _meta key.
-	Header string
-}
+type MissingModernMetadataError struct{}
 
 func (*MissingModernMetadataError) Error() string {
 	return "request carries a Modern signal but no valid io.modelcontextprotocol/protocolVersion in _meta"
 }
 
 // Code implements CodedError.
-func (*MissingModernMetadataError) Code() int64 { return jsonRPCCodeInvalidParams }
+func (*MissingModernMetadataError) Code() int64 { return CodeInvalidParams }
 
 // Data implements CodedError.
-func (e *MissingModernMetadataError) Data() map[string]any {
-	data := map[string]any{}
-	if e.Header != "" {
-		data["header"] = e.Header
-	}
-	return data
-}
+func (*MissingModernMetadataError) Data() map[string]any { return map[string]any{} }
 
 // ClassifyRevision determines whether a single MCP request is Legacy or Modern,
 // and whether it is valid.
@@ -190,8 +190,12 @@ func (e *MissingModernMetadataError) Data() map[string]any {
 // than erroring.
 //
 // Given a Modern signal, checks run in this order:
-//  1. meta[metaKeyProtocolVersion] must be a non-empty string, or the request
-//     is malformed (*MissingModernMetadataError).
+//  1. meta[metaKeyProtocolVersion] must be a non-empty string. If it is not,
+//     and protoHeader is non-empty, the body has nothing valid to match against
+//     the header: this is a header/body mismatch (*HeaderMismatchError). If
+//     protoHeader is empty — the signal came only from a reserved _meta key,
+//     so there is no header to mismatch against — the request is malformed
+//     (*MissingModernMetadataError).
 //  2. that string must equal MCPVersionModern, or it names an unsupported
 //     version (*UnsupportedVersionError).
 //  3. if protoHeader is non-empty it must equal the body version, or the two
@@ -213,7 +217,16 @@ func ClassifyRevision(method string, meta map[string]any, protoHeader string) (R
 
 	bodyVersion, hasBodyVersion := stringMetaValue(meta, metaKeyProtocolVersion)
 	if !hasBodyVersion {
-		return RevisionModern, &MissingModernMetadataError{Header: protoHeader}
+		if protoHeader != "" {
+			return RevisionModern, &HeaderMismatchError{Header: protoHeader, Body: ""}
+		}
+		// TODO: this always returns -32602, but ClassifyRevision is transport-agnostic
+		// and cannot tell "stdio, no header concept" (where -32602 is correct) apart from
+		// "HTTP, header omitted" (where the draft's Server Validation rules make a missing
+		// MCP-Protocol-Version header itself a -32020 HeaderMismatch condition). Revisit
+		// once the classifier is wired into the HTTP request path and can be given
+		// transport context.
+		return RevisionModern, &MissingModernMetadataError{}
 	}
 
 	if bodyVersion != MCPVersionModern {
@@ -261,14 +274,24 @@ func stringMetaValue(meta map[string]any, key string) (string, bool) {
 }
 
 // hasObjectMetaValue reports whether meta[key] is present and decodes as a JSON
-// object (map[string]any) — the shape clientCapabilities takes in _meta. A
-// missing key or a wrong-typed value (e.g. a string or number) both count as
-// "not present".
+// object; see objectMetaValue for the shape this covers.
 func hasObjectMetaValue(meta map[string]any, key string) bool {
+	_, ok := objectMetaValue(meta, key)
+	return ok
+}
+
+// objectMetaValue reports the value of meta[key] if it decodes as a JSON
+// object (map[string]any) — the shape clientInfo and clientCapabilities take
+// in _meta. A missing key or a wrong-typed value (e.g. a string or number)
+// both count as "not present".
+func objectMetaValue(meta map[string]any, key string) (map[string]any, bool) {
 	raw, ok := meta[key]
 	if !ok {
-		return false
+		return nil, false
 	}
-	_, ok = raw.(map[string]any)
-	return ok
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	return obj, true
 }

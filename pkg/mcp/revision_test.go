@@ -67,7 +67,7 @@ func TestClassifyRevision(t *testing.T) {
 				require.Error(t, err)
 				var mismatchErr *HeaderMismatchError
 				require.ErrorAs(t, err, &mismatchErr)
-				assert.Equal(t, int64(-32020), mismatchErr.Code())
+				assert.Equal(t, CodeHeaderMismatch, mismatchErr.Code())
 				assert.Equal(t, "2025-11-25", mismatchErr.Header)
 				assert.Equal(t, MCPVersionModern, mismatchErr.Body)
 				assert.Equal(t, map[string]any{"header": "2025-11-25", "body": MCPVersionModern}, mismatchErr.Data())
@@ -86,14 +86,14 @@ func TestClassifyRevision(t *testing.T) {
 				require.Error(t, err)
 				var unsupportedErr *UnsupportedVersionError
 				require.ErrorAs(t, err, &unsupportedErr)
-				assert.Equal(t, int64(-32022), unsupportedErr.Code())
+				assert.Equal(t, CodeUnsupportedProtocolVersion, unsupportedErr.Code())
 				data := unsupportedErr.Data()
 				assert.Equal(t, "2099-01-01", data["requested"])
 				assert.Equal(t, []string{MCPVersionModern}, data["supported"])
 			},
 		},
 		{
-			name:        "modern header but meta absent entirely",
+			name:        "modern header but meta absent entirely is a header mismatch",
 			method:      "tools/call",
 			meta:        nil,
 			protoHeader: MCPVersionModern,
@@ -101,46 +101,47 @@ func TestClassifyRevision(t *testing.T) {
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
 				require.Error(t, err)
-				var missingMetaErr *MissingModernMetadataError
-				require.ErrorAs(t, err, &missingMetaErr)
-				assert.Equal(t, int64(-32602), missingMetaErr.Code())
-				assert.Equal(t, MCPVersionModern, missingMetaErr.Header)
+				var mismatchErr *HeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
+				assert.Equal(t, CodeHeaderMismatch, mismatchErr.Code())
+				assert.Equal(t, MCPVersionModern, mismatchErr.Header)
+				assert.Empty(t, mismatchErr.Body)
 			},
 		},
 		{
-			name:        "modern header but meta missing protocol version key",
+			name:        "modern header but meta missing protocol version key is a header mismatch",
 			method:      "tools/call",
 			meta:        map[string]any{"other": "value"},
 			protoHeader: MCPVersionModern,
 			expectedRev: RevisionModern,
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
-				var missingMetaErr *MissingModernMetadataError
-				require.ErrorAs(t, err, &missingMetaErr)
+				var mismatchErr *HeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
 			},
 		},
 		{
-			name:        "modern header but body version wrong-typed",
+			name:        "modern header but body version wrong-typed is a header mismatch",
 			method:      "tools/call",
 			meta:        map[string]any{metaKeyProtocolVersion: 42},
 			protoHeader: MCPVersionModern,
 			expectedRev: RevisionModern,
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
-				var missingMetaErr *MissingModernMetadataError
-				require.ErrorAs(t, err, &missingMetaErr)
+				var mismatchErr *HeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
 			},
 		},
 		{
-			name:        "modern header but body version empty string",
+			name:        "modern header but body version empty string is a header mismatch",
 			method:      "tools/call",
 			meta:        map[string]any{metaKeyProtocolVersion: ""},
 			protoHeader: MCPVersionModern,
 			expectedRev: RevisionModern,
 			checkErr: func(t *testing.T, err error) {
 				t.Helper()
-				var missingMetaErr *MissingModernMetadataError
-				require.ErrorAs(t, err, &missingMetaErr)
+				var mismatchErr *HeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
 			},
 		},
 		{
@@ -171,7 +172,7 @@ func TestClassifyRevision(t *testing.T) {
 				require.Error(t, err)
 				var missingCapErr *MissingClientCapabilityError
 				require.ErrorAs(t, err, &missingCapErr)
-				assert.Equal(t, int64(-32021), missingCapErr.Code())
+				assert.Equal(t, CodeMissingClientCapability, missingCapErr.Code())
 			},
 		},
 		{
@@ -218,7 +219,7 @@ func TestClassifyRevision(t *testing.T) {
 				require.Error(t, err)
 				var missingMetaErr *MissingModernMetadataError
 				require.ErrorAs(t, err, &missingMetaErr)
-				assert.Equal(t, int64(-32602), missingMetaErr.Code())
+				assert.Equal(t, CodeInvalidParams, missingMetaErr.Code())
 			},
 		},
 		{
@@ -232,7 +233,7 @@ func TestClassifyRevision(t *testing.T) {
 				require.Error(t, err)
 				var missingMetaErr *MissingModernMetadataError
 				require.ErrorAs(t, err, &missingMetaErr)
-				assert.Equal(t, int64(-32602), missingMetaErr.Code())
+				assert.Equal(t, CodeInvalidParams, missingMetaErr.Code())
 			},
 		},
 		{
@@ -246,7 +247,7 @@ func TestClassifyRevision(t *testing.T) {
 				require.Error(t, err)
 				var missingMetaErr *MissingModernMetadataError
 				require.ErrorAs(t, err, &missingMetaErr)
-				assert.Equal(t, int64(-32602), missingMetaErr.Code())
+				assert.Equal(t, CodeInvalidParams, missingMetaErr.Code())
 			},
 		},
 		{
@@ -263,7 +264,25 @@ func TestClassifyRevision(t *testing.T) {
 				require.Error(t, err)
 				var missingMetaErr *MissingModernMetadataError
 				require.ErrorAs(t, err, &missingMetaErr)
-				assert.Equal(t, int64(-32602), missingMetaErr.Code())
+				assert.Equal(t, CodeInvalidParams, missingMetaErr.Code())
+			},
+		},
+		{
+			name:   "modern signal via reserved key with non-modern header is a header mismatch",
+			method: "tools/call",
+			meta: map[string]any{
+				metaKeyClientCapabilities: map[string]any{},
+			},
+			protoHeader: "2025-11-25",
+			expectedRev: RevisionModern,
+			checkErr: func(t *testing.T, err error) {
+				t.Helper()
+				require.Error(t, err)
+				var mismatchErr *HeaderMismatchError
+				require.ErrorAs(t, err, &mismatchErr)
+				assert.Equal(t, CodeHeaderMismatch, mismatchErr.Code())
+				assert.Equal(t, "2025-11-25", mismatchErr.Header)
+				assert.Empty(t, mismatchErr.Body)
 			},
 		},
 		{

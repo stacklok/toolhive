@@ -265,19 +265,13 @@ func extractResourceAndArguments(method string, params json.RawMessage) (string,
 }
 
 // extractModernMeta surfaces the Modern (stateless MCP) clientInfo and
-// protocolVersion fields from a parsed _meta map, if present. Guarded type
-// assertions mirror the style used for the top-level _meta extraction above:
-// a wrong-shaped value is treated as absent rather than causing an error.
+// protocolVersion fields from a parsed _meta map, if present. It delegates to
+// the reserved-key helpers in revision.go so the guarded type assertions live
+// in one place; a wrong-shaped value is treated as absent rather than causing
+// an error.
 func extractModernMeta(meta map[string]interface{}) (clientInfo map[string]interface{}, protocolVersion string) {
-	if meta == nil {
-		return nil, ""
-	}
-	if ci, ok := meta[metaKeyClientInfo].(map[string]interface{}); ok {
-		clientInfo = ci
-	}
-	if pv, ok := meta[metaKeyProtocolVersion].(string); ok {
-		protocolVersion = pv
-	}
+	clientInfo, _ = objectMetaValue(meta, metaKeyClientInfo)
+	protocolVersion, _ = stringMetaValue(meta, metaKeyProtocolVersion)
 	return clientInfo, protocolVersion
 }
 

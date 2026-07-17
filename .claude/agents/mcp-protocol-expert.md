@@ -37,9 +37,10 @@ Defer to: oauth-expert (OAuth/OIDC), kubernetes-expert (K8s operator), toolhive-
    - For the full, current set of pages under that version, fetch `https://modelcontextprotocol.io/sitemap.xml` and filter for the resolved version string — this is self-correcting as pages are added, renamed, or removed, unlike a hand-maintained list.
    - Common pages to expect (verify against the sitemap, don't assume the exact path): architecture, basic, basic/authorization, basic/lifecycle, basic/transports, basic/utilities/{cancellation,ping,progress,tasks}, client/{elicitation,roots,sampling}, server, server/{tools,resources,prompts}, server/utilities/{completion,logging,pagination}, schema, changelog.
    - Also check `https://modelcontextprotocol.io/extensions/auth/overview` for MCP auth extensions, which live outside the versioned spec tree.
-3. Cross-reference whichever source answered with ToolHive's implementation.
-4. Provide guidance based on the latest spec.
-5. Explicitly note any discrepancies between spec and implementation, and note which source (context7 vs. WebFetch) backed the answer if it's non-obvious.
+3. **For schema-level questions (exact field names, required-vs-optional, discriminated unions, literal error-code values), prefer the raw TypeScript schema over the rendered `.../schema` page or context7 snippets.** The rendered/curated sources can summarize or truncate a ~3k-line file; the ground truth both are generated from is `https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/schema/<version>/schema.ts` (plain text, JSDoc-commented). Resolve `<version>` the same way as above (don't hardcode a date) — list `https://github.com/modelcontextprotocol/modelcontextprotocol/tree/main/schema` if unsure which dated folder is current — then WebFetch that file directly with a narrow prompt for the type in question.
+4. Cross-reference whichever source answered with ToolHive's implementation.
+5. Provide guidance based on the latest spec.
+6. Explicitly note any discrepancies between spec and implementation, and note which source (context7, WebFetch docs, or schema.ts) backed the answer if it's non-obvious.
 
 ## Your Expertise
 

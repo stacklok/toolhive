@@ -1,16 +1,33 @@
 # Conformance baseline for the ToolHive vMCP aggregator (`thv vmcp serve`).
 #
-# Unlike the transparent CLI proxy, vMCP is an aggregator that terminates the MCP
-# protocol and re-serves an aggregated view of its backends using the migrated
-# mcpcompat/go-sdk serving surface. It does not (yet) proxy every capability of
-# an upstream server: sampling, completions, and resource subscribe are expected
-# to fail until vMCP implements them.
+# Unlike the transparent CLI proxy, vMCP terminates the MCP protocol and re-serves
+# an aggregated view of its backends using the migrated mcpcompat/go-sdk serving
+# surface. It does not (yet) proxy every capability of an upstream server.
 #
-# List scenario names here that are KNOWN to fail and accepted. The suite fails
-# CI only on failures NOT listed here. An entry that starts passing again is
-# reported as a STALE entry and also fails CI, so keep this list accurate.
+# List scenario names that are KNOWN to fail and accepted. The suite fails CI only
+# on failures NOT listed here. An entry that starts passing again is reported as a
+# STALE entry and also fails CI, so keep this list accurate — when a fix lands,
+# remove its entry here.
 #
-# This list is INTENTIONALLY EMPTY for now: the first CI run against vMCP reports
-# the true failure set, which is then transcribed here as the seeded baseline
-# (expected to include the sampling/completions/subscribe scenarios above).
-server: []
+# NOTE: `prompts-get-*` is deliberately ABSENT — it was a real bug (vMCP listed
+# prompts but never served prompts/get) fixed in #5857 (toolhive-core
+# SessionWithPrompts), so those scenarios now pass.
+#
+# The gaps below are triaged in #5859. Several ("worth a real fix") are likely
+# bugs to be fixed and removed from this list; the rest are aggregator limitations.
+server:
+  # Accepted aggregator limitations (no action expected).
+  - tools-call-sampling
+  - completion-complete
+  - resources-subscribe
+  - resources-unsubscribe
+  # Server-to-client forwarding not yet implemented in the vMCP serve path (#5859).
+  - tools-call-with-progress
+  - tools-call-with-logging
+  - tools-call-elicitation
+  - elicitation-sep1034-defaults
+  - elicitation-sep1330-enums
+  # Content-type / template handling gaps — likely real fixes (#5859).
+  - tools-call-mixed-content
+  - tools-call-embedded-resource
+  - resources-templates-read

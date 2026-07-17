@@ -233,6 +233,14 @@ func NewEmbeddedAuthServerWithStorage(
 		InsecureAllowHTTP:            cfg.InsecureAllowHTTP,
 	}
 
+	// Install a static upstream filter when any upstream opts out of the login
+	// chain via LoginPolicy. Assigned only when non-nil: Config.UpstreamFilter
+	// must stay untyped-nil for the no-filter case (see its doc comment), and
+	// nil here preserves the pre-filter behavior of walking every upstream.
+	if filter := buildUpstreamFilter(cfg.Upstreams); filter != nil {
+		resolvedCfg.UpstreamFilter = filter
+	}
+
 	// 7. Create the auth server. authserver.New also asserts the DCR
 	// capability internally so its DCRStore() accessor returns the same
 	// asserted handle this constructor used for buildUpstreamConfigs.
@@ -420,6 +428,38 @@ func parseTokenLifespans(cfg *authserver.TokenLifespanRunConfig) (access, refres
 	}
 
 	return access, refresh, authCode, nil
+}
+
+// buildUpstreamFilter translates per-upstream LoginPolicy values into a
+// handlers.UpstreamFilter. It returns a StaticUpstreamFilter keeping the
+// non-first upstreams whose policy is required (or unset) when at least one
+// non-first upstream is marked onDemand, and nil otherwise — so a RunConfig
+// that never uses LoginPolicy yields a nil filter and the exact pre-filter
+// chain behavior. RunConfig.Validate has already rejected onDemand on the
+// first upstream and unknown policy values before this runs.
+//
+// Names are used verbatim: with two or more upstreams (the only case that
+// reaches filter construction) authserver.Config validation requires explicit
+// unique names, and handlers.computeChain matches chain entries against those
+// same configured names.
+func buildUpstreamFilter(upstreams []authserver.UpstreamRunConfig) handlers.UpstreamFilter {
+	if len(upstreams) < 2 {
+		return nil
+	}
+	onDemand := false
+	keep := make([]string, 0, len(upstreams)-1)
+	for i := range upstreams[1:] {
+		u := &upstreams[1+i]
+		if u.LoginPolicy == authserver.UpstreamLoginPolicyOnDemand {
+			onDemand = true
+			continue
+		}
+		keep = append(keep, u.Name)
+	}
+	if !onDemand {
+		return nil
+	}
+	return authserver.NewStaticUpstreamFilter(keep)
 }
 
 // buildUpstreamConfigs converts UpstreamRunConfig slice to UpstreamConfig slice.

@@ -752,6 +752,11 @@ func buildUpstreamRunConfig(
 	config := &authserver.UpstreamRunConfig{
 		Name: provider.Name,
 		Type: authserver.UpstreamProviderType(provider.Type),
+		// LoginPolicy passes through verbatim: the CRD enum and the runtime
+		// constants share the same values ("required"/"onDemand"), admission
+		// rejects anything else, and CRD-type/vmcp validation rejects
+		// "onDemand" on the first provider before this conversion runs.
+		LoginPolicy: authserver.UpstreamLoginPolicy(provider.LoginPolicy),
 	}
 
 	switch provider.Type {

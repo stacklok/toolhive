@@ -4271,6 +4271,24 @@ _Appears in:_
 | `providerName` _string_ | ProviderName is the name of the upstream IdP provider whose access token<br />should be injected as the Authorization: Bearer header. |  | MinLength: 1 <br />Required: \{\} <br /> |
 
 
+#### api.v1beta1.UpstreamLoginPolicy
+
+_Underlying type:_ _string_
+
+UpstreamLoginPolicy controls whether an upstream provider participates in
+every login authorization chain.
+
+
+
+_Appears in:_
+- [api.v1beta1.UpstreamProviderConfig](#apiv1beta1upstreamproviderconfig)
+
+| Field | Description |
+| --- | --- |
+| `required` | UpstreamLoginPolicyRequired walks the provider on every login<br />authorization chain (the default, and the behavior before this field<br />existed).<br /> |
+| `onDemand` | UpstreamLoginPolicyOnDemand excludes the provider from the login<br />authorization chain, so users are not sent through its consent screen at<br />every login.<br /> |
+
+
 #### api.v1beta1.UpstreamProviderConfig
 
 
@@ -4299,6 +4317,7 @@ _Appears in:_
 | `type` _[api.v1beta1.UpstreamProviderType](#apiv1beta1upstreamprovidertype)_ | Type specifies the provider type: "oidc" or "oauth2" |  | Enum: [oidc oauth2] <br />Required: \{\} <br /> |
 | `oidcConfig` _[api.v1beta1.OIDCUpstreamConfig](#apiv1beta1oidcupstreamconfig)_ | OIDCConfig contains OIDC-specific configuration.<br />Required when Type is "oidc", must be nil when Type is "oauth2". |  | Optional: \{\} <br /> |
 | `oauth2Config` _[api.v1beta1.OAuth2UpstreamConfig](#apiv1beta1oauth2upstreamconfig)_ | OAuth2Config contains OAuth 2.0-specific configuration.<br />Required when Type is "oauth2", must be nil when Type is "oidc". |  | Optional: \{\} <br /> |
+| `loginPolicy` _[api.v1beta1.UpstreamLoginPolicy](#apiv1beta1upstreamloginpolicy)_ | LoginPolicy controls whether this provider participates in every login<br />authorization chain. When empty or "required" (the default), the embedded<br />auth server walks the provider on every login — the behavior before this<br />field existed. When "onDemand", the provider is excluded from the login<br />chain: users are not sent through its consent screen at login, and any<br />token previously stored for it (for example from an earlier login while<br />the provider was still required, or from a future on-demand connect flow)<br />continues to be injected and refreshed at MCP-request time.<br />Note that this field controls only login-time acquisition. There is not<br />yet an in-band flow for a user to authorize an onDemand provider after<br />login; a request to a backend that needs a token the user never granted<br />fails until such a flow exists.<br />Must not be "onDemand" on the first entry of UpstreamProviders: the first<br />provider anchors the chain and resolves the user's identity, so it can<br />never be filtered out. Only meaningful when multiple upstream providers<br />are configured (VirtualMCPServer); on single-upstream resources the only<br />provider is the first, where "onDemand" is rejected. |  | Enum: [required onDemand] <br />Optional: \{\} <br /> |
 
 
 #### api.v1beta1.UpstreamProviderType

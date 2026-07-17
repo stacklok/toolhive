@@ -666,6 +666,18 @@
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver.UpstreamLoginPolicy": {
+                "description": "LoginPolicy controls whether this upstream participates in every login\nauthorization chain (\"required\", the default when empty) or is excluded\nfrom it (\"onDemand\"). When any upstream is \"onDemand\", the runner\ninstalls a static upstream filter that narrows the chain to the\n\"required\" upstreams. Must be empty or \"required\" on the first upstream.",
+                "enum": [
+                    "required",
+                    "onDemand"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "UpstreamLoginPolicyRequired",
+                    "UpstreamLoginPolicyOnDemand"
+                ]
+            },
             "github_com_stacklok_toolhive_pkg_authserver.UpstreamProviderType": {
                 "description": "Type specifies the provider type: \"oidc\" or \"oauth2\".",
                 "enum": [
@@ -680,6 +692,9 @@
             },
             "github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig": {
                 "properties": {
+                    "login_policy": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamLoginPolicy"
+                    },
                     "name": {
                         "description": "Name uniquely identifies this upstream.\nUsed for routing decisions and session binding in multi-upstream scenarios.\nIf empty when only one upstream is configured, defaults to \"default\".",
                         "type": "string"

@@ -549,6 +549,22 @@ const (
 	UpstreamProviderTypeOAuth2 UpstreamProviderType = "oauth2"
 )
 
+// UpstreamLoginPolicy controls whether an upstream provider participates in
+// every login authorization chain.
+type UpstreamLoginPolicy string
+
+const (
+	// UpstreamLoginPolicyRequired walks the provider on every login
+	// authorization chain (the default, and the behavior before this field
+	// existed).
+	UpstreamLoginPolicyRequired UpstreamLoginPolicy = "required"
+
+	// UpstreamLoginPolicyOnDemand excludes the provider from the login
+	// authorization chain, so users are not sent through its consent screen at
+	// every login.
+	UpstreamLoginPolicyOnDemand UpstreamLoginPolicy = "onDemand"
+)
+
 // UpstreamProviderConfig defines configuration for an upstream Identity Provider.
 //
 // Exactly one of OIDCConfig or OAuth2Config must be set and must match the
@@ -589,6 +605,29 @@ type UpstreamProviderConfig struct {
 	// Required when Type is "oauth2", must be nil when Type is "oidc".
 	// +optional
 	OAuth2Config *OAuth2UpstreamConfig `json:"oauth2Config,omitempty"`
+
+	// LoginPolicy controls whether this provider participates in every login
+	// authorization chain. When empty or "required" (the default), the embedded
+	// auth server walks the provider on every login — the behavior before this
+	// field existed. When "onDemand", the provider is excluded from the login
+	// chain: users are not sent through its consent screen at login, and any
+	// token previously stored for it (for example from an earlier login while
+	// the provider was still required, or from a future on-demand connect flow)
+	// continues to be injected and refreshed at MCP-request time.
+	//
+	// Note that this field controls only login-time acquisition. There is not
+	// yet an in-band flow for a user to authorize an onDemand provider after
+	// login; a request to a backend that needs a token the user never granted
+	// fails until such a flow exists.
+	//
+	// Must not be "onDemand" on the first entry of UpstreamProviders: the first
+	// provider anchors the chain and resolves the user's identity, so it can
+	// never be filtered out. Only meaningful when multiple upstream providers
+	// are configured (VirtualMCPServer); on single-upstream resources the only
+	// provider is the first, where "onDemand" is rejected.
+	// +kubebuilder:validation:Enum=required;onDemand
+	// +optional
+	LoginPolicy UpstreamLoginPolicy `json:"loginPolicy,omitempty"`
 }
 
 // OIDCUpstreamConfig contains configuration for OIDC providers.
@@ -1608,6 +1647,16 @@ func (r *MCPExternalAuthConfig) validateEmbeddedAuthServer() error {
 	// Note: multi-upstream is accepted at the CRD level. Consumer controllers
 	// (MCPServer, MCPRemoteProxy) enforce single-upstream restrictions;
 	// VirtualMCPServer allows multiple upstreams.
+
+	// The first provider anchors the authorization chain and resolves the
+	// user's identity, so it can never be excluded from the chain. This is a
+	// cross-item (positional) rule, which is why it lives here next to the
+	// duplicate-name check rather than in per-provider CEL.
+	if cfg.UpstreamProviders[0].LoginPolicy == UpstreamLoginPolicyOnDemand {
+		return fmt.Errorf("upstreamProviders[0]: loginPolicy %q is not allowed on the first provider; "+
+			"the first provider anchors the authorization chain and cannot be filtered out",
+			UpstreamLoginPolicyOnDemand)
+	}
 
 	seen := make(map[string]bool, len(cfg.UpstreamProviders))
 	for i, provider := range cfg.UpstreamProviders {

@@ -622,6 +622,31 @@ spec:
                         rule fails admission instead of silently demanding the OAuth2 shape. When
                         adding a new type, extend both this rule and validateUpstreamProvider.
                       properties:
+                        loginPolicy:
+                          description: |-
+                            LoginPolicy controls whether this provider participates in every login
+                            authorization chain. When empty or "required" (the default), the embedded
+                            auth server walks the provider on every login — the behavior before this
+                            field existed. When "onDemand", the provider is excluded from the login
+                            chain: users are not sent through its consent screen at login, and any
+                            token previously stored for it (for example from an earlier login while
+                            the provider was still required, or from a future on-demand connect flow)
+                            continues to be injected and refreshed at MCP-request time.
+
+                            Note that this field controls only login-time acquisition. There is not
+                            yet an in-band flow for a user to authorize an onDemand provider after
+                            login; a request to a backend that needs a token the user never granted
+                            fails until such a flow exists.
+
+                            Must not be "onDemand" on the first entry of UpstreamProviders: the first
+                            provider anchors the chain and resolves the user's identity, so it can
+                            never be filtered out. Only meaningful when multiple upstream providers
+                            are configured (VirtualMCPServer); on single-upstream resources the only
+                            provider is the first, where "onDemand" is rejected.
+                          enum:
+                          - required
+                          - onDemand
+                          type: string
                         name:
                           description: |-
                             Name uniquely identifies this upstream provider.
@@ -2224,6 +2249,31 @@ spec:
                         rule fails admission instead of silently demanding the OAuth2 shape. When
                         adding a new type, extend both this rule and validateUpstreamProvider.
                       properties:
+                        loginPolicy:
+                          description: |-
+                            LoginPolicy controls whether this provider participates in every login
+                            authorization chain. When empty or "required" (the default), the embedded
+                            auth server walks the provider on every login — the behavior before this
+                            field existed. When "onDemand", the provider is excluded from the login
+                            chain: users are not sent through its consent screen at login, and any
+                            token previously stored for it (for example from an earlier login while
+                            the provider was still required, or from a future on-demand connect flow)
+                            continues to be injected and refreshed at MCP-request time.
+
+                            Note that this field controls only login-time acquisition. There is not
+                            yet an in-band flow for a user to authorize an onDemand provider after
+                            login; a request to a backend that needs a token the user never granted
+                            fails until such a flow exists.
+
+                            Must not be "onDemand" on the first entry of UpstreamProviders: the first
+                            provider anchors the chain and resolves the user's identity, so it can
+                            never be filtered out. Only meaningful when multiple upstream providers
+                            are configured (VirtualMCPServer); on single-upstream resources the only
+                            provider is the first, where "onDemand" is rejected.
+                          enum:
+                          - required
+                          - onDemand
+                          type: string
                         name:
                           description: |-
                             Name uniquely identifies this upstream provider.

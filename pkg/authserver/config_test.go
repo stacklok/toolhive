@@ -465,6 +465,53 @@ func TestRunConfigValidate(t *testing.T) {
 		{name: "CIMD enabled negative TTL rejected", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheFallbackTTL: "-5m"}}, wantErr: true, errMsg: "cache_fallback_ttl"},
 		{name: "CIMD enabled valid passes", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true, CacheMaxSize: 64, CacheFallbackTTL: "5m"}}},
 		{name: "CIMD enabled omitted optional fields pass", config: RunConfig{CIMD: &CIMDRunConfig{Enabled: true}}},
+		// Upstream login policy validation
+		{
+			name: "empty login policy passes",
+			config: RunConfig{Upstreams: []UpstreamRunConfig{
+				{Name: "idp"}, {Name: "saas"},
+			}},
+		},
+		{
+			name: "explicit required login policy passes",
+			config: RunConfig{Upstreams: []UpstreamRunConfig{
+				{Name: "idp", LoginPolicy: UpstreamLoginPolicyRequired},
+				{Name: "saas", LoginPolicy: UpstreamLoginPolicyRequired},
+			}},
+		},
+		{
+			name: "onDemand on non-first upstream passes",
+			config: RunConfig{Upstreams: []UpstreamRunConfig{
+				{Name: "idp"},
+				{Name: "saas", LoginPolicy: UpstreamLoginPolicyOnDemand},
+			}},
+		},
+		{
+			name: "onDemand on first upstream rejected",
+			config: RunConfig{Upstreams: []UpstreamRunConfig{
+				{Name: "idp", LoginPolicy: UpstreamLoginPolicyOnDemand},
+				{Name: "saas"},
+			}},
+			wantErr: true,
+			errMsg:  "not allowed on the first upstream",
+		},
+		{
+			name: "onDemand on sole upstream rejected",
+			config: RunConfig{Upstreams: []UpstreamRunConfig{
+				{Name: "idp", LoginPolicy: UpstreamLoginPolicyOnDemand},
+			}},
+			wantErr: true,
+			errMsg:  "not allowed on the first upstream",
+		},
+		{
+			name: "unknown login policy rejected",
+			config: RunConfig{Upstreams: []UpstreamRunConfig{
+				{Name: "idp"},
+				{Name: "saas", LoginPolicy: "sometimes"},
+			}},
+			wantErr: true,
+			errMsg:  `invalid login_policy "sometimes"`,
+		},
 	}
 
 	for _, tt := range tests {

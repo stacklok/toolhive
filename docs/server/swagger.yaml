@@ -767,6 +767,20 @@ components:
             "scope".
           type: string
       type: object
+    github_com_stacklok_toolhive_pkg_authserver.UpstreamLoginPolicy:
+      description: |-
+        LoginPolicy controls whether this upstream participates in every login
+        authorization chain ("required", the default when empty) or is excluded
+        from it ("onDemand"). When any upstream is "onDemand", the runner
+        installs a static upstream filter that narrows the chain to the
+        "required" upstreams. Must be empty or "required" on the first upstream.
+      enum:
+      - required
+      - onDemand
+      type: string
+      x-enum-varnames:
+      - UpstreamLoginPolicyRequired
+      - UpstreamLoginPolicyOnDemand
     github_com_stacklok_toolhive_pkg_authserver.UpstreamProviderType:
       description: 'Type specifies the provider type: "oidc" or "oauth2".'
       enum:
@@ -778,6 +792,8 @@ components:
       - UpstreamProviderTypeOAuth2
     github_com_stacklok_toolhive_pkg_authserver.UpstreamRunConfig:
       properties:
+        login_policy:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UpstreamLoginPolicy'
         name:
           description: |-
             Name uniquely identifies this upstream.

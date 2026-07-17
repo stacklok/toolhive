@@ -923,6 +923,50 @@ func TestBuildAuthServerRunConfig(t *testing.T) {
 				assert.Equal(t, "https://okta.example.com", upstream.OIDCConfig.IssuerURL)
 				assert.Equal(t, "client-id", upstream.OIDCConfig.ClientID)
 				assert.Equal(t, []string{"openid", "profile"}, upstream.OIDCConfig.Scopes)
+				// LoginPolicy was not set on the CRD provider, so it must stay
+				// empty (the "required" default) in the RunConfig.
+				assert.Empty(t, upstream.LoginPolicy)
+			},
+		},
+		{
+			name:        "upstream provider loginPolicy propagates to RunConfig",
+			resourceURL: defaultResourceURL,
+			authConfig: &mcpv1beta1.EmbeddedAuthServerConfig{
+				Issuer: "https://auth.example.com",
+				SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "signing-key", Key: "private.pem"},
+				},
+				HMACSecretRefs: []mcpv1beta1.SecretKeyRef{
+					{Name: "hmac-secret", Key: "hmac"},
+				},
+				UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+					{
+						Name:        "okta",
+						Type:        mcpv1beta1.UpstreamProviderTypeOIDC,
+						LoginPolicy: mcpv1beta1.UpstreamLoginPolicyRequired,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+							IssuerURL: "https://okta.example.com",
+							ClientID:  "client-id",
+						},
+					},
+					{
+						Name:        "github",
+						Type:        mcpv1beta1.UpstreamProviderTypeOIDC,
+						LoginPolicy: mcpv1beta1.UpstreamLoginPolicyOnDemand,
+						OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+							IssuerURL: "https://github.com",
+							ClientID:  "client-id-2",
+						},
+					},
+				},
+			},
+			allowedAudiences: defaultAudiences,
+			scopesSupported:  defaultScopes,
+			checkFunc: func(t *testing.T, config *authserver.RunConfig) {
+				t.Helper()
+				require.Len(t, config.Upstreams, 2)
+				assert.Equal(t, authserver.UpstreamLoginPolicyRequired, config.Upstreams[0].LoginPolicy)
+				assert.Equal(t, authserver.UpstreamLoginPolicyOnDemand, config.Upstreams[1].LoginPolicy)
 			},
 		},
 		{

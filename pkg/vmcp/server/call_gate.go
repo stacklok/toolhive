@@ -34,15 +34,13 @@ import (
 // turns a denial into 403 before dispatch); the call-path check remains as
 // defense-in-depth for embedders that bypass this transport.
 //
-// One caveat for argument-conditional policies (tools/call): the gate authorizes on
-// parsed.Arguments (decoded by pkg/mcp's parser) while dispatch re-authorizes on the
-// SDK's decode of the same request bytes. Both are encoding/json over identical
-// bytes, so they agree for plain JSON today. If the two decoders ever diverge
-// (json.Number vs float64, a future typed-params path, duplicate-key handling), the
-// gate could ALLOW while the call path DENIES (re-introducing the 200/IsError this
-// closure exists to remove) or vice-versa. The invariant is that the gated decision
-// and the enforced decision must derive from the same parse; unifying the source is
-// tracked as a follow-up (see #5845).
+// For argument-conditional policies (tools/call), the gated decision and the enforced
+// decision derive from the SAME parse by construction: the gate authorizes on
+// parsed.Arguments (pkg/mcp's transport parse) and dispatch prefers that same map via
+// gateParsedArgs before re-authorizing and forwarding (see serve_handlers.go). Where
+// no matching parse exists (batch, embedders bypassing this transport, method/tool
+// mismatch), dispatch falls back to the SDK decode and makes a single decision on that
+// single map — so no path can produce an allow-then-deny split between gate and call.
 func (s *Server) authzCallGate() server.CallGate {
 	return func(ctx context.Context, _ *http.Request) *server.Denial {
 		// An unparsable body or a batch leaves no ParsedMCPRequest: admit and let the

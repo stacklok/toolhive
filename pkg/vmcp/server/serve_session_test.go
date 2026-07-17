@@ -116,6 +116,7 @@ type fakeCore struct {
 	callToolCalls      atomic.Int32
 	readResourceCalls  atomic.Int32
 	lastCallToolName   atomic.Value // string
+	lastCallToolArgs   atomic.Value // map[string]any
 	lastReadURI        atomic.Value // string
 
 	callErr error // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
@@ -130,10 +131,13 @@ func (f *fakeCore) ListTools(context.Context, *auth.Identity) ([]vmcp.Tool, erro
 }
 
 func (f *fakeCore) CallTool(
-	_ context.Context, _ *auth.Identity, name string, _ map[string]any, _ map[string]any,
+	_ context.Context, _ *auth.Identity, name string, args map[string]any, _ map[string]any,
 ) (*vmcp.ToolCallResult, error) {
 	f.callToolCalls.Add(1)
 	f.lastCallToolName.Store(name)
+	if args != nil {
+		f.lastCallToolArgs.Store(args)
+	}
 	if f.callErr != nil {
 		return nil, f.callErr
 	}

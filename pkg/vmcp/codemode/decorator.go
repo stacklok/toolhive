@@ -18,6 +18,13 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/core"
 )
 
+// ErrReservedToolName is returned when a backend advertises a tool whose name collides
+// with the reserved execute_tool_script virtual tool. It is fail-loud on purpose: a
+// silent shadow would let the backend tool skip its own Cedar admission (LookupTool /
+// ListTools would resolve the virtual definition instead), so the decorator refuses to
+// serve rather than mask the backend tool (#5845).
+var ErrReservedToolName = errors.New("codemode: backend tool collides with reserved virtual tool name")
+
 // defaultScriptTimeout bounds the total wall-clock time of a single script execution.
 // The step limit caps CPU-equivalent work and Config.ToolCallTimeout caps each inner tool
 // call, but neither bounds a script that makes many sequential calls — without this an
@@ -94,10 +101,22 @@ func virtualToolInputSchema() map[string]any {
 // grant for every tool the feature can call. This is safe precisely because code mode adds
 // no reachability beyond the caller's already-authorized tool set.
 //
+// Because the decorator resolves execute_tool_script to its own virtual definition, a
+// backend that advertised a tool of the same name would be silently shadowed and skip
+// its Cedar admission. The decorator refuses that collision fail-loud via innerTools:
+// ListTools, LookupTool, and the CallTool script-binding path all error with
+// ErrReservedToolName rather than serve the shadowed set (#5845).
+//
 // The decorator is stateless and safe for concurrent use: a fresh [script.Executor] is
 // built per execution from the inner core's identity-filtered tool set, so two callers
 // never share an engine or a tool binding.
 type decorator struct {
+	// core.VMCP is embedded, so any method the decorator does not override is promoted
+	// straight to the inner core. The reserved-name collision guard (#5845) lives only in
+	// the overrides that read the inner tool set via innerTools (ListTools, LookupTool, and
+	// CallTool's script path). If core.VMCP ever grows another tool-set-reading method, it
+	// will auto-promote and bypass that guard — reintroducing the silent execute_tool_script
+	// shadow. Any such new method MUST be overridden here to funnel through innerTools.
 	core.VMCP
 	cfg Config
 }
@@ -120,11 +139,32 @@ func NewDecorator(inner core.VMCP, cfg *Config) core.VMCP {
 	}
 }
 
+// innerTools lists inner's admission-filtered tools and fails loud if any of them
+// collides with the reserved execute_tool_script name. Every decorator path that reads
+// inner's tool set goes through here so a shadowing backend tool is rejected once,
+// consistently: were it served, ListTools/LookupTool would advertise the virtual
+// definition in its place and the backend tool would never reach its own Cedar
+// admission (#5845). The defensive skips in virtualTool/bindTools remain as
+// belt-and-braces for the same name.
+func (d *decorator) innerTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
+	tools, err := d.VMCP.ListTools(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	for _, t := range tools {
+		if t.Name == script.ExecuteToolScriptName {
+			return nil, fmt.Errorf("%w: %q advertised by backend %q",
+				ErrReservedToolName, script.ExecuteToolScriptName, t.BackendID)
+		}
+	}
+	return tools, nil
+}
+
 // ListTools returns inner's tools plus the execute_tool_script virtual tool. The
 // virtual tool's description is generated from inner's (identity-filtered) tools, so
 // it lists exactly what the script may call for this identity.
 func (d *decorator) ListTools(ctx context.Context, identity *auth.Identity) ([]vmcp.Tool, error) {
-	tools, err := d.VMCP.ListTools(ctx, identity)
+	tools, err := d.innerTools(ctx, identity)
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +182,7 @@ func (d *decorator) LookupTool(ctx context.Context, identity *auth.Identity, nam
 	if name != script.ExecuteToolScriptName {
 		return d.VMCP.LookupTool(ctx, identity, name)
 	}
-	tools, err := d.VMCP.ListTools(ctx, identity)
+	tools, err := d.innerTools(ctx, identity)
 	if err != nil {
 		return nil, err
 	}
@@ -182,7 +222,10 @@ func (d *decorator) CallTool(
 
 	// Bind the script to the identity's admission-filtered tool set. Each inner call
 	// re-enters inner.CallTool, so admission is enforced per call by the real tool name.
-	tools, err := d.VMCP.ListTools(ctx, identity)
+	// innerTools fails loud on a reserved-name collision, so a shadowing backend tool
+	// surfaces as a transport error here rather than silently binding under the wrong
+	// admission (#5845).
+	tools, err := d.innerTools(ctx, identity)
 	if err != nil {
 		return nil, fmt.Errorf("codemode: list tools for script execution: %w", err)
 	}

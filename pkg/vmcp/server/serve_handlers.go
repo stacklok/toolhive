@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
+	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -179,11 +180,25 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 			bi.BackendName = backendName
 		}
 
+		// Shape-check on the SDK decode first: a non-object payload is rejected before the
+		// core is reached. This validates request shape for the parse we forward too — both
+		// decode the same request bytes, so a valid transport parse implies a valid SDK
+		// shape (the substitution below only changes which equal-shaped map is used).
 		args, ok := req.Params.Arguments.(map[string]any)
 		if !ok {
 			wrappedErr := fmt.Errorf("%w: arguments must be object, got %T", vmcp.ErrInvalidInput, req.Params.Arguments)
 			slog.Warn("invalid arguments for tool", "tool", toolName, "error", wrappedErr)
 			return mcp.NewToolResultError(wrappedErr.Error()), nil
+		}
+
+		// Prefer the transport-parsed argument map so the pre-dispatch authz gate's
+		// decision, this handler's enforced decision, and the forwarded backend call
+		// all derive from one decode (#5845). A nil result means no matching parse is
+		// available (batch / embedders bypassing transport middleware / method or tool
+		// mismatch); those paths keep the SDK decode above and still make a single
+		// decision on a single map, so gate and dispatch cannot diverge.
+		if pa := gateParsedArgs(ctx, toolName); pa != nil {
+			args = pa
 		}
 
 		caller, _ := auth.IdentityFromContext(ctx)
@@ -204,6 +219,24 @@ func (s *Server) coreToolHandler(sessionID, toolName, backendName string) server
 			IsError:           result.IsError,
 		}, nil
 	}
+}
+
+// gateParsedArgs returns the argument map the pre-dispatch authz gate decided on
+// (pkg/mcp's transport parse), so the gated decision, this handler's enforced
+// decision, and the forwarded backend call all share one decode (#5845). It returns
+// parsed.Arguments only when the context carries a ParsedMCPRequest for the SAME
+// tools/call on the SAME tool with non-nil arguments.
+//
+// A nil result tells the caller to keep the SDK decode: batch requests, embedders
+// that bypass the transport middleware, or a method/tool mismatch leave no matching
+// parse. Those paths make a single decision on a single map (the SDK decode), so
+// there is still no allow-then-deny divergence between gate and dispatch.
+func gateParsedArgs(ctx context.Context, toolName string) map[string]any {
+	parsed := mcpparser.GetParsedMCPRequest(ctx)
+	if parsed == nil || parsed.Method != "tools/call" || parsed.ResourceID != toolName || parsed.Arguments == nil {
+		return nil
+	}
+	return parsed.Arguments
 }
 
 // coreResourceHandler builds the SDK handler for a Serve-path resource. It mirrors

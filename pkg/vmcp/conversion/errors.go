@@ -6,8 +6,7 @@ package conversion
 import (
 	"errors"
 
-	sdkmcp "github.com/mark3labs/mcp-go/mcp"
-
+	sdkmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	thvmcp "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )

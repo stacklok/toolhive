@@ -13,8 +13,8 @@ import (
 	context "context"
 	reflect "reflect"
 
-	mcp "github.com/mark3labs/mcp-go/mcp"
-	server "github.com/mark3labs/mcp-go/server"
+	mcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	server "github.com/stacklok/toolhive-core/mcpcompat/server"
 	gomock "go.uber.org/mock/gomock"
 )
 

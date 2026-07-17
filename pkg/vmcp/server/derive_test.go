@@ -39,6 +39,7 @@ func populatedLegacyConfig() *Config {
 		Port:                    7777,
 		EndpointPath:            "/custom",
 		SessionTTL:              17 * time.Minute,
+		HeartbeatInterval:       5 * time.Second,
 		AuthMiddleware:          passthrough,
 		AuthzMiddleware:         passthrough,
 		AuthInfoHandler:         http.NewServeMux(),
@@ -70,6 +71,7 @@ func TestDeriveServerConfigProjectsTransportFields(t *testing.T) {
 	assert.Equal(t, 7777, got.Port)
 	assert.Equal(t, "/custom", got.EndpointPath)
 	assert.Equal(t, 17*time.Minute, got.SessionTTL)
+	assert.Equal(t, 5*time.Second, got.HeartbeatInterval)
 	assert.Equal(t, 11*time.Second, got.StatusReportingInterval)
 
 	// Func/handler/pointer fields projected by reference.

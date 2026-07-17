@@ -4,7 +4,7 @@
 // Package client provides MCP protocol client implementation for communicating with backend servers.
 //
 // This package implements the BackendClient interface defined in the vmcp package,
-// using the mark3labs/mcp-go SDK for protocol communication.
+// using the stacklok/toolhive-core/mcpcompat SDK for protocol communication.
 package client
 
 import (
@@ -21,12 +21,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/versions"
@@ -100,7 +100,7 @@ func WithDialControl(control func(network, address string, c syscall.RawConn) er
 	}
 }
 
-// httpBackendClient implements vmcp.BackendClient using mark3labs/mcp-go HTTP client.
+// httpBackendClient implements vmcp.BackendClient using stacklok/toolhive-core/mcpcompat HTTP client.
 // It supports streamable-HTTP and SSE transports for backend MCP servers.
 type httpBackendClient struct {
 	// clientFactory creates MCP clients for backends.
@@ -397,7 +397,7 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmc
 	return strategy, nil
 }
 
-// defaultClientFactory creates mark3labs MCP clients for different transport types.
+// defaultClientFactory creates mcpcompat MCP clients for different transport types.
 func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
 	// Build transport chain (outermost to innermost, request execution order):
 	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP

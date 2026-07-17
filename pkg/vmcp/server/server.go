@@ -21,8 +21,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mark3labs/mcp-go/server"
-
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
@@ -96,6 +95,15 @@ const (
 	capabilityCacheTTL = 30 * time.Second
 )
 
+// heartbeatInterval returns the configured heartbeat interval, or the default
+// when the configured value is zero or negative (unset or invalid).
+func heartbeatInterval(d time.Duration) time.Duration {
+	if d <= 0 {
+		return defaultHeartbeatInterval
+	}
+	return d
+}
+
 //go:generate mockgen -destination=mocks/mock_watcher.go -package=mocks -source=server.go Watcher
 
 // Watcher is the interface for Kubernetes backend watcher integration.
@@ -131,6 +139,17 @@ type Config struct {
 	// SessionTTL is the session time-to-live duration (default: 30 minutes)
 	// Sessions inactive for this duration will be automatically cleaned up
 	SessionTTL time.Duration
+
+	// HeartbeatInterval configures the SSE keep-alive ping interval on GET
+	// connections. When zero, the Handler defaults to defaultHeartbeatInterval (30s).
+	// Prevents proxies/load balancers from closing idle SSE connections.
+	//
+	// This is intentionally plumbed end-to-end (ServerConfig → Config → Handler →
+	// WithHeartbeatInterval) ahead of any CLI-flag or CRD wiring. No external entry
+	// point sets it yet, so in practice it is always the default unless an embedder
+	// assigns it programmatically; the plumbing exists so surfacing a flag/field
+	// later is a one-line change rather than a re-thread through the server.
+	HeartbeatInterval time.Duration
 
 	// AuthMiddleware is the optional authentication middleware to apply to MCP routes.
 	// If nil, no authentication is required.
@@ -265,7 +284,7 @@ type Server struct {
 	// session manager; this is the resolved factory surfaced via Manager.OptimizerFactory.
 	optimizerFactory func(context.Context, []server.ServerTool) (optimizer.Optimizer, error)
 
-	// MCP protocol server (mark3labs/mcp-go)
+	// MCP protocol server (stacklok/toolhive-core/mcpcompat)
 	mcpServer *server.MCPServer
 
 	// HTTP server for Streamable HTTP transport
@@ -502,7 +521,7 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		s.mcpServer,
 		server.WithEndpointPath(s.config.EndpointPath),
 		server.WithSessionIdManager(s.vmcpSessionMgr),
-		server.WithHeartbeatInterval(defaultHeartbeatInterval),
+		server.WithHeartbeatInterval(heartbeatInterval(s.config.HeartbeatInterval)),
 	)
 
 	// Create HTTP mux with separated authenticated and unauthenticated routes
@@ -907,7 +926,7 @@ func (s *Server) SessionManager() *transportsession.Manager {
 	return s.sessionManager
 }
 
-// MCPServer returns the underlying mark3labs *server.MCPServer instance
+// MCPServer returns the underlying mcpcompat *server.MCPServer instance
 // servicing this vMCP server's /mcp endpoint.
 //
 // Intended for embedders that wrap the vMCP composer in their own pipeline and
@@ -918,7 +937,7 @@ func (s *Server) SessionManager() *transportsession.Manager {
 //
 // Trust boundary: this accessor is in-process only; the returned pointer is
 // the same instance for the lifetime of the Server and is safe for concurrent
-// use per mark3labs guarantees.
+// use per mcpcompat guarantees.
 //
 // Safe operations include RequestElicitation against an active session,
 // registering observability hooks, and reading registered

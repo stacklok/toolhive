@@ -8,9 +8,9 @@ import (
 	"errors"
 
 	tea "github.com/charmbracelet/bubbletea"
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
 
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/core"
 	thclient "github.com/stacklok/toolhive/pkg/mcp/client"
 )

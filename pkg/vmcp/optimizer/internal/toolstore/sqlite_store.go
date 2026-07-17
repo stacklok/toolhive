@@ -19,11 +19,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 	"golang.org/x/sync/errgroup"
 	_ "modernc.org/sqlite" // registers the "sqlite" database/sql driver
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/similarity"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer/internal/types"
 )

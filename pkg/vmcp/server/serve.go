@@ -9,9 +9,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
-
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/audit"
 	asrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -62,6 +61,10 @@ type ServerConfig struct {
 
 	// SessionTTL is the session time-to-live duration (default: 30 minutes).
 	SessionTTL time.Duration
+
+	// HeartbeatInterval configures the SSE keep-alive ping interval on GET
+	// connections (default: 30s when zero).
+	HeartbeatInterval time.Duration
 
 	// AuthMiddleware is the optional authentication middleware applied to MCP routes.
 	// If nil, no authentication is required.
@@ -327,6 +330,7 @@ func buildServeConfig(cfg *ServerConfig) *Config {
 		Port:                    cfg.Port,
 		EndpointPath:            cfg.EndpointPath,
 		SessionTTL:              cfg.SessionTTL,
+		HeartbeatInterval:       cfg.HeartbeatInterval,
 		AuthMiddleware:          cfg.AuthMiddleware,
 		AuthInfoHandler:         cfg.AuthInfoHandler,
 		PassthroughHeaders:      cfg.PassthroughHeaders,

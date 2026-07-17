@@ -9,7 +9,8 @@ import (
 	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/mark3labs/mcp-go/mcp"
+
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
 // handleInspectorKey handles key input when the inspector panel is active.

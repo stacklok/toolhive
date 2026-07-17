@@ -12,12 +12,12 @@ import (
 	"sync"
 	"testing"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
 
@@ -234,7 +234,7 @@ func (f *fakeBackend) writeError(w http.ResponseWriter, id json.RawMessage, e *j
 	}
 }
 
-// newTestClient builds a streamable-HTTP mark3labs client pointing at url and
+// newTestClient builds a streamable-HTTP mcpcompat client pointing at url and
 // runs Start() so the transport is ready for initAndQueryCapabilities. Cleanup
 // is registered via t.Cleanup.
 func newTestClient(t *testing.T, url string) *mcpclient.Client {

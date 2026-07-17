@@ -21,8 +21,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/cache"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
@@ -43,7 +43,7 @@ const (
 )
 
 // Manager bridges the domain session lifecycle (MultiSession / MultiSessionFactory)
-// to the mark3labs SDK's SessionIdManager interface.
+// to the mcpcompat SDK's SessionIdManager interface.
 //
 // It implements a two-phase session-creation pattern:
 //
@@ -417,10 +417,25 @@ func (sm *Manager) cleanupFailedPlaceholder(sessionID string, metadata map[strin
 
 // Validate implements the SDK's SessionIdManager.Validate().
 //
-// Returns (isTerminated=true, nil) for explicitly terminated sessions.
-// Returns (false, error) for unknown sessions — per the SDK interface contract,
-// a lookup failure is signalled via err, not via isTerminated.
+// Returns (isTerminated=true, nil) for a session that is definitively gone:
+// explicitly terminated (placeholder marked terminated=true) OR absent from
+// storage (a full MultiSession is deleted on Terminate, TTL-expired, or never
+// existed). All of these must reject the request as a hard termination so the
+// client re-initializes rather than retrying a dead session.
+//
+// Returns (false, error) only for a genuine, transient storage error (e.g. the
+// backing store is unreachable) — the caller should treat this as retryable and
+// NOT drop session state.
+//
 // Returns (false, nil) for valid, active sessions.
+//
+// This distinction is load-bearing: the streamable transport maps
+// (isTerminated=true) to HTTP 404 (-> client ErrSessionTerminated -> re-init)
+// and a non-terminated error to HTTP 503 (retryable). Reporting a genuinely-gone
+// session as an error would surface as 503 and make a client whose session was
+// terminated on another replica retry the dead session forever. Terminate still
+// DELETES the key (unchanged), so the resurrection-race guarantee is preserved;
+// only the way an absent key is reported here changes.
 func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 	if sessionID == "" {
 		return false, fmt.Errorf("Manager.Validate: empty session ID")
@@ -431,8 +446,12 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 
 	metadata, err := sm.storage.Load(ctx, sessionID)
 	if errors.Is(err, transportsession.ErrSessionNotFound) {
-		slog.Debug("Manager.Validate: session not found", "session_id", sessionID)
-		return false, fmt.Errorf("session not found")
+		// The session is gone (terminated + deleted, TTL-expired, or never
+		// existed). Report it as terminated so the transport answers 404 and the
+		// client re-initializes, rather than as an error (which the transport
+		// would treat as a transient 503 and the client would retry indefinitely).
+		slog.Debug("Manager.Validate: session not found; reporting as terminated", "session_id", sessionID)
+		return true, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("Manager.Validate: storage error for session %q: %w", sessionID, err)
@@ -455,15 +474,16 @@ func (sm *Manager) Validate(sessionID string) (isTerminated bool, err error) {
 //   - MultiSession (Phase 2): the storage key is deleted. The node-local cache
 //     self-heals on the next Get: checkSession detects ErrSessionNotFound,
 //     evicts the entry, and onEvict closes backend connections. After deletion
-//     Validate() returns (false, error) — the same response as "never existed".
+//     Validate() reports the absent key as (isTerminated=true, nil), so the next
+//     request — on this or any other replica — is rejected with a definitive 404
+//     and the client re-initializes instead of retrying the dead session.
 //
 //   - Placeholder (Phase 1): the session is marked terminated=true and left
 //     for TTL cleanup. This prevents CreateSession() from opening backend
 //     connections for an already-terminated session (see fast-fail check in
 //     CreateSession). The terminated flag also lets Validate() return
 //     (isTerminated=true, nil) during the window between termination and TTL
-//     expiry, allowing the SDK to distinguish "actively terminated" from
-//     "never existed".
+//     expiry — the same terminated response the deleted case now gives.
 //
 // Returns (isNotAllowed=false, nil) on success; client termination is always permitted.
 func (sm *Manager) Terminate(sessionID string) (isNotAllowed bool, err error) {

@@ -16,12 +16,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/ratelimit"
@@ -927,18 +927,30 @@ func TestServeOmitsPrompts(t *testing.T) {
 // package-server-internal analogue of the postMCP helper in the external suite.
 func postServeMCP(t *testing.T, baseURL string, body map[string]any, sessionID string) *http.Response {
 	t.Helper()
-	rawBody, err := json.Marshal(body)
+	resp, err := doServeMCP(baseURL, body, sessionID)
 	require.NoError(t, err)
+	return resp
+}
+
+// doServeMCP performs a tools POST and returns the response or an error. It never
+// calls require/assert, so it is safe to invoke from worker goroutines where
+// FailNow/Goexit would run off the test goroutine and misreport. postServeMCP
+// wraps it for the common test-goroutine case.
+func doServeMCP(baseURL string, body map[string]any, sessionID string) (*http.Response, error) {
+	rawBody, err := json.Marshal(body)
+	if err != nil {
+		return nil, err
+	}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, baseURL+"/mcp", bytes.NewReader(rawBody))
-	require.NoError(t, err)
+	if err != nil {
+		return nil, err
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	if sessionID != "" {
 		req.Header.Set("Mcp-Session-Id", sessionID)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	require.NoError(t, err)
-	return resp
+	return http.DefaultClient.Do(req)
 }

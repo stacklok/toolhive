@@ -503,7 +503,7 @@ func TestSessionManager_Validate(t *testing.T) {
 		assert.Contains(t, err.Error(), "empty session ID")
 	})
 
-	t.Run("returns error for unknown session", func(t *testing.T) {
+	t.Run("reports unknown session as terminated", func(t *testing.T) {
 		t.Parallel()
 
 		ctrl := gomock.NewController(t)
@@ -512,10 +512,15 @@ func TestSessionManager_Validate(t *testing.T) {
 		registry := newFakeRegistry()
 		sm, _ := newTestSessionManager(t, factory, registry)
 
+		// A session that is absent from storage (deleted on Terminate, TTL-expired,
+		// or never existed) must be reported as terminated (isTerminated=true, nil),
+		// NOT as an error. The transport maps terminated -> 404 so the client
+		// re-initializes; reporting an error would surface as a retryable 503 and a
+		// client whose session was terminated on another replica would retry the
+		// dead session forever (regression guarded here).
 		isTerminated, err := sm.Validate("non-existent-id")
-		require.Error(t, err)
-		assert.False(t, isTerminated)
-		assert.Contains(t, err.Error(), "session not found")
+		require.NoError(t, err)
+		assert.True(t, isTerminated, "an absent session must report as terminated, not as a transient error")
 	})
 
 	t.Run("returns false for active session", func(t *testing.T) {

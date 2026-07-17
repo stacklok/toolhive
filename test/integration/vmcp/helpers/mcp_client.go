@@ -10,14 +10,15 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
-// MCPClient wraps the mark3labs MCP client with test-friendly methods.
+// MCPClient wraps the mcpcompat MCP client with test-friendly methods.
 // It automatically handles initialization and provides semantic assertion helpers
 // that integrate with Go's testing.TB interface.
 //

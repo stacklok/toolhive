@@ -66,7 +66,7 @@ docker build -t "${IMAGE}" "${SERVER_DIR}"
 echo "==> Starting server through ToolHive"
 "${THV_BINARY}" rm -f "${SERVER_NAME}" >/dev/null 2>&1 || true
 "${THV_BINARY}" run "${IMAGE}" \
-  --transport streamable-http --target-port 3000 --name "${SERVER_NAME}" --debug
+  --transport streamable-http --target-port 3000 --name "${SERVER_NAME}"
 
 echo "==> Resolving proxy URL"
 URL=""

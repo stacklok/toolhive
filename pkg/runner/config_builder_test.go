@@ -1639,3 +1639,86 @@ func TestWithAdditionalMiddlewareConfigs(t *testing.T) {
 		assert.Nil(t, b.config.AdditionalMiddlewareConfigs)
 	})
 }
+
+// TestRunConfigBuilder_NetworkIsolationReconciliation verifies that network
+// isolation is reconciled against the resolved network mode: enforced in bridge
+// mode, dropped (with warn or error) for host, and dropped silently for none.
+// See issue #5775.
+func TestRunConfigBuilder_NetworkIsolationReconciliation(t *testing.T) {
+	t.Parallel()
+
+	mockValidator := &mockEnvVarValidator{}
+
+	const (
+		isolateDefaultTrue  = "default-true"  // isolation on, not explicitly requested
+		isolateExplicitTrue = "explicit-true" // isolation on, explicitly requested
+		isolateFalse        = "false"         // isolation off
+	)
+
+	tests := []struct {
+		name            string
+		networkMode     string
+		isolate         string
+		expectError     bool
+		expectIsolation bool
+	}{
+		// Bridge modes: isolation left untouched.
+		{"empty mode default isolate", "", isolateDefaultTrue, false, true},
+		{"empty mode explicit isolate", "", isolateExplicitTrue, false, true},
+		{"empty mode isolate off", "", isolateFalse, false, false},
+		{"bridge mode default isolate", "bridge", isolateDefaultTrue, false, true},
+		{"bridge mode explicit isolate", "bridge", isolateExplicitTrue, false, true},
+		{"default mode default isolate", "default", isolateDefaultTrue, false, true},
+
+		// Host mode: drop + warn when defaulted, error when explicit.
+		{"host mode default isolate degrades", "host", isolateDefaultTrue, false, false},
+		{"host mode explicit isolate errors", "host", isolateExplicitTrue, true, false},
+		{"host mode isolate off untouched", "host", isolateFalse, false, false},
+
+		// None mode: always drop silently, never error.
+		{"none mode default isolate degrades", "none", isolateDefaultTrue, false, false},
+		{"none mode explicit isolate degrades", "none", isolateExplicitTrue, false, false},
+		{"none mode isolate off", "none", isolateFalse, false, false},
+
+		// Custom (non-bridge, non-none) mode behaves like host.
+		{"custom mode default isolate degrades", "container:foo", isolateDefaultTrue, false, false},
+		{"custom mode explicit isolate errors", "container:foo", isolateExplicitTrue, true, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			opts := []RunConfigBuilderOption{
+				WithImage("test-image"),
+				WithName("test-name"),
+				WithNetworkMode(tt.networkMode),
+			}
+			switch tt.isolate {
+			case isolateDefaultTrue:
+				opts = append(opts, WithNetworkIsolation(true))
+			case isolateExplicitTrue:
+				opts = append(opts, WithNetworkIsolation(true), WithNetworkIsolationExplicit(true))
+			case isolateFalse:
+				opts = append(opts, WithNetworkIsolation(false))
+			}
+
+			config, err := NewRunConfigBuilder(t.Context(), nil, map[string]string{}, mockValidator, opts...)
+
+			if tt.expectError {
+				require.Error(t, err, "expected build to fail fast")
+				// The error must name both ways out.
+				assert.Contains(t, err.Error(), "drop --network "+tt.networkMode,
+					"error should offer dropping the network mode")
+				assert.Contains(t, err.Error(), "pass --isolate-network=false",
+					"error should offer disabling isolation")
+				return
+			}
+
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.Equal(t, tt.expectIsolation, config.IsolateNetwork,
+				"IsolateNetwork should reflect reconciled value")
+		})
+	}
+}

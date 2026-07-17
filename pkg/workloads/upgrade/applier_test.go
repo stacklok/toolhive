@@ -620,3 +620,46 @@ func TestApplier_Apply_PreservesHTTPTransportPorts(t *testing.T) {
 	assert.Equal(t, 21000, h.updatedConfig.Port, "existing proxy port preserved over candidate's")
 	assert.Equal(t, 22000, h.updatedConfig.TargetPort, "existing target port preserved over candidate's")
 }
+
+// TestApplier_Apply_DegradesLegacyHostIsolation verifies that upgrading a legacy
+// config that persisted network isolation together with a host network mode
+// degrades (isolation dropped) rather than failing: the upgrade path
+// intentionally does not pass WithNetworkIsolationExplicit. See #5775.
+func TestApplier_Apply_DegradesLegacyHostIsolation(t *testing.T) {
+	t.Parallel()
+	h := newApplierHarness(t)
+
+	old := &runner.RunConfig{
+		Name:               "wl",
+		Image:              "ghcr.io/example/server:1.0.0",
+		RegistryServerName: applyServerName,
+		Group:              "default",
+		Transport:          transporttypes.TransportTypeStreamableHTTP,
+		ProxyMode:          transporttypes.ProxyModeStreamableHTTP,
+		Port:               21000,
+		TargetPort:         22000,
+		IsolateNetwork:     true,
+		PermissionProfile: &permissions.Profile{
+			Network: &permissions.NetworkPermissions{Mode: "host"},
+		},
+		EnvVars: map[string]string{},
+	}
+	h.loadConfig = old
+	h.provider.EXPECT().
+		GetServer(applyServerName).
+		Return(&regtypes.ImageMetadata{Image: "ghcr.io/example/server:1.2.0"}, nil)
+	candidate := &regtypes.ImageMetadata{Image: "ghcr.io/example/server:1.2.0"}
+	candidate.Transport = string(transporttypes.TransportTypeStreamableHTTP)
+	h.resolveImageURL = "ghcr.io/example/server:1.2.0"
+	h.resolveMeta = candidate
+	h.configMock.EXPECT().GetConfig().Return(&appconfig.Config{}).AnyTimes()
+	h.expectUpdate()
+
+	_, err := h.applier.Apply(context.Background(), "wl", ApplyOptions{
+		EnvVarValidator: &runner.DetachedEnvVarValidator{},
+	})
+	require.NoError(t, err, "legacy host+isolation config must degrade, not fail, on upgrade")
+	require.NotNil(t, h.updatedConfig)
+	assert.False(t, h.updatedConfig.IsolateNetwork,
+		"isolation must be dropped when upgrading a host-network workload")
+}

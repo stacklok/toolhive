@@ -2601,3 +2601,53 @@ func TestRunConfig_MCPServerGenerationJSONRoundTrip(t *testing.T) {
 			"decoded missing field should be zero, got %d", got.MCPServerGeneration)
 	})
 }
+
+// TestReadJSON_DegradesNetworkIsolation verifies that ReadJSON self-heals legacy
+// on-disk configs that persisted isolate_network=true with a non-bridge network
+// mode, so status/list reflect reality. See issue #5775.
+func TestReadJSON_DegradesNetworkIsolation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		mode            string
+		omitProfile     bool // omit permission_profile entirely (nil-guard case)
+		expectIsolation bool
+	}{
+		{name: "host mode degrades", mode: "host", expectIsolation: false},
+		{name: "none mode degrades", mode: "none", expectIsolation: false},
+		{name: "bridge mode untouched", mode: "bridge", expectIsolation: true},
+		{name: "empty mode untouched", mode: "", expectIsolation: true},
+		{name: "no permission profile is nil-safe and untouched", omitProfile: true, expectIsolation: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			profileJSON := fmt.Sprintf(`,
+				"permission_profile": {
+					"network": {
+						"mode": "%s"
+					}
+				}`, tt.mode)
+			if tt.omitProfile {
+				profileJSON = ""
+			}
+
+			configJSON := fmt.Sprintf(`{
+				"schema_version": "v1",
+				"name": "degrade-test",
+				"image": "test:latest",
+				"transport": "stdio",
+				"isolate_network": true%s
+			}`, profileJSON)
+
+			config, err := ReadJSON(strings.NewReader(configJSON))
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.Equal(t, tt.expectIsolation, config.IsolateNetwork,
+				"IsolateNetwork should reflect reconciled value for mode %q", tt.mode)
+		})
+	}
+}

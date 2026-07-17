@@ -268,7 +268,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 		"Emit legacy attribute names alongside new OTEL semantic convention names (default true)")
 
 	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", true,
-		"Isolate the container network from the host. Use --isolate-network=false to opt out.")
+		"Isolate the container network from the host. Use --isolate-network=false to opt out. "+
+			"Not enforced with --network host or --network none (isolation requires bridge networking).")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
 		"Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). "+
 			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled. "+
@@ -285,7 +286,8 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
-		"Connect the container to a network (e.g., 'host' for host networking)")
+		"Connect the container to a network (e.g., 'host' for host networking). "+
+			"Note: 'host' and 'none' cannot enforce network isolation, so isolation is dropped for those modes.")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
 	cmd.Flags().BoolVarP(&config.Foreground, "foreground", "f", false, "Run in foreground mode (block until container exits) "+
 		"(default false)")
@@ -361,10 +363,15 @@ func BuildRunnerConfig(
 		return nil, err
 	}
 
+	// Whether --isolate-network was explicitly passed (vs. defaulted). This
+	// controls whether an incompatible network mode fails fast or degrades.
+	isolateExplicit := cmd.Flags().Changed("isolate-network")
+
 	if runFlags.RemoteURL != "" {
 		slog.Debug(fmt.Sprintf("Attempting to run remote MCP server: %s", runFlags.RemoteURL))
 		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
-			nil, envVarValidator, oidcConfig, telemetryConfig, appConfig)
+			nil, envVarValidator, oidcConfig, telemetryConfig, appConfig,
+			runner.WithNetworkIsolationExplicit(isolateExplicit))
 	}
 
 	// Resolve image from registry without pulling (fast registry lookup only).
@@ -392,7 +399,8 @@ func BuildRunnerConfig(
 	runConfig, err := buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
 		envVars, envVarValidator, oidcConfig, telemetryConfig, appConfig,
 		runner.WithRegistrySourceURLs(regAPIURL, regURL),
-		runner.WithRegistryServerName(regServerName))
+		runner.WithRegistryServerName(regServerName),
+		runner.WithNetworkIsolationExplicit(isolateExplicit))
 	if err != nil {
 		return nil, err
 	}

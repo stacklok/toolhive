@@ -18,6 +18,17 @@ import (
 	"github.com/stacklok/toolhive/pkg/plugins"
 )
 
+// resolvedTempDir returns a temp directory path with symlinks resolved, so that
+// paths under it pass plugin extraction's "refusing to extract through symlinks"
+// check (e.g. on macOS, t.TempDir() may return /var/folders/... where /var is a
+// symlink to /private/var).
+func resolvedTempDir(t *testing.T) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(t.TempDir())
+	require.NoError(t, err)
+	return resolved
+}
+
 // makePluginLayer builds a tar.gz layer from the given file entries, suitable
 // for passing as MaterializeRequest.LayerData. Mirrors the fixture helper in
 // pkg/skills/installer_test.go.
@@ -98,7 +109,7 @@ func requireMarketplacePlugin(t *testing.T, mp claudeMarketplace, name string) {
 
 func TestClaudeCodeAdapter_SupportedComponents(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewClaudeCodeAdapter(cm)
 
@@ -113,7 +124,7 @@ func TestClaudeCodeAdapter_SupportedComponents(t *testing.T) {
 
 func TestClaudeCodeAdapter_MaterializeWritesFiles(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewClaudeCodeAdapter(cm)
 
@@ -158,7 +169,7 @@ func TestClaudeCodeAdapter_MaterializeWritesFiles(t *testing.T) {
 
 func TestClaudeCodeAdapter_ExecutableBitPreserved(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewClaudeCodeAdapter(cm)
 
@@ -193,7 +204,7 @@ func TestClaudeCodeAdapter_ExecutableBitPreserved(t *testing.T) {
 
 func TestClaudeCodeAdapter_DroppedComponents(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewClaudeCodeAdapter(cm)
 
@@ -230,7 +241,7 @@ func TestClaudeCodeAdapter_DroppedComponents(t *testing.T) {
 
 func TestClaudeCodeAdapter_DematerializeRemovesDir(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewClaudeCodeAdapter(cm)
 
@@ -272,7 +283,7 @@ func TestClaudeCodeAdapter_DematerializeRemovesDir(t *testing.T) {
 
 func TestClaudeCodeAdapter_DematerializeIdempotent(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewClaudeCodeAdapter(cm)
 
@@ -288,7 +299,7 @@ func TestClaudeCodeAdapter_DematerializeIdempotent(t *testing.T) {
 
 func TestClaudeCodeAdapter_RematerializeOverwrites(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewClaudeCodeAdapter(cm)
 
@@ -342,7 +353,7 @@ func TestClaudeCodeAdapter_ScopeSupport(t *testing.T) {
 
 func TestClaudeCodeAdapter_MaterializePreservesUnrelatedSettingsKeys(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewClaudeCodeAdapter(cm)
 
@@ -391,7 +402,7 @@ func TestClaudeCodeAdapter_MaterializePreservesUnrelatedSettingsKeys(t *testing.
 
 func TestClaudeCodeAdapter_DematerializeRemovesMarketplaceEntryWhenNoToolhivePluginsRemain(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewClaudeCodeAdapter(cm)
 
@@ -436,7 +447,7 @@ func TestClaudeCodeAdapter_DematerializeRemovesMarketplaceEntryWhenNoToolhivePlu
 
 func TestClaudeCodeAdapter_NonLifoUninstallKeepsMarketplacePathValid(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewClaudeCodeAdapter(cm)
 
@@ -504,11 +515,11 @@ func TestClaudeCodeAdapter_NonLifoUninstallKeepsMarketplacePathValid(t *testing.
 
 func TestClaudeCodeAdapter_ProjectScopeUsesProjectSettings(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewClaudeCodeAdapter(cm)
 
-	projectRoot := t.TempDir()
+	projectRoot := resolvedTempDir(t)
 	layer := makePluginLayer(t, []ociskills.FileEntry{
 		{Path: "commands/greet.md", Content: []byte("# greet"), Mode: 0644},
 	})

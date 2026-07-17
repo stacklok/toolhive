@@ -56,7 +56,7 @@ func findCodexPlugin(t *testing.T, mp codexMarketplace, name string) codexMarket
 
 func TestCodexAdapter_SupportedComponents(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 
@@ -70,7 +70,7 @@ func TestCodexAdapter_SupportedComponents(t *testing.T) {
 
 func TestCodexAdapter_MaterializeExtractsAndRegisters(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 
@@ -111,7 +111,7 @@ func TestCodexAdapter_MaterializeExtractsAndRegisters(t *testing.T) {
 
 func TestCodexAdapter_DematerializeRemovesPluginAndEntry(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 
@@ -140,7 +140,7 @@ func TestCodexAdapter_DematerializeRemovesPluginAndEntry(t *testing.T) {
 
 func TestCodexAdapter_DroppedComponentsAllSix(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 
@@ -178,7 +178,7 @@ func TestCodexAdapter_DroppedComponentsAllSix(t *testing.T) {
 
 func TestCodexAdapter_ProjectScopeUsesProjectMarketplace(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 
@@ -188,7 +188,7 @@ func TestCodexAdapter_ProjectScopeUsesProjectMarketplace(t *testing.T) {
 
 	// Project scope writes to <projectRoot>/.agents/plugins, a Codex discovery
 	// path, so it does NOT degrade.
-	projectRoot := t.TempDir()
+	projectRoot := resolvedTempDir(t)
 	res, err := a.Materialize(context.Background(), plugins.MaterializeRequest{
 		Name:        "proj-plugin",
 		LayerData:   layer,
@@ -214,7 +214,7 @@ func TestCodexAdapter_ProjectScopeUsesProjectMarketplace(t *testing.T) {
 
 func TestCodexAdapter_DematerializeIdempotent(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 
@@ -240,7 +240,7 @@ func TestCodexAdapter_ScopeSupport(t *testing.T) {
 // second deletes it.
 func TestCodexAdapter_MarketplaceSurvivesWhenOtherPluginRemains(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 
@@ -270,7 +270,7 @@ func TestCodexAdapter_MarketplaceSurvivesWhenOtherPluginRemains(t *testing.T) {
 // with its relative source and alpha's dir is intact.
 func TestCodexAdapter_NonLifoUninstallKeepsMarketplaceValid(t *testing.T) {
 	t.Parallel()
-	tempHome := t.TempDir()
+	tempHome := resolvedTempDir(t)
 	cm := newTestClientManager(t, tempHome)
 	a := NewCodexAdapter(cm)
 

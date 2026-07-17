@@ -16,6 +16,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -206,25 +208,77 @@ func TestBridge_ToolsListChanged_TriggersReSync(t *testing.T) {
 		"beta must be present after the re-sync, got %v", names)
 }
 
-// TestBridge_ProgressAndLoggingNotifications_DroppedByShim is a regression
-// anchor for a known limitation of the mcpcompat client shim: it does not
-// install ProgressNotificationHandler or LoggingMessageHandler on the
-// underlying go-sdk client, so upstream notifications/progress and
-// notifications/message notifications are dropped before they ever reach the
-// bridge's OnNotification handler (and thus before they could be forwarded
-// downstream by SendNotificationToAllClients, which itself only forwards those
-// two methods).
+// TestBridge_ProgressAndLoggingNotifications_ForwardedByShim guards the premise
+// the bridge's notification forwarding depends on: the mcpcompat client the
+// bridge uses must deliver upstream notifications/progress and
+// notifications/message to registered OnNotification handlers. The bridge's
+// OnNotification handler then relays every method downstream unconditionally
+// (SendNotificationToAllClients, in run()), so client delivery is the load-
+// bearing link.
 //
-// When the shim is fixed to install those handlers, delete this Skip and
-// implement a real end-to-end test asserting that progress and logging
-// notifications are forwarded to the bridge's local server clients.
-//
-//nolint:paralleltest // Skipped regression anchor; documents a shim limitation.
-func TestBridge_ProgressAndLoggingNotifications_DroppedByShim(t *testing.T) {
-	t.Skip("known shim limitation: mcpcompat client does not install " +
-		"ProgressNotificationHandler/LoggingMessageHandler, so upstream " +
-		"progress/logging notifications are dropped before reaching the bridge " +
-		"(see client.installNotificationHandlers); additionally the shim's " +
-		"SendNotificationToAllClients only forwards notifications/progress and " +
-		"notifications/message, dropping list_changed downstream")
+// An earlier shim iteration did NOT install the go-sdk
+// ProgressNotificationHandler/LoggingMessageHandler and dropped these
+// notifications; they were wired in toolhive-core (issue #156). This test fails
+// if that regresses — a client behind the bridge would silently stop seeing
+// progress/logging on long-running tool calls.
+func TestBridge_ProgressAndLoggingNotifications_ForwardedByShim(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Live mcpcompat backend; capture the connected session so we can push
+	// server->client notifications to it once the client is listening.
+	holder := &sessionHolder{}
+	hooks := &server.Hooks{}
+	hooks.AddOnRegisterSession(func(_ context.Context, s server.ClientSession) { holder.set(s) })
+	backend := server.NewMCPServer("backend", "1.0", server.WithToolCapabilities(true), server.WithHooks(hooks))
+
+	httpSrv := server.NewStreamableHTTPServer(backend)
+	ts := httptest.NewServer(httpSrv)
+	t.Cleanup(ts.Close)
+
+	// The bridge connects its upstream client with the standalone SSE stream on
+	// (WithContinuousListening); mirror that here so server->client notifications
+	// have a stream to arrive on.
+	c, err := client.NewStreamableHttpClient(ts.URL, transport.WithContinuousListening())
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	var mu sync.Mutex
+	seen := map[string]int{}
+	c.OnNotification(func(n mcp.JSONRPCNotification) {
+		mu.Lock()
+		seen[n.Method]++
+		mu.Unlock()
+	})
+
+	require.NoError(t, c.Start(ctx))
+	_, err = c.Initialize(ctx, mcp.InitializeRequest{Params: mcp.InitializeParams{
+		ProtocolVersion: mcp.LATEST_PROTOCOL_VERSION,
+		ClientInfo:      mcp.Implementation{Name: "test", Version: "1.0"},
+	}})
+	require.NoError(t, err)
+
+	// Logging is level-gated per the MCP spec (and per mcp-go, whose SetLevel the
+	// shim aliases): the client must subscribe before the server delivers
+	// notifications/message. Progress is not gated. Subscribe so both paths are
+	// exercised.
+	require.NoError(t, c.SetLoggingLevel(ctx, "info"))
+
+	// Wait for the session to register (and the standalone SSE stream to attach)
+	// before pushing notifications, so they are not emitted into the void.
+	require.Eventually(t, func() bool { return holder.get() != nil }, 5*time.Second, 50*time.Millisecond,
+		"client did not connect to the backend")
+
+	backend.SendNotificationToAllClients("notifications/progress",
+		map[string]any{"progressToken": "tok", "progress": 0.5})
+	backend.SendNotificationToAllClients("notifications/message",
+		map[string]any{"level": "info", "data": "hello"})
+
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return seen["notifications/progress"] >= 1 && seen["notifications/message"] >= 1
+	}, 5*time.Second, 50*time.Millisecond,
+		"shim client must forward progress + logging notifications to OnNotification (regression: they were dropped); got %v", seen)
 }

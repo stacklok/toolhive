@@ -55,7 +55,7 @@ var reservedModernMetaKeys = []string{metaKeyProtocolVersion, metaKeyClientInfo,
 // to a revision that matches MCPVersionModern.
 //
 // These are exported so other packages (e.g. the HTTP layer) can reference
-// the same wire values instead of hardcoding or re-declaring them.
+// the same wire values instead of hardcoding or redeclaring them.
 const (
 	// CodeHeaderMismatch signals a mismatch between the MCP-Protocol-Version
 	// header and the _meta protocol version (schema.ts HeaderMismatchError).

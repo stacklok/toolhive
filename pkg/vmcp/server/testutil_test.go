@@ -126,6 +126,34 @@ func (c *MCPTestClient) CallTool(toolName string, args map[string]any) *http.Res
 	return resp
 }
 
+// ReadResource calls resources/read for the given URI and returns the raw response.
+func (c *MCPTestClient) ReadResource(uri string) *http.Response {
+	c.t.Helper()
+
+	resp := c.postMCP(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      c.nextID,
+		"method":  "resources/read",
+		"params":  map[string]any{"uri": uri},
+	}, c.sessionID)
+	c.nextID++
+	return resp
+}
+
+// GetPrompt calls prompts/get for the given prompt name and returns the raw response.
+func (c *MCPTestClient) GetPrompt(name string) *http.Response {
+	c.t.Helper()
+
+	resp := c.postMCP(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      c.nextID,
+		"method":  "prompts/get",
+		"params":  map[string]any{"name": name},
+	}, c.sessionID)
+	c.nextID++
+	return resp
+}
+
 // SessionID returns the current session ID (available after InitializeSession).
 func (c *MCPTestClient) SessionID() string {
 	return c.sessionID

@@ -51,6 +51,18 @@ occurs:
 4. If the request is authorized, it is passed to the next handler. Otherwise, a
    403 Forbidden response is returned.
 
+### Virtual MCP parity
+
+Virtual MCP (`vmcp`) enforces the same Cedar policies through its core admission
+seam rather than HTTP middleware, but the client-facing behavior matches a
+single-server `thv run`: a denied `tools/call`, `resources/read`, or `prompts/get`
+is rejected with **HTTP 403** and a JSON-RPC error whose code is `403`, and the
+denied request is audited with outcome `denied`. The denial message is kind-only
+(for example, `call denied by authorization policy`) and never reveals the
+capability name or whether it exists, so it cannot be used to enumerate the
+server. See the [Virtual MCP architecture](arch/10-virtual-mcp-architecture.md#authorization-enforcement-core-admission-seam--pre-dispatch-gate)
+for details.
+
 ## Configure authorization
 
 To set up authorization for an MCP server managed by ToolHive, follow these

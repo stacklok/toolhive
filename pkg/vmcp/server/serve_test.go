@@ -63,6 +63,11 @@ func (*stubVMCP) LookupResource(context.Context, *auth.Identity, string) (*vmcp.
 func (*stubVMCP) LookupPrompt(context.Context, *auth.Identity, string) (*vmcp.Prompt, error) {
 	return nil, nil
 }
+func (*stubVMCP) CheckToolCall(context.Context, *auth.Identity, string, map[string]any) error {
+	return nil
+}
+func (*stubVMCP) CheckResourceRead(context.Context, *auth.Identity, string) error { return nil }
+func (*stubVMCP) CheckPromptGet(context.Context, *auth.Identity, string) error    { return nil }
 func (*stubVMCP) ListBackends(context.Context, *auth.Identity, bool) ([]vmcp.Backend, error) {
 	return nil, nil
 }

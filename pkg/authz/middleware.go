@@ -124,7 +124,7 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 
 	errorResponse := &jsonrpc2.Response{
 		ID:    id,
-		Error: jsonrpc2.NewError(403, errorMsg),
+		Error: jsonrpc2.NewError(mcp.JSONRPCCodeDenied, errorMsg),
 	}
 
 	// Set the response headers

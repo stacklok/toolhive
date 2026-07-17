@@ -225,7 +225,7 @@ func (s *Server) coreResourceHandler(
 		result, err := s.core.ReadResource(ctx, caller, uri)
 		if err != nil {
 			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
-				return nil, errors.New("read denied by authorization policy")
+				return nil, errors.New(vmcp.DenyMessageResourceRead)
 			}
 			return nil, err
 		}

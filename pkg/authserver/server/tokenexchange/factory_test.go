@@ -9,6 +9,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 )
 
 func TestFactory(t *testing.T) {
@@ -33,6 +35,20 @@ func TestFactory(t *testing.T) {
 			name:               "positive delegationLifespan succeeds",
 			delegationLifespan: 15 * time.Minute,
 		},
+		{
+			name:               "delegationLifespan at max access token lifespan succeeds",
+			delegationLifespan: server.MaxAccessTokenLifespan,
+		},
+		{
+			name:               "delegationLifespan above max access token lifespan returns error",
+			delegationLifespan: server.MaxAccessTokenLifespan + time.Hour,
+			wantErr:            true,
+		},
+		{
+			name:               "delegationLifespan of 48h returns error",
+			delegationLifespan: 48 * time.Hour,
+			wantErr:            true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -42,7 +58,7 @@ func TestFactory(t *testing.T) {
 			f, err := Factory(tt.delegationLifespan)
 			if tt.wantErr {
 				require.Error(t, err)
-				assert.Contains(t, err.Error(), "delegationLifespan must be positive")
+				assert.Contains(t, err.Error(), "delegationLifespan must be between")
 				assert.Nil(t, f)
 				return
 			}

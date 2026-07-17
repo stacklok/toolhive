@@ -55,7 +55,7 @@ func (tj *testJWKS) publicJWKS() *jose.JSONWebKeySet {
 }
 
 // signToken creates a signed JWT with the given claims using the test JWKS key.
-func (tj *testJWKS) signToken(t *testing.T, claims jwt.Claims, extraClaims map[string]interface{}) string {
+func (tj *testJWKS) signToken(t *testing.T, claims jwt.Claims, extraClaims map[string]any) string {
 	t.Helper()
 
 	signer, err := jose.NewSigner(
@@ -90,8 +90,8 @@ func validClaims() jwt.Claims {
 }
 
 // validExtraClaims returns extra claims that match the session package claim keys.
-func validExtraClaims() map[string]interface{} {
-	return map[string]interface{}{
+func validExtraClaims() map[string]any {
+	return map[string]any{
 		"name":      "Test User",
 		"email":     "test@example.com",
 		"client_id": testAgentClientID,
@@ -254,7 +254,7 @@ func TestSubjectTokenValidator_Validate(t *testing.T) {
 			token: func(t *testing.T) string {
 				t.Helper()
 				extra := validExtraClaims()
-				extra["may_act"] = map[string]interface{}{"sub": "authorized-agent"}
+				extra["may_act"] = map[string]any{"sub": "authorized-agent"}
 				return tj.signToken(t, validClaims(), extra)
 			},
 			check: func(t *testing.T, vc *ValidatedClaims) {
@@ -279,7 +279,7 @@ func TestSubjectTokenValidator_Validate(t *testing.T) {
 			token: func(t *testing.T) string {
 				t.Helper()
 				extra := validExtraClaims()
-				extra["may_act"] = map[string]interface{}{"foo": "bar"}
+				extra["may_act"] = map[string]any{"foo": "bar"}
 				return tj.signToken(t, validClaims(), extra)
 			},
 			wantErr:     true,
@@ -290,7 +290,7 @@ func TestSubjectTokenValidator_Validate(t *testing.T) {
 			token: func(t *testing.T) string {
 				t.Helper()
 				extra := validExtraClaims()
-				extra["may_act"] = map[string]interface{}{"sub": 123}
+				extra["may_act"] = map[string]any{"sub": 123}
 				return tj.signToken(t, validClaims(), extra)
 			},
 			wantErr:     true,
@@ -473,6 +473,30 @@ func TestSubjectTokenValidator_MultiKeyJWKS(t *testing.T) {
 		// Key B is not in the JWKS.
 		otherJWK := newECDSAJWK(t, "other-key")
 		rawToken := signWithJWK(t, otherJWK, jose.ES256, validClaims())
+
+		result, err := validator.Validate(context.Background(), rawToken)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "signature verification failed")
+		assert.Nil(t, result)
+	})
+
+	t.Run("token claiming a kid it is not signed with fails", func(t *testing.T) {
+		t.Parallel()
+
+		jwk1 := newECDSAJWK(t, "test-key-1")
+		jwk2 := newECDSAJWK(t, "test-key-2")
+		jwks := publicJWKSOf(jwk1, jwk2)
+
+		validator, err := NewSubjectTokenValidator(jwks, testIssuer, []string{testIssuer})
+		require.NoError(t, err)
+
+		// Sign with jwk2's key material but claim jwk1's kid in the header.
+		// A validator that fell back to the full keyset after a kid match
+		// would wrongly accept this via jwk2; verifySignature must try only
+		// the matched key (jwk1) and fail.
+		spoofedKey := jwk2
+		spoofedKey.KeyID = jwk1.KeyID
+		rawToken := signWithJWK(t, spoofedKey, jose.ES256, validClaims())
 
 		result, err := validator.Validate(context.Background(), rawToken)
 		require.Error(t, err)

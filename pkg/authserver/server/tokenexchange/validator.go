@@ -57,7 +57,7 @@ type ValidatedClaims struct {
 	// Nil when the subject token does not carry a may_act claim.
 	MayAct *MayActClaim
 	// Extra contains all non-standard claims not captured by other fields.
-	Extra map[string]interface{}
+	Extra map[string]any
 }
 
 // MayActClaim represents the RFC 8693 §4.1 may_act claim from a subject token.
@@ -102,6 +102,16 @@ func NewSubjectTokenValidator(
 // Validate parses and verifies a raw JWT subject token.
 // It checks the signature against the server's JWKS, validates issuer and audience,
 // ensures the token is not expired, and requires a subject claim for delegation.
+//
+// The subject token's "aud" claim is checked against allowedAudiences, but this
+// validator deliberately does not require that the authorization server itself
+// (i.e. the token endpoint) be among those audiences. RFC 8693 leaves subject-token
+// validation criteria out of scope, and ToolHive's vMCP flow legitimately exchanges
+// tokens addressed to a downstream/upstream resource rather than the AS. The residual
+// cross-resource risk is mitigated elsewhere: the token is still pinned to the
+// server-wide allowedAudiences, and the handler enforces the requested resource
+// against the client's registered audiences.
+//
 // Returns the validated claims on success, or a descriptive error on failure.
 func (v *SubjectTokenValidator) Validate(_ context.Context, rawToken string) (*ValidatedClaims, error) {
 	parsedToken, err := jwt.ParseSigned(rawToken, allowedSignatureAlgorithms)
@@ -109,11 +119,8 @@ func (v *SubjectTokenValidator) Validate(_ context.Context, rawToken string) (*V
 		return nil, fmt.Errorf("subject token is not a valid JWT: %w", err)
 	}
 
-	// Try each key in the JWKS until one verifies the signature.
-	var standardClaims jwt.Claims
-	var extraClaims map[string]interface{}
-
-	if err := verifySignature(parsedToken, v.publicJWKS, &standardClaims, &extraClaims); err != nil {
+	standardClaims, extraClaims, err := verifySignature(parsedToken, v.publicJWKS)
+	if err != nil {
 		return nil, err
 	}
 
@@ -148,7 +155,7 @@ func (v *SubjectTokenValidator) Validate(_ context.Context, rawToken string) (*V
 	// A present-but-malformed may_act is treated as an invalid token, not
 	// an absent one — fail closed to prevent silent downgrade to client_id.
 	if rawMayAct, ok := extraClaims["may_act"]; ok && rawMayAct != nil {
-		m, ok := rawMayAct.(map[string]interface{})
+		m, ok := rawMayAct.(map[string]any)
 		if !ok {
 			return nil, fmt.Errorf("subject token has malformed 'may_act' claim: expected a JSON object")
 		}
@@ -162,36 +169,37 @@ func (v *SubjectTokenValidator) Validate(_ context.Context, rawToken string) (*V
 }
 
 // verifySignature attempts to verify the JWT signature using the provided public keys.
-// If the JWT header contains a key ID (kid), it tries the matching key first for
-// efficiency, then falls back to iterating all keys. Returns on the first
-// successful verification. On failure, the last verification error is wrapped.
+// If the JWT header names a key ID (kid) that matches a key in the JWKS, only that
+// key is tried: a token naming a kid but signed by a different key is a spoofed-kid
+// attempt and must fail, not fall back to verifying against the rest of the keyset.
+// When there is no kid, or the kid doesn't match any key in the JWKS, every key is
+// tried in turn. Returns on the first successful verification. On failure, the last
+// verification error is wrapped.
 func verifySignature(
 	token *jwt.JSONWebToken,
 	publicJWKS *jose.JSONWebKeySet,
-	standardClaims *jwt.Claims,
-	extraClaims *map[string]interface{},
-) error {
-	// Try kid-matched key first, then fall back to full iteration.
+) (jwt.Claims, map[string]any, error) {
 	candidates := publicJWKS.Keys
 	if len(token.Headers) > 0 && token.Headers[0].KeyID != "" {
 		if matched := publicJWKS.Key(token.Headers[0].KeyID); len(matched) > 0 {
-			candidates = append(matched, candidates...)
+			candidates = matched
 		}
 	}
 
 	var lastErr error
 	for _, key := range candidates {
-		*extraClaims = make(map[string]interface{})
-		err := token.Claims(key, standardClaims, extraClaims)
+		var claims jwt.Claims
+		extra := map[string]any{}
+		err := token.Claims(key, &claims, &extra)
 		if err == nil {
-			return nil
+			return claims, extra, nil
 		}
 		lastErr = err
 	}
 	if lastErr != nil {
-		return fmt.Errorf("subject token signature verification failed: %w", lastErr)
+		return jwt.Claims{}, nil, fmt.Errorf("subject token signature verification failed: %w", lastErr)
 	}
-	return fmt.Errorf("subject token signature verification failed: no keys in JWKS")
+	return jwt.Claims{}, nil, fmt.Errorf("subject token signature verification failed: no keys in JWKS")
 }
 
 // validateAudience checks that tokenAudience intersects allowedAudiences.
@@ -213,14 +221,14 @@ func validateAudience(tokenAudience jwt.Audience, allowedAudiences []string) err
 // buildValidatedClaims constructs a ValidatedClaims from standard and extra claims.
 func buildValidatedClaims(
 	standard jwt.Claims,
-	extra map[string]interface{},
+	extra map[string]any,
 ) *ValidatedClaims {
 	vc := &ValidatedClaims{
 		Subject:  standard.Subject,
 		Issuer:   standard.Issuer,
 		Audience: []string(standard.Audience),
 		JWTID:    standard.ID,
-		Extra:    make(map[string]interface{}),
+		Extra:    make(map[string]any),
 	}
 
 	if standard.Expiry != nil {
@@ -244,7 +252,7 @@ func buildValidatedClaims(
 // ValidatedClaims field, or into Extra if it isn't a well-known claim.
 // Registered JWT claims (sub, iss, aud, exp, iat, nbf, jti) are dropped —
 // they're already captured in buildValidatedClaims's structured fields.
-func assignClaim(vc *ValidatedClaims, key string, val interface{}) {
+func assignClaim(vc *ValidatedClaims, key string, val any) {
 	switch key {
 	case "name":
 		if s, ok := val.(string); ok {
@@ -263,7 +271,7 @@ func assignClaim(vc *ValidatedClaims, key string, val interface{}) {
 			vc.Scopes = s
 		}
 	case "may_act":
-		if m, ok := val.(map[string]interface{}); ok {
+		if m, ok := val.(map[string]any); ok {
 			if s, ok := m["sub"].(string); ok {
 				vc.MayAct = &MayActClaim{Sub: s}
 			}

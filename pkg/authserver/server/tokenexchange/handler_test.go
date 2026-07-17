@@ -6,6 +6,7 @@ package tokenexchange
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/url"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
@@ -77,6 +79,17 @@ func defaultFormValues(t *testing.T, tj *testJWKS) url.Values {
 		"subject_token":      {token},
 		"subject_token_type": {oauthproto.TokenTypeAccessToken},
 	}
+}
+
+// nestedActChain builds a chain of depth nested "act" maps, each holding a
+// distinct "sub", for exercising actChainDepth boundary behavior. depth must
+// be at least 1.
+func nestedActChain(depth int) map[string]any {
+	chain := map[string]any{"sub": fmt.Sprintf("agent-%d", depth-1)}
+	for i := depth - 2; i >= 0; i-- {
+		chain = map[string]any{"sub": fmt.Sprintf("agent-%d", i), "act": chain}
+	}
+	return chain
 }
 
 func TestTokenExchangeHandler_CanHandleTokenEndpointRequest(t *testing.T) {
@@ -145,7 +158,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 				// Verify the act claim contains the authenticated client's ID.
 				actClaim, exists := sess.JWTClaims.Extra["act"]
 				require.True(t, exists, "act claim must be present")
-				actMap, ok := actClaim.(map[string]interface{})
+				actMap, ok := actClaim.(map[string]any)
 				require.True(t, ok, "act claim must be a map")
 				assert.Equal(t, testAgentClientID, actMap["sub"])
 
@@ -359,7 +372,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			form: func(t *testing.T) url.Values {
 				t.Helper()
 				extra := validExtraClaims()
-				extra["may_act"] = map[string]interface{}{"sub": testAgentClientID}
+				extra["may_act"] = map[string]any{"sub": testAgentClientID}
 				token := tj.signToken(t, validClaims(), extra)
 				return url.Values{
 					"grant_type":         {oauthproto.GrantTypeTokenExchange},
@@ -375,7 +388,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 				assert.Equal(t, "user-123", sess.JWTClaims.Subject)
 				actClaim, exists := sess.JWTClaims.Extra["act"]
 				require.True(t, exists, "act claim must be present")
-				actMap, ok := actClaim.(map[string]interface{})
+				actMap, ok := actClaim.(map[string]any)
 				require.True(t, ok, "act claim must be a map")
 				assert.Equal(t, testAgentClientID, actMap["sub"])
 			},
@@ -387,7 +400,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			form: func(t *testing.T) url.Values {
 				t.Helper()
 				extra := validExtraClaims()
-				extra["may_act"] = map[string]interface{}{"sub": "different-agent"}
+				extra["may_act"] = map[string]any{"sub": "different-agent"}
 				token := tj.signToken(t, validClaims(), extra)
 				return url.Values{
 					"grant_type":         {oauthproto.GrantTypeTokenExchange},
@@ -408,7 +421,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 				t.Helper()
 				extra := validExtraClaims()
 				extra["client_id"] = "original-client" // different from the authenticated client
-				extra["may_act"] = map[string]interface{}{"sub": testAgentClientID}
+				extra["may_act"] = map[string]any{"sub": testAgentClientID}
 				token := tj.signToken(t, validClaims(), extra)
 				return url.Values{
 					"grant_type":         {oauthproto.GrantTypeTokenExchange},
@@ -424,7 +437,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 				assert.Equal(t, "user-123", sess.JWTClaims.Subject)
 				actClaim, exists := sess.JWTClaims.Extra["act"]
 				require.True(t, exists, "act claim must be present")
-				actMap, ok := actClaim.(map[string]interface{})
+				actMap, ok := actClaim.(map[string]any)
 				require.True(t, ok, "act claim must be a map")
 				assert.Equal(t, testAgentClientID, actMap["sub"])
 			},
@@ -435,7 +448,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			client: defaultClient,
 			form: func(t *testing.T) url.Values {
 				t.Helper()
-				extra := map[string]interface{}{
+				extra := map[string]any{
 					"name":  "Test User",
 					"email": "test@example.com",
 				}
@@ -458,7 +471,7 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			form: func(t *testing.T) url.Values {
 				t.Helper()
 				extra := validExtraClaims()
-				extra["act"] = map[string]interface{}{"sub": "original-agent"}
+				extra["act"] = map[string]any{"sub": "original-agent"}
 				token := tj.signToken(t, validClaims(), extra)
 				return url.Values{
 					"grant_type":         {oauthproto.GrantTypeTokenExchange},
@@ -473,10 +486,10 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 				require.True(t, ok, "session should be *session.Session")
 				actClaim, exists := sess.JWTClaims.Extra["act"]
 				require.True(t, exists, "act claim must be present")
-				actMap, ok := actClaim.(map[string]interface{})
+				actMap, ok := actClaim.(map[string]any)
 				require.True(t, ok, "act claim must be a map")
 				assert.Equal(t, testAgentClientID, actMap["sub"])
-				priorAct, ok := actMap["act"].(map[string]interface{})
+				priorAct, ok := actMap["act"].(map[string]any)
 				require.True(t, ok, "prior act claim should be nested under the new act claim")
 				assert.Equal(t, "original-agent", priorAct["sub"])
 			},
@@ -559,6 +572,91 @@ func TestTokenExchangeHandler_HandleTokenEndpointRequest(t *testing.T) {
 			wantErr:      true,
 			hintContains: "absolute URI",
 		},
+		{
+			// Server-wide allowedAudiences (set by newTestHandler to testIssuer)
+			// permits testIssuer, but the client is not registered for it — the
+			// per-client audience strategy must still reject the resource param.
+			name: "resource not permitted for this client rejected",
+			ctx:  func(_ *testing.T) context.Context { return context.Background() },
+			client: func() *fosite.DefaultClient {
+				c := defaultClient()
+				c.Audience = []string{"https://other.example.com"}
+				return c
+			},
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				f := defaultFormValues(t, tj)
+				f.Set("resource", testIssuer)
+				return f
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: server.ErrInvalidTarget,
+			hintContains: "not permitted",
+		},
+		{
+			name: "confidential client without token-exchange grant type rejected",
+			ctx:  func(_ *testing.T) context.Context { return context.Background() },
+			client: func() *fosite.DefaultClient {
+				c := defaultClient()
+				c.GrantTypes = fosite.Arguments{"client_credentials"}
+				return c
+			},
+			form:         func(t *testing.T) url.Values { t.Helper(); return defaultFormValues(t, tj) },
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrUnauthorizedClient,
+			hintContains: "not allowed to use authorization grant",
+		},
+		{
+			name:   "delegation chain at max depth rejected",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["act"] = nestedActChain(maxDelegationDepth)
+				token := tj.signToken(t, validClaims(), extra)
+				return url.Values{
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
+					"subject_token":      {token},
+					"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				}
+			},
+			lifespan:     15 * time.Minute,
+			wantErr:      true,
+			wantFositeIs: fosite.ErrInvalidGrant,
+			hintContains: "too deep",
+		},
+		{
+			name:   "delegation chain under max depth is nested",
+			ctx:    func(_ *testing.T) context.Context { return context.Background() },
+			client: defaultClient,
+			form: func(t *testing.T) url.Values {
+				t.Helper()
+				extra := validExtraClaims()
+				extra["act"] = nestedActChain(maxDelegationDepth - 1)
+				token := tj.signToken(t, validClaims(), extra)
+				return url.Values{
+					"grant_type":         {oauthproto.GrantTypeTokenExchange},
+					"subject_token":      {token},
+					"subject_token_type": {oauthproto.TokenTypeAccessToken},
+				}
+			},
+			lifespan: 15 * time.Minute,
+			check: func(t *testing.T, req *fosite.AccessRequest) {
+				t.Helper()
+				sess, ok := req.GetSession().(*session.Session)
+				require.True(t, ok, "session should be *session.Session")
+				actClaim, exists := sess.JWTClaims.Extra["act"]
+				require.True(t, exists, "act claim must be present")
+				actMap, ok := actClaim.(map[string]any)
+				require.True(t, ok, "act claim must be a map")
+				assert.Equal(t, testAgentClientID, actMap["sub"])
+				assert.Equal(t, nestedActChain(maxDelegationDepth-1), actMap["act"],
+					"the prior act chain should be nested unchanged under the new act claim")
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -620,7 +718,9 @@ func TestTokenExchangeHandler_DefaultAudience(t *testing.T) {
 	tests := []struct {
 		name             string
 		allowedAudiences []string
+		client           func() *fosite.DefaultClient // defaults to defaultClient if nil
 		wantErr          bool
+		hintContains     string // defaults to "unambiguous default audience" if empty
 		wantAudience     string
 	}{
 		{
@@ -638,6 +738,20 @@ func TestTokenExchangeHandler_DefaultAudience(t *testing.T) {
 			allowedAudiences: []string{testIssuer, "https://other.example.com"},
 			wantErr:          true,
 		},
+		{
+			// The sole configured audience is unambiguous server-wide, but the
+			// client is not registered for it — the per-client check must still
+			// reject rather than silently granting an unregistered audience.
+			name:             "default audience not permitted for this client rejected",
+			allowedAudiences: []string{testIssuer},
+			client: func() *fosite.DefaultClient {
+				c := defaultClient()
+				c.Audience = []string{"https://other.example.com"}
+				return c
+			},
+			wantErr:      true,
+			hintContains: "not permitted to request a token for the default audience",
+		},
 	}
 
 	for _, tt := range tests {
@@ -651,18 +765,49 @@ func TestTokenExchangeHandler_DefaultAudience(t *testing.T) {
 			h := newTestHandler(t, tj, 15*time.Minute)
 			h.allowedAudiences = tt.allowedAudiences
 
-			req := newAccessRequest(t, defaultClient(), defaultFormValues(t, tj))
+			client := defaultClient
+			if tt.client != nil {
+				client = tt.client
+			}
+			req := newAccessRequest(t, client(), defaultFormValues(t, tj))
 			err := h.HandleTokenEndpointRequest(context.Background(), req)
 
 			if tt.wantErr {
 				require.Error(t, err)
 				var rfcErr *fosite.RFC6749Error
 				require.True(t, errors.As(err, &rfcErr), "expected fosite RFC6749Error")
-				assert.Contains(t, rfcErr.Reason(), "unambiguous default audience")
+				hintContains := tt.hintContains
+				if hintContains == "" {
+					hintContains = "unambiguous default audience"
+				}
+				assert.Contains(t, rfcErr.Reason(), hintContains)
 				return
 			}
 			require.NoError(t, err)
 			assert.Contains(t, req.GetGrantedAudience(), tt.wantAudience)
+		})
+	}
+}
+
+func TestActChainDepth(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		act  any
+		want int
+	}{
+		{name: "nil is depth 0", act: nil, want: 0},
+		{name: "non-map is depth 0", act: "not-a-map", want: 0},
+		{name: "single act entry is depth 1", act: nestedActChain(1), want: 1},
+		{name: "nested chain reports its full depth", act: nestedActChain(5), want: 5},
+		{name: "map without a nested act claim stops at depth 1", act: map[string]any{"sub": "agent"}, want: 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, actChainDepth(tt.act))
 		})
 	}
 }

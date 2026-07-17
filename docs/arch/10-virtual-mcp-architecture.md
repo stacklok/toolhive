@@ -325,16 +325,26 @@ policies are configured:
 - An authorizer error fails **closed** (treated as a denial); a non-authorization
   (infrastructure) error admits, so the call path surfaces it through existing mapping —
   the gate never converts a plumbing fault into a 403.
+- **One decode per `tools/call`**: dispatch (`coreToolHandler`) prefers the transport
+  parse (`pkg/mcp`) the gate authorized on — via `gateParsedArgs`, keyed on matching
+  method + tool — so the gated decision, the enforced call-path decision, and the
+  forwarded backend arguments all derive from a single decoded map. Where no matching
+  parse exists (batch, embedders bypassing the transport, method/tool mismatch), dispatch
+  falls back to the SDK decode and makes a single decision on that single map, so no path
+  can produce an allow-then-deny split between gate and call.
 - **Code mode carve-out**: `execute_tool_script` is not in the admission seam (the feature
   flag is the grant, and each inner tool call the script makes is re-authorized by its real
   name), so the codemode decorator's `CheckToolCall` admits it while delegating every other
-  name to the inner core.
+  name to the inner core. A backend that advertised a tool named `execute_tool_script`
+  would be silently shadowed by the virtual tool and skip its own Cedar admission, so the
+  decorator fails **loud** (`ErrReservedToolName`) on that collision — `ListTools`,
+  `LookupTool`, and the `CallTool` script-binding path all refuse to serve rather than mask it.
 
 The `Call*` methods keep their internal admission checks as defense-in-depth for other
 embedders and misconfigured gates.
 
 **Implementation**: `pkg/vmcp/core/core_checks.go`, `pkg/vmcp/server/call_gate.go`,
-`pkg/vmcp/codemode/decorator.go`, `pkg/mcp/errors.go`
+`pkg/vmcp/server/serve_handlers.go`, `pkg/vmcp/codemode/decorator.go`, `pkg/mcp/errors.go`
 
 ## Health Monitoring
 

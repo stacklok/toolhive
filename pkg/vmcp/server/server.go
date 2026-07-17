@@ -1017,6 +1017,26 @@ func setSessionResourcesDirect(session server.ClientSession, resources []server.
 	return nil
 }
 
+// setSessionPromptsDirect sets prompts directly on the session via the SessionWithPrompts
+// interface, analogous to setSessionResourcesDirect for prompts.
+func setSessionPromptsDirect(session server.ClientSession, prompts []server.ServerPrompt) error {
+	sessionWithPrompts, ok := session.(server.SessionWithPrompts)
+	if !ok {
+		return fmt.Errorf("session does not support per-session prompts")
+	}
+
+	existing := sessionWithPrompts.GetSessionPrompts()
+	promptMap := make(map[string]server.ServerPrompt, len(existing)+len(prompts))
+	for k, v := range existing {
+		promptMap[k] = v
+	}
+	for _, p := range prompts {
+		promptMap[p.Prompt.Name] = p
+	}
+	sessionWithPrompts.SetSessionPrompts(promptMap)
+	return nil
+}
+
 // setSessionToolsDirect sets tools directly on the session via the SessionWithTools
 // interface, bypassing MCPServer.AddSessionTools. This avoids sending notifications
 // through the session's notification channel, which would accumulate as stale
@@ -1117,7 +1137,8 @@ func (s *Server) handleSessionRegistration(
 //     indexed into the optimizer and only find_tool/call_tool are exposed,
 //     using session-scoped tool handlers.
 //
-//   - Prompts: not supported until the SDK adds AddSessionPrompts.
+//   - Prompts: injected per session via SessionWithPrompts, mirroring resources;
+//     see injectCoreSessionCapabilities.
 func (s *Server) handleSessionRegistrationImpl(ctx context.Context, session server.ClientSession) (retErr error) {
 	sessionID := session.SessionID()
 	slog.Debug("creating session-scoped backends", "session_id", sessionID)

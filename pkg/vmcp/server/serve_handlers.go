@@ -48,8 +48,10 @@ import (
 // ServerConfig.SessionManagerConfig); otherwise the factory would aggregate a second,
 // divergent set whose routing table this path discards.
 //
-// Prompts are intentionally not injected: per-session prompt injection is not yet
-// supported by the SDK (parity with the legacy path, which also omits them).
+// Prompts are injected here too, alongside tools and resources: the SDK's
+// SessionWithPrompts interface (toolhive-core mcpcompat) supports per-session prompt
+// injection, so core.ListPrompts sources the advertised set and corePromptHandler
+// routes prompts/get through core.GetPrompt (an exact mirror of the resource path).
 func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session server.ClientSession) error {
 	sessionID := session.SessionID()
 
@@ -69,10 +71,21 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 		slog.Error("failed to list core resources for session", "session_id", sessionID, "error", err)
 		return err
 	}
+	prompts, err := s.coreSessionPrompts(ctx, sessionID, identity)
+	if err != nil {
+		slog.Error("failed to list core prompts for session", "session_id", sessionID, "error", err)
+		return err
+	}
 
 	if len(resources) > 0 {
 		if err := setSessionResourcesDirect(session, resources); err != nil {
 			slog.Error("failed to add session resources", "session_id", sessionID, "error", err)
+			return err
+		}
+	}
+	if len(prompts) > 0 {
+		if err := setSessionPromptsDirect(session, prompts); err != nil {
+			slog.Error("failed to add session prompts", "session_id", sessionID, "error", err)
 			return err
 		}
 	}
@@ -86,7 +99,8 @@ func (s *Server) injectCoreSessionCapabilities(ctx context.Context, session serv
 	slog.Info("session capabilities injected from core",
 		"session_id", sessionID,
 		"tool_count", len(tools),
-		"resource_count", len(resources))
+		"resource_count", len(resources),
+		"prompt_count", len(prompts))
 	return nil
 }
 
@@ -163,6 +177,40 @@ func (s *Server) coreSessionResources(
 		})
 	}
 	return sdkResources, nil
+}
+
+// coreSessionPrompts queries the core for the prompts advertised to identity and
+// adapts them to SDK ServerPrompts whose handlers route through core.GetPrompt. The
+// backend display name is resolved here and captured in the handler closure for audit
+// labelling (see corePromptHandler). Mirrors coreSessionResources.
+func (s *Server) coreSessionPrompts(
+	ctx context.Context, sessionID string, identity *auth.Identity,
+) ([]server.ServerPrompt, error) {
+	domainPrompts, err := s.core.ListPrompts(ctx, identity)
+	if err != nil {
+		return nil, fmt.Errorf("core ListPrompts: %w", err)
+	}
+
+	sdkPrompts := make([]server.ServerPrompt, 0, len(domainPrompts))
+	for _, domainPrompt := range domainPrompts {
+		arguments := make([]mcp.PromptArgument, 0, len(domainPrompt.Arguments))
+		for _, arg := range domainPrompt.Arguments {
+			arguments = append(arguments, mcp.PromptArgument{
+				Name:        arg.Name,
+				Description: arg.Description,
+				Required:    arg.Required,
+			})
+		}
+		sdkPrompts = append(sdkPrompts, server.ServerPrompt{
+			Prompt: mcp.Prompt{
+				Name:        domainPrompt.Name,
+				Description: domainPrompt.Description,
+				Arguments:   arguments,
+			},
+			Handler: s.corePromptHandler(sessionID, domainPrompt.Name, s.backendDisplayName(ctx, domainPrompt.BackendID)),
+		})
+	}
+	return sdkPrompts, nil
 }
 
 // coreToolHandler builds the SDK handler for a Serve-path tool. It labels the audit
@@ -263,6 +311,44 @@ func (s *Server) coreResourceHandler(
 			return nil, err
 		}
 		return conversion.ToMCPResourceContents(result.Contents), nil
+	}
+}
+
+// corePromptHandler builds the SDK handler for a Serve-path prompt. It mirrors
+// coreResourceHandler: audit label, binding check, then core.GetPrompt with explicit
+// identity. The request's string-typed prompt arguments are widened to map[string]any
+// for the domain call, and the domain result is converted to *mcp.GetPromptResult.
+func (s *Server) corePromptHandler(
+	sessionID, promptName, backendName string,
+) server.PromptHandlerFunc {
+	return func(ctx context.Context, req mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+		if bi, ok := audit.BackendInfoFromContext(ctx); ok && bi != nil {
+			bi.BackendName = backendName
+		}
+
+		caller, _ := auth.IdentityFromContext(ctx)
+		if err := s.enforceSessionBinding(ctx, sessionID, caller); err != nil {
+			s.terminateOnBindingFailure(sessionID, promptName, err)
+			return nil, fmt.Errorf("unauthorized: %w", err)
+		}
+
+		args := make(map[string]any, len(req.Params.Arguments))
+		for k, v := range req.Params.Arguments {
+			args[k] = v
+		}
+
+		result, err := s.core.GetPrompt(ctx, caller, promptName, args)
+		if err != nil {
+			if errors.Is(err, vmcp.ErrAuthorizationFailed) {
+				return nil, errors.New(vmcp.DenyMessagePromptGet)
+			}
+			return nil, err
+		}
+		return &mcp.GetPromptResult{
+			Result:      mcp.Result{Meta: conversion.ToMCPMeta(result.Meta)},
+			Description: result.Description,
+			Messages:    conversion.ToMCPPromptMessages(result.Messages),
+		}, nil
 	}
 }
 

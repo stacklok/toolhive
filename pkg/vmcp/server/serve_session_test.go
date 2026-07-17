@@ -113,14 +113,19 @@ type fakeCore struct {
 
 	listToolsCalls     atomic.Int32
 	listResourcesCalls atomic.Int32
+	listPromptsCalls   atomic.Int32
 	callToolCalls      atomic.Int32
 	readResourceCalls  atomic.Int32
+	getPromptCalls     atomic.Int32
 	lastCallToolName   atomic.Value // string
 	lastCallToolArgs   atomic.Value // map[string]any
 	lastReadURI        atomic.Value // string
+	lastGetPromptName  atomic.Value // string
+	lastGetPromptArgs  atomic.Value // map[string]any
 
-	callErr error // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
-	readErr error // when set, ReadResource returns it
+	callErr   error // when set, CallTool returns it (e.g. vmcp.ErrAuthorizationFailed)
+	readErr   error // when set, ReadResource returns it
+	promptErr error // when set, GetPrompt returns it (e.g. vmcp.ErrAuthorizationFailed)
 }
 
 var _ core.VMCP = (*fakeCore)(nil)
@@ -159,13 +164,27 @@ func (f *fakeCore) ReadResource(_ context.Context, _ *auth.Identity, uri string)
 }
 
 func (f *fakeCore) ListPrompts(context.Context, *auth.Identity) ([]vmcp.Prompt, error) {
+	f.listPromptsCalls.Add(1)
 	return f.prompts, nil
 }
 
-func (*fakeCore) GetPrompt(
-	context.Context, *auth.Identity, string, map[string]any,
+func (f *fakeCore) GetPrompt(
+	_ context.Context, _ *auth.Identity, name string, args map[string]any,
 ) (*vmcp.PromptGetResult, error) {
-	return &vmcp.PromptGetResult{}, nil
+	f.getPromptCalls.Add(1)
+	f.lastGetPromptName.Store(name)
+	if args != nil {
+		f.lastGetPromptArgs.Store(args)
+	}
+	if f.promptErr != nil {
+		return nil, f.promptErr
+	}
+	return &vmcp.PromptGetResult{
+		Description: "prompt-desc",
+		Messages: []vmcp.PromptMessage{
+			{Role: "user", Content: vmcp.Content{Type: vmcp.ContentTypeText, Text: "prompt-body"}},
+		},
+	}, nil
 }
 
 func (f *fakeCore) LookupTool(_ context.Context, _ *auth.Identity, name string) (*vmcp.Tool, error) {
@@ -799,6 +818,63 @@ func TestServeCoreResourceHandler(t *testing.T) {
 	})
 }
 
+// TestServeCorePromptHandler covers the Serve prompt path: the core's prompt is
+// advertised by the registration builder, the handler routes a get through
+// core.GetPrompt (widening the string args to map[string]any and converting the
+// result), and an ErrAuthorizationFailed is genericized to the prompt denial message.
+func TestServeCorePromptHandler(t *testing.T) {
+	t.Parallel()
+
+	const promptName = "greeting"
+
+	t.Run("advertises and routes the prompt through core.GetPrompt", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{prompts: []vmcp.Prompt{{
+			Name:        promptName,
+			Description: "a greeting prompt",
+			Arguments:   []vmcp.PromptArgument{{Name: "name", Description: "who to greet", Required: true}},
+		}}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		prompts, err := srv.coreSessionPrompts(t.Context(), sessionID, nil)
+		require.NoError(t, err)
+		require.Len(t, prompts, 1)
+		assert.Equal(t, promptName, prompts[0].Prompt.Name)
+		require.Len(t, prompts[0].Prompt.Arguments, 1)
+		assert.Equal(t, "name", prompts[0].Prompt.Arguments[0].Name)
+		assert.True(t, prompts[0].Prompt.Arguments[0].Required)
+
+		req := mcp.GetPromptRequest{Params: mcp.GetPromptParams{
+			Name:      promptName,
+			Arguments: map[string]string{"name": "world"},
+		}}
+		result, err := srv.corePromptHandler(sessionID, promptName, "")(t.Context(), req)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, "prompt-desc", result.Description)
+		require.Len(t, result.Messages, 1)
+
+		gotName, _ := fc.lastGetPromptName.Load().(string)
+		assert.Equal(t, promptName, gotName, "the handler must route the get through core.GetPrompt with the name")
+		gotArgs, _ := fc.lastGetPromptArgs.Load().(map[string]any)
+		assert.Equal(t, "world", gotArgs["name"], "the handler must widen the string prompt args to map[string]any")
+	})
+
+	t.Run("authorization denial yields the prompt denial message", func(t *testing.T) {
+		t.Parallel()
+		fc := &fakeCore{
+			prompts:   []vmcp.Prompt{{Name: promptName}},
+			promptErr: fmt.Errorf("%w: cedar said no", vmcp.ErrAuthorizationFailed),
+		}
+		srv, sessionID, _ := registerServeSession(t, fc)
+
+		_, err := srv.corePromptHandler(sessionID, promptName, "")(t.Context(), mcp.GetPromptRequest{})
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), vmcp.DenyMessagePromptGet)
+		assert.NotContains(t, err.Error(), "cedar said no", "the underlying authorizer error must not leak")
+	})
+}
+
 // TestServeHandlersLabelAuditBackend verifies the Serve-path audit labelling (#5512):
 // the per-session tool/resource handlers write the pre-resolved backend name into the
 // audit BackendInfo carried in the request context — the mechanism that lets the Serve
@@ -842,6 +918,22 @@ func TestServeHandlersLabelAuditBackend(t *testing.T) {
 		assert.Equal(t, "docs-backend", bi.BackendName)
 		assert.Equal(t, listResourcesAtRegistration, fc.listResourcesCalls.Load(),
 			"labelling must not re-aggregate — core.ListResources is not called again during the resource read")
+	})
+
+	t.Run("prompt handler labels the backend and does not re-aggregate", func(t *testing.T) {
+		t.Parallel()
+		const promptName = "greeting"
+		fc := &fakeCore{prompts: []vmcp.Prompt{{Name: promptName}}}
+		srv, sessionID, _ := registerServeSession(t, fc)
+		listPromptsAtRegistration := fc.listPromptsCalls.Load()
+
+		bi := &audit.BackendInfo{}
+		ctx := audit.WithBackendInfo(context.Background(), bi)
+		_, err := srv.corePromptHandler(sessionID, promptName, "prompts-backend")(ctx, mcp.GetPromptRequest{})
+		require.NoError(t, err)
+		assert.Equal(t, "prompts-backend", bi.BackendName)
+		assert.Equal(t, listPromptsAtRegistration, fc.listPromptsCalls.Load(),
+			"labelling must not re-aggregate — core.ListPrompts is not called again during the prompt get")
 	})
 
 	t.Run("no BackendInfo in context is a safe no-op", func(t *testing.T) {
@@ -916,27 +1008,45 @@ func TestServeResolvesBackendNameEndToEnd(t *testing.T) {
 		"the handler must label the audit event with the registry-resolved name, not the raw BackendID")
 }
 
-// TestServeOmitsPrompts locks in the intentional prompt omission: even when the core
-// advertises a prompt, the Serve path injects only tools/resources (the SDK has no
-// per-session prompt support), so a prompts/list does not surface it.
-func TestServeOmitsPrompts(t *testing.T) {
+// TestServeServesPrompts locks in end-to-end per-session prompt serving: the core
+// advertises a prompt, the Serve path injects it via SessionWithPrompts, and a
+// prompts/list surfaces it while a prompts/get routes through core.GetPrompt and
+// returns the core result (the fix for the "unknown prompt" -32602 regression).
+func TestServeServesPrompts(t *testing.T) {
 	t.Parallel()
 
-	const promptName = "serve-only-prompt"
-	fc := &fakeCore{prompts: []vmcp.Prompt{{Name: promptName}}}
+	const promptName = "serve-prompt"
+	fc := &fakeCore{prompts: []vmcp.Prompt{{Name: promptName, Description: "a served prompt"}}}
 	_, sessionID, baseURL := registerServeSession(t, fc)
 
-	resp := postServeMCP(t, baseURL, map[string]any{
+	listResp := postServeMCP(t, baseURL, map[string]any{
 		"jsonrpc": "2.0",
 		"id":      2,
 		"method":  "prompts/list",
 		"params":  map[string]any{},
 	}, sessionID)
-	defer resp.Body.Close()
-	body, err := io.ReadAll(resp.Body)
+	defer listResp.Body.Close()
+	listBody, err := io.ReadAll(listResp.Body)
 	require.NoError(t, err)
-	assert.NotContains(t, string(body), promptName,
-		"the Serve path must not advertise prompts even when the core supplies them")
+	assert.Contains(t, string(listBody), promptName,
+		"the Serve path must advertise prompts injected from the core")
+
+	getResp := postServeMCP(t, baseURL, map[string]any{
+		"jsonrpc": "2.0",
+		"id":      3,
+		"method":  "prompts/get",
+		"params":  map[string]any{"name": promptName},
+	}, sessionID)
+	defer getResp.Body.Close()
+	getBody, err := io.ReadAll(getResp.Body)
+	require.NoError(t, err)
+	assert.Equal(t, http.StatusOK, getResp.StatusCode, "prompts/get should succeed; body: %s", string(getBody))
+	assert.Contains(t, string(getBody), "prompt-body",
+		"prompts/get must return the core result, not a -32602 unknown-prompt error")
+	assert.NotContains(t, string(getBody), "-32602",
+		"prompts/get must not report the prompt as unknown")
+	assert.Equal(t, int32(1), fc.getPromptCalls.Load(),
+		"prompts/get must route through core.GetPrompt exactly once")
 }
 
 // postServeMCP sends a JSON-RPC POST to the given Streamable HTTP base URL. It is the

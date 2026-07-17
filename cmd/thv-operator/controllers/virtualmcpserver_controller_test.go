@@ -2534,6 +2534,117 @@ func TestVirtualMCPServerEnsureDeployment_NoUpdateNeeded(t *testing.T) {
 	assert.Equal(t, ctrl.Result{}, result)
 }
 
+// TestVirtualMCPServerEnsureDeployment_RemovesStaleImagePullSecretsHash is a
+// regression test for #5817: a stale imagePullRefsHashAnnotation left over
+// from a prior reconcile (when imagePullSecrets was non-empty) must be
+// removed once the desired list is empty, and reconciling again from that
+// cleaned-up state must be a no-op rather than looping forever.
+func TestVirtualMCPServerEnsureDeployment_RemovesStaleImagePullSecretsHash(t *testing.T) {
+	t.Parallel()
+
+	scheme := testutil.NewScheme(t)
+
+	vmcp := v1beta1test.NewVirtualMCPServer(testVmcpName, "default",
+		v1beta1test.WithVMCPGroupRef(testGroupName),
+	)
+
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vmcpConfigMapName(vmcp.Name),
+			Namespace: "default",
+			Annotations: map[string]string{
+				checksum.ContentChecksumAnnotation: "test-checksum",
+			},
+		},
+		Data: map[string]string{
+			"config.yaml": "test-config",
+		},
+	}
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fake.NewClientBuilder().WithScheme(scheme).Build(),
+		Scheme: scheme,
+	}
+
+	expectedLabels, expectedAnnotations := reconciler.buildPodTemplateMetadata(
+		labelsForVirtualMCPServer(vmcp.Name), vmcp, "test-checksum",
+	)
+
+	// Deployment otherwise matches the desired state exactly, except it
+	// carries a stale imagePullRefsHashAnnotation from before imagePullSecrets
+	// was cleared on the VirtualMCPServer.
+	staleDeployment := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      testVmcpName,
+			Namespace: "default",
+			Labels:    labelsForVirtualMCPServer(vmcp.Name),
+			Annotations: map[string]string{
+				imagePullRefsHashAnnotation: "stale-hash",
+			},
+		},
+		Spec: appsv1.DeploymentSpec{
+			Selector: &metav1.LabelSelector{
+				MatchLabels: labelsForVirtualMCPServer(vmcp.Name),
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels:      expectedLabels,
+					Annotations: expectedAnnotations,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{
+						{
+							Name:  "vmcp",
+							Image: getVmcpImage(),
+							Ports: []corev1.ContainerPort{
+								{ContainerPort: 4483},
+							},
+							Env: mustBuildEnvVarsForVmcp(reconciler, vmcp),
+						},
+					},
+					ServiceAccountName: vmcpServiceAccountName(vmcp.Name),
+				},
+			},
+		},
+	}
+
+	k8sClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(vmcp, configMap, staleDeployment).
+		Build()
+	reconciler.Client = k8sClient
+
+	// First reconcile cleans up the stale annotation.
+	result, err := reconciler.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	deployment := &appsv1.Deployment{}
+	require.NoError(t, k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, deployment))
+	_, present := deployment.Annotations[imagePullRefsHashAnnotation]
+	assert.False(t, present, "stale imagePullRefsHashAnnotation must be removed once desired list is empty")
+
+	resourceVersionAfterCleanup := deployment.ResourceVersion
+
+	// Second reconcile from the now-clean steady state must be a no-op.
+	// Without both fixes, this would keep re-detecting drift and updating
+	// forever — the hot-reconcile loop from #5817.
+	result, err = reconciler.ensureDeployment(context.Background(), vmcp, nil, []workloads.TypedWorkload{})
+	require.NoError(t, err)
+	assert.Equal(t, ctrl.Result{}, result)
+
+	deployment = &appsv1.Deployment{}
+	require.NoError(t, k8sClient.Get(context.Background(), types.NamespacedName{
+		Name:      vmcp.Name,
+		Namespace: vmcp.Namespace,
+	}, deployment))
+	assert.Equal(t, resourceVersionAfterCleanup, deployment.ResourceVersion,
+		"reconciling from steady state must not write again")
+}
+
 func TestVirtualMCPServerEnsureService_CreateService(t *testing.T) {
 	t.Parallel()
 

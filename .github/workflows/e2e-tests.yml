@@ -154,3 +154,43 @@ jobs:
           path: |
             test/e2e/junit-report.xml
           retention-days: 7
+
+  conformance:
+    name: MCP Conformance
+    runs-on: ubuntu-8cores-32gb
+    needs: build-binary
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Download ToolHive binary
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
+        with:
+          name: toolhive-binary
+          path: ./bin/
+
+      - name: Set binary permissions
+        run: chmod +x ./bin/thv
+
+      - name: Set up container runtime (Docker)
+        run: |
+          docker --version
+          sudo systemctl start docker
+
+      - name: Run MCP conformance suite
+        env:
+          THV_BINARY: ${{ github.workspace }}/bin/thv
+        run: ./test/conformance/run-conformance.sh
+
+      - name: Upload conformance results
+        if: always()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: conformance-results
+          path: test/conformance/results
+          retention-days: 7

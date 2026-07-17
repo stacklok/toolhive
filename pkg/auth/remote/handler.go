@@ -85,7 +85,7 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 	}
 
 	// Discover OAuth endpoints once (used by both cached token restore and fresh OAuth)
-	issuer, scopes, authServerInfo, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
+	issuer, scopes, authServerInfo, allowPrivateIPs, err := h.discoverIssuerAndScopes(ctx, authInfo, remoteURL)
 	if err != nil {
 		return nil, err
 	}
@@ -103,8 +103,13 @@ func (h *Handler) Authenticate(ctx context.Context, remoteURL string) (oauth2.To
 		}
 	}
 
-	// Priority 3: Fresh OAuth authentication flow
-	return h.performOAuthFlow(ctx, issuer, scopes, authServerInfo)
+	// Priority 3: Fresh OAuth authentication flow. Reuse the same target-private
+	// decision the discovery fetches above already computed, so DCR (discovery +
+	// registration) is allowed to reach a private upstream only when the
+	// operator-configured remote is itself private, and guarded otherwise
+	// (CWE-918) — without a second, later TargetIsPrivate DNS lookup that could
+	// disagree with the first.
+	return h.performOAuthFlow(ctx, issuer, scopes, authServerInfo, allowPrivateIPs)
 }
 
 // validateBearerRequirement checks if Bearer auth is required without OAuth fallback
@@ -132,6 +137,7 @@ func (h *Handler) performOAuthFlow(
 	issuer string,
 	scopes []string,
 	authServerInfo *discovery.AuthServerInfo,
+	allowPrivateIPs bool,
 ) (oauth2.TokenSource, error) {
 	slog.Debug("Starting OAuth authentication flow", "issuer", issuer)
 
@@ -139,7 +145,7 @@ func (h *Handler) performOAuthFlow(
 	// Priority 1: Pre-configured credentials — set by buildOAuthFlowConfig from h.config.ClientID/ClientSecret.
 	// Priority 2: CIMD — AS advertises support and no credentials are set; use metadata URL as client_id.
 	// Priority 3: DCR — PerformOAuthFlow handles this when ClientID is still empty after the above.
-	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo)
+	flowConfig := h.buildOAuthFlowConfig(scopes, authServerInfo, allowPrivateIPs)
 	if shouldUseCIMD(authServerInfo, flowConfig) {
 		flowConfig.ClientID = oauthproto.ToolHiveClientMetadataDocumentURL
 		slog.Debug("Using CIMD client_id", "url", oauthproto.ToolHiveClientMetadataDocumentURL)
@@ -162,19 +168,24 @@ func (h *Handler) performOAuthFlow(
 }
 
 // buildOAuthFlowConfig creates the OAuth flow configuration
-func (h *Handler) buildOAuthFlowConfig(scopes []string, authServerInfo *discovery.AuthServerInfo) *discovery.OAuthFlowConfig {
+func (h *Handler) buildOAuthFlowConfig(
+	scopes []string,
+	authServerInfo *discovery.AuthServerInfo,
+	allowPrivateIPs bool,
+) *discovery.OAuthFlowConfig {
 	flowConfig := &discovery.OAuthFlowConfig{
-		ClientID:       h.config.ClientID,
-		ClientSecret:   h.config.ClientSecret,
-		AuthorizeURL:   h.config.AuthorizeURL,
-		TokenURL:       h.config.TokenURL,
-		Scopes:         scopes,
-		CallbackPort:   h.config.CallbackPort,
-		Timeout:        h.config.Timeout,
-		SkipBrowser:    h.config.SkipBrowser,
-		Resource:       h.config.Resource,
-		OAuthParams:    h.config.OAuthParams,
-		ScopeParamName: h.config.ScopeParamName,
+		ClientID:        h.config.ClientID,
+		ClientSecret:    h.config.ClientSecret,
+		AuthorizeURL:    h.config.AuthorizeURL,
+		TokenURL:        h.config.TokenURL,
+		Scopes:          scopes,
+		CallbackPort:    h.config.CallbackPort,
+		Timeout:         h.config.Timeout,
+		SkipBrowser:     h.config.SkipBrowser,
+		Resource:        h.config.Resource,
+		OAuthParams:     h.config.OAuthParams,
+		ScopeParamName:  h.config.ScopeParamName,
+		AllowPrivateIPs: allowPrivateIPs,
 	}
 
 	// If we have discovered endpoints from the authorization server metadata,
@@ -352,13 +363,18 @@ func (h *Handler) discoverIssuerAndScopes(
 	ctx context.Context,
 	authInfo *discovery.AuthInfo,
 	remoteURL string,
-) (string, []string, *discovery.AuthServerInfo, error) {
+) (string, []string, *discovery.AuthServerInfo, bool, error) {
 	// Decide once whether discovery fetches derived from untrusted server input
 	// (realm, resource_metadata, authorization_servers) may reach private
 	// addresses. If the operator-configured target is itself internal they may;
 	// otherwise block them to contain SSRF (CWE-918). The configured-issuer path
 	// below is exempt because that URL comes from the operator, not the server.
-	blockPrivateIPs := !networking.TargetIsPrivate(ctx, remoteURL)
+	// Callers also thread this decision into the DCR flow (see performOAuthFlow),
+	// so it's computed exactly once per Authenticate call rather than being
+	// re-derived from a second, later TargetIsPrivate DNS lookup that could
+	// disagree with this one.
+	allowPrivateIPs := networking.TargetIsPrivate(ctx, remoteURL)
+	blockPrivateIPs := !allowPrivateIPs
 
 	// Priority 1: Use configured issuer if available. Fetch discovery to populate
 	// AuthServerInfo (including ClientIDMetadataDocumentSupported) even when the
@@ -366,7 +382,7 @@ func (h *Handler) discoverIssuerAndScopes(
 	if h.config.Issuer != "" {
 		slog.Debug("Using configured issuer", "issuer", h.config.Issuer)
 		authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, h.config.Issuer, false)
-		return h.config.Issuer, h.config.Scopes, authServerInfo, nil
+		return h.config.Issuer, h.config.Scopes, authServerInfo, allowPrivateIPs, nil
 	}
 
 	// Priority 2: Try to derive from realm (RFC 8414). Fetch discovery for the
@@ -376,7 +392,7 @@ func (h *Handler) discoverIssuerAndScopes(
 		if derivedIssuer != "" {
 			slog.Debug("Derived issuer from realm", "issuer", derivedIssuer)
 			authServerInfo, _ := discovery.ValidateAndDiscoverAuthServer(ctx, derivedIssuer, blockPrivateIPs)
-			return derivedIssuer, h.config.Scopes, authServerInfo, nil
+			return derivedIssuer, h.config.Scopes, authServerInfo, allowPrivateIPs, nil
 		}
 	}
 
@@ -384,7 +400,7 @@ func (h *Handler) discoverIssuerAndScopes(
 	if authInfo.ResourceMetadata != "" {
 		issuer, scopes, authServerInfo, err := h.tryDiscoverFromResourceMetadata(ctx, authInfo.ResourceMetadata, blockPrivateIPs)
 		if err == nil {
-			return issuer, scopes, authServerInfo, nil
+			return issuer, scopes, authServerInfo, allowPrivateIPs, nil
 		}
 		slog.Debug("Resource metadata discovery failed, falling through to well-known discovery", "error", err)
 	}
@@ -393,7 +409,7 @@ func (h *Handler) discoverIssuerAndScopes(
 	// This handles cases where the issuer differs from the server URL (e.g., Atlassian)
 	issuer, scopes, authServerInfo, err := h.tryDiscoverFromWellKnown(ctx, remoteURL, blockPrivateIPs)
 	if err == nil {
-		return issuer, scopes, authServerInfo, nil
+		return issuer, scopes, authServerInfo, allowPrivateIPs, nil
 	}
 	slog.Debug("Could not discover from well-known endpoint", "error", err)
 
@@ -401,11 +417,11 @@ func (h *Handler) discoverIssuerAndScopes(
 	derivedIssuer := discovery.DeriveIssuerFromURL(remoteURL)
 	if derivedIssuer != "" {
 		slog.Debug("Using derived issuer from URL", "issuer", derivedIssuer)
-		return derivedIssuer, h.config.Scopes, nil, nil
+		return derivedIssuer, h.config.Scopes, nil, allowPrivateIPs, nil
 	}
 
 	// No issuer could be determined
-	return "", nil, nil, fmt.Errorf("could not determine OAuth issuer. Please provide issuer in configuration, " +
+	return "", nil, nil, false, fmt.Errorf("could not determine OAuth issuer. Please provide issuer in configuration, " +
 		"or ensure the server provides a valid realm parameter or resource_metadata URL in the WWW-Authenticate header")
 }
 

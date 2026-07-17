@@ -1083,6 +1083,77 @@ var _ = Describe("thv llm — all-client matrix", Label("cli", "llm", "clients",
 				return config
 			}
 
+			It("detects the macOS desktop app without CLI evidence", func() {
+				if runtime.GOOS != osDarwin {
+					Skip("Codex desktop detection is macOS-only")
+				}
+
+				issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
+				configPath := filepath.Join(tempDir, ".codex", "config.toml")
+				plistPath := filepath.Join(tempDir, "Applications", "ChatGPT.app", "Contents", "Info.plist")
+				plist := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>CFBundleIdentifier</key><string>com.openai.codex</string></dict></plist>`
+
+				By("creating only the ChatGPT desktop app bundle evidence")
+				Expect(os.MkdirAll(filepath.Dir(plistPath), 0750)).To(Succeed())
+				Expect(os.WriteFile(plistPath, []byte(plist), 0600)).To(Succeed())
+				_, err := os.Stat(filepath.Join(tempDir, ".codex"))
+				Expect(os.IsNotExist(err)).To(BeTrue(), ".codex must not exist before setup")
+				_, err = os.Stat(filepath.Join(binDir, "codex"))
+				Expect(os.IsNotExist(err)).To(BeTrue(), "no fake codex binary should exist")
+
+				// plutil is invoked by absolute path (/usr/bin/plutil) so it does
+				// not need to be on $PATH. The PATH is still restricted to exclude
+				// user-level package-manager paths that may contain a real Codex CLI.
+				appOnlyTHVCmd := func(args ...string) *e2e.THVCommand {
+					return thvCmd(args...).WithEnv("PATH=" + binDir + ":/usr/bin:/bin")
+				}
+				stdout, stderr, err := runSetupWithOIDCCompletion(
+					appOnlyTHVCmd, oidcServer,
+					"--client", "codex",
+					"--gateway-url", gatewayURL,
+					"--issuer", issuerURL,
+					"--client-id", clientID,
+				)
+				Expect(err).ToNot(HaveOccurred(),
+					"setup should succeed; stdout=%q stderr=%q", stdout, stderr)
+
+				By("verifying app-only detection wrote the canonical Codex configuration")
+				config := readCodexConfig(configPath)
+				Expect(config["model_provider"]).To(Equal("toolhive-gateway"))
+				providers, ok := config["model_providers"].(map[string]any)
+				Expect(ok).To(BeTrue())
+				provider, ok := providers["toolhive-gateway"].(map[string]any)
+				Expect(ok).To(BeTrue())
+				Expect(provider["base_url"]).To(Equal(gatewayURL + "/v1"))
+				auth, ok := provider["auth"].(map[string]any)
+				Expect(ok).To(BeTrue())
+				Expect(auth["command"]).ToNot(BeEmpty())
+				Expect(auth["args"]).To(Equal([]any{"llm", "token", "--skip-browser"}))
+
+				showOut, _ := appOnlyTHVCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				var cfg llm.Config
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				Expect(cfg.ConfiguredTools).To(HaveLen(1))
+				Expect(string(cfg.ConfiguredTools[0].Tool)).To(Equal("codex"))
+				Expect(cfg.ConfiguredTools[0].Mode).To(Equal("codex-auth"))
+
+				By("tearing down and verifying the provider is removed")
+				appOnlyTHVCmd("llm", "teardown", "codex").ExpectSuccess()
+				config = readCodexConfig(configPath)
+				_, hasModelProvider := config["model_provider"]
+				Expect(hasModelProvider).To(BeFalse())
+				if providers, ok := config["model_providers"].(map[string]any); ok {
+					_, stillPresent := providers["toolhive-gateway"]
+					Expect(stillPresent).To(BeFalse())
+				}
+				showOut, _ = appOnlyTHVCmd("llm", "config", "show", "--format", "json").ExpectSuccess()
+				cfg = llm.Config{}
+				Expect(json.Unmarshal([]byte(showOut), &cfg)).To(Succeed())
+				Expect(cfg.ConfiguredTools).To(BeEmpty())
+			})
+
 			It("writes the model_provider and auth command, then reverts them", func() {
 				issuerURL := fmt.Sprintf("http://localhost:%d", oidcPort)
 				codexDir := filepath.Join(tempDir, ".codex")

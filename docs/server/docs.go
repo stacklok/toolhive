@@ -423,7 +423,7 @@ const docTemplate = `{
                         "type": "object"
                     },
                     "allow_private_ips": {
-                        "description": "AllowPrivateIPs permits the upstream provider's HTTP client to connect to\nprivate IP ranges (RFC-1918, link-local). Use only when the upstream is\nhosted inside the same cluster and has no public endpoint. HTTP-scheme\nrestrictions are unchanged — HTTPS is still required for non-localhost hosts.\nDefaults to false.",
+                        "description": "AllowPrivateIPs permits the upstream provider's HTTP client to connect to\nprivate IP ranges (RFC-1918, link-local). When DCRConfig is set, this\nalso gates the DCR discovery and registration calls made on this\nupstream's behalf (see pkg/authserver/runner/dcr_adapter.go), so a\nsingle flag covers the whole upstream rather than needing a separate\nDCR-specific setting. Use only when the upstream is hosted inside the\nsame cluster and has no public endpoint. HTTP-scheme restrictions are\nunchanged — HTTPS is still required for non-localhost hosts. Defaults\nto false.",
                         "type": "boolean"
                     },
                     "authorization_endpoint": {
@@ -1041,6 +1041,13 @@ const docTemplate = `{
                     "builder_image": {
                         "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
                         "type": "string"
+                    },
+                    "runtime_env": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "RuntimeEnv contains environment variables to inject into the Dockerfile's\nfinal runtime stage. Unlike BuildEnv (pkg/container/templates.TemplateData.BuildEnv),\nwhich only affects the builder stage, these variables are baked into the\nshipped image and are present in the running container's process\nenvironment at startup. Use this for values a packaged MCP server reads at\nprocess start (e.g. feature flags, cache backend selection), not for\nbuild-time package manager configuration.\nKeys must be uppercase with underscores, values are validated for safety.",
+                        "type": "object"
                     }
                 },
                 "type": "object"
@@ -2353,13 +2360,13 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "registryBaseUrl": {
-                        "description": "RegistryBaseURL is the base URL of the package registry (used by npm, pypi, nuget; not used by oci, mcpb)",
+                        "description": "RegistryBaseURL is the base URL of the package registry (used by npm, pypi, nuget, cargo; not used by oci, mcpb)",
                         "example": "https://registry.npmjs.org",
                         "format": "uri",
                         "type": "string"
                     },
                     "registryType": {
-                        "description": "RegistryType indicates how to download packages (e.g., \"npm\", \"pypi\", \"oci\", \"nuget\", \"mcpb\")",
+                        "description": "RegistryType indicates how to download packages (e.g., \"npm\", \"pypi\", \"cargo\", \"oci\", \"nuget\", \"mcpb\")",
                         "example": "npm",
                         "minLength": 1,
                         "type": "string"
@@ -2736,6 +2743,10 @@ const docTemplate = `{
             "pkg_api_v1.createRequest": {
                 "description": "Request to create a new workload",
                 "properties": {
+                    "allow_docker_gateway": {
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "type": "boolean"
+                    },
                     "authz_config": {
                         "description": "Authorization configuration",
                         "type": "string"
@@ -3422,6 +3433,10 @@ const docTemplate = `{
             "pkg_api_v1.updateRequest": {
                 "description": "Request to update an existing workload (name cannot be changed)",
                 "properties": {
+                    "allow_docker_gateway": {
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "type": "boolean"
+                    },
                     "authz_config": {
                         "description": "Authorization configuration",
                         "type": "string"

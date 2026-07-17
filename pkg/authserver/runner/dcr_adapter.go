@@ -79,6 +79,10 @@ func newDCRRequest(rc *authserver.OAuth2UpstreamRunConfig, localIssuer string) (
 		AuthorizationEndpoint: rc.AuthorizationEndpoint,
 		TokenEndpoint:         rc.TokenEndpoint,
 		InitialAccessToken:    initialAccessToken,
+		// Reuse the upstream's private-IP policy so the DCR discovery and
+		// registration calls share the same SSRF posture as its token and
+		// userinfo calls (see upstream.OAuth2Config.AllowPrivateIPs).
+		AllowPrivateIPs: rc.AllowPrivateIPs,
 	}, nil
 }
 

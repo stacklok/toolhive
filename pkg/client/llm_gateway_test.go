@@ -5,6 +5,7 @@ package client
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,6 +170,66 @@ func TestRealClientConfigs_ConfigureAndRevert(t *testing.T) {
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────────
+
+// TestConfigureLLMGateway_ClaudeCodeBedrock verifies that BedrockCompat writes
+// CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS=1 and the three per-tier model IDs into
+// Claude Code's settings.json, and that without BedrockCompat those keys are
+// absent (the ClearWhenEmpty behaviour), all against the real config table.
+func TestConfigureLLMGateway_ClaudeCodeBedrock(t *testing.T) {
+	t.Parallel()
+
+	bedrockPointers := map[string]string{
+		"/env/CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1",
+		"/env/ANTHROPIC_DEFAULT_HAIKU_MODEL":          "us.anthropic.claude-haiku-x",
+		"/env/ANTHROPIC_DEFAULT_OPUS_MODEL":           "us.anthropic.claude-opus-x[1m]",
+		"/env/ANTHROPIC_DEFAULT_SONNET_MODEL":         "us.anthropic.claude-sonnet-x[1m]",
+	}
+
+	t.Run("BedrockCompat writes keys", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+			GatewayURL:         "https://gw.example.com",
+			TokenHelperCommand: `"thv" llm token`,
+			BedrockCompat:      true,
+			BedrockHaikuModel:  "us.anthropic.claude-haiku-x",
+			BedrockOpusModel:   "us.anthropic.claude-opus-x[1m]",
+			BedrockSonnetModel: "us.anthropic.claude-sonnet-x[1m]",
+		})
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr, want := range bedrockPointers {
+			got, ok := jsonPointerGet(data, ptr)
+			assert.True(t, ok, "pointer %q missing", ptr)
+			assert.Equal(t, want, got, "wrong value at %q", ptr)
+		}
+	})
+
+	t.Run("without BedrockCompat keys are absent", func(t *testing.T) {
+		t.Parallel()
+		home := t.TempDir()
+		cm := NewTestClientManager(home, nil, supportedClientIntegrations, nil)
+		require.NoError(t, os.MkdirAll(filepath.Join(home, ".claude"), 0o700))
+
+		path, err := cm.ConfigureLLMGateway(ClaudeCode, llmgateway.ApplyConfig{
+			GatewayURL:         "https://gw.example.com",
+			TokenHelperCommand: `"thv" llm token`,
+		})
+		require.NoError(t, err)
+
+		data, err := os.ReadFile(path)
+		require.NoError(t, err)
+		for ptr := range bedrockPointers {
+			_, ok := jsonPointerGet(data, ptr)
+			assert.False(t, ok, "pointer %q should be absent without BedrockCompat", ptr)
+		}
+	})
+}
 
 // newLLMManager builds a ClientManager with a single direct-mode LLM entry
 // whose settings dir is homeDir/<dir>.
@@ -447,6 +508,62 @@ func TestConfigureLLMGateway_ProxyMode(t *testing.T) {
 
 // ── DetectedLLMGatewayClients ─────────────────────────────────────────────────
 
+func TestDetectedLLMGatewayClients_Codex(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		configDir   bool
+		binary      bool
+		desktop     bool
+		detectorErr error
+		nilDetector bool
+		want        bool
+	}{
+		{name: "CLI only", configDir: true, binary: true, want: true},
+		{name: "app only without config directory or PATH", desktop: true, want: true},
+		{name: "CLI and app append once", configDir: true, binary: true, desktop: true, want: true},
+		{name: "stale settings only", configDir: true},
+		{name: "no CLI or desktop evidence"},
+		{name: "nil desktop detector is not detected", nilDetector: true},
+		{name: "detector failure is not detected", detectorErr: errors.New("query failed")},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			home := t.TempDir()
+			cfgs := []clientAppConfig{{
+				ClientType:         Codex,
+				LLMGatewayMode:     llmgateway.ModeCodexAuth,
+				LLMBinaryName:      "codex",
+				LLMSettingsFile:    "config.toml",
+				LLMSettingsRelPath: []string{".codex"},
+			}}
+			if !tt.nilDetector {
+				cfgs[0].LLMInstalledDetector = func() (bool, error) { return tt.desktop, tt.detectorErr }
+			}
+			if tt.configDir {
+				require.NoError(t, os.MkdirAll(filepath.Join(home, ".codex"), 0o700))
+			}
+			cm := NewTestClientManager(home, nil, cfgs, nil)
+			cm.lookPath = func(_ string) (string, error) {
+				if tt.binary {
+					return "/bin/codex", nil
+				}
+				return "", os.ErrNotExist
+			}
+
+			detected := cm.DetectedLLMGatewayClients()
+			if tt.want {
+				require.Equal(t, []ClientApp{Codex}, detected)
+			} else {
+				assert.Empty(t, detected)
+			}
+		})
+	}
+}
+
 // TestDetectedLLMGatewayClients_DirOnly verifies that a client without a
 // BinaryName set is detected based solely on the settings directory existing.
 func TestDetectedLLMGatewayClients_DirOnly(t *testing.T) {
@@ -561,6 +678,7 @@ func TestRealClientConfigs_LLMBinaryNames(t *testing.T) {
 		Cursor:        "cursor",
 		ClaudeCode:    "claude",
 		GeminiCli:     "gemini",
+		Codex:         "codex",
 		// Tools without a binary check (dir-only detection) are omitted.
 	}
 

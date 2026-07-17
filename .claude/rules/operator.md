@@ -318,6 +318,30 @@ write-path mechanics.)
 
 See `cmd/thv-operator/DESIGN.md` for detailed decision guidelines.
 
+## Phase and Conditions
+
+**Conditions** are the primary status mechanism. Each condition represents one
+aspect of readiness, validity, or external dependency state, and controllers
+should set conditions with specific reason constants and actionable messages.
+Use specific condition types such as `ConfigurationValid` or `RemoteAvailable`
+when the condition is scoped to one CRD; reserve truly shared types for
+cross-CRD conventions.
+
+**Phase** is a human-readable lifecycle summary for `kubectl get` output. It
+must be derived from the current conditions and observed state, never set as an
+independent source of truth.
+
+Rules:
+
+- Never set `Phase` directly from a separate code path; derive it from the
+  current condition states.
+- `Ready` means all readiness conditions are `True`.
+- `Failed` means at least one condition is `False` with a terminal reason.
+- `Pending` means required conditions are not all satisfied yet, and no terminal
+  failure has been observed.
+- Condition `Type` names should be specific and have meaningful `Reason`
+  constants.
+
 ## CRD Type Conventions
 
 - Use `metav1.Duration` for duration fields in CRD types, not `string` or

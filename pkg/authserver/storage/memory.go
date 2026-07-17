@@ -1281,6 +1281,7 @@ func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCr
 	if !ok {
 		slog.Debug("dcr credentials not found",
 			"issuer", key.Issuer,
+			"upstream_id", key.UpstreamID,
 			"redirect_uri", key.RedirectURI,
 		)
 		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("DCR credentials not found"))

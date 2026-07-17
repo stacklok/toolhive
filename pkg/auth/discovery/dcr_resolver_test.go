@@ -17,6 +17,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/networking"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -172,6 +173,8 @@ func TestHandleDynamicRegistration_InheritsS256Gating(t *testing.T) {
 			config := &OAuthFlowConfig{
 				Scopes:       []string{"openid", "profile"},
 				CallbackPort: 8765,
+				// Loopback test server: guard would otherwise refuse to dial it.
+				AllowPrivateIPs: true,
 			}
 
 			err := handleDynamicRegistration(context.Background(), server.URL, config)
@@ -206,8 +209,9 @@ func TestHandleDynamicRegistration_InheritsRedirectRefusal(t *testing.T) {
 	})
 
 	config := &OAuthFlowConfig{
-		Scopes:       []string{"openid", "profile"},
-		CallbackPort: 8765,
+		Scopes:          []string{"openid", "profile"},
+		CallbackPort:    8765,
+		AllowPrivateIPs: true, // loopback test server; guard would otherwise refuse to dial it
 	}
 
 	err := handleDynamicRegistration(context.Background(), server.URL, config)
@@ -216,6 +220,54 @@ func TestHandleDynamicRegistration_InheritsRedirectRefusal(t *testing.T) {
 		"resolver error must mention the refused redirect so operators can correlate")
 	assert.EqualValues(t, 0, atomic.LoadInt32(&foreignHits),
 		"foreign origin must receive zero requests; the redirect refusal prevents the leak")
+}
+
+// TestHandleDynamicRegistration_MetadataRefetchBlocksPrivateIP pins the
+// CWE-918 guard on resolveDCRCredentials's own metadata re-fetch (used to
+// recover code_challenge_methods_supported on the pre-discovered path): an
+// issuer that resolves to a private IP must be refused at connect time, the
+// same as the resolver's own outbound calls in pkg/auth/dcr.
+func TestHandleDynamicRegistration_MetadataRefetchBlocksPrivateIP(t *testing.T) {
+	t.Parallel()
+
+	config := &OAuthFlowConfig{
+		Scopes:               []string{"openid", "profile"},
+		CallbackPort:         8765,
+		AuthorizeURL:         "https://10.255.255.1/authorize",
+		TokenURL:             "https://10.255.255.1/token",
+		RegistrationEndpoint: "https://10.255.255.1/register",
+	}
+
+	err := handleDynamicRegistration(context.Background(), "https://10.255.255.1", config)
+	require.Error(t, err, "an issuer resolving to a private IP must be refused at connect time")
+	assert.ErrorContains(t, err, networking.ErrPrivateIpAddress,
+		"the metadata re-fetch must be guarded the same as the resolver's own outbound calls")
+}
+
+// TestHandleDynamicRegistration_MetadataRefetchAllowPrivateIPsHonored proves
+// OAuthFlowConfig.AllowPrivateIPs lifts the guard on the same metadata
+// re-fetch pinned as blocked-by-default above. The target is a non-routable
+// RFC 5737 documentation address (TEST-NET-1), so the dial fails with a
+// network error rather than the guard error — and can never reach a real host.
+func TestHandleDynamicRegistration_MetadataRefetchAllowPrivateIPsHonored(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	config := &OAuthFlowConfig{
+		Scopes:               []string{"openid", "profile"},
+		CallbackPort:         8765,
+		AuthorizeURL:         "https://192.0.2.1/authorize",
+		TokenURL:             "https://192.0.2.1/token",
+		RegistrationEndpoint: "https://192.0.2.1/register",
+		AllowPrivateIPs:      true,
+	}
+
+	err := handleDynamicRegistration(ctx, "https://192.0.2.1", config)
+	require.Error(t, err, "the dead documentation address cannot complete registration")
+	assert.NotContains(t, err.Error(), networking.ErrPrivateIpAddress,
+		"AllowPrivateIPs=true must lift the guard on the metadata re-fetch")
 }
 
 // TestHandleDynamicRegistration_InheritsSingleflightDedup verifies that
@@ -256,8 +308,9 @@ func TestHandleDynamicRegistration_InheritsSingleflightDedup(t *testing.T) {
 		// Each goroutine gets its own OAuthFlowConfig so we can assert
 		// the resolution was applied to every caller's config.
 		cfg := &OAuthFlowConfig{
-			Scopes:       []string{"openid", "profile"},
-			CallbackPort: 8765,
+			Scopes:          []string{"openid", "profile"},
+			CallbackPort:    8765,
+			AllowPrivateIPs: true, // loopback test server; guard would otherwise refuse to dial it
 		}
 		results[i] = cfg
 		go func(idx int) {
@@ -336,8 +389,9 @@ func TestHandleDynamicRegistration_NonRootIssuerRFC8414PathInsertion(t *testing.
 	t.Cleanup(server.Close)
 
 	config := &OAuthFlowConfig{
-		Scopes:       []string{"openid", "profile"},
-		CallbackPort: 8765,
+		Scopes:          []string{"openid", "profile"},
+		CallbackPort:    8765,
+		AllowPrivateIPs: true, // loopback test server; guard would otherwise refuse to dial it
 	}
 
 	err := handleDynamicRegistration(context.Background(), server.URL+"/oauth", config)
@@ -487,8 +541,9 @@ func TestHandleDynamicRegistration_PopulatesEndpoints(t *testing.T) {
 	})
 
 	config := &OAuthFlowConfig{
-		Scopes:       []string{"openid", "profile"},
-		CallbackPort: 8765,
+		Scopes:          []string{"openid", "profile"},
+		CallbackPort:    8765,
+		AllowPrivateIPs: true, // loopback test server; guard would otherwise refuse to dial it
 	}
 
 	err := handleDynamicRegistration(context.Background(), server.URL, config)

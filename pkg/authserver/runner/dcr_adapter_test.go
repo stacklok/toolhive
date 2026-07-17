@@ -174,11 +174,16 @@ func TestApplyResolutionToOAuth2Config(t *testing.T) {
 
 	cfg := upstream.OAuth2Config{}
 	res := &dcr.Resolution{
-		ClientSecret: "dcr-issued-secret",
+		ClientSecret:            "dcr-issued-secret",
+		TokenEndpointAuthMethod: "client_secret_basic",
 	}
 	out := applyResolutionToOAuth2Config(cfg, res)
 	assert.Equal(t, "dcr-issued-secret", out.ClientSecret)
+	// The negotiated auth method must be carried through so newBaseOAuth2Provider
+	// presents credentials the way the upstream registered the client (issue #5865).
+	assert.Equal(t, "client_secret_basic", out.TokenEndpointAuthMethod)
 	assert.Equal(t, "", cfg.ClientSecret, "caller's cfg must not be mutated")
+	assert.Equal(t, "", cfg.TokenEndpointAuthMethod, "caller's cfg must not be mutated")
 
 	// nil resolution is a no-op rather than a crash.
 	unchanged := applyResolutionToOAuth2Config(cfg, nil)

@@ -41,6 +41,14 @@ const (
 	// TokenEndpointAuthMethodNone indicates no client authentication (public clients).
 	// Typically used with PKCE for native/mobile applications.
 	TokenEndpointAuthMethodNone = "none"
+
+	// TokenEndpointAuthMethodClientSecretBasic sends the client credentials in the
+	// HTTP Basic Authorization header at the token endpoint (RFC 6749 Section 2.3.1).
+	TokenEndpointAuthMethodClientSecretBasic = "client_secret_basic"
+
+	// TokenEndpointAuthMethodClientSecretPost sends the client credentials in the
+	// request body at the token endpoint (RFC 6749 Section 2.3.1).
+	TokenEndpointAuthMethodClientSecretPost = "client_secret_post"
 )
 
 // PKCE (Proof Key for Code Exchange) methods as defined by RFC 7636.

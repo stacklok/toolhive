@@ -148,16 +148,14 @@ type OAuth2Config struct {
 	TokenEndpoint string `json:"token_endpoint" yaml:"token_endpoint"`
 
 	// TokenEndpointAuthMethod is the RFC 7591 client authentication method used
-	// at the token endpoint. It controls how client credentials are presented
-	// during code exchange and refresh: "client_secret_basic" sends them in the
-	// HTTP Basic Authorization header, "client_secret_post" sends them in the
-	// request body. When empty, the historical default (POST body) is used.
+	// at the token endpoint; see authStyleFromMethod for the mapping to
+	// oauth2.AuthStyle and the rationale. When empty, the historical default
+	// (POST body) is used.
 	//
-	// For DCR-registered clients this is copied from the negotiated
-	// dcr.Resolution.TokenEndpointAuthMethod so the exchange respects whatever
-	// the upstream advertised — some authorization servers (e.g. Ory Hydra)
-	// default confidential clients to client_secret_basic and reject
-	// client_secret_post outright. See authStyleFromMethod for the mapping.
+	// Only the DCR path populates this, via applyResolutionToOAuth2Config.
+	// OAuth2UpstreamRunConfig has no corresponding field, so a statically-
+	// configured upstream cannot set it and always gets the default — an
+	// intentional limitation scoped to issue #5865 (DCR-negotiated clients).
 	//nolint:lll // field tags require full JSON+YAML names
 	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
 
@@ -320,10 +318,14 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
 
+	// AuthStyle is derived from the negotiated token_endpoint_auth_method
+	// rather than hardcoded — see authStyleFromMethod.
+	authStyle, err := authStyleFromMethod(config.TokenEndpointAuthMethod)
+	if err != nil {
+		return nil, err
+	}
+
 	// Create the oauth2.Config for use with golang.org/x/oauth2 library.
-	// The auth style is derived from the negotiated token_endpoint_auth_method
-	// (DCR-registered clients) rather than hardcoded, so upstreams that require
-	// client_secret_basic are not rejected — see authStyleFromMethod.
 	oauth2Cfg := &oauth2.Config{
 		ClientID:     config.ClientID,
 		ClientSecret: config.ClientSecret,
@@ -332,7 +334,7 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		Endpoint: oauth2.Endpoint{
 			AuthURL:   config.AuthorizationEndpoint,
 			TokenURL:  config.TokenEndpoint,
-			AuthStyle: authStyleFromMethod(config.TokenEndpointAuthMethod),
+			AuthStyle: authStyle,
 		},
 	}
 
@@ -349,24 +351,38 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 //
 //   - client_secret_basic → AuthStyleInHeader (HTTP Basic Authorization header)
 //   - client_secret_post  → AuthStyleInParams (credentials in the POST body)
+//   - none / "" (unset)   → AuthStyleInParams (historical default, no secret)
 //
-// An empty method (statically-configured upstreams that never negotiated one)
-// and any unrecognised method fall back to AuthStyleInParams — the historical
-// default — so existing upstreams keep sending credentials in the POST body
-// unchanged. AuthStyleAutoDetect is deliberately avoided as the fallback: its
-// Basic-auth probe can consume a single-use authorization code against strict
-// servers that reject Basic auth, the same failure pkg/auth/oauth/flow.go
-// sidesteps by pinning AuthStyleInParams for public clients. Only an explicit
-// client_secret_basic, typically threaded through from a DCR resolution,
-// switches to the Basic header.
-func authStyleFromMethod(method string) oauth2.AuthStyle {
+// This is the single home for the auth-method rationale. For DCR-registered
+// clients the method is copied from the negotiated
+// dcr.Resolution.TokenEndpointAuthMethod so the exchange respects whatever the
+// upstream advertised — some authorization servers (e.g. Ory Hydra) default
+// confidential clients to client_secret_basic and reject client_secret_post
+// outright (issue #5865). The same AuthStyle governs the refresh path, which
+// shares this oauth2.Config.
+//
+// AuthStyleAutoDetect is deliberately not used for the default: its Basic-auth
+// probe can consume a single-use authorization code against strict servers that
+// reject Basic auth, the same failure pkg/auth/oauth/flow.go sidesteps by
+// pinning AuthStyleInParams for public clients.
+//
+// An unrecognised, non-empty method (e.g. private_key_jwt or tls_client_auth,
+// which the DCR resolver can negotiate but this client cannot fulfil) returns
+// an error rather than silently degrading to POST-body credentials, per the
+// "fail loudly on unrecognised enum values" convention in
+// .claude/rules/go-style.md. Silently falling back would send an unusable
+// credential and reproduce the opaque invalid_client symptom class issue #5865
+// was written to eliminate.
+func authStyleFromMethod(method string) (oauth2.AuthStyle, error) {
 	switch method {
 	case oauthproto.TokenEndpointAuthMethodClientSecretBasic:
-		return oauth2.AuthStyleInHeader
-	case oauthproto.TokenEndpointAuthMethodClientSecretPost:
-		return oauth2.AuthStyleInParams
+		return oauth2.AuthStyleInHeader, nil
+	case oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		oauthproto.TokenEndpointAuthMethodNone,
+		"":
+		return oauth2.AuthStyleInParams, nil
 	default:
-		return oauth2.AuthStyleInParams
+		return oauth2.AuthStyleAutoDetect, fmt.Errorf("unsupported token_endpoint_auth_method %q", method)
 	}
 }
 

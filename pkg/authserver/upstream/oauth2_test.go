@@ -222,31 +222,62 @@ func TestNewOAuth2Provider(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "redirect_uri is required")
 	})
+
+	t.Run("unsupported token endpoint auth method returns error", func(t *testing.T) {
+		t.Parallel()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint:   mock.URL + "/authorize",
+			TokenEndpoint:           mock.URL + "/token",
+			TokenEndpointAuthMethod: "private_key_jwt",
+		}
+
+		_, err := NewOAuth2Provider(config)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "private_key_jwt",
+			"construction must fail loudly on a method this client cannot fulfil")
+	})
 }
 
 // TestAuthStyleFromMethod pins the mapping from RFC 7591
-// token_endpoint_auth_method values to oauth2.AuthStyle, including the
-// fallback for unset and unrecognised methods (both of which must resolve to
-// the historical POST-body default rather than AuthStyleAutoDetect).
+// token_endpoint_auth_method values to oauth2.AuthStyle. Recognised methods
+// (basic/post/none) and the unset case resolve to a definite style; an
+// unrecognised, non-empty method must be rejected (fail loudly) rather than
+// silently degrading to the POST-body default.
 func TestAuthStyleFromMethod(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name   string
-		method string
-		want   oauth2.AuthStyle
+		name    string
+		method  string
+		want    oauth2.AuthStyle
+		wantErr bool
 	}{
-		{"client_secret_basic maps to header", oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauth2.AuthStyleInHeader},
-		{"client_secret_post maps to params", oauthproto.TokenEndpointAuthMethodClientSecretPost, oauth2.AuthStyleInParams},
-		{"unset defaults to params", "", oauth2.AuthStyleInParams},
-		{"unknown method defaults to params", "private_key_jwt", oauth2.AuthStyleInParams},
-		{"none defaults to params", oauthproto.TokenEndpointAuthMethodNone, oauth2.AuthStyleInParams},
+		{"client_secret_basic maps to header", oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauth2.AuthStyleInHeader, false},
+		{"client_secret_post maps to params", oauthproto.TokenEndpointAuthMethodClientSecretPost, oauth2.AuthStyleInParams, false},
+		{"none maps to params", oauthproto.TokenEndpointAuthMethodNone, oauth2.AuthStyleInParams, false},
+		{"unset maps to params", "", oauth2.AuthStyleInParams, false},
+		{"private_key_jwt is rejected", "private_key_jwt", oauth2.AuthStyleAutoDetect, true},
+		{"unknown method is rejected", "totally_bogus", oauth2.AuthStyleAutoDetect, true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			assert.Equal(t, tt.want, authStyleFromMethod(tt.method))
+			got, err := authStyleFromMethod(tt.method)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.method,
+					"error must name the offending method for operator diagnosis")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
 		})
 	}
 }

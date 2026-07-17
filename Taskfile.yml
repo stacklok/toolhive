@@ -220,6 +220,16 @@ tasks:
     deps: [build]
     env:
       THV_BINARY: "{{.PWD}}/bin/thv"
+      CONFORMANCE_TARGET: '{{.CONFORMANCE_TARGET | default "proxy"}}'
+    cmds:
+      - ./test/conformance/run-conformance.sh
+
+  conformance-vmcp:
+    desc: Run the MCP conformance suite against a `thv vmcp serve` deployment (requires Docker + Node)
+    deps: [build]
+    env:
+      THV_BINARY: "{{.PWD}}/bin/thv"
+      CONFORMANCE_TARGET: vmcp
     cmds:
       - ./test/conformance/run-conformance.sh
 

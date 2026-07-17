@@ -1,0 +1,16 @@
+# Conformance baseline for the ToolHive vMCP aggregator (`thv vmcp serve`).
+#
+# Unlike the transparent CLI proxy, vMCP is an aggregator that terminates the MCP
+# protocol and re-serves an aggregated view of its backends using the migrated
+# mcpcompat/go-sdk serving surface. It does not (yet) proxy every capability of
+# an upstream server: sampling, completions, and resource subscribe are expected
+# to fail until vMCP implements them.
+#
+# List scenario names here that are KNOWN to fail and accepted. The suite fails
+# CI only on failures NOT listed here. An entry that starts passing again is
+# reported as a STALE entry and also fails CI, so keep this list accurate.
+#
+# This list is INTENTIONALLY EMPTY for now: the first CI run against vMCP reports
+# the true failure set, which is then transcribed here as the seeded baseline
+# (expected to include the sampling/completions/subscribe scenarios above).
+server: []

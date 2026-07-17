@@ -384,6 +384,69 @@ func TestNewOAuth2Provider_TokenEndpointAuthMethod(t *testing.T) {
 	}
 }
 
+// TestBaseOAuth2Provider_RefreshTokens_TokenEndpointAuthMethod verifies that
+// the negotiated auth method also governs the refresh path. RefreshTokens
+// shares the same oauth2.Config.Endpoint.AuthStyle as code exchange, so a
+// client_secret_basic client must present its credentials in the Basic
+// Authorization header on refresh too — this pins the refresh half of the
+// contract documented on authStyleFromMethod so a future change that rebuilds
+// the config or bypasses AuthStyle in RefreshTokens does not ship unnoticed.
+func TestBaseOAuth2Provider_RefreshTokens_TokenEndpointAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	const (
+		clientID     = "dcr-client"
+		clientSecret = "dcr-secret"
+	)
+
+	mock := newMockOAuth2Server()
+	t.Cleanup(mock.Close)
+
+	var (
+		gotUser, gotPass string
+		gotBasicAuth     bool
+		gotBodySecret    string
+	)
+	mock.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		gotUser, gotPass, gotBasicAuth = r.BasicAuth()
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		gotBodySecret = r.PostForm.Get("client_secret")
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(testTokenResponse{
+			AccessToken: "refreshed-access-token",
+			TokenType:   "Bearer",
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			RedirectURI:  "http://localhost:8080/callback",
+		},
+		AuthorizationEndpoint:   mock.URL + "/authorize",
+		TokenEndpoint:           mock.URL + "/token",
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+	}
+
+	provider, err := NewOAuth2Provider(config)
+	require.NoError(t, err)
+
+	_, err = provider.RefreshTokens(context.Background(), "some-refresh-token", "")
+	require.NoError(t, err)
+
+	require.True(t, gotBasicAuth, "refresh must send credentials in the Basic Authorization header")
+	assert.Equal(t, clientID, gotUser)
+	assert.Equal(t, clientSecret, gotPass)
+	assert.Empty(t, gotBodySecret, "client_secret must not also appear in the refresh POST body")
+}
+
 func TestBaseOAuth2Provider_Type(t *testing.T) {
 	t.Parallel()
 

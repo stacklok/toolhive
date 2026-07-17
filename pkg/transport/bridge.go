@@ -105,10 +105,11 @@ func (b *StdioBridge) run(ctx context.Context) {
 		}
 
 		// On a *_list_changed notification, re-fetch the upstream capability set
-		// before forwarding the notification. forwardAll is additive (AddTool/
-		// AddResource/AddPrompt upsert by name/URI), so re-running it matches the
-		// startup behavior and keeps the local server's advertised set in sync with
-		// the upstream's post-change state.
+		// before forwarding the notification. forwardAll is additive only:
+		// AddTool/AddResource/AddPrompt upsert by name/URI, so re-running it adds
+		// or updates capabilities but does NOT prune ones the upstream removed —
+		// a stale capability stays advertised locally after an upstream removal.
+		// (SetTools exists if pruning is needed later.)
 		switch n.Method {
 		case "notifications/tools/list_changed",
 			"notifications/resources/list_changed",

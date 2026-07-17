@@ -161,7 +161,10 @@ func TestRegression_ConcurrentToolCalls_NoAuditBleed(t *testing.T) {
 		i, tool := i, tool
 		go func() {
 			defer wg.Done()
-			resp := postServeMCP(t, baseURL, map[string]any{
+			// doServeMCP returns an error instead of calling require: FailNow from a
+			// worker goroutine only runs Goexit off the test goroutine and misreports.
+			// All assertions happen on the test goroutine after wg.Wait() below.
+			resp, doErr := doServeMCP(baseURL, map[string]any{
 				"jsonrpc": "2.0",
 				"id":      2 + i,
 				"method":  "tools/call",
@@ -170,6 +173,10 @@ func TestRegression_ConcurrentToolCalls_NoAuditBleed(t *testing.T) {
 					"arguments": map[string]any{},
 				},
 			}, sessionID)
+			if doErr != nil {
+				outcomes[i] = callOutcome{toolName: tool.Name, err: doErr}
+				return
+			}
 			defer resp.Body.Close()
 			body, readErr := io.ReadAll(resp.Body)
 			outcomes[i] = callOutcome{toolName: tool.Name, body: string(body), err: readErr}
@@ -198,25 +205,33 @@ func TestRegression_ConcurrentToolCalls_NoAuditBleed(t *testing.T) {
 	assert.Equal(t, int32(len(tools)), fc.callToolCalls.Load(),
 		"core.CallTool must be called exactly once per concurrent request")
 
-	// The per-request audit BackendInfo must not bleed: drive the handler closure
-	// directly with two distinct BackendInfo values concurrently to assert each
-	// context's BackendInfo is labelled with its own tool's backend name, not the
-	// sibling's. This exercises the per-request labelling surface in
-	// coreToolHandler (serve_handlers.go) directly.
+	// Verify coreToolHandler labels the request-scoped audit BackendInfo with the
+	// backend name it was constructed with. Each goroutine owns a freshly-allocated
+	// BackendInfo and passes its own backend name, so this is NOT a shared-state
+	// isolation test — it asserts the handler copies the resolved backend name into
+	// the per-request BackendInfo (rather than dropping or swapping it). Running it
+	// concurrently additionally lets the race detector flag any accidental sharing
+	// of the labelling surface across invocations.
+	type labelOutcome struct {
+		want   string
+		got    string
+		hasRes bool
+		err    error
+	}
 	var bgWG sync.WaitGroup
 	bgWG.Add(len(tools))
-	backendLabels := make([]string, len(tools))
+	labelOutcomes := make([]labelOutcome, len(tools))
 	for i, tool := range tools {
 		i, tool := i, tool
 		go func() {
 			defer bgWG.Done()
+			// No require/assert here: collect results and assert on the test
+			// goroutine after Wait, since FailNow is only safe there.
 			bi := &audit.BackendInfo{}
 			ctx := audit.WithBackendInfo(context.Background(), bi)
 			req := mcp.CallToolRequest{Params: mcp.CallToolParams{Name: tool.Name, Arguments: map[string]any{}}}
 			res, err := srv.coreToolHandler(sessionID, tool.Name, tool.Name)(ctx, req)
-			require.NoError(t, err)
-			require.NotNil(t, res)
-			backendLabels[i] = bi.BackendName
+			labelOutcomes[i] = labelOutcome{want: tool.Name, got: bi.BackendName, hasRes: res != nil, err: err}
 		}()
 	}
 	bgDone := make(chan struct{})
@@ -227,12 +242,14 @@ func TestRegression_ConcurrentToolCalls_NoAuditBleed(t *testing.T) {
 		t.Fatal("timeout waiting for backend-label goroutines")
 	}
 
-	// Each concurrent handler invocation must have labelled its OWN BackendInfo
-	// with its own tool's backend name — no cross-contamination between the
-	// concurrent contexts.
-	for i, tool := range tools {
-		assert.Equal(t, tool.Name, backendLabels[i],
-			"audit BackendInfo for %q must carry its own backend name, not a sibling's",
-			tool.Name)
+	// Assert on the test goroutine (require/FailNow is only safe here). Each
+	// handler invocation must have labelled its own BackendInfo with the backend
+	// name it was given.
+	for _, o := range labelOutcomes {
+		require.NoError(t, o.err)
+		require.True(t, o.hasRes, "coreToolHandler must return a non-nil result")
+		assert.Equal(t, o.want, o.got,
+			"coreToolHandler must copy the resolved backend name %q into the request-scoped audit BackendInfo",
+			o.want)
 	}
 }

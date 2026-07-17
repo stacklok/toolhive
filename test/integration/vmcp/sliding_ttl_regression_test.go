@@ -55,10 +55,19 @@ func TestRegression_SlidingSessionTTL_TrafficKeepsSessionAlive(t *testing.T) {
 	// ── Active session: traffic every 500ms for 4s (2x the TTL) ──────────────
 	//
 	// If the TTL were fixed (not sliding), the session would expire at the 2s
-	// mark and the next tools/list would fail. A sliding TTL refreshes
+	// mark and the next tools/call would fail. A sliding TTL refreshes
 	// last-access on each request, so all calls must succeed.
+	//
+	// We use tools/call (not tools/list) here because tools/list returns the
+	// SDK's cached tool set even after the vMCP session storage has evicted the
+	// session (the go-sdk transport map is not TTL-gated), so it would pass
+	// whether the TTL slides or not. tools/call routes through
+	// enforceSessionBinding → storage.Load, so it fails once the session is gone
+	// — making it the assertion that actually distinguishes sliding from fixed TTL.
 	activeClient := helpers.NewMCPClient(ctx, t, vmcpURL)
 	defer activeClient.Close()
+
+	const activeTool = "ping-backend_ping"
 
 	const (
 		tickInterval = 500 * time.Millisecond
@@ -78,17 +87,19 @@ func TestRegression_SlidingSessionTTL_TrafficKeepsSessionAlive(t *testing.T) {
 				return
 			case <-ticker.C:
 			}
-			// tools/list routes through the session; each call refreshes
-			// last-access in the transport session storage.
-			_ = activeClient.ListTools(ctx)
+			// tools/call routes through enforceSessionBinding → storage.Load,
+			// which refreshes last-access in the transport session storage.
+			_ = activeClient.CallTool(ctx, activeTool, map[string]any{})
 		}
 	}()
 	wg.Wait()
 
 	// One final call after the full window: the session must still be alive.
-	final := activeClient.ListTools(ctx)
-	assert.NotEmpty(t, final.Tools,
-		"active session must survive past its TTL while receiving traffic")
+	// CallTool fails the test if the session was evicted (the SDK surfaces the
+	// missing session as a transport error or an error result).
+	final := activeClient.CallTool(ctx, activeTool, map[string]any{})
+	assert.False(t, final.IsError,
+		"active session must survive past its TTL while receiving traffic; got error result %v", final.Content)
 
 	// ── Idle session: no traffic for 3s (> TTL) must be evicted ──────────────
 	//

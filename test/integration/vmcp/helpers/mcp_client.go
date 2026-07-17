@@ -18,7 +18,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
-// MCPClient wraps the mark3labs MCP client with test-friendly methods.
+// MCPClient wraps the mcpcompat MCP client with test-friendly methods.
 // It automatically handles initialization and provides semantic assertion helpers
 // that integrate with Go's testing.TB interface.
 //

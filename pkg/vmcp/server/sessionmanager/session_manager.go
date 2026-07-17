@@ -43,7 +43,7 @@ const (
 )
 
 // Manager bridges the domain session lifecycle (MultiSession / MultiSessionFactory)
-// to the mark3labs SDK's SessionIdManager interface.
+// to the mcpcompat SDK's SessionIdManager interface.
 //
 // It implements a two-phase session-creation pattern:
 //

@@ -15,7 +15,6 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
-	"github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/server/sessionmanager"
 )
@@ -47,13 +46,13 @@ func TestRegression_SSEKeepAlive_PeriodicBytesOnIdleStream(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = srv.Stop(context.Background()) })
 
-	streamable := server.NewStreamableHTTPServer(
-		srv.mcpServer,
-		server.WithEndpointPath("/mcp"),
-		server.WithSessionIdManager(srv.vmcpSessionMgr),
-		server.WithHeartbeatInterval(100*time.Millisecond),
-	)
-	ts := httptest.NewServer(streamable)
+	// Serve through the real Handler wiring rather than a hand-built streamable
+	// server. This exercises the ServerConfig.HeartbeatInterval → Config →
+	// Handler → WithHeartbeatInterval path that server.go adds, so removing that
+	// wiring line in Handler regresses this test (no keep-alive bytes arrive).
+	handler, err := srv.Handler(context.Background())
+	require.NoError(t, err)
+	ts := httptest.NewServer(handler)
 	t.Cleanup(ts.Close)
 
 	// initialize → obtain a session ID for the subsequent GET stream.

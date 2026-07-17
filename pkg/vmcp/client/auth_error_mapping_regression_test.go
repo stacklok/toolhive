@@ -7,7 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -297,4 +299,86 @@ func TestRegression_BackendToolErrorWith401_NotClassifiedAsAuthFailure(t *testin
 	assert.NotNil(t, result, "expected non-nil result for IsError=true")
 	assert.True(t, result.IsError, "expected IsError=true")
 	assert.NotEmpty(t, result.Content, "expected non-empty content")
+}
+
+// TestRegression_WrapBackendError_ClassificationMatrix pins the remaining
+// wrapBackendError classification arms that the httptest-driven cases above do
+// not exercise. wrapBackendError maps several distinct failure shapes onto vmcp
+// sentinels, and health monitoring (#4935, #5223) branches on those sentinels;
+// a regression that reshuffles the arms would silently mis-route recovery. Each
+// case reconstructs the error shape the transport layer produces in the wild and
+// asserts the sentinel via errors.Is (the chain-aware check wrapBackendError's
+// %w wrapping is designed to satisfy).
+func TestRegression_WrapBackendError_ClassificationMatrix(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		err          error
+		wantSentinel error
+	}{
+		{
+			// A backend returning a 5xx surfaces as a generic HTTP status error
+			// (no transport sentinel). It must classify as ErrBackendUnavailable
+			// so the health monitor can recover once the backend is healthy again.
+			name:         "5xx HTTP status maps to ErrBackendUnavailable",
+			err:          fmt.Errorf("request failed with status code 503 service unavailable"),
+			wantSentinel: vmcp.ErrBackendUnavailable,
+		},
+		{
+			// A network timeout arrives as a net.Error whose Timeout() reports true;
+			// wrapBackendError's errors.As(&netErr)+Timeout() arm must map it to
+			// ErrTimeout ahead of any string-based fallback.
+			name:         "net.Error timeout maps to ErrTimeout",
+			err:          &net.DNSError{Err: "i/o timeout", Name: "backend.example", IsTimeout: true},
+			wantSentinel: vmcp.ErrTimeout,
+		},
+		{
+			// An unexpectedly closed connection surfaces as io.EOF; it means the
+			// backend dropped the stream, so it maps to ErrBackendUnavailable.
+			name:         "io.EOF maps to ErrBackendUnavailable",
+			err:          io.EOF,
+			wantSentinel: vmcp.ErrBackendUnavailable,
+		},
+		{
+			// A refused dial (backend down) is a net.OpError whose message contains
+			// "connection refused"; the Timeout() arm is skipped (not a timeout) and
+			// the connection-error string arm maps it to ErrBackendUnavailable.
+			name: "connection refused maps to ErrBackendUnavailable",
+			err: &net.OpError{
+				Op:  "dial",
+				Net: "tcp",
+				Err: errors.New("connect: connection refused"),
+			},
+			wantSentinel: vmcp.ErrBackendUnavailable,
+		},
+		{
+			// transport.ErrAuthorizationRequired is the migration-sensitive sentinel
+			// (mcp-go v0.49.0+) returned for 401 + WWW-Authenticate. It must map to
+			// ErrAuthenticationFailed so health monitoring engages the auth-aware
+			// branch (#4935) instead of marking the backend unhealthy (#5223).
+			name:         "transport.ErrAuthorizationRequired maps to ErrAuthenticationFailed",
+			err:          mcptransport.ErrAuthorizationRequired,
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+		{
+			// The production chain wraps the sentinel in *transport.Error via
+			// *AuthorizationRequiredError; both layers Unwrap to the sentinel so
+			// errors.Is must still classify it as ErrAuthenticationFailed.
+			name:         "wrapped AuthorizationRequiredError maps to ErrAuthenticationFailed",
+			err:          mcptransport.NewError(&mcptransport.AuthorizationRequiredError{}),
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := wrapBackendError(tt.err, "test-backend", "initialize")
+			require.Error(t, err)
+			assert.True(t, errors.Is(err, tt.wantSentinel),
+				"expected %v, got: %v", tt.wantSentinel, err)
+		})
+	}
 }

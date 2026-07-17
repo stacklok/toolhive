@@ -397,7 +397,7 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmc
 	return strategy, nil
 }
 
-// defaultClientFactory creates mark3labs MCP clients for different transport types.
+// defaultClientFactory creates mcpcompat MCP clients for different transport types.
 func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
 	// Build transport chain (outermost to innermost, request execution order):
 	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP

@@ -96,7 +96,7 @@ const (
 )
 
 // heartbeatInterval returns the configured heartbeat interval, or the default
-// when the configured value is zero (unset).
+// when the configured value is zero or negative (unset or invalid).
 func heartbeatInterval(d time.Duration) time.Duration {
 	if d <= 0 {
 		return defaultHeartbeatInterval
@@ -143,6 +143,12 @@ type Config struct {
 	// HeartbeatInterval configures the SSE keep-alive ping interval on GET
 	// connections. When zero, the Handler defaults to defaultHeartbeatInterval (30s).
 	// Prevents proxies/load balancers from closing idle SSE connections.
+	//
+	// This is intentionally plumbed end-to-end (ServerConfig → Config → Handler →
+	// WithHeartbeatInterval) ahead of any CLI-flag or CRD wiring. No external entry
+	// point sets it yet, so in practice it is always the default unless an embedder
+	// assigns it programmatically; the plumbing exists so surfacing a flag/field
+	// later is a one-line change rather than a re-thread through the server.
 	HeartbeatInterval time.Duration
 
 	// AuthMiddleware is the optional authentication middleware to apply to MCP routes.
@@ -920,7 +926,7 @@ func (s *Server) SessionManager() *transportsession.Manager {
 	return s.sessionManager
 }
 
-// MCPServer returns the underlying mark3labs *server.MCPServer instance
+// MCPServer returns the underlying mcpcompat *server.MCPServer instance
 // servicing this vMCP server's /mcp endpoint.
 //
 // Intended for embedders that wrap the vMCP composer in their own pipeline and
@@ -931,7 +937,7 @@ func (s *Server) SessionManager() *transportsession.Manager {
 //
 // Trust boundary: this accessor is in-process only; the returned pointer is
 // the same instance for the lifetime of the Server and is safe for concurrent
-// use per mark3labs guarantees.
+// use per mcpcompat guarantees.
 //
 // Safe operations include RequestElicitation against an active session,
 // registering observability hooks, and reading registered

@@ -97,7 +97,7 @@ func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 // Compile-time assertion: mcpSession must implement Session.
 var _ Session = (*mcpSession)(nil)
 
-// mcpSession wraps a persistent mark3labs MCP client for one backend.
+// mcpSession wraps a persistent mcpcompat MCP client for one backend.
 // It is created once per backend during MakeSession and closed when the session ends.
 //
 // Phase 1 limitation — no reconnection: if the underlying transport drops
@@ -250,7 +250,7 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 
 		// Extract the backend-assigned session ID when the transport supports it.
 		// Streamable-HTTP servers send an Mcp-Session-Id response header during
-		// Initialize; the mark3labs transport captures it internally and exposes
+		// Initialize; the mcpcompat transport captures it internally and exposes
 		// it via GetSessionId(). SSE transports do not assign a session ID, so
 		// the field remains empty for those backends.
 		var backendSessionID string
@@ -262,7 +262,7 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 	}
 }
 
-// createMCPClient builds and starts a mark3labs MCP client for target.
+// createMCPClient builds and starts a mcpcompat MCP client for target.
 // The transport is started with context.Background() so its lifetime is bound
 // to client.Close(), not to any caller-supplied init context.
 // sessionHint, when non-empty, is passed as the initial Mcp-Session-Id for
@@ -339,7 +339,7 @@ func createMCPClient(
 		// request/response pair, so a per-response body size limit is safe and
 		// correct. http.Client.Timeout provides a hard wall-clock deadline;
 		// WithHTTPTimeout additionally wraps each SDK request in a
-		// context.WithTimeout so the mark3labs transport surfaces a descriptive
+		// context.WithTimeout so the mcpcompat transport surfaces a descriptive
 		// error before the stdlib deadline fires. Both are set to
 		// defaultBackendRequestTimeout: defense-in-depth.
 		sizeLimited := httpRoundTripperFunc(func(req *http.Request) (*http.Response, error) {

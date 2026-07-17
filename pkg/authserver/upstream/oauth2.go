@@ -147,6 +147,20 @@ type OAuth2Config struct {
 	// TokenEndpoint is the URL for the OAuth token endpoint.
 	TokenEndpoint string `json:"token_endpoint" yaml:"token_endpoint"`
 
+	// TokenEndpointAuthMethod is the RFC 7591 client authentication method used
+	// at the token endpoint. It controls how client credentials are presented
+	// during code exchange and refresh: "client_secret_basic" sends them in the
+	// HTTP Basic Authorization header, "client_secret_post" sends them in the
+	// request body. When empty, the historical default (POST body) is used.
+	//
+	// For DCR-registered clients this is copied from the negotiated
+	// dcr.Resolution.TokenEndpointAuthMethod so the exchange respects whatever
+	// the upstream advertised — some authorization servers (e.g. Ory Hydra)
+	// default confidential clients to client_secret_basic and reject
+	// client_secret_post outright. See authStyleFromMethod for the mapping.
+	//nolint:lll // field tags require full JSON+YAML names
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
+
 	// UserInfo contains configuration for fetching user information (optional).
 	// When nil, the provider does not support UserInfo fetching.
 	UserInfo *UserInfoConfig `json:"userinfo,omitempty" yaml:"userinfo,omitempty"`
@@ -306,7 +320,10 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
 
-	// Create the oauth2.Config for use with golang.org/x/oauth2 library
+	// Create the oauth2.Config for use with golang.org/x/oauth2 library.
+	// The auth style is derived from the negotiated token_endpoint_auth_method
+	// (DCR-registered clients) rather than hardcoded, so upstreams that require
+	// client_secret_basic are not rejected — see authStyleFromMethod.
 	oauth2Cfg := &oauth2.Config{
 		ClientID:     config.ClientID,
 		ClientSecret: config.ClientSecret,
@@ -315,7 +332,7 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		Endpoint: oauth2.Endpoint{
 			AuthURL:   config.AuthorizationEndpoint,
 			TokenURL:  config.TokenEndpoint,
-			AuthStyle: oauth2.AuthStyleInParams, // Send client credentials in POST body
+			AuthStyle: authStyleFromMethod(config.TokenEndpointAuthMethod),
 		},
 	}
 
@@ -324,6 +341,33 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		oauth2Config: oauth2Cfg,
 		httpClient:   httpClient,
 	}, nil
+}
+
+// authStyleFromMethod maps an RFC 7591 token_endpoint_auth_method to the
+// oauth2.AuthStyle the golang.org/x/oauth2 library uses when presenting client
+// credentials at the token endpoint:
+//
+//   - client_secret_basic → AuthStyleInHeader (HTTP Basic Authorization header)
+//   - client_secret_post  → AuthStyleInParams (credentials in the POST body)
+//
+// An empty method (statically-configured upstreams that never negotiated one)
+// and any unrecognised method fall back to AuthStyleInParams — the historical
+// default — so existing upstreams keep sending credentials in the POST body
+// unchanged. AuthStyleAutoDetect is deliberately avoided as the fallback: its
+// Basic-auth probe can consume a single-use authorization code against strict
+// servers that reject Basic auth, the same failure pkg/auth/oauth/flow.go
+// sidesteps by pinning AuthStyleInParams for public clients. Only an explicit
+// client_secret_basic, typically threaded through from a DCR resolution,
+// switches to the Basic header.
+func authStyleFromMethod(method string) oauth2.AuthStyle {
+	switch method {
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic:
+		return oauth2.AuthStyleInHeader
+	case oauthproto.TokenEndpointAuthMethodClientSecretPost:
+		return oauth2.AuthStyleInParams
+	default:
+		return oauth2.AuthStyleInParams
+	}
 }
 
 // NewOAuth2Provider creates a new pure OAuth 2.0 provider.

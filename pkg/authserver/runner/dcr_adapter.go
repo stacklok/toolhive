@@ -147,14 +147,20 @@ func consumeResolution(rc authserver.OAuth2UpstreamRunConfig, res *dcr.Resolutio
 }
 
 // applyResolutionToOAuth2Config returns a copy of cfg with the DCR-
-// resolved ClientSecret overlaid onto it. This is the companion to
-// consumeResolution: where that function writes fields representable in
-// the file-or-env run-config model, this one writes the inline-only
-// ClientSecret directly on the runtime config.
+// resolved ClientSecret and TokenEndpointAuthMethod overlaid onto it. This
+// is the companion to consumeResolution: where that function writes fields
+// representable in the file-or-env run-config model, this one writes the
+// inline-only fields directly on the runtime config.
 //
 // cfg is taken by value and the modified copy is returned, mirroring
 // consumeResolution. The no-mutation contract is compile-time enforced
 // by the signature rather than a prose discipline.
+//
+// TokenEndpointAuthMethod carries the auth method the upstream negotiated
+// during registration (RFC 7591). Without it, newBaseOAuth2Provider would
+// fall back to its default (client_secret_post) and an upstream that
+// registered the client as client_secret_basic would reject the code
+// exchange with invalid_client (issue #5865).
 //
 // The split exists because buildPureOAuth2Config intentionally retains a
 // narrow file-or-env contract (no DCR awareness) and because OAuth2's
@@ -170,5 +176,6 @@ func applyResolutionToOAuth2Config(cfg upstream.OAuth2Config, res *dcr.Resolutio
 		return cfg
 	}
 	cfg.ClientSecret = res.ClientSecret
+	cfg.TokenEndpointAuthMethod = res.TokenEndpointAuthMethod
 	return cfg
 }

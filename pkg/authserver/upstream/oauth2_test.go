@@ -31,6 +31,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // testTokenResponse is a test helper to produce token responses.
@@ -219,6 +222,135 @@ func TestNewOAuth2Provider(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "redirect_uri is required")
 	})
+}
+
+// TestAuthStyleFromMethod pins the mapping from RFC 7591
+// token_endpoint_auth_method values to oauth2.AuthStyle, including the
+// fallback for unset and unrecognised methods (both of which must resolve to
+// the historical POST-body default rather than AuthStyleAutoDetect).
+func TestAuthStyleFromMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		method string
+		want   oauth2.AuthStyle
+	}{
+		{"client_secret_basic maps to header", oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauth2.AuthStyleInHeader},
+		{"client_secret_post maps to params", oauthproto.TokenEndpointAuthMethodClientSecretPost, oauth2.AuthStyleInParams},
+		{"unset defaults to params", "", oauth2.AuthStyleInParams},
+		{"unknown method defaults to params", "private_key_jwt", oauth2.AuthStyleInParams},
+		{"none defaults to params", oauthproto.TokenEndpointAuthMethodNone, oauth2.AuthStyleInParams},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, authStyleFromMethod(tt.method))
+		})
+	}
+}
+
+// TestNewOAuth2Provider_TokenEndpointAuthMethod verifies that the negotiated
+// token_endpoint_auth_method controls how client credentials are presented at
+// the token endpoint. This is the regression guard for issue #5865: a
+// DCR-registered client whose upstream negotiated client_secret_basic must send
+// its credentials in the HTTP Basic Authorization header, not the POST body, or
+// strict authorization servers (e.g. Ory Hydra) reject the exchange with
+// invalid_client.
+func TestNewOAuth2Provider_TokenEndpointAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	const (
+		clientID     = "dcr-client"
+		clientSecret = "dcr-secret"
+	)
+
+	tests := []struct {
+		name          string
+		authMethod    string
+		wantAuthStyle oauth2.AuthStyle
+		wantBasicAuth bool // credentials expected in the Authorization header
+	}{
+		{
+			name:          "client_secret_basic sends credentials in Basic header",
+			authMethod:    oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			wantAuthStyle: oauth2.AuthStyleInHeader,
+			wantBasicAuth: true,
+		},
+		{
+			name:          "client_secret_post sends credentials in body",
+			authMethod:    oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			wantAuthStyle: oauth2.AuthStyleInParams,
+			wantBasicAuth: false,
+		},
+		{
+			name:          "unset defaults to credentials in body",
+			authMethod:    "",
+			wantAuthStyle: oauth2.AuthStyleInParams,
+			wantBasicAuth: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mock := newMockOAuth2Server()
+			t.Cleanup(mock.Close)
+
+			var (
+				gotUser, gotPass string
+				gotBasicAuth     bool
+				gotBodySecret    string
+			)
+			mock.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
+				gotUser, gotPass, gotBasicAuth = r.BasicAuth()
+				if err := r.ParseForm(); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				gotBodySecret = r.PostForm.Get("client_secret")
+
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(testTokenResponse{
+					AccessToken: "access-token",
+					TokenType:   "Bearer",
+				}); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			}
+
+			config := &OAuth2Config{
+				CommonOAuthConfig: CommonOAuthConfig{
+					ClientID:     clientID,
+					ClientSecret: clientSecret,
+					RedirectURI:  "http://localhost:8080/callback",
+				},
+				AuthorizationEndpoint:   mock.URL + "/authorize",
+				TokenEndpoint:           mock.URL + "/token",
+				TokenEndpointAuthMethod: tt.authMethod,
+			}
+
+			provider, err := NewOAuth2Provider(config)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthStyle, provider.oauth2Config.Endpoint.AuthStyle,
+				"oauth2 endpoint auth style must reflect the negotiated method")
+
+			_, err = provider.exchangeCodeForTokens(context.Background(), "auth-code", "")
+			require.NoError(t, err)
+
+			if tt.wantBasicAuth {
+				require.True(t, gotBasicAuth, "credentials must be sent in the Basic Authorization header")
+				assert.Equal(t, clientID, gotUser)
+				assert.Equal(t, clientSecret, gotPass)
+				assert.Empty(t, gotBodySecret, "client_secret must not also appear in the POST body")
+			} else {
+				assert.False(t, gotBasicAuth, "no Basic Authorization header expected")
+				assert.Equal(t, clientSecret, gotBodySecret, "client_secret must be sent in the POST body")
+			}
+		})
+	}
 }
 
 func TestBaseOAuth2Provider_Type(t *testing.T) {

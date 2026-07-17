@@ -79,7 +79,7 @@ type AuthorizationServerConfig struct {
 // The strategy parameter is typed as any because fosite uses different strategy
 // interfaces for different flows (e.g., oauth2.CoreStrategy, openid.OpenIDConnectTokenStrategy)
 // that do not share a common base interface.
-type Factory func(config *AuthorizationServerConfig, storage fosite.Storage, strategy any) any
+type Factory func(config *AuthorizationServerConfig, storage fosite.Storage, strategy any) (any, error)
 
 // AuthorizationServerParams contains the configuration needed to create an AuthorizationServerConfig.
 // This is a minimal subset of the authserver.Config fields needed for OAuth2.
@@ -273,35 +273,49 @@ func NewAuthorizationServer(
 	storage fosite.Storage,
 	strategy any,
 	factories ...Factory,
-) fosite.OAuth2Provider {
+) (fosite.OAuth2Provider, error) {
 	fositeConfig := config.Config
 	provider := fosite.NewOAuth2Provider(storage, fositeConfig)
 
 	for _, factory := range factories {
-		result := factory(config, storage, strategy)
+		result, err := factory(config, storage, strategy)
+		if err != nil {
+			return nil, fmt.Errorf("authorization server factory failed: %w", err)
+		}
+
+		var matched bool
 
 		if ah, ok := result.(fosite.AuthorizeEndpointHandler); ok {
 			fositeConfig.AuthorizeEndpointHandlers.Append(ah)
+			matched = true
 		}
 
 		if th, ok := result.(fosite.TokenEndpointHandler); ok {
 			fositeConfig.TokenEndpointHandlers.Append(th)
+			matched = true
 		}
 
 		if ti, ok := result.(fosite.TokenIntrospector); ok {
 			fositeConfig.TokenIntrospectionHandlers.Append(ti)
+			matched = true
 		}
 
 		if rh, ok := result.(fosite.RevocationHandler); ok {
 			fositeConfig.RevocationHandlers.Append(rh)
+			matched = true
 		}
 
 		if ph, ok := result.(fosite.PushedAuthorizeEndpointHandler); ok {
 			fositeConfig.PushedAuthorizeEndpointHandlers.Append(ph)
+			matched = true
+		}
+
+		if result != nil && !matched {
+			return nil, fmt.Errorf("authorization server factory returned unrecognized handler type %T", result)
 		}
 	}
 
-	return provider
+	return provider, nil
 }
 
 // GetSigningKey returns the config's signing key.

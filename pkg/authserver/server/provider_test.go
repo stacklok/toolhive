@@ -564,7 +564,7 @@ func (*mockTokenIntrospector) IntrospectToken(_ context.Context, _ string, _ fos
 // mockRevocationHandler implements fosite.RevocationHandler for testing.
 type mockRevocationHandler struct{}
 
-func (*mockRevocationHandler) RevokeToken(_ context.Context, _ string, _ string, _ fosite.Client) error {
+func (*mockRevocationHandler) RevokeToken(_ context.Context, _ string, _ fosite.TokenType, _ fosite.Client) error {
 	return nil
 }
 
@@ -597,72 +597,79 @@ func TestNewAuthorizationServer(t *testing.T) {
 	t.Run("creates provider with no factories", func(t *testing.T) {
 		t.Parallel()
 
-		provider := NewAuthorizationServer(createConfig(t), storage, nil)
+		provider, err := NewAuthorizationServer(createConfig(t), storage, nil)
+		require.NoError(t, err)
 		require.NotNil(t, provider)
 	})
 
 	t.Run("creates provider with authorize handler factory", func(t *testing.T) {
 		t.Parallel()
 
-		factory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) any {
-			return &mockAuthorizeHandler{}
+		factory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) (any, error) {
+			return &mockAuthorizeHandler{}, nil
 		}
 
-		provider := NewAuthorizationServer(createConfig(t), storage, nil, factory)
+		provider, err := NewAuthorizationServer(createConfig(t), storage, nil, factory)
+		require.NoError(t, err)
 		require.NotNil(t, provider)
 	})
 
 	t.Run("creates provider with token handler factory", func(t *testing.T) {
 		t.Parallel()
 
-		factory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) any {
-			return &mockTokenHandler{}
+		factory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) (any, error) {
+			return &mockTokenHandler{}, nil
 		}
 
-		provider := NewAuthorizationServer(createConfig(t), storage, nil, factory)
+		provider, err := NewAuthorizationServer(createConfig(t), storage, nil, factory)
+		require.NoError(t, err)
 		require.NotNil(t, provider)
 	})
 
 	t.Run("creates provider with multiple factories", func(t *testing.T) {
 		t.Parallel()
 
-		authorizeFactory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) any {
-			return &mockAuthorizeHandler{}
+		authorizeFactory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) (any, error) {
+			return &mockAuthorizeHandler{}, nil
 		}
-		tokenFactory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) any {
-			return &mockTokenHandler{}
+		tokenFactory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) (any, error) {
+			return &mockTokenHandler{}, nil
 		}
-		introspectorFactory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) any {
-			return &mockTokenIntrospector{}
+		introspectorFactory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) (any, error) {
+			return &mockTokenIntrospector{}, nil
 		}
-		revocationFactory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) any {
-			return &mockRevocationHandler{}
+		revocationFactory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) (any, error) {
+			return &mockRevocationHandler{}, nil
 		}
 
-		provider := NewAuthorizationServer(createConfig(t), storage, nil,
+		provider, err := NewAuthorizationServer(createConfig(t), storage, nil,
 			authorizeFactory, tokenFactory, introspectorFactory, revocationFactory)
+		require.NoError(t, err)
 		require.NotNil(t, provider)
 	})
 
 	t.Run("handles factory returning nil", func(t *testing.T) {
 		t.Parallel()
 
-		factory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) any {
-			return nil
+		factory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) (any, error) {
+			return nil, nil
 		}
 
-		provider := NewAuthorizationServer(createConfig(t), storage, nil, factory)
+		provider, err := NewAuthorizationServer(createConfig(t), storage, nil, factory)
+		require.NoError(t, err)
 		require.NotNil(t, provider)
 	})
 
-	t.Run("handles factory returning non-handler type", func(t *testing.T) {
+	t.Run("errors on factory returning non-handler type", func(t *testing.T) {
 		t.Parallel()
 
-		factory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) any {
-			return "not a handler"
+		factory := func(_ *AuthorizationServerConfig, _ fosite.Storage, _ any) (any, error) {
+			return "not a handler", nil
 		}
 
-		provider := NewAuthorizationServer(createConfig(t), storage, nil, factory)
-		require.NotNil(t, provider)
+		provider, err := NewAuthorizationServer(createConfig(t), storage, nil, factory)
+		require.Error(t, err)
+		require.Contains(t, err.Error(), "string")
+		require.Nil(t, provider)
 	})
 }

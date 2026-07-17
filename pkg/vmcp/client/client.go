@@ -36,6 +36,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
 )
 
 const (
@@ -697,39 +698,68 @@ func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabil
 }
 
 // queryTools queries tools from a backend if the server advertises tool support.
+// It follows MCP pagination cursors so backends that paginate (mcpcompat
+// paginates at DefaultPageSize=1000) contribute their complete tool set rather
+// than only the first page.
 func queryTools(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListToolsResult, error) {
 	if supported {
-		result, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+		tools, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Tool, mcp.Cursor, error) {
+			req := mcp.ListToolsRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListTools(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Tools, result.NextCursor, nil
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list tools from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListToolsResult{Tools: tools}, nil
 	}
 	slog.Debug("backend does not advertise tools capability, skipping tools query", "backend", backendID)
 	return &mcp.ListToolsResult{Tools: []mcp.Tool{}}, nil
 }
 
-// queryResources queries resources from a backend if the server advertises resource support.
+// queryResources queries resources from a backend if the server advertises
+// resource support. It follows MCP pagination cursors (see queryTools).
 func queryResources(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListResourcesResult, error) {
 	if supported {
-		result, err := c.ListResources(ctx, mcp.ListResourcesRequest{})
+		resources, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Resource, mcp.Cursor, error) {
+			req := mcp.ListResourcesRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListResources(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Resources, result.NextCursor, nil
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list resources from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListResourcesResult{Resources: resources}, nil
 	}
 	slog.Debug("backend does not advertise resources capability, skipping resources query", "backend", backendID)
 	return &mcp.ListResourcesResult{Resources: []mcp.Resource{}}, nil
 }
 
-// queryPrompts queries prompts from a backend if the server advertises prompt support.
+// queryPrompts queries prompts from a backend if the server advertises prompt
+// support. It follows MCP pagination cursors (see queryTools).
 func queryPrompts(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListPromptsResult, error) {
 	if supported {
-		result, err := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
+		prompts, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Prompt, mcp.Cursor, error) {
+			req := mcp.ListPromptsRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListPrompts(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Prompts, result.NextCursor, nil
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list prompts from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListPromptsResult{Prompts: prompts}, nil
 	}
 	slog.Debug("backend does not advertise prompts capability, skipping prompts query", "backend", backendID)
 	return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil

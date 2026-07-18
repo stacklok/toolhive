@@ -265,6 +265,135 @@ func TestSessionRouter_RouteResource(t *testing.T) {
 	}
 }
 
+// TestSessionRouter_RouteResource_TemplateFallback exercises the template-match
+// fallback: when the exact-URI lookup misses, the URI is matched against the
+// aggregated resource templates (RFC 6570), routing to the matching template's
+// backend. It covers a single match, no match, and disjoint multiple templates
+// where exactly one matches (first-match selection).
+func TestSessionRouter_RouteResource_TemplateFallback(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		routingTable  *vmcp.RoutingTable
+		uri           string
+		expectedID    string
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name: "URI matches a single template",
+			routingTable: &vmcp.RoutingTable{
+				Resources: map[string]*vmcp.BackendTarget{},
+				ResourceTemplates: map[string]*vmcp.BackendTarget{
+					"file:///logs/{date}.txt": {WorkloadID: "logs-backend"},
+				},
+			},
+			uri:        "file:///logs/2025-01-01.txt",
+			expectedID: "logs-backend",
+		},
+		{
+			name: "exact resource wins over a matching template",
+			routingTable: &vmcp.RoutingTable{
+				Resources: map[string]*vmcp.BackendTarget{
+					"file:///logs/2025-01-01.txt": {WorkloadID: "exact-backend"},
+				},
+				ResourceTemplates: map[string]*vmcp.BackendTarget{
+					"file:///logs/{date}.txt": {WorkloadID: "template-backend"},
+				},
+			},
+			uri:        "file:///logs/2025-01-01.txt",
+			expectedID: "exact-backend",
+		},
+		{
+			name: "URI matches no template",
+			routingTable: &vmcp.RoutingTable{
+				Resources: map[string]*vmcp.BackendTarget{},
+				ResourceTemplates: map[string]*vmcp.BackendTarget{
+					"file:///logs/{date}.txt": {WorkloadID: "logs-backend"},
+				},
+			},
+			uri:           "db:///users/42",
+			expectError:   true,
+			errorContains: "resource not found",
+		},
+		{
+			name: "disjoint multiple templates: only the matching one is selected",
+			routingTable: &vmcp.RoutingTable{
+				Resources: map[string]*vmcp.BackendTarget{},
+				ResourceTemplates: map[string]*vmcp.BackendTarget{
+					"file:///logs/{date}.txt": {WorkloadID: "logs-backend"},
+					"db:///users/{id}":        {WorkloadID: "users-backend"},
+				},
+			},
+			uri:        "db:///users/42",
+			expectedID: "users-backend",
+		},
+		{
+			name: "invalid template is skipped, valid one still matches",
+			routingTable: &vmcp.RoutingTable{
+				Resources: map[string]*vmcp.BackendTarget{},
+				ResourceTemplates: map[string]*vmcp.BackendTarget{
+					"file:///logs/{date}.txt": {WorkloadID: "logs-backend"},
+					"://{bad":                 {WorkloadID: "broken-backend"},
+				},
+			},
+			uri:        "file:///logs/2025-01-01.txt",
+			expectedID: "logs-backend",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			r := router.NewSessionRouter(tt.routingTable)
+			target, err := r.RouteResource(t.Context(), tt.uri)
+
+			if tt.expectError {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errorContains)
+				assert.Nil(t, target)
+			} else {
+				require.NoError(t, err)
+				require.NotNil(t, target)
+				assert.Equal(t, tt.expectedID, target.WorkloadID)
+			}
+		})
+	}
+}
+
+// TestSessionRouter_RouteResource_TemplateDeterminism locks in deterministic
+// resolution when two OVERLAPPING templates match the same URI. Map iteration
+// order is randomized per range, so before the sorted-key fix the winner could
+// flip between runs; matchResourceTemplate now iterates template keys in sorted
+// order, so the first-match winner is stable. "file:///{+path}" sorts before
+// "file:///{a}/{b}" ('+' 0x2B < 'a' 0x61), so the greedy template wins every run.
+func TestSessionRouter_RouteResource_TemplateDeterminism(t *testing.T) {
+	t.Parallel()
+
+	const uri = "file:///logs/foo"
+
+	// A single shared map is sufficient: Go randomizes iteration order on every
+	// range, so each RouteResource call below exercises a fresh order.
+	rt := &vmcp.RoutingTable{
+		Resources: map[string]*vmcp.BackendTarget{},
+		ResourceTemplates: map[string]*vmcp.BackendTarget{
+			"file:///{+path}": {WorkloadID: "greedy-backend"},
+			"file:///{a}/{b}": {WorkloadID: "specific-backend"},
+		},
+	}
+
+	for i := range 50 {
+		r := router.NewSessionRouter(rt)
+		target, err := r.RouteResource(t.Context(), uri)
+		require.NoError(t, err)
+		require.NotNil(t, target)
+		assert.Equal(t, "greedy-backend", target.WorkloadID,
+			"overlapping templates must resolve to the sorted-first key deterministically (run %d)", i)
+	}
+}
+
 func TestSessionRouter_RoutePrompt(t *testing.T) {
 	t.Parallel()
 

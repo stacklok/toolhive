@@ -283,6 +283,75 @@ func TestListResourcesAndPrompts(t *testing.T) {
 	assert.Equal(t, "p1", prompts[0].Name)
 }
 
+// denyResourceAdmission is a test Admission that drops resources whose URI is in
+// deny. It embeds allowAllAdmission so the tool/prompt methods are satisfied, and
+// overrides only FilterResources — the sole method ListResourceTemplates exercises
+// (the URI template is projected onto a resource URI for admission).
+type denyResourceAdmission struct {
+	allowAllAdmission
+	deny map[string]struct{}
+}
+
+func (d denyResourceAdmission) FilterResources(
+	_ context.Context, _ *auth.Identity, resources []vmcp.Resource,
+) ([]vmcp.Resource, error) {
+	out := make([]vmcp.Resource, 0, len(resources))
+	for i := range resources {
+		if _, blocked := d.deny[resources[i].URI]; !blocked {
+			out = append(out, resources[i])
+		}
+	}
+	return out, nil
+}
+
+func TestListResourceTemplates(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(2)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
+		ResourceTemplates: []vmcp.ResourceTemplate{
+			{URITemplate: "file:///logs/{date}.txt", BackendID: "be1"},
+			{URITemplate: "secret:///{id}", BackendID: "be1"},
+		},
+	}, nil).Times(2)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	// Default allow-all admission: both templates surface, tagged with their backend.
+	templates, err := c.ListResourceTemplates(t.Context(), nil)
+	require.NoError(t, err)
+	require.Len(t, templates, 2)
+
+	// Inject a deny-admission that filters templates by URI template (treated as the
+	// resource id): the denied template is withheld, mirroring ListResources.
+	c.(*coreVMCP).admission = denyResourceAdmission{deny: map[string]struct{}{"secret:///{id}": {}}}
+	templates, err = c.ListResourceTemplates(t.Context(), nil)
+	require.NoError(t, err)
+	require.Len(t, templates, 1)
+	assert.Equal(t, "file:///logs/{date}.txt", templates[0].URITemplate)
+	assert.Equal(t, "be1", templates[0].BackendID)
+}
+
+func TestListResourceTemplates_Empty(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	m.reg.EXPECT().List(gomock.Any()).Return(nil)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(
+		&aggregator.AggregatedCapabilities{}, nil)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+
+	templates, err := c.ListResourceTemplates(t.Context(), nil)
+	require.NoError(t, err)
+	assert.Empty(t, templates)
+}
+
 func TestListTools_AggregationError(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)

@@ -99,6 +99,17 @@ func TestQueryHelpers_PartialCapabilities(t *testing.T) {
 		assert.Empty(t, result.Resources)
 	})
 
+	t.Run("queryResourceTemplates with unsupported capability returns empty slice", func(t *testing.T) {
+		t.Parallel()
+
+		// Resource templates are gated on the resources capability; when the backend
+		// does not advertise resources, the query is skipped and returns empty.
+		result, err := queryResourceTemplates(context.Background(), nil, false, "test-backend")
+		require.NoError(t, err)
+		assert.NotNil(t, result)
+		assert.Empty(t, result.ResourceTemplates)
+	})
+
 	t.Run("queryPrompts with unsupported capability returns empty slice", func(t *testing.T) {
 		t.Parallel()
 

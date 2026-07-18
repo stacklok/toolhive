@@ -289,6 +289,54 @@ func (c *coreVMCP) ListResources(ctx context.Context, identity *auth.Identity) (
 	return c.admission.FilterResources(ctx, identity, agg.Resources)
 }
 
+// ListResourceTemplates health-filters the registry, aggregates resource
+// templates on demand, and returns only those identity is admitted to read.
+//
+// Resource templates carry no admission entity of their own: the URI template is
+// treated as the resource id, reusing the exact resource-read filter (the same
+// per-item skip-on-error, log-and-continue decision ListResources applies). A
+// template whose URI-template string is denied is withheld.
+func (c *coreVMCP) ListResourceTemplates(
+	ctx context.Context, identity *auth.Identity,
+) ([]vmcp.ResourceTemplate, error) {
+	agg, err := c.aggregatedView(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return c.filterResourceTemplates(ctx, identity, agg.ResourceTemplates)
+}
+
+// filterResourceTemplates applies the resource-read admission filter to templates
+// by projecting each template's URI template onto a vmcp.Resource and reusing
+// admission.FilterResources, so templates and resources share one decision path.
+// The surviving URI templates select which templates are returned.
+func (c *coreVMCP) filterResourceTemplates(
+	ctx context.Context, identity *auth.Identity, templates []vmcp.ResourceTemplate,
+) ([]vmcp.ResourceTemplate, error) {
+	if len(templates) == 0 {
+		return []vmcp.ResourceTemplate{}, nil
+	}
+	proxies := make([]vmcp.Resource, len(templates))
+	for i := range templates {
+		proxies[i] = vmcp.Resource{URI: templates[i].URITemplate, BackendID: templates[i].BackendID}
+	}
+	allowedProxies, err := c.admission.FilterResources(ctx, identity, proxies)
+	if err != nil {
+		return nil, err
+	}
+	allowed := make(map[string]struct{}, len(allowedProxies))
+	for i := range allowedProxies {
+		allowed[allowedProxies[i].URI] = struct{}{}
+	}
+	filtered := make([]vmcp.ResourceTemplate, 0, len(templates))
+	for i := range templates {
+		if _, ok := allowed[templates[i].URITemplate]; ok {
+			filtered = append(filtered, templates[i])
+		}
+	}
+	return filtered, nil
+}
+
 // ListPrompts health-filters the registry, aggregates prompts on demand, and
 // returns only those identity is admitted to get.
 func (c *coreVMCP) ListPrompts(ctx context.Context, identity *auth.Identity) ([]vmcp.Prompt, error) {

@@ -304,6 +304,46 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 		assert.Equal(t, 1, aggregated.Metadata.ResourceCount)
 		assert.Equal(t, 1, aggregated.Metadata.PromptCount)
 	})
+
+	t.Run("merge threads resource templates through and populates the routing table", func(t *testing.T) {
+		t.Parallel()
+		resolved := &ResolvedCapabilities{
+			Tools: map[string]*ResolvedTool{},
+			ResourceTemplates: []vmcp.ResourceTemplate{
+				{URITemplate: "file:///logs/{date}.txt", Name: "Daily log", MimeType: "text/plain", BackendID: "backend1"},
+			},
+		}
+
+		backends := []vmcp.Backend{
+			{
+				ID:            "backend1",
+				Name:          "Backend 1",
+				BaseURL:       "http://backend1:8080",
+				TransportType: "streamable-http",
+				HealthStatus:  vmcp.BackendHealthy,
+			},
+		}
+		registry := vmcp.NewImmutableRegistry(backends)
+
+		agg := NewDefaultAggregator(nil, nil, nil, nil)
+		aggregated, err := agg.MergeCapabilities(context.Background(), resolved, registry)
+		require.NoError(t, err)
+
+		// Pass-through: the aggregated view carries the templates unchanged.
+		require.Len(t, aggregated.ResourceTemplates, 1)
+		assert.Equal(t, "file:///logs/{date}.txt", aggregated.ResourceTemplates[0].URITemplate)
+		assert.Equal(t, "backend1", aggregated.ResourceTemplates[0].BackendID)
+		assert.Equal(t, 1, aggregated.Metadata.ResourceTemplateCount)
+
+		// Routing table is keyed by URI template and carries full backend info.
+		require.Contains(t, aggregated.RoutingTable.ResourceTemplates, "file:///logs/{date}.txt")
+		target := aggregated.RoutingTable.ResourceTemplates["file:///logs/{date}.txt"]
+		require.NotNil(t, target)
+		assert.Equal(t, "backend1", target.WorkloadID)
+		assert.Equal(t, "http://backend1:8080", target.BaseURL)
+		// The original URI template is preserved for forwarding to the backend.
+		assert.Equal(t, "file:///logs/{date}.txt", target.OriginalCapabilityName)
+	})
 }
 
 func TestDefaultAggregator_MergeCapabilities_DeterministicToolOrder(t *testing.T) {

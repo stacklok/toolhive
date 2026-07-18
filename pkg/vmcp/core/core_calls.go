@@ -129,6 +129,73 @@ func (c *coreVMCP) GetPrompt(
 	return c.backendClient.GetPrompt(ctx, target, name, maps.Clone(args))
 }
 
+// Complete resolves argument-completion candidates for the referenced prompt or
+// resource template. It resolves the backend from the freshly aggregated routing
+// table (prompts table for a prompt ref, resource-templates table with a concrete
+// fallback for a resource ref), admission-checks the referenced capability (the same
+// get/read decision GetPrompt/ReadResource enforce), and forwards to the backend.
+//
+// An unroutable ref returns an empty (non-nil) result rather than an error, matching
+// the MCP spec's lenient completion semantics (a client asking for completions on an
+// unknown ref should get no candidates, not a protocol error). Admission denial
+// returns an error wrapping vmcp.ErrAuthorizationFailed. See ListTools for identity
+// semantics; identity is never logged.
+func (c *coreVMCP) Complete(
+	ctx context.Context,
+	identity *auth.Identity,
+	ref vmcp.CompletionRef,
+	argName, argValue string,
+	contextArgs map[string]string,
+) (*vmcp.CompletionResult, error) {
+	agg, err := c.aggregatedView(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	sessionRouter := router.NewSessionRouter(agg.RoutingTable)
+
+	switch ref.Type {
+	case vmcp.CompletionRefTypePrompt:
+		if err := c.authorizePromptGet(ctx, identity, ref.Name); err != nil {
+			return nil, err
+		}
+		target, err := sessionRouter.RoutePrompt(ctx, ref.Name)
+		if err != nil {
+			if errors.Is(err, router.ErrPromptNotFound) {
+				return emptyCompletion(), nil
+			}
+			return nil, fmt.Errorf("routing prompt %q for completion: %w", ref.Name, err)
+		}
+		return c.backendClient.Complete(ctx, target, ref, argName, argValue, contextArgs)
+
+	case vmcp.CompletionRefTypeResource:
+		if err := c.authorizeResourceRead(ctx, identity, ref.URI); err != nil {
+			return nil, err
+		}
+		// RouteResource matches the URI against concrete resources first, then the
+		// resource-template table (the same fallback ReadResource uses).
+		target, err := sessionRouter.RouteResource(ctx, ref.URI)
+		if err != nil {
+			if errors.Is(err, router.ErrResourceNotFound) {
+				return emptyCompletion(), nil
+			}
+			return nil, fmt.Errorf("routing resource %q for completion: %w", ref.URI, err)
+		}
+		return c.backendClient.Complete(ctx, target, ref, argName, argValue, contextArgs)
+
+	default:
+		// Unknown ref type: no candidates, not a hard error (lenient completion).
+		slog.Debug("unknown completion ref type, returning empty completion", "ref_type", ref.Type)
+		return emptyCompletion(), nil
+	}
+}
+
+// emptyCompletion returns a non-nil, empty completion result. It is the lenient
+// answer for an unroutable or unknown completion ref.
+func emptyCompletion() *vmcp.CompletionResult {
+	return &vmcp.CompletionResult{Values: []string{}}
+}
+
 // executeComposite runs a composite-tool workflow and converts the result to a
 // ToolCallResult. Workflow failures are returned as an IsError result (not a
 // transport error), mirroring the legacy compositeToolsDecorator

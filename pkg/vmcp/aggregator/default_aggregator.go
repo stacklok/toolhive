@@ -107,12 +107,13 @@ func (a *defaultAggregator) QueryCapabilities(ctx context.Context, backend vmcp.
 
 	// Convert to BackendCapabilities
 	result := &BackendCapabilities{
-		BackendID:        backend.ID,
-		Tools:            processedTools,
-		Resources:        capabilities.Resources,
-		Prompts:          capabilities.Prompts,
-		SupportsLogging:  capabilities.SupportsLogging,
-		SupportsSampling: capabilities.SupportsSampling,
+		BackendID:         backend.ID,
+		Tools:             processedTools,
+		Resources:         capabilities.Resources,
+		ResourceTemplates: capabilities.ResourceTemplates,
+		Prompts:           capabilities.Prompts,
+		SupportsLogging:   capabilities.SupportsLogging,
+		SupportsSampling:  capabilities.SupportsSampling,
 	}
 
 	span.SetAttributes(
@@ -255,14 +256,16 @@ func (a *defaultAggregator) ResolveConflicts(
 
 	// Build resolved capabilities
 	resolved := &ResolvedCapabilities{
-		Tools:     resolvedTools,
-		Resources: []vmcp.Resource{},
-		Prompts:   []vmcp.Prompt{},
+		Tools:             resolvedTools,
+		Resources:         []vmcp.Resource{},
+		ResourceTemplates: []vmcp.ResourceTemplate{},
+		Prompts:           []vmcp.Prompt{},
 	}
 
-	// Collect resources and prompts (no conflict resolution for these yet)
+	// Collect resources, resource templates, and prompts (no conflict resolution for these yet)
 	for _, caps := range capabilities {
 		resolved.Resources = append(resolved.Resources, caps.Resources...)
+		resolved.ResourceTemplates = append(resolved.ResourceTemplates, caps.ResourceTemplates...)
 		resolved.Prompts = append(resolved.Prompts, caps.Prompts...)
 
 		// Aggregate logging/sampling support (OR logic - enabled if any backend supports)
@@ -308,9 +311,10 @@ func (a *defaultAggregator) MergeCapabilities(
 
 	// Create routing table
 	routingTable := &vmcp.RoutingTable{
-		Tools:     make(map[string]*vmcp.BackendTarget),
-		Resources: make(map[string]*vmcp.BackendTarget),
-		Prompts:   make(map[string]*vmcp.BackendTarget),
+		Tools:             make(map[string]*vmcp.BackendTarget),
+		Resources:         make(map[string]*vmcp.BackendTarget),
+		ResourceTemplates: make(map[string]*vmcp.BackendTarget),
+		Prompts:           make(map[string]*vmcp.BackendTarget),
 	}
 
 	// Convert resolved tools to final vmcp.Tool format
@@ -376,6 +380,25 @@ func (a *defaultAggregator) MergeCapabilities(
 		}
 	}
 
+	// Add resource templates to routing table, keyed by URI-template string.
+	// Pass-through, mirroring resources: no URI-template rewriting.
+	for _, template := range resolved.ResourceTemplates {
+		backend := registry.Get(ctx, template.BackendID)
+		if backend == nil {
+			slog.Warn("backend not found in registry for resource template, creating minimal target",
+				"backend", template.BackendID, "resource_template", template.URITemplate)
+			routingTable.ResourceTemplates[template.URITemplate] = &vmcp.BackendTarget{
+				WorkloadID:             template.BackendID,
+				OriginalCapabilityName: template.URITemplate,
+			}
+		} else {
+			target := vmcp.BackendToTarget(backend)
+			// Store the original URI template for forwarding to backend.
+			target.OriginalCapabilityName = template.URITemplate
+			routingTable.ResourceTemplates[template.URITemplate] = target
+		}
+	}
+
 	// Add prompts to routing table
 	for _, prompt := range resolved.Prompts {
 		backend := registry.Get(ctx, prompt.BackendID)
@@ -406,18 +429,20 @@ func (a *defaultAggregator) MergeCapabilities(
 
 	// Create final aggregated view
 	aggregated := &AggregatedCapabilities{
-		Tools:            tools,
-		Resources:        resolved.Resources,
-		Prompts:          resolved.Prompts,
-		SupportsLogging:  resolved.SupportsLogging,
-		SupportsSampling: resolved.SupportsSampling,
-		RoutingTable:     routingTable,
+		Tools:             tools,
+		Resources:         resolved.Resources,
+		ResourceTemplates: resolved.ResourceTemplates,
+		Prompts:           resolved.Prompts,
+		SupportsLogging:   resolved.SupportsLogging,
+		SupportsSampling:  resolved.SupportsSampling,
+		RoutingTable:      routingTable,
 		Metadata: &AggregationMetadata{
-			BackendCount:     0, // Will be set by caller
-			ToolCount:        len(tools),
-			ResourceCount:    len(resolved.Resources),
-			PromptCount:      len(resolved.Prompts),
-			ConflictStrategy: conflictStrategy,
+			BackendCount:          0, // Will be set by caller
+			ToolCount:             len(tools),
+			ResourceCount:         len(resolved.Resources),
+			ResourceTemplateCount: len(resolved.ResourceTemplates),
+			PromptCount:           len(resolved.Prompts),
+			ConflictStrategy:      conflictStrategy,
 		},
 	}
 

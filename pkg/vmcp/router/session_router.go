@@ -6,7 +6,11 @@ package router
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"sort"
 	"strings"
+
+	"github.com/yosida95/uritemplate/v3"
 
 	"github.com/stacklok/toolhive/pkg/vmcp"
 )
@@ -103,15 +107,60 @@ func (r *sessionRouter) ResolveToolName(_ context.Context, toolName string) stri
 
 // RouteResource resolves a resource URI to its backend target using the
 // session's routing table directly.
+//
+// Resolution order:
+//
+//  1. Exact match against the aggregated concrete resources (the fast path,
+//     covering resources/list entries).
+//
+//  2. Template match: when no concrete resource matches, the URI is tested
+//     against the aggregated resource TEMPLATES (RFC 6570) and routed to the
+//     first template whose expansion matches. This lets a client read a
+//     templated resource (e.g. "file:///logs/2025-01-01.txt" matching
+//     "file:///logs/{date}.txt") through the ordinary resources/read path
+//     without a dedicated template read method.
 func (r *sessionRouter) RouteResource(_ context.Context, uri string) (*vmcp.BackendTarget, error) {
-	if r.routingTable == nil || r.routingTable.Resources == nil {
+	if r.routingTable == nil {
 		return nil, fmt.Errorf("%w: %s", ErrResourceNotFound, uri)
 	}
-	target, exists := r.routingTable.Resources[uri]
-	if !exists {
-		return nil, fmt.Errorf("%w: %s", ErrResourceNotFound, uri)
+	// Fast path: exact concrete-resource match.
+	if target, exists := r.routingTable.Resources[uri]; exists {
+		return target, nil
 	}
-	return target, nil
+	// Fallback: match the URI against the aggregated resource templates.
+	if target := r.matchResourceTemplate(uri); target != nil {
+		return target, nil
+	}
+	return nil, fmt.Errorf("%w: %s", ErrResourceNotFound, uri)
+}
+
+// matchResourceTemplate returns the backend target for the first resource
+// template whose RFC 6570 expansion matches uri, or nil when none match. A
+// template string that fails to parse is skipped (logged) rather than aborting
+// the whole match. First-match wins. Template keys are iterated in sorted order
+// so that when overlapping templates match the same URI (e.g. a greedy
+// "{+path}" template alongside a more specific one) the winner is deterministic
+// and stable across runs, resolved by sorted-key order.
+func (r *sessionRouter) matchResourceTemplate(uri string) *vmcp.BackendTarget {
+	tmplStrs := make([]string, 0, len(r.routingTable.ResourceTemplates))
+	for tmplStr := range r.routingTable.ResourceTemplates {
+		tmplStrs = append(tmplStrs, tmplStr)
+	}
+	sort.Strings(tmplStrs)
+
+	for _, tmplStr := range tmplStrs {
+		tmpl, err := uritemplate.New(tmplStr)
+		if err != nil {
+			slog.Warn("skipping invalid resource URI template during routing",
+				"template", tmplStr, "error", err)
+			continue
+		}
+		// Match returns non-nil Values on a match, nil otherwise.
+		if tmpl.Match(uri) != nil {
+			return r.routingTable.ResourceTemplates[tmplStr]
+		}
+	}
+	return nil
 }
 
 // RoutePrompt resolves a prompt name to its backend target using the session's

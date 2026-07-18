@@ -171,6 +171,35 @@ Steps can be of three types:
 
 **Implementation**: `pkg/vmcp/composer/`
 
+## Served MCP Capabilities
+
+Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities. Every served capability flows through the domain **core** (`pkg/vmcp/core`), so the same admission decision that filters `tools/list` also gates reads, gets, and completions.
+
+| Capability | Served? | Notes |
+|------------|---------|-------|
+| Tools (`tools/list`, `tools/call`) | Yes | Aggregated, conflict-resolved, admission-filtered |
+| Resources (`resources/list`, `resources/read`) | Yes | Admission-filtered per identity |
+| Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; the router matches an expanded URI against the aggregated templates |
+| Prompts (`prompts/list`, `prompts/get`) | Yes | Served per-session |
+| Completions (`completion/complete`) | Yes | A `ref/prompt` routes via the prompts table; a `ref/resource` routes via the resource-templates table (with an exact-resource fallback). Unroutable refs return an empty result (lenient completion); admission denial returns an error |
+| Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated` — see the limitation below |
+
+The completion handler is a single global handler installed via `WithCompletionHandler`, so it recovers the session from the SDK request context rather than a per-session closure. Setting it makes the shim auto-advertise the `completions` capability at initialize.
+
+### Subscription limitation (ack-level)
+
+vMCP advertises `resources.subscribe: true` and answers `resources/subscribe` / `resources/unsubscribe` at **ack level**: the request is accepted (enforcing session binding and validating the URI is an advertised, admitted resource), and go-sdk records the subscription. vMCP does **not** currently propagate backend `notifications/resources/updated` to the subscribed client — doing so requires persistent per-session backend connections, which is out of scope. Clients that subscribe will receive a success ack but no update stream yet.
+
+### Mid-call forwarding (elicitation / sampling / progress / logging)
+
+While a backend `tools/call` (or other request) is in flight, the backend may issue **server-initiated** requests and notifications back toward the client: elicitation, sampling, progress, and logging. vMCP forwards these mid-call in both directions through a per-call forwarder that bridges the backend connection to the originating client session, so a backend that needs user input (elicitation) or model completions (sampling), or that emits progress/log notifications, reaches the real client transparently. This is distinct from composite-tool elicitation (which the composer drives during a workflow); the mid-call forwarder handles the general request-scoped case for a single backend call.
+
+**Implementation**: `pkg/vmcp/forwarding.go`, `pkg/vmcp/client/forwarding.go`, `pkg/vmcp/server/serve_handlers.go`
+
+**Known limitation (logging level)**: forwarded backend logging is not yet filtered to the downstream client's requested `logging/setLevel`. vMCP requests debug-level logging from the backend so it emits `notifications/message`, and every such notification is forwarded — the downstream client's own level preference is not applied to the relayed stream.
+
+**Known limitation (resource-template authorization)**: a resource template is advertised on the template-string entity (e.g. `file:///logs/{date}.txt`), but a concrete read is admission-checked on the **expanded** URI (e.g. `file:///logs/2025-01-01.txt`). Operators should therefore author resource authorization policies against concrete URI patterns, not the template string.
+
 ## Two-Boundary Authentication
 
 vMCP uses separate authentication for incoming clients and outgoing backend calls:

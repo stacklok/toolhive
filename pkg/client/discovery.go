@@ -113,7 +113,7 @@ func (cm *ClientManager) IsClientInstalled(clientType ClientApp) bool {
 		return false
 	}
 	var pathToCheck string
-	if len(cfg.RelPath) == 0 {
+	if len(cfg.RelPath) == 0 && len(cfg.PlatformPrefix) == 0 {
 		pathToCheck = filepath.Join(cm.homeDir, cfg.SettingsFile)
 	} else {
 		pathToCheck = buildConfigDirectoryPath(cfg.RelPath, cfg.PlatformPrefix, []string{cm.homeDir})

@@ -906,7 +906,8 @@ const docTemplate = `{
                     "codex",
                     "kimi-cli",
                     "factory",
-                    "copilot-cli"
+                    "copilot-cli",
+                    "qoder"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -933,7 +934,8 @@ const docTemplate = `{
                     "Codex",
                     "KimiCli",
                     "Factory",
-                    "CopilotCli"
+                    "CopilotCli",
+                    "Qoder"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {

@@ -259,8 +259,6 @@ func (h *Handler) wrapWithPersistence(result *discovery.OAuthFlowResult) oauth2.
 
 // resolveClientCredentials returns the client ID and secret to use, preferring
 // cached DCR credentials over statically configured ones.
-// If the cached client secret is expiring soon, it attempts renewal via RFC 7592
-// before returning the credentials.
 func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clientSecret string) {
 	// First try to use statically configured credentials
 	clientID = h.config.ClientID
@@ -280,18 +278,6 @@ func (h *Handler) resolveClientCredentials(ctx context.Context) (clientID, clien
 		// ClientID is stored as plain text (it's public information)
 		clientID = h.config.CachedClientID
 		slog.Debug("Using cached DCR client credentials", "client_id", clientID)
-
-		// Proactively renew the client secret if it is expiring soon (RFC 7592)
-		if h.isSecretExpiredOrExpiringSoon() {
-			slog.Debug("Cached client secret is expiring soon, attempting renewal",
-				"expiry", h.config.CachedSecretExpiry)
-			if renewErr := h.renewClientSecret(ctx); renewErr != nil {
-				slog.Warn("Failed to proactively renew client secret; continuing with existing secret",
-					"error", renewErr)
-			} else {
-				slog.Debug("Successfully renewed client secret ahead of expiry")
-			}
-		}
 
 		// Client secret is stored securely and may be empty for PKCE flows
 		if h.config.CachedClientSecretRef != "" && h.secretProvider != nil {
@@ -324,7 +310,7 @@ func (h *Handler) tryRestoreFromCachedTokens(
 	if h.isSecretExpiredOrExpiringSoon() {
 		slog.Debug("Cached client secret is expiring or expired; attempting renewal before token restore",
 			"expiry", h.config.CachedSecretExpiry)
-		if renewErr := h.renewClientSecret(ctx); renewErr != nil {
+		if renewErr := h.renewClientSecret(ctx, issuer); renewErr != nil {
 			slog.Warn("Client secret renewal failed", "error", renewErr)
 			// Hard-fail only when the secret is already past its expiry.
 			// If we are still in the buffer window the existing secret may work.

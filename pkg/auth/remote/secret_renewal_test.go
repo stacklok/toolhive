@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 	secretmocks "github.com/stacklok/toolhive/pkg/secrets/mocks"
 )
 
@@ -130,6 +133,16 @@ func TestValidateRegistrationClientURI(t *testing.T) {
 			uri:     "https://example.com/",
 			wantErr: true,
 		},
+		{
+			name:    "non-canonical root path URI is rejected",
+			uri:     "https://example.com//",
+			wantErr: true,
+		},
+		{
+			name:    "missing host is rejected",
+			uri:     "https:///oauth/register/client-id",
+			wantErr: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -158,7 +171,7 @@ func TestRenewClientSecret_MissingConfig(t *testing.T) {
 				CachedRegTokenRef:  "some-ref",
 			},
 		}
-		err := h.renewClientSecret(context.Background())
+		err := h.renewClientSecret(context.Background(), "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "registration_client_uri missing")
 	})
@@ -172,7 +185,7 @@ func TestRenewClientSecret_MissingConfig(t *testing.T) {
 				CachedRegTokenRef:  "",
 			},
 		}
-		err := h.renewClientSecret(context.Background())
+		err := h.renewClientSecret(context.Background(), "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "registration_access_token missing")
 	})
@@ -187,7 +200,7 @@ func TestRenewClientSecret_MissingConfig(t *testing.T) {
 			},
 			secretProvider: nil, // no provider
 		}
-		err := h.renewClientSecret(context.Background())
+		err := h.renewClientSecret(context.Background(), "")
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "secret provider not configured")
 	})
@@ -255,7 +268,7 @@ func TestRenewClientSecret_Success(t *testing.T) {
 		},
 	}
 
-	err := h.renewClientSecret(context.Background())
+	err := h.renewClientSecret(context.Background(), server.URL)
 	require.NoError(t, err)
 
 	assert.Equal(t, "test-client-id", persistedClientID)
@@ -289,7 +302,7 @@ func TestRenewClientSecret_ServerError(t *testing.T) {
 		},
 	}
 
-	err := h.renewClientSecret(context.Background())
+	err := h.renewClientSecret(context.Background(), server.URL)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "401")
 }
@@ -320,7 +333,7 @@ func TestRenewClientSecret_NoPersister(t *testing.T) {
 		clientCredentialsPersister: nil, // no persister
 	}
 
-	err := h.renewClientSecret(context.Background())
+	err := h.renewClientSecret(context.Background(), server.URL)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "client credentials persister not configured")
 }
@@ -358,7 +371,7 @@ func TestRenewClientSecret_ZeroExpiryInResponse(t *testing.T) {
 		},
 	}
 
-	err := h.renewClientSecret(context.Background())
+	err := h.renewClientSecret(context.Background(), server.URL)
 	require.NoError(t, err)
 	assert.True(t, capturedExpiry.IsZero(), "zero client_secret_expires_at must produce zero time.Time")
 }
@@ -381,7 +394,7 @@ func TestRenewClientSecret_MalformedJSON(t *testing.T) {
 		secretProvider: newTestSecretProvider(t, map[string]string{"rat-ref": "rat-token"}),
 	}
 
-	err := h.renewClientSecret(context.Background())
+	err := h.renewClientSecret(context.Background(), svc.URL)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "failed to decode client update response")
 }
@@ -425,35 +438,9 @@ func TestRenewClientSecret_MissingFields(t *testing.T) {
 				secretProvider: newTestSecretProvider(t, map[string]string{"rat-ref": "rat-token"}),
 			}
 
-			err := h.renewClientSecret(context.Background())
+			err := h.renewClientSecret(context.Background(), svc.URL)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), tt.wantErr)
-		})
-	}
-}
-
-func TestValidateRegistrationClientURI_Internal(t *testing.T) {
-	t.Parallel()
-	tests := []struct {
-		name    string
-		uri     string
-		wantErr bool
-	}{
-		{"empty", "", true},
-		{"malformed", "://foo", true},
-		{"http_external", "http://example.com/reg", true},
-		{"https_external", "https://example.com/reg", false},
-		{"https_root_path", "https://example.com/", true},
-		{"http_localhost", "http://localhost:8080/reg", false},
-		{"http_127_0_0_1", "http://127.0.0.1:8080/reg", false},
-	}
-
-	for _, tt := range tests {
-		tt := tt // capture loop variable
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			err := validateRegistrationClientURI(tt.uri)
-			assert.Equal(t, tt.wantErr, err != nil)
 		})
 	}
 }
@@ -494,7 +481,7 @@ func TestHandler_Restore_RenewSuccess(t *testing.T) {
 
 	// Calling tryRestoreFromCachedTokens should trigger renewal because of the 1h expiry.
 	// We expect an error because it will try to refresh the token and fail (no token endpoint).
-	_, err := h.tryRestoreFromCachedTokens(context.Background(), "http://issuer", nil, nil)
+	_, err := h.tryRestoreFromCachedTokens(context.Background(), svc.URL, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "cached tokens are invalid or expired")
 
@@ -510,7 +497,11 @@ func TestHandler_Restore_RenewFail_Soft(t *testing.T) {
 
 	// Initial setup: secret expiring in 1 hour
 	expiry := time.Now().Add(1 * time.Hour)
-	svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var renewalPUTs atomic.Int32
+	svc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			renewalPUTs.Add(1)
+		}
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	t.Cleanup(svc.Close)
@@ -530,10 +521,14 @@ func TestHandler_Restore_RenewFail_Soft(t *testing.T) {
 		clientCredentialsPersister: func(_, _ string, _ time.Time, _, _, _ string, _ int) error { return nil },
 	}
 
-	// Renewal fails, but since it's only "expiring soon", it should continue (and then fail on token refresh)
-	_, err := h.tryRestoreFromCachedTokens(context.Background(), "http://issuer", nil, nil)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "cached tokens are invalid or expired")
+	// Renewal fails, but since it's only "expiring soon", each restore should
+	// continue to token refresh after making exactly one renewal request.
+	for attempt := int32(1); attempt <= 2; attempt++ {
+		_, err := h.tryRestoreFromCachedTokens(context.Background(), svc.URL, nil, nil)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "cached tokens are invalid or expired")
+		assert.Equal(t, attempt, renewalPUTs.Load())
+	}
 }
 
 func TestHandler_Restore_RenewFail_Hard(t *testing.T) {
@@ -562,8 +557,125 @@ func TestHandler_Restore_RenewFail_Hard(t *testing.T) {
 	}
 
 	// Renewal fails and it's fully expired -> fatal error
-	_, err := h.tryRestoreFromCachedTokens(context.Background(), "http://issuer", nil, nil)
+	_, err := h.tryRestoreFromCachedTokens(context.Background(), svc.URL, nil, nil)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "client secret expired at")
 	assert.Contains(t, err.Error(), "and renewal failed")
+}
+
+func TestPersistRenewedSecret_RegistrationClientURIRotation(t *testing.T) {
+	t.Parallel()
+
+	const currentURI = "https://issuer.example/register/test-client"
+	tests := []struct {
+		name       string
+		rotatedURI string
+		wantErr    string
+	}{
+		{
+			name:       "same origin is accepted",
+			rotatedURI: "https://issuer.example/manage/test-client",
+		},
+		{
+			name:       "equivalent default port is accepted",
+			rotatedURI: "https://issuer.example:443/manage/test-client",
+		},
+		{
+			name:       "cross origin is rejected",
+			rotatedURI: "https://attacker.example/manage/test-client",
+			wantErr:    "must remain on origin",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			persistCalls := 0
+			persistedURI := ""
+			h := &Handler{
+				config: &Config{CachedRegClientURI: currentURI},
+				clientCredentialsPersister: func(_, _ string, _ time.Time, _, regURI, _ string, _ int) error {
+					persistCalls++
+					persistedURI = regURI
+					return nil
+				},
+			}
+
+			err := h.persistRenewedSecret(clientUpdateResponse{
+				ClientID:              "test-client",
+				ClientSecret:          "rotated-secret",
+				RegistrationClientURI: tt.rotatedURI,
+			})
+			if tt.wantErr != "" {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.wantErr)
+				assert.Zero(t, persistCalls)
+				assert.Equal(t, currentURI, h.config.CachedRegClientURI)
+				return
+			}
+
+			require.NoError(t, err)
+			assert.Equal(t, 1, persistCalls)
+			assert.Equal(t, tt.rotatedURI, persistedURI)
+			assert.Equal(t, tt.rotatedURI, h.config.CachedRegClientURI)
+		})
+	}
+}
+
+func TestNewRenewalHTTPClient(t *testing.T) {
+	t.Parallel()
+
+	baseClient := oauthproto.DefaultHTTPClient()
+	baseTransport, ok := baseClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	require.NotNil(t, baseTransport.Proxy)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	localhostClient := newRenewalHTTPClient(
+		context.Background(),
+		server.URL,
+	)
+	assert.Equal(t, baseClient.Timeout, localhostClient.Timeout)
+	assert.Same(t, baseTransport, localhostClient.Transport)
+	require.NotNil(t, localhostClient.CheckRedirect)
+
+	resp, err := localhostClient.Get(server.URL)
+	require.NoError(t, err)
+	require.NoError(t, resp.Body.Close())
+	assert.Equal(t, http.StatusNoContent, resp.StatusCode)
+
+	originalRequest, err := http.NewRequest(http.MethodGet, "https://issuer.example/register", nil)
+	require.NoError(t, err)
+	sameHostRequest, err := http.NewRequest(http.MethodGet, "https://issuer.example/rotated", nil)
+	require.NoError(t, err)
+	crossHostRequest, err := http.NewRequest(http.MethodGet, "https://attacker.example/rotated", nil)
+	require.NoError(t, err)
+	assert.NoError(t, localhostClient.CheckRedirect(sameHostRequest, []*http.Request{originalRequest}))
+	assert.ErrorIs(t,
+		localhostClient.CheckRedirect(crossHostRequest, []*http.Request{originalRequest}),
+		networking.ErrRedirectRefused,
+	)
+
+	publicClient := newRenewalHTTPClient(
+		context.Background(),
+		"https://issuer.example",
+	)
+	assert.Equal(t, baseClient.Timeout, publicClient.Timeout)
+	protectedTransport, ok := publicClient.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.NotSame(t, baseTransport, protectedTransport)
+	assert.Nil(t, protectedTransport.Proxy)
+	assert.NotNil(t, protectedTransport.DialContext)
+	assert.True(t, protectedTransport.DisableKeepAlives)
+	assert.Equal(t, baseTransport.TLSHandshakeTimeout, protectedTransport.TLSHandshakeTimeout)
+	assert.False(t, baseTransport.DisableKeepAlives, "the shared OAuth transport must not be mutated")
+
+	_, err = publicClient.Get(server.URL)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), networking.ErrPrivateIpAddress)
 }

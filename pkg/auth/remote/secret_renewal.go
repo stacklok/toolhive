@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"path"
+	"strings"
 	"time"
 
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -22,14 +24,6 @@ import (
 // renew the client secret (RFC 7592). Renewal is attempted when the secret
 // expires within this window, not only after expiry.
 const secretExpiryBuffer = 24 * time.Hour
-
-var defaultRenewalHTTPClient = &http.Client{
-	Timeout: 30 * time.Second,
-	Transport: &http.Transport{
-		TLSHandshakeTimeout:   10 * time.Second,
-		ResponseHeaderTimeout: 10 * time.Second,
-	},
-}
 
 // clientUpdateRequest is the body sent in a RFC 7592 §2.2 PUT request.
 // Per the spec, all client metadata fields that were provided during
@@ -79,7 +73,7 @@ func (h *Handler) isSecretExpiredOrExpiringSoon() bool {
 //
 // Callers should log a warning and continue if renewal fails — the existing
 // secret may still be valid for some time, or the provider may not support renewal.
-func (h *Handler) renewClientSecret(ctx context.Context) error {
+func (h *Handler) renewClientSecret(ctx context.Context, issuer string) error {
 	if err := h.validateRenewalPrerequisites(); err != nil {
 		return err
 	}
@@ -134,7 +128,7 @@ func (h *Handler) renewClientSecret(ctx context.Context) error {
 
 	httpClient := h.httpClient
 	if httpClient == nil {
-		httpClient = defaultRenewalHTTPClient
+		httpClient = newRenewalHTTPClient(ctx, issuer)
 	}
 
 	resp, err := httpClient.Do(req)
@@ -203,6 +197,11 @@ func (h *Handler) persistRenewedSecret(updateResp clientUpdateResponse) error {
 	// Use the rotated registration_access_token if provided; fall back to existing.
 	newRegToken := updateResp.RegistrationAccessToken
 	newRegURI := updateResp.RegistrationClientURI
+	if newRegURI != "" {
+		if err := validateRegistrationClientURIRotation(h.config.CachedRegClientURI, newRegURI); err != nil {
+			return fmt.Errorf("invalid rotated registration_client_uri: %w", err)
+		}
+	}
 	if newRegURI == "" {
 		newRegURI = h.config.CachedRegClientURI
 	}
@@ -245,13 +244,87 @@ func validateRegistrationClientURI(registrationClientURI string) error {
 	if err != nil {
 		return fmt.Errorf("invalid registration_client_uri URL: %w", err)
 	}
+	if parsedURL.Scheme == "" || parsedURL.Host == "" {
+		return fmt.Errorf("registration_client_uri must include a scheme and host: %s", registrationClientURI)
+	}
 
 	if parsedURL.Scheme != "https" && !networking.IsLocalhost(parsedURL.Host) {
 		return fmt.Errorf("registration_client_uri must use HTTPS: %s", registrationClientURI)
 	}
-	if parsedURL.Path == "" || parsedURL.Path == "/" {
+	cleanPath := path.Clean(parsedURL.Path)
+	if parsedURL.Path == "" || cleanPath == "." || cleanPath == "/" {
 		return fmt.Errorf("registration_client_uri must include a non-root path: %s", registrationClientURI)
 	}
 
 	return nil
+}
+
+// validateRegistrationClientURIRotation prevents a renewal response from
+// moving the bearer-authenticated management endpoint to another origin.
+func validateRegistrationClientURIRotation(currentURI, rotatedURI string) error {
+	if err := validateRegistrationClientURI(rotatedURI); err != nil {
+		return err
+	}
+
+	current, err := url.Parse(currentURI)
+	if err != nil {
+		return fmt.Errorf("invalid current registration_client_uri: %w", err)
+	}
+	rotated, err := url.Parse(rotatedURI)
+	if err != nil {
+		return fmt.Errorf("invalid rotated registration_client_uri: %w", err)
+	}
+	if !sameOrigin(current, rotated) {
+		return fmt.Errorf("rotated registration_client_uri must remain on origin %s://%s", current.Scheme, current.Host)
+	}
+
+	return nil
+}
+
+func sameOrigin(first, second *url.URL) bool {
+	return strings.EqualFold(first.Scheme, second.Scheme) &&
+		strings.EqualFold(first.Hostname(), second.Hostname()) &&
+		effectivePort(first) == effectivePort(second)
+}
+
+func effectivePort(parsedURL *url.URL) string {
+	if port := parsedURL.Port(); port != "" {
+		return port
+	}
+	if strings.EqualFold(parsedURL.Scheme, "https") {
+		return "443"
+	}
+	if strings.EqualFold(parsedURL.Scheme, "http") {
+		return "80"
+	}
+	return ""
+}
+
+// newRenewalHTTPClient derives renewal transport behavior from the shared
+// OAuth client while adding protections required for a bearer-authenticated
+// request to an endpoint supplied by an authorization server.
+func newRenewalHTTPClient(ctx context.Context, issuer string) *http.Client {
+	baseClient := oauthproto.DefaultHTTPClient()
+	client := *baseClient
+	client.CheckRedirect = networking.SameHostRedirectPolicy()
+
+	// Internal IdPs are an intentional deployment mode. Base the exception on
+	// the configured issuer rather than the server-returned management URI.
+	if networking.TargetIsPrivate(ctx, issuer) {
+		return &client
+	}
+
+	if transport, ok := baseClient.Transport.(*http.Transport); ok {
+		protectedTransport := transport.Clone()
+		// A proxy resolves and connects to the destination on ToolHive's behalf,
+		// bypassing the destination-IP check below. Public management endpoints
+		// therefore use direct dials; trusted private issuers retain base-client
+		// proxy behavior through the branch above.
+		protectedTransport.Proxy = nil
+		protectedTransport.DialContext = networking.NewPrivateIPBlockingDialContext()
+		protectedTransport.DisableKeepAlives = true
+		client.Transport = protectedTransport
+	}
+
+	return &client
 }

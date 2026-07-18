@@ -951,8 +951,17 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 	}
 
 	source := flow.TokenSource()
+	return buildOAuthFlowResult(source, oauthConfig, tokenResult, config), nil
+}
+
+func buildOAuthFlowResult(
+	tokenSource oauth2.TokenSource,
+	oauthConfig *oauth.Config,
+	tokenResult *oauth.TokenResult,
+	config *OAuthFlowConfig,
+) *OAuthFlowResult {
 	return &OAuthFlowResult{
-		TokenSource:  source,
+		TokenSource:  tokenSource,
 		Config:       oauthConfig,
 		AccessToken:  tokenResult.AccessToken,
 		RefreshToken: tokenResult.RefreshToken,
@@ -965,7 +974,7 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 		RegistrationClientURI:   config.RegistrationClientURI,
 		TokenEndpointAuthMethod: config.TokenEndpointAuthMethod,
 		RegisteredCallbackPort:  config.RegisteredCallbackPort,
-	}, nil
+	}
 }
 
 // FetchResourceMetadata fetches RFC 9728 protected-resource metadata from a

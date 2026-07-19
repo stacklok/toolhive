@@ -4,11 +4,13 @@
 package server_test
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,6 +18,7 @@ import (
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -65,7 +68,7 @@ func parseRPCError(t *testing.T, body []byte) rpcErrorFields {
 // chain that replaced the legacy HTTP authz middleware on the Serve path.
 func newCedarAuthzTestServer(t *testing.T, backendURL string, policies ...string) *httptest.Server {
 	t.Helper()
-	return buildCedarAuthzServer(t, backendURL, nil, policies...)
+	return buildCedarAuthzServer(t, backendURL, nil, nil, policies...)
 }
 
 // newCedarAuthzCodeModeServer is newCedarAuthzTestServer with code mode enabled, so
@@ -74,14 +77,15 @@ func newCedarAuthzTestServer(t *testing.T, backendURL string, policies ...string
 // while a directly-denied tool still 403s.
 func newCedarAuthzCodeModeServer(t *testing.T, backendURL string, policies ...string) *httptest.Server {
 	t.Helper()
-	return buildCedarAuthzServer(t, backendURL, &codemode.Config{}, policies...)
+	return buildCedarAuthzServer(t, backendURL, &codemode.Config{}, nil, policies...)
 }
 
 // buildCedarAuthzServer builds the vMCP test server. A non-nil codeModeCfg enables
-// the codemode decorator; a nil policies slice leaves Authz unset (allow-all, gate
-// not installed) — used by the no-Authz parity guard.
+// the codemode decorator; a non-nil auditCfg enables the audit middleware; a nil
+// policies slice leaves Authz unset (allow-all, gate not installed) — used by the
+// no-Authz parity guard.
 func buildCedarAuthzServer(
-	t *testing.T, backendURL string, codeModeCfg *codemode.Config, policies ...string,
+	t *testing.T, backendURL string, codeModeCfg *codemode.Config, auditCfg *audit.Config, policies ...string,
 ) *httptest.Server {
 	t.Helper()
 
@@ -116,14 +120,18 @@ func buildCedarAuthzServer(
 
 	// Inject a fixed authenticated identity on every request so the session binds to it at
 	// initialize and the Cedar authorizer can resolve the principal on subsequent calls.
+	// The MCP parser is composed inside it, mirroring the production incoming-auth factory
+	// (see pkg/vmcp/auth/factory): audit and authz read parsed MCP data from the request
+	// context, and the audit middleware sits between auth and the parser applied in Handler.
 	identityMiddleware := func(next http.Handler) http.Handler {
+		withParser := mcpparser.ParsingMiddleware(next)
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
 				Subject: "user-123",
 				Name:    "Test User",
 				Claims:  map[string]any{"sub": "user-123", "name": "Test User"},
 			}}
-			next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
+			withParser.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
 		})
 	}
 
@@ -141,7 +149,7 @@ func buildCedarAuthzServer(
 	}
 
 	srv, err := server.New(
-		context.Background(),
+		t.Context(),
 		&server.Config{
 			// Name is non-empty: deriveCoreConfig forwards the raw server name to the core,
 			// and the Cedar admission seam requires it (resource entities are scoped to
@@ -154,6 +162,7 @@ func buildCedarAuthzServer(
 			Aggregator:     agg,
 			AuthMiddleware: identityMiddleware,
 			Authz:          authzCfg,
+			AuditConfig:    auditCfg,
 			CodeModeConfig: codeModeCfg,
 		},
 		router.NewSessionRouter(&vmcp.RoutingTable{}),
@@ -163,7 +172,7 @@ func buildCedarAuthzServer(
 	)
 	require.NoError(t, err)
 
-	handler, err := srv.Handler(context.Background())
+	handler, err := srv.Handler(t.Context())
 	require.NoError(t, err)
 
 	ts := httptest.NewServer(handler)
@@ -430,4 +439,63 @@ func TestIntegration_RealBackend_CodeMode_Authz(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, http.StatusForbidden, denyResp.StatusCode, "body: %s", string(denyBody))
 	assert.Equal(t, mcpparser.JSONRPCCodeDenied, parseRPCError(t, denyBody).code)
+}
+
+// TestIntegration_CedarAuthzDenialIsAudited proves that on the vMCP Serve path a
+// policy-denied tools/call still produces an audit event with outcome "denied".
+// The pre-dispatch authorization gate runs inside the audit middleware, so the
+// 403 it writes must be captured as the event outcome. This is the vMCP
+// counterpart of the proxyrunner-path guard in pkg/runner
+// (TestAuthzDecisionIsAudited).
+func TestIntegration_CedarAuthzDenialIsAudited(t *testing.T) {
+	t.Parallel()
+
+	backendURL := startRealMCPBackend(t)
+	auditLogPath := filepath.Join(t.TempDir(), "audit.log")
+	// Permit only an unrelated tool: "echo" is default-denied.
+	ts := buildCedarAuthzServer(t, backendURL, nil,
+		&audit.Config{Component: "vmcp-server", LogFile: auditLogPath},
+		`permit(principal, action == Action::"call_tool", resource == Tool::"unrelated");`)
+
+	client := NewMCPTestClient(t, ts.URL)
+	client.InitializeSession()
+
+	resp := client.CallTool("echo", map[string]any{"input": "hello"})
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	require.NoError(t, err)
+	require.Equal(t, http.StatusForbidden, resp.StatusCode, "body: %s", string(body))
+
+	// The audit event is written after the response is flushed, so poll briefly.
+	require.Eventually(t, func() bool {
+		return findAuditEvent(t, auditLogPath, "mcp_tool_call") != nil
+	}, 5*time.Second, 50*time.Millisecond, "a tools/call audit event must be emitted for the denied call")
+
+	event := findAuditEvent(t, auditLogPath, "mcp_tool_call")
+	assert.Equal(t, "denied", event["outcome"],
+		"a policy-denied tools/call must be audited with outcome denied")
+}
+
+// findAuditEvent reads the newline-delimited JSON audit log at path and returns
+// the first event whose "type" matches eventType, or nil if none is present yet.
+func findAuditEvent(t *testing.T, path string, eventType string) map[string]any {
+	t.Helper()
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		if line == "" {
+			continue
+		}
+		var event map[string]any
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			continue
+		}
+		if event["type"] == eventType {
+			return event
+		}
+	}
+	return nil
 }

@@ -10,14 +10,14 @@ This document primarily covers the middleware system for `thv` and `thv-proxyrun
 
 The middleware chain consists of the following components:
 
-1. **Authentication Middleware**: Validates JWT tokens and extracts client identity
-2. **Upstream Token Swap Middleware**: Exchanges ToolHive JWTs for upstream IdP tokens (automatic with embedded auth server)
-3. **Token Exchange Middleware**: Exchanges JWT tokens for external service tokens via OAuth 2.0 Token Exchange (optional)
-4. **MCP Parsing Middleware**: Parses JSON-RPC MCP requests and extracts structured data
-5. **Tool Mapping Middleware**: Enables tool filtering and override capabilities through two complementary middleware components that process outgoing `tools/list` responses and incoming `tools/call` requests (optional)
-6. **Usage Metrics Middleware**: Collects anonymous usage metrics for ToolHive development (optional)
-7. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
-8. **Audit Middleware**: Logs request events for compliance and monitoring (optional)
+1. **Audit Middleware**: Wraps the rest of the chain and logs every request outcome — including rejections from authentication, webhooks, and authorization (optional)
+2. **Authentication Middleware**: Validates JWT tokens and extracts client identity
+3. **Upstream Token Swap Middleware**: Exchanges ToolHive JWTs for upstream IdP tokens (automatic with embedded auth server)
+4. **Token Exchange Middleware**: Exchanges JWT tokens for external service tokens via OAuth 2.0 Token Exchange (optional)
+5. **MCP Parsing Middleware**: Parses JSON-RPC MCP requests and extracts structured data
+6. **Tool Mapping Middleware**: Enables tool filtering and override capabilities through two complementary middleware components that process outgoing `tools/list` responses and incoming `tools/call` requests (optional)
+7. **Usage Metrics Middleware**: Collects anonymous usage metrics for ToolHive development (optional)
+8. **Telemetry Middleware**: Instruments requests with OpenTelemetry (optional)
 9. **Authorization Middleware**: Evaluates Cedar policies to authorize requests (optional)
 10. **Header Forward Middleware**: Injects custom headers into requests to remote MCP servers (optional)
 11. **Recovery Middleware**: Catches panics and returns HTTP 500 errors (always present)
@@ -33,12 +33,13 @@ Two webhook types are supported:
 
 When configured together, the effective order is:
 
-1. Authentication
-2. Token exchange and related auth middleware, when configured
-3. MCP parsing
-4. Mutating webhooks
-5. Validating webhooks
-6. Telemetry, audit, and authorization middleware
+1. Audit (wraps everything below, so webhook denials are audited)
+2. Authentication
+3. Token exchange and related auth middleware, when configured
+4. MCP parsing
+5. Mutating webhooks
+6. Validating webhooks
+7. Telemetry and authorization middleware
 
 Multiple webhook definitions of the same type run in configuration order. When multiple `--webhook-config` files are provided, later files override earlier webhook definitions with the same `name`.
 
@@ -59,10 +60,10 @@ Example config files:
 
 ```mermaid
 graph TD
-    A[Incoming MCP Request] --> B[Authentication Middleware]
+    A[Incoming MCP Request] --> E[Audit Middleware]
+    E --> B[Authentication Middleware]
     B --> C[MCP Parsing Middleware]
-    C --> E[Audit Middleware]
-    E --> D[Authorization Middleware]
+    C --> D[Authorization Middleware]
     D --> R[Recovery Middleware]
     R --> F[MCP Server Handler]
 
@@ -101,29 +102,29 @@ graph TD
 ```mermaid
 sequenceDiagram
     participant Client
+    participant Audit as Audit
     participant Auth as Authentication
     participant Parser as MCP Parser
-    participant Audit as Audit
     participant Authz as Authorization
     participant Recovery as Recovery
     participant Server as MCP Server
 
-    Client->>Auth: HTTP Request with JWT
+    Client->>Audit: HTTP Request
+    Note over Audit: Injects identity / parsed-request holders,<br/>logs the outcome after the inner chain returns
     Note over Recovery: Innermost wrapper: catches panics<br/>from the handler and inner middleware
+
+    Audit->>Auth: HTTP Request with JWT
     Auth->>Auth: Validate JWT Token
     Auth->>Auth: Extract Claims
-    Note over Auth: Add claims to context
+    Note over Auth: Add identity to context and holder
 
     Auth->>Parser: Request + JWT Claims
     Parser->>Parser: Parse JSON-RPC
     Parser->>Parser: Extract MCP Method
     Parser->>Parser: Extract Resource ID & Arguments
-    Note over Parser: Add parsed data to context
+    Note over Parser: Add parsed data to context and holder
 
-    Parser->>Audit: Request + Parsed MCP Data
-    Note over Audit: Wraps authorization so every<br/>request is logged, including denials
-
-    Audit->>Authz: Request
+    Parser->>Authz: Request + Parsed MCP Data
     Authz->>Authz: Get Parsed Data from Context
     Authz->>Authz: Create Cedar Entities
     Authz->>Authz: Evaluate Policies
@@ -133,7 +134,11 @@ sequenceDiagram
         Server->>Audit: Response
         Audit->>Audit: Log Audit Event (outcome success)
         Audit->>Client: Response
-    else Unauthorized
+    else Authentication fails
+        Auth->>Audit: 401 Unauthorized
+        Audit->>Audit: Log Audit Event (outcome denied)
+        Audit->>Client: 401 Unauthorized
+    else Denied by policy
         Authz->>Audit: 403 Forbidden
         Audit->>Audit: Log Audit Event (outcome denied)
         Audit->>Client: 403 Forbidden
@@ -391,7 +396,7 @@ thv config usage-metrics enable
 - Log structured audit events as JSON
 - Track request duration and outcome
 - Support file-based and stdout log destinations
-- Wrap the authorization middleware so denied requests are still recorded (outcome `denied`)
+- Wrap the rest of the chain (authentication, webhooks, authorization) so rejected requests are still recorded (outcome `denied`); the identity and parsed MCP data flow back from the inner middlewares via holder carriers
 
 **Event Types**:
 - `mcp_initialize` - Client initialization events
@@ -446,6 +451,7 @@ thv run --transport sse --name my-server --audit-config audit.json my-image:late
 
 **Important Notes**:
 - `excludeEventTypes` takes precedence over `eventTypes`
+- Requests rejected before the MCP parser runs (e.g. authentication failures) are typed `http_request`, not `mcp_*`. An `eventTypes` allowlist containing only `mcp_*` types will drop those rejection events — include `http_request` to keep them.
 - When `includeRequestData` or `includeResponseData` is enabled, **`maxDataSize` must be set** (non-zero) for data capture to work
 - Log files are created with restrictive permissions (0600) for security
 - Logs are written in newline-delimited JSON format for easy parsing
@@ -618,10 +624,14 @@ The middleware chain uses Go's `context.Context` to pass data between components
 
 ```mermaid
 graph LR
-    A[Request Context] --> B[+ JWT Claims]
+    A[Request Context] --> E[+ Audit holder carriers]
+    E --> B[+ JWT Claims]
     B --> C[+ Parsed MCP Data]
-    C --> E[+ Audit Metadata]
-    E --> D[+ Authorization Result]
+    C --> D[+ Authorization Result]
+    
+    subgraph "Audit"
+        E
+    end
     
     subgraph "Authentication"
         B
@@ -629,10 +639,6 @@ graph LR
     
     subgraph "MCP Parser"
         C
-    end
-    
-    subgraph "Audit"
-        E
     end
     
     subgraph "Authorization"
@@ -661,9 +667,9 @@ thv run --transport sse --name my-server --audit-config audit.yaml my-image:late
 
 The middleware order is critical and enforced by the system:
 
-1. **Authentication** - Must be first to establish client identity
-2. **MCP Parsing** - Must come after authentication to access JWT context
-3. **Audit** - Must wrap authorization so every request is logged, including policy denials (outcome `denied`)
+1. **Audit** - Wraps the rest of the chain so every request outcome is logged, including authentication failures (401) and policy denials (403, outcome `denied`). The identity and parsed MCP data are published back to it by the inner middlewares via holder carriers.
+2. **Authentication** - Establishes client identity
+3. **MCP Parsing** - Must come after authentication to access JWT context
 4. **Authorization** - Must come after parsing to access structured MCP data
 
 ## Error Handling
@@ -995,28 +1001,29 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 
 The middleware chain execution order is critical and controlled by the order in `PopulateMiddlewareConfigs()` in `pkg/runner/middleware.go`.
 
-1. **Authentication Middleware** (always present) - Validates JWT tokens and extracts claims
-2. **Upstream Token Swap Middleware** (if embedded auth server configured) - Swaps ToolHive JWT for upstream IdP token
-3. **Token Exchange Middleware** (if enabled) - Exchanges JWT for external service tokens via OAuth 2.0 Token Exchange
-4. **Tool Filter Middleware** (if enabled) - Filters available tools in list responses
-5. **Tool Call Filter Middleware** (if enabled) - Filters tool call requests
-6. **MCP Parser Middleware** (always present) - Parses JSON-RPC MCP requests
-7. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
-8. **Telemetry Middleware** (if enabled) - OpenTelemetry instrumentation
-9. **Audit Middleware** (if enabled) - Request logging
+1. **Audit Middleware** (if enabled) - Request logging; wraps everything below so every rejection is audited
+2. **Authentication Middleware** (always present) - Validates JWT tokens and extracts claims
+3. **Upstream Token Swap Middleware** (if embedded auth server configured) - Swaps ToolHive JWT for upstream IdP token
+4. **Token Exchange Middleware** (if enabled) - Exchanges JWT for external service tokens via OAuth 2.0 Token Exchange
+5. **Tool Filter Middleware** (if enabled) - Filters available tools in list responses
+6. **Tool Call Filter Middleware** (if enabled) - Filters tool call requests
+7. **MCP Parser Middleware** (always present) - Parses JSON-RPC MCP requests
+8. **Usage Metrics Middleware** (if enabled) - Tracks tool call counts
+9. **Telemetry Middleware** (if enabled) - OpenTelemetry instrumentation
 10. **Authorization Middleware** (if enabled) - Cedar policy evaluation
 11. **Header Forward Middleware** (if configured for remote servers) - Injects custom headers
 12. **Recovery Middleware** (always present) - Catches panics
 
 **Important Ordering Rules**:
-- Authentication must come first to establish client identity
+- Audit wraps the whole chain (directly inside the body-size limit): every request that passes the size cap produces an audit event no matter which middleware rejects it. It does not need to run inside auth or the parser — those publish the identity and parsed MCP data back to it via `auth.IdentityHolder` and `mcp.ParsedRequestHolder`.
+- Authentication must come before the other middlewares to establish client identity
 - Upstream Token Swap must come after Authentication (requires `tsid` claim) and before Token Exchange (so it can read the original JWT)
 - Token Exchange must come after Upstream Swap if both are used (can further transform the upstream IdP token)
 - Tool filters should come before MCP Parser to operate on raw requests
 - MCP Parser must come before Authorization (provides structured MCP data)
-- Audit must come before Authorization so it wraps it: policy denials (403) must still produce an audit event with outcome `denied`
 - Header Forward executes close to the backend handler (innermost position)
 - Recovery is always last in config, making it the innermost wrapper (the chain wraps in reverse config order, so the first entry is the outermost and runs first)
+- Body-size limit and Origin validation stay OUTSIDE audit: oversized bodies must be rejected before audit buffers request data, and origin validation is a pre-auth DNS-rebind guard. Their rejections (413/403) are the only ones not audited.
 
 ### Custom Authorization Policies
 

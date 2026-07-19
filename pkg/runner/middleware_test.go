@@ -1317,6 +1317,34 @@ func TestPopulateMiddlewareConfigs_RateLimit(t *testing.T) {
 	}
 }
 
+func TestPopulateMiddlewareConfigs_RateLimitTelemetryOrdering(t *testing.T) {
+	t.Parallel()
+	config := &RunConfig{
+		Name:               "test-server",
+		TelemetryConfig:    &telemetry.Config{},
+		RateLimitNamespace: "default",
+		RateLimitConfig: &v1beta1.RateLimitConfig{
+			Shared: &v1beta1.RateLimitBucket{
+				MaxTokens:    5,
+				RefillPeriod: metav1.Duration{Duration: time.Minute},
+			},
+		},
+		ScalingConfig: &ScalingConfig{
+			SessionRedis: &SessionRedisConfig{Address: "redis:6379"},
+		},
+	}
+
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+
+	parserIdx := indexOfMiddleware(t, config.MiddlewareConfigs, mcp.ParserMiddlewareType)
+	telemetryIdx := indexOfMiddleware(t, config.MiddlewareConfigs, telemetry.MiddlewareType)
+	rateLimitIdx := indexOfMiddleware(t, config.MiddlewareConfigs, ratelimit.MiddlewareType)
+	assert.Less(t, parserIdx, telemetryIdx,
+		"MCP parsing must run before telemetry creates the request span")
+	assert.Less(t, telemetryIdx, rateLimitIdx,
+		"telemetry must create the request span before rate limiting annotates it")
+}
+
 func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
 	t.Parallel()
 

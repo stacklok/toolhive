@@ -141,17 +141,33 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	}
 	middlewareConfigs = append(middlewareConfigs, *mcpParserConfig)
 
+	// Telemetry middleware (if enabled).
+	// Positioned after MCP parsing so request spans include MCP attributes, and
+	// before rate limiting so the limiter can annotate the active request span.
+	if config.TelemetryConfig != nil {
+		telemetryParams := telemetry.FactoryMiddlewareParams{
+			Config:     config.TelemetryConfig,
+			ServerName: config.Name,
+			Transport:  config.Transport.String(),
+		}
+		telemetryConfig, err := types.NewMiddlewareConfig(telemetry.MiddlewareType, telemetryParams)
+		if err != nil {
+			return fmt.Errorf("failed to create telemetry middleware config: %w", err)
+		}
+		middlewareConfigs = append(middlewareConfigs, *telemetryConfig)
+	}
+
 	// Rate limit middleware (if configured)
-	// Positioned after MCP parser (needs tool name from context).
-	// Will also need user identity from auth when per-user limits are added (#4550).
+	// Positioned after MCP parser (needs tool name from context) and telemetry
+	// (needs the active request span for rate-limit attributes).
 	middlewareConfigs, err = addRateLimitMiddleware(middlewareConfigs, config)
 	if err != nil {
 		return err
 	}
 
 	// Mutating Webhooks middleware (if configured).
-	// Must run BEFORE validating webhooks:
-	// MCP Parser -> [Mutating Webhooks] -> [Validating Webhooks] -> Authz -> Audit
+	// Must run before validating webhooks; parser, telemetry, and rate limiting
+	// remain outside both webhook layers.
 	middlewareConfigs, err = addMutatingWebhookMiddleware(middlewareConfigs, config)
 	if err != nil {
 		return err
@@ -171,20 +187,6 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 	middlewareConfigs, err = addUsageMetricsMiddleware(middlewareConfigs, appConfig.DisableUsageMetrics)
 	if err != nil {
 		return err
-	}
-
-	// Telemetry middleware (if enabled)
-	if config.TelemetryConfig != nil {
-		telemetryParams := telemetry.FactoryMiddlewareParams{
-			Config:     config.TelemetryConfig,
-			ServerName: config.Name,
-			Transport:  config.Transport.String(),
-		}
-		telemetryConfig, err := types.NewMiddlewareConfig(telemetry.MiddlewareType, telemetryParams)
-		if err != nil {
-			return fmt.Errorf("failed to create telemetry middleware config: %w", err)
-		}
-		middlewareConfigs = append(middlewareConfigs, *telemetryConfig)
 	}
 
 	// Authorization middleware (if enabled)

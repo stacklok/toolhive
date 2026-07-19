@@ -142,11 +142,15 @@ type bucketSpec struct {
 	refillPeriod time.Duration
 }
 
-// limitCheck keeps a bucket paired with its metric dimensions.
+// limitCheck keeps a bucket paired with its observability dimensions.
 type limitCheck struct {
 	bucket        *bucket.TokenBucket
 	scope         string
 	operationType string
+}
+
+func (c limitCheck) rejectionIdentifier() string {
+	return c.scope + "_" + c.operationType
 }
 
 // limiter is the concrete implementation of Limiter.
@@ -221,6 +225,7 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 	}
 
 	if len(checks) == 0 {
+		recordRateLimitSpanOutcome(ctx, rateLimitDecisionAllowed, rateLimitRejectedByNone)
 		return &Decision{Allowed: true}, nil
 	}
 
@@ -238,6 +243,7 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 	}
 	if rejectedIdx >= 0 {
 		l.telemetry.recordRejected(ctx, checks[rejectedIdx])
+		recordRateLimitSpanOutcome(ctx, rateLimitDecisionRejected, checks[rejectedIdx].rejectionIdentifier())
 		return &Decision{
 			Allowed:    false,
 			RetryAfter: buckets[rejectedIdx].RetryAfter(),
@@ -245,6 +251,7 @@ func (l *limiter) Allow(ctx context.Context, toolName, userID string) (*Decision
 	}
 
 	l.telemetry.recordAllowed(ctx, checks)
+	recordRateLimitSpanOutcome(ctx, rateLimitDecisionAllowed, rateLimitRejectedByNone)
 	return &Decision{Allowed: true}, nil
 }
 

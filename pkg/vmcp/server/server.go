@@ -522,8 +522,9 @@ func New(
 // This enables embedding the vmcp server inside another HTTP server or framework.
 //
 // The returned handler includes all routes (health, metrics, well-known, MCP)
-// and the full middleware chain (recovery, body limit, header validation, auth,
-// rate limit, audit, MCP parsing, telemetry).
+// and the full HTTP middleware chain (recovery, body limit, header validation,
+// auth, audit, MCP parsing, telemetry). Rate limiting decorates the core VMCP
+// and runs inside the MCP SDK handler.
 //
 // Each call builds a fresh handler. The method is safe to call multiple times.
 // All returned handlers share the same underlying MCPServer and SessionManager,
@@ -583,9 +584,9 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth → rate-limit → audit → MCP-parsing → telemetry
+	// Code wraps: auth → audit → MCP-parsing → telemetry
 	// Execution order: recovery → body-limit → header-val → auth →
-	//   rate-limit → audit → MCP-parsing → telemetry → handler
+	//   audit → MCP-parsing → telemetry → handler → core rate-limit decorator
 	//
 	// Upstream token refresh failures are detected inside AuthMiddleware itself:
 	// GetAllUpstreamCredentials returns a non-empty failed-provider slice when

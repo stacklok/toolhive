@@ -548,7 +548,7 @@ func TestIntegration_CedarAuthzDenial_ModernPath_IsAudited(t *testing.T) {
 	// Permit only an unrelated tool: "echo" is default-denied, so the re-homed gate
 	// in dispatchModern rejects the call before it reaches the backend.
 	ts := buildCedarAuthzServer(t, backendURL, nil,
-		&audit.Config{Component: "vmcp-server", LogFile: auditLogPath},
+		&audit.Config{Component: "vmcp-server", LogFile: auditLogPath}, nil,
 		`permit(principal, action == Action::"call_tool", resource == Tool::"unrelated");`)
 
 	resp, decoded := postModern(t, ts.URL, "tools/call", map[string]any{
@@ -704,6 +704,13 @@ func TestRegression_PerSessionToolCall_DeniedForUnprivilegedPrincipal(t *testing
 // returns the first "mcp_tool_call" event, or nil if none is present yet.
 func findToolCallAuditEvent(t *testing.T, path string) map[string]any {
 	t.Helper()
+	return findAuditEvent(t, path, "mcp_tool_call")
+}
+
+// findAuditEvent reads the newline-delimited JSON audit log at path and returns
+// the first event whose "type" matches eventType, or nil if none is present yet.
+func findAuditEvent(t *testing.T, path string, eventType string) map[string]any {
+	t.Helper()
 
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -717,7 +724,7 @@ func findToolCallAuditEvent(t *testing.T, path string) map[string]any {
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			continue
 		}
-		if event["type"] == "mcp_tool_call" {
+		if event["type"] == eventType {
 			return event
 		}
 	}

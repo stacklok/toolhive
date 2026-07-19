@@ -78,11 +78,12 @@ func PopulateMiddlewareConfigs(config *RunConfig) error {
 
 	// Audit middleware (if enabled). Added directly inside body-limit so it
 	// wraps the REST of the chain: every request that passes the size cap
-	// produces an audit event no matter which middleware rejects it —
-	// authentication (401), webhook policy denials, rate limiting, and
-	// authorization (403, outcome "denied") included. Identity and parsed MCP
-	// data are read back from the inner auth/parser middlewares via the
-	// holder carriers (see auth.IdentityHolder, mcp.ParsedRequestHolder).
+	// produces an audit event no matter which middleware rejects it.
+	// Authentication (401) and authorization/webhook denials (403) map to
+	// outcome "denied"; other rejections such as rate limiting (429) map to
+	// "failure" (see audit.determineOutcome). Identity and parsed MCP data are
+	// read back from the inner auth/parser middlewares via the holder
+	// carriers (see auth.IdentityHolder, mcp.ParsedRequestHolder).
 	if config.AuditConfig != nil {
 		auditParams := audit.MiddlewareParams{
 			ConfigPath:    config.AuditConfigPath, // Keep for backwards compatibility

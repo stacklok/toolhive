@@ -1354,13 +1354,16 @@ func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
 	assert.True(t, typeIndex[audit.MiddlewareType])
 }
 
-// TestPopulateMiddlewareConfigs_AuditBeforeAuthz pins the ordering invariant
-// that the audit middleware precedes authorization in the config slice.
-// Earlier entries wrap later ones at request time, so audit must wrap authz
-// for an authorization denial (403) to still produce an audit event with
-// outcome "denied". It must in turn come after auth and the MCP parser, which
-// provide the identity and parsed MCP data the audit event is built from.
-func TestPopulateMiddlewareConfigs_AuditBeforeAuthz(t *testing.T) {
+// TestPopulateMiddlewareConfigs_AuditWrapsChain pins the ordering invariant
+// that the audit middleware sits directly inside body-limit, wrapping the
+// REST of the chain. Earlier entries wrap later ones at request time, so this
+// placement is what guarantees every request that passes the size cap
+// produces an audit event no matter which middleware rejects it —
+// authentication 401s, webhook denials, and authorization 403s included.
+// Identity and parsed MCP data flow back to audit from the inner auth/parser
+// middlewares via the holder carriers, so audit no longer needs to run inside
+// them.
+func TestPopulateMiddlewareConfigs_AuditWrapsChain(t *testing.T) {
 	t.Parallel()
 
 	config := &RunConfig{
@@ -1383,13 +1386,17 @@ func TestPopulateMiddlewareConfigs_AuditBeforeAuthz(t *testing.T) {
 	require.True(t, ok, "auth middleware must be present")
 	parserIdx, ok := typeIndex[mcp.ParserMiddlewareType]
 	require.True(t, ok, "MCP parser middleware must be present")
+	bodyLimitIdx, ok := typeIndex[bodylimit.MiddlewareType]
+	require.True(t, ok, "body limit middleware must be present")
 
+	assert.Less(t, bodyLimitIdx, auditIdx,
+		"body limit must stay outside audit so oversized bodies are rejected before audit buffers them")
+	assert.Less(t, auditIdx, authIdx,
+		"audit must wrap auth so authentication failures (401) are audited")
+	assert.Less(t, auditIdx, parserIdx,
+		"audit wraps the parser; parsed MCP data flows back via mcp.ParsedRequestHolder")
 	assert.Less(t, auditIdx, authzIdx,
-		"audit must precede authz so authorization denials are audited")
-	assert.Less(t, authIdx, auditIdx,
-		"auth must precede audit so the identity is available to audit events")
-	assert.Less(t, parserIdx, auditIdx,
-		"MCP parser must precede audit so parsed MCP data is available to audit events")
+		"audit must wrap authz so authorization denials (403) are audited")
 }
 
 // TestPopulateMiddlewareConfigs_StripAuthOrdering pins the ordering invariant

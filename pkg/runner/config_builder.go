@@ -665,6 +665,15 @@ func WithMiddlewareFromFlags(
 		// actual proxy determine the order of application of middlewares, since
 		// the types of middleware are known at compile time.
 
+		// Audit middleware (if enabled) goes first so it is the outermost
+		// wrapper after the body-limit prepended in runner.Run: every request
+		// that passes the size cap produces an audit event no matter which
+		// middleware rejects it — authentication (401), webhook denials, and
+		// authorization (403, outcome "denied") included. Identity and parsed
+		// MCP data are read back from the inner auth/parser middlewares via
+		// the holder carriers (auth.IdentityHolder, mcp.ParsedRequestHolder).
+		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
+
 		// Add tool filter middlewares
 		middlewareConfigs = addToolFilterMiddlewares(middlewareConfigs, toolsFilter, toolsOverride)
 
@@ -696,11 +705,10 @@ func WithMiddlewareFromFlags(
 			return err
 		}
 
-		// Add optional middlewares. Audit is added BEFORE authorization so it
-		// wraps it at request time: authorization denials (403) must still
-		// produce an audit event with outcome "denied".
+		// Add optional middlewares. Audit was added at the top of the chain
+		// so authorization denials (403) still produce an audit event with
+		// outcome "denied".
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
-		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 		var authzErr error
 		middlewareConfigs, authzErr = addAuthzMiddleware(middlewareConfigs, authzConfigPath, b.config.EmbeddedAuthServerConfig)
 		if authzErr != nil {

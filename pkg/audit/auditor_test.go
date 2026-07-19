@@ -20,6 +20,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/mcp"
 )
 
 func TestNewAuditor(t *testing.T) {
@@ -1038,5 +1039,188 @@ func TestAuditLoggerLevelFormat(t *testing.T) {
 		logOutput := logBuf.String()
 		assert.Contains(t, logOutput, `"level":"WARN"`)
 		assert.NotContains(t, logOutput, `"level":"AUDIT"`)
+	})
+}
+
+// newBufferAuditor returns an Auditor writing audit events to the returned
+// buffer, for tests asserting on emitted events.
+func newBufferAuditor(t *testing.T) (*Auditor, *bytes.Buffer) {
+	t.Helper()
+	auditor, err := NewAuditorWithTransport(&Config{Component: "test"}, "streamable-http")
+	require.NoError(t, err)
+	var logBuf bytes.Buffer
+	auditor.auditLogger = NewAuditLogger(&logBuf)
+	return auditor, &logBuf
+}
+
+// decodeAuditEvents parses the newline-delimited JSON events in buf.
+func decodeAuditEvents(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var events []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var event map[string]any
+		require.NoError(t, json.Unmarshal([]byte(line), &event), "audit log line is not JSON: %s", line)
+		events = append(events, event)
+	}
+	return events
+}
+
+// newToolsCallRequest builds a POST tools/call request suitable for the parser.
+func newToolsCallRequest() *http.Request {
+	req := httptest.NewRequest("POST", "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"target_tool","arguments":{}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	return req
+}
+
+// TestMiddlewareAuditsInnerChainOutcomes pins the audit-wraps-chain
+// arrangement: auth and the MCP parser run INSIDE the audit middleware, and
+// audit reads the identity and parsed MCP data back through the holder
+// carriers it injects (auth.IdentityHolder, mcp.ParsedRequestHolder). This is
+// what lets audit record rejections from any inner middleware — auth 401s,
+// webhook denials, authz 403s — instead of only requests that reached its old
+// position deep in the chain.
+func TestMiddlewareAuditsInnerChainOutcomes(t *testing.T) {
+	t.Parallel()
+
+	// innerAuth emulates an auth middleware running inside audit: it attaches
+	// the identity exactly as production middlewares do (via auth.WithIdentity,
+	// which also fills the IdentityHolder injected by audit).
+	innerAuth := func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			id := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user-123",
+				Name:    "Test User",
+				Claims:  jwt.MapClaims{"sub": "user-123"},
+			}}
+			next.ServeHTTP(w, r.WithContext(auth.WithIdentity(r.Context(), id)))
+		})
+	}
+
+	t.Run("identity attached by inner auth reaches the audit event", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		auditor.Middleware(innerAuth(handler)).ServeHTTP(httptest.NewRecorder(), newToolsCallRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+		assert.Equal(t, OutcomeSuccess, events[0]["outcome"])
+		subjects, ok := events[0]["subjects"].(map[string]any)
+		require.True(t, ok, "event must carry subjects")
+		assert.Equal(t, "user-123", subjects[SubjectKeyUserID],
+			"identity attached by an inner auth middleware must reach the audit event via the holder")
+	})
+
+	t.Run("inner 401 rejection is audited as denied with anonymous subject", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		reject := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+		})
+		auditor.Middleware(reject).ServeHTTP(httptest.NewRecorder(), newToolsCallRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1, "an authentication failure must still produce an audit event")
+		assert.Equal(t, OutcomeDenied, events[0]["outcome"])
+		subjects, ok := events[0]["subjects"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "anonymous", subjects[SubjectKeyUser],
+			"no identity exists when authentication fails")
+	})
+
+	t.Run("event type comes from inner parser via holder", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		})
+		// The parser runs INSIDE audit, as in the real chains.
+		auditor.Middleware(mcp.ParsingMiddleware(handler)).ServeHTTP(httptest.NewRecorder(), newToolsCallRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+		assert.Equal(t, EventTypeMCPToolCall, events[0]["type"],
+			"parsed MCP data from an inner parser must drive the event type via the holder")
+		target, ok := events[0]["target"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "target_tool", target[TargetKeyName])
+	})
+}
+
+// TestStreamOpenAuditEvents pins the deferred stream-open logging: the
+// connection event for SSE / streamable GET requests is logged on the FIRST
+// response write, so it reflects the real outcome and the identity attached by
+// inner middleware — instead of being logged on arrival with neither.
+func TestStreamOpenAuditEvents(t *testing.T) {
+	t.Parallel()
+
+	newStreamRequest := func() *http.Request {
+		req := httptest.NewRequest("GET", "/mcp", nil)
+		req.Header.Set("Accept", "text/event-stream")
+		return req
+	}
+
+	t.Run("established stream logs one success event with identity", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Emulate inner auth attaching the identity before the stream starts.
+			// The returned context is intentionally discarded: only WithIdentity's
+			// side effect of filling the audit-injected IdentityHolder matters here.
+			id := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user-123"}}
+			_ = auth.WithIdentity(r.Context(), id)
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte("event: message\ndata: {}\n\n"))
+			_, _ = w.Write([]byte("event: message\ndata: {}\n\n"))
+		})
+		auditor.Middleware(handler).ServeHTTP(httptest.NewRecorder(), newStreamRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1, "the connection event must be logged exactly once")
+		assert.Equal(t, EventTypeSSEConnection, events[0]["type"])
+		assert.Equal(t, OutcomeSuccess, events[0]["outcome"])
+		subjects, ok := events[0]["subjects"].(map[string]any)
+		require.True(t, ok)
+		assert.Equal(t, "user-123", subjects[SubjectKeyUserID],
+			"deferring the log to first write makes the inner auth identity available")
+	})
+
+	t.Run("rejected stream open logs a denied event", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		reject := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			http.Error(w, "invalid token", http.StatusUnauthorized)
+		})
+		auditor.Middleware(reject).ServeHTTP(httptest.NewRecorder(), newStreamRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+		assert.Equal(t, EventTypeSSEConnection, events[0]["type"])
+		assert.Equal(t, OutcomeDenied, events[0]["outcome"])
+	})
+
+	t.Run("handler that never writes still produces one event", func(t *testing.T) {
+		t.Parallel()
+		auditor, logBuf := newBufferAuditor(t)
+
+		silent := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {})
+		auditor.Middleware(silent).ServeHTTP(httptest.NewRecorder(), newStreamRequest())
+
+		events := decodeAuditEvents(t, logBuf)
+		require.Len(t, events, 1)
+		assert.Equal(t, OutcomeSuccess, events[0]["outcome"],
+			"net/http sends an implicit 200 when the handler writes nothing")
 	})
 }

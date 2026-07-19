@@ -76,10 +76,10 @@ type ParsedMCPRequest struct {
 // Example usage:
 //
 //	middlewares := []types.Middleware{
-//	    authMiddleware,        // Authentication first
+//	    auditMiddleware,       // Audit wraps the chain; parsed data flows back via ParsedRequestHolder
+//	    authMiddleware,        // Authentication
 //	    mcp.ParsingMiddleware, // MCP parsing after auth
 //	    authzMiddleware,       // Authorization uses parsed data
-//	    auditMiddleware,       // Audit uses parsed data
 //	}
 func ParsingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -112,6 +112,12 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 		if parsedRequest != nil {
 			parsedRequest.MCPMethodHeader = r.Header.Get("Mcp-Method")
 			parsedRequest.MCPNameHeader = r.Header.Get("Mcp-Name")
+			// Publish to a ParsedRequestHolder if one is present, so middleware
+			// wrapping the parser (e.g. audit) can observe the parsed request
+			// even though the derived context only flows downstream.
+			if holder, ok := ParsedRequestHolderFromContext(r.Context()); ok {
+				holder.Parsed = parsedRequest
+			}
 			ctx := context.WithValue(r.Context(), MCPRequestContextKey, parsedRequest)
 			r = r.WithContext(ctx)
 		}
@@ -119,6 +125,36 @@ func ParsingMiddleware(next http.Handler) http.Handler {
 		// Call the next handler
 		next.ServeHTTP(w, r)
 	})
+}
+
+// parsedRequestHolderContextKey is the context key for ParsedRequestHolder.
+type parsedRequestHolderContextKey struct{}
+
+// ParsedRequestHolder is a mutable carrier that lets middleware running
+// OUTSIDE the parsing middleware observe the parsed MCP request. Context
+// values only flow downstream, so a wrapper such as the audit middleware
+// cannot read the parsed request that the parser attaches for inner handlers.
+// The wrapper injects an empty holder via WithParsedRequestHolder before
+// calling the inner chain; ParsingMiddleware fills it; the wrapper reads it
+// after the inner chain returns.
+//
+// The holder is written and read by the single request goroutine (writes
+// happen-before the wrapper's post-ServeHTTP read), so no synchronization is
+// needed.
+type ParsedRequestHolder struct {
+	Parsed *ParsedMCPRequest
+}
+
+// WithParsedRequestHolder returns a new context carrying the given holder.
+func WithParsedRequestHolder(ctx context.Context, holder *ParsedRequestHolder) context.Context {
+	return context.WithValue(ctx, parsedRequestHolderContextKey{}, holder)
+}
+
+// ParsedRequestHolderFromContext retrieves the ParsedRequestHolder from the
+// context. Returns (nil, false) if no holder is present.
+func ParsedRequestHolderFromContext(ctx context.Context) (*ParsedRequestHolder, bool) {
+	holder, ok := ctx.Value(parsedRequestHolderContextKey{}).(*ParsedRequestHolder)
+	return holder, ok && holder != nil
 }
 
 // GetParsedMCPRequest retrieves the parsed MCP request from the request context.

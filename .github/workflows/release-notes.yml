@@ -98,7 +98,7 @@ jobs:
 
       - name: Generate release notes with Claude
         id: claude
-        uses: anthropics/claude-code-action@f1bd27ca5b54584506e40e17884d90bdaaa1a9b3 # v1
+        uses: anthropics/claude-code-action@af0559ee4f514d1ef21826982bed13f7edc3c35e # v1
         env:
           # gh CLI used by the skill (read-only PR/issue lookups) authenticates
           # via GH_TOKEN. Read access is sufficient — publishing happens in a

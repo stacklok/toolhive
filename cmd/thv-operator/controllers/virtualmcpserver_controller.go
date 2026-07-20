@@ -1782,10 +1782,12 @@ func (r *VirtualMCPServerReconciler) podTemplateMetadataNeedsUpdate(
 	return false
 }
 
-// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed.
-// Instead of comparing full rendered templates (which always differ due to Kubernetes-defaulted
-// fields like terminationGracePeriodSeconds, dnsPolicy, etc.), this compares a SHA256 hash of
-// the raw PodTemplateSpec input stored as a deployment annotation.
+// podTemplateSpecNeedsUpdate checks if the user-provided PodTemplateSpec has changed, by
+// comparing a SHA256 hash of the raw input against the stored annotation rather than the
+// full rendered template (which always differs due to Kubernetes-defaulted fields).
+// Symmetric by design (#5818): an absent PodTemplateSpec expects an empty hash, so a stale
+// annotation left over after the field is cleared is treated as drift and gets pruned by
+// mergeDeploymentAnnotations on the next write, instead of being flagged forever.
 func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 	ctx context.Context,
 	deployment *appsv1.Deployment,
@@ -1796,37 +1798,28 @@ func (*VirtualMCPServerReconciler) podTemplateSpecNeedsUpdate(
 		return true
 	}
 
-	// If no PodTemplateSpec is provided, update is only needed if one was previously applied
-	if vmcp.Spec.PodTemplateSpec == nil || vmcp.Spec.PodTemplateSpec.Raw == nil {
-		_, hadPrevious := deployment.Annotations[podTemplateSpecHashAnnotation]
-		return hadPrevious
-	}
-
-	// Compare hash of the raw PodTemplateSpec input against the stored annotation.
-	// Avoids comparing full rendered templates which always differ due to
-	// Kubernetes-defaulted fields (terminationGracePeriodSeconds, dnsPolicy, etc.).
-	// Uses HashRawJSON to ensure deterministic hashing regardless of JSON field ordering.
-	expectedHash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
-	if err != nil {
-		// If we can't hash, assume update is needed
-		log.FromContext(ctx).Error(err, "Failed to hash PodTemplateSpec, assuming update needed")
-		return true
+	expectedHash := ""
+	if vmcp.Spec.PodTemplateSpec != nil && len(vmcp.Spec.PodTemplateSpec.Raw) > 0 {
+		hash, err := checksum.HashRawJSON(vmcp.Spec.PodTemplateSpec.Raw)
+		if err != nil {
+			log.FromContext(ctx).Error(err, "Failed to hash PodTemplateSpec, assuming update needed")
+			return true
+		}
+		expectedHash = hash
 	}
 	return deployment.Annotations[podTemplateSpecHashAnnotation] != expectedHash
 }
 
-// mergeDeploymentAnnotations merges desired Deployment annotations onto the
-// live ones via ctrlutil.MergeAnnotations, then prunes imagePullRefsHashAnnotation
-// from the result if desired no longer wants it. MergeAnnotations preserves any
-// live key absent from desired so externally-managed annotations survive, but
-// imagePullRefsHashAnnotation is operator-owned: when the desired imagePullSecrets
-// list is empty, desired carries no annotation for it, and a stale value left by
-// a prior reconcile must be pruned explicitly or it survives forever and
-// imagePullSecretsNeedsUpdate flags drift on every reconcile (#5817).
+// mergeDeploymentAnnotations merges desired annotations onto the live ones via
+// ctrlutil.MergeAnnotations, then prunes the operator-owned hash annotations
+// (imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation) that desired no longer wants —
+// MergeAnnotations otherwise preserves them forever once their source field goes empty (#5817, #5818).
 func mergeDeploymentAnnotations(desired, live map[string]string) map[string]string {
 	merged := ctrlutil.MergeAnnotations(desired, live)
-	if _, wantHash := desired[imagePullRefsHashAnnotation]; !wantHash {
-		delete(merged, imagePullRefsHashAnnotation)
+	for _, key := range []string{imagePullRefsHashAnnotation, podTemplateSpecHashAnnotation} {
+		if _, want := desired[key]; !want {
+			delete(merged, key)
+		}
 	}
 	return merged
 }

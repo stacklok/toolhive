@@ -16,9 +16,11 @@ import (
 
 	"github.com/stacklok/toolhive-core/permissions"
 	regtypes "github.com/stacklok/toolhive-core/registry/types"
+	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/server/registration"
+	"github.com/stacklok/toolhive/pkg/authz"
 	appconfig "github.com/stacklok/toolhive/pkg/config"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/networking"
@@ -1581,6 +1583,53 @@ func TestResolveRegistryServerName(t *testing.T) {
 			assert.Equal(t, tt.expected, result)
 		})
 	}
+}
+
+// TestWithMiddlewareFromFlags_AuditBeforeAuthz pins the same audit-wraps-authz
+// ordering invariant on the CLI flag path that
+// TestPopulateMiddlewareConfigs_AuditBeforeAuthz pins on the operator path:
+// audit must precede authorization in the config slice (earlier entries wrap
+// later ones at request time) so authorization denials still produce an audit
+// event with outcome "denied".
+func TestWithMiddlewareFromFlags_AuditBeforeAuthz(t *testing.T) {
+	t.Parallel()
+
+	builder := &runConfigBuilder{config: NewRunConfig()}
+	opt := WithMiddlewareFromFlags(
+		nil,                     // oidcConfig
+		nil,                     // tokenExchangeConfig
+		nil,                     // toolsFilter
+		nil,                     // toolsOverride
+		nil,                     // telemetryConfig
+		writeCedarConfigFile(t), // authzConfigPath
+		true,                    // enableAudit
+		"",                      // auditConfigPath
+		"test-server",           // serverName
+		"streamable-http",       // transportType
+		true,                    // disableUsageMetrics
+	)
+	require.NoError(t, opt(builder))
+
+	typeIndex := make(map[string]int, len(builder.config.MiddlewareConfigs))
+	for i, mw := range builder.config.MiddlewareConfigs {
+		typeIndex[mw.Type] = i
+	}
+
+	auditIdx, ok := typeIndex[audit.MiddlewareType]
+	require.True(t, ok, "audit middleware must be present")
+	authzIdx, ok := typeIndex[authz.MiddlewareType]
+	require.True(t, ok, "authz middleware must be present")
+	authIdx, ok := typeIndex[auth.MiddlewareType]
+	require.True(t, ok, "auth middleware must be present")
+	parserIdx, ok := typeIndex[mcp.ParserMiddlewareType]
+	require.True(t, ok, "MCP parser middleware must be present")
+
+	assert.Less(t, auditIdx, authzIdx,
+		"audit must precede authz so authorization denials are audited")
+	assert.Less(t, authIdx, auditIdx,
+		"auth must precede audit so the identity is available to audit events")
+	assert.Less(t, parserIdx, auditIdx,
+		"MCP parser must precede audit so parsed MCP data is available to audit events")
 }
 
 // TestWithAdditionalMiddlewareConfigs verifies the generic injected-middleware

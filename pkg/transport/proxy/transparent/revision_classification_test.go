@@ -219,4 +219,70 @@ func TestRoundTripClassifiesModernRequests(t *testing.T) {
 		require.NoError(t, json.NewDecoder(resp.Body).Decode(&decoded))
 		assert.Equal(t, largeID, string(decoded.ID), "large integer id must not lose precision")
 	})
+
+	t.Run("Modern 200 response flips serverInitialized", func(t *testing.T) {
+		t.Parallel()
+
+		spy := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+		})
+		tt, p := newProxy(spy)
+		require.False(t, p.serverInitialized(), "precondition: latch starts unset")
+
+		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{` +
+			`"io.modelcontextprotocol/protocolVersion":"` + mcp.MCPVersionModern + `",` +
+			`"io.modelcontextprotocol/clientCapabilities":{}}}}`
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("MCP-Protocol-Version", mcp.MCPVersionModern)
+
+		resp, err := tt.RoundTrip(req)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.True(t, p.serverInitialized(), "a 200 to a Modern request must flip the readiness latch")
+	})
+
+	t.Run("Modern non-200 response does not flip serverInitialized", func(t *testing.T) {
+		t.Parallel()
+
+		spy := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusInternalServerError, Header: make(http.Header), Body: http.NoBody}, nil
+		})
+		tt, p := newProxy(spy)
+		require.False(t, p.serverInitialized(), "precondition: latch starts unset")
+
+		body := `{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{` +
+			`"io.modelcontextprotocol/protocolVersion":"` + mcp.MCPVersionModern + `",` +
+			`"io.modelcontextprotocol/clientCapabilities":{}}}}`
+		req := httptest.NewRequest(http.MethodPost, "/mcp", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("MCP-Protocol-Version", mcp.MCPVersionModern)
+
+		resp, err := tt.RoundTrip(req)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+		assert.False(t, p.serverInitialized(), "a non-200 response must not flip the readiness latch")
+	})
+
+	t.Run("Legacy 200 response without session header or initialize does not flip serverInitialized", func(t *testing.T) {
+		t.Parallel()
+
+		spy := roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: http.NoBody}, nil
+		})
+		tt, p := newProxy(spy)
+		require.False(t, p.serverInitialized(), "precondition: latch starts unset")
+
+		// Legacy request (no MCP-Protocol-Version header, not initialize) whose
+		// 200 response carries no Mcp-Session-Id: neither existing branch fires,
+		// and the new Modern branch must not broaden to cover this case either.
+		req := httptest.NewRequest(http.MethodPost, "/mcp",
+			strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`))
+		req.Header.Set("Content-Type", "application/json")
+
+		resp, err := tt.RoundTrip(req)
+		require.NoError(t, err)
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.False(t, p.serverInitialized(), "a Legacy 200 with no session header must not flip the readiness latch")
+	})
 }

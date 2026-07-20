@@ -751,6 +751,14 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			t.p.setServerInitialized()
 			return resp, nil
 		}
+
+		// Modern (2026-07-28, stateless) has no initialize handshake, so use the
+		// first successful (HTTP 200) Modern request as the readiness signal: it
+		// lets the background health monitor begin probing this backend, which
+		// otherwise never starts for a pure-Modern server. See #5831.
+		if revision == mcp.RevisionModern && !t.p.serverInitialized() {
+			t.p.setServerInitialized()
+		}
 	}
 
 	return resp, nil

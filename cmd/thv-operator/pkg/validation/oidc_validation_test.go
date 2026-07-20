@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
@@ -24,7 +24,7 @@ func TestValidateCABundleSource(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		ref         *mcpv1alpha1.CABundleSource
+		ref         *mcpv1beta1.CABundleSource
 		wantErr     bool
 		errContains string
 	}{
@@ -45,7 +45,7 @@ func TestValidateCABundleSource(t *testing.T) {
 		},
 		{
 			name:        "missing configMapRef",
-			ref:         &mcpv1alpha1.CABundleSource{},
+			ref:         &mcpv1beta1.CABundleSource{},
 			wantErr:     true,
 			errContains: "configMapRef must be specified in caBundleRef",
 		},
@@ -156,8 +156,8 @@ func TestValidateOIDCIssuerURL(t *testing.T) {
 }
 
 // makeCABundleSource creates a CABundleSource with the given name and optional key.
-func makeCABundleSource(name, key string) *mcpv1alpha1.CABundleSource {
-	return &mcpv1alpha1.CABundleSource{
+func makeCABundleSource(name, key string) *mcpv1beta1.CABundleSource {
+	return &mcpv1beta1.CABundleSource{
 		ConfigMapRef: &corev1.ConfigMapKeySelector{
 			LocalObjectReference: corev1.LocalObjectReference{Name: name},
 			Key:                  key,

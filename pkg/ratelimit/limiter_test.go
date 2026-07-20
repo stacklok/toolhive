@@ -4,6 +4,7 @@
 package ratelimit
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -13,7 +14,8 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/pkg/auth"
 )
 
 func newTestClient(t *testing.T) (*redis.Client, *miniredis.Miniredis) {
@@ -38,12 +40,73 @@ func TestNewLimiter_NilCRDReturnsNoop(t *testing.T) {
 	assert.True(t, d.Allowed)
 }
 
+func TestAllowNilLimiterAllows(t *testing.T) {
+	t.Parallel()
+
+	err := Allow(t.Context(), nil, &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}}, "echo")
+
+	require.NoError(t, err)
+}
+
+func TestAllowPassesIdentitySubject(t *testing.T) {
+	t.Parallel()
+
+	limiter := &recordingLimiter{}
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}}
+
+	err := Allow(t.Context(), limiter, identity, "echo")
+
+	require.NoError(t, err)
+	assert.Equal(t, "echo", limiter.toolName)
+	assert.Equal(t, "alice", limiter.userID)
+}
+
+func TestAllowNilIdentityUsesEmptyUserID(t *testing.T) {
+	t.Parallel()
+
+	limiter := &recordingLimiter{}
+
+	err := Allow(t.Context(), limiter, nil, "echo")
+
+	require.NoError(t, err)
+	assert.Equal(t, "echo", limiter.toolName)
+	assert.Empty(t, limiter.userID)
+}
+
+func TestAllowRateLimitedReturnsTypedError(t *testing.T) {
+	t.Parallel()
+
+	limiter := &dummyLimiter{
+		decision: &Decision{
+			Allowed:    false,
+			RetryAfter: 3 * time.Second,
+		},
+	}
+
+	err := Allow(t.Context(), limiter, nil, "echo")
+
+	var limited *RateLimitedError
+	require.ErrorAs(t, err, &limited)
+	assert.Equal(t, 3*time.Second, limited.RetryAfter)
+}
+
+func TestAllowPropagatesLimiterError(t *testing.T) {
+	t.Parallel()
+
+	expected := errors.New("redis unavailable")
+	limiter := &dummyLimiter{err: expected}
+
+	err := Allow(t.Context(), limiter, nil, "echo")
+
+	require.ErrorIs(t, err, expected)
+}
+
 func TestNewLimiter_ZeroMaxTokens(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
 
-	crd := &v1alpha1.RateLimitConfig{
-		Shared: &v1alpha1.RateLimitBucket{
+	crd := &v1beta1.RateLimitConfig{
+		Shared: &v1beta1.RateLimitBucket{
 			MaxTokens:    0,
 			RefillPeriod: metav1.Duration{Duration: time.Minute},
 		},
@@ -58,8 +121,8 @@ func TestNewLimiter_ZeroDuration(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
 
-	crd := &v1alpha1.RateLimitConfig{
-		Shared: &v1alpha1.RateLimitBucket{
+	crd := &v1beta1.RateLimitConfig{
+		Shared: &v1beta1.RateLimitBucket{
 			MaxTokens:    100,
 			RefillPeriod: metav1.Duration{Duration: 0},
 		},
@@ -70,13 +133,13 @@ func TestNewLimiter_ZeroDuration(t *testing.T) {
 	assert.Contains(t, err.Error(), "refillPeriod must be positive")
 }
 
-func TestLimiter_ServerGlobalExhausted(t *testing.T) {
+func TestLimiter_ServerSharedExhausted(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
 	ctx := t.Context()
 
-	crd := &v1alpha1.RateLimitConfig{
-		Shared: &v1alpha1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+	crd := &v1beta1.RateLimitConfig{
+		Shared: &v1beta1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
 	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
@@ -93,16 +156,45 @@ func TestLimiter_ServerGlobalExhausted(t *testing.T) {
 	assert.Greater(t, d.RetryAfter, time.Duration(0))
 }
 
+func TestLimiter_SharedUsesRedisKeys(t *testing.T) {
+	t.Parallel()
+	client, _ := newTestClient(t)
+	ctx := t.Context()
+
+	crd := &v1beta1.RateLimitConfig{
+		Shared: &v1beta1.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+		Tools: []v1beta1.ToolRateLimitConfig{
+			{
+				Name:   "search",
+				Shared: &v1beta1.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+			},
+		},
+	}
+	l, err := NewLimiter(client, "ns", "srv", crd)
+	require.NoError(t, err)
+
+	d, err := l.Allow(ctx, "search", "")
+	require.NoError(t, err)
+	require.True(t, d.Allowed)
+
+	serverKey := "thv:rl:{ns:srv}:shared"
+	toolKey := "thv:rl:{ns:srv}:shared:tool:search"
+
+	exists, err := client.Exists(ctx, serverKey, toolKey).Result()
+	require.NoError(t, err)
+	assert.Equal(t, int64(2), exists)
+}
+
 func TestLimiter_PerToolIsolation(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
 	ctx := t.Context()
 
-	crd := &v1alpha1.RateLimitConfig{
-		Tools: []v1alpha1.ToolRateLimitConfig{
+	crd := &v1beta1.RateLimitConfig{
+		Tools: []v1beta1.ToolRateLimitConfig{
 			{
 				Name:   "search",
-				Shared: &v1alpha1.RateLimitBucket{MaxTokens: 1, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+				Shared: &v1beta1.RateLimitBucket{MaxTokens: 1, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 			},
 		},
 	}
@@ -128,12 +220,12 @@ func TestLimiter_ServerAndPerToolBothRequired(t *testing.T) {
 	client, _ := newTestClient(t)
 	ctx := t.Context()
 
-	crd := &v1alpha1.RateLimitConfig{
-		Shared: &v1alpha1.RateLimitBucket{MaxTokens: 5, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-		Tools: []v1alpha1.ToolRateLimitConfig{
+	crd := &v1beta1.RateLimitConfig{
+		Shared: &v1beta1.RateLimitBucket{MaxTokens: 5, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+		Tools: []v1beta1.ToolRateLimitConfig{
 			{
 				Name:   "search",
-				Shared: &v1alpha1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+				Shared: &v1beta1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 			},
 		},
 	}
@@ -161,8 +253,8 @@ func TestLimiter_RedisUnavailableReturnsError(t *testing.T) {
 	t.Parallel()
 	client, mr := newTestClient(t)
 
-	crd := &v1alpha1.RateLimitConfig{
-		Shared: &v1alpha1.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+	crd := &v1beta1.RateLimitConfig{
+		Shared: &v1beta1.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
 	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
@@ -178,8 +270,8 @@ func TestLimiter_PerUserServerLevel(t *testing.T) {
 	client, _ := newTestClient(t)
 	ctx := t.Context()
 
-	crd := &v1alpha1.RateLimitConfig{
-		PerUser: &v1alpha1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+	crd := &v1beta1.RateLimitConfig{
+		PerUser: &v1beta1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
 	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
@@ -206,11 +298,11 @@ func TestLimiter_PerToolPerUserIsolation(t *testing.T) {
 	client, _ := newTestClient(t)
 	ctx := t.Context()
 
-	crd := &v1alpha1.RateLimitConfig{
-		Tools: []v1alpha1.ToolRateLimitConfig{
+	crd := &v1beta1.RateLimitConfig{
+		Tools: []v1beta1.ToolRateLimitConfig{
 			{
 				Name:    "search",
-				PerUser: &v1alpha1.RateLimitBucket{MaxTokens: 1, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+				PerUser: &v1beta1.RateLimitBucket{MaxTokens: 1, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 			},
 		},
 	}
@@ -243,12 +335,12 @@ func TestLimiter_ServerAndToolPerUserBothRequired(t *testing.T) {
 	client, _ := newTestClient(t)
 	ctx := t.Context()
 
-	crd := &v1alpha1.RateLimitConfig{
-		PerUser: &v1alpha1.RateLimitBucket{MaxTokens: 5, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-		Tools: []v1alpha1.ToolRateLimitConfig{
+	crd := &v1beta1.RateLimitConfig{
+		PerUser: &v1beta1.RateLimitBucket{MaxTokens: 5, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+		Tools: []v1beta1.ToolRateLimitConfig{
 			{
 				Name:    "search",
-				PerUser: &v1alpha1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+				PerUser: &v1beta1.RateLimitBucket{MaxTokens: 2, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 			},
 		},
 	}
@@ -280,9 +372,9 @@ func TestLimiter_PerUserRejectionDoesNotDrainShared(t *testing.T) {
 
 	// Shared: 3 tokens, PerUser: 1 token.
 	// A noisy user hitting their per-user limit must not consume shared tokens.
-	crd := &v1alpha1.RateLimitConfig{
-		Shared:  &v1alpha1.RateLimitBucket{MaxTokens: 3, RefillPeriod: metav1.Duration{Duration: time.Minute}},
-		PerUser: &v1alpha1.RateLimitBucket{MaxTokens: 1, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+	crd := &v1beta1.RateLimitConfig{
+		Shared:  &v1beta1.RateLimitBucket{MaxTokens: 3, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+		PerUser: &v1beta1.RateLimitBucket{MaxTokens: 1, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
 	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
@@ -316,8 +408,8 @@ func TestLimiter_RedisUnavailablePerUser(t *testing.T) {
 	t.Parallel()
 	client, mr := newTestClient(t)
 
-	crd := &v1alpha1.RateLimitConfig{
-		PerUser: &v1alpha1.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+	crd := &v1beta1.RateLimitConfig{
+		PerUser: &v1beta1.RateLimitBucket{MaxTokens: 10, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
 	l, err := NewLimiter(client, "ns", "srv", crd)
 	require.NoError(t, err)
@@ -332,8 +424,8 @@ func TestNewLimiter_PerUserZeroMaxTokens(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
 
-	crd := &v1alpha1.RateLimitConfig{
-		PerUser: &v1alpha1.RateLimitBucket{MaxTokens: 0, RefillPeriod: metav1.Duration{Duration: time.Minute}},
+	crd := &v1beta1.RateLimitConfig{
+		PerUser: &v1beta1.RateLimitBucket{MaxTokens: 0, RefillPeriod: metav1.Duration{Duration: time.Minute}},
 	}
 	_, err := NewLimiter(client, "ns", "srv", crd)
 	assert.Error(t, err)
@@ -344,11 +436,11 @@ func TestNewLimiter_ToolPerUserZeroDuration(t *testing.T) {
 	t.Parallel()
 	client, _ := newTestClient(t)
 
-	crd := &v1alpha1.RateLimitConfig{
-		Tools: []v1alpha1.ToolRateLimitConfig{
+	crd := &v1beta1.RateLimitConfig{
+		Tools: []v1beta1.ToolRateLimitConfig{
 			{
 				Name:    "search",
-				PerUser: &v1alpha1.RateLimitBucket{MaxTokens: 5, RefillPeriod: metav1.Duration{Duration: 0}},
+				PerUser: &v1beta1.RateLimitBucket{MaxTokens: 5, RefillPeriod: metav1.Duration{Duration: 0}},
 			},
 		},
 	}

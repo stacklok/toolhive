@@ -13,7 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 )
@@ -26,9 +26,9 @@ import (
 // Uses the batched statusManager pattern instead of direct r.Status().Update().
 func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	statusManager virtualmcpserverstatus.StatusManager,
-) (*mcpv1alpha1.MCPTelemetryConfig, error) {
+) (*mcpv1beta1.MCPTelemetryConfig, error) {
 	ctxLogger := log.FromContext(ctx)
 
 	if vmcp.Spec.TelemetryConfigRef == nil {
@@ -37,7 +37,7 @@ func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 			statusManager.SetTelemetryConfigHash("")
 		}
 		statusManager.RemoveConditionsWithPrefix(
-			mcpv1alpha1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated, []string{})
+			mcpv1beta1.ConditionTypeVirtualMCPServerTelemetryConfigRefValidated, []string{})
 		return nil, nil
 	}
 
@@ -46,7 +46,7 @@ func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 	if err != nil {
 		// Transient API error (not a NotFound)
 		statusManager.SetTelemetryConfigRefValidatedCondition(
-			mcpv1alpha1.ConditionReasonVirtualMCPServerTelemetryConfigRefFetchError,
+			mcpv1beta1.ConditionReasonVirtualMCPServerTelemetryConfigRefFetchError,
 			err.Error(),
 			metav1.ConditionFalse,
 		)
@@ -56,7 +56,7 @@ func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 	if telemetryConfig == nil {
 		// Resource genuinely does not exist
 		statusManager.SetTelemetryConfigRefValidatedCondition(
-			mcpv1alpha1.ConditionReasonVirtualMCPServerTelemetryConfigRefNotFound,
+			mcpv1beta1.ConditionReasonVirtualMCPServerTelemetryConfigRefNotFound,
 			fmt.Sprintf("MCPTelemetryConfig %s not found", vmcp.Spec.TelemetryConfigRef.Name),
 			metav1.ConditionFalse,
 		)
@@ -66,7 +66,7 @@ func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 	// Validate that the MCPTelemetryConfig is valid (has Valid=True condition)
 	if err := telemetryConfig.Validate(); err != nil {
 		statusManager.SetTelemetryConfigRefValidatedCondition(
-			mcpv1alpha1.ConditionReasonVirtualMCPServerTelemetryConfigRefInvalid,
+			mcpv1beta1.ConditionReasonVirtualMCPServerTelemetryConfigRefInvalid,
 			fmt.Sprintf("MCPTelemetryConfig %s is invalid: %v", vmcp.Spec.TelemetryConfigRef.Name, err),
 			metav1.ConditionFalse,
 		)
@@ -75,7 +75,7 @@ func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 
 	// Set valid condition
 	statusManager.SetTelemetryConfigRefValidatedCondition(
-		mcpv1alpha1.ConditionReasonVirtualMCPServerTelemetryConfigRefValid,
+		mcpv1beta1.ConditionReasonVirtualMCPServerTelemetryConfigRefValid,
 		fmt.Sprintf("MCPTelemetryConfig %s is valid", vmcp.Spec.TelemetryConfigRef.Name),
 		metav1.ConditionTrue,
 	)
@@ -99,12 +99,12 @@ func (r *VirtualMCPServerReconciler) handleTelemetryConfig(
 func (r *VirtualMCPServerReconciler) mapTelemetryConfigToVirtualMCPServer(
 	ctx context.Context, obj client.Object,
 ) []reconcile.Request {
-	telemetryConfig, ok := obj.(*mcpv1alpha1.MCPTelemetryConfig)
+	telemetryConfig, ok := obj.(*mcpv1beta1.MCPTelemetryConfig)
 	if !ok {
 		return nil
 	}
 
-	vmcpList := &mcpv1alpha1.VirtualMCPServerList{}
+	vmcpList := &mcpv1beta1.VirtualMCPServerList{}
 	if err := r.List(ctx, vmcpList, client.InNamespace(telemetryConfig.Namespace)); err != nil {
 		log.FromContext(ctx).Error(err, "Failed to list VirtualMCPServers for MCPTelemetryConfig watch")
 		return nil

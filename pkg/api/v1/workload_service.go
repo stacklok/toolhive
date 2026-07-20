@@ -28,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/runner/retriever"
 	"github.com/stacklok/toolhive/pkg/secrets"
+	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/transport"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 	"github.com/stacklok/toolhive/pkg/workloads"
@@ -66,6 +67,10 @@ type WorkloadService struct {
 	imageRetriever   retriever.Retriever
 	imagePuller      retriever.ImagePuller
 	configProvider   config.Provider
+	// imageVerification is the mode (warn/enabled/disabled) used when verifying
+	// image provenance for both the registry-resolved path and the imageRetriever
+	// path. Kept as a single field so the two paths can't drift.
+	imageVerification string
 }
 
 // NewWorkloadService creates a new WorkloadService instance
@@ -76,13 +81,14 @@ func NewWorkloadService(
 	debugMode bool,
 ) *WorkloadService {
 	return &WorkloadService{
-		workloadManager:  workloadManager,
-		groupManager:     groupManager,
-		containerRuntime: containerRuntime,
-		debugMode:        debugMode,
-		imageRetriever:   retriever.ResolveMCPServer,
-		imagePuller:      retriever.PullMCPServerImage,
-		configProvider:   config.NewProvider(),
+		workloadManager:   workloadManager,
+		groupManager:      groupManager,
+		containerRuntime:  containerRuntime,
+		debugMode:         debugMode,
+		imageRetriever:    retriever.ResolveMCPServer,
+		imagePuller:       retriever.PullMCPServerImage,
+		configProvider:    config.NewProvider(),
+		imageVerification: retriever.VerifyImageWarn,
 	}
 }
 
@@ -228,8 +234,9 @@ func (s *WorkloadService) BuildFullRunConfig(
 	// Verify image provenance for registry-resolved image servers.
 	// The normal imageRetriever path calls verifyImage internally, but
 	// we bypass it for registry references, so we must verify here.
+	// Both paths use s.imageVerification so their behavior stays in sync.
 	if imageMetadata != nil && registryResolvedMetadata != nil {
-		if err := retriever.VerifyImage(imageURL, imageMetadata, retriever.VerifyImageWarn); err != nil {
+		if err := retriever.VerifyImage(imageURL, imageMetadata, s.imageVerification); err != nil {
 			return nil, fmt.Errorf("image verification failed: %w", err)
 		}
 	}
@@ -264,7 +271,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			imageCtx,
 			req.Image,
 			"", // We do not let the user specify a CA cert path here.
-			retriever.VerifyImageWarn,
+			s.imageVerification,
 			"", // Registry-based group lookups are not supported
 			retrievalRuntimeConfig,
 		)
@@ -306,6 +313,12 @@ func (s *WorkloadService) BuildFullRunConfig(
 	// call are consistent with each other, even if a concurrent registry update fires mid-call.
 	cfg := s.configProvider.GetConfig()
 
+	// Apply telemetry defaults from the application config so workloads created
+	// via the API inherit the same OTEL settings as workloads created via
+	// "thv run". The API request struct does not expose OTEL fields, so the
+	// application config is the only source. See issue #5253.
+	telemetryConfig := runner.BuildTelemetryConfigFromAppConfig(cfg.OTEL, "", nil, "")
+
 	// Resolve registry source URLs and server name when the server was discovered via registry lookup.
 	regAPIURL, regURL := runner.ResolveRegistrySourceURLs(serverMetadata, cfg)
 	regServerName := runner.ResolveRegistryServerName(serverMetadata)
@@ -326,8 +339,9 @@ func (s *WorkloadService) BuildFullRunConfig(
 		runner.WithAuthzConfigPath(req.AuthzConfig),
 		runner.WithAuditConfigPath(""),
 		runner.WithPermissionProfile(req.PermissionProfile),
-		runner.WithNetworkIsolation(req.NetworkIsolation),
+		runner.WithNetworkIsolation(networkIsolationEnabled(req.NetworkIsolation)),
 		runner.WithTrustProxyHeaders(req.TrustProxyHeaders),
+		runner.WithAllowDockerGateway(req.AllowDockerGateway),
 		runner.WithK8sPodPatch(""),
 		runner.WithProxyMode(types.ProxyMode(req.ProxyMode)),
 		runner.WithTransportAndPorts(req.Transport, req.ProxyPort, req.TargetPort),
@@ -336,7 +350,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			req.OIDC.ClientID, "", "", "", "", false, false, req.OIDC.Scopes),
 		runner.WithToolsFilter(req.ToolsFilter),
 		runner.WithToolsOverride(toolsOverride),
-		runner.WithTelemetryConfigFromFlags("", false, false, false, "", 0.0, nil, false, nil, false),
+		runner.WithTelemetryConfig(telemetryConfig),
 		runner.WithRegistrySourceURLs(regAPIURL, regURL),
 		runner.WithRegistryServerName(regServerName),
 	}
@@ -376,6 +390,10 @@ func (s *WorkloadService) BuildFullRunConfig(
 		}
 	}
 
+	// Resolve the OTel service name from the workload name when not explicitly
+	// set. Mirrors what the CLI does in configureMiddlewareAndAuthOptions.
+	telemetry.ResolveServiceName(telemetryConfig, req.Name)
+
 	// Configure middleware from flags
 	options = append(options,
 		runner.WithMiddlewareFromFlags(
@@ -383,7 +401,7 @@ func (s *WorkloadService) BuildFullRunConfig(
 			nil, // tokenExchangeConfig - not supported via API yet
 			req.ToolsFilter,
 			toolsOverride,
-			nil,
+			telemetryConfig,
 			req.AuthzConfig,
 			false,
 			"",
@@ -423,13 +441,10 @@ func buildRemoteAuthConfigFromMetadata(req *createRequest, md *regtypes.RemoteSe
 		return nil
 	}
 
-	// Default resource: user-provided > registry metadata > derived from remote URL
+	// Default resource: user-provided > registry metadata
 	resource := req.OAuthConfig.Resource
 	if resource == "" {
 		resource = md.OAuthConfig.Resource
-	}
-	if resource == "" && md.URL != "" {
-		resource = remote.DefaultResourceIndicator(md.URL)
 	}
 
 	cfg := &remote.Config{
@@ -460,12 +475,6 @@ func createRequestToRemoteAuthConfig(
 	req *createRequest,
 ) *remote.Config {
 
-	// Default resource: user-provided > derived from remote URL
-	resource := req.OAuthConfig.Resource
-	if resource == "" && req.URL != "" {
-		resource = remote.DefaultResourceIndicator(req.URL)
-	}
-
 	// Create RemoteAuthConfig
 	remoteAuthConfig := &remote.Config{
 		ClientID:     req.OAuthConfig.ClientID,
@@ -474,7 +483,7 @@ func createRequestToRemoteAuthConfig(
 		AuthorizeURL: req.OAuthConfig.AuthorizeURL,
 		TokenURL:     req.OAuthConfig.TokenURL,
 		UsePKCE:      req.OAuthConfig.UsePKCE,
-		Resource:     resource,
+		Resource:     req.OAuthConfig.Resource,
 		OAuthParams:  req.OAuthConfig.OAuthParams,
 		CallbackPort: req.OAuthConfig.CallbackPort,
 		SkipBrowser:  req.OAuthConfig.SkipBrowser,

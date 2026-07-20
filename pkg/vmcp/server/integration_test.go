@@ -26,8 +26,6 @@ import (
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
-	discoveryMocks "github.com/stacklok/toolhive/pkg/vmcp/discovery/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/mocks"
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	"github.com/stacklok/toolhive/pkg/vmcp/server"
@@ -166,42 +164,12 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 	assert.Equal(t, 1, len(aggregatedCaps.RoutingTable.Resources))
 	assert.Equal(t, 1, len(aggregatedCaps.RoutingTable.Prompts))
 
-	// Step 4: Create router and add capabilities to context
-	rt := router.NewDefaultRouter()
+	// Step 4: Create a router for the server. Per-call routing is exercised by the
+	// core's SessionRouter (see router/session_router_test.go); this end-to-end test
+	// only needs a router instance to construct the server.
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
-	// Add discovered capabilities to context
-	ctxWithCaps := discovery.WithDiscoveredCapabilities(ctx, aggregatedCaps)
-
-	// Step 5: Verify router can route to correct backends (using context with capabilities)
-	target, err := rt.RouteTool(ctxWithCaps, "github_create_issue")
-	require.NoError(t, err)
-	assert.Equal(t, "github", target.WorkloadID)
-	assert.Equal(t, "http://github-mcp:8080", target.BaseURL)
-
-	target, err = rt.RouteTool(ctxWithCaps, "jira_create_issue")
-	require.NoError(t, err)
-	assert.Equal(t, "jira", target.WorkloadID)
-	assert.Equal(t, "http://jira-mcp:8080", target.BaseURL)
-
-	target, err = rt.RouteResource(ctxWithCaps, "file:///github/repos")
-	require.NoError(t, err)
-	assert.Equal(t, "github", target.WorkloadID)
-
-	target, err = rt.RoutePrompt(ctxWithCaps, "code_review")
-	require.NoError(t, err)
-	assert.Equal(t, "github", target.WorkloadID)
-
-	// Step 6: Create discovery manager and server
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-
-	// Mock discovery to return our aggregated capabilities
-	mockDiscoveryMgr.EXPECT().
-		Discover(gomock.Any(), gomock.Any()).
-		Return(aggregatedCaps, nil).
-		AnyTimes()
-
-	// Mock Stop to be called during server shutdown
-	mockDiscoveryMgr.EXPECT().Stop().Times(1)
+	// Step 5: Create the server
 
 	srv, err := server.New(ctx, &server.Config{
 		Name:           "test-vmcp",
@@ -209,13 +177,14 @@ func TestIntegration_AggregatorToRouterToServer(t *testing.T) {
 		Host:           "127.0.0.1",
 		Port:           4484,
 		SessionFactory: newNoopMockFactory(t),
-	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
+		Aggregator:     agg,
+	}, rt, mockBackendClient, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
 	// Validate server address
 	assert.Equal(t, "127.0.0.1:4484", srv.Address())
 
-	// Step 7: Start server and validate it's running
+	// Step 6: Start server and validate it's running
 	serverCtx, cancelServer := context.WithCancel(ctx)
 	t.Cleanup(cancelServer)
 
@@ -453,19 +422,7 @@ func TestIntegration_AuditLogging(t *testing.T) {
 	}
 
 	// Create router
-	rt := router.NewDefaultRouter()
-
-	// Create discovery manager
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	mockDiscoveryMgr.EXPECT().
-		Discover(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
-			resolver := aggregator.NewPrefixConflictResolver("{workload}_")
-			agg := aggregator.NewDefaultAggregator(mockBackendClient, resolver, nil, nil)
-			return agg.AggregateCapabilities(ctx, backends)
-		}).
-		AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 	// Helper function to read audit log file
 	readAuditLog := func() string {
@@ -506,8 +463,8 @@ func TestIntegration_AuditLogging(t *testing.T) {
 	// table needed for tool calls and resource reads to be audit-logged correctly.
 	auditSessionFactory := sessionfactorymocks.NewMockMultiSessionFactory(ctrl)
 	auditSessionFactory.EXPECT().
-		MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ bool, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
+		MakeSessionWithID(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).
+		DoAndReturn(func(_ context.Context, id string, _ *auth.Identity, _ []*vmcp.Backend) (vmcpsession.MultiSession, error) {
 			mock := sessionmocks.NewMockMultiSession(ctrl)
 			mock.EXPECT().ID().Return(id).AnyTimes()
 			mock.EXPECT().UpdatedAt().Return(time.Time{}).AnyTimes()
@@ -515,7 +472,12 @@ func TestIntegration_AuditLogging(t *testing.T) {
 			mock.EXPECT().Type().Return(transportsession.SessionType("")).AnyTimes()
 			mock.EXPECT().GetData().Return(nil).AnyTimes()
 			mock.EXPECT().SetData(gomock.Any()).AnyTimes()
-			mock.EXPECT().GetMetadata().Return(map[string]string{}).AnyTimes()
+			mock.EXPECT().GetMetadata().Return(map[string]string{
+				vmcpsession.MetadataKeyIdentityBinding: "unauthenticated",
+			}).AnyTimes()
+			// Serve-path enforceSessionBinding reads the binding via GetMetadataValue.
+			mock.EXPECT().GetMetadataValue(vmcpsession.MetadataKeyIdentityBinding).
+				Return("unauthenticated", true).AnyTimes()
 			mock.EXPECT().SetMetadata(gomock.Any(), gomock.Any()).AnyTimes()
 			mock.EXPECT().Tools().Return(auditTools).AnyTimes()
 			mock.EXPECT().Resources().Return(nil).AnyTimes()
@@ -530,12 +492,19 @@ func TestIntegration_AuditLogging(t *testing.T) {
 			return mock, nil
 		}).AnyTimes()
 
+	// The core sources the advertised set by aggregating over mockBackendClient with the
+	// same prefix resolver the legacy discovery path used, so tools/call and resources/read
+	// route through the core and are audit-logged with the prefixed names.
+	auditAgg := aggregator.NewDefaultAggregator(
+		mockBackendClient, aggregator.NewPrefixConflictResolver("{workload}_"), nil, nil)
+
 	srv, err := server.New(ctx, &server.Config{
 		Host:           "127.0.0.1",
 		Port:           0, // Random port
 		AuditConfig:    auditConfig,
 		SessionFactory: auditSessionFactory,
-	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
+		Aggregator:     auditAgg,
+	}, rt, mockBackendClient, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
 	// Start server
@@ -566,7 +535,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 	// Test 1: Initialize request should be logged
 	t.Run("initialize request is logged", func(t *testing.T) {
 		initReq := map[string]any{
-			"method": "initialize",
+			"jsonrpc": "2.0",
+			"id":      1,
+			"method":  "initialize",
 			"params": map[string]any{
 				"protocolVersion": "2024-11-05",
 				"capabilities":    map[string]any{},
@@ -605,7 +576,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
 
 		toolsReq := map[string]any{
-			"method": "tools/list",
+			"jsonrpc": "2.0",
+			"id":      2,
+			"method":  "tools/list",
 		}
 
 		reqBody, err := json.Marshal(toolsReq)
@@ -633,7 +606,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
 
 		toolCallReq := map[string]any{
-			"method": "tools/call",
+			"jsonrpc": "2.0",
+			"id":      3,
+			"method":  "tools/call",
 			"params": map[string]any{
 				"name": "weather-service_get_weather", // Prefix added by aggregator
 				"arguments": map[string]any{
@@ -675,7 +650,9 @@ func TestIntegration_AuditLogging(t *testing.T) {
 		require.NotEmpty(t, sessionID, "Session ID must be set from initialize test")
 
 		resourceReq := map[string]any{
-			"method": "resources/read",
+			"jsonrpc": "2.0",
+			"id":      4,
+			"method":  "resources/read",
 			"params": map[string]any{
 				"uri": "weather://current",
 			},
@@ -750,27 +727,11 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 	mockBackendClient := mocks.NewMockBackendClient(ctrl)
 
 	// Create mock discovery manager
-	mockDiscoveryMgr := discoveryMocks.NewMockManager(ctrl)
-	mockDiscoveryMgr.EXPECT().
-		Discover(gomock.Any(), gomock.Any()).
-		DoAndReturn(func(_ context.Context, _ []vmcp.Backend) (*aggregator.AggregatedCapabilities, error) {
-			return &aggregator.AggregatedCapabilities{
-				Tools: []vmcp.Tool{
-					{
-						Name:        "test_tool",
-						Description: "A test tool",
-						InputSchema: map[string]any{"type": "object"},
-					},
-				},
-			}, nil
-		}).
-		AnyTimes()
-	mockDiscoveryMgr.EXPECT().Stop().AnyTimes()
 
 	backends := []vmcp.Backend{}
 
 	// Create router
-	rt := router.NewDefaultRouter()
+	rt := router.NewSessionRouter(&vmcp.RoutingTable{})
 
 	// Create identity middleware for auth
 	identityMiddleware := func(next http.Handler) http.Handler {
@@ -813,7 +774,8 @@ func TestIntegration_AuditLoggingWithAuth(t *testing.T) {
 		AuditConfig:    auditConfig,
 		AuthMiddleware: identityMiddleware,
 		SessionFactory: newNoopMockFactory(t),
-	}, rt, mockBackendClient, mockDiscoveryMgr, vmcp.NewImmutableRegistry(backends), nil)
+		Aggregator:     newStubAggregator(nil),
+	}, rt, mockBackendClient, vmcp.NewImmutableRegistry(backends), nil)
 	require.NoError(t, err)
 
 	// Start server

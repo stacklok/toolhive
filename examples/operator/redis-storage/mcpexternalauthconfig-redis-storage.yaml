@@ -12,7 +12,7 @@
 # Usage:
 #   kubectl apply -f redis-credentials.yaml
 #   kubectl apply -f mcpexternalauthconfig-redis-storage.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPExternalAuthConfig
 metadata:
   name: auth-with-redis

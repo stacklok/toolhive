@@ -71,6 +71,13 @@ type Config struct {
 	// RegistrationAccessToken is used to update/delete the client registration.
 	// Stored as a secret reference since it's sensitive.
 	CachedRegTokenRef string `json:"cached_reg_token_ref,omitempty" yaml:"cached_reg_token_ref,omitempty"`
+
+	// CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD
+	// authentication was used. Kept separate from CachedClientID (which holds
+	// DCR-issued IDs) so the two can have independent lifecycles — DCR credential
+	// rotation clears CachedClientID without touching the stable CIMD URL.
+	// Read by resolveClientCredentials to send the correct client_id on token refresh.
+	CachedCIMDClientID string `json:"cached_cimd_client_id,omitempty" yaml:"cached_cimd_client_id,omitempty"`
 }
 
 // BearerTokenEnvVarName is the environment variable name used for bearer token authentication.
@@ -164,12 +171,43 @@ func (c *Config) HasCachedClientCredentials() bool {
 	return c.CachedClientID != ""
 }
 
+// HasCachedCIMDClientID returns true if a CIMD client_id was cached from a prior session.
+func (c *Config) HasCachedCIMDClientID() bool {
+	return c.CachedCIMDClientID != ""
+}
+
 // ClearCachedClientCredentials removes any cached DCR client credential references from the config.
+// It does not clear CachedCIMDClientID — the CIMD URL is a stable constant that does not
+// need to be rotated alongside DCR secrets.
 func (c *Config) ClearCachedClientCredentials() {
 	c.CachedClientID = ""
 	c.CachedClientSecretRef = ""
 	c.CachedSecretExpiry = time.Time{}
 	c.CachedRegTokenRef = ""
+}
+
+// LogContext returns the upstream issuer and resolved client_id for use as
+// log-correlation fields on the MonitoredTokenSource. Returns ("", "")
+// when c is nil so callers do not need to guard the call. Mirrors the
+// precedence applied at runtime when sending the client_id on token
+// refresh: cached CIMD URL > cached DCR client_id > statically configured
+// client_id. Lives next to resolveClientCredentials so the precedence has
+// a single home — adding a fourth cached field updates both call sites
+// in one place.
+func (c *Config) LogContext() (upstream, clientID string) {
+	if c == nil {
+		return "", ""
+	}
+	clientID = func() string {
+		if c.CachedCIMDClientID != "" {
+			return c.CachedCIMDClientID
+		}
+		if c.CachedClientID != "" {
+			return c.CachedClientID
+		}
+		return c.ClientID
+	}()
+	return c.Issuer, clientID
 }
 
 // DefaultResourceIndicator derives the resource indicator (RFC 8707) from the remote server URL.

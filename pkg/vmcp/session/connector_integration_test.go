@@ -5,24 +5,23 @@ package session
 
 import (
 	"context"
-	"encoding/hex"
 	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 
 	"github.com/google/uuid"
-	mcpmcp "github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/internal/security"
+	internalbk "github.com/stacklok/toolhive/pkg/vmcp/session/internal/backend"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
 
@@ -115,7 +114,7 @@ func TestSessionFactory_Integration_CapabilityDiscovery(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
 	require.NoError(t, err)
 	require.NotNil(t, sess)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
@@ -144,7 +143,7 @@ func TestSessionFactory_Integration_CallTool(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -167,7 +166,7 @@ func TestSessionFactory_Integration_ReadResource(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -190,7 +189,7 @@ func TestSessionFactory_Integration_GetPrompt(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, []*vmcp.Backend{backend})
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -219,7 +218,7 @@ func TestSessionFactory_Integration_MultipleBackends(t *testing.T) {
 	}
 
 	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, backends)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, backends)
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
@@ -229,21 +228,46 @@ func TestSessionFactory_Integration_MultipleBackends(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Token-binding integration tests — HMAC rejection for ReadResource / GetPrompt
+// Identity-binding integration tests — CallerRejection for ReadResource / GetPrompt
 // ---------------------------------------------------------------------------
 
 // TestTokenBinding_CallerRejection verifies that the hijack-prevention decorator
 // is applied to all three protected methods (CallTool, ReadResource, GetPrompt):
-// each rejects a wrong token (ErrUnauthorizedCaller) and a nil caller
-// (ErrNilCaller) before any backend routing occurs, so nilBackendConnector suffices.
-func TestTokenBinding_CallerRejection(t *testing.T) {
+// each rejects a wrong caller (ErrUnauthorizedCaller) and a nil caller
+// (ErrNilCaller) before any backend routing occurs.
+//
+// The identity binding is derived from Claims["iss"] and Claims["sub"] per the
+// new #5306 model (no HMAC secret required).
+func TestIdentityBinding_CallerRejection(t *testing.T) {
 	t.Parallel()
 
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}, Token: "alice-token"}
-	wrongCaller := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "bob"}, Token: "wrong-token"}
+	// Both alice and bob need valid Claims so the binding decorator can extract
+	// their (iss, sub) pairs. alice creates the session; bob is the wrong caller.
+	alice := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "alice",
+			Claims: map[string]any{
+				"iss": "https://idp.example",
+				"sub": "alice",
+			},
+		},
+	}
+	wrongCaller := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "bob",
+			Claims: map[string]any{
+				"iss": "https://idp.example",
+				"sub": "bob",
+			},
+		},
+	}
 
-	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
+	// No backend connector needed: auth validation fires before any routing.
+	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+		return nil, nil, nil
+	}
+	factory := newSessionFactoryWithConnector(connector)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), alice, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sess.Close() })
 
@@ -266,7 +290,7 @@ func TestTokenBinding_CallerRejection(t *testing.T) {
 	}
 
 	for _, fn := range callFns {
-		t.Run(fn.name+"/wrong token", func(t *testing.T) {
+		t.Run(fn.name+"/wrong caller", func(t *testing.T) {
 			t.Parallel()
 			assert.ErrorIs(t, fn.call(wrongCaller), sessiontypes.ErrUnauthorizedCaller)
 		})
@@ -280,7 +304,7 @@ func TestTokenBinding_CallerRejection(t *testing.T) {
 // TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend verifies that a
 // bound session accepts ReadResource and GetPrompt calls from the correct caller
 // when a real backend is connected.
-func TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T) {
+func TestIdentityBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T) {
 	t.Parallel()
 
 	baseURL := startInProcessMCPServer(t)
@@ -291,15 +315,24 @@ func TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T) {
 		TransportType: "streamable-http",
 	}
 
-	const rawToken = "alice-real-token"
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}, Token: rawToken}
+	// Identity with Claims so binding.Format(iss, sub) succeeds and the session
+	// is bound to the caller identity.
+	identity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "alice",
+			Claims: map[string]any{
+				"iss": "https://idp.example",
+				"sub": "alice",
+			},
+		},
+	}
 
-	factory := NewSessionFactory(newUnauthenticatedRegistry(t), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, []*vmcp.Backend{backend})
+	factory := NewSessionFactory(newUnauthenticatedRegistry(t))
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, []*vmcp.Backend{backend})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, sess.Close()) })
 
-	t.Run("allows ReadResource with correct token", func(t *testing.T) {
+	t.Run("allows ReadResource with correct caller", func(t *testing.T) {
 		t.Parallel()
 		result, err := sess.ReadResource(context.Background(), identity, "test://data")
 		require.NoError(t, err)
@@ -308,7 +341,7 @@ func TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T) {
 		assert.Equal(t, "hello", result.Contents[0].Text)
 	})
 
-	t.Run("allows GetPrompt with correct token", func(t *testing.T) {
+	t.Run("allows GetPrompt with correct caller", func(t *testing.T) {
 		t.Parallel()
 		result, err := sess.GetPrompt(context.Background(), identity, "greet", nil)
 		require.NoError(t, err)
@@ -319,71 +352,43 @@ func TestTokenBinding_ReadResource_And_GetPrompt_WithRealBackend(t *testing.T) {
 	})
 }
 
-// TestTokenBinding_DifferentSecretsProduceDifferentHashes verifies that two
-// session factories configured with different HMAC secrets store different token
-// hashes for the same raw bearer token. This is the key isolation property that
-// prevents sessions from one secret epoch from being validated against another.
-func TestTokenBinding_DifferentSecretsProduceDifferentHashes(t *testing.T) {
-	t.Parallel()
-
-	const rawToken = "shared-token-same-for-both"
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: rawToken}
-
-	factoryA := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("secret-A-exactly-32-bytes-long!!")))
-	factoryB := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("secret-B-exactly-32-bytes-long!!")))
-
-	sessA, err := factoryA.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sessA.Close() })
-
-	sessB, err := factoryB.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sessB.Close() })
-
-	hashA := sessA.GetMetadata()[MetadataKeyTokenHash]
-	hashB := sessB.GetMetadata()[MetadataKeyTokenHash]
-
-	assert.NotEmpty(t, hashA)
-	assert.NotEmpty(t, hashB)
-	assert.NotEqual(t, hashA, hashB,
-		"different HMAC secrets must produce different token hashes for the same input token")
-}
-
-// TestRestoreHijackPrevention_Integration_RoundTrip verifies the full
+// TestTokenBinding_RestoreSession_RoundTrip verifies the full
 // store-then-restore flow across a real factory-created session:
 //
-//  1. Create a session via the factory (writes tokenHash + tokenSalt to metadata).
-//  2. Extract the persisted values.
-//  3. Wrap a fresh base session with RestoreHijackPrevention using those values.
-//  4. Confirm the restored decorator accepts the original token and rejects others.
-func TestRestoreHijackPrevention_Integration_RoundTrip(t *testing.T) {
+//  1. Create a session via the factory (writes MetadataKeyIdentityBinding to metadata).
+//  2. Extract the persisted binding.
+//  3. Restore the session via RestoreSession using the persisted metadata.
+//  4. Confirm the restored decorator accepts the original caller and rejects others.
+func TestIdentityBinding_RestoreSession_RoundTrip(t *testing.T) {
 	t.Parallel()
 
-	const rawToken = "integration-token"
-	hmacSecret := []byte("test-hmac-secret-exactly-32bytes")
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}, Token: rawToken}
+	identity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "alice",
+			Claims: map[string]any{
+				"iss": "https://idp.example",
+				"sub": "alice",
+			},
+		},
+	}
 
-	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret(hmacSecret))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
+	connector := func(_ context.Context, _ *vmcp.BackendTarget, _ *auth.Identity, _ string) (internalbk.Session, *vmcp.CapabilityList, error) {
+		return nil, nil, nil
+	}
+	factory := newSessionFactoryWithConnector(connector)
+	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, nil)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = sess.Close() })
 
 	// Extract persisted values — these simulate what would be read back from Redis.
 	meta := sess.GetMetadata()
-	persistedHash := meta[MetadataKeyTokenHash]
-	persistedSalt := meta[sessiontypes.MetadataKeyTokenSalt]
-	require.NotEmpty(t, persistedHash, "factory must write tokenHash to metadata")
-	require.NotEmpty(t, persistedSalt, "factory must write tokenSalt to metadata")
+	storedBinding := meta[MetadataKeyIdentityBinding]
+	require.NotEmpty(t, storedBinding, "factory must write MetadataKeyIdentityBinding to metadata")
 
-	// Simulate "Pod B": restore the decorator from persisted metadata.
-	// We use a nil-connector session as the inner session (no real backend needed
-	// to test auth path).
-	innerSess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
+	// Simulate "Pod B": restore the session from persisted metadata.
+	restored, err := factory.RestoreSession(context.Background(), uuid.New().String(), meta, nil)
 	require.NoError(t, err)
-	t.Cleanup(func() { _ = innerSess.Close() })
-
-	restored, err := security.RestoreHijackPrevention(innerSess, persistedHash, persistedSalt, hmacSecret)
-	require.NoError(t, err)
+	t.Cleanup(func() { _ = restored.Close() })
 
 	ctx := context.Background()
 
@@ -393,78 +398,22 @@ func TestRestoreHijackPrevention_Integration_RoundTrip(t *testing.T) {
 	require.NotErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller)
 	require.NotErrorIs(t, err, sessiontypes.ErrNilCaller)
 
-	// A different caller is rejected at the auth layer — before any backend routing.
-	wrongCaller := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "eve"}, Token: "eve-token"}
+	// A different caller is rejected at the auth layer.
+	wrongCaller := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "eve",
+			Claims: map[string]any{
+				"iss": "https://idp.example",
+				"sub": "eve",
+			},
+		},
+	}
 	_, err = restored.CallTool(ctx, wrongCaller, "any-tool", nil, nil)
 	require.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller)
 
 	// Nil caller is rejected at the auth layer.
 	_, err = restored.CallTool(ctx, nil, "any-tool", nil, nil)
 	require.ErrorIs(t, err, sessiontypes.ErrNilCaller)
-}
-
-// TestRestoreHijackPrevention_Integration_CrossReplicaSecretMismatch verifies
-// that a session restored on a replica with a different HMAC secret rejects
-// the original caller's token, documenting the operational requirement that
-// all replicas must share the same secret.
-func TestRestoreHijackPrevention_Integration_CrossReplicaSecretMismatch(t *testing.T) {
-	t.Parallel()
-
-	secretA := []byte("secret-A-exactly-32-bytes-long!!")
-	secretB := []byte("secret-B-exactly-32-bytes-long!!")
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "alice"}, Token: "alice-token"}
-
-	// Pod A creates the session with secretA, persisting the hash.
-	factoryA := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret(secretA))
-	sessA, err := factoryA.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sessA.Close() })
-
-	persistedHash := sessA.GetMetadata()[MetadataKeyTokenHash]
-	persistedSalt := sessA.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
-
-	// Pod B restores with secretB — the persisted hash was computed with secretA,
-	// so validation will produce a different HMAC and reject the caller.
-	factoryB := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret(secretB))
-	innerSess, err := factoryB.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = innerSess.Close() })
-
-	restored, err := security.RestoreHijackPrevention(innerSess, persistedHash, persistedSalt, secretB)
-	require.NoError(t, err)
-
-	_, err = restored.CallTool(context.Background(), identity, "any-tool", nil, nil)
-	require.ErrorIs(t, err, sessiontypes.ErrUnauthorizedCaller,
-		"cross-replica secret mismatch must reject the original caller")
-}
-
-// TestTokenBinding_MetadataEncoding verifies that the token hash and salt stored
-// in session metadata are valid hex strings of the expected lengths:
-//   - token hash: 64 hex chars (32-byte HMAC-SHA256)
-//   - token salt: 32 hex chars (16-byte random salt)
-func TestTokenBinding_MetadataEncoding(t *testing.T) {
-	t.Parallel()
-
-	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "user"}, Token: "test-token-123"}
-
-	factory := newSessionFactoryWithConnector(nilBackendConnector(), WithHMACSecret([]byte("test-hmac-secret-exactly-32bytes")))
-	sess, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), identity, false, nil)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = sess.Close() })
-
-	tokenHash := sess.GetMetadata()[MetadataKeyTokenHash]
-	require.NotEmpty(t, tokenHash)
-	assert.Len(t, tokenHash, 64, "HMAC-SHA256 hex-encoded hash must be 64 characters")
-	hashBytes, err := hex.DecodeString(tokenHash)
-	require.NoError(t, err, "token hash must be valid hex")
-	assert.Len(t, hashBytes, 32, "decoded token hash must be 32 bytes")
-
-	tokenSalt := sess.GetMetadata()[sessiontypes.MetadataKeyTokenSalt]
-	require.NotEmpty(t, tokenSalt)
-	saltBytes, err := hex.DecodeString(tokenSalt)
-	require.NoError(t, err, "token salt must be valid hex")
-	assert.Len(t, saltBytes, 16, "decoded token salt must be 16 bytes")
 }
 
 // startInProcessMCPServerWithHeaderCapture starts an in-process MCP server and
@@ -529,7 +478,7 @@ func TestSessionFactory_Integration_RestoreSession_SendsStoredSessionHintToBacke
 
 	// Create the original session — the backend assigns a session ID over
 	// streamable-HTTP and we store it in metadata.
-	orig, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, true, []*vmcp.Backend{backend})
+	orig, err := factory.MakeSessionWithID(context.Background(), uuid.New().String(), nil, []*vmcp.Backend{backend})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = orig.Close() })
 

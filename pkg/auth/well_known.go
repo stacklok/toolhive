@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"strings"
 
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // NewWellKnownHandler creates an HTTP handler that routes requests under the

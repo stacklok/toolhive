@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestNewMCPServerFieldAccessor(t *testing.T) {
@@ -24,14 +24,14 @@ func TestGetProxyDeploymentLabelsAndAnnotations(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name                string
-		mcpServer           *mcpv1alpha1.MCPServer
+		mcpServer           *mcpv1beta1.MCPServer
 		expectedLabels      map[string]string
 		expectedAnnotations map[string]string
 	}{
 		{
 			name: "nil resource overrides",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
 					ResourceOverrides: nil,
 				},
 			},
@@ -40,9 +40,9 @@ func TestGetProxyDeploymentLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "nil proxy deployment overrides",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
 						ProxyDeployment: nil,
 					},
 				},
@@ -52,11 +52,11 @@ func TestGetProxyDeploymentLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "with labels only",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
 								Labels: map[string]string{
 									"app":     "my-app",
 									"version": "v1",
@@ -74,11 +74,11 @@ func TestGetProxyDeploymentLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "with annotations only",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
 								Annotations: map[string]string{
 									"prometheus.io/scrape": "true",
 									"prometheus.io/port":   "9090",
@@ -96,11 +96,11 @@ func TestGetProxyDeploymentLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "with both labels and annotations",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
 								Labels: map[string]string{
 									"env":                    "production",
 									"team":                   "platform",
@@ -129,11 +129,11 @@ func TestGetProxyDeploymentLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "nil labels and annotations maps",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
 								Labels:      nil,
 								Annotations: nil,
 							},
@@ -146,11 +146,11 @@ func TestGetProxyDeploymentLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "empty labels and annotations maps",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
 								Labels:      map[string]string{},
 								Annotations: map[string]string{},
 							},
@@ -179,14 +179,14 @@ func TestGetProxyDeploymentTemplateLabelsAndAnnotations(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name                string
-		mcpServer           *mcpv1alpha1.MCPServer
+		mcpServer           *mcpv1beta1.MCPServer
 		expectedLabels      map[string]string
 		expectedAnnotations map[string]string
 	}{
 		{
 			name: "nil resource overrides",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
 					ResourceOverrides: nil,
 				},
 			},
@@ -195,9 +195,9 @@ func TestGetProxyDeploymentTemplateLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "nil proxy deployment overrides",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
 						ProxyDeployment: nil,
 					},
 				},
@@ -207,10 +207,10 @@ func TestGetProxyDeploymentTemplateLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "nil pod template metadata overrides",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
 							PodTemplateMetadataOverrides: nil,
 						},
 					},
@@ -221,11 +221,11 @@ func TestGetProxyDeploymentTemplateLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "with pod template labels only",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
 								Labels: map[string]string{
 									"pod-label-1": "value1",
 									"pod-label-2": "value2",
@@ -243,11 +243,11 @@ func TestGetProxyDeploymentTemplateLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "with pod template annotations only",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
 								Annotations: map[string]string{
 									"pod-annotation-1": "value1",
 									"pod-annotation-2": "value2",
@@ -265,11 +265,11 @@ func TestGetProxyDeploymentTemplateLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "with both pod template labels and annotations",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
 								Labels: map[string]string{
 									"app.kubernetes.io/component": "proxy",
 									"app.kubernetes.io/instance":  "server-1",
@@ -294,11 +294,11 @@ func TestGetProxyDeploymentTemplateLabelsAndAnnotations(t *testing.T) {
 		},
 		{
 			name: "deployment overrides don't affect pod template",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				Spec: mcpv1alpha1.MCPServerSpec{
-					ResourceOverrides: &mcpv1alpha1.ResourceOverrides{
-						ProxyDeployment: &mcpv1alpha1.ProxyDeploymentOverrides{
-							ResourceMetadataOverrides: mcpv1alpha1.ResourceMetadataOverrides{
+			mcpServer: &mcpv1beta1.MCPServer{
+				Spec: mcpv1beta1.MCPServerSpec{
+					ResourceOverrides: &mcpv1beta1.ResourceOverrides{
+						ProxyDeployment: &mcpv1beta1.ProxyDeploymentOverrides{
+							ResourceMetadataOverrides: mcpv1beta1.ResourceMetadataOverrides{
 								Labels: map[string]string{
 									"deployment-label": "should-not-appear",
 								},
@@ -306,7 +306,7 @@ func TestGetProxyDeploymentTemplateLabelsAndAnnotations(t *testing.T) {
 									"deployment-annotation": "should-not-appear",
 								},
 							},
-							PodTemplateMetadataOverrides: &mcpv1alpha1.ResourceMetadataOverrides{
+							PodTemplateMetadataOverrides: &mcpv1beta1.ResourceMetadataOverrides{
 								Labels: map[string]string{
 									"pod-label": "should-appear",
 								},

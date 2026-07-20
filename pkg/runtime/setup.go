@@ -54,6 +54,7 @@ func Setup(
 	targetHost string,
 	publishedPorts []string,
 	scalingConfig *rt.ScalingConfig,
+	runConfigMCPServerGeneration int64,
 ) (*SetupResult, error) {
 	// Add transport-specific environment variables
 	env, ok := transportEnvMap[transportType]
@@ -99,6 +100,7 @@ func Setup(
 	}
 	containerOptions.ScalingConfig = scalingConfig
 	containerOptions.AllowDockerGateway = allowDockerGateway
+	containerOptions.RunConfigMCPServerGeneration = runConfigMCPServerGeneration
 
 	if transportType == types.TransportTypeStdio {
 		containerOptions.AttachStdio = true

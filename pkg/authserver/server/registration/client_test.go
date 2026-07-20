@@ -32,7 +32,7 @@ func TestNewLoopbackClient(t *testing.T) {
 		Public:       true,
 	}
 
-	client := NewLoopbackClient(defaultClient)
+	client := NewLoopbackClient(&fosite.DefaultOpenIDConnectClient{DefaultClient: defaultClient})
 
 	assert.NotNil(t, client)
 	assert.Equal(t, "test-client", client.GetID())
@@ -196,10 +196,12 @@ func TestLoopbackClient_MatchRedirectURI(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := NewLoopbackClient(&fosite.DefaultClient{
-				ID:           "test-client",
-				RedirectURIs: tt.registeredURIs,
-				Public:       true,
+			client := NewLoopbackClient(&fosite.DefaultOpenIDConnectClient{
+				DefaultClient: &fosite.DefaultClient{
+					ID:           "test-client",
+					RedirectURIs: tt.registeredURIs,
+					Public:       true,
+				},
 			})
 
 			result := client.MatchRedirectURI(tt.requestedURI)
@@ -247,10 +249,12 @@ func TestLoopbackClient_GetMatchingRedirectURI(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			client := NewLoopbackClient(&fosite.DefaultClient{
-				ID:           "test-client",
-				RedirectURIs: tt.registeredURIs,
-				Public:       true,
+			client := NewLoopbackClient(&fosite.DefaultOpenIDConnectClient{
+				DefaultClient: &fosite.DefaultClient{
+					ID:           "test-client",
+					RedirectURIs: tt.registeredURIs,
+					Public:       true,
+				},
 			})
 
 			result := client.GetMatchingRedirectURI(tt.requestedURI)

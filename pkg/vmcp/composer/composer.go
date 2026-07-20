@@ -89,8 +89,8 @@ type WorkflowStep struct {
 	// Templates use Go text/template syntax with access to:
 	//   - {{.params.name}}: Input parameters
 	//   - {{.steps.stepid.output}}: Previous step outputs
-	//   - {{.steps.stepid.content}}: Elicitation response data
-	//   - {{.steps.stepid.action}}: Elicitation action (accept/decline/cancel)
+	//   - {{.steps.stepid.output.content}}: Elicitation response data
+	//   - {{.steps.stepid.output.action}}: Elicitation action (accept/decline/cancel)
 	Arguments map[string]any
 
 	// Condition is an optional condition for conditional execution.
@@ -428,7 +428,7 @@ type WorkflowStateStore interface {
 // ElicitationProtocolHandler handles MCP elicitation protocol interactions.
 //
 // This interface provides an SDK-agnostic abstraction for elicitation requests,
-// enabling migration from mark3labs SDK to official SDK without changing workflow code.
+// enabling migration from mcpcompat SDK to official SDK without changing workflow code.
 //
 // Per MCP 2025-06-18 spec: Elicitation is a synchronous request/response protocol
 // where the server sends a request and blocks until the client responds.

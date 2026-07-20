@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -59,7 +60,12 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	// Create clients for each webhook.
 	var executors []clientExecutor
 	for i, whCfg := range params.Webhooks {
-		client, err := webhook.NewClient(whCfg, webhook.TypeMutating, nil) // HMAC secret not yet plumbed
+		hmacSecret, err := webhook.ResolveSecret(context.Background(), whCfg.HMACSecretRef)
+		if err != nil {
+			return fmt.Errorf("failed to resolve HMAC secret for webhook[%d] (%q): %w", i, whCfg.Name, err)
+		}
+
+		client, err := webhook.NewClient(whCfg, webhook.TypeMutating, hmacSecret)
 		if err != nil {
 			return fmt.Errorf("failed to create client for webhook[%d] (%q): %w", i, whCfg.Name, err)
 		}
@@ -83,9 +89,16 @@ func createMutatingHandler(executors []clientExecutor, serverName, transport str
 				return
 			}
 
-			// Read the request body to get the raw MCP request.
+			// Read the request body to get the raw MCP request, capped at MaxRequestSize
+			// to prevent unbounded memory consumption from oversized inbound requests.
+			r.Body = http.MaxBytesReader(w, r.Body, webhook.MaxRequestSize)
 			bodyBytes, err := io.ReadAll(r.Body)
 			if err != nil {
+				var maxErr *http.MaxBytesError
+				if errors.As(err, &maxErr) {
+					sendErrorResponse(w, http.StatusRequestEntityTooLarge, "Request body exceeds maximum size", parsedMCP.ID)
+					return
+				}
 				sendErrorResponse(w, http.StatusInternalServerError, "Failed to read request body", parsedMCP.ID)
 				return
 			}

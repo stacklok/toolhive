@@ -11,14 +11,19 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"slices"
 	"sync"
 	"time"
 
+	tcredis "github.com/stacklok/toolhive-core/redis"
+	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
+	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 )
 
 // Redis ACL credential environment variable names.
@@ -31,11 +36,20 @@ const (
 	// RedisPasswordEnvVar is the environment variable for the Redis ACL password.
 	// #nosec G101 -- This is an environment variable name, not a hardcoded credential
 	RedisPasswordEnvVar = "TOOLHIVE_AUTH_SERVER_REDIS_PASSWORD"
+
+	// maxAuthServerBodySize caps auth-server request bodies; shared with the DCR
+	// endpoint via handlers.MaxDCRBodySize so the two bounds cannot drift.
+	maxAuthServerBodySize = handlers.MaxDCRBodySize
 )
 
 // EmbeddedAuthServer wraps the authorization server for integration with the proxy runner.
 // It handles configuration transformation from authserver.RunConfig to authserver.Config,
 // manages resource lifecycle, and provides HTTP handlers for OAuth/OIDC endpoints.
+//
+// The DCR credential store is owned by the underlying authserver.Server and
+// reached via DCRStore(); see that accessor's doc for SECURITY and lifecycle
+// notes. Storing it twice on this struct would create a drift window with
+// the server's copy, so we delegate through e.server.DCRStore() instead.
 type EmbeddedAuthServer struct {
 	server      authserver.Server
 	keyProvider keys.KeyProvider
@@ -53,6 +67,103 @@ type EmbeddedAuthServer struct {
 func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*EmbeddedAuthServer, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
+	}
+
+	// Register gjson modifiers used by IdentityFromToken configs (e.g. @upstreamjwt).
+	// Without this, modifier-bearing paths silently fail to resolve.
+	upstream.RegisterModifiers()
+
+	// Fail loudly on operator-supplied misconfiguration (e.g. a baseline
+	// scope absent from scopes_supported) BEFORE touching storage or any
+	// other side-effecting work, so a bad config never reaches the network
+	// or filesystem. NewEmbeddedAuthServerWithStorage re-validates for callers
+	// that invoke it directly; this earlier check keeps the failure ahead of
+	// createStorage on this path.
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid run config: %w", err)
+	}
+
+	// Create the storage backend FIRST so the DCR resolver and the auth
+	// server share the same persistence. Both MemoryStorage and RedisStorage
+	// satisfy storage.DCRCredentialStore (verified by package-level var _
+	// checks in pkg/authserver/storage), so an explicit type assertion at
+	// the boundary is provably safe and keeps the wider Storage interface
+	// from advertising secret-bearing DCR methods to every consumer. This
+	// is the wiring change that lets a Redis-backed authserver reuse RFC
+	// 7591 client registrations across replicas and restarts.
+	stor, err := createStorage(ctx, cfg.Storage)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create storage: %w", err)
+	}
+	return NewEmbeddedAuthServerWithStorage(ctx, cfg, stor)
+}
+
+// NewEmbeddedAuthServerWithStorage is the exported core constructor that
+// builds an EmbeddedAuthServer around a caller-supplied storage backend. It
+// lets external composition (e.g. an enterprise build) inject a decorated
+// storage.Storage aggregate.
+//
+// What the injection does NOT solve: the supplied storage is the sole
+// persistence boundary for this server instance. Injecting a shared backend
+// (e.g. Redis) lets replicas share persisted state — DCR registrations,
+// pending authorizations, upstream tokens — but it does not provide
+// cross-replica message delivery or fan-out, and it does not establish session
+// affinity. A request must still reach a replica that can resolve its session
+// from the shared store; pinning a session to a replica (or ensuring all
+// session state is in the shared store) remains the caller's responsibility,
+// typically at the load balancer.
+//
+// The supplied storage MUST also implement storage.DCRCredentialStore (both
+// OSS MemoryStorage and RedisStorage do); the constructor returns an error if
+// it does not. It also validates cfg, so direct callers get the same
+// fail-loud config check NewEmbeddedAuthServer performs before dispatch.
+//
+// NewEmbeddedAuthServer dispatches into this helper after running
+// createStorage; tests dispatch into it directly so they can supply a
+// closeTrackingStorage wrapper to verify the deferred-cleanup contract.
+//
+// Resource ownership: on success, the returned EmbeddedAuthServer takes
+// ownership of stor (its Close releases the backend). On any error path
+// after entry, the deferred cleanup closes stor before returning so a
+// crash-looping caller (typical when DCR's network I/O fails) does not
+// leak the Redis client connection pool / MemoryStorage cleanup goroutine
+// on every restart. The named return retErr is the gate.
+func NewEmbeddedAuthServerWithStorage(
+	ctx context.Context,
+	cfg *authserver.RunConfig,
+	stor storage.Storage,
+) (retEAS *EmbeddedAuthServer, retErr error) {
+	// From here on, any error must close stor before returning.
+	//
+	// Both errors are passed through dcr.SanitizeErrorForLog before being
+	// recorded: closeErr for symmetry with retErr, retErr because the
+	// most common cause of reaching this gate is a wrapped DCR failure
+	// whose error chain may inline several KiB of the upstream's raw
+	// /register response body — that body is attacker-influenced and may
+	// contain URL components that carry credentials (userinfo, query,
+	// fragment). The existing dcr.LogStepError boundary log routes
+	// through the same sanitiser; keep the two log paths consistent so
+	// the cleanup log cannot regress to a less-defended state. The
+	// "cause" key matches the package-wide vocabulary for the
+	// triggering error.
+	defer func() {
+		if retErr != nil {
+			if closeErr := stor.Close(); closeErr != nil {
+				slog.Warn("failed to close storage on NewEmbeddedAuthServer error path",
+					"error", dcr.SanitizeErrorForLog(closeErr),
+					"cause", dcr.SanitizeErrorForLog(retErr),
+				)
+			}
+		}
+	}()
+
+	// Validate cfg here too. NewEmbeddedAuthServer validates before
+	// createStorage, but direct callers of this exported constructor would
+	// otherwise skip the check. Placed inside the deferred-cleanup gate above so
+	// a validation failure still closes the caller-supplied storage per the
+	// resource-ownership contract.
+	if err := cfg.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid run config: %w", err)
 	}
 
 	// 1. Create key provider from RunConfig.SigningKeyConfig
@@ -73,13 +184,37 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		return nil, fmt.Errorf("failed to parse token lifespans: %w", err)
 	}
 
-	// 4. Build upstream configurations
-	upstreams, err := buildUpstreamConfigs(ctx, cfg.Upstreams)
+	// 4. Type-assert to the DCR-capable handle for the resolver. The
+	// per-backend `var _ DCRCredentialStore = (*MemoryStorage)(nil)` /
+	// `(*RedisStorage)(nil)` checks make this provably safe for production
+	// backends; surfacing a non-DCR backend as a constructor error keeps
+	// misconfiguration fail-loud at boot rather than at first DCR resolve.
+	dcrStore, ok := stor.(storage.DCRCredentialStore)
+	if !ok {
+		return nil, fmt.Errorf("storage backend %T does not implement storage.DCRCredentialStore", stor)
+	}
+
+	// 5. Build upstream configurations. The DCR resolver caches RFC 7591
+	// resolutions in dcrStore so re-entrant boot/reload paths reuse
+	// previously-registered upstream clients instead of re-registering.
+	upstreams, err := buildUpstreamConfigs(
+		ctx, cfg.Upstreams, cfg.Issuer, dcr.NewStorageBackedStore(dcrStore), cfg.InsecureAllowHTTP,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build upstream configs: %w", err)
 	}
 
-	// 5. Build the resolved Config
+	// 6. Build the resolved Config.
+	//
+	// Defensive copies of the scope/audience slices: cfg is operator-supplied
+	// input that may be retained or mutated by the caller (e.g. tests, a
+	// future hot-reload path). The DCR handler reads these slices on every
+	// request, so a mid-request mutation of the original would race. Cloning
+	// here once at the boundary lets all downstream stages share by reference
+	// safely. Cost is negligible — each slice is bounded by validation (≤10
+	// for BaselineClientScopes, low cardinality in practice for the others).
+	cimdEnabled, cimdCacheMaxSize, cimdCacheFallbackTTL := resolveCIMDConfig(cfg.CIMD)
+
 	resolvedCfg := authserver.Config{
 		Issuer:                       cfg.Issuer,
 		AuthorizationEndpointBaseURL: cfg.AuthorizationEndpointBaseURL,
@@ -89,17 +224,18 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 		RefreshTokenLifespan:         refreshLifespan,
 		AuthCodeLifespan:             authCodeLifespan,
 		Upstreams:                    upstreams,
-		ScopesSupported:              cfg.ScopesSupported,
-		AllowedAudiences:             cfg.AllowedAudiences,
+		ScopesSupported:              slices.Clone(cfg.ScopesSupported),
+		BaselineClientScopes:         slices.Clone(cfg.BaselineClientScopes),
+		AllowedAudiences:             slices.Clone(cfg.AllowedAudiences),
+		CIMDEnabled:                  cimdEnabled,
+		CIMDCacheMaxSize:             cimdCacheMaxSize,
+		CIMDCacheFallbackTTL:         cimdCacheFallbackTTL,
+		InsecureAllowHTTP:            cfg.InsecureAllowHTTP,
 	}
 
-	// 6. Create storage backend based on configuration
-	stor, err := createStorage(ctx, cfg.Storage)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create storage: %w", err)
-	}
-
-	// 7. Create the auth server
+	// 7. Create the auth server. authserver.New also asserts the DCR
+	// capability internally so its DCRStore() accessor returns the same
+	// asserted handle this constructor used for buildUpstreamConfigs.
 	server, err := authserver.New(ctx, resolvedCfg, stor)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create auth server: %w", err)
@@ -115,8 +251,16 @@ func NewEmbeddedAuthServer(ctx context.Context, cfg *authserver.RunConfig) (*Emb
 // The handler uses internal chi routing and serves all endpoints:
 //   - /oauth/authorize, /oauth/callback, /oauth/token, /oauth/register
 //   - /.well-known/jwks.json, /.well-known/oauth-authorization-server, /.well-known/openid-configuration
+//
+// All auth-server endpoints are body-size-limited to handlers.MaxDCRBodySize
+// (64KB) and reject oversized requests with HTTP 413 Request Entity Too Large.
 func (e *EmbeddedAuthServer) Handler() http.Handler {
-	return e.server.Handler()
+	// Cap request bodies on all auth-server endpoints (e.g. POST /oauth/token,
+	// /oauth/register) so they cannot be used for memory-exhaustion DoS. These
+	// routes are mounted outside the MCP middleware chain (the proxies and vMCP
+	// mount them via Routes()/RegisterHandlers, which derive from this handler),
+	// so the cap is applied here to cover every consumer.
+	return bodylimit.Middleware(maxAuthServerBodySize)(e.server.Handler())
 }
 
 // Close releases resources held by the EmbeddedAuthServer.
@@ -149,6 +293,16 @@ func (e *EmbeddedAuthServer) UpstreamTokenRefresher() storage.UpstreamTokenRefre
 // self-referential HTTP calls when the token validator runs in the same process.
 func (e *EmbeddedAuthServer) KeyProvider() keys.KeyProvider {
 	return e.keyProvider
+}
+
+// DCRStore returns the persistent DCR credential store the authorization
+// server is wired against. This delegates to the underlying authserver.Server
+// so this struct does not hold a redundant copy that could drift if the
+// server ever swaps backends. See authserver.Server.DCRStore for SECURITY
+// and lifecycle notes — the returned interface surfaces raw client_secret
+// and registration_access_token values and MUST NOT be logged or rendered.
+func (e *EmbeddedAuthServer) DCRStore() storage.DCRCredentialStore {
+	return e.server.DCRStore()
 }
 
 // Routes returns the authorization server's HTTP route map.
@@ -271,14 +425,79 @@ func parseTokenLifespans(cfg *authserver.TokenLifespanRunConfig) (access, refres
 // buildUpstreamConfigs converts UpstreamRunConfig slice to UpstreamConfig slice.
 // It preserves the provider type so the factory can create the correct provider
 // (OIDCProviderImpl for OIDC, BaseOAuth2Provider for OAuth2).
-func buildUpstreamConfigs(_ context.Context, runConfigs []authserver.UpstreamRunConfig) ([]authserver.UpstreamConfig, error) {
+//
+// For OAuth2 upstreams configured with DCRConfig, buildUpstreamConfigs performs
+// RFC 7591 Dynamic Client Registration against the upstream authorization
+// server (hitting the network on first call, using dcrStore on subsequent
+// calls) and overlays the resulting ClientID / ClientSecret onto the output
+// config via consumeResolution + applyResolutionToOAuth2Config (see
+// dcr_adapter.go). The caller's runConfigs slice is not mutated: in-place
+// mutation of caller-provided values surprises callers and can cause data
+// races, so each element is cloned before applying DCR resolution.
+//
+// Error logging: this function is the boundary for DCR errors — on any
+// failure from dcr.ResolveCredentials it emits exactly one structured
+// slog.Error via dcr.LogStepError and returns the wrapped error to the
+// caller without logging further. The resolver itself does not log
+// errors, which avoids the log-and-return double-reporting pattern.
+func buildUpstreamConfigs(
+	ctx context.Context,
+	runConfigs []authserver.UpstreamRunConfig,
+	issuer string,
+	dcrStore dcr.CredentialStore,
+	insecureAllowHTTP bool,
+) ([]authserver.UpstreamConfig, error) {
 	configs := make([]authserver.UpstreamConfig, 0, len(runConfigs))
 
 	for _, rc := range runConfigs {
-		cfg, err := buildUpstreamConfig(&rc)
+		// Shallow copy of the outer UpstreamRunConfig so DCR resolution never
+		// mutates the caller's slice element.
+		rcCopy := rc
+
+		var dcrResolution *dcr.Resolution
+		// needsDCR returns false for nil input, so the explicit Type ==
+		// OAuth2 guard is redundant. Keeping a single source of truth for
+		// "does this upstream require DCR" avoids drift if the condition
+		// ever needs to be extended (e.g., to support OIDC DCR).
+		if needsDCR(rcCopy.OAuth2Config) {
+			// Take a local copy of the OAuth2 sub-config. dcr.ResolveCredentials
+			// reads it but does not mutate; consumeResolution is value-in /
+			// value-out, so the caller's original OAuth2Config pointer target
+			// is never reached by either call.
+			o2 := *rcCopy.OAuth2Config
+
+			req, err := newDCRRequest(&o2, issuer)
+			if err != nil {
+				return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+			}
+			resolution, err := dcr.ResolveCredentials(ctx, req, dcrStore)
+			if err != nil {
+				// Emit the single boundary Error record with enough context to
+				// correlate the failure back to this upstream; then return the
+				// wrapped error without further logging.
+				dcr.LogStepError(rc.Name, err)
+				return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
+			}
+			o2 = consumeResolution(o2, resolution)
+			rcCopy.OAuth2Config = &o2
+			dcrResolution = resolution
+		}
+
+		cfg, err := buildUpstreamConfig(&rcCopy, insecureAllowHTTP)
 		if err != nil {
 			return nil, fmt.Errorf("upstream %q: %w", rc.Name, err)
 		}
+
+		// Apply the DCR-resolved ClientSecret to the built OAuth2Config.
+		// The split between consumeResolution (run-config fields) and
+		// applyResolutionToOAuth2Config (inline-only ClientSecret) is
+		// documented in dcr_adapter.go — both calls must be paired to
+		// produce a fully-resolved DCR client.
+		if dcrResolution != nil && cfg.OAuth2Config != nil {
+			applied := applyResolutionToOAuth2Config(*cfg.OAuth2Config, dcrResolution)
+			cfg.OAuth2Config = &applied
+		}
+
 		configs = append(configs, *cfg)
 	}
 
@@ -287,10 +506,10 @@ func buildUpstreamConfigs(_ context.Context, runConfigs []authserver.UpstreamRun
 
 // buildUpstreamConfig builds an authserver.UpstreamConfig from UpstreamRunConfig.
 // It preserves the provider type and builds the appropriate config.
-func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.UpstreamConfig, error) {
+func buildUpstreamConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (*authserver.UpstreamConfig, error) {
 	switch rc.Type {
 	case authserver.UpstreamProviderTypeOIDC:
-		oidcCfg, err := buildOIDCConfig(rc)
+		oidcCfg, err := buildOIDCConfig(rc, insecureAllowHTTP)
 		if err != nil {
 			return nil, err
 		}
@@ -301,7 +520,7 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.Upstream
 		}, nil
 
 	case authserver.UpstreamProviderTypeOAuth2:
-		oauth2Cfg, err := buildPureOAuth2Config(rc)
+		oauth2Cfg, err := buildPureOAuth2Config(rc, insecureAllowHTTP)
 		if err != nil {
 			return nil, err
 		}
@@ -324,7 +543,7 @@ func buildUpstreamConfig(rc *authserver.UpstreamRunConfig) (*authserver.Upstream
 // by OIDCProviderImpl.ExchangeCodeForIdentity), not from the UserInfo endpoint.
 // The UserInfo endpoint may still be discovered via OIDC discovery for other
 // purposes, but it is not used for identity resolution.
-func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, error) {
+func buildOIDCConfig(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (*upstream.OIDCConfig, error) {
 	if rc.OIDCConfig == nil {
 		return nil, fmt.Errorf("oidc_config required for OIDC provider")
 	}
@@ -361,17 +580,28 @@ func buildOIDCConfig(rc *authserver.UpstreamRunConfig) (*upstream.OIDCConfig, er
 			Scopes:                        scopes,
 			AdditionalAuthorizationParams: oidc.AdditionalAuthorizationParams,
 		},
-		Issuer: oidc.IssuerURL,
+		Issuer:            oidc.IssuerURL,
+		SubjectClaim:      oidc.SubjectClaim,
+		AllowPrivateIPs:   oidc.AllowPrivateIPs,
+		InsecureAllowHTTP: insecureAllowHTTP || oidc.InsecureAllowHTTP,
 	}, nil
 }
 
 // buildPureOAuth2Config builds an upstream.OAuth2Config for a pure OAuth2 provider.
-func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Config, error) {
+//
+// Run-config-specific invariants (e.g. ClientID/DCRConfig mutual exclusion) are
+// enforced here via OAuth2UpstreamRunConfig.Validate before secrets are
+// resolved, since the downstream upstream.OAuth2Config validator only sees the
+// flattened runtime shape and cannot observe DCR fields.
+func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig, insecureAllowHTTP bool) (*upstream.OAuth2Config, error) {
 	if rc.OAuth2Config == nil {
 		return nil, fmt.Errorf("oauth2_config required for OAuth2 provider")
 	}
 
 	oauth2 := rc.OAuth2Config
+	if err := oauth2.Validate(); err != nil {
+		return nil, err
+	}
 	clientSecret, err := resolveSecret(oauth2.ClientSecretFile, oauth2.ClientSecretEnvVar)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve OAuth2 client secret: %w", err)
@@ -388,6 +618,8 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 		AuthorizationEndpoint: oauth2.AuthorizationEndpoint,
 		TokenEndpoint:         oauth2.TokenEndpoint,
 		UserInfo:              convertUserInfoConfig(oauth2.UserInfo),
+		AllowPrivateIPs:       oauth2.AllowPrivateIPs,
+		InsecureAllowHTTP:     insecureAllowHTTP || oauth2.InsecureAllowHTTP,
 	}
 
 	if oauth2.TokenResponseMapping != nil {
@@ -396,6 +628,14 @@ func buildPureOAuth2Config(rc *authserver.UpstreamRunConfig) (*upstream.OAuth2Co
 			ScopePath:        oauth2.TokenResponseMapping.ScopePath,
 			RefreshTokenPath: oauth2.TokenResponseMapping.RefreshTokenPath,
 			ExpiresInPath:    oauth2.TokenResponseMapping.ExpiresInPath,
+		}
+	}
+
+	if oauth2.IdentityFromToken != nil {
+		cfg.IdentityFromToken = &upstream.IdentityFromTokenConfig{
+			SubjectPath: oauth2.IdentityFromToken.SubjectPath,
+			NamePath:    oauth2.IdentityFromToken.NamePath,
+			EmailPath:   oauth2.IdentityFromToken.EmailPath,
 		}
 	}
 
@@ -461,96 +701,131 @@ func createStorage(ctx context.Context, cfg *storage.RunConfig) (storage.Storage
 		if err != nil {
 			return nil, fmt.Errorf("invalid Redis config: %w", err)
 		}
-		return storage.NewRedisStorage(ctx, *redisCfg)
+		return storage.NewRedisStorage(ctx, redisCfg, cfg.RedisConfig.KeyPrefix)
 	}
 	return nil, fmt.Errorf("unsupported storage type: %s", cfg.Type)
 }
 
-// convertRedisRunConfig converts a serializable RedisRunConfig to the runtime RedisConfig.
-// It resolves credentials from environment variables and parses duration strings.
-func convertRedisRunConfig(rc *storage.RedisRunConfig) (*storage.RedisConfig, error) {
+// convertRedisRunConfig converts a serializable RedisRunConfig to a runtime
+// tcredis.Config. It resolves ACL credentials from environment variables and
+// parses duration strings. Connection-mode topology and defaulting are handled
+// by the shared toolhive-core redis package when the client is constructed.
+func convertRedisRunConfig(rc *storage.RedisRunConfig) (tcredis.Config, error) {
 	if rc == nil {
-		return nil, fmt.Errorf("redis config is required when storage type is redis")
+		return tcredis.Config{}, fmt.Errorf("redis config is required when storage type is redis")
 	}
 
-	cfg := &storage.RedisConfig{
-		KeyPrefix: rc.KeyPrefix,
+	cfg := tcredis.Config{
+		Addr:        rc.Addr,
+		ClusterMode: rc.ClusterMode,
 	}
 
-	// Convert Sentinel config
-	if rc.SentinelConfig == nil {
-		return nil, fmt.Errorf("sentinel config is required")
-	}
-	cfg.SentinelConfig = &storage.SentinelConfig{
-		MasterName:    rc.SentinelConfig.MasterName,
-		SentinelAddrs: rc.SentinelConfig.SentinelAddrs,
-		DB:            rc.SentinelConfig.DB,
+	if rc.SentinelConfig != nil {
+		cfg.SentinelConfig = &tcredis.SentinelConfig{
+			MasterName:    rc.SentinelConfig.MasterName,
+			SentinelAddrs: rc.SentinelConfig.SentinelAddrs,
+		}
+		cfg.DB = rc.SentinelConfig.DB
 	}
 
-	// Resolve ACL credentials from environment variables
-	if rc.ACLUserConfig == nil {
-		return nil, fmt.Errorf("ACL user config is required")
-	}
-	username, err := resolveEnvVar(rc.ACLUserConfig.UsernameEnvVar)
+	acl, err := convertRedisACLConfig(rc.ACLUserConfig)
 	if err != nil {
-		return nil, fmt.Errorf("failed to resolve Redis username: %w", err)
+		return tcredis.Config{}, fmt.Errorf("failed to convert ACL config: %w", err)
 	}
-	password, err := resolveEnvVar(rc.ACLUserConfig.PasswordEnvVar)
-	if err != nil {
-		return nil, fmt.Errorf("failed to resolve Redis password: %w", err)
-	}
-	cfg.ACLUserConfig = &storage.ACLUserConfig{
-		Username: username,
-		Password: password,
+	cfg.Username = acl.username
+	cfg.Password = acl.password
+
+	if err := applyRedisTimeouts(rc, &cfg); err != nil {
+		return tcredis.Config{}, fmt.Errorf("failed to apply redis timeouts: %w", err)
 	}
 
-	// Parse optional timeouts
+	tlsCfg, err := convertRedisTLSRunConfig(rc.TLS)
+	if err != nil {
+		return tcredis.Config{}, fmt.Errorf("master TLS config: %w", err)
+	}
+	cfg.TLS = tlsCfg
+
+	// SentinelTLS only applies in Sentinel mode
+	if rc.SentinelConfig != nil {
+		sentinelTLSCfg, err := convertRedisTLSRunConfig(rc.SentinelTLS)
+		if err != nil {
+			return tcredis.Config{}, fmt.Errorf("sentinel TLS config: %w", err)
+		}
+		cfg.SentinelTLS = sentinelTLSCfg
+	}
+
+	return cfg, nil
+}
+
+// redisACLCredentials carries resolved Redis ACL credentials between
+// convertRedisACLConfig and its caller. Named fields prevent positional
+// swaps of two same-typed strings at the call site.
+type redisACLCredentials struct {
+	username string
+	password string
+}
+
+// convertRedisACLConfig resolves ACL user credentials from environment variables.
+// When UsernameEnvVar is empty, no username is resolved; go-redis then sends
+// HELLO with "default" as the username (or falls back to legacy AUTH <password>
+// for servers that do not support HELLO). This is required for managed Redis
+// tiers without ACL users (e.g. GCP Memorystore Basic/Standard HA, Azure Cache
+// for Redis).
+func convertRedisACLConfig(rc *storage.ACLUserRunConfig) (redisACLCredentials, error) {
+	if rc == nil {
+		return redisACLCredentials{}, fmt.Errorf("acl user config is required")
+	}
+	var username string
+	if rc.UsernameEnvVar != "" {
+		var err error
+		username, err = resolveEnvVar(rc.UsernameEnvVar)
+		if err != nil {
+			return redisACLCredentials{}, fmt.Errorf("failed to resolve Redis username: %w", err)
+		}
+	}
+	password, err := resolveEnvVar(rc.PasswordEnvVar)
+	if err != nil {
+		return redisACLCredentials{}, fmt.Errorf("failed to resolve Redis password: %w", err)
+	}
+	return redisACLCredentials{username: username, password: password}, nil
+}
+
+// applyRedisTimeouts parses and applies optional timeout duration strings to cfg.
+func applyRedisTimeouts(rc *storage.RedisRunConfig, cfg *tcredis.Config) error {
 	if rc.DialTimeout != "" {
 		d, err := time.ParseDuration(rc.DialTimeout)
 		if err != nil {
-			return nil, fmt.Errorf("invalid dial timeout: %w", err)
+			return fmt.Errorf("invalid dial timeout: %w", err)
 		}
 		cfg.DialTimeout = d
 	}
 	if rc.ReadTimeout != "" {
 		d, err := time.ParseDuration(rc.ReadTimeout)
 		if err != nil {
-			return nil, fmt.Errorf("invalid read timeout: %w", err)
+			return fmt.Errorf("invalid read timeout: %w", err)
 		}
 		cfg.ReadTimeout = d
 	}
 	if rc.WriteTimeout != "" {
 		d, err := time.ParseDuration(rc.WriteTimeout)
 		if err != nil {
-			return nil, fmt.Errorf("invalid write timeout: %w", err)
+			return fmt.Errorf("invalid write timeout: %w", err)
 		}
 		cfg.WriteTimeout = d
 	}
-
-	tlsCfg, err := convertRedisTLSRunConfig(rc.TLS)
-	if err != nil {
-		return nil, fmt.Errorf("master TLS config: %w", err)
-	}
-	cfg.TLS = tlsCfg
-
-	sentinelTLSCfg, err := convertRedisTLSRunConfig(rc.SentinelTLS)
-	if err != nil {
-		return nil, fmt.Errorf("sentinel TLS config: %w", err)
-	}
-	cfg.SentinelTLS = sentinelTLSCfg
-
-	return cfg, nil
+	return nil
 }
 
-// convertRedisTLSRunConfig converts a RedisTLSRunConfig to runtime RedisTLSConfig.
-// Returns an error if a CA cert file is configured but cannot be read — this is
-// treated as a hard error because silently falling back to system CAs could mask
-// a misconfiguration and cause confusing TLS failures downstream.
-func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*storage.RedisTLSConfig, error) {
+// convertRedisTLSRunConfig converts a RedisTLSRunConfig to a runtime
+// tcredis.TLSConfig. Returns an error if a CA cert file is configured but
+// cannot be read — this is treated as a hard error because silently falling
+// back to system CAs could mask a misconfiguration and cause confusing TLS
+// failures downstream.
+func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*tcredis.TLSConfig, error) {
 	if rc == nil {
 		return nil, nil
 	}
-	cfg := &storage.RedisTLSConfig{
+	cfg := &tcredis.TLSConfig{
 		InsecureSkipVerify: rc.InsecureSkipVerify,
 	}
 	if rc.CACertFile != "" {
@@ -564,13 +839,37 @@ func convertRedisTLSRunConfig(rc *storage.RedisTLSRunConfig) (*storage.RedisTLSC
 	return cfg, nil
 }
 
+// resolveCIMDConfig extracts CIMD settings from a CIMDRunConfig.
+// Returns zero values when cfg is nil (CIMD disabled).
+// The CacheFallbackTTL string is parsed to time.Duration; callers must ensure
+// CIMDRunConfig.Validate() has already been called so the string is well-formed.
+func resolveCIMDConfig(cfg *authserver.CIMDRunConfig) (enabled bool, cacheMaxSize int, cacheFallbackTTL time.Duration) {
+	if cfg == nil {
+		return false, 0, 0
+	}
+	var ttl time.Duration
+	if cfg.CacheFallbackTTL != "" {
+		var err error
+		ttl, err = time.ParseDuration(cfg.CacheFallbackTTL)
+		if err != nil {
+			// Should not happen when called after CIMDRunConfig.Validate().
+			slog.Warn("invalid cimd cache_fallback_ttl, zero will be replaced by default",
+				"value", cfg.CacheFallbackTTL, "err", err)
+		}
+	}
+	return cfg.Enabled, cfg.CacheMaxSize, ttl
+}
+
 // resolveEnvVar reads a value from the named environment variable.
+// An empty value is returned without error — empty credentials are valid for
+// unauthenticated backends (e.g. a no-auth Redis where the operator injects a
+// blank password from a Kubernetes Secret).
 func resolveEnvVar(envVar string) (string, error) {
 	if envVar == "" {
 		return "", fmt.Errorf("environment variable name is empty")
 	}
-	value := os.Getenv(envVar)
-	if value == "" {
+	value, ok := os.LookupEnv(envVar)
+	if !ok {
 		return "", fmt.Errorf("environment variable %q is not set", envVar)
 	}
 	return value, nil

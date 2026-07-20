@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
+	tcredis "github.com/stacklok/toolhive-core/redis"
 )
 
 const (
@@ -118,12 +120,20 @@ func NewManagerWithStorage(ttl time.Duration, factory Factory, storage Storage) 
 // NewManagerWithRedis creates a session manager backed by Redis.
 // ctx is used for the initial Ping during construction and should carry any
 // deadline appropriate for the connection attempt (e.g. a startup timeout).
-// cfg supplies the Redis connection configuration; ttl is applied as both the
-// manager's cleanup interval and the Redis key TTL.
-// Returns an error if the Redis client cannot be constructed (e.g. invalid config or TLS error).
-// Callers that do not require Redis should use NewManager or NewTypedManager instead.
-func NewManagerWithRedis(ctx context.Context, ttl time.Duration, factory Factory, cfg RedisConfig) (*Manager, error) {
-	storage, err := NewRedisStorage(ctx, cfg, ttl)
+// cfg supplies the Redis connection configuration (delegated to the shared
+// toolhive-core redis package); keyPrefix namespaces the keys and must end
+// with ':'. ttl is applied as both the manager's cleanup interval and the
+// Redis key TTL. Returns an error if the Redis client cannot be constructed
+// (e.g. invalid config or TLS error). Callers that do not require Redis
+// should use NewManager or NewTypedManager instead.
+func NewManagerWithRedis(
+	ctx context.Context,
+	ttl time.Duration,
+	factory Factory,
+	cfg tcredis.Config,
+	keyPrefix string,
+) (*Manager, error) {
+	storage, err := NewRedisStorage(ctx, cfg, keyPrefix, ttl)
 	if err != nil {
 		return nil, fmt.Errorf("creating redis storage: %w", err)
 	}

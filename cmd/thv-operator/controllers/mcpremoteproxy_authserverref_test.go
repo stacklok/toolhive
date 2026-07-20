@@ -10,13 +10,12 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
@@ -24,8 +23,8 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		proxy           func() *mcpv1alpha1.MCPRemoteProxy
-		authConfig      func() *mcpv1alpha1.MCPExternalAuthConfig
+		proxy           func() *mcpv1beta1.MCPRemoteProxy
+		authConfig      func() *mcpv1beta1.MCPExternalAuthConfig
 		expectError     bool
 		errContains     string
 		expectHash      string
@@ -34,66 +33,56 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 	}{
 		{
 			name: "nil authServerRef removes condition and clears hash",
-			proxy: func() *mcpv1alpha1.MCPRemoteProxy {
-				return &mcpv1alpha1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec:       mcpv1alpha1.MCPRemoteProxySpec{RemoteURL: "https://remote.example.com"},
-					Status: mcpv1alpha1.MCPRemoteProxyStatus{
+			proxy: func() *mcpv1beta1.MCPRemoteProxy {
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyStatus(mcpv1beta1.MCPRemoteProxyStatus{
 						AuthServerConfigHash: "old-hash",
-					},
-				}
+					}),
+				)
 			},
 			expectHash: "",
 		},
 		{
 			name: "unsupported kind sets InvalidKind condition",
-			proxy: func() *mcpv1alpha1.MCPRemoteProxy {
-				return &mcpv1alpha1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPRemoteProxySpec{
-						RemoteURL:     "https://remote.example.com",
-						AuthServerRef: &mcpv1alpha1.AuthServerRef{Kind: "Secret", Name: "foo"},
-					},
-				}
+			proxy: func() *mcpv1beta1.MCPRemoteProxy {
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyAuthServerRef("Secret", "foo"),
+				)
 			},
 			expectError:     true,
 			errContains:     "unsupported authServerRef kind",
 			conditionStatus: metav1.ConditionFalse,
-			conditionReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidKind,
+			conditionReason: mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidKind,
 		},
 		{
 			name: "not found sets NotFound condition",
-			proxy: func() *mcpv1alpha1.MCPRemoteProxy {
-				return &mcpv1alpha1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPRemoteProxySpec{
-						RemoteURL:     "https://remote.example.com",
-						AuthServerRef: &mcpv1alpha1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "missing"},
-					},
-				}
+			proxy: func() *mcpv1beta1.MCPRemoteProxy {
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyAuthServerRef("MCPExternalAuthConfig", "missing"),
+				)
 			},
 			expectError:     true,
 			errContains:     "not found",
 			conditionStatus: metav1.ConditionFalse,
-			conditionReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefNotFound,
+			conditionReason: mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefNotFound,
 		},
 		{
 			name: "wrong type sets InvalidType condition",
-			proxy: func() *mcpv1alpha1.MCPRemoteProxy {
-				return &mcpv1alpha1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPRemoteProxySpec{
-						RemoteURL:     "https://remote.example.com",
-						AuthServerRef: &mcpv1alpha1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "sts-config"},
-					},
-				}
+			proxy: func() *mcpv1beta1.MCPRemoteProxy {
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyAuthServerRef("MCPExternalAuthConfig", "sts-config"),
+				)
 			},
-			authConfig: func() *mcpv1alpha1.MCPExternalAuthConfig {
-				return &mcpv1alpha1.MCPExternalAuthConfig{
+			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {
+				return &mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "sts-config", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-						Type: mcpv1alpha1.ExternalAuthTypeAWSSts,
-						AWSSts: &mcpv1alpha1.AWSStsConfig{
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeAWSSts,
+						AWSSts: &mcpv1beta1.AWSStsConfig{
 							Region: "us-east-1",
 						},
 					},
@@ -102,69 +91,63 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 			expectError:     true,
 			errContains:     "only embeddedAuthServer is supported",
 			conditionStatus: metav1.ConditionFalse,
-			conditionReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidType,
+			conditionReason: mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefInvalidType,
 		},
 		{
 			name: "multi-upstream sets MultiUpstream condition",
-			proxy: func() *mcpv1alpha1.MCPRemoteProxy {
-				return &mcpv1alpha1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPRemoteProxySpec{
-						RemoteURL:     "https://remote.example.com",
-						AuthServerRef: &mcpv1alpha1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "multi"},
-					},
-				}
+			proxy: func() *mcpv1beta1.MCPRemoteProxy {
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyAuthServerRef("MCPExternalAuthConfig", "multi"),
+				)
 			},
-			authConfig: func() *mcpv1alpha1.MCPExternalAuthConfig {
-				return &mcpv1alpha1.MCPExternalAuthConfig{
+			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {
+				return &mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "multi", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-						Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-						EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
 							Issuer: "https://auth.example.com",
-							UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
-								{Name: "a", Type: mcpv1alpha1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{IssuerURL: "https://a.com", ClientID: "a"}},
-								{Name: "b", Type: mcpv1alpha1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{IssuerURL: "https://b.com", ClientID: "b"}},
+							UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+								{Name: "a", Type: mcpv1beta1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{IssuerURL: "https://a.com", ClientID: "a"}},
+								{Name: "b", Type: mcpv1beta1.UpstreamProviderTypeOIDC, OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{IssuerURL: "https://b.com", ClientID: "b"}},
 							},
 						},
 					},
-					Status: mcpv1alpha1.MCPExternalAuthConfigStatus{ConfigHash: "multi-hash"},
+					Status: mcpv1beta1.MCPExternalAuthConfigStatus{ConfigHash: "multi-hash"},
 				}
 			},
 			expectError:     true,
 			errContains:     "only 1 is supported",
 			conditionStatus: metav1.ConditionFalse,
-			conditionReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream,
+			conditionReason: mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefMultiUpstream,
 		},
 		{
 			name: "valid ref sets Valid condition and updates hash",
-			proxy: func() *mcpv1alpha1.MCPRemoteProxy {
-				return &mcpv1alpha1.MCPRemoteProxy{
-					ObjectMeta: metav1.ObjectMeta{Name: "proxy", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPRemoteProxySpec{
-						RemoteURL:     "https://remote.example.com",
-						AuthServerRef: &mcpv1alpha1.AuthServerRef{Kind: "MCPExternalAuthConfig", Name: "valid"},
-					},
-				}
+			proxy: func() *mcpv1beta1.MCPRemoteProxy {
+				return v1beta1test.NewMCPRemoteProxy("proxy", "default",
+					v1beta1test.WithRemoteProxyURL("https://remote.example.com"),
+					v1beta1test.WithRemoteProxyAuthServerRef("MCPExternalAuthConfig", "valid"),
+				)
 			},
-			authConfig: func() *mcpv1alpha1.MCPExternalAuthConfig {
-				return &mcpv1alpha1.MCPExternalAuthConfig{
+			authConfig: func() *mcpv1beta1.MCPExternalAuthConfig {
+				return &mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{Name: "valid", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-						Type: mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer,
-						EmbeddedAuthServer: &mcpv1alpha1.EmbeddedAuthServerConfig{
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer,
+						EmbeddedAuthServer: &mcpv1beta1.EmbeddedAuthServerConfig{
 							Issuer:                       "https://auth.example.com",
 							AuthorizationEndpointBaseURL: "https://auth.example.com",
-							SigningKeySecretRefs:         []mcpv1alpha1.SecretKeyRef{{Name: "key", Key: "pem"}},
-							HMACSecretRefs:               []mcpv1alpha1.SecretKeyRef{{Name: "hmac", Key: "secret"}},
+							SigningKeySecretRefs:         []mcpv1beta1.SecretKeyRef{{Name: "key", Key: "pem"}},
+							HMACSecretRefs:               []mcpv1beta1.SecretKeyRef{{Name: "hmac", Key: "secret"}},
 						},
 					},
-					Status: mcpv1alpha1.MCPExternalAuthConfigStatus{ConfigHash: "valid-hash"},
+					Status: mcpv1beta1.MCPExternalAuthConfigStatus{ConfigHash: "valid-hash"},
 				}
 			},
 			expectHash:      "valid-hash",
 			conditionStatus: metav1.ConditionTrue,
-			conditionReason: mcpv1alpha1.ConditionReasonMCPRemoteProxyAuthServerRefValid,
+			conditionReason: mcpv1beta1.ConditionReasonMCPRemoteProxyAuthServerRefValid,
 		},
 	}
 
@@ -174,26 +157,13 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
-
 			proxy := tt.proxy()
-			objs := []runtime.Object{proxy}
+			objs := []client.Object{proxy}
 			if tt.authConfig != nil {
 				objs = append(objs, tt.authConfig())
 			}
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
-				WithRuntimeObjects(objs...).
-				WithStatusSubresource(&mcpv1alpha1.MCPRemoteProxy{}).
-				Build()
-
-			reconciler := &MCPRemoteProxyReconciler{
-				Client: fakeClient,
-				Scheme: scheme,
-			}
+			reconciler, _ := newTestMCPRemoteProxyReconciler(t, objs...)
 			err := reconciler.handleAuthServerRef(ctx, proxy)
 
 			if tt.expectError {
@@ -204,7 +174,7 @@ func TestMCPRemoteProxyReconciler_handleAuthServerRef(t *testing.T) {
 				assert.Equal(t, tt.expectHash, proxy.Status.AuthServerConfigHash)
 			}
 
-			cond := meta.FindStatusCondition(proxy.Status.Conditions, mcpv1alpha1.ConditionTypeMCPRemoteProxyAuthServerRefValidated)
+			cond := meta.FindStatusCondition(proxy.Status.Conditions, mcpv1beta1.ConditionTypeMCPRemoteProxyAuthServerRefValidated)
 			if tt.conditionStatus != "" {
 				require.NotNil(t, cond, "AuthServerRefValidated condition should be present")
 				assert.Equal(t, tt.conditionStatus, cond.Status)

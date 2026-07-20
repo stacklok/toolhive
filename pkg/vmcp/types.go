@@ -15,6 +15,27 @@ import (
 // This file contains shared domain types used across multiple vmcp subpackages.
 // Following DDD principles, these are core domain concepts that cross bounded contexts.
 
+// HeaderForwardConfig configures HTTP headers injected into outbound requests
+// from the vMCP runtime to a static backend. AddPlaintextHeaders carries literal
+// values; AddHeadersFromSecret maps header names to secret identifiers resolved
+// via secrets.EnvironmentProvider at request time (env var TOOLHIVE_SECRET_<identifier>).
+//
+// Secret values MUST NOT appear in this struct — only identifiers. The operator
+// injects actual Secret values into the vMCP pod as env vars via
+// valueFrom.secretKeyRef at Deployment rendering time. Plaintext values are
+// also injected via env vars by the operator (literal values, not secret refs)
+// and ingested at vMCP startup; the type is therefore purely a runtime
+// representation and is not part of any CRD schema.
+type HeaderForwardConfig struct {
+	// AddPlaintextHeaders is a map of canonical HTTP header name to literal value.
+	AddPlaintextHeaders map[string]string `json:"addPlaintextHeaders,omitempty" yaml:"addPlaintextHeaders,omitempty"`
+
+	// AddHeadersFromSecret maps canonical HTTP header name to secret identifier.
+	// The vMCP runtime resolves each identifier via secrets.EnvironmentProvider,
+	// which reads TOOLHIVE_SECRET_<identifier> from the pod environment.
+	AddHeadersFromSecret map[string]string `json:"addHeadersFromSecret,omitempty" yaml:"addHeadersFromSecret,omitempty"`
+}
+
 // BackendTarget identifies a specific backend workload and provides
 // the information needed to forward requests to it.
 type BackendTarget struct {
@@ -78,6 +99,11 @@ type BackendTarget struct {
 	// HealthStatus indicates the current health of the backend.
 	HealthStatus BackendHealthStatus
 
+	// HeaderForward carries per-backend HTTP header injection configuration
+	// applied by the vMCP client to every outbound request targeting this backend
+	// (list, call, health-check). Nil when no headers are configured.
+	HeaderForward *HeaderForwardConfig
+
 	// Metadata stores additional backend-specific information.
 	Metadata map[string]string
 }
@@ -135,6 +161,8 @@ const (
 	// This occurs when:
 	// - Health checks succeed but response times exceed the degraded threshold (slow but working)
 	// - Backend just recovered from failures and is in a stabilizing state
+	// - Background OAuth token refresh is failing transiently while the
+	//   workload monitor retries (auth_retrying workload status)
 	BackendDegraded BackendHealthStatus = "degraded"
 
 	// BackendUnhealthy indicates the backend is not responding to health checks.
@@ -143,7 +171,16 @@ const (
 	// BackendUnknown indicates the backend health status is unknown.
 	BackendUnknown BackendHealthStatus = "unknown"
 
-	// BackendUnauthenticated indicates the backend is not authenticated.
+	// BackendUnauthenticated indicates the backend returned an authentication error
+	// (HTTP 401/403) while the backend target had no outgoing auth strategy
+	// configured (AuthConfig nil or StrategyTypeUnauthenticated). This signals
+	// operator misconfiguration: the backend requires authentication but no
+	// auth strategy was configured on the backend target.
+	//
+	// Note: a 401/403 from a backend with a configured outgoing auth strategy is
+	// treated as BackendHealthy, because health probes deliberately do not carry
+	// user credentials and the backend's challenge proves reachability and a
+	// working auth layer.
 	BackendUnauthenticated BackendHealthStatus = "unauthenticated"
 )
 
@@ -152,7 +189,7 @@ const (
 //   - healthy → ready
 //   - degraded → degraded
 //   - unhealthy → unavailable
-//   - unauthenticated → unauthenticated (backend is reachable but needs per-request user auth)
+//   - unauthenticated → unauthenticated (misconfig: backend requires auth but none configured)
 //   - unknown → unknown
 func (s BackendHealthStatus) ToCRDStatus() string {
 	switch s {
@@ -204,6 +241,7 @@ const (
 
 // DiscoveredBackend represents a backend server discovered by vMCP runtime.
 // This type is shared with the Kubernetes operator CRD (VirtualMCPServer.Status.DiscoveredBackends).
+// +gendoc
 type DiscoveredBackend struct {
 	// Name is the name of the backend MCPServer
 	Name string `json:"name"`
@@ -318,6 +356,11 @@ type Backend struct {
 	// debugging and status reporting.
 	// +optional
 	AuthConfigRef string
+
+	// HeaderForward carries per-backend HTTP header injection configuration.
+	// Only populated for entry-type backends whose MCPServerEntry declares
+	// spec.headerForward. Nil when the entry has no header forwarding configured.
+	HeaderForward *HeaderForwardConfig
 
 	// Metadata stores additional backend information.
 	Metadata map[string]string
@@ -568,6 +611,7 @@ type RoutingTable struct {
 
 // ConflictResolutionStrategy defines how to handle capability name conflicts.
 // Placed in vmcp root package to be shared by config and aggregator packages.
+// +gendoc
 type ConflictResolutionStrategy string
 
 const (

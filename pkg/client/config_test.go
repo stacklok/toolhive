@@ -104,38 +104,6 @@ func createMockClientConfigs() []clientAppConfig {
 			Extension:            JSON,
 		},
 		{
-			ClientType:           AmpVSCode,
-			Description:          "VS Code Sourcegraph Amp extension (Mock)",
-			RelPath:              []string{"mock_amp_vscode"},
-			SettingsFile:         "settings.json",
-			MCPServersPathPrefix: "/amp.mcpServers",
-			Extension:            JSON,
-		},
-		{
-			ClientType:           AmpCursor,
-			Description:          "Cursor Sourcegraph Amp extension (Mock)",
-			RelPath:              []string{"mock_amp_cursor"},
-			SettingsFile:         "settings.json",
-			MCPServersPathPrefix: "/amp.mcpServers",
-			Extension:            JSON,
-		},
-		{
-			ClientType:           AmpVSCodeInsider,
-			Description:          "VS Code Insiders Sourcegraph Amp extension (Mock)",
-			RelPath:              []string{"mock_amp_vscode_insider"},
-			SettingsFile:         "settings.json",
-			MCPServersPathPrefix: "/amp.mcpServers",
-			Extension:            JSON,
-		},
-		{
-			ClientType:           AmpWindsurf,
-			Description:          "Windsurf Sourcegraph Amp extension (Mock)",
-			RelPath:              []string{"mock_amp_windsurf"},
-			SettingsFile:         "settings.json",
-			MCPServersPathPrefix: "/amp.mcpServers",
-			Extension:            JSON,
-		},
-		{
 			ClientType:           LMStudio,
 			Description:          "LM Studio application (Mock)",
 			RelPath:              []string{"mock_lm_studio"},
@@ -394,10 +362,6 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 					string(Windsurf),
 					string(WindsurfJetBrains),
 					string(AmpCli),
-					string(AmpVSCode),
-					string(AmpCursor),
-					string(AmpVSCodeInsider),
-					string(AmpWindsurf),
 					string(LMStudio),
 					string(Goose),
 					string(Trae),
@@ -492,19 +456,7 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 			case AmpCli:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"AmpCli config should contain mcpServers key")
-			case AmpVSCode:
-				assert.Contains(t, string(content), `"mcpServers":`,
-					"AmpVSCode config should contain mcpServers key")
-			case AmpVSCodeInsider:
-				assert.Contains(t, string(content), `"mcpServers":`,
-					"AmpVSCodeInsider config should contain mcpServers key")
-			case AmpCursor:
-				assert.Contains(t, string(content), `"mcpServers":`,
-					"AmpCursor config should contain mcpServers key")
-			case AmpWindsurf:
-				assert.Contains(t, string(content), `"mcpServers":`,
-					"AmpWindsurf config should contain mcpServers key")
-			case LMStudio, Trae, Kiro, Antigravity, GeminiCli, KimiCli, Factory:
+			case LMStudio, Trae, Kiro, Antigravity, GeminiCli, KimiCli, Factory, CopilotCli:
 				assert.Contains(t, string(content), `"mcpServers":`,
 					"Config should contain mcpServers key")
 			case VSCodeServer:
@@ -562,8 +514,8 @@ func TestSuccessfulClientConfigOperations(t *testing.T) {
 				assert.Contains(t, string(content), testURL,
 					"VSCode config should contain the server URL")
 			case Cursor, RooCode, ClaudeCode, Cline, Windsurf, WindsurfJetBrains, AmpCli,
-				AmpVSCode, AmpCursor, AmpVSCodeInsider, AmpWindsurf, LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
-				MistralVibe, Codex, KimiCli, Factory:
+				LMStudio, Goose, Trae, Continue, OpenCode, Kiro, Antigravity, Zed, GeminiCli, VSCodeServer,
+				MistralVibe, Codex, KimiCli, Factory, CopilotCli:
 				assert.Contains(t, string(content), testURL,
 					"Config should contain the server URL")
 			}
@@ -1292,8 +1244,8 @@ func TestGetAllClients(t *testing.T) {
 
 	clients := GetAllClients()
 
-	// Should return all 27 supported clients
-	assert.Len(t, clients, 27, "Expected 27 supported clients")
+	// Should return all 24 supported clients
+	assert.Len(t, clients, 24, "Expected 24 supported clients")
 
 	// Verify the list is sorted alphabetically
 	for i := 1; i < len(clients); i++ {
@@ -1316,6 +1268,34 @@ func TestGetAllClients(t *testing.T) {
 
 	for _, expected := range expectedClients {
 		assert.True(t, clientMap[expected], "Expected client %s to be in the list", expected)
+	}
+
+	// LLM-gateway-only tools must not appear in the MCP client list.
+	assert.NotContains(t, clients, ClientApp(Xcode),
+		"Xcode is LLM-gateway-only and must not appear in the MCP ClientApp enum")
+}
+
+// TestLLMGatewayOnlyExcludedFromClientListAndValidation verifies that every
+// supportedClientIntegrations entry marked LLMGatewayOnly is excluded from
+// GetAllClients and rejected by IsValidClient.
+func TestLLMGatewayOnlyExcludedFromClientListAndValidation(t *testing.T) {
+	t.Parallel()
+
+	allClients := GetAllClients()
+	clientSet := make(map[ClientApp]bool, len(allClients))
+	for _, c := range allClients {
+		clientSet[c] = true
+	}
+
+	for _, cfg := range supportedClientIntegrations {
+		if !cfg.LLMGatewayOnly {
+			continue
+		}
+		assert.False(t, clientSet[cfg.ClientType],
+			"LLM-gateway-only tool %q must not appear in GetAllClients(); "+
+				"declare it as LLMClientApp, not ClientApp", cfg.ClientType)
+		assert.False(t, IsValidClient(string(cfg.ClientType)),
+			"LLM-gateway-only tool %q must not be accepted by IsValidClient()", cfg.ClientType)
 	}
 }
 
@@ -1479,7 +1459,7 @@ func TestGetClientListCSV(t *testing.T) {
 			clientNames[i-1], clientNames[i])
 	}
 
-	// Count the number of clients (should be 25)
+	// Count the number of clients (should be 24)
 	clients := strings.Split(csv, ", ")
-	assert.Len(t, clients, 27, "Expected 27 clients in CSV list")
+	assert.Len(t, clients, 24, "Expected 24 clients in CSV list")
 }

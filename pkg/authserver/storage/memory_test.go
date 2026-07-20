@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"net/url"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -217,6 +218,19 @@ func TestMemoryStorage_RegisterClient(t *testing.T) {
 		retrieved, err := s.GetClient(ctx, "test-client")
 		require.NoError(t, err)
 		assert.Equal(t, client, retrieved)
+	})
+}
+
+func TestMemoryStorage_RenewClientTTL_NoOp(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		// In-memory clients have no TTL, so renewal is a documented no-op: it must
+		// not error and must leave the client retrievable.
+		client := &mockClient{id: "public-client", public: true}
+		require.NoError(t, s.RegisterClient(ctx, client))
+		require.NoError(t, s.RenewClientTTL(ctx, client))
+		retrieved, err := s.GetClient(ctx, "public-client")
+		require.NoError(t, err)
+		assert.Equal(t, "public-client", retrieved.GetID())
 	})
 }
 
@@ -621,6 +635,232 @@ func TestMemoryStorage_UpstreamTokens(t *testing.T) {
 	})
 }
 
+func TestMemoryStorage_GetLatestUpstreamTokensForUser(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no_match", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("one_match_returns_deep_copy", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-1",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "rt-1", got.RefreshToken)
+
+			// Mutate the returned copy and confirm the stored value is unchanged.
+			got.RefreshToken = "mutated"
+			got2, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			assert.Equal(t, "rt-1", got2.RefreshToken, "stored row must be unaffected by mutation of returned copy")
+		})
+	})
+
+	t.Run("multiple_sessions_pick_latest_expires_at", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			now := time.Now()
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-1h",
+				ExpiresAt:    now.Add(time.Hour),
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-2", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-2h",
+				ExpiresAt:    now.Add(2 * time.Hour),
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-3", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-3h",
+				ExpiresAt:    now.Add(3 * time.Hour),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			assert.Equal(t, "rt-3h", got.RefreshToken)
+		})
+	})
+
+	t.Run("different_user_not_matched", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID: "prov-X",
+				UserID:     "user-B",
+				ExpiresAt:  time.Now().Add(time.Hour),
+			}))
+
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("different_provider_not_matched", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// The lookup filters on the stored UpstreamTokens.ProviderID field,
+			// not the map key. StoreUpstreamTokens copies the field from the
+			// input struct, so they always match here.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-Y", &UpstreamTokens{
+				ProviderID: "prov-Y",
+				UserID:     "user-A",
+				ExpiresAt:  time.Now().Add(time.Hour),
+			}))
+
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.Error(t, err)
+			assert.ErrorIs(t, err, ErrNotFound)
+		})
+	})
+
+	t.Run("tolerate_access_token_expired", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// ExpiresAt is 1h in the past (access token expired), but the storage TTL
+			// is ExpiresAt + DefaultRefreshTokenTTL which is still in the future,
+			// so the cleanup loop has not swept this row yet.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-expired-at",
+				ExpiresAt:    time.Now().Add(-time.Hour),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, "rt-expired-at", got.RefreshToken)
+		})
+	})
+
+	t.Run("zero_expires_at_wins_over_nonzero", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// Row with zero ExpiresAt — providers like Slack and GitHub OAuth Apps
+			// genuinely never expire; treated as "alive forever" by IsExpired.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-zero",
+				ExpiresAt:    time.Time{},
+			}))
+			// Row with a real ExpiresAt in the future.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-nonzero", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-nonzero",
+				ExpiresAt:    time.Now().Add(time.Hour),
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			assert.Equal(t, "rt-zero", got.RefreshToken)
+		})
+	})
+
+	t.Run("two_zero_expires_at_rows", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// Both rows have zero ExpiresAt. Go's map iteration is randomized so
+			// we only assert that one of the two is returned.
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero-1", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-zero-1",
+				ExpiresAt:    time.Time{},
+			}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-zero-2", "prov-X", &UpstreamTokens{
+				ProviderID:   "prov-X",
+				UserID:       "user-A",
+				RefreshToken: "rt-zero-2",
+				ExpiresAt:    time.Time{},
+			}))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Contains(t, []string{"rt-zero-1", "rt-zero-2"}, got.RefreshToken)
+		})
+	})
+
+	t.Run("empty_user_id", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "", "prov-X")
+			require.Error(t, err)
+			require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+		})
+	})
+
+	t.Run("empty_provider_id", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			_, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "")
+			require.Error(t, err)
+			require.ErrorIs(t, err, fosite.ErrInvalidRequest)
+		})
+	})
+
+	t.Run("returns_all_fields_round_trip", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			now := time.Now().Truncate(time.Second)
+			fixture := UpstreamTokens{
+				ProviderID:       "prov-X",
+				AccessToken:      "access-tok",
+				RefreshToken:     "refresh-tok",
+				IDToken:          "id-tok",
+				ExpiresAt:        now.Add(time.Hour),
+				SessionExpiresAt: now.Add(2 * time.Hour),
+				UserID:           "user-A",
+				UpstreamSubject:  "sub-upstream",
+				ClientID:         "client-1",
+			}
+
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-rt", "prov-X", &fixture))
+
+			got, err := s.GetLatestUpstreamTokensForUser(ctx, "user-A", "prov-X")
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			require.Equal(t, fixture, *got)
+		})
+	})
+
+	t.Run("DeleteUpstreamTokensForProvider leaves sibling intact", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-a", &UpstreamTokens{AccessToken: "a"}))
+			require.NoError(t, s.StoreUpstreamTokens(ctx, "session-1", "provider-b", &UpstreamTokens{AccessToken: "b"}))
+
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "session-1", "provider-a"))
+
+			_, err := s.GetUpstreamTokens(ctx, "session-1", "provider-a")
+			requireNotFoundError(t, err)
+
+			got, err := s.GetUpstreamTokens(ctx, "session-1", "provider-b")
+			require.NoError(t, err)
+			assert.Equal(t, "b", got.AccessToken)
+
+			all, err := s.GetAllUpstreamTokens(ctx, "session-1")
+			require.NoError(t, err)
+			assert.Len(t, all, 1)
+		})
+	})
+
+	t.Run("DeleteUpstreamTokensForProvider absent row is non-fatal", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			require.NoError(t, s.DeleteUpstreamTokensForProvider(ctx, "no-such-session", "provider-a"))
+		})
+	})
+}
+
 // --- Pending Authorization Tests ---
 
 func TestMemoryStorage_PendingAuthorization(t *testing.T) {
@@ -630,7 +870,9 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			ClientID: "test-client", RedirectURI: "https://example.com/callback",
 			State: "client-state", PKCEChallenge: "challenge", PKCEMethod: "S256",
 			Scopes: []string{"openid", "profile"}, InternalState: state,
-			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce", CreatedAt: time.Now(),
+			UpstreamPKCEVerifier: "verifier", UpstreamNonce: "nonce",
+			SingleLeg: true, ChainUpstreams: []string{"provider-1", "provider-2"},
+			CreatedAt: time.Now(),
 		}
 	}
 
@@ -644,6 +886,8 @@ func TestMemoryStorage_PendingAuthorization(t *testing.T) {
 			assert.Equal(t, pending.ClientID, retrieved.ClientID)
 			assert.Equal(t, pending.PKCEChallenge, retrieved.PKCEChallenge)
 			assert.Equal(t, pending.Scopes, retrieved.Scopes)
+			assert.Equal(t, pending.SingleLeg, retrieved.SingleLeg)
+			assert.Equal(t, pending.ChainUpstreams, retrieved.ChainUpstreams)
 		})
 	})
 
@@ -818,6 +1062,65 @@ func TestMemoryStorage_CleanupExpired(t *testing.T) {
 			})
 		})
 	}
+
+	t.Run("upstream tokens with zero ExpiresAt are never evicted", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			// Non-expiring token (ExpiresAt zero) must survive cleanup runs.
+			_ = s.StoreUpstreamTokens(ctx, "never-expiring", "provider-a", &UpstreamTokens{
+				AccessToken: "non-expiring-token",
+				// ExpiresAt intentionally zero
+			})
+			// Expiring token to confirm cleanup still works.
+			_ = s.StoreUpstreamTokens(ctx, "expired", "provider-a", &UpstreamTokens{
+				AccessToken: "expired-token",
+				ExpiresAt:   time.Now().Add(-DefaultRefreshTokenTTL - time.Hour),
+			})
+
+			assert.Equal(t, 2, s.Stats().UpstreamTokens)
+
+			s.cleanupExpired()
+
+			assert.Equal(t, 1, s.Stats().UpstreamTokens, "only the expiring token should be removed")
+
+			tokens, err := s.GetUpstreamTokens(ctx, "never-expiring", "provider-a")
+			require.NoError(t, err)
+			require.NotNil(t, tokens)
+			assert.Equal(t, "non-expiring-token", tokens.AccessToken)
+			assert.True(t, tokens.ExpiresAt.IsZero())
+		})
+	})
+
+	t.Run("non-expiring token with SessionExpiresAt is evicted after session bound passes", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.StoreUpstreamTokens(ctx, "sess-1", "github", &UpstreamTokens{
+				AccessToken:      "pat-token",
+				SessionExpiresAt: time.Now().Add(-DefaultRefreshTokenTTL - time.Second),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, 1, s.Stats().UpstreamTokens)
+
+			s.cleanupExpired()
+
+			assert.Equal(t, 0, s.Stats().UpstreamTokens)
+			_, getErr := s.GetUpstreamTokens(ctx, "sess-1", "github")
+			requireNotFoundError(t, getErr)
+		})
+	})
+
+	t.Run("non-expiring token with future SessionExpiresAt is kept", func(t *testing.T) {
+		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+			err := s.StoreUpstreamTokens(ctx, "sess-2", "github", &UpstreamTokens{
+				AccessToken:      "pat-token",
+				SessionExpiresAt: time.Now().Add(time.Hour),
+			})
+			require.NoError(t, err)
+			assert.Equal(t, 1, s.Stats().UpstreamTokens)
+
+			s.cleanupExpired()
+
+			assert.Equal(t, 1, s.Stats().UpstreamTokens)
+		})
+	})
 
 	t.Run("cleanup expired invalidated codes", func(t *testing.T) {
 		withStorage(t, func(ctx context.Context, s *MemoryStorage) {
@@ -1457,4 +1760,433 @@ func TestMemoryStorage_ConcurrentAccess(t *testing.T) {
 			wg.Wait()
 		})
 	})
+}
+
+func TestMemoryStorage_DCRCredentials_RoundTrip(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := DCRKey{
+			Issuer:      "https://thv.example.com",
+			UpstreamID:  "https://idp.example.com",
+			RedirectURI: "https://thv.example.com/oauth/callback",
+			ScopesHash:  ScopesHash([]string{"openid", "profile"}),
+		}
+		creds := &DCRCredentials{
+			Key:                     key,
+			ProviderName:            "atlassian",
+			ClientID:                "client-abc",
+			ClientSecret:            "secret-xyz",
+			TokenEndpointAuthMethod: "client_secret_basic",
+			RegistrationAccessToken: "rat-123",
+			RegistrationClientURI:   "https://idp.example.com/register/client-abc",
+			AuthorizationEndpoint:   "https://idp.example.com/authorize",
+			TokenEndpoint:           "https://idp.example.com/token",
+			CreatedAt:               time.Date(2025, 5, 1, 12, 0, 0, 0, time.UTC),
+			ClientSecretExpiresAt:   time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC),
+		}
+
+		require.NoError(t, s.StoreDCRCredentials(ctx, creds))
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+
+		// Every field round-trips, including the embedded Key.
+		assert.Equal(t, *creds, *got)
+	})
+}
+
+func TestMemoryStorage_DCRCredentials_DistinctKeysDoNotCollide(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		mkKey := func(issuer, upstreamID, redirect string, scopes []string) DCRKey {
+			return DCRKey{
+				Issuer:      issuer,
+				UpstreamID:  upstreamID,
+				RedirectURI: redirect,
+				ScopesHash:  ScopesHash(scopes),
+			}
+		}
+		mkCreds := func(key DCRKey, clientID string) *DCRCredentials {
+			return &DCRCredentials{
+				Key:                   key,
+				ClientID:              clientID,
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			}
+		}
+		entries := []*DCRCredentials{
+			mkCreds(mkKey("https://idp-a.example.com", "https://up-a", "https://x/cb", []string{"openid"}), "a"),
+			mkCreds(mkKey("https://idp-b.example.com", "https://up-a", "https://x/cb", []string{"openid"}), "b"),
+			mkCreds(mkKey("https://idp-a.example.com", "https://up-a", "https://y/cb", []string{"openid"}), "c"),
+			mkCreds(mkKey("https://idp-a.example.com", "https://up-a", "https://x/cb", []string{"openid", "email"}), "d"),
+			// Differs from entry "a" only by UpstreamID — two OAuth2 upstreams
+			// inside one embedded authserver sharing issuer, redirect, and
+			// scopes. Before UpstreamID joined the key these collided (#5823).
+			mkCreds(mkKey("https://idp-a.example.com", "https://up-b", "https://x/cb", []string{"openid"}), "e"),
+		}
+		for _, e := range entries {
+			require.NoError(t, s.StoreDCRCredentials(ctx, e))
+		}
+
+		for _, want := range entries {
+			got, err := s.GetDCRCredentials(ctx, want.Key)
+			require.NoError(t, err)
+			require.NotNil(t, got)
+			assert.Equal(t, want.ClientID, got.ClientID)
+		}
+	})
+}
+
+func TestMemoryStorage_DCRCredentials_OverwriteSemantics(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := DCRKey{
+			Issuer:      "https://idp.example.com",
+			UpstreamID:  "https://upstream.example.com",
+			RedirectURI: "https://x/cb",
+			ScopesHash:  ScopesHash([]string{"openid"}),
+		}
+		mkCreds := func(clientID string) *DCRCredentials {
+			return &DCRCredentials{
+				Key:                   key,
+				ClientID:              clientID,
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			}
+		}
+
+		require.NoError(t, s.StoreDCRCredentials(ctx, mkCreds("first")))
+		require.NoError(t, s.StoreDCRCredentials(ctx, mkCreds("second")))
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "second", got.ClientID)
+	})
+}
+
+func TestMemoryStorage_DCRCredentials_NotFound(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		_, err := s.GetDCRCredentials(ctx, DCRKey{Issuer: "https://unknown.example.com"})
+		requireNotFoundError(t, err)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected pins the
+// fail-loud-on-invalid-input contract: nil creds, an unpopulated Key
+// (empty Issuer, UpstreamID, RedirectURI, or ScopesHash), and missing RFC 7591
+// mandatory response fields (ClientID, AuthorizationEndpoint,
+// TokenEndpoint) must be rejected with fosite.ErrInvalidRequest rather
+// than producing a working-looking write that fails downstream at the
+// upstream's token endpoint.
+func TestMemoryStorage_DCRCredentials_StoreInvalidInputRejected(t *testing.T) {
+	t.Parallel()
+
+	// validCreds returns a fully-populated DCRCredentials that subtests
+	// mutate to isolate a single missing field. Keeping every other field
+	// valid ensures the assertion proves which field was rejected.
+	validCreds := func() *DCRCredentials {
+		return &DCRCredentials{
+			Key: DCRKey{
+				Issuer:      "https://idp.example.com",
+				UpstreamID:  "https://upstream.example.com",
+				RedirectURI: "https://x/cb",
+				ScopesHash:  ScopesHash([]string{"openid"}),
+			},
+			ClientID:              "abc",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
+	}
+
+	tests := []struct {
+		name    string
+		mutator func(*DCRCredentials) *DCRCredentials
+	}{
+		{
+			name:    "nil creds",
+			mutator: func(*DCRCredentials) *DCRCredentials { return nil },
+		},
+		{
+			name: "empty issuer",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.Issuer = ""
+				return c
+			},
+		},
+		{
+			name: "empty upstream_id",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.UpstreamID = ""
+				return c
+			},
+		},
+		{
+			name: "empty redirect_uri",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.RedirectURI = ""
+				return c
+			},
+		},
+		{
+			name: "empty scopes_hash",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.Key.ScopesHash = ""
+				return c
+			},
+		},
+		{
+			name: "empty client_id",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.ClientID = ""
+				return c
+			},
+		},
+		{
+			name: "empty authorization_endpoint",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.AuthorizationEndpoint = ""
+				return c
+			},
+		},
+		{
+			name: "empty token_endpoint",
+			mutator: func(c *DCRCredentials) *DCRCredentials {
+				c.TokenEndpoint = ""
+				return c
+			},
+		},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+				err := s.StoreDCRCredentials(ctx, tc.mutator(validCreds()))
+				require.Error(t, err)
+				assert.ErrorIs(t, err, fosite.ErrInvalidRequest)
+				// Confirm the rejection did not partially populate the store.
+				assert.Equal(t, 0, s.Stats().DCRCredentials,
+					"rejected Store must not leave any entry behind")
+			})
+		})
+	}
+}
+
+// TestMemoryStorage_DCRCredentials_GetReturnsDefensiveCopy pins the
+// defensive-copy contract: a caller mutating the returned record must not
+// affect persisted state.
+func TestMemoryStorage_DCRCredentials_GetReturnsDefensiveCopy(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := DCRKey{
+			Issuer:      "https://idp.example.com",
+			UpstreamID:  "https://upstream.example.com",
+			RedirectURI: "https://x/cb",
+			ScopesHash:  ScopesHash([]string{"openid"}),
+		}
+		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "orig",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}))
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		got.ClientID = "tampered-by-caller"
+
+		refetched, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "orig", refetched.ClientID)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_StoreCopyIsolatesCaller pins the
+// store-side defensive-copy contract: a caller mutating the input *after*
+// Store must not affect persisted state.
+func TestMemoryStorage_DCRCredentials_StoreCopyIsolatesCaller(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := DCRKey{
+			Issuer:      "https://idp.example.com",
+			UpstreamID:  "https://upstream.example.com",
+			RedirectURI: "https://x/cb",
+			ScopesHash:  ScopesHash([]string{"openid"}),
+		}
+		input := &DCRCredentials{
+			Key:                   key,
+			ClientID:              "orig",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+		}
+		require.NoError(t, s.StoreDCRCredentials(ctx, input))
+
+		input.ClientID = "tampered-after-store"
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "orig", got.ClientID)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_ExcludedFromCleanupExpired pins the
+// invariant that DCR entries are NOT swept by cleanupExpired. The Redis
+// backend applies TTL via SetEX; the in-memory backend keeps entries for the
+// process lifetime.
+func TestMemoryStorage_DCRCredentials_ExcludedFromCleanupExpired(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		key := DCRKey{
+			Issuer:      "https://idp.example.com",
+			UpstreamID:  "https://upstream.example.com",
+			RedirectURI: "https://x/cb",
+			ScopesHash:  ScopesHash([]string{"openid"}),
+		}
+		require.NoError(t, s.StoreDCRCredentials(ctx, &DCRCredentials{
+			Key:                   key,
+			ClientID:              "abc",
+			AuthorizationEndpoint: "https://idp.example.com/auth",
+			TokenEndpoint:         "https://idp.example.com/token",
+			CreatedAt:             time.Now().Add(-365 * 24 * time.Hour),
+		}))
+
+		s.cleanupExpired()
+
+		got, err := s.GetDCRCredentials(ctx, key)
+		require.NoError(t, err)
+		assert.Equal(t, "abc", got.ClientID)
+	})
+}
+
+// TestMemoryStorage_DCRCredentials_ConcurrentAccess fans out N goroutines
+// performing alternating StoreDCRCredentials / GetDCRCredentials against
+// overlapping and disjoint keys, exercising the sync.RWMutex guard
+// advertised in the DCRCredentialStore contract. With go test -race this
+// catches a future change that drops the lock or returns an internal
+// pointer instead of a defensive copy.
+//
+// The test is bounded by a fail-fast deadline so a regression that
+// deadlocks fails loudly rather than hanging until the global Go test
+// timeout, per .claude/rules/testing.md.
+func TestMemoryStorage_DCRCredentials_ConcurrentAccess(t *testing.T) {
+	withStorage(t, func(ctx context.Context, s *MemoryStorage) {
+		const (
+			workers      = 16
+			opsPerWorker = 200
+		)
+
+		// Two key spaces: overlapping (every worker writes the same keys, so
+		// the lock must serialise their writes) and disjoint (each worker has
+		// its own key space, so reads never see another worker's writes).
+		overlappingKey := func(i int) DCRKey {
+			return DCRKey{
+				Issuer:      "https://idp.example.com",
+				UpstreamID:  "https://upstream.example.com",
+				RedirectURI: "https://thv.example.com/oauth/callback",
+				ScopesHash:  fmt.Sprintf("overlap-%d", i%4),
+			}
+		}
+		disjointKey := func(worker, i int) DCRKey {
+			return DCRKey{
+				Issuer:      fmt.Sprintf("https://idp-%d.example.com", worker),
+				UpstreamID:  "https://upstream.example.com",
+				RedirectURI: "https://thv.example.com/oauth/callback",
+				ScopesHash:  fmt.Sprintf("disjoint-%d", i),
+			}
+		}
+		mkCreds := func(key DCRKey, clientID string) *DCRCredentials {
+			return &DCRCredentials{
+				Key:                   key,
+				ClientID:              clientID,
+				AuthorizationEndpoint: "https://idp.example.com/auth",
+				TokenEndpoint:         "https://idp.example.com/token",
+			}
+		}
+
+		var errCount int32
+		var wg sync.WaitGroup
+		wg.Add(workers)
+		for w := 0; w < workers; w++ {
+			go func(worker int) {
+				defer wg.Done()
+				for i := 0; i < opsPerWorker; i++ {
+					var key DCRKey
+					if i%2 == 0 {
+						key = overlappingKey(i)
+					} else {
+						key = disjointKey(worker, i)
+					}
+					if err := s.StoreDCRCredentials(ctx, mkCreds(key, fmt.Sprintf("worker-%d-op-%d", worker, i))); err != nil {
+						atomic.AddInt32(&errCount, 1)
+					}
+					// The disjoint Get must always hit (the goroutine that
+					// just wrote owns this key); the overlapping Get may
+					// miss if another worker happens to be mid-Store, but
+					// that's not an error.
+					if _, err := s.GetDCRCredentials(ctx, key); err != nil && i%2 != 0 {
+						atomic.AddInt32(&errCount, 1)
+					}
+				}
+			}(w)
+		}
+
+		done := make(chan struct{})
+		go func() { wg.Wait(); close(done) }()
+
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for concurrent DCR Store/Get to finish; possible deadlock")
+		}
+
+		assert.Zero(t, atomic.LoadInt32(&errCount),
+			"no Store or disjoint-Get should have errored under concurrent access")
+	})
+}
+
+// TestScopesHash_StableAcrossPermutationAndDuplicates pins the canonical-form
+// invariants of ScopesHash.
+func TestScopesHash_StableAcrossPermutationAndDuplicates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		a, b []string
+	}{
+		{"two-element permutation", []string{"openid", "profile"}, []string{"profile", "openid"}},
+		{"three-element permutation", []string{"openid", "profile", "email"}, []string{"email", "openid", "profile"}},
+		// OAuth scope sets are sets, not multisets (RFC 6749 §3.3); duplicates
+		// must canonicalise to the same hash.
+		{"single equals double duplicate", []string{"openid"}, []string{"openid", "openid"}},
+		{"three with duplicate equals two unique", []string{"openid", "profile", "openid"}, []string{"openid", "profile"}},
+	}
+	for _, tc := range tests {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, ScopesHash(tc.a), ScopesHash(tc.b))
+		})
+	}
+}
+
+// TestScopesHash_NoCollisionFromBoundaryJoin guards against a regression in
+// the canonical form: ["ab", "c"] and ["a", "bc"] must produce different
+// hashes. The newline delimiter is what prevents the collision; this test
+// exists to fail loudly if the canonical form is ever simplified.
+func TestScopesHash_NoCollisionFromBoundaryJoin(t *testing.T) {
+	t.Parallel()
+	assert.NotEqual(t, ScopesHash([]string{"ab", "c"}), ScopesHash([]string{"a", "bc"}))
+}
+
+// TestScopesHash_DistinctForDistinctScopes pins that distinct non-empty
+// scope sets hash to distinct values, while nil and empty slice canonicalise
+// to the same value (both reduce to the empty canonical form).
+func TestScopesHash_DistinctForDistinctScopes(t *testing.T) {
+	t.Parallel()
+
+	a := ScopesHash([]string{"openid"})
+	b := ScopesHash([]string{"openid", "profile"})
+	c := ScopesHash([]string{"profile"})
+	d := ScopesHash(nil)
+	e := ScopesHash([]string{})
+
+	assert.NotEqual(t, a, b)
+	assert.NotEqual(t, a, c)
+	assert.NotEqual(t, b, c)
+	assert.NotEqual(t, a, d)
+	assert.Equal(t, d, e)
 }

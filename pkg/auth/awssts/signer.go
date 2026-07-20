@@ -37,22 +37,22 @@ const emptySHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b785
 // See: https://docs.aws.amazon.com/aws-mcp/latest/userguide/getting-started-aws-mcp-server.html
 const defaultService = "aws-mcp"
 
-// requestSigner signs HTTP requests using AWS Signature Version 4.
+// RequestSigner signs HTTP requests using AWS Signature Version 4.
 //
 // SigV4 signing should run as close to the backend as possible.
 // Modifying signed headers or the request body after signing will
 // invalidate the signature.
-type requestSigner struct {
+type RequestSigner struct {
 	signer  *v4.Signer
 	region  string
 	service string
 }
 
-type signerOption func(*requestSigner)
+type signerOption func(*RequestSigner)
 
 // withService sets a custom service name for SigV4 signing.
 func withService(service string) signerOption {
-	return func(s *requestSigner) {
+	return func(s *RequestSigner) {
 		s.service = service
 	}
 }
@@ -61,12 +61,12 @@ func withService(service string) signerOption {
 //
 // By default, it uses "aws-mcp" as the service name for AWS MCP Server.
 // Use withService to override for other AWS services.
-func newRequestSigner(region string, opts ...signerOption) (*requestSigner, error) {
+func newRequestSigner(region string, opts ...signerOption) (*RequestSigner, error) {
 	if region == "" {
 		return nil, ErrMissingRegion
 	}
 
-	s := &requestSigner{
+	s := &RequestSigner{
 		signer:  v4.NewSigner(),
 		region:  region,
 		service: defaultService,
@@ -77,6 +77,19 @@ func newRequestSigner(region string, opts ...signerOption) (*requestSigner, erro
 	}
 
 	return s, nil
+}
+
+// NewRequestSigner creates a new SigV4 request signer for the specified region
+// and service name. An empty service string defaults to "aws-mcp".
+//
+// Exported so that pkg/vmcp/auth/strategies and other packages can sign requests
+// outside the HTTP middleware flow.
+func NewRequestSigner(region, service string) (*RequestSigner, error) {
+	opts := []signerOption{}
+	if service != "" {
+		opts = append(opts, withService(service))
+	}
+	return newRequestSigner(region, opts...)
 }
 
 // SignRequest signs an HTTP request using AWS SigV4.
@@ -97,7 +110,7 @@ func newRequestSigner(region string, opts ...signerOption) (*requestSigner, erro
 // Returns an error if:
 //   - The request body cannot be read
 //   - Signing fails
-func (s *requestSigner) SignRequest(ctx context.Context, req *http.Request, creds *aws.Credentials) error {
+func (s *RequestSigner) SignRequest(ctx context.Context, req *http.Request, creds *aws.Credentials) error {
 	if creds == nil {
 		return fmt.Errorf("credentials are required for signing")
 	}
@@ -129,7 +142,7 @@ func (s *requestSigner) SignRequest(ctx context.Context, req *http.Request, cred
 //   - payloadHash: Hex-encoded SHA-256 hash of the body
 //   - bodyBytes: The body content (for replacing the consumed reader)
 //   - error: Any error reading the body
-func (*requestSigner) hashPayload(req *http.Request) (string, []byte, error) {
+func (*RequestSigner) hashPayload(req *http.Request) (string, []byte, error) {
 	// Handle empty body
 	if req.Body == nil || req.Body == http.NoBody {
 		return emptySHA256, nil, nil

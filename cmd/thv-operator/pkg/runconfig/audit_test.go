@@ -13,7 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
@@ -22,12 +23,12 @@ func TestAddAuditConfigOptions(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name      string
-		mcpServer *mcpv1alpha1.MCPServer
+		mcpServer *mcpv1beta1.MCPServer
 		expected  func(t *testing.T, config *runner.RunConfig)
 	}{
 		{
 			name: "with empty audit configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
+			mcpServer: &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "empty-audit-server",
 					Namespace: "test-ns",
@@ -40,20 +41,9 @@ func TestAddAuditConfigOptions(t *testing.T) {
 		},
 		{
 			name: "with disabled audit configuration",
-			mcpServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "audit-server",
-					Namespace: "test-ns",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image:     testImage,
-					Transport: stdioTransport,
-					ProxyPort: 8080,
-					Audit: &mcpv1alpha1.AuditConfig{
-						Enabled: true,
-					},
-				},
-			},
+			mcpServer: v1beta1test.NewMCPServer("audit-server", "test-ns",
+				v1beta1test.WithAudit(&mcpv1beta1.AuditConfig{Enabled: true}),
+			),
 			//nolint:thelper // We want to see the error at the specific line
 			expected: func(t *testing.T, config *runner.RunConfig) {
 				assert.Equal(t, "audit-server", config.Name)

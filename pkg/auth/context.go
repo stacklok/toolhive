@@ -36,7 +36,9 @@ func WithIdentity(ctx context.Context, identity *Identity) context.Context {
 }
 
 // IdentityFromContext retrieves an Identity from the context.
-// Returns the identity and true if present, nil and false otherwise.
+// Returns the identity and true if a non-nil identity is present, nil and false otherwise.
+// A typed-nil *Identity stored directly in the context (bypassing WithIdentity) is
+// treated as absent so callers can safely gate on the boolean without nil checks.
 //
 // This function is typically called by authorization middleware or handlers that need
 // to check who the authenticated user is.
@@ -50,7 +52,70 @@ func WithIdentity(ctx context.Context, identity *Identity) context.Context {
 //	log.Printf("Request from user: %s", identity.Subject)
 func IdentityFromContext(ctx context.Context) (*Identity, bool) {
 	identity, ok := ctx.Value(IdentityContextKey{}).(*Identity)
-	return identity, ok
+	return identity, ok && identity != nil
+}
+
+// PlatformUserContextKey is the key used to store the platform's canonical user
+// identifier in the request context. It is deliberately distinct from
+// IdentityContextKey.
+//
+// A value under this key means only "this is the canonical user to key storage
+// on" — it is NOT proof that an authenticated principal is present. The two are
+// kept structurally separate so a storage-scoped user id can never be mistaken
+// for a validated identity: authorizers and other consumers that need the
+// authenticated caller use IdentityFromContext (which carries the validated token
+// and claims), while storage layers that key on the canonical user use
+// CanonicalUserFromContext.
+type PlatformUserContextKey struct{}
+
+// WithPlatformUser stores the platform's canonical user identifier in the context.
+// If userID is empty, the original context is returned unchanged.
+//
+// Use this — not WithIdentity — on paths that have resolved the user but have no
+// validated identity to assert (e.g. the OAuth callback, which resolves the user
+// while it is still minting the ToolHive bearer, so no validated token/claims
+// exist yet). Reusing WithIdentity there would place a credential-free stub under
+// the identity key that later readers could mistake for an authenticated principal.
+//
+// Request-serving paths that already carry a validated identity do NOT need to
+// call this — CanonicalUserFromContext falls back to the Identity's PlatformUserID
+// there, so the canonical user is read from one accessor without storing it twice.
+func WithPlatformUser(ctx context.Context, userID string) context.Context {
+	if userID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, PlatformUserContextKey{}, userID)
+}
+
+// PlatformUserFromContext retrieves the platform's canonical user identifier from
+// the dedicated platform-user key. Returns the identifier and true if present,
+// "" and false otherwise.
+//
+// Most callers should use CanonicalUserFromContext, which also resolves the user
+// from a validated Identity on request-serving paths. Use this only when you
+// specifically need the dedicated key and must NOT fall back to an Identity.
+func PlatformUserFromContext(ctx context.Context) (string, bool) {
+	userID, ok := ctx.Value(PlatformUserContextKey{}).(string)
+	return userID, ok
+}
+
+// CanonicalUserFromContext returns the platform's canonical user identifier for
+// storage keying. It is the single accessor storage layers should use, regardless
+// of which path produced the context.
+//
+// It prefers the dedicated platform-user key (set on identity-less paths such as
+// the OAuth callback) and falls back to the authenticated Identity's
+// PlatformUserID (set on request-serving paths). Returns "" and false if neither
+// is present. The dedicated key wins so an explicit WithPlatformUser can override
+// the identity-derived value.
+func CanonicalUserFromContext(ctx context.Context) (string, bool) {
+	if userID, ok := PlatformUserFromContext(ctx); ok {
+		return userID, true
+	}
+	if identity, ok := IdentityFromContext(ctx); ok && identity.PlatformUserID != "" {
+		return identity.PlatformUserID, true
+	}
+	return "", false
 }
 
 // claimsToIdentity converts JWT claims to Identity struct.
@@ -75,8 +140,9 @@ func claimsToIdentity(claims jwt.MapClaims, token string) (*Identity, error) {
 
 	identity := &Identity{
 		PrincipalInfo: PrincipalInfo{
-			Subject: sub,
-			Claims:  filteredClaims,
+			Subject:        sub,
+			PlatformUserID: sub,
+			Claims:         filteredClaims,
 		},
 		Token:     token,
 		TokenType: "Bearer",

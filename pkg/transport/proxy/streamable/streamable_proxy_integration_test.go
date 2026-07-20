@@ -35,7 +35,7 @@ func TestHTTPRequestIgnoresNotifications(t *testing.T) {
 	// Get an available port dynamically
 	port := getFreePort(t)
 	proxy := NewHTTPProxy("localhost", port, nil, nil)
-	ctx := context.Background()
+	ctx := t.Context()
 
 	// Start the proxy server
 	err := proxy.Start(ctx)
@@ -105,4 +105,47 @@ func TestHTTPRequestIgnoresNotifications(t *testing.T) {
 	assert.Equal(t, "2.0", batchResponse[0]["jsonrpc"])
 	assert.Equal(t, "batch-1", batchResponse[0]["id"])
 	assert.Equal(t, "operation complete", batchResponse[0]["result"])
+}
+
+// TestHTTPProxy_StartMountsAuthDiscoveryEndpoint is an integration test that
+// starts a real proxy with an authInfoHandler and verifies the RFC 9728
+// discovery endpoint responds correctly.
+//
+//nolint:paralleltest // Test starts/stops HTTP server
+func TestHTTPProxy_StartMountsAuthDiscoveryEndpoint(t *testing.T) {
+	const wantBody = `{"resource":"https://example.com"}`
+
+	sentinel := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(wantBody))
+	})
+
+	port := getFreePort(t)
+	proxy := NewHTTPProxy("localhost", port, nil, nil, WithAuthInfoHandler(sentinel))
+	ctx := t.Context()
+
+	require.NoError(t, proxy.Start(ctx))
+	t.Cleanup(func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = proxy.Stop(stopCtx)
+	})
+
+	// streamable Start() returns before the goroutine binds — poll until ready.
+	url := fmt.Sprintf("http://localhost:%d/.well-known/oauth-protected-resource", port)
+	var resp *http.Response
+	require.Eventually(t, func() bool {
+		var err error
+		resp, err = http.Get(url) //nolint:gosec // test-only URL construction
+		return err == nil
+	}, 500*time.Millisecond, 10*time.Millisecond, "server did not become ready in time")
+	defer resp.Body.Close()
+
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
+	assert.Contains(t, resp.Header.Get("Content-Type"), "application/json")
+
+	var body map[string]string
+	require.NoError(t, json.NewDecoder(resp.Body).Decode(&body))
+	assert.Equal(t, "https://example.com", body["resource"])
 }

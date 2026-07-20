@@ -5,7 +5,7 @@
 # VirtualMCPServer applies the auth strategy directly.
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPExternalAuthConfig
 metadata:
   name: salesforce-auth
@@ -24,7 +24,7 @@ spec:
       - mcp:write
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServerEntry
 metadata:
   name: salesforce-mcp

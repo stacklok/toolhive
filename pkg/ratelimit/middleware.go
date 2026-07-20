@@ -6,7 +6,9 @@ package ratelimit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
@@ -15,7 +17,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -25,13 +27,6 @@ const (
 	// MiddlewareType is the type constant for the rate limit middleware.
 	MiddlewareType = "ratelimit"
 
-	// CodeRateLimited is the JSON-RPC error code for rate-limited requests.
-	// Per RFC THV-0057: implementation-defined code in the -32000 to -32099 range.
-	CodeRateLimited int64 = -32029
-
-	// MessageRateLimited is the JSON-RPC error message for rate-limited requests.
-	MessageRateLimited = "Rate limit exceeded"
-
 	// redisPasswordEnvVar is the environment variable containing the Redis password.
 	// Shared with session storage — the operator injects it from the same Secret.
 	redisPasswordEnvVar = "THV_SESSION_REDIS_PASSWORD" //nolint:gosec // G101: env var name, not a credential
@@ -39,17 +34,17 @@ const (
 
 // MiddlewareParams holds the parameters for the rate limit middleware factory.
 type MiddlewareParams struct {
-	Namespace  string                    `json:"namespace"`
-	ServerName string                    `json:"server_name"`
-	Config     *v1alpha1.RateLimitConfig `json:"config"`
-	RedisAddr  string                    `json:"redis_addr,omitempty"`
-	RedisDB    int32                     `json:"redis_db,omitempty"`
+	Namespace  string                   `json:"namespace"`
+	ServerName string                   `json:"server_name"`
+	Config     *v1beta1.RateLimitConfig `json:"config"`
+	RedisAddr  string                   `json:"redis_addr,omitempty"`
+	RedisDB    int32                    `json:"redis_db,omitempty"`
 }
 
 // rateLimitMiddleware wraps rate limiting functionality for the factory pattern.
 type rateLimitMiddleware struct {
 	handler types.MiddlewareFunction
-	client  redis.UniversalClient
+	closer  io.Closer
 }
 
 // Handler returns the middleware function used by the proxy.
@@ -59,21 +54,16 @@ func (m *rateLimitMiddleware) Handler() types.MiddlewareFunction {
 
 // Close cleans up the Redis client.
 func (m *rateLimitMiddleware) Close() error {
-	if m.client != nil {
-		return m.client.Close()
+	if m.closer != nil {
+		return m.closer.Close()
 	}
 	return nil
 }
 
-// CreateMiddleware is the factory function for rate limit middleware.
-func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
-	var params MiddlewareParams
-	if err := json.Unmarshal(config.Parameters, &params); err != nil {
-		return fmt.Errorf("failed to unmarshal rate limit middleware parameters: %w", err)
-	}
-
+// NewRedisLimiter creates a Redis-backed rate limiter from typed params.
+func NewRedisLimiter(params MiddlewareParams) (Limiter, io.Closer, error) {
 	if params.RedisAddr == "" {
-		return fmt.Errorf("rate limit middleware requires a Redis address")
+		return nil, nil, fmt.Errorf("rate limit middleware requires a Redis address")
 	}
 
 	// TODO: share a Redis client builder with session storage to get TLS,
@@ -89,18 +79,41 @@ func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRun
 	defer pingCancel()
 	if err := client.Ping(pingCtx).Err(); err != nil {
 		_ = client.Close()
-		return fmt.Errorf("rate limit middleware: failed to connect to Redis at %s: %w", params.RedisAddr, err)
+		return nil, nil, fmt.Errorf("rate limit middleware: failed to connect to Redis at %s: %w", params.RedisAddr, err)
 	}
 
 	limiter, err := NewLimiter(client, params.Namespace, params.ServerName, params.Config)
 	if err != nil {
 		_ = client.Close()
-		return fmt.Errorf("failed to create rate limiter: %w", err)
+		return nil, nil, fmt.Errorf("failed to create rate limiter: %w", err)
 	}
 
-	mw := &rateLimitMiddleware{
+	return limiter, client, nil
+}
+
+// NewMiddleware creates a Redis-backed rate limit middleware from typed params.
+func NewMiddleware(params MiddlewareParams) (types.Middleware, error) {
+	limiter, closer, err := NewRedisLimiter(params)
+	if err != nil {
+		return nil, err
+	}
+
+	return &rateLimitMiddleware{
 		handler: rateLimitHandler(limiter),
-		client:  client,
+		closer:  closer,
+	}, nil
+}
+
+// CreateMiddleware is the factory function for rate limit middleware.
+func CreateMiddleware(config *types.MiddlewareConfig, runner types.MiddlewareRunner) error {
+	var params MiddlewareParams
+	if err := json.Unmarshal(config.Parameters, &params); err != nil {
+		return fmt.Errorf("failed to unmarshal rate limit middleware parameters: %w", err)
+	}
+
+	mw, err := NewMiddleware(params)
+	if err != nil {
+		return err
 	}
 	runner.AddMiddleware(MiddlewareType, mw)
 	return nil
@@ -120,21 +133,16 @@ func rateLimitHandler(limiter Limiter) types.MiddlewareFunction {
 				return
 			}
 
-			// When no identity is present (unauthenticated), userID stays empty
-			// and per-user buckets are skipped — only shared limits apply. CEL
-			// validation ensures perUser rate limits require auth to be enabled.
-			var userID string
-			if identity, ok := auth.IdentityFromContext(r.Context()); ok {
-				userID = identity.Subject
+			identity, _ := auth.IdentityFromContext(r.Context())
+			err := Allow(r.Context(), limiter, identity, parsed.ResourceID)
+			var limited *RateLimitedError
+			if errors.As(err, &limited) {
+				writeRateLimited(w, parsed.ID, limited.RetryAfter)
+				return
 			}
-			decision, err := limiter.Allow(r.Context(), parsed.ResourceID, userID)
 			if err != nil {
 				slog.Warn("rate limit check failed, allowing request", "error", err)
 				next.ServeHTTP(w, r)
-				return
-			}
-			if !decision.Allowed {
-				writeRateLimited(w, parsed.ID, decision.RetryAfter)
 				return
 			}
 			next.ServeHTTP(w, r)

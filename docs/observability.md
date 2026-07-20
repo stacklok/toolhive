@@ -13,6 +13,10 @@ setting up and using these features, see the ToolHive documentation:
 - [CLI guide](https://docs.stacklok.com/toolhive/guides-cli/telemetry-and-metrics),
   including how to enable and configure telemetry and send to common backends
 
+To run a complete local observability stack (Prometheus, Grafana, and the
+OpenTelemetry Collector) for testing this instrumentation, see the
+[OpenTelemetry example stack](../examples/otel/README.md).
+
 For migrating from legacy attribute names to the new OTEL MCP semantic
 conventions, see the [Telemetry Migration Guide](./telemetry-migration-guide.md).
 
@@ -30,7 +34,7 @@ operations through:
 4. **Protocol-aware instrumentation**: MCP-specific insights beyond generic HTTP
    metrics
 
-See [the original design document](./proposals/otel-integration-proposal.md) for
+See [the original design document](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0001-otel-integration-proposal.md) for
 more details on the design and goals of this observability architecture.
 
 ## Architecture
@@ -133,7 +137,7 @@ override. Sensitive headers (API keys, bearer tokens) are stored in Kubernetes
 Secrets via `sensitiveHeaders[].secretKeyRef`.
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPTelemetryConfig
 metadata:
   name: shared-otel
@@ -148,7 +152,7 @@ spec:
     metrics:
       enabled: true
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: my-server
@@ -159,12 +163,12 @@ spec:
     serviceName: my-server    # unique per server
 ```
 
-See [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](./examples/operator/mcp-servers/mcpserver_fetch_otel.yaml)
+See [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](../examples/operator/mcp-servers/mcpserver_fetch_otel.yaml)
 for a complete example.
 
 **Inline (deprecated)**: The inline `spec.telemetry` (MCPServer, MCPRemoteProxy)
 and `spec.config.telemetry` (VirtualMCPServer) fields still work but are
-deprecated and will be removed in v1beta1. They are mutually exclusive with
+deprecated and will be removed in a future API version. They are mutually exclusive with
 `telemetryConfigRef` (CEL enforced). All three resource types now support
 `spec.telemetryConfigRef`.
 
@@ -247,6 +251,48 @@ Number of currently active MCP connections.
 | `server` | string | MCP server name |
 | `transport` | string | Backend transport type |
 | `connection_type` | string | `"sse"` (only present for SSE connections) |
+
+### Rate Limit Metrics
+
+These metrics are emitted for Redis-backed rate limit checks used by MCPServer
+and VirtualMCPServer. Prometheus appends `_total` to counter names. The latency
+histogram is exported with the `_seconds` unit suffix and the standard
+`_bucket`, `_sum`, and `_count` series suffixes.
+
+#### `toolhive_rate_limit_decisions` (Counter)
+
+Total number of rate limit bucket decisions. An allowed request increments once
+for every applicable bucket. A rejected request increments only for the first
+bucket rejected by the atomic Redis check. Requests with no applicable bucket
+do not increment this counter.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `namespace` | string | Kubernetes namespace associated with the server |
+| `server` | string | MCPServer or VirtualMCPServer name |
+| `decision` | string | `"allowed"` or `"rejected"` |
+| `scope` | string | `"shared"` or `"per_user"` |
+| `operation_type` | string | `"server"` or `"tool"` |
+
+#### `toolhive_rate_limit_redis_errors` (Counter)
+
+Total number of Redis errors encountered while checking rate limits.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `namespace` | string | Kubernetes namespace associated with the server |
+| `server` | string | MCPServer or VirtualMCPServer name |
+| `error_type` | string | `"timeout"`, `"connection"`, `"auth"`, or `"other"` |
+
+#### `toolhive_rate_limit_check_latency` (Histogram, seconds)
+
+Duration of each attempted atomic Redis Lua rate limit check, including failed
+checks.
+
+| Attribute | Type | Description |
+|-----------|------|-------------|
+| `namespace` | string | Kubernetes namespace associated with the server |
+| `server` | string | MCPServer or VirtualMCPServer name |
 
 ## Span Attributes
 

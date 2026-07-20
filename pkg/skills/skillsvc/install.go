@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/groups"
@@ -38,6 +39,17 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 			return nil, err
 		}
 		return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
+	}
+
+	// When the caller supplies `version` separately and the name is a tag-less
+	// OCI-like reference (contains '/' but no ':' or '@'), splice the version
+	// in as the tag. Without this, parseOCIReference + qualifiedOCIRef would
+	// default the pull to ":latest" and silently drop opts.Version. An
+	// explicit tag in the name still wins (we only splice when none is set).
+	if opts.Version != "" &&
+		strings.ContainsRune(opts.Name, '/') &&
+		!strings.ContainsAny(opts.Name, ":@") {
+		opts.Name = opts.Name + ":" + opts.Version
 	}
 
 	ref, isOCI, err := parseOCIReference(opts.Name)

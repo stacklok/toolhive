@@ -144,6 +144,30 @@ func (l *YAMLLoader) processBackendAuthStrategy(name string, strategy *authtypes
 	case authtypes.StrategyTypeUnauthenticated:
 		// No validation needed
 
+	case authtypes.StrategyTypeAwsSts:
+		if strategy.AwsSts == nil {
+			return fmt.Errorf("backend %s: aws_sts configuration is required", name)
+		}
+		if strategy.AwsSts.Region == "" {
+			return fmt.Errorf("backend %s: aws_sts requires region field", name)
+		}
+
+	case authtypes.StrategyTypeOBO:
+		if strategy.OBO == nil {
+			return fmt.Errorf("backend %s: obo configuration is required", name)
+		}
+		obo := strategy.OBO
+		if obo.ClientSecret != "" && obo.ClientSecretEnv != "" {
+			return fmt.Errorf("backend %s: only one of clientSecret or clientSecretEnv must be set", name)
+		}
+		if obo.ClientSecretEnv != "" {
+			resolvedSecret := l.envReader.Getenv(obo.ClientSecretEnv)
+			if resolvedSecret == "" {
+				return fmt.Errorf("backend %s: environment variable %s not set", name, obo.ClientSecretEnv)
+			}
+			obo.ClientSecret = resolvedSecret
+		}
+
 	default:
 		// Unknown strategy type - let validation handle it
 	}

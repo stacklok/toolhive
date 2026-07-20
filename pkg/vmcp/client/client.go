@@ -4,7 +4,7 @@
 // Package client provides MCP protocol client implementation for communicating with backend servers.
 //
 // This package implements the BackendClient interface defined in the vmcp package,
-// using the mark3labs/mcp-go SDK for protocol communication.
+// using the stacklok/toolhive-core/mcpcompat SDK for protocol communication.
 package client
 
 import (
@@ -18,21 +18,25 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"syscall"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
 )
 
 const (
@@ -54,7 +58,50 @@ const (
 	maxResponseSize = 100 * 1024 * 1024 // 100 MB
 )
 
-// httpBackendClient implements vmcp.BackendClient using mark3labs/mcp-go HTTP client.
+// Option configures an httpBackendClient.
+type Option func(*httpBackendClient)
+
+// WithDialControl installs a per-connection Control hook on the dialer used to
+// reach every backend. The hook fires after DNS resolution and before the TCP
+// handshake, receiving the resolved peer IP in address — which is why it
+// defeats DNS-rebinding attacks that a host-name–based allow/deny check cannot:
+// a hostname can legitimately resolve to a blocked IP after the name-based check
+// passes.
+//
+// The hook composes with per-backend CA-bundle handling: it augments the
+// internally built *http.Transport rather than replacing it. Supplying it
+// implies the standard dial timeouts (30 s Timeout, 30 s KeepAlive) used
+// throughout this package.
+//
+// The signature matches net.Dialer.Control exactly.
+//
+// Security limitations embedders must understand:
+//
+//   - Per-TCP-dial, not per-request: the hook fires once per TCP connection.
+//     A pooled connection is reused without re-invoking the hook until it is
+//     recycled. Because each backend gets its own isolated transport and
+//     connection pool, a reused connection is always one this hook already
+//     approved on its first dial — reuse cannot reach an unclassified peer.
+//     This client does not offer per-request re-classification.
+//
+//   - Proxy transparency: when http.ProxyFromEnvironment selects a proxy
+//     (HTTP_PROXY/HTTPS_PROXY set), the dial target is the proxy server, so
+//     the hook receives the proxy's IP, not the backend's. Embedders relying
+//     on this hook for SSRF or IP allow-listing must either unset the proxy
+//     env vars or additionally validate the request URL's host before dialing.
+//
+//   - Both IP families: the address argument may be an IPv4 or IPv6 literal
+//     (host:port form); embedders must handle both families — including
+//     IPv4-mapped IPv6 such as ::ffff:127.0.0.1 — in their check. See the
+//     OWASP SSRF Prevention Cheat Sheet for the full set of ranges to deny
+//     (loopback, RFC 1918, link-local 169.254/16, CGNAT 100.64/10, IPv6 ULA).
+func WithDialControl(control func(network, address string, c syscall.RawConn) error) Option {
+	return func(h *httpBackendClient) {
+		h.dialControl = control
+	}
+}
+
+// httpBackendClient implements vmcp.BackendClient using stacklok/toolhive-core/mcpcompat HTTP client.
 // It supports streamable-HTTP and SSE transports for backend MCP servers.
 type httpBackendClient struct {
 	// clientFactory creates MCP clients for backends.
@@ -64,6 +111,17 @@ type httpBackendClient struct {
 	// registry manages authentication strategies for outgoing requests to backend MCP servers.
 	// Must not be nil - use UnauthenticatedStrategy for no authentication.
 	registry vmcpauth.OutgoingAuthRegistry
+
+	// secretsProvider resolves TOOLHIVE_SECRET_<ident> env vars at client-creation
+	// time for per-backend header-forward injection. Nil when no backends declare
+	// headerForward.AddHeadersFromSecret — plaintext-only backends do not require it.
+	secretsProvider secrets.Provider
+
+	// dialControl is an optional per-connection hook injected via WithDialControl.
+	// When non-nil it is installed on the net.Dialer used by every backend transport,
+	// receiving the resolved peer IP before the TCP handshake. Nil reproduces the
+	// default dialer behavior with no hook.
+	dialControl func(network, address string, c syscall.RawConn) error
 }
 
 // NewHTTPBackendClient creates a new HTTP-based backend client.
@@ -73,17 +131,37 @@ type httpBackendClient struct {
 // It must not be nil. To disable authentication, use a registry configured with the
 // "unauthenticated" strategy.
 //
+// Options are additive: nil or absent options reproduce the default behavior exactly.
+// See [WithDialControl] to install a per-connection dial hook for SSRF /
+// DNS-rebinding defense.
+//
 // Returns an error if registry is nil.
-func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendClient, error) {
+func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry, opts ...Option) (vmcp.BackendClient, error) {
 	if registry == nil {
 		return nil, fmt.Errorf("registry cannot be nil; use UnauthenticatedStrategy for no authentication")
 	}
 
 	c := &httpBackendClient{
-		registry: registry,
+		registry:        registry,
+		secretsProvider: secrets.NewEnvironmentProvider(),
+	}
+	for _, o := range opts {
+		o(c)
 	}
 	c.clientFactory = c.defaultClientFactory
 	return c, nil
+}
+
+// backendDialer returns a net.Dialer with the standard backend timeouts and an
+// optional Control hook. Centralising the timeout constants here ensures the
+// fallback-construction branch and the dial-control replacement branch always
+// stay in sync — no "kept in sync with the branch below" promise required.
+func backendDialer(control func(network, address string, c syscall.RawConn) error) *net.Dialer {
+	return &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+		Control:   control,
+	}
 }
 
 // newBackendTransport creates a *http.Transport with the same defaults as http.DefaultTransport.
@@ -99,7 +177,18 @@ func NewHTTPBackendClient(registry vmcpauth.OutgoingAuthRegistry) (vmcp.BackendC
 // If caBundleData is non-empty, the raw PEM bytes are used directly instead of reading
 // from a file. This is used in dynamic mode where CA bundles are fetched from K8s
 // ConfigMaps at discovery time. caBundleData takes precedence over caBundlePath.
-func newBackendTransport(caBundlePath string, caBundleData []byte) (*http.Transport, error) {
+//
+// If dialControl is non-nil, a fresh net.Dialer carrying the hook is installed on the
+// transport. The hook fires per-connection on the resolved peer IP, which is what
+// defeats DNS-rebinding attacks — a name-based check cannot, because the name can
+// resolve to a blocked IP after the check passes. A cloned *http.Transport exposes
+// DialContext only as an opaque func, so we cannot read back the original dialer's
+// settings; we reconstruct the dialer via backendDialer instead.
+func newBackendTransport(
+	caBundlePath string,
+	caBundleData []byte,
+	dialControl func(network, address string, c syscall.RawConn) error,
+) (*http.Transport, error) {
 	var t *http.Transport
 	if dt, ok := http.DefaultTransport.(*http.Transport); ok {
 		t = dt.Clone()
@@ -108,17 +197,18 @@ func newBackendTransport(caBundlePath string, caBundleData []byte) (*http.Transp
 		// Construct a transport with the same defaults as the Go standard library uses for
 		// http.DefaultTransport so we don't silently drop proxy, timeout, or HTTP/2 settings.
 		t = &http.Transport{
-			Proxy: http.ProxyFromEnvironment,
-			DialContext: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).DialContext,
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           backendDialer(nil).DialContext,
 			ForceAttemptHTTP2:     true,
 			MaxIdleConns:          100,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		}
+	}
+
+	if dialControl != nil {
+		t.DialContext = backendDialer(dialControl).DialContext
 	}
 
 	// Resolve CA certificate PEM data: caBundleData takes precedence over caBundlePath
@@ -169,31 +259,79 @@ func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
 	return f(req)
 }
 
-// identityPropagatingRoundTripper propagates identity and health-check markers to backend HTTP requests.
-// This ensures that identity information from the vMCP handler is available for authentication
-// strategies that need it (e.g., token exchange).
+// identityPropagatingRoundTripper propagates the health-check marker and a
+// fallback identity to backend HTTP requests.
 //
-// The health-check marker is stored at transport creation time and re-injected into every
-// outgoing request, including the DELETE that mcp-go sends when closing a streamable-HTTP
-// session. Without this, mcp-go's Close() creates a fresh context.Background()-based request
-// that loses the health-check marker, causing auth strategies (UpstreamInjectStrategy,
-// TokenExchangeStrategy) to fail with "no identity found in context".
+// Identity invariant: an identity already present on req.Context() is NEVER
+// overridden. The per-request identity placed on the request context by
+// auth.TokenValidator.Middleware carries the freshest upstream tokens (the
+// middleware refreshes them transparently on every incoming request via
+// upstreamtoken.InProcessService.GetAllUpstreamCredentials). Overriding it with a
+// snapshot captured at session-init time would silently re-inject stale
+// upstream access tokens on every backend call, forcing users to re-auth
+// once the captured access token expired (see issue #5323).
+//
+// The fallback identity is used only when req.Context() carries no identity
+// at all. This covers mcp-go's streamable-HTTP Close() path, which constructs
+// its DELETE request from context.Background() and therefore loses any
+// identity attached to the original tool-call context. Without a fallback,
+// auth strategies (UpstreamInjectStrategy, TokenExchangeStrategy, AWSSTSStrategy)
+// would reject the teardown DELETE with "no identity found in context" — the
+// teardown would still complete locally, but the upstream backend would see
+// an unauthenticated DELETE. The fallback may itself be stale, which is
+// acceptable for a session-close: the request is best-effort and any 401
+// from the upstream does not affect functional behavior.
+//
+// The health-check marker is similarly captured at transport creation time and
+// re-injected into every outgoing request — including the Close() DELETE — so
+// that auth strategies correctly skip authentication for health probes even
+// when the request context has been replaced with context.Background().
+//
+// This is the canonical location for the #5323 fallback-only identity
+// invariant. A near-clone exists at identityRoundTripper in
+// pkg/vmcp/session/internal/backend/mcp_session.go (without isHealthCheck
+// support, since health probes do not flow through the session-backed
+// connector). Keep the invariant in sync across both implementations until
+// #5333 lands a shared transport.
 type identityPropagatingRoundTripper struct {
-	base          http.RoundTripper
-	identity      *auth.Identity
-	isHealthCheck bool
+	base http.RoundTripper
+	// fallbackIdentity is injected only when req.Context() carries no identity.
+	// It must never override a non-nil identity present on the request context.
+	//
+	// Shared across all concurrent RoundTrip invocations on this transport; the
+	// pointed-to *auth.Identity (including UpstreamTokens) MUST be treated as
+	// immutable — see pkg/auth/identity.go.
+	fallbackIdentity *auth.Identity
+	isHealthCheck    bool
 }
 
-// RoundTrip implements http.RoundTripper by adding identity and health-check marker to the request context.
+// RoundTrip implements http.RoundTripper.
+//
+// It preserves any identity already present on req.Context() (the fresh,
+// per-request identity placed there by TokenValidator.Middleware). When the
+// request context carries no identity — for example, mcp-go's Close() DELETE
+// is constructed from context.Background() — the captured fallback identity
+// is injected so session-teardown requests can still authenticate. The
+// health-check marker is always re-injected when configured.
 func (i *identityPropagatingRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
 	ctx := req.Context()
-	if i.identity != nil {
-		ctx = auth.WithIdentity(ctx, i.identity)
+	mutated := false
+
+	// Inject the fallback identity ONLY when the request context carries no
+	// identity. We must never overwrite a non-nil identity already on ctx —
+	// doing so would clobber the freshly refreshed upstream tokens that the
+	// auth middleware places on every incoming request (see #5323).
+	if _, hasIdentity := auth.IdentityFromContext(ctx); !hasIdentity && i.fallbackIdentity != nil {
+		ctx = auth.WithIdentity(ctx, i.fallbackIdentity)
+		mutated = true
 	}
+
 	if i.isHealthCheck {
 		ctx = healthcontext.WithHealthCheckMarker(ctx)
+		mutated = true
 	}
-	if i.identity != nil || i.isHealthCheck {
+
+	if mutated {
 		req = req.Clone(ctx)
 	}
 	return i.base.RoundTrip(req)
@@ -260,14 +398,14 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmc
 	return strategy, nil
 }
 
-// defaultClientFactory creates mark3labs MCP clients for different transport types.
+// defaultClientFactory creates mcpcompat MCP clients for different transport types.
 func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
 	// Build transport chain (outermost to innermost, request execution order):
 	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP
 	//
-	// Clone DefaultTransport per call so each client gets an isolated connection pool,
+	// Build an isolated per-call transport so each client gets its own connection pool,
 	// preventing stale keep-alive connections from one backend affecting others.
-	httpTransport, err := newBackendTransport(target.CABundlePath, target.CABundleData)
+	httpTransport, err := newBackendTransport(target.CABundlePath, target.CABundleData, h.dialControl)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create transport for backend %s: %w", target.WorkloadID, err)
 	}
@@ -296,16 +434,58 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 		target:       target,
 	}
 
-	// Extract identity and health-check marker from context and propagate them to backend
-	// requests. The health-check marker must be carried through to the DELETE request that
-	// mcp-go emits when closing a streamable-HTTP session: mcp-go creates that request with
-	// context.Background(), which loses both the identity and the health-check marker that
-	// were present on the original ListCapabilities call context.
-	identity, _ := auth.IdentityFromContext(ctx)
+	// Merge the live per-request forwarded headers (captured by headerforward.CaptureMiddleware
+	// into the request context) with the static per-backend header-forward config. This factory
+	// runs on every backend call, so forwarding is per-request: each call reflects the current
+	// incoming header value. Restricted names and static-config collisions are rejected by
+	// MergeForwardedHeaders.
+	mergedHeaderForward, mergeErr := headerforward.MergeForwardedHeaders(
+		target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx),
+	)
+	if mergeErr != nil {
+		return nil, fmt.Errorf("failed to merge forwarded headers for backend %s: %w", target.WorkloadID, mergeErr)
+	}
+	baseTransport, err = headerforward.BuildHeaderForwardTripper(
+		ctx, baseTransport, mergedHeaderForward, h.secretsProvider, target.WorkloadID,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build header-forward transport: %w", err)
+	}
+
+	// Capture a fallback identity and the health-check marker from the construction
+	// context. These are used ONLY when the per-request context lacks them.
+	//
+	// Scope note: httpBackendClient calls this factory on every CallTool /
+	// ReadResource / GetPrompt / ListCapabilities with the per-call context, so
+	// the captured "fallback" is per-call, not per-session, in this path. The
+	// always-stale capture-at-session-init behavior that caused #5323 lives in
+	// the persistent-session path (pkg/vmcp/session/internal/backend); this
+	// transport uses the same RoundTripper out of consistency, not because it
+	// suffered the same bug.
+	//
+	// Fallback injection scope: the round-tripper injects the captured fallback
+	// identity on ANY outgoing request whose context lacks an identity — not
+	// only the teardown DELETE. In the current code paths the only known caller
+	// that drops the per-request identity is mcp-go's streamable-HTTP Close()
+	// (which builds its DELETE from context.Background()), so in practice the
+	// fallback only fires for teardown. If a future code path wraps the client
+	// with a context that doesn't carry identity (audit, telemetry, background
+	// reconciliation), it will be silently authenticated using the captured
+	// snapshot. Add an explicit method/URL gate if that becomes undesirable.
+	//
+	//   - Normal backend requests inherit the fresh, per-request identity placed on
+	//     the request context by auth.TokenValidator.Middleware. The transport
+	//     preserves it untouched so upstream-token refresh is not bypassed (#5323).
+	//
+	//   - mcp-go's streamable-HTTP Close() builds its DELETE from context.Background(),
+	//     which loses both the identity and the health-check marker. Re-injecting them
+	//     here keeps the teardown DELETE authenticated and tagged as a health-check
+	//     probe when the original session was a probe (#4613).
+	fallbackIdentity, _ := auth.IdentityFromContext(ctx)
 	baseTransport = &identityPropagatingRoundTripper{
-		base:          baseTransport,
-		identity:      identity,
-		isHealthCheck: healthcontext.IsHealthCheck(ctx),
+		base:             baseTransport,
+		fallbackIdentity: fallbackIdentity,
+		isHealthCheck:    healthcontext.IsHealthCheck(ctx),
 	}
 
 	// Inject W3C Trace Context headers (traceparent/tracestate) into outgoing requests.
@@ -378,6 +558,13 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	return c, nil
 }
 
+// isAuthorizationRequired reports whether err is one of the mcp-go authorization-required
+// sentinels. Extracted to keep wrapBackendError within the cyclomatic complexity limit.
+func isAuthorizationRequired(err error) bool {
+	return errors.Is(err, transport.ErrAuthorizationRequired) ||
+		errors.Is(err, transport.ErrOAuthAuthorizationRequired)
+}
+
 // wrapBackendError wraps an error with the appropriate sentinel error based on error type.
 // This enables type-safe error checking with errors.Is() instead of string matching.
 //
@@ -429,6 +616,16 @@ func wrapBackendError(err error, backendID string, operation string) error {
 		return fmt.Errorf("%w: failed to %s for backend %s: %v",
 			vmcp.ErrAuthenticationFailed, operation, backendID, err)
 	}
+	// transport.ErrAuthorizationRequired is returned (wrapped in *transport.Error
+	// and *transport.AuthorizationRequiredError) for 401 responses with a
+	// WWW-Authenticate header. transport.ErrOAuthAuthorizationRequired is the
+	// companion sentinel from the OAuth-handler path. Both must map to
+	// ErrAuthenticationFailed so health monitoring engages the auth-aware
+	// branch (#4935) instead of treating the probe as unhealthy (#5223).
+	if isAuthorizationRequired(err) {
+		return fmt.Errorf("%w: failed to %s for backend %s: %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
 	// ErrLegacySSEServer is returned for any 4xx (except 401) on initialize POST.
 	// This includes 403 (auth rejection) and 404/405 (endpoint not found/method not allowed).
 	// We cannot distinguish auth failures from routing errors without the raw status code,
@@ -439,7 +636,17 @@ func wrapBackendError(err error, backendID string, operation string) error {
 			vmcp.ErrBackendUnavailable, operation, backendID, legacyMsg, err)
 	}
 
-	// 5. String-based detection: Fall back to pattern matching for cases where
+	// 5. ErrUpstreamTokenNotFound: upstream provider token missing from identity.
+	// Explicit sentinel check takes priority over the string-based "authentication failed"
+	// fallback below, which would also match (via the authRoundTripper error message)
+	// but is fragile. This maps to ErrAuthenticationFailed so the pre-check middleware
+	// and health monitors classify the error correctly.
+	if errors.Is(err, authtypes.ErrUpstreamTokenNotFound) {
+		return fmt.Errorf("%w: failed to %s for backend %s (upstream token missing): %v",
+			vmcp.ErrAuthenticationFailed, operation, backendID, err)
+	}
+
+	// 6. String-based detection: Fall back to pattern matching for cases where
 	// we don't have structured error types (MCP SDK, HTTP libraries with embedded status codes)
 	// Authentication errors (401, 403, auth failures)
 	if vmcp.IsAuthenticationError(err) {
@@ -491,39 +698,68 @@ func initializeClient(ctx context.Context, c *client.Client) (*mcp.ServerCapabil
 }
 
 // queryTools queries tools from a backend if the server advertises tool support.
+// It follows MCP pagination cursors so backends that paginate (mcpcompat
+// paginates at DefaultPageSize=1000) contribute their complete tool set rather
+// than only the first page.
 func queryTools(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListToolsResult, error) {
 	if supported {
-		result, err := c.ListTools(ctx, mcp.ListToolsRequest{})
+		tools, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Tool, mcp.Cursor, error) {
+			req := mcp.ListToolsRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListTools(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Tools, result.NextCursor, nil
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list tools from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListToolsResult{Tools: tools}, nil
 	}
 	slog.Debug("backend does not advertise tools capability, skipping tools query", "backend", backendID)
 	return &mcp.ListToolsResult{Tools: []mcp.Tool{}}, nil
 }
 
-// queryResources queries resources from a backend if the server advertises resource support.
+// queryResources queries resources from a backend if the server advertises
+// resource support. It follows MCP pagination cursors (see queryTools).
 func queryResources(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListResourcesResult, error) {
 	if supported {
-		result, err := c.ListResources(ctx, mcp.ListResourcesRequest{})
+		resources, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Resource, mcp.Cursor, error) {
+			req := mcp.ListResourcesRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListResources(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Resources, result.NextCursor, nil
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list resources from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListResourcesResult{Resources: resources}, nil
 	}
 	slog.Debug("backend does not advertise resources capability, skipping resources query", "backend", backendID)
 	return &mcp.ListResourcesResult{Resources: []mcp.Resource{}}, nil
 }
 
-// queryPrompts queries prompts from a backend if the server advertises prompt support.
+// queryPrompts queries prompts from a backend if the server advertises prompt
+// support. It follows MCP pagination cursors (see queryTools).
 func queryPrompts(ctx context.Context, c *client.Client, supported bool, backendID string) (*mcp.ListPromptsResult, error) {
 	if supported {
-		result, err := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
+		prompts, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Prompt, mcp.Cursor, error) {
+			req := mcp.ListPromptsRequest{}
+			req.Params.Cursor = cursor
+			result, err := c.ListPrompts(ctx, req)
+			if err != nil {
+				return nil, "", err
+			}
+			return result.Prompts, result.NextCursor, nil
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to list prompts from backend %s: %w", backendID, err)
 		}
-		return result, nil
+		return &mcp.ListPromptsResult{Prompts: prompts}, nil
 	}
 	slog.Debug("backend does not advertise prompts capability, skipping prompts query", "backend", backendID)
 	return &mcp.ListPromptsResult{Prompts: []mcp.Prompt{}}, nil

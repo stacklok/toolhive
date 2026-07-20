@@ -7,13 +7,14 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
@@ -43,62 +44,58 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 			images.YardstickServerImage, timeout, pollingInterval)
 
 		By("Creating VirtualMCPServer with composite sequential workflow")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-					},
-					// Define a composite tool that echoes input, then echoes the result again
-					CompositeTools: []vmcpconfig.CompositeToolConfig{
-						{
-							Name:        compositeToolName,
-							Description: "Echoes the input message twice in sequence",
-							Parameters: thvjson.NewMap(map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"message": map[string]any{
-										"type":        "string",
-										"description": "The message to echo twice",
-									},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
+				},
+				// Define a composite tool that echoes input, then echoes the result again
+				CompositeTools: []vmcpconfig.CompositeToolConfig{
+					{
+						Name:        compositeToolName,
+						Description: "Echoes the input message twice in sequence",
+						Parameters: thvjson.NewMap(map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"message": map[string]any{
+									"type":        "string",
+									"description": "The message to echo twice",
 								},
-								"required": []any{"message"},
-							}),
-							Timeout: vmcpconfig.Duration(30 * time.Second),
-							Steps: []vmcpconfig.WorkflowStepConfig{
-								{
-									ID:   "first_echo",
-									Type: "tool",
-									Tool: fmt.Sprintf("%s.echo", backendName),
-									Arguments: thvjson.NewMap(map[string]any{
-										"input": "{{ .params.message }}",
-									}),
-								},
-								{
-									ID:        "second_echo",
-									Type:      "tool",
-									Tool:      fmt.Sprintf("%s.echo", backendName),
-									DependsOn: []string{"first_echo"},
-									Arguments: thvjson.NewMap(map[string]any{
-										"input": "{{ .steps.first_echo.result }}",
-									}),
-								},
+							},
+							"required": []any{"message"},
+						}),
+						Timeout: vmcpconfig.Duration(30 * time.Second),
+						Steps: []vmcpconfig.WorkflowStepConfig{
+							{
+								ID:   "first_echo",
+								Type: "tool",
+								Tool: fmt.Sprintf("%s.echo", backendName),
+								Arguments: thvjson.NewMap(map[string]any{
+									"input": "{{ .params.message }}",
+								}),
+							},
+							{
+								ID:        "second_echo",
+								Type:      "tool",
+								Tool:      fmt.Sprintf("%s.echo", backendName),
+								DependsOn: []string{"first_echo"},
+								Arguments: thvjson.NewMap(map[string]any{
+									"input": "{{ .steps.first_echo.result }}",
+								}),
 							},
 						},
 					},
 				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -112,16 +109,11 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace)
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up backend MCPServer")
-		backend := &mcpv1alpha1.MCPServer{
+		backend := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backendName,
 				Namespace: testNamespace,
@@ -130,7 +122,7 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 		_ = k8sClient.Delete(ctx, backend)
 
 		By("Cleaning up MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
+		mcpGroup := &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,
@@ -207,7 +199,7 @@ var _ = Describe("VirtualMCPServer Composite Sequential Workflow", Ordered, func
 
 	Context("when verifying composite tool configuration", func() {
 		It("should have correct composite tool spec stored", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,

@@ -40,6 +40,18 @@ func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.
 	}
 	result, err := s.packager.Package(ctx, opts.Path, ociskills.DefaultPackageOptions())
 	if err != nil {
+		// User-input failures (missing SKILL.md, bad frontmatter, symlinks,
+		// size/count limits, unreadable directory) are surfaced as 400 with
+		// the packager's message intact. Anything else is a real 500.
+		switch {
+		case errors.Is(err, ociskills.ErrSkillMDMissing),
+			errors.Is(err, ociskills.ErrInvalidFrontmatter),
+			errors.Is(err, ociskills.ErrInvalidSkillDir),
+			errors.Is(err, ociskills.ErrInvalidSkillFile),
+			errors.Is(err, ociskills.ErrTooManyFiles),
+			errors.Is(err, ociskills.ErrSkillTooLarge):
+			return nil, httperr.WithCode(err, http.StatusBadRequest)
+		}
 		return nil, fmt.Errorf("packaging skill: %w", err)
 	}
 
@@ -64,7 +76,13 @@ func (s *service) Build(ctx context.Context, opts skills.BuildOptions) (*skills.
 	}
 
 	if tag != "" {
-		if tagErr := s.ociStore.Tag(ctx, result.IndexDigest, tag); tagErr != nil {
+		// Tag the artifact and stamp the local-build marker on the root-index
+		// descriptor entry so ListBuilds can distinguish this tag from ones
+		// created by OCI pulls (install, content preview). The marker lives
+		// at the descriptor level in index.json, not in the manifest blob,
+		// so it doesn't change the artifact digest and is not carried across
+		// push (push resolves by digest, which returns a plain descriptor).
+		if tagErr := tagAsLocalBuild(ctx, s.ociStore, result.IndexDigest, tag); tagErr != nil {
 			return nil, fmt.Errorf("tagging artifact: %w", tagErr)
 		}
 	}
@@ -111,6 +129,9 @@ func (s *service) Push(ctx context.Context, opts skills.PushOptions) error {
 }
 
 // ListBuilds returns all locally-built OCI skill artifacts in the local store.
+// Tags are filtered by the local-build descriptor annotation (set by Build),
+// so artifacts pulled into the store by install or the content API for
+// caching do not appear here.
 func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 	if s.ociStore == nil {
 		return nil, httperr.WithCode(
@@ -121,11 +142,20 @@ func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 
 	tags, err := s.ociStore.ListTags(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("listing local OCI builds: %w", err)
+		return nil, fmt.Errorf("listing OCI tags: %w", err)
 	}
 
 	builds := make([]skills.LocalBuild, 0, len(tags))
 	for _, tag := range tags {
+		local, markerErr := isLocalBuild(ctx, s.ociStore, tag)
+		if markerErr != nil {
+			slog.Debug("failed to read local-build marker", "tag", tag, "error", markerErr)
+			continue
+		}
+		if !local {
+			continue
+		}
+
 		d, resolveErr := s.ociStore.Resolve(ctx, tag)
 		if resolveErr != nil {
 			slog.Debug("failed to resolve tag in local OCI store", "tag", tag, "error", resolveErr)
@@ -163,7 +193,8 @@ func (s *service) ListBuilds(ctx context.Context) ([]skills.LocalBuild, error) {
 
 // DeleteBuild removes a locally-built OCI skill artifact from the local store.
 // It deletes the tag and, when no other tag shares the same digest, also
-// garbage-collects all associated blobs.
+// garbage-collects all associated blobs. The local-build descriptor
+// annotation disappears from index.json together with the tag.
 func (s *service) DeleteBuild(ctx context.Context, tag string) error {
 	if s.ociStore == nil {
 		return httperr.WithCode(

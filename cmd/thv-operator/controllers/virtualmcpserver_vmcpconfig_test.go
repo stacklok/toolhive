@@ -21,7 +21,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 	oidcmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc/mocks"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus"
 	statusmocks "github.com/stacklok/toolhive/cmd/thv-operator/pkg/virtualmcpserverstatus/mocks"
@@ -44,8 +46,7 @@ func newNoOpMockResolver(t *testing.T) *oidcmocks.MockResolver {
 // newTestConverter creates a Converter with the given resolver, failing the test if creation fails.
 func newTestConverter(t *testing.T, resolver *oidcmocks.MockResolver) *vmcpconfigconv.Converter {
 	t.Helper()
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 	converter, err := vmcpconfigconv.NewConverter(resolver, fakeClient)
 	require.NoError(t, err)
@@ -58,21 +59,15 @@ func TestCreateVmcpConfigFromVirtualMCPServer(t *testing.T) {
 
 	tests := []struct {
 		name             string
-		vmcp             *mcpv1alpha1.VirtualMCPServer
+		vmcp             *mcpv1beta1.VirtualMCPServer
 		expectedName     string
 		expectedGroupRef string
 	}{
 		{
 			name: "basic config",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+			),
 			expectedName:     "test-vmcp",
 			expectedGroupRef: "test-group",
 		},
@@ -100,26 +95,26 @@ func TestConvertOutgoingAuth(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		outgoingAuth   *mcpv1alpha1.OutgoingAuthConfig
+		outgoingAuth   *mcpv1beta1.OutgoingAuthConfig
 		expectedSource string
 		hasDefault     bool
 		backendCount   int
 	}{
 		{
 			name: "discovered mode",
-			outgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: mcpv1alpha1.BackendAuthTypeDiscovered,
+			outgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
+				Source: mcpv1beta1.BackendAuthTypeDiscovered,
 			},
-			expectedSource: mcpv1alpha1.BackendAuthTypeDiscovered,
+			expectedSource: mcpv1beta1.BackendAuthTypeDiscovered,
 			hasDefault:     false,
 			backendCount:   0,
 		},
 		{
 			name: "with default auth",
-			outgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+			outgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
 				Source: "inline",
-				Default: &mcpv1alpha1.BackendAuthConfig{
-					Type: mcpv1alpha1.BackendAuthTypeDiscovered,
+				Default: &mcpv1beta1.BackendAuthConfig{
+					Type: mcpv1beta1.BackendAuthTypeDiscovered,
 				},
 			},
 			expectedSource: "inline",
@@ -128,11 +123,11 @@ func TestConvertOutgoingAuth(t *testing.T) {
 		},
 		{
 			name: "with per-backend auth",
-			outgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
+			outgoingAuth: &mcpv1beta1.OutgoingAuthConfig{
 				Source: "discovered",
-				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
+				Backends: map[string]mcpv1beta1.BackendAuthConfig{
 					"backend-1": {
-						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
+						Type: mcpv1beta1.BackendAuthTypeDiscovered,
 					},
 				},
 			},
@@ -147,12 +142,10 @@ func TestConvertOutgoingAuth(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef:     &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-					OutgoingAuth: tt.outgoingAuth,
-				},
-			}
+			vmcpServer := v1beta1test.NewVirtualMCPServer("", "",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(tt.outgoingAuth),
+			)
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			config, _, err := converter.Convert(context.Background(), vmcpServer, nil)
@@ -176,22 +169,22 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		authConfig   *mcpv1alpha1.BackendAuthConfig
+		authConfig   *mcpv1beta1.BackendAuthConfig
 		expectedType string
 	}{
 		{
 			name: "discovered",
-			authConfig: &mcpv1alpha1.BackendAuthConfig{
-				Type: mcpv1alpha1.BackendAuthTypeDiscovered,
+			authConfig: &mcpv1beta1.BackendAuthConfig{
+				Type: mcpv1beta1.BackendAuthTypeDiscovered,
 			},
 			// "discovered" type is converted to "unauthenticated" by the converter
 			expectedType: "unauthenticated",
 		},
 		{
 			name: "external auth config ref",
-			authConfig: &mcpv1alpha1.BackendAuthConfig{
-				Type: mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef,
-				ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
+			authConfig: &mcpv1beta1.BackendAuthConfig{
+				Type: mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{
 					Name: "auth-config",
 				},
 			},
@@ -205,36 +198,29 @@ func TestConvertBackendAuthConfig(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-vmcp",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-					OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-						Default: tt.authConfig,
-					},
-				},
-			}
+			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+					Default: tt.authConfig,
+				}),
+			)
 
 			// For externalAuthConfigRef test, create the referenced MCPExternalAuthConfig
 			var converter *vmcpconfigconv.Converter
-			if tt.authConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef {
+			if tt.authConfig.Type == mcpv1beta1.BackendAuthTypeExternalAuthConfigRef {
 				// Create a fake MCPExternalAuthConfig
-				externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+				externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "auth-config",
 						Namespace: "default",
 					},
-					Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-						Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+					Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+						Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
 					},
 				}
 
 				// Create converter with fake client that has the external auth config
-				scheme := runtime.NewScheme()
-				require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+				scheme := testutil.NewScheme(t)
 				fakeClient := fake.NewClientBuilder().
 					WithScheme(scheme).
 					WithObjects(externalAuthConfig).
@@ -330,14 +316,12 @@ func TestConvertAggregation(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						Aggregation: tt.aggregation,
-					},
-				},
-			}
+			vmcpServer := v1beta1test.NewVirtualMCPServer("", "",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					Aggregation: tt.aggregation,
+				}),
+			)
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			config, _, err := converter.Convert(context.Background(), vmcpServer, nil)
@@ -382,7 +366,7 @@ func TestConvertCompositeTools(t *testing.T) {
 					Steps: []vmcpconfig.WorkflowStepConfig{
 						{
 							ID:   "deploy",
-							Type: mcpv1alpha1.WorkflowStepTypeToolCall,
+							Type: mcpv1beta1.WorkflowStepTypeToolCall,
 							Tool: "kubectl.apply",
 						},
 					},
@@ -399,7 +383,7 @@ func TestConvertCompositeTools(t *testing.T) {
 					Steps: []vmcpconfig.WorkflowStepConfig{
 						{
 							ID:   "step1",
-							Type: mcpv1alpha1.WorkflowStepTypeToolCall,
+							Type: mcpv1beta1.WorkflowStepTypeToolCall,
 						},
 					},
 				},
@@ -409,7 +393,7 @@ func TestConvertCompositeTools(t *testing.T) {
 					Steps: []vmcpconfig.WorkflowStepConfig{
 						{
 							ID:   "step1",
-							Type: mcpv1alpha1.WorkflowStepTypeElicitation,
+							Type: mcpv1beta1.WorkflowStepTypeElicitation,
 						},
 					},
 				},
@@ -423,14 +407,12 @@ func TestConvertCompositeTools(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-					Config: vmcpconfig.Config{
-						CompositeTools: tt.compositeTools,
-					},
-				},
-			}
+			vmcpServer := v1beta1test.NewVirtualMCPServer("", "",
+				v1beta1test.WithVMCPGroupRef("test-group"),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					CompositeTools: tt.compositeTools,
+				}),
+			)
 
 			converter := newTestConverter(t, newNoOpMockResolver(t))
 			config, _, err := converter.Convert(context.Background(), vmcpServer, nil)
@@ -452,28 +434,20 @@ func TestConvertCompositeTools(t *testing.T) {
 func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	t.Parallel()
 
-	testVmcp := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-		},
-	}
+	testVmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+	)
 
 	// Create MCPGroup for workload discovery
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-group",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPGroupSpec{},
+		Spec: mcpv1beta1.MCPGroupSpec{},
 	}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -507,6 +481,11 @@ func TestEnsureVmcpConfigConfigMap(t *testing.T) {
 	assert.Equal(t, "test-vmcp-vmcp-config", cm.Name)
 	assert.Contains(t, cm.Data, "config.yaml")
 	assert.NotEmpty(t, cm.Annotations["toolhive.stacklok.dev/content-checksum"])
+
+	var cfg vmcpconfig.Config
+	require.NoError(t, yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &cfg))
+	assert.Equal(t, "test-vmcp", cfg.Name)
+	assert.Equal(t, "test-group", cfg.Group)
 }
 
 // TestSetAuthConfigConditions tests that auth config conditions reflect the current state
@@ -926,6 +905,70 @@ func TestSetAuthConfigConditions(t *testing.T) {
 					Times(1)
 			},
 		},
+		{
+			// Mirror added for #5347: when an AuthConfigError carries a
+			// non-empty Reason (set by buildOutgoingAuthConfig/
+			// discoverExternalAuthConfigs when the referenced
+			// MCPExternalAuthConfig surfaced Valid=False), the per-backend
+			// condition must use that reason instead of the generic
+			// ConversionFailed. Covers default + discovered + inline paths.
+			name:                   "mirrored Reason propagates to default/discovered/inline conditions",
+			backendsWithAuthConfig: []string{"discovered-backend"},
+			inlineBackendNames:     []string{"inline-backend"},
+			allAuthErrors: []AuthConfigError{
+				{
+					Context:     "default",
+					BackendName: "",
+					Error:       fmt.Errorf("on-behalf-of (OBO) external auth type requires an enterprise build"),
+					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+				},
+				{
+					Context:     "discovered:discovered-backend",
+					BackendName: "discovered-backend",
+					Error:       fmt.Errorf("obo enterprise required"),
+					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+				},
+				{
+					Context:     "backend:inline-backend",
+					BackendName: "inline-backend",
+					Error:       fmt.Errorf("obo enterprise required"),
+					Reason:      mcpv1beta1.ConditionReasonEnterpriseRequired,
+				},
+			},
+			validate: func(t *testing.T, mock *statusmocks.MockStatusManager) {
+				t.Helper()
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("DiscoveredAuthConfig-", []string{"DiscoveredAuthConfig-discovered-backend"}).
+					Times(1)
+				mock.EXPECT().
+					RemoveConditionsWithPrefix("BackendAuthConfig-", []string{"BackendAuthConfig-inline-backend"}).
+					Times(1)
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DefaultAuthConfig",
+						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						gomock.Any(),
+						metav1.ConditionFalse,
+					).
+					Times(1)
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"DiscoveredAuthConfig-discovered-backend",
+						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						gomock.Any(),
+						metav1.ConditionFalse,
+					).
+					Times(1)
+				mock.EXPECT().
+					SetAuthConfigCondition(
+						"BackendAuthConfig-inline-backend",
+						mcpv1beta1.ConditionReasonEnterpriseRequired,
+						gomock.Any(),
+						metav1.ConditionFalse,
+					).
+					Times(1)
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1005,66 +1048,60 @@ func TestYAMLMarshalingDeterminism(t *testing.T) {
 	t.Parallel()
 
 	// Create a VirtualMCPServer with multiple map fields to test determinism
-	testVmcp := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				// Aggregation with tool overrides (map)
-				Aggregation: &vmcpconfig.AggregationConfig{
-					ConflictResolution: vmcp.ConflictStrategyPrefix,
-					Tools: []*vmcpconfig.WorkloadToolConfig{
-						{
-							Workload: "workload-1",
-							Overrides: map[string]*vmcpconfig.ToolOverride{
-								"tool-zebra": {
-									Name:        "renamed-zebra",
-									Description: "Zebra tool",
-								},
-								"tool-alpha": {
-									Name:        "renamed-alpha",
-									Description: "Alpha tool",
-								},
-								"tool-middle": {
-									Name:        "renamed-middle",
-									Description: "Middle tool",
-								},
+	testVmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			// Aggregation with tool overrides (map)
+			Aggregation: &vmcpconfig.AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPrefix,
+				Tools: []*vmcpconfig.WorkloadToolConfig{
+					{
+						Workload: "workload-1",
+						Overrides: map[string]*vmcpconfig.ToolOverride{
+							"tool-zebra": {
+								Name:        "renamed-zebra",
+								Description: "Zebra tool",
+							},
+							"tool-alpha": {
+								Name:        "renamed-alpha",
+								Description: "Alpha tool",
+							},
+							"tool-middle": {
+								Name:        "renamed-middle",
+								Description: "Middle tool",
 							},
 						},
 					},
 				},
-				// Operational with PerWorkload timeouts (map)
-				Operational: &vmcpconfig.OperationalConfig{
-					Timeouts: &vmcpconfig.TimeoutConfig{
-						Default: vmcpconfig.Duration(30 * time.Second),
-						PerWorkload: map[string]vmcpconfig.Duration{
-							"workload-zebra":  vmcpconfig.Duration(60 * time.Second),
-							"workload-alpha":  vmcpconfig.Duration(45 * time.Second),
-							"workload-middle": vmcpconfig.Duration(50 * time.Second),
-						},
+			},
+			// Operational with PerWorkload timeouts (map)
+			Operational: &vmcpconfig.OperationalConfig{
+				Timeouts: &vmcpconfig.TimeoutConfig{
+					Default: vmcpconfig.Duration(30 * time.Second),
+					PerWorkload: map[string]vmcpconfig.Duration{
+						"workload-zebra":  vmcpconfig.Duration(60 * time.Second),
+						"workload-alpha":  vmcpconfig.Duration(45 * time.Second),
+						"workload-middle": vmcpconfig.Duration(50 * time.Second),
 					},
 				},
 			},
-			// OutgoingAuth with Backends map
-			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: "discovered",
-				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
-					"backend-zebra": {
-						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
-					},
-					"backend-alpha": {
-						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
-					},
-					"backend-middle": {
-						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
-					},
+		}),
+		// OutgoingAuth with Backends map
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "discovered",
+			Backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"backend-zebra": {
+					Type: mcpv1beta1.BackendAuthTypeDiscovered,
+				},
+				"backend-alpha": {
+					Type: mcpv1beta1.BackendAuthTypeDiscovered,
+				},
+				"backend-middle": {
+					Type: mcpv1beta1.BackendAuthTypeDiscovered,
 				},
 			},
-		},
-	}
+		}),
+	)
 
 	converter := newTestConverter(t, newNoOpMockResolver(t))
 
@@ -1112,15 +1149,15 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create a VirtualMCPCompositeToolDefinition
-	compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+	compositeToolDef := &mcpv1beta1.VirtualMCPCompositeToolDefinition{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-composite-tool",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+		Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
 			CompositeToolConfig: vmcpconfig.CompositeToolConfig{
 				Name:        "test-composite-tool",
 				Description: "A test composite tool definition",
@@ -1144,35 +1181,29 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_EndToEnd(t *testing.T) {
 	}
 
 	// Create MCPGroup
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-group",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPGroupSpec{},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Spec: mcpv1beta1.MCPGroupSpec{},
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
 	// Create VirtualMCPServer that references the composite tool
-	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-					{Name: "test-composite-tool"},
-				},
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+				{Name: "test-composite-tool"},
 			},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "anonymous",
-			},
-		},
-	}
+		}),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+	)
 
 	// Create fake client with all resources
 	fakeClient := fake.NewClientBuilder().
@@ -1234,15 +1265,15 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create a referenced VirtualMCPCompositeToolDefinition
-	referencedTool := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{
+	referencedTool := &mcpv1beta1.VirtualMCPCompositeToolDefinition{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "referenced-tool",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.VirtualMCPCompositeToolDefinitionSpec{
+		Spec: mcpv1beta1.VirtualMCPCompositeToolDefinitionSpec{
 			CompositeToolConfig: vmcpconfig.CompositeToolConfig{
 				Name:        "referenced-tool",
 				Description: "A referenced composite tool",
@@ -1258,48 +1289,42 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_MergeInlineAndReferenced(t
 	}
 
 	// Create MCPGroup
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-group",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPGroupSpec{},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Spec: mcpv1beta1.MCPGroupSpec{},
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
 	// Create VirtualMCPServer with both inline and referenced tools
-	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				CompositeTools: []vmcpconfig.CompositeToolConfig{
-					{
-						Name:        "inline-tool",
-						Description: "An inline composite tool",
-						Steps: []vmcpconfig.WorkflowStepConfig{
-							{
-								ID:   "step1",
-								Type: "tool",
-								Tool: "backend.inline",
-							},
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			CompositeTools: []vmcpconfig.CompositeToolConfig{
+				{
+					Name:        "inline-tool",
+					Description: "An inline composite tool",
+					Steps: []vmcpconfig.WorkflowStepConfig{
+						{
+							ID:   "step1",
+							Type: "tool",
+							Tool: "backend.inline",
 						},
 					},
 				},
-				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-					{Name: "referenced-tool"},
-				},
 			},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "anonymous",
+			CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+				{Name: "referenced-tool"},
 			},
-		},
-	}
+		}),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+	)
 
 	// Create fake client
 	fakeClient := fake.NewClientBuilder().
@@ -1352,38 +1377,32 @@ func TestVirtualMCPServerReconciler_CompositeToolRefs_NotFound(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create MCPGroup
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-group",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPGroupSpec{},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Spec: mcpv1beta1.MCPGroupSpec{},
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
 	// Create VirtualMCPServer that references a non-existent composite tool
-	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			Config: vmcpconfig.Config{
-				CompositeToolRefs: []vmcpconfig.CompositeToolRef{
-					{Name: "non-existent-tool"},
-				},
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			CompositeToolRefs: []vmcpconfig.CompositeToolRef{
+				{Name: "non-existent-tool"},
 			},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "anonymous",
-			},
-		},
-	}
+		}),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+	)
 
 	// Create fake client WITHOUT the referenced tool
 	fakeClient := fake.NewClientBuilder().
@@ -1415,36 +1434,30 @@ func TestConfigMapContent_DynamicMode(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create MCPGroup for workload discovery
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-group",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPGroupSpec{},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Spec: mcpv1beta1.MCPGroupSpec{},
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
 	// Create VirtualMCPServer in dynamic mode (source: discovered)
-	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "anonymous",
-			},
-			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: "discovered", // Dynamic mode
-			},
-		},
-	}
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "discovered", // Dynamic mode
+		}),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
@@ -1499,58 +1512,46 @@ func TestConfigMapContent_StaticMode_InlineOverrides(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create MCPGroup for workload discovery
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-group",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPGroupSpec{},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Spec: mcpv1beta1.MCPGroupSpec{},
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
 	// Create MCPServer in the group so static mode has something to discover
 	// This is needed because static mode validates that at least one backend exists
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-backend",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			Transport: "sse", // Required for backend discovery
-		},
-		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseReady,
+	mcpServer := v1beta1test.NewMCPServer("test-backend", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"), // Required for backend discovery
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://test-backend.default.svc.cluster.local:8080",
-		},
-	}
+		}),
+	)
 
 	// Create VirtualMCPServer in static mode (source: inline)
-	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "anonymous",
-			},
-			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: "inline", // Static mode
-				Backends: map[string]mcpv1alpha1.BackendAuthConfig{
-					"test-backend": {
-						Type: mcpv1alpha1.BackendAuthTypeDiscovered,
-					},
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "inline", // Static mode
+			Backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"test-backend": {
+					Type: mcpv1beta1.BackendAuthTypeDiscovered,
 				},
 			},
-		},
-	}
+		}),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
@@ -1606,66 +1607,52 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	testScheme := createRunConfigTestScheme()
+	testScheme := testutil.NewScheme(t)
 
 	// Create MCPGroup for workload discovery
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-group",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPGroupSpec{},
-		Status: mcpv1alpha1.MCPGroupStatus{
-			Phase: mcpv1alpha1.MCPGroupPhaseReady,
+		Spec: mcpv1beta1.MCPGroupSpec{},
+		Status: mcpv1beta1.MCPGroupStatus{
+			Phase: mcpv1beta1.MCPGroupPhaseReady,
 		},
 	}
 
 	// Create MCPExternalAuthConfig that will be referenced by MCPServer
-	externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-auth-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeUnauthenticated,
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeUnauthenticated,
 		},
 	}
 
 	// Create MCPServer with ExternalAuthConfigRef and Status
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "discovered-backend",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			Transport: "sse", // Required for static mode backend discovery
-			ExternalAuthConfigRef: &mcpv1alpha1.ExternalAuthConfigRef{
-				Name: "test-auth-config",
-			},
-		},
-		Status: mcpv1alpha1.MCPServerStatus{
-			Phase: mcpv1alpha1.MCPServerPhaseReady,
+	mcpServer := v1beta1test.NewMCPServer("discovered-backend", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"), // Required for static mode backend discovery
+		v1beta1test.WithExternalAuthConfigRef("test-auth-config"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
 			URL:   "http://discovered-backend.default.svc.cluster.local:8080",
-		},
-	}
+		}),
+	)
 
 	// Create VirtualMCPServer in static mode (source: inline) WITHOUT inline backends
-	vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-vmcp",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "anonymous",
-			},
-			OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-				Source: "inline", // Static mode - should discover backends
-			},
-		},
-	}
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "inline", // Static mode - should discover backends
+		}),
+	)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(testScheme).
@@ -1740,6 +1727,326 @@ func TestConfigMapContent_StaticModeWithDiscovery(t *testing.T) {
 	t.Log("Static mode ConfigMap contains both auth configs, backend URLs/transports, and metadata")
 }
 
+// TestConfigMapContent_StaticMode_ExcludesBackendWithFailedAuth is a regression test for the
+// fail-open bug where a backend whose outgoing auth strategy failed to build (here, an xaa
+// strategy with an empty SubjectProviderName made ambiguous by 2 configured upstreams) was
+// correctly omitted from config.OutgoingAuth.Backends, but was still embedded in the static
+// config.Backends list served to the vMCP runtime. Since OutgoingAuthConfig.ResolveForBackend
+// falls through to Default for any backend absent from Backends, that backend would have been
+// silently served with the Default (token_exchange) identity instead of being unroutable.
+//
+// This test exercises the full ensureVmcpConfigConfigMap pipeline (not just
+// buildOutgoingAuthConfig in isolation) and asserts the failed backend is absent from BOTH
+// config.OutgoingAuth.Backends and the served config.Backends list, while an unaffected
+// backend relying on the same Default strategy is still served.
+func TestConfigMapContent_StaticMode_ExcludesBackendWithFailedAuth(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issuer   = "https://auth.example.com"
+		audience = "https://api.example.com"
+	)
+
+	ctx := context.Background()
+	testScheme := testutil.NewScheme(t)
+
+	mcpGroup := &mcpv1beta1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-group", Namespace: "default"},
+		Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
+	}
+
+	// An embedded auth server requires OIDC incoming auth, and the two must agree on
+	// issuer/audience (ValidateAuthServerIntegration) — this is plumbing required to
+	// reach the xaa ambiguity check, not itself under test.
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type:   mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{Issuer: issuer},
+		},
+	}
+
+	// b1's override strategy is xaa with an empty SubjectProviderName, which becomes
+	// ambiguous once 2 upstream providers are configured on the embedded auth server below.
+	xaaAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "xaa-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeXAA,
+			XAA: &mcpv1beta1.XAASpec{
+				IDPTokenURL:    "https://idp.example.com/token",
+				TargetTokenURL: "https://target.example.com/token",
+				TargetAudience: "https://target.example.com",
+				// SubjectProviderName intentionally left empty.
+			},
+		},
+	}
+
+	// Default strategy is a valid token_exchange config, used by b2.
+	tokenExchangeAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "te-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+			},
+		},
+	}
+
+	b1 := v1beta1test.NewMCPServer("b1", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
+			URL:   "http://b1.default.svc.cluster.local:8080",
+		}),
+	)
+	b2 := v1beta1test.NewMCPServer("b2", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
+			URL:   "http://b2.default.svc.cluster.local:8080",
+		}),
+	)
+
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "oidc",
+			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+				Name:        "test-oidc",
+				Audience:    audience,
+				ResourceURL: audience,
+			},
+		}),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "inline",
+			Default: &mcpv1beta1.BackendAuthConfig{
+				Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+				ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "te-auth"},
+			},
+			Backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"b1": {
+					Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "xaa-auth"},
+				},
+			},
+		}),
+		// 2 upstreams makes b1's xaa override ambiguous.
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: issuer,
+			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+				{Name: "signing-key-secret", Key: "key.pem"},
+			},
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{
+					Name: "first",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL: "https://first-idp.example.com",
+						ClientID:  "first-client-id",
+					},
+				},
+				{
+					Name: "second",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL: "https://second-idp.example.com",
+						ClientID:  "second-client-id",
+					},
+				},
+			},
+		}),
+	)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, mcpGroup, b1, b2, xaaAuthConfig, tokenExchangeAuthConfig, oidcConfig).
+		WithStatusSubresource(b1, b2).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: testScheme,
+	}
+
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
+	require.NoError(t, err)
+	require.Len(t, workloadNames, 2, "should have discovered both backends")
+
+	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
+	require.NoError(t, err, "reconciliation must succeed in degraded mode, not fail outright")
+
+	configMap := &corev1.ConfigMap{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      vmcpConfigMapName("test-vmcp"),
+		Namespace: "default",
+	}, configMap)
+	require.NoError(t, err)
+
+	var config vmcpconfig.Config
+	err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
+	require.NoError(t, err)
+
+	require.NotNil(t, config.OutgoingAuth)
+	require.NotNil(t, config.OutgoingAuth.Default, "Default strategy must still build successfully")
+	assert.Equal(t, "token_exchange", config.OutgoingAuth.Default.Type)
+	assert.NotContains(t, config.OutgoingAuth.Backends, "b1",
+		"b1's ambiguous xaa override must not be assigned")
+
+	// The actual regression: b1 must be excluded from the served/routable backend set
+	// entirely, not merely absent from OutgoingAuth.Backends while still reachable and
+	// falling back to Default at runtime.
+	servedNames := make([]string, 0, len(config.Backends))
+	for _, backend := range config.Backends {
+		servedNames = append(servedNames, backend.Name)
+	}
+	assert.NotContains(t, servedNames, "b1", "b1 must be excluded from the served backend set")
+	assert.Contains(t, servedNames, "b2", "b2 must still be served via the valid Default strategy")
+}
+
+// TestConfigMapContent_StaticMode_KeepsBackendWithValidInlineOverrideDespiteDiscoveredError
+// is a regression test for an over-exclusion bug introduced by the fix for
+// TestConfigMapContent_StaticMode_ExcludesBackendWithFailedAuth: backendsWithFailedAuth
+// excluded a backend from the served set whenever ANY AuthConfigError named it, even if
+// that same backend also had a fully valid, resolved strategy from another source.
+//
+// b1 here has both: a discovered ExternalAuthConfigRef on its own MCPServer spec that
+// mirrors a Valid=False condition (mirroredExternalAuthConfigInvalid), which makes
+// discoverExternalAuthConfigs record an AuthConfigError for "b1" unconditionally, and a
+// valid inline override in vmcp.Spec.OutgoingAuth.Backends["b1"], applied in a separate,
+// unconditional pass that ends up correctly populated in authConfig.Backends.
+// discoverExternalAuthConfigs records the mirrored-invalid error before it even checks
+// whether an inline override exists, so both the error and the valid strategy coexist for
+// the same backend name. b1 must still be served using its valid inline strategy.
+//
+// The Valid=False mirror check is unique to the operator's own discovery path
+// (mirroredExternalAuthConfigInvalid) and is not replicated by the independent backend
+// discovery in pkg/vmcp/workloads (converters.DiscoverAndResolveAuth), so this scenario
+// does not also trip that unrelated fail-closed mechanism.
+func TestConfigMapContent_StaticMode_KeepsBackendWithValidInlineOverrideDespiteDiscoveredError(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	testScheme := testutil.NewScheme(t)
+
+	mcpGroup := &mcpv1beta1.MCPGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-group", Namespace: "default"},
+		Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
+	}
+
+	// The valid inline override strategy for b1.
+	validAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "valid-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+				TokenURL: "https://oauth.example.com/token",
+			},
+		},
+	}
+
+	// b1's own discovered ref exists and is otherwise convertible, but carries a
+	// Valid=False condition (e.g. as set by a validating webhook/controller). This
+	// makes discoverExternalAuthConfigs record an AuthConfigError for "b1" without
+	// affecting the independent, condition-agnostic auth discovery used for backend
+	// listing (converters.DiscoverAndResolveAuth), so b1 remains discoverable.
+	invalidRefAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{
+		ObjectMeta: metav1.ObjectMeta{Name: "invalid-ref-auth", Namespace: "default"},
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+			TokenExchange: &mcpv1beta1.TokenExchangeConfig{
+				TokenURL: "https://broken.example.com/token",
+			},
+		},
+		Status: mcpv1beta1.MCPExternalAuthConfigStatus{
+			Conditions: []metav1.Condition{
+				{
+					Type:               mcpv1beta1.ConditionTypeValid,
+					Status:             metav1.ConditionFalse,
+					Reason:             "SomeValidationFailure",
+					Message:            "this config is not valid",
+					LastTransitionTime: metav1.Now(),
+				},
+			},
+		},
+	}
+
+	b1 := v1beta1test.NewMCPServer("b1", "default",
+		v1beta1test.WithMCPGroupRef("test-group"),
+		v1beta1test.WithTransport("sse"),
+		v1beta1test.WithExternalAuthConfigRef("invalid-ref-auth"),
+		v1beta1test.WithStatus(mcpv1beta1.MCPServerStatus{
+			Phase: mcpv1beta1.MCPServerPhaseReady,
+			URL:   "http://b1.default.svc.cluster.local:8080",
+		}),
+	)
+
+	vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+		v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+			Source: "inline",
+			Backends: map[string]mcpv1beta1.BackendAuthConfig{
+				"b1": {
+					Type:                  mcpv1beta1.BackendAuthTypeExternalAuthConfigRef,
+					ExternalAuthConfigRef: &mcpv1beta1.ExternalAuthConfigRef{Name: "valid-auth"},
+				},
+			},
+		}),
+	)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(vmcpServer, mcpGroup, b1, validAuthConfig, invalidRefAuthConfig).
+		WithStatusSubresource(b1, invalidRefAuthConfig).
+		Build()
+
+	reconciler := &VirtualMCPServerReconciler{
+		Client: fakeClient,
+		Scheme: testScheme,
+	}
+
+	workloadDiscoverer := workloads.NewK8SDiscovererWithClient(fakeClient, vmcpServer.Namespace)
+	workloadNames, err := workloadDiscoverer.ListWorkloadsInGroup(ctx, vmcpServer.ResolveGroupName())
+	require.NoError(t, err)
+	require.Len(t, workloadNames, 1, "should have discovered b1")
+
+	statusCollector := virtualmcpserverstatus.NewStatusManager(vmcpServer)
+	err = reconciler.ensureVmcpConfigConfigMap(ctx, vmcpServer, workloadNames, nil, statusCollector)
+	require.NoError(t, err, "reconciliation must succeed despite the discovered-path error")
+
+	configMap := &corev1.ConfigMap{}
+	err = fakeClient.Get(ctx, types.NamespacedName{
+		Name:      vmcpConfigMapName("test-vmcp"),
+		Namespace: "default",
+	}, configMap)
+	require.NoError(t, err)
+
+	var config vmcpconfig.Config
+	err = yaml.Unmarshal([]byte(configMap.Data["config.yaml"]), &config)
+	require.NoError(t, err)
+
+	require.NotNil(t, config.OutgoingAuth)
+	b1Strategy, exists := config.OutgoingAuth.Backends["b1"]
+	require.True(t, exists, "b1's valid inline override must still be assigned")
+	require.NotNil(t, b1Strategy)
+	assert.Equal(t, "token_exchange", b1Strategy.Type)
+
+	// The actual regression: b1 must remain in the served/routable backend set because it
+	// has a valid, resolved strategy, even though an AuthConfigError was also recorded for
+	// it via the unrelated broken discovered ref.
+	servedNames := make([]string, 0, len(config.Backends))
+	for _, backend := range config.Backends {
+		servedNames = append(servedNames, backend.Name)
+	}
+	assert.Contains(t, servedNames, "b1", "b1 must not be excluded when it has a valid resolved strategy")
+}
+
 // TestConvertBackendsToStaticBackends_SkipsInvalidBackends tests that backends
 // without URL or transport are skipped with appropriate logging
 func TestConvertBackendsToStaticBackends_SkipsInvalidBackends(t *testing.T) {
@@ -1772,7 +2079,7 @@ func TestConvertBackendsToStaticBackends_SkipsInvalidBackends(t *testing.T) {
 		// "no-transport-backend" intentionally missing
 	}
 
-	result := convertBackendsToStaticBackends(ctx, backends, transportMap, nil)
+	result := convertBackendsToStaticBackends(ctx, backends, transportMap, nil, nil)
 
 	// Should only include the valid backend
 	assert.Len(t, result, 1, "should only include backends with URL and transport")
@@ -1780,6 +2087,35 @@ func TestConvertBackendsToStaticBackends_SkipsInvalidBackends(t *testing.T) {
 	assert.Equal(t, "http://backend1:8080", result[0].URL)
 	assert.Equal(t, "sse", result[0].Transport)
 	assert.Equal(t, "value", result[0].Metadata["key"])
+}
+
+// TestConvertBackendsToStaticBackends_ExcludesFailedAuthBackends verifies that a backend
+// named in excludedBackends is dropped from the served set even though it otherwise has a
+// valid URL and transport. This is the fix for the fail-open bug where a backend whose
+// outgoing auth strategy failed to build (e.g. an ambiguous XAA SubjectProviderName) would
+// still be embedded in the static backend list and silently fall back to the Default auth
+// strategy at runtime.
+func TestConvertBackendsToStaticBackends_ExcludesFailedAuthBackends(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	backends := []vmcp.Backend{
+		{Name: "healthy-backend", BaseURL: "http://backend1:8080", TransportType: "sse"},
+		{Name: "failed-auth-backend", BaseURL: "http://backend2:8080", TransportType: "sse"},
+	}
+	transportMap := map[string]string{
+		"healthy-backend":     "sse",
+		"failed-auth-backend": "sse",
+	}
+	excludedBackends := map[string]struct{}{
+		"failed-auth-backend": {},
+	}
+
+	result := convertBackendsToStaticBackends(ctx, backends, transportMap, nil, excludedBackends)
+
+	require.Len(t, result, 1, "the excluded backend must not be served")
+	assert.Equal(t, "healthy-backend", result[0].Name)
 }
 
 // TestStaticModeTransportConstants verifies that the transport constants match the CRD enum.
@@ -1821,47 +2157,31 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		vmcp        *mcpv1alpha1.VirtualMCPServer
+		vmcp        *mcpv1beta1.VirtualMCPServer
 		esName      string
 		esPort      int32
 		expectedURL string
 	}{
 		{
 			name: "referenced embedding server populates full URL",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "my-vmcp",
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroup},
-					Config: vmcpconfig.Config{
-						Optimizer: &vmcpconfig.OptimizerConfig{},
-					},
-					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
-						Name: "shared-embedding",
-					},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("my-vmcp", testNamespace,
+				v1beta1test.WithVMCPGroupRef(testGroup),
+				v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+					Optimizer: &vmcpconfig.OptimizerConfig{},
+				}),
+				v1beta1test.WithVMCPEmbeddingServerRef("shared-embedding"),
+			),
 			esName:      "shared-embedding",
 			esPort:      customPort,
 			expectedURL: "http://shared-embedding.default.svc.cluster.local:9090",
 		},
 		{
 			name: "ref without optimizer auto-populates optimizer with defaults",
-			vmcp: &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "my-vmcp",
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: testGroup},
-					// No Optimizer — validation auto-populates it when ref is set
-					EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
-						Name: "shared-embedding",
-					},
-				},
-			},
+			vmcp: v1beta1test.NewVirtualMCPServer("my-vmcp", testNamespace,
+				v1beta1test.WithVMCPGroupRef(testGroup),
+				// No Optimizer — validation auto-populates it when ref is set
+				v1beta1test.WithVMCPEmbeddingServerRef("shared-embedding"),
+			),
 			esName:      "shared-embedding",
 			esPort:      customPort,
 			expectedURL: "http://shared-embedding.default.svc.cluster.local:9090",
@@ -1873,38 +2193,32 @@ func TestOptimizerEmbeddingServiceURL(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 
-			mcpGroup := &mcpv1alpha1.MCPGroup{
+			mcpGroup := &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      testGroup,
 					Namespace: testNamespace,
 				},
-				Spec:   mcpv1alpha1.MCPGroupSpec{},
-				Status: mcpv1alpha1.MCPGroupStatus{Phase: mcpv1alpha1.MCPGroupPhaseReady},
+				Spec:   mcpv1beta1.MCPGroupSpec{},
+				Status: mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
 			}
 
 			objects := []runtime.Object{tt.vmcp, mcpGroup}
 
 			// Create the EmbeddingServer with Status.URL if one is expected
 			if tt.esName != "" {
-				es := &mcpv1alpha1.EmbeddingServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      tt.esName,
-						Namespace: testNamespace,
-					},
-					Spec: mcpv1alpha1.EmbeddingServerSpec{
-						Image: "ghcr.io/huggingface/text-embeddings-inference:cpu-1.5",
-						Model: "BAAI/bge-small-en-v1.5",
-						Port:  tt.esPort,
-					},
-					Status: mcpv1alpha1.EmbeddingServerStatus{
-						Phase:         mcpv1alpha1.EmbeddingServerPhaseReady,
+				es := v1beta1test.NewEmbeddingServer(tt.esName, testNamespace,
+					v1beta1test.WithEmbeddingImage("ghcr.io/huggingface/text-embeddings-inference:cpu-1.5"),
+					v1beta1test.WithEmbeddingModel("BAAI/bge-small-en-v1.5"),
+					v1beta1test.WithEmbeddingPort(tt.esPort),
+					v1beta1test.WithEmbeddingStatus(mcpv1beta1.EmbeddingServerStatus{
+						Phase:         mcpv1beta1.EmbeddingServerPhaseReady,
 						ReadyReplicas: 1,
 						URL: fmt.Sprintf("http://%s.%s.svc.cluster.local:%d",
 							tt.esName, testNamespace, tt.esPort),
-					},
-				}
+					}),
+				)
 				objects = append(objects, es)
 			}
 
@@ -1964,15 +2278,15 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		sessionStorage  *mcpv1alpha1.SessionStorageConfig
+		sessionStorage  *mcpv1beta1.SessionStorageConfig
 		expectedStorage *vmcpconfig.SessionStorageConfig
 		// noLeakStrings are substrings that must NOT appear in config.yaml (secret leakage check).
 		noLeakStrings []string
 	}{
 		{
 			name: "redis provider populates sessionStorage in ConfigMap YAML",
-			sessionStorage: &mcpv1alpha1.SessionStorageConfig{
-				Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider:  mcpv1beta1.SessionStorageProviderRedis,
 				Address:   "redis.default.svc:6379",
 				DB:        1,
 				KeyPrefix: "thv:",
@@ -1991,7 +2305,7 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 		},
 		{
 			name:            "memory provider produces no sessionStorage section",
-			sessionStorage:  &mcpv1alpha1.SessionStorageConfig{Provider: "memory"},
+			sessionStorage:  &mcpv1beta1.SessionStorageConfig{Provider: "memory"},
 			expectedStorage: nil,
 		},
 		{
@@ -1999,12 +2313,12 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 			// the password via THV_SESSION_REDIS_PASSWORD env var; it must never appear in
 			// the ConfigMap YAML where any reader of the ConfigMap could see it.
 			name: "redis provider with passwordRef — secret name and key not in ConfigMap YAML",
-			sessionStorage: &mcpv1alpha1.SessionStorageConfig{
-				Provider:  mcpv1alpha1.SessionStorageProviderRedis,
+			sessionStorage: &mcpv1beta1.SessionStorageConfig{
+				Provider:  mcpv1beta1.SessionStorageProviderRedis,
 				Address:   "redis.default.svc:6379",
 				DB:        1,
 				KeyPrefix: "thv:",
-				PasswordRef: &mcpv1alpha1.SecretKeyRef{
+				PasswordRef: &mcpv1beta1.SecretKeyRef{
 					Name: "redis-secret",
 					Key:  "redis-password",
 				},
@@ -2024,21 +2338,18 @@ func TestConfigMapContent_SessionStorage(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			testScheme := createRunConfigTestScheme()
+			testScheme := testutil.NewScheme(t)
 
-			mcpGroup := &mcpv1alpha1.MCPGroup{
+			mcpGroup := &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{Name: testGroup, Namespace: testNamespace},
-				Spec:       mcpv1alpha1.MCPGroupSpec{},
-				Status:     mcpv1alpha1.MCPGroupStatus{Phase: mcpv1alpha1.MCPGroupPhaseReady},
+				Spec:       mcpv1beta1.MCPGroupSpec{},
+				Status:     mcpv1beta1.MCPGroupStatus{Phase: mcpv1beta1.MCPGroupPhaseReady},
 			}
 
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: "test-vmcp-session", Namespace: testNamespace},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					GroupRef:       &mcpv1alpha1.MCPGroupRef{Name: testGroup},
-					SessionStorage: tt.sessionStorage,
-				},
-			}
+			vmcpServer := v1beta1test.NewVirtualMCPServer("test-vmcp-session", testNamespace,
+				v1beta1test.WithVMCPGroupRef(testGroup),
+				v1beta1test.WithVMCPSessionStorage(tt.sessionStorage),
+			)
 
 			fakeClient := fake.NewClientBuilder().
 				WithScheme(testScheme).
@@ -2092,59 +2403,53 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 		upstreamIssuerURL = "https://upstream-idp.example.com"
 	)
 
-	testVmcp := &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:       "test-vmcp",
-			Namespace:  "default",
-			Generation: 3,
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type:          "oidc",
-				OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{Name: "test-oidc", Audience: audience},
+	testVmcp := v1beta1test.NewVirtualMCPServer("test-vmcp", "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type:          "oidc",
+			OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{Name: "test-oidc", Audience: audience},
+		}),
+		v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+			Issuer: authServerIssuer,
+			SigningKeySecretRefs: []mcpv1beta1.SecretKeyRef{
+				{Name: "signing-key-secret", Key: "key.pem"},
 			},
-			AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
-				Issuer: authServerIssuer,
-				SigningKeySecretRefs: []mcpv1alpha1.SecretKeyRef{
-					{Name: "signing-key-secret", Key: "key.pem"},
-				},
-				UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
-					{
-						Name: "corporate-idp",
-						Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
-						OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
-							IssuerURL: upstreamIssuerURL,
-							ClientID:  "upstream-client-id",
-						},
+			UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+				{
+					Name: "corporate-idp",
+					Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+					OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+						IssuerURL: upstreamIssuerURL,
+						ClientID:  "upstream-client-id",
 					},
 				},
 			},
-		},
-	}
+		}),
+		v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+			v.Generation = 3
+		}),
+	)
 
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-group",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPGroupSpec{},
+		Spec: mcpv1beta1.MCPGroupSpec{},
 	}
 
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
 		ObjectMeta: metav1.ObjectMeta{Name: "test-oidc", Namespace: "default"},
-		Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-			Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-			Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 				Issuer:   incomingIssuer,
 				ClientID: clientID,
 			},
 		},
 	}
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
@@ -2171,12 +2476,12 @@ func TestEnsureVmcpConfigConfigMap_AuthServerIntegrationValidationError(t *testi
 	mockStatus.EXPECT().RemoveConditionsWithPrefix("BackendAuthConfig-", []string{}).Times(1)
 
 	// ValidateAuthServerIntegration failure: issuer mismatch sets Failed phase and condition.
-	mockStatus.EXPECT().SetPhase(mcpv1alpha1.VirtualMCPServerPhaseFailed).Times(1)
+	mockStatus.EXPECT().SetPhase(mcpv1beta1.VirtualMCPServerPhaseFailed).Times(1)
 	mockStatus.EXPECT().SetMessage(gomock.Any()).Times(1).Do(func(message string) {
 		assert.Contains(t, message, "invalid auth server integration")
 	})
 	mockStatus.EXPECT().SetAuthServerConfigValidatedCondition(
-		mcpv1alpha1.ConditionReasonAuthServerConfigInvalid,
+		mcpv1beta1.ConditionReasonAuthServerConfigInvalid,
 		gomock.Any(),
 		metav1.ConditionFalse,
 	).Times(1)
@@ -2291,7 +2596,7 @@ func TestConvertBackendsToStaticBackends_WithCABundlePathMap(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			result := convertBackendsToStaticBackends(t.Context(), tt.backends, tt.transportMap, tt.caBundlePathMap)
+			result := convertBackendsToStaticBackends(t.Context(), tt.backends, tt.transportMap, tt.caBundlePathMap, nil)
 			assert.Len(t, result, tt.expectedCount)
 
 			if tt.validateBackends != nil {
@@ -2308,7 +2613,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 
 	tests := []struct {
 		name           string
-		entries        []mcpv1alpha1.MCPServerEntry
+		entries        []mcpv1beta1.MCPServerEntry
 		typedWorkloads []workloads.TypedWorkload
 		expectedMap    map[string]string
 	}{
@@ -2322,13 +2627,13 @@ func TestBuildCABundlePathMap(t *testing.T) {
 		},
 		{
 			name: "entry without caBundleRef is not in map",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-no-ca", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
+					Spec: mcpv1beta1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -2339,14 +2644,14 @@ func TestBuildCABundlePathMap(t *testing.T) {
 		},
 		{
 			name: "entry with caBundleRef using default key",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-with-ca", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
+					Spec: mcpv1beta1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
 							},
@@ -2363,14 +2668,14 @@ func TestBuildCABundlePathMap(t *testing.T) {
 		},
 		{
 			name: "entry with caBundleRef using custom key",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "custom-entry", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
+					Spec: mcpv1beta1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
 								Key:                  "custom-cert.pem",
@@ -2388,14 +2693,14 @@ func TestBuildCABundlePathMap(t *testing.T) {
 		},
 		{
 			name: "mixed workloads only includes entries with caBundleRef",
-			entries: []mcpv1alpha1.MCPServerEntry{
+			entries: []mcpv1beta1.MCPServerEntry{
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-with-ca", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
+					Spec: mcpv1beta1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp.example.com",
 						Transport: "streamable-http",
-						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "ca-cm"},
 							},
@@ -2404,10 +2709,10 @@ func TestBuildCABundlePathMap(t *testing.T) {
 				},
 				{
 					ObjectMeta: metav1.ObjectMeta{Name: "entry-no-ca", Namespace: "default"},
-					Spec: mcpv1alpha1.MCPServerEntrySpec{
+					Spec: mcpv1beta1.MCPServerEntrySpec{
 						RemoteURL: "https://mcp2.example.com",
 						Transport: "sse",
-						GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
+						GroupRef:  &mcpv1beta1.MCPGroupRef{Name: "test-group"},
 					},
 				},
 			},
@@ -2426,9 +2731,7 @@ func TestBuildCABundlePathMap(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			objs := make([]client.Object, 0, len(tt.entries))
 			for i := range tt.entries {

@@ -1,0 +1,31 @@
+Thank you for installing {{ .Chart.Name }}!
+
+Release: {{ .Release.Name }}
+Namespace: {{ .Release.Namespace }}
+Chart version: {{ .Chart.Version }}
+Operator version: {{ .Chart.AppVersion }}
+
+The ToolHive Operator is being deployed. It watches ToolHive custom resources
+and reconciles MCP server workloads in your cluster.
+
+Learn more
+
+  Operator guide:
+    https://github.com/stacklok/toolhive/blob/main/docs/kind/deploying-mcp-server-with-operator.md
+
+  Example manifests:
+    https://github.com/stacklok/toolhive/tree/main/examples/operator
+
+  Documentation:
+    https://docs.stacklok.com/toolhive/
+
+{{- if eq .Values.operator.rbac.scope "namespace" }}
+
+Note: RBAC scope is set to "namespace". The operator only manages resources in:
+{{- range .Values.operator.rbac.allowedNamespaces }}
+  - {{ . }}
+{{- end }}
+{{- if not .Values.operator.rbac.allowedNamespaces }}
+  (no namespaces configured — set operator.rbac.allowedNamespaces)
+{{- end }}
+{{- end }}

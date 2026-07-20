@@ -4,8 +4,10 @@
 package cedar
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"testing"
 
 	cedar "github.com/cedar-policy/cedar-go"
@@ -144,7 +146,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 	// Test cases
 	testCases := []struct {
 		name             string
-		policy           string
+		policies         []string
 		claims           jwt.MapClaims
 		feature          authorizers.MCPFeature
 		operation        authorizers.MCPOperation
@@ -154,7 +156,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 	}{
 		{
 			name: "User with correct name can call weather tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -163,7 +165,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_name == "John Doe"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":   "user123",
 				"name":  "John Doe",
@@ -177,7 +179,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with incorrect name cannot call weather tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -186,7 +188,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_name == "John Doe"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":   "user123",
 				"name":  "Jane Smith",
@@ -200,7 +202,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Admin user can call any tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -209,7 +211,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_role == "admin"
 			};
-			`,
+			`},
 			claims: map[string]interface{}{
 				"sub":  "admin123",
 				"name": "Admin User",
@@ -223,7 +225,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with specific argument value can call tool",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"call_tool",
@@ -232,7 +234,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.arg_operation == "add" && context.arg_value1 == 5
 			};
-			`,
+			`},
 			claims: map[string]interface{}{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -249,7 +251,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User with specific role in array can access resource",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -258,7 +260,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				context.claim_groups.contains("editor")
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":    "user123",
 				"name":   "John Doe",
@@ -272,7 +274,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Resource entity exposes name attribute for Cedar schema",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -281,7 +283,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				resource.name == "sensitive_data"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub": "user123",
 			},
@@ -293,7 +295,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Resource entity retains uri attribute for backward compat",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -302,7 +304,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				resource.uri == "sensitive_data"
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub": "user123",
 			},
@@ -314,7 +316,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "Resource name and uri attributes carry the same value",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"read_resource",
@@ -323,7 +325,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			when {
 				resource.name == resource.uri
 			};
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub": "user123",
 			},
@@ -335,13 +337,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can get prompt",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"get_prompt",
 				resource == Prompt::"greeting"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -355,13 +357,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list tools",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_tools",
 				resource == FeatureType::"tool"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -375,13 +377,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list prompts",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_prompts",
 				resource == FeatureType::"prompt"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -395,13 +397,13 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 		},
 		{
 			name: "User can list resources",
-			policy: `
+			policies: []string{`
 			permit(
 				principal,
 				action == Action::"list_resources",
 				resource == FeatureType::"resource"
 			);
-			`,
+			`},
 			claims: jwt.MapClaims{
 				"sub":  "user123",
 				"name": "John Doe",
@@ -412,6 +414,115 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 			resourceID:       "",
 			arguments:        nil,
 			expectAuthorized: true,
+		},
+		{
+			name: "Delegated access permitted when act claim matches SPIFFE ID pattern",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context.claim_sub == "user@example.com" &&
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Delegated access denied when act claim has wrong SPIFFE ID",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context.claim_sub == "user@example.com" &&
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://evil.example.com/ns/agents/sa/attacker",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: false,
+		},
+		{
+			name: "Forbid delegated access to admin tools when act claim present",
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource);`,
+				`forbid(principal, action == Action::"call_tool", resource == Tool::"admin_reset")
+				when { context has claim_act };`,
+			},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+				"act": map[string]interface{}{
+					"sub": "spiffe://toolhive.dev/ns/agents/sa/devops-agent",
+				},
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "admin_reset",
+			arguments:        nil,
+			expectAuthorized: false,
+		},
+		{
+			name: "Direct access to admin tools allowed when no act claim",
+			policies: []string{
+				`permit(principal, action == Action::"call_tool", resource);`,
+				`forbid(principal, action == Action::"call_tool", resource == Tool::"admin_reset")
+				when { context has claim_act };`,
+			},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "admin_reset",
+			arguments:        nil,
+			expectAuthorized: true,
+		},
+		{
+			name: "Policy with has operator does not match when act claim absent",
+			policies: []string{`
+			permit(
+				principal,
+				action == Action::"call_tool",
+				resource == Tool::"deploy"
+			)
+			when {
+				context has claim_act &&
+				context.claim_act.sub like "spiffe://toolhive.dev/ns/agents/sa/*"
+			};
+			`},
+			claims: jwt.MapClaims{
+				"sub": "user@example.com",
+			},
+			feature:          authorizers.MCPFeatureTool,
+			operation:        authorizers.MCPOperationCall,
+			resourceID:       "deploy",
+			arguments:        nil,
+			expectAuthorized: false,
 		},
 	}
 
@@ -424,7 +535,7 @@ func TestAuthorizeWithJWTClaims(t *testing.T) {
 
 			// Create a Cedar authorizer
 			authorizer, err := NewCedarAuthorizer(ConfigOptions{
-				Policies:     []string{tc.policy},
+				Policies:     tc.policies,
 				EntitiesJSON: `[]`,
 			}, "")
 			require.NoError(t, err, "Failed to create Cedar authorizer")
@@ -1053,6 +1164,7 @@ func TestIsAuthorizedWithEntities(t *testing.T) {
 		map[string]interface{}{"name": "Test User"},
 		map[string]interface{}{"name": "weather"},
 		nil,
+		"",
 	)
 	require.NoError(t, err)
 
@@ -1066,6 +1178,67 @@ func TestIsAuthorizedWithEntities(t *testing.T) {
 	)
 	assert.NoError(t, err)
 	assert.True(t, authorized)
+}
+
+// TestServerScopedPolicyWithMCPParent verifies end-to-end Cedar evaluation
+// with a server-scoped policy. When the authorizer has a serverName, resource
+// entities get an MCP parent and `resource in MCP::"<server>"` matches.
+// When serverName is empty, the same policy denies because there is no parent.
+func TestServerScopedPolicyWithMCPParent(t *testing.T) {
+	t.Parallel()
+
+	policy := `permit(
+		principal,
+		action == Action::"call_tool",
+		resource in MCP::"test-server"
+	);`
+
+	// The MCP entity must be present in the entity store for Cedar's `in`
+	// operator to traverse the parent chain. In production this comes from
+	// entities_json managed by the enterprise controller.
+	mcpEntity := `[{"uid":{"type":"MCP","id":"test-server"},"parents":[],"attrs":{}}]`
+
+	tests := []struct {
+		name       string
+		serverName string
+		wantAllow  bool
+	}{
+		{
+			name:       "serverName_matches_policy_permits",
+			serverName: "test-server",
+			wantAllow:  true,
+		},
+		{
+			name:       "empty_serverName_policy_denies",
+			serverName: "",
+			wantAllow:  false,
+		},
+		{
+			name:       "wrong_serverName_policy_denies",
+			serverName: "other-server",
+			wantAllow:  false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:     []string{policy},
+				EntitiesJSON: mcpEntity,
+			}, tt.serverName)
+			require.NoError(t, err)
+
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{Subject: "testuser", Claims: map[string]interface{}{"sub": "testuser"}}}
+			ctx := auth.WithIdentity(context.Background(), identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(ctx, authorizers.MCPFeatureTool, authorizers.MCPOperationCall, "weather", nil)
+			assert.NoError(t, err)
+			assert.Equal(t, tt.wantAllow, authorized,
+				"serverName=%q: expected allow=%v", tt.serverName, tt.wantAllow)
+		})
+	}
 }
 
 // TestParseUpstreamJWTClaims tests the parseUpstreamJWTClaims helper.
@@ -1232,7 +1405,7 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 			errContains: "upstream token for provider",
 		},
 		{
-			name: "upstream_token_opaque_not_parseable",
+			name: "upstream_token_opaque_falls_back_to_request_claims_denied",
 			identity: &auth.Identity{
 				PrincipalInfo: auth.PrincipalInfo{
 					Subject: "thv-user",
@@ -1240,6 +1413,45 @@ func TestAuthorizeWithJWTClaims_UpstreamProvider(t *testing.T) {
 				},
 				UpstreamTokens: map[string]string{
 					providerName: "opaque-token-cannot-be-parsed",
+				},
+			},
+			// Opaque upstream tokens (Google's ya29.*, GitHub's gho_*, etc.)
+			// trigger the fallback to identity.Claims. Here the request-token
+			// sub does not match the policy, so authorization is correctly
+			// denied based on policy evaluation rather than a parse-time error.
+			wantAuthorize: false,
+		},
+		{
+			name: "upstream_token_opaque_falls_back_to_request_claims_permitted",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "upstream-user",
+					Claims:  map[string]any{"sub": "upstream-user"},
+				},
+				UpstreamTokens: map[string]string{
+					providerName: "opaque-token-cannot-be-parsed",
+				},
+			},
+			// When the upstream token is not a JWT, Cedar evaluates against
+			// the request-token claims. The embedded auth server already
+			// mirrors the upstream OIDC sub/email/name into its issued token,
+			// so a policy referencing claim_sub still matches the user.
+			wantAuthorize: true,
+		},
+		{
+			name: "upstream_token_jwt_shaped_but_malformed_still_errors",
+			identity: &auth.Identity{
+				PrincipalInfo: auth.PrincipalInfo{
+					Subject: "thv-user",
+					Claims:  map[string]any{"sub": "thv-user"},
+				},
+				UpstreamTokens: map[string]string{
+					// Three-segment shape (looks like a JWT) but the segments are
+					// not valid base64-encoded JSON — i.e. a tampered or
+					// corrupted JWT. The fallback path MUST NOT trigger here:
+					// silently degrading a tampered upstream JWT to fallback
+					// claims would be a security regression.
+					providerName: "not-base64.not-base64.not-base64",
 				},
 			},
 			wantErr:     true,
@@ -2771,4 +2983,318 @@ func TestConfigOptionsRoleClaimNameJSON(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidateGroupEntityType exercises the private validateGroupEntityType helper
+// directly. Each case names an input, states whether it should succeed, and — for
+// error cases — a substring that the error message must contain so operators can
+// diagnose misconfiguration from a single log line.
+//
+// Only our package's contract is tested here:
+//  1. Empty string short-circuits to nil.
+//  2. Inputs containing "::" are rejected with our project-specific error.
+//  3. Valid Cedar identifiers pass through (smoke test of the cedar-go delegation path).
+//  4. Invalid Cedar identifiers surface the cedar-go rejection wrapped with our message.
+//  5. __cedarFoo is accepted — the Cedar spec only reserves the bare "__cedar" token,
+//     not the entire prefix namespace. This intentional behavioral difference vs older
+//     hand-rolled validators would be the most surprising case for a future reader.
+//
+// Exhaustive grammar testing (hyphens, leading digits, whitespace, reserved words, …)
+// belongs in cedar-go's own test suite, not here.
+func TestValidateGroupEntityType(t *testing.T) {
+	t.Parallel()
+
+	testCases := []struct {
+		name        string
+		input       string
+		wantErr     bool
+		errContains string // substring the error message must contain (ignored when wantErr=false)
+	}{
+		{
+			// Empty string triggers the short-circuit: our function returns nil immediately
+			// without consulting cedar-go's parser.
+			name:    "empty string accepted (short-circuit, means use default)",
+			input:   "",
+			wantErr: false,
+		},
+		{
+			// Smoke test: a plain valid identifier must pass the cedar-go delegation path.
+			name:    "valid Cedar identifier accepted",
+			input:   "OrgRole",
+			wantErr: false,
+		},
+		{
+			// Our project rule: "::" always means a namespaced type which is never a
+			// valid bare entity-type name. We reject before delegating to cedar-go.
+			name:        "namespaced type rejected with project-specific message",
+			input:       "Foo::Bar",
+			wantErr:     true,
+			errContains: "::",
+		},
+		{
+			// Smoke test: an invalid Cedar identifier must produce an error containing
+			// our wrapper text, proving the cedar-go rejection bubbles up correctly.
+			// One representative case is sufficient; the grammar details are cedar-go's domain.
+			name:        "invalid Cedar identifier rejected with wrapper message",
+			input:       "Org-Role",
+			wantErr:     true,
+			errContains: "not a valid Cedar identifier",
+		},
+		{
+			// The Cedar spec reserves the literal "__cedar" token. "__cedarFoo" (with a
+			// suffix) is accepted because the reservation does NOT extend to the whole
+			// prefix namespace. This is intentionally different from older hand-rolled
+			// validators that rejected the entire "__cedar" prefix — keep this case so a
+			// future refactor cannot silently regress to the stricter behavior.
+			name:    "__cedarFoo accepted (Cedar spec only reserves bare __cedar)",
+			input:   "__cedarFoo",
+			wantErr: false,
+		},
+		{
+			// Sanity check that cedar-go's reserved-word rejection surfaces through our
+			// wrapper. One reserved word is enough to prove the path works.
+			name:        "reserved word 'in' rejected",
+			input:       "in",
+			wantErr:     true,
+			errContains: "not a valid Cedar identifier",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateGroupEntityType(tc.input)
+
+			if tc.wantErr {
+				require.Error(t, err, "expected an error for input %q", tc.input)
+				assert.Contains(t, err.Error(), tc.errContains,
+					"error for %q should mention %q", tc.input, tc.errContains)
+			} else {
+				require.NoError(t, err, "unexpected error for input %q", tc.input)
+			}
+		})
+	}
+}
+
+// TestAuthorizeWithJWTClaims_CustomGroupEntityType proves that GroupEntityType
+// actually flows through Cedar evaluation, not just through entity construction.
+// Case A: GroupEntityType "OrgRole" with policy "principal in OrgRole::..." → Permit.
+// Case B: same policy, default GroupEntityType "" (resolves to THVGroup) → Deny,
+// because the parent UIDs are typed THVGroup::"engineering" which is not in OrgRole.
+// The two cases are adjacent so the contrast is visible to reviewers.
+func TestAuthorizeWithJWTClaims_CustomGroupEntityType(t *testing.T) {
+	t.Parallel()
+
+	// Policy references OrgRole — only a factory configured with GroupEntityType "OrgRole"
+	// will synthesise parent UIDs that match this policy.
+	policy := `
+		permit(
+			principal in OrgRole::"engineering",
+			action == Action::"call_tool",
+			resource == Tool::"deploy"
+		);
+	`
+
+	identity := &auth.Identity{
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "user1",
+			Claims: map[string]any{
+				"sub":    "user1",
+				"groups": []interface{}{"engineering"},
+			},
+		},
+	}
+
+	tests := []struct {
+		name            string
+		groupEntityType string
+		wantAuthorize   bool
+	}{
+		{
+			// GroupEntityType "OrgRole" makes the factory emit OrgRole::"engineering"
+			// as the principal's parent UID. Cedar's `in` resolves to true → Permit.
+			name:            "custom_type_OrgRole_permits",
+			groupEntityType: "OrgRole",
+			wantAuthorize:   true,
+		},
+		{
+			// Default GroupEntityType "" resolves to THVGroup. The factory emits
+			// THVGroup::"engineering" instead of OrgRole::"engineering". Cedar's `in`
+			// for OrgRole::"engineering" evaluates to false → Deny by default.
+			name:            "default_type_THVGroup_denies",
+			groupEntityType: "",
+			wantAuthorize:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			authorizer, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:        []string{policy},
+				EntitiesJSON:    `[]`,
+				GroupClaimName:  "groups",
+				GroupEntityType: tt.groupEntityType,
+			}, "")
+			require.NoError(t, err)
+
+			ctx := auth.WithIdentity(context.Background(), identity)
+
+			authorized, err := authorizer.AuthorizeWithJWTClaims(
+				ctx,
+				authorizers.MCPFeatureTool,
+				authorizers.MCPOperationCall,
+				"deploy",
+				nil,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthorize, authorized,
+				"GroupEntityType=%q: expected allow=%v", tt.groupEntityType, tt.wantAuthorize)
+		})
+	}
+}
+
+// TestNewCedarAuthorizerGroupEntityTypeValidation is a thin wiring proof
+// that NewCedarAuthorizer actually invokes validateGroupEntityType. The
+// exhaustive rejection coverage lives in TestValidateGroupEntityType — this
+// test only confirms one valid input passes through and one invalid input
+// produces the validator's error at the constructor boundary.
+func TestNewCedarAuthorizerGroupEntityTypeValidation(t *testing.T) {
+	t.Parallel()
+
+	validPolicy := []string{`permit(principal, action, resource);`}
+
+	testCases := []struct {
+		name            string
+		groupEntityType string
+		wantErr         bool
+		errContains     string
+	}{
+		{name: "empty string succeeds", groupEntityType: "", wantErr: false},
+		{name: "namespaced type fails", groupEntityType: "Foo::Bar", wantErr: true, errContains: "::"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			_, err := NewCedarAuthorizer(ConfigOptions{
+				Policies:        validPolicy,
+				GroupEntityType: tc.groupEntityType,
+			}, "")
+
+			if tc.wantErr {
+				require.Error(t, err, "expected construction error for GroupEntityType=%q", tc.groupEntityType)
+				assert.Contains(t, err.Error(), tc.errContains,
+					"validator error must bubble up unchanged to the constructor boundary")
+			} else {
+				require.NoError(t, err, "unexpected error for GroupEntityType=%q", tc.groupEntityType)
+			}
+		})
+	}
+}
+
+// captureSlogWarn redirects slog's default logger to a bytes.Buffer for the
+// duration of f, then restores the original default. Returns the captured
+// output. This helper exists because slog.SetDefault is a process-global
+// side effect — tests that use it must NOT run in parallel.
+func captureSlogWarn(t *testing.T, f func()) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+	orig := slog.Default()
+	slog.SetDefault(slog.New(handler))
+	t.Cleanup(func() { slog.SetDefault(orig) })
+
+	f()
+
+	return buf.String()
+}
+
+// TestStaleTHVGroupWarning verifies that NewCedarAuthorizer emits a WARN log
+// when entities_json contains entities of type "THVGroup" while GroupEntityType
+// is configured to a different value. The mismatch causes Cedar's `in` operator
+// to evaluate to false for those entities — a silent deny that is hard to debug
+// without this diagnostic.
+//
+// Subtests use slog.SetDefault (process-global), so they must NOT run in
+// parallel with other tests. The parent is still parallel-safe because it does
+// not touch global state itself.
+//
+//nolint:paralleltest,tparallel // Subtests redirect slog.Default, which is process-global state
+func TestStaleTHVGroupWarning(t *testing.T) {
+	t.Parallel()
+
+	const thvGroupEntity = `[{"uid":{"type":"THVGroup","id":"engineering"},"attrs":{},"parents":[]}]`
+	validPolicy := []string{`permit(principal, action, resource);`}
+
+	tests := []struct {
+		name            string
+		groupEntityType string
+		entitiesJSON    string
+		wantWarn        bool
+		wantContains    []string // when wantWarn=true, log must contain each of these
+	}{
+		{
+			name:            "warns when stale THVGroup present and GroupEntityType differs",
+			groupEntityType: "OrgRole",
+			entitiesJSON:    thvGroupEntity,
+			wantWarn:        true,
+			wantContains:    []string{"GroupEntityType", "OrgRole", "THVGroup"},
+		},
+		{
+			// Most common path: GroupEntityType is empty (uses THVGroup default), so no
+			// conflict is possible. One negative is sufficient to prove the guard works.
+			name:            "no warning when GroupEntityType is empty (uses THVGroup default)",
+			groupEntityType: "",
+			entitiesJSON:    thvGroupEntity,
+			wantWarn:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Cannot be parallel: subtests redirect slog.Default.
+			output := captureSlogWarn(t, func() {
+				_, err := NewCedarAuthorizer(ConfigOptions{
+					Policies:        validPolicy,
+					EntitiesJSON:    tt.entitiesJSON,
+					GroupEntityType: tt.groupEntityType,
+				}, "")
+				require.NoError(t, err)
+			})
+
+			if tt.wantWarn {
+				require.NotEmpty(t, output, "expected a warn log")
+				for _, want := range tt.wantContains {
+					assert.Contains(t, output, want,
+						"warn log must mention %q", want)
+				}
+			} else {
+				assert.Empty(t, output, "no warning expected")
+			}
+		})
+	}
+}
+
+// TestFactory_ConfigKeyMatchesStructTag locks in the contract between
+// Factory.ConfigKey() and the Config struct's json tag. A future rename of
+// either string without updating the other would silently produce JSON the
+// backend's own Unmarshal could not parse. Building an envelope around
+// ConfigKey() and asserting it deserialises into Config.Options is the
+// cheapest way to make that drift impossible.
+func TestFactory_ConfigKeyMatchesStructTag(t *testing.T) {
+	t.Parallel()
+
+	envelope := []byte(`{"version":"1.0","type":"cedarv1","` + (&Factory{}).ConfigKey() +
+		`":{"policies":["permit(principal, action, resource);"],"entities_json":"[]"}}`)
+
+	var cfg Config
+	require.NoError(t, json.Unmarshal(envelope, &cfg),
+		"envelope built around Factory.ConfigKey() must parse into Config")
+	require.NotNil(t, cfg.Options,
+		"Config.Options must be set after Unmarshal — if nil, Factory.ConfigKey() and the Options struct tag have drifted apart")
 }

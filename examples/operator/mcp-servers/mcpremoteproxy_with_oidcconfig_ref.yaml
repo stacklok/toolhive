@@ -1,11 +1,11 @@
 # MCPRemoteProxy referencing a shared MCPOIDCConfig via oidcConfigRef.
 #
 # This is the preferred pattern — the inline oidcConfig field is deprecated
-# and will be removed in v1beta1.
+# and will be removed in a future API version.
 
 ---
 # Shared MCPOIDCConfig for the proxy's incoming authentication
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPOIDCConfig
 metadata:
   name: proxy-idp
@@ -16,7 +16,7 @@ spec:
 
 ---
 # MCPRemoteProxy using oidcConfigRef instead of inline oidcConfig
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRemoteProxy
 metadata:
   name: github-proxy

@@ -89,20 +89,21 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		t.Parallel()
 
 		runConfig := &runner.RunConfig{
-			Name:           "test-workload",
-			Image:          "test-image:latest",
-			Host:           "localhost",
-			Port:           3000,
-			CmdArgs:        []string{"arg1", "arg2"},
-			TargetPort:     8080,
-			EnvVars:        map[string]string{"ENV1": "value1"},
-			Secrets:        []string{"secret1,target=/path1", "secret2,target=/path2"},
-			Volumes:        []string{"/host:/container"},
-			Transport:      types.TransportTypeSSE,
-			Group:          "test-group",
-			ProxyMode:      types.ProxyModeSSE,
-			IsolateNetwork: true,
-			ToolsFilter:    []string{"tool1", "tool2"},
+			Name:               "test-workload",
+			Image:              "test-image:latest",
+			Host:               "localhost",
+			Port:               3000,
+			CmdArgs:            []string{"arg1", "arg2"},
+			TargetPort:         8080,
+			EnvVars:            map[string]string{"ENV1": "value1"},
+			Secrets:            []string{"secret1,target=/path1", "secret2,target=/path2"},
+			Volumes:            []string{"/host:/container"},
+			Transport:          types.TransportTypeSSE,
+			Group:              "test-group",
+			ProxyMode:          types.ProxyModeSSE,
+			IsolateNetwork:     true,
+			ToolsFilter:        []string{"tool1", "tool2"},
+			AllowDockerGateway: true,
 		}
 
 		result := runConfigToCreateRequest(runConfig)
@@ -124,8 +125,10 @@ func TestRunConfigToCreateRequest(t *testing.T) {
 		assert.Equal(t, "sse", result.Transport)
 		assert.Equal(t, "test-group", result.Group)
 		assert.Equal(t, "sse", result.ProxyMode)
-		assert.True(t, result.NetworkIsolation)
+		require.NotNil(t, result.NetworkIsolation)
+		assert.True(t, *result.NetworkIsolation)
 		assert.Equal(t, []string{"tool1", "tool2"}, result.ToolsFilter)
+		assert.True(t, result.AllowDockerGateway)
 	})
 
 	t.Run("with plaintext header forward", func(t *testing.T) {
@@ -515,6 +518,44 @@ func TestCreateRequestToRemoteAuthConfig(t *testing.T) {
 			assert.Equal(t, tt.expectedBearerToken, result.BearerToken)
 		})
 	}
+
+	// Guard against reintroduction of RFC 8707 auto-derivation from URL.
+	// Resource must only be set when explicitly provided (see #5203).
+	t.Run("resource empty when URL set but resource not explicitly provided", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				URL:         "https://mcp.example.com/mcp",
+				OAuthConfig: remoteOAuthConfig{ClientID: "some-client"},
+			},
+		}
+
+		cfg := createRequestToRemoteAuthConfig(context.Background(), req)
+
+		require.NotNil(t, cfg)
+		assert.Empty(t, cfg.Resource, "resource must not be auto-derived from URL when not explicitly set")
+	})
+
+	t.Run("resource preserved when user provides it explicitly", func(t *testing.T) {
+		t.Parallel()
+
+		req := &createRequest{
+			updateRequest: updateRequest{
+				URL: "https://mcp.example.com/mcp",
+				OAuthConfig: remoteOAuthConfig{
+					ClientID: "some-client",
+					Resource: "https://explicit-resource.example.com",
+				},
+			},
+		}
+
+		cfg := createRequestToRemoteAuthConfig(context.Background(), req)
+
+		require.NotNil(t, cfg)
+		assert.Equal(t, "https://explicit-resource.example.com", cfg.Resource,
+			"user-provided resource must be preserved verbatim")
+	})
 }
 
 func TestValidateHeaderForwardConfig(t *testing.T) {
@@ -639,6 +680,30 @@ func TestValidateHeaderForwardConfig(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 			}
+		})
+	}
+}
+
+func TestNetworkIsolationEnabled(t *testing.T) {
+	t.Parallel()
+
+	trueVal := true
+	falseVal := false
+
+	tests := []struct {
+		name string
+		in   *bool
+		want bool
+	}{
+		{name: "nil defaults to enabled", in: nil, want: true},
+		{name: "explicit false disables", in: &falseVal, want: false},
+		{name: "explicit true enables", in: &trueVal, want: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, networkIsolationEnabled(tt.in))
 		})
 	}
 }

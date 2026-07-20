@@ -44,50 +44,22 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket": {
-                "description": "PerUser token bucket configuration for this tool.\n+optional",
-                "properties": {
-                    "maxTokens": {
-                        "description": "MaxTokens is the maximum number of tokens (bucket capacity).\nThis is also the burst size: the maximum number of requests that can be served\ninstantaneously before the bucket is depleted.\n+kubebuilder:validation:Required\n+kubebuilder:validation:Minimum=1",
-                        "type": "integer"
-                    },
-                    "refillPeriod": {
-                        "$ref": "#/components/schemas/v1.Duration"
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig": {
+            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig": {
                 "description": "RateLimitConfig contains the CRD rate limiting configuration.\nWhen set, rate limiting middleware is added to the proxy middleware chain.",
                 "properties": {
                     "perUser": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket"
                     },
                     "shared": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket"
                     },
                     "tools": {
                         "description": "Tools defines per-tool rate limit overrides.\nEach entry applies additional rate limits to calls targeting a specific tool name.\nA request must pass both the server-level limit and the per-tool limit.\n+listType=map\n+listMapKey=name\n+optional",
                         "items": {
-                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig"
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.ToolRateLimitConfig"
                         },
                         "type": "array",
                         "uniqueItems": false
-                    }
-                },
-                "type": "object"
-            },
-            "github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig": {
-                "properties": {
-                    "name": {
-                        "description": "Name is the MCP tool name this limit applies to.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1",
-                        "type": "string"
-                    },
-                    "perUser": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
-                    },
-                    "shared": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket"
                     }
                 },
                 "type": "object"
@@ -233,6 +205,10 @@ const docTemplate = `{
                     "session_name_claim": {
                         "description": "SessionNameClaim is the JWT claim to use for role session name (default: \"sub\").",
                         "type": "string"
+                    },
+                    "subject_provider_name": {
+                        "description": "SubjectProviderName identifies which upstream provider's access token to use\nfor STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer\ntoken from the incoming HTTP request is used.",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -269,6 +245,10 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "bearer_token_file": {
+                        "type": "string"
+                    },
+                    "cached_cimd_client_id": {
+                        "description": "CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD\nauthentication was used. Kept separate from CachedClientID (which holds\nDCR-issued IDs) so the two can have independent lifecycles — DCR credential\nrotation clears CachedClientID without touching the stable CIMD URL.\nRead by resolveClientCredentials to send the correct client_id on token refresh.",
                         "type": "string"
                     },
                     "cached_client_id": {
@@ -347,48 +327,6 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
-            "github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config": {
-                "description": "TokenExchangeConfig contains token exchange configuration for external authentication",
-                "properties": {
-                    "audience": {
-                        "description": "Audience is the target audience for the exchanged token",
-                        "type": "string"
-                    },
-                    "client_id": {
-                        "description": "ClientID is the OAuth 2.0 client identifier",
-                        "type": "string"
-                    },
-                    "client_secret": {
-                        "description": "ClientSecret is the OAuth 2.0 client secret",
-                        "type": "string"
-                    },
-                    "external_token_header_name": {
-                        "description": "ExternalTokenHeaderName is the name of the custom header to use when HeaderStrategy is \"custom\"",
-                        "type": "string"
-                    },
-                    "header_strategy": {
-                        "description": "HeaderStrategy determines how to inject the token\nValid values: HeaderStrategyReplace (default), HeaderStrategyCustom",
-                        "type": "string"
-                    },
-                    "scopes": {
-                        "description": "Scopes is the list of scopes to request for the exchanged token",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "subject_token_type": {
-                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.\nIf empty, defaults to tokenTypeAccessToken.",
-                        "type": "string"
-                    },
-                    "token_url": {
-                        "description": "TokenURL is the OAuth 2.0 token endpoint URL",
-                        "type": "string"
-                    }
-                },
-                "type": "object"
-            },
             "github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config": {
                 "description": "UpstreamSwapConfig contains configuration for upstream token swap middleware.\nWhen set along with EmbeddedAuthServerConfig, this middleware exchanges ToolHive JWTs\nfor upstream IdP tokens before forwarding requests to the MCP server.",
                 "properties": {
@@ -407,6 +345,73 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig": {
+                "description": "CIMD controls client_id metadata document support. When enabled, the\nembedded authorization server accepts HTTPS URLs as client_id values\nand resolves them via the CIMD protocol instead of requiring DCR.",
+                "properties": {
+                    "cache_fallback_ttl": {
+                        "description": "CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.\nCache-Control header parsing is not yet implemented; all entries use this value.\nFormat: Go duration string (e.g. \"5m\", \"10m\", \"1h\").\nDefaults to 5 minutes when Enabled is true and this field is omitted.",
+                        "example": "5m",
+                        "type": "string"
+                    },
+                    "cache_max_size": {
+                        "description": "CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.\nDefaults to 256 when Enabled is true and this field is zero.",
+                        "type": "integer"
+                    },
+                    "enabled": {
+                        "description": "Enabled activates CIMD client lookup when true.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig": {
+                "description": "DCRConfig enables RFC 7591 Dynamic Client Registration against the\nupstream authorization server. When set, the client credentials are\nobtained at runtime rather than being pre-provisioned via ClientID /\nClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.\nMutually exclusive with ClientID.",
+                "properties": {
+                    "discovery_url": {
+                        "description": "DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to\nfetch at runtime. The resolver issues a single GET against this URL\n(no well-known-path fallback) and reads registration_endpoint,\nauthorization_endpoint, token_endpoint,\ntoken_endpoint_auth_methods_supported, and scopes_supported from the\nresponse. Per RFC 8414 §3.3, the document's \"issuer\" field must\nexactly match the upstream issuer configured on the parent\nrun-config.\n\nUse this field when the upstream publishes discovery metadata at a\npath that differs from the issuer-derived well-known paths — for\nexample a multi-tenant IdP whose metadata lives at\nhttps://idp.example.com/tenants/acme/.well-known/openid-configuration.\n\nMutually exclusive with RegistrationEndpoint.",
+                        "type": "string"
+                    },
+                    "initial_access_token_env_var": {
+                        "description": "InitialAccessTokenEnvVar is the name of an environment variable\ncontaining the RFC 7591 initial access token. Mutually exclusive with\nInitialAccessTokenFile.",
+                        "type": "string"
+                    },
+                    "initial_access_token_file": {
+                        "description": "InitialAccessTokenFile is the path to a file containing the RFC 7591\ninitial access token presented to the registration endpoint. Mutually\nexclusive with InitialAccessTokenEnvVar. Both may be omitted for open\nregistration endpoints.",
+                        "type": "string"
+                    },
+                    "registration_endpoint": {
+                        "description": "RegistrationEndpoint is the RFC 7591 registration endpoint URL used\ndirectly, bypassing discovery. Because no discovery is performed,\nserver-capability fields (token_endpoint_auth_methods_supported,\nscopes_supported) are unavailable on this code path; the caller is\nexpected to also supply AuthorizationEndpoint, TokenEndpoint, and an\nexplicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth\nmethod falls back to the resolver's default (client_secret_basic).\n\nMutually exclusive with DiscoveryURL.",
+                        "type": "string"
+                    },
+                    "software_id": {
+                        "description": "SoftwareID is the RFC 7591 \"software_id\" registration metadata value,\nidentifying the client software independent of any particular\nregistration instance.",
+                        "type": "string"
+                    },
+                    "software_statement": {
+                        "description": "SoftwareStatement is the RFC 7591 \"software_statement\" JWT asserting\nmetadata about the client software, signed by a party the authorization\nserver trusts.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig": {
+                "description": "IdentityFromToken extracts user identity (subject, name, email) directly from the\nOAuth2 token-endpoint response body using gjson dot-notation paths. When set, the\nembedded auth server skips the userinfo HTTP call entirely. Mirrors the CRD type\n(cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative\ntrust-model and uniqueness documentation lives there.",
+                "properties": {
+                    "email_path": {
+                        "description": "EmailPath is the dot-notation path to the email address field.",
+                        "type": "string"
+                    },
+                    "name_path": {
+                        "description": "NamePath is the dot-notation path to the display name field.",
+                        "type": "string"
+                    },
+                    "subject_path": {
+                        "description": "SubjectPath is the dot-notation path to the subject (user ID) field.\nRequired when IdentityFromToken is set.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
             "github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig": {
                 "description": "OAuth2Config contains OAuth 2.0-specific configuration.\nRequired when Type is \"oauth2\", must be nil when Type is \"oidc\".",
                 "properties": {
@@ -417,12 +422,16 @@ const docTemplate = `{
                         "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
                         "type": "object"
                     },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits the upstream provider's HTTP client to connect to\nprivate IP ranges (RFC-1918, link-local). When DCRConfig is set, this\nalso gates the DCR discovery and registration calls made on this\nupstream's behalf (see pkg/authserver/runner/dcr_adapter.go), so a\nsingle flag covers the whole upstream rather than needing a separate\nDCR-specific setting. Use only when the upstream is hosted inside the\nsame cluster and has no public endpoint. HTTP-scheme restrictions are\nunchanged — HTTPS is still required for non-localhost hosts. Defaults\nto false.",
+                        "type": "boolean"
+                    },
                     "authorization_endpoint": {
                         "description": "AuthorizationEndpoint is the URL for the OAuth authorization endpoint.",
                         "type": "string"
                     },
                     "client_id": {
-                        "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.",
+                        "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.\nMutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained\nat runtime via RFC 7591 Dynamic Client Registration and must be left empty.",
                         "type": "string"
                     },
                     "client_secret_env_var": {
@@ -432,6 +441,16 @@ const docTemplate = `{
                     "client_secret_file": {
                         "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
                         "type": "string"
+                    },
+                    "dcr_config": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig"
+                    },
+                    "identity_from_token": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs\nfor this upstream. Only for in-cluster development environments (e.g. an\nOAuth2 provider served over HTTP in a kind cluster) where TLS is not\navailable. Never set this in production.",
+                        "type": "boolean"
                     },
                     "redirect_uri": {
                         "description": "RedirectURI is the callback URL where the upstream IDP will redirect after authentication.\nWhen not specified, defaults to ` + "`" + `{issuer}/oauth/callback` + "`" + `.",
@@ -468,6 +487,10 @@ const docTemplate = `{
                         "description": "AdditionalAuthorizationParams are extra query parameters to include in\nauthorization requests. Useful for provider-specific parameters like\nGoogle's access_type=offline.",
                         "type": "object"
                     },
+                    "allow_private_ips": {
+                        "description": "AllowPrivateIPs permits the OIDC discovery and token HTTP clients to\nconnect to private IP ranges (RFC-1918, link-local). Use only when the\nupstream is hosted inside the same cluster and has no public endpoint.\nHTTP-scheme restrictions are unchanged — HTTPS is still required for\nnon-localhost hosts. Defaults to false.",
+                        "type": "boolean"
+                    },
                     "client_id": {
                         "description": "ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.",
                         "type": "string"
@@ -479,6 +502,10 @@ const docTemplate = `{
                     "client_secret_file": {
                         "description": "ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.\nMutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.",
                         "type": "string"
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery\nendpoints for this upstream. Only for in-cluster development environments\n(e.g. Dex served over HTTP in a kind cluster) where TLS is not available.\nNever set this in production.",
+                        "type": "boolean"
                     },
                     "issuer_url": {
                         "description": "IssuerURL is the OIDC issuer URL for automatic endpoint discovery.\nMust be a valid HTTPS URL.",
@@ -495,6 +522,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "subject_claim": {
+                        "description": "SubjectClaim names the validated ID-token claim to use as the upstream\nsubject. Defaults to \"sub\" when empty. Set for IdPs where \"sub\" isn't\nstable per user (e.g. Entra/Azure AD's \"oid\"). See upstream.OIDCConfig.",
+                        "type": "string"
                     },
                     "userinfo_override": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig"
@@ -517,6 +548,21 @@ const docTemplate = `{
                         "description": "AuthorizationEndpointBaseURL overrides the base URL used for the authorization_endpoint\nin the OAuth discovery document. When set, the discovery document will advertise\n` + "`" + `{authorization_endpoint_base_url}/oauth/authorize` + "`" + ` instead of ` + "`" + `{issuer}/oauth/authorize` + "`" + `.\nAll other endpoints remain derived from the issuer.",
                         "type": "string"
                     },
+                    "baseline_client_scopes": {
+                        "description": "BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every\nDCR registration. All values must appear in ScopesSupported; the auth server\nrejects this RunConfig at startup otherwise. Empty means current behavior is\npreserved (registered scope = client-requested, or DefaultScopes if empty).\nWhen ScopesSupported is empty, the subset check uses registration.DefaultScopes\n(the same set applyDefaults would substitute at startup) — so\nBaselineClientScopes containing standard OIDC scopes works without enumerating\nScopesSupported explicitly.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "cimd": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig"
+                    },
+                    "disable_upstream_token_injection": {
+                        "description": "DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.\nWhen true, the embedded auth server handles OAuth flows for clients, but instead of\ninjecting upstream IdP tokens the proxy strips the client's credential headers\n(Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the\nbackend receives an unauthenticated request. Incompatible with token exchange\nand AWS STS, which would re-add credentials after the strip.",
+                        "type": "boolean"
+                    },
                     "hmac_secret_files": {
                         "description": "HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes\nand refresh tokens (opaque tokens).\nFirst file is the current secret (must be at least 32 bytes), subsequent files\nare for rotation/verification of existing tokens.\nIf empty, an ephemeral secret will be auto-generated (development only).",
                         "items": {
@@ -524,6 +570,10 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    },
+                    "insecure_allow_http": {
+                        "description": "InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.\nOnly set this for in-cluster Kubernetes deployments on a trusted network.\nProduction deployments reachable outside the cluster MUST use https://.",
+                        "type": "boolean"
                     },
                     "issuer": {
                         "description": "Issuer is the issuer identifier for this authorization server.\nThis will be included in the \"iss\" claim of issued tokens.\nMust be a valid HTTPS URL (or HTTP for localhost) without query, fragment, or trailing slash.",
@@ -684,7 +734,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig": {
-                "description": "UserInfo contains configuration for fetching user information (required for OAuth2).",
+                "description": "UserInfo contains configuration for fetching user information.\nOptional: when nil, the upstream OAuth2 provider derives a deterministic\nsubject by SHA-256-hashing the access token (with a \"tk-\" prefix) instead\nof calling a userinfo endpoint. OIDC providers always derive Subject from\nthe ID token and are unaffected.",
                 "properties": {
                     "additional_headers": {
                         "additionalProperties": {
@@ -727,9 +777,17 @@ const docTemplate = `{
                     "acl_user_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig"
                     },
+                    "addr": {
+                        "description": "Addr is the Redis server address (host:port). Required for standalone and cluster modes.\nMutually exclusive with SentinelConfig.",
+                        "type": "string"
+                    },
                     "auth_type": {
                         "description": "AuthType must be \"aclUser\" - only ACL user authentication is supported.",
                         "type": "string"
+                    },
+                    "cluster_mode": {
+                        "description": "ClusterMode enables the Redis Cluster protocol. Requires Addr to be set.",
+                        "type": "boolean"
                     },
                     "dial_timeout": {
                         "description": "DialTimeout is the timeout for establishing connections (e.g., \"5s\").",
@@ -760,7 +818,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig": {
-                "description": "SentinelTLS configures TLS for Sentinel connections.\nFalls back to TLS config when nil.",
+                "description": "SentinelTLS configures TLS for Sentinel connections. Only applies when SentinelConfig is set.",
                 "properties": {
                     "ca_cert_file": {
                         "description": "CACertFile is the path to a PEM-encoded CA certificate file.",
@@ -787,7 +845,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig": {
-                "description": "SentinelConfig contains Sentinel-specific configuration.",
+                "description": "SentinelConfig contains Sentinel-specific configuration.\nMutually exclusive with Addr.",
                 "properties": {
                     "db": {
                         "description": "DB is the Redis database number (default: 0).",
@@ -834,10 +892,6 @@ const docTemplate = `{
                     "windsurf",
                     "windsurf-jetbrains",
                     "amp-cli",
-                    "amp-vscode",
-                    "amp-cursor",
-                    "amp-vscode-insider",
-                    "amp-windsurf",
                     "lm-studio",
                     "goose",
                     "trae",
@@ -851,7 +905,8 @@ const docTemplate = `{
                     "mistral-vibe",
                     "codex",
                     "kimi-cli",
-                    "factory"
+                    "factory",
+                    "copilot-cli"
                 ],
                 "type": "string",
                 "x-enum-varnames": [
@@ -864,10 +919,6 @@ const docTemplate = `{
                     "Windsurf",
                     "WindsurfJetBrains",
                     "AmpCli",
-                    "AmpVSCode",
-                    "AmpCursor",
-                    "AmpVSCodeInsider",
-                    "AmpWindsurf",
                     "LMStudio",
                     "Goose",
                     "Trae",
@@ -881,7 +932,8 @@ const docTemplate = `{
                     "MistralVibe",
                     "Codex",
                     "KimiCli",
-                    "Factory"
+                    "Factory",
+                    "CopilotCli"
                 ]
             },
             "github_com_stacklok_toolhive_pkg_client.ClientAppStatus": {
@@ -895,6 +947,10 @@ const docTemplate = `{
                     },
                     "registered": {
                         "description": "Registered indicates whether the client is registered in the ToolHive configuration",
+                        "type": "boolean"
+                    },
+                    "supports_plugins": {
+                        "description": "SupportsPlugins indicates whether ToolHive can install plugins for this client",
                         "type": "boolean"
                     },
                     "supports_skills": {
@@ -931,6 +987,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "auth_retrying",
                     "policy_stopped",
                     "running",
                     "stopped",
@@ -941,6 +998,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "auth_retrying",
                     "policy_stopped",
                     "running",
                     "stopped",
@@ -951,6 +1009,7 @@ const docTemplate = `{
                     "removing",
                     "unknown",
                     "unauthenticated",
+                    "auth_retrying",
                     "policy_stopped"
                 ],
                 "type": "string",
@@ -964,6 +1023,7 @@ const docTemplate = `{
                     "WorkloadStatusRemoving",
                     "WorkloadStatusUnknown",
                     "WorkloadStatusUnauthenticated",
+                    "WorkloadStatusAuthRetrying",
                     "WorkloadStatusPolicyStopped"
                 ]
             },
@@ -981,6 +1041,13 @@ const docTemplate = `{
                     "builder_image": {
                         "description": "BuilderImage is the full image reference for the builder stage.\nAn empty string signals \"use the default for this transport type\" during config merging.\nExamples: \"golang:1.26-alpine\", \"node:24-alpine\", \"python:3.14-slim\"",
                         "type": "string"
+                    },
+                    "runtime_env": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "RuntimeEnv contains environment variables to inject into the Dockerfile's\nfinal runtime stage. Unlike BuildEnv (pkg/container/templates.TemplateData.BuildEnv),\nwhich only affects the builder stage, these variables are baked into the\nshipped image and are present in the running container's process\nenvironment at startup. Use this for values a packaged MCP server reads at\nprocess start (e.g. feature flags, cache backend selection), not for\nbuild-time package manager configuration.\nKeys must be uppercase with underscores, values are validated for safety.",
+                        "type": "object"
                     }
                 },
                 "type": "object"
@@ -1056,6 +1123,13 @@ const docTemplate = `{
                     "name": {
                         "type": "string"
                     },
+                    "plugins": {
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "registered_clients": {
                         "items": {
                             "type": "string"
@@ -1083,6 +1157,76 @@ const docTemplate = `{
                     "printOverlays": {
                         "description": "Whether to print resolved overlay paths for debugging",
                         "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_oauthproto_tokenexchange.Config": {
+                "description": "TokenExchangeConfig contains token exchange configuration for external authentication",
+                "properties": {
+                    "audience": {
+                        "description": "Audience is the target audience for the exchanged token",
+                        "type": "string"
+                    },
+                    "client_id": {
+                        "description": "ClientID is the OAuth 2.0 client identifier",
+                        "type": "string"
+                    },
+                    "client_secret": {
+                        "description": "ClientSecret is the OAuth 2.0 client secret",
+                        "type": "string"
+                    },
+                    "external_token_header_name": {
+                        "description": "ExternalTokenHeaderName is the name of the custom header to use when HeaderStrategy is \"custom\"",
+                        "type": "string"
+                    },
+                    "header_strategy": {
+                        "description": "HeaderStrategy determines how to inject the token\nValid values: HeaderStrategyReplace (default), HeaderStrategyCustom",
+                        "type": "string"
+                    },
+                    "scopes": {
+                        "description": "Scopes is the list of scopes to request for the exchanged token",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "subject_token_type": {
+                        "description": "SubjectTokenType specifies the type of the subject token being exchanged.\nCommon values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.\nIf empty, defaults to oauthproto.TokenTypeAccessToken.",
+                        "type": "string"
+                    },
+                    "token_url": {
+                        "description": "TokenURL is the OAuth 2.0 token endpoint URL",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket": {
+                "description": "PerUser token bucket configuration for this tool.\n+optional",
+                "properties": {
+                    "maxTokens": {
+                        "description": "MaxTokens is the maximum number of tokens (bucket capacity).\nThis is also the burst size: the maximum number of requests that can be served\ninstantaneously before the bucket is depleted.\n+kubebuilder:validation:Required\n+kubebuilder:validation:Minimum=1",
+                        "type": "integer"
+                    },
+                    "refillPeriod": {
+                        "$ref": "#/components/schemas/v1.Duration"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_ratelimit_types.ToolRateLimitConfig": {
+                "properties": {
+                    "name": {
+                        "description": "Name is the MCP tool name this limit applies to.\n+kubebuilder:validation:Required\n+kubebuilder:validation:MinLength=1",
+                        "type": "string"
+                    },
+                    "perUser": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket"
+                    },
+                    "shared": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket"
                     }
                 },
                 "type": "object"
@@ -1131,9 +1275,25 @@ const docTemplate = `{
             },
             "github_com_stacklok_toolhive_pkg_runner.RunConfig": {
                 "properties": {
+                    "additional_middleware_configs": {
+                        "description": "AdditionalMiddlewareConfigs carries pre-built middleware configs injected by\nexternal-auth handlers (reached via *[]RunConfigBuilderOption) rather than\nderived from typed RunConfig fields. PopulateMiddlewareConfigs splices these\ninto the chain in the backend-egress group — after auth and before recovery —\ninstead of discarding them. Upstream carries these configs verbatim and never\ninspects their parameters; the middleware type identity (e.g. an enterprise\nauth type) is supplied by the caller via types.MiddlewareConfig.Type.\n\nEach entry's Type is expected to be a NEW egress middleware type (e.g. OBO),\nnot one already produced from a typed RunConfig field (auth, authz, audit,\ntokenExchange, awssts, …). Dispatch in the proxyrunner is purely by Type\nstring, so an injected Type that shadows a typed-field type would add a\nsecond instance of that middleware to the chain; the seam does not validate\nagainst this.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "allow_docker_gateway": {
-                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "description": "AllowDockerGateway permits outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when InsecureAllowAll is set.\nOnly applicable to Docker deployments with network isolation enabled.\nGateway access is port-independent: it ignores the permission profile's\nallowed ports, so once enabled the gateway is reachable on any port.",
                         "type": "boolean"
+                    },
+                    "allowed_origins": {
+                        "description": "AllowedOrigins is the allowlist of values accepted on the HTTP Origin header,\nused for DNS-rebinding protection per MCP 2025-11-25 §\"Security Warning\".\nWhen empty and Host is loopback (127.0.0.1 / localhost / [::1]), a default\nloopback-only allowlist is derived at middleware-wiring time.\nWhen empty and Host is non-loopback, the middleware is disabled — operators\nexposing the proxy publicly must configure an explicit allowlist.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     },
                     "audit_config": {
                         "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_audit.Config"
@@ -1227,6 +1387,10 @@ const docTemplate = `{
                         "description": "K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template\nOnly applicable when using Kubernetes runtime",
                         "type": "string"
                     },
+                    "mcpserver_generation": {
+                        "description": "MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered\nthis RunConfig. The Kubernetes runtime uses it as a monotonic version to prevent stale\nrolling-update pods from overwriting a newer RunConfig's StatefulSet apply. Zero value\nmeans unversioned (backward-compat with older operators, or non-operator callers).",
+                        "type": "integer"
+                    },
                     "middleware_configs": {
                         "description": "MiddlewareConfigs contains the list of middleware to apply to the transport\nand the configuration for each middleware.",
                         "items": {
@@ -1270,7 +1434,7 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "rate_limit_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig"
                     },
                     "rate_limit_namespace": {
                         "description": "RateLimitNamespace is the Kubernetes namespace for Redis key derivation.",
@@ -1313,6 +1477,11 @@ const docTemplate = `{
                         "type": "array",
                         "uniqueItems": false
                     },
+                    "session_ttl": {
+                        "description": "SessionTTL is the inactivity timeout for proxy sessions, expressed as a Go\nduration string (e.g. \"30m\", \"2h\", \"168h\"). Empty uses the transport\ndefault (2h). Negative durations and values that fail time.ParseDuration\nare rejected at runtime.\nString (not time.Duration) keeps the wire format unit-explicit: a\ntime.Duration field serializes as nanoseconds in JSON.",
+                        "example": "2h",
+                        "type": "string"
+                    },
                     "stateless": {
                         "description": "Stateless indicates the server only supports POST (no SSE/GET).\nWhen true, the proxy returns 405 for incoming GET requests and uses a\nPOST-based health check instead of the default GET probe.\nApplies to both remote URLs and local container workloads.",
                         "type": "boolean"
@@ -1333,7 +1502,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "token_exchange_config": {
-                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config"
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_oauthproto_tokenexchange.Config"
                     },
                     "tools_filter": {
                         "description": "DEPRECATED: Middleware configuration.\nToolsFilter is the list of tools to filter",
@@ -1855,6 +2024,130 @@ const docTemplate = `{
                 },
                 "type": "object"
             },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult": {
+                "description": "Result is the upgrade-check outcome for the workload. It carries only\nmetadata (status, image references, drift) and never secret values.",
+                "properties": {
+                    "candidate_image": {
+                        "description": "CandidateImage is the image reference the registry currently reports.",
+                        "type": "string"
+                    },
+                    "config_drift": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.ConfigDrift"
+                    },
+                    "current_image": {
+                        "description": "CurrentImage is the image reference the workload is currently running.",
+                        "type": "string"
+                    },
+                    "env_var_drift": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarDrift"
+                    },
+                    "reason": {
+                        "description": "Reason provides additional context, primarily for StatusUnknown.",
+                        "type": "string"
+                    },
+                    "registry_server": {
+                        "description": "RegistryServer is the registry entry name the workload was sourced from.\nEmpty when the workload is not registry-sourced.",
+                        "type": "string"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.UpgradeStatus"
+                    },
+                    "workload_name": {
+                        "description": "WorkloadName is the name of the workload that was checked.",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.ConfigDrift": {
+                "description": "ConfigDrift describes posture differences (transport, permission profile)\nbetween the workload and the candidate registry entry.",
+                "properties": {
+                    "permission_profile": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.StringChange"
+                    },
+                    "transport": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.StringChange"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarDrift": {
+                "description": "EnvVarDrift describes environment variables the candidate registry entry\ndeclares that differ from the workload's current configuration.",
+                "properties": {
+                    "added": {
+                        "description": "Added lists environment variables the candidate declares that the\nworkload does not currently supply (via plain env vars or secrets).",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarInfo"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "removed": {
+                        "description": "Removed lists environment variables the workload supplies that the\ncandidate no longer declares. Populated on a best-effort basis; may be\nempty even when removals exist (forward-compatible field).",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarInfo"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarInfo": {
+                "properties": {
+                    "default": {
+                        "description": "Default is the candidate's default value. It is cleared (left empty)\nwhenever Secret is true: a secret env var's default could carry sensitive\ndata, and surfacing it in a drift report (which may be logged or returned\nover the API) would leak it. Non-secret defaults are safe to display.",
+                        "type": "string"
+                    },
+                    "description": {
+                        "description": "Description is the human-readable purpose of the variable.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the environment variable name.",
+                        "type": "string"
+                    },
+                    "required": {
+                        "description": "Required indicates whether the candidate marks the variable as required.",
+                        "type": "boolean"
+                    },
+                    "secret": {
+                        "description": "Secret indicates whether the variable holds sensitive data.",
+                        "type": "boolean"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.StringChange": {
+                "description": "PermissionProfile is set when the candidate's permission profile differs\nfrom the workload's current profile.",
+                "properties": {
+                    "from": {
+                        "type": "string"
+                    },
+                    "to": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_workloads_upgrade.UpgradeStatus": {
+                "description": "Status is the upgrade status for the workload.",
+                "enum": [
+                    "up-to-date",
+                    "upgrade-available",
+                    "not-registry-sourced",
+                    "server-not-found",
+                    "unknown"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "StatusUpToDate",
+                    "StatusUpgradeAvailable",
+                    "StatusNotRegistrySourced",
+                    "StatusServerNotFound",
+                    "StatusUnknown"
+                ]
+            },
             "model.Argument": {
                 "properties": {
                     "choices": {
@@ -2067,13 +2360,13 @@ const docTemplate = `{
                         "uniqueItems": false
                     },
                     "registryBaseUrl": {
-                        "description": "RegistryBaseURL is the base URL of the package registry (used by npm, pypi, nuget; not used by oci, mcpb)",
+                        "description": "RegistryBaseURL is the base URL of the package registry (used by npm, pypi, nuget, cargo; not used by oci, mcpb)",
                         "example": "https://registry.npmjs.org",
                         "format": "uri",
                         "type": "string"
                     },
                     "registryType": {
-                        "description": "RegistryType indicates how to download packages (e.g., \"npm\", \"pypi\", \"oci\", \"nuget\", \"mcpb\")",
+                        "description": "RegistryType indicates how to download packages (e.g., \"npm\", \"pypi\", \"cargo\", \"oci\", \"nuget\", \"mcpb\")",
                         "example": "npm",
                         "minLength": 1,
                         "type": "string"
@@ -2097,6 +2390,7 @@ const docTemplate = `{
                     "version": {
                         "description": "Version is the package version (required for npm, pypi, nuget; optional for mcpb; not used by oci where version is in the identifier)",
                         "example": "1.0.2",
+                        "maxLength": 255,
                         "minLength": 1,
                         "type": "string"
                     }
@@ -2449,6 +2743,10 @@ const docTemplate = `{
             "pkg_api_v1.createRequest": {
                 "description": "Request to create a new workload",
                 "properties": {
+                    "allow_docker_gateway": {
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "type": "boolean"
+                    },
                     "authz_config": {
                         "description": "Authorization configuration",
                         "type": "string"
@@ -2495,7 +2793,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "network_isolation": {
-                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.",
+                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.\nPointer so that omitting the field defaults to network isolation ENABLED (matching the\n` + "`" + `thv run` + "`" + ` CLI default); set it explicitly to false to disable network isolation.\nThis also applies on update: a request that omits this field enables isolation, so\nclients that build update requests from scratch should send it explicitly to avoid\nunintentionally turning isolation on for a workload that had it off.",
                         "type": "boolean"
                     },
                     "oauth_config": {
@@ -3135,6 +3433,10 @@ const docTemplate = `{
             "pkg_api_v1.updateRequest": {
                 "description": "Request to update an existing workload (name cannot be changed)",
                 "properties": {
+                    "allow_docker_gateway": {
+                        "description": "Whether to permit outbound connections to Docker gateway addresses\n(host.docker.internal, gateway.docker.internal, 172.17.0.1). These are\nblocked by default in the egress proxy even when network isolation is on.\nOnly applicable to Docker deployments with network isolation enabled.",
+                        "type": "boolean"
+                    },
                     "authz_config": {
                         "description": "Authorization configuration",
                         "type": "string"
@@ -3177,7 +3479,7 @@ const docTemplate = `{
                         "type": "string"
                     },
                     "network_isolation": {
-                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.",
+                        "description": "Whether network isolation is turned on. This applies the rules in the permission profile.\nPointer so that omitting the field defaults to network isolation ENABLED (matching the\n` + "`" + `thv run` + "`" + ` CLI default); set it explicitly to false to disable network isolation.\nThis also applies on update: a request that omits this field enables isolation, so\nclients that build update requests from scratch should send it explicitly to avoid\nunintentionally turning isolation on for a workload that had it off.",
                         "type": "boolean"
                     },
                     "oauth_config": {
@@ -3270,6 +3572,50 @@ const docTemplate = `{
                     "message": {
                         "description": "Success message",
                         "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.upgradeCheckBulkResponse": {
+                "description": "Results of checking multiple workloads for available upgrades",
+                "properties": {
+                    "results": {
+                        "description": "Results holds one upgrade-check outcome per scoped workload, in the order\nthe workloads were enumerated. Each entry carries only metadata and never\nsecret values.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.upgradeCheckResponse": {
+                "description": "Result of checking a single workload for an available upgrade",
+                "properties": {
+                    "result": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult"
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.upgradeRequest": {
+                "description": "Request to apply an available upgrade to a workload. All fields are optional; an empty body applies the upgrade preserving the workload's existing configuration.",
+                "properties": {
+                    "env": {
+                        "additionalProperties": {
+                            "type": "string"
+                        },
+                        "description": "Env holds additional or overriding environment variables to merge into the\nupgraded workload's configuration.",
+                        "type": "object"
+                    },
+                    "secrets": {
+                        "description": "Secrets holds additional secret parameters (` + "`" + `\u003cname\u003e,target=\u003cenv\u003e` + "`" + `) to merge\ninto the upgraded workload's configuration. Only references are accepted;\nno secret values are transmitted in the request.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
                     }
                 },
                 "type": "object"
@@ -3464,6 +3810,10 @@ const docTemplate = `{
                     "repository_url": {
                         "description": "RepositoryURL is the URL to the source code repository for the server",
                         "type": "string"
+                    },
+                    "stateless": {
+                        "description": "Stateless indicates the server only supports POST (no SSE/GET)",
+                        "type": "boolean"
                     },
                     "status": {
                         "description": "Status indicates whether the server is currently active or deprecated",
@@ -3676,6 +4026,10 @@ const docTemplate = `{
                     "repository_url": {
                         "description": "RepositoryURL is the URL to the source code repository for the server",
                         "type": "string"
+                    },
+                    "stateless": {
+                        "description": "Stateless indicates the server only supports POST (no SSE/GET)",
+                        "type": "boolean"
                     },
                     "status": {
                         "description": "Status indicates whether the server is currently active or deprecated",
@@ -3927,6 +4281,8 @@ const docTemplate = `{
                     },
                     "version": {
                         "example": "1.0.2",
+                        "maxLength": 255,
+                        "minLength": 1,
                         "type": "string"
                     },
                     "websiteUrl": {
@@ -4803,6 +5159,71 @@ const docTemplate = `{
                 ]
             }
         },
+        "/api/v1beta/registry/{name}/refresh": {
+            "post": {
+                "description": "Force a refresh of the server-side registry cache for the default registry",
+                "parameters": [
+                    {
+                        "description": "Registry name (must be 'default')",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "additionalProperties": {
+                                        "type": "string"
+                                    },
+                                    "type": "object"
+                                }
+                            }
+                        },
+                        "description": "Registry refreshed"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.registryErrorResponse"
+                                }
+                            }
+                        },
+                        "description": "Registry authentication required or upstream registry unavailable"
+                    }
+                },
+                "summary": "Refresh registry cache",
+                "tags": [
+                    "registry"
+                ]
+            }
+        },
         "/api/v1beta/registry/{name}/servers": {
             "get": {
                 "description": "Get a list of servers in a specific registry",
@@ -5409,6 +5830,26 @@ const docTemplate = `{
                         },
                         "description": "Bad Request"
                     },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized (registry refused credentials)"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (artifact not present in registry)"
+                    },
                     "409": {
                         "content": {
                             "application/json": {
@@ -5418,6 +5859,16 @@ const docTemplate = `{
                             }
                         },
                         "description": "Conflict"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Too Many Requests (registry rate limit)"
                     },
                     "500": {
                         "content": {
@@ -5437,7 +5888,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Bad Gateway"
+                        "description": "Bad Gateway (upstream registry failure)"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout (upstream pull timed out)"
                     }
                 },
                 "summary": "Install a skill",
@@ -5625,6 +6086,36 @@ const docTemplate = `{
                         },
                         "description": "Bad Request"
                     },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Unauthorized (registry refused credentials)"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (artifact not present in registry)"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Too Many Requests (registry rate limit)"
+                    },
                     "500": {
                         "content": {
                             "application/json": {
@@ -5643,7 +6134,17 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "Bad Gateway"
+                        "description": "Bad Gateway (upstream registry or git resolver failure)"
+                    },
+                    "504": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Gateway Timeout (upstream pull timed out)"
                     }
                 },
                 "summary": "Get skill content",
@@ -6228,6 +6729,65 @@ const docTemplate = `{
                 ]
             }
         },
+        "/api/v1beta/workloads/upgrade-check": {
+            "get": {
+                "description": "Check all workloads (optionally filtered by group) for newer\nimages available in their source registries. This is an offline\nmetadata comparison; it does not pull images. Secret values are\nnever returned.",
+                "parameters": [
+                    {
+                        "description": "Include stopped workloads",
+                        "in": "query",
+                        "name": "all",
+                        "schema": {
+                            "type": "boolean"
+                        }
+                    },
+                    {
+                        "description": "Filter workloads by group name",
+                        "in": "query",
+                        "name": "group",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.upgradeCheckBulkResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Group not found"
+                    }
+                },
+                "summary": "Check workloads for available upgrades",
+                "tags": [
+                    "workloads"
+                ]
+            }
+        },
         "/api/v1beta/workloads/{name}": {
             "delete": {
                 "description": "Delete a workload asynchronously. Returns 202 Accepted immediately.\nThe deletion happens in the background. Poll the workload list to confirm deletion.",
@@ -6679,6 +7239,149 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Stop a workload",
+                "tags": [
+                    "workloads"
+                ]
+            }
+        },
+        "/api/v1beta/workloads/{name}/upgrade": {
+            "post": {
+                "description": "Apply a registry-sourced upgrade to a single workload. This\nre-resolves and verifies the candidate image, pulls it, and only\nthen recreates the workload with the new image, preserving the\nexisting configuration. If the workload is already up to date or\nis not registry-sourced, the current check result is returned\nunchanged (no-op). Secret values are never accepted or returned.",
+                "parameters": [
+                    {
+                        "description": "Workload name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.upgradeRequest",
+                                        "summary": "request",
+                                        "description": "Upgrade options"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Upgrade options"
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.upgradeCheckResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    },
+                    "422": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Unprocessable Entity"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    }
+                },
+                "summary": "Apply an available upgrade to a workload",
+                "tags": [
+                    "workloads"
+                ]
+            }
+        },
+        "/api/v1beta/workloads/{name}/upgrade-check": {
+            "get": {
+                "description": "Check whether a single workload has a newer image available in\nits source registry. This is an offline metadata comparison; it\ndoes not pull images. Secret values are never returned.",
+                "parameters": [
+                    {
+                        "description": "Workload name",
+                        "in": "path",
+                        "name": "name",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/pkg_api_v1.upgradeCheckResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found"
+                    }
+                },
+                "summary": "Check a workload for an available upgrade",
                 "tags": [
                     "workloads"
                 ]

@@ -1,39 +1,89 @@
 {
+  "$schema": "https://raw.githubusercontent.com/stacklok/toolhive-core/main/registry/types/data/upstream-registry.schema.json",
   "version": "1.0.0",
-  "last_updated": "2025-01-12T00:00:00Z",
-  "servers": {
-    "example-container": {
-      "image": "example/mcp-server:latest",
-      "description": "Example container-based MCP server",
-      "tier": "community",
-      "status": "active",
-      "transport": "stdio",
-      "tools": ["example-tool"],
-      "tags": ["example", "container"]
-    }
+  "meta": {
+    "last_updated": "2025-01-12T00:00:00Z"
   },
-  "remote_servers": {
-    "example-remote": {
-      "url": "https://api.example.com/mcp",
-      "description": "Example remote MCP server accessed via HTTP",
-      "tier": "community",
-      "status": "active",
-      "transport": "sse",
-      "tools": ["remote-tool"],
-      "tags": ["example", "remote"],
-      "headers": [
-        {
-          "name": "X-API-Key",
-          "description": "API key for authentication",
-          "required": true,
-          "secret": true
+  "data": {
+    "servers": [
+      {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+        "name": "io.github.stacklok/example-container",
+        "description": "Example container-based MCP server",
+        "version": "1.0.0",
+        "packages": [
+          {
+            "registryType": "oci",
+            "identifier": "example/mcp-server:latest",
+            "transport": {
+              "type": "stdio"
+            }
+          }
+        ],
+        "_meta": {
+          "io.modelcontextprotocol.registry/publisher-provided": {
+            "io.github.stacklok": {
+              "example/mcp-server:latest": {
+                "status": "active",
+                "tags": [
+                  "example",
+                  "container"
+                ],
+                "tier": "Community",
+                "tools": [
+                  "example-tool"
+                ]
+              }
+            }
+          }
         }
-      ],
-      "oauth_config": {
-        "issuer": "https://accounts.example.com",
-        "client_id": "example-client-id",
-        "scopes": ["openid", "profile", "email"]
+      },
+      {
+        "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+        "name": "io.github.stacklok/example-remote",
+        "description": "Example remote MCP server accessed via HTTP",
+        "version": "1.0.0",
+        "remotes": [
+          {
+            "type": "sse",
+            "url": "https://api.example.com/mcp",
+            "headers": [
+              {
+                "description": "API key for authentication",
+                "isRequired": true,
+                "isSecret": true,
+                "name": "X-API-Key"
+              }
+            ]
+          }
+        ],
+        "_meta": {
+          "io.modelcontextprotocol.registry/publisher-provided": {
+            "io.github.stacklok": {
+              "https://api.example.com/mcp": {
+                "oauth_config": {
+                  "client_id": "example-client-id",
+                  "issuer": "https://accounts.example.com",
+                  "scopes": [
+                    "openid",
+                    "profile",
+                    "email"
+                  ]
+                },
+                "status": "active",
+                "tags": [
+                  "example",
+                  "remote"
+                ],
+                "tier": "Community",
+                "tools": [
+                  "remote-tool"
+                ]
+              }
+            }
+          }
+        }
       }
-    }
+    ]
   }
 }

@@ -16,6 +16,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/runner"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
+	"github.com/stacklok/toolhive/pkg/workloads/upgrade"
 )
 
 // workloadListResponse represents the response for listing workloads
@@ -32,7 +33,7 @@ type workloadListResponse struct {
 type workloadStatusResponse struct {
 	// Current status of the workload
 	//nolint:lll // enums tag needed for swagger generation with --parseDependencyLevel
-	Status runtime.WorkloadStatus `json:"status" enums:"running,stopped,error,starting,stopping,unhealthy,removing,unknown,unauthenticated,policy_stopped"`
+	Status runtime.WorkloadStatus `json:"status" enums:"running,stopped,error,starting,stopping,unhealthy,removing,unknown,unauthenticated,auth_retrying,policy_stopped"`
 }
 
 // updateRequest represents the request to update an existing workload
@@ -71,9 +72,19 @@ type updateRequest struct {
 	// Proxy mode to use
 	ProxyMode string `json:"proxy_mode"`
 	// Whether network isolation is turned on. This applies the rules in the permission profile.
-	NetworkIsolation bool `json:"network_isolation"`
+	// Pointer so that omitting the field defaults to network isolation ENABLED (matching the
+	// `thv run` CLI default); set it explicitly to false to disable network isolation.
+	// This also applies on update: a request that omits this field enables isolation, so
+	// clients that build update requests from scratch should send it explicitly to avoid
+	// unintentionally turning isolation on for a workload that had it off.
+	NetworkIsolation *bool `json:"network_isolation,omitempty"`
 	// Whether to trust X-Forwarded-* headers from reverse proxies
 	TrustProxyHeaders bool `json:"trust_proxy_headers"`
+	// Whether to permit outbound connections to Docker gateway addresses
+	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+	// blocked by default in the egress proxy even when network isolation is on.
+	// Only applicable to Docker deployments with network isolation enabled.
+	AllowDockerGateway bool `json:"allow_docker_gateway,omitempty"`
 	// Tools filter
 	ToolsFilter []string `json:"tools"`
 	// Tools override
@@ -183,6 +194,40 @@ type oidcOptions struct {
 	Scopes []string `json:"scopes,omitempty"`
 }
 
+// upgradeCheckResponse is the response for a single-workload upgrade check.
+//
+//	@Description	Result of checking a single workload for an available upgrade
+type upgradeCheckResponse struct {
+	// Result is the upgrade-check outcome for the workload. It carries only
+	// metadata (status, image references, drift) and never secret values.
+	Result *upgrade.CheckResult `json:"result"`
+}
+
+// upgradeRequest is the request body for applying an upgrade to a workload.
+//
+//	@Description	Request to apply an available upgrade to a workload. All fields
+//	@Description	are optional; an empty body applies the upgrade preserving the
+//	@Description	workload's existing configuration.
+type upgradeRequest struct {
+	// Env holds additional or overriding environment variables to merge into the
+	// upgraded workload's configuration.
+	Env map[string]string `json:"env,omitempty"`
+	// Secrets holds additional secret parameters (`<name>,target=<env>`) to merge
+	// into the upgraded workload's configuration. Only references are accepted;
+	// no secret values are transmitted in the request.
+	Secrets []string `json:"secrets,omitempty"`
+}
+
+// upgradeCheckBulkResponse is the response for a batch upgrade check.
+//
+//	@Description	Results of checking multiple workloads for available upgrades
+type upgradeCheckBulkResponse struct {
+	// Results holds one upgrade-check outcome per scoped workload, in the order
+	// the workloads were enumerated. Each entry carries only metadata and never
+	// secret values.
+	Results []*upgrade.CheckResult `json:"results"`
+}
+
 // createWorkloadResponse represents the response for workload creation
 //
 //	@Description	Response after successfully creating a workload
@@ -210,6 +255,15 @@ func validateBulkOperationRequest(req bulkOperationRequest) error {
 		return fmt.Errorf("must specify either names or group")
 	}
 	return nil
+}
+
+// networkIsolationEnabled defaults network isolation to ON when the client
+// omits the field (nil), matching the CLI default. Explicit false disables it.
+func networkIsolationEnabled(v *bool) bool {
+	if v == nil {
+		return true
+	}
+	return *v
 }
 
 // runConfigToCreateRequest converts a RunConfig to createRequest for API responses
@@ -308,29 +362,30 @@ func runConfigToCreateRequest(runConfig *runner.RunConfig) *createRequest {
 
 	return &createRequest{
 		updateRequest: updateRequest{
-			Image:             runConfig.Image,
-			RuntimeConfig:     runtimeConfigForResponse(runConfig),
-			Host:              runConfig.Host,
-			CmdArguments:      runConfig.CmdArgs,
-			TargetPort:        runConfig.TargetPort,
-			ProxyPort:         runConfig.Port,
-			EnvVars:           runConfig.EnvVars,
-			Secrets:           secretParams,
-			Volumes:           runConfig.Volumes,
-			Transport:         string(runConfig.Transport),
-			AuthzConfig:       authzConfigPath,
-			OIDC:              oidcConfig,
-			PermissionProfile: runConfig.PermissionProfile,
-			ProxyMode:         string(runConfig.ProxyMode),
-			NetworkIsolation:  runConfig.IsolateNetwork,
-			TrustProxyHeaders: runConfig.TrustProxyHeaders,
-			ToolsFilter:       runConfig.ToolsFilter,
-			ToolsOverride:     toolsOverride,
-			Group:             runConfig.Group,
-			URL:               runConfig.RemoteURL,
-			OAuthConfig:       oAuthConfig,
-			Headers:           headers,
-			HeaderForward:     headerForward,
+			Image:              runConfig.Image,
+			RuntimeConfig:      runtimeConfigForResponse(runConfig),
+			Host:               runConfig.Host,
+			CmdArguments:       runConfig.CmdArgs,
+			TargetPort:         runConfig.TargetPort,
+			ProxyPort:          runConfig.Port,
+			EnvVars:            runConfig.EnvVars,
+			Secrets:            secretParams,
+			Volumes:            runConfig.Volumes,
+			Transport:          string(runConfig.Transport),
+			AuthzConfig:        authzConfigPath,
+			OIDC:               oidcConfig,
+			PermissionProfile:  runConfig.PermissionProfile,
+			ProxyMode:          string(runConfig.ProxyMode),
+			NetworkIsolation:   &runConfig.IsolateNetwork,
+			TrustProxyHeaders:  runConfig.TrustProxyHeaders,
+			AllowDockerGateway: runConfig.AllowDockerGateway,
+			ToolsFilter:        runConfig.ToolsFilter,
+			ToolsOverride:      toolsOverride,
+			Group:              runConfig.Group,
+			URL:                runConfig.RemoteURL,
+			OAuthConfig:        oAuthConfig,
+			Headers:            headers,
+			HeaderForward:      headerForward,
 		},
 		Name: runConfig.Name,
 	}

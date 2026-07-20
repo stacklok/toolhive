@@ -8,13 +8,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -44,17 +45,17 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		}, timeout, pollingInterval)
 
 		By("Creating MCPToolConfig for filtering and overriding tools")
-		toolConfig := &mcpv1alpha1.MCPToolConfig{
+		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      toolConfigName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.MCPToolConfigSpec{
+			Spec: mcpv1beta1.MCPToolConfigSpec{
 				// Filter on the overridden name (renamed_fetch), not the backend name (fetch).
 				// This is because filtering happens AFTER override is applied.
 				ToolsFilter: []string{"renamed_fetch"},
 				// Override the fetch tool name and description
-				ToolsOverride: map[string]mcpv1alpha1.ToolOverride{
+				ToolsOverride: map[string]mcpv1beta1.ToolOverride{
 					"fetch": {
 						Name:        "renamed_fetch",
 						Description: "This fetch tool has been renamed via MCPToolConfig",
@@ -65,39 +66,35 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		Expect(k8sClient.Create(ctx, toolConfig)).To(Succeed())
 
 		By("Creating VirtualMCPServer with MCPToolConfig reference for backend1")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-						Tools: []*vmcpconfig.WorkloadToolConfig{
-							{
-								Workload: backend1Name,
-								// Reference MCPToolConfig instead of inline Filter
-								ToolConfigRef: &vmcpconfig.ToolConfigRef{
-									Name: toolConfigName,
-								},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
+					Tools: []*vmcpconfig.WorkloadToolConfig{
+						{
+							Workload: backend1Name,
+							// Reference MCPToolConfig instead of inline Filter
+							ToolConfigRef: &vmcpconfig.ToolConfigRef{
+								Name: toolConfigName,
 							},
-							{
-								Workload: backend2Name,
-								// Use inline filter to exclude all tools from backend2
-								Filter: []string{"nonexistent_tool"},
-							},
+						},
+						{
+							Workload: backend2Name,
+							// Use inline filter to exclude all tools from backend2
+							Filter: []string{"nonexistent_tool"},
 						},
 					},
 				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -111,16 +108,11 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace)
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up MCPToolConfig")
-		toolConfig := &mcpv1alpha1.MCPToolConfig{
+		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      toolConfigName,
 				Namespace: testNamespace,
@@ -130,7 +122,7 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 
 		By("Cleaning up backend MCPServers")
 		for _, backendName := range []string{backend1Name, backend2Name} {
-			backend := &mcpv1alpha1.MCPServer{
+			backend := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      backendName,
 					Namespace: testNamespace,
@@ -140,7 +132,7 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		}
 
 		By("Cleaning up MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
+		mcpGroup := &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,
@@ -276,7 +268,7 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 
 	Context("when verifying MCPToolConfig configuration", func() {
 		It("should have correct ToolConfigRef in VirtualMCPServer spec", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -301,7 +293,7 @@ var _ = Describe("VirtualMCPServer Tool Filtering via MCPToolConfig", Ordered, f
 		})
 
 		It("should have MCPToolConfig with correct filter and overrides", func() {
-			toolConfig := &mcpv1alpha1.MCPToolConfig{}
+			toolConfig := &mcpv1beta1.MCPToolConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      toolConfigName,
 				Namespace: testNamespace,
@@ -343,12 +335,12 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 			images.GofetchServerImage, timeout, pollingInterval)
 
 		By("Creating MCPToolConfig with initial filter")
-		toolConfig := &mcpv1alpha1.MCPToolConfig{
+		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      toolConfigName,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.MCPToolConfigSpec{
+			Spec: mcpv1beta1.MCPToolConfigSpec{
 				// Initially only allow 'fetch' tool
 				ToolsFilter: []string{"fetch"},
 			},
@@ -356,33 +348,29 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 		Expect(k8sClient.Create(ctx, toolConfig)).To(Succeed())
 
 		By("Creating VirtualMCPServer with MCPToolConfig reference")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-						Tools: []*vmcpconfig.WorkloadToolConfig{
-							{
-								Workload: backendName,
-								ToolConfigRef: &vmcpconfig.ToolConfigRef{
-									Name: toolConfigName,
-								},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
+					Tools: []*vmcpconfig.WorkloadToolConfig{
+						{
+							Workload: backendName,
+							ToolConfigRef: &vmcpconfig.ToolConfigRef{
+								Name: toolConfigName,
 							},
 						},
 					},
 				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -396,16 +384,11 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace)
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up MCPToolConfig")
-		toolConfig := &mcpv1alpha1.MCPToolConfig{
+		toolConfig := &mcpv1beta1.MCPToolConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      toolConfigName,
 				Namespace: testNamespace,
@@ -414,7 +397,7 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 		_ = k8sClient.Delete(ctx, toolConfig)
 
 		By("Cleaning up backend MCPServer")
-		backend := &mcpv1alpha1.MCPServer{
+		backend := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backendName,
 				Namespace: testNamespace,
@@ -423,7 +406,7 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 		_ = k8sClient.Delete(ctx, backend)
 
 		By("Cleaning up MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
+		mcpGroup := &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,
@@ -459,7 +442,7 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 
 		It("should reflect updated overrides when MCPToolConfig is modified", func() {
 			By("Updating MCPToolConfig to change the tool override name")
-			toolConfig := &mcpv1alpha1.MCPToolConfig{}
+			toolConfig := &mcpv1beta1.MCPToolConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      toolConfigName,
 				Namespace: testNamespace,
@@ -469,7 +452,7 @@ var _ = Describe("VirtualMCPServer MCPToolConfig Dynamic Updates", Ordered, func
 			// Update the override to rename fetch to "updated_fetch" instead of "renamed_fetch"
 			// Also update the filter to match the new overridden name
 			toolConfig.Spec.ToolsFilter = []string{"updated_fetch"}
-			toolConfig.Spec.ToolsOverride = map[string]mcpv1alpha1.ToolOverride{
+			toolConfig.Spec.ToolsOverride = map[string]mcpv1beta1.ToolOverride{
 				"fetch": {
 					Name:        "updated_fetch",
 					Description: "This fetch tool name was updated via MCPToolConfig",

@@ -231,6 +231,27 @@ func TestInjectSubjectProviderNames(t *testing.T) {
 		}
 	}
 
+	makeXAAStrategy := func(subjectProviderName string) *authtypes.BackendAuthStrategy {
+		return &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeXAA,
+			XAA: &authtypes.XAAConfig{
+				IDPTokenURL:         "https://idp.example.com/token",
+				TargetTokenURL:      "https://target.example.com/token",
+				SubjectProviderName: subjectProviderName,
+			},
+		}
+	}
+
+	makeAwsStsStrategy := func(subjectProviderName string) *authtypes.BackendAuthStrategy {
+		return &authtypes.BackendAuthStrategy{
+			Type: authtypes.StrategyTypeAwsSts,
+			AwsSts: &authtypes.AwsStsConfig{
+				Region:              "us-east-1",
+				SubjectProviderName: subjectProviderName,
+			},
+		}
+	}
+
 	makeRunConfig := func(upstreamNames ...string) *authserver.RunConfig {
 		rc := &authserver.RunConfig{}
 		for _, name := range upstreamNames {
@@ -246,6 +267,7 @@ func TestInjectSubjectProviderNames(t *testing.T) {
 		wantDefault   string
 		wantBackends  map[string]string // backend name → expected SubjectProviderName
 		wantUnchanged bool              // OutgoingAuth must not be touched
+		wantErr       error             // if set, InjectSubjectProviderNames must return an error satisfying errors.Is
 	}{
 		{
 			name:          "nil_cfg_is_a_noop",
@@ -339,20 +361,75 @@ func TestInjectSubjectProviderNames(t *testing.T) {
 			rc:          makeRunConfig("github"),
 			wantDefault: "", // no TokenExchange on this strategy
 		},
+		{
+			name: "xaa_empty_subject_provider_gets_populated",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeXAAStrategy(""),
+				},
+			},
+			rc:          makeRunConfig("github"),
+			wantDefault: "github",
+		},
+		{
+			name: "xaa_explicit_subject_provider_not_overridden",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeXAAStrategy("explicit"),
+				},
+			},
+			rc:          makeRunConfig("github"),
+			wantDefault: "explicit",
+		},
+		{
+			name: "aws_sts_empty_subject_provider_gets_populated",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeAwsStsStrategy(""),
+				},
+			},
+			rc:          makeRunConfig("github"),
+			wantDefault: "github",
+		},
+		{
+			name: "aws_sts_explicit_subject_provider_not_overridden",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeAwsStsStrategy("explicit"),
+				},
+			},
+			rc:          makeRunConfig("github"),
+			wantDefault: "explicit",
+		},
+		{
+			name: "xaa_ambiguous_with_multiple_upstreams_errors",
+			cfg: &Config{
+				OutgoingAuth: &OutgoingAuthConfig{
+					Default: makeXAAStrategy(""),
+				},
+			},
+			rc:      makeRunConfig("first", "second"),
+			wantErr: authtypes.ErrAmbiguousSubjectProvider,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			// Snapshot the default strategy pointer before calling so we can verify
-			// InjectSubjectProviderNames mutates in place rather than replacing pointers.
-			var beforeDefault *authtypes.BackendAuthStrategy
-			if tt.cfg != nil && tt.cfg.OutgoingAuth != nil {
-				beforeDefault = tt.cfg.OutgoingAuth.Default
-			}
+			err := InjectSubjectProviderNames(tt.cfg, tt.rc)
 
-			assert.NotPanics(t, func() { InjectSubjectProviderNames(tt.cfg, tt.rc) })
+			if tt.wantErr != nil {
+				require.Error(t, err)
+				assert.ErrorIs(t, err, tt.wantErr)
+				if tt.cfg != nil && tt.cfg.OutgoingAuth != nil &&
+					tt.cfg.OutgoingAuth.Default != nil && tt.cfg.OutgoingAuth.Default.XAA != nil {
+					assert.Empty(t, tt.cfg.OutgoingAuth.Default.XAA.SubjectProviderName,
+						"SubjectProviderName must be left untouched when InjectSubjectProviderNames fails")
+				}
+				return
+			}
+			require.NoError(t, err)
 
 			if tt.wantUnchanged {
 				if tt.cfg != nil && tt.cfg.OutgoingAuth != nil &&
@@ -368,13 +445,17 @@ func TestInjectSubjectProviderNames(t *testing.T) {
 
 			// Verify the Default strategy.
 			if tt.cfg.OutgoingAuth.Default != nil {
-				if tt.cfg.OutgoingAuth.Default.TokenExchange != nil {
+				switch {
+				case tt.cfg.OutgoingAuth.Default.TokenExchange != nil:
 					assert.Equal(t, tt.wantDefault, tt.cfg.OutgoingAuth.Default.TokenExchange.SubjectProviderName,
 						"Default SubjectProviderName mismatch")
+				case tt.cfg.OutgoingAuth.Default.XAA != nil:
+					assert.Equal(t, tt.wantDefault, tt.cfg.OutgoingAuth.Default.XAA.SubjectProviderName,
+						"Default SubjectProviderName mismatch")
+				case tt.cfg.OutgoingAuth.Default.AwsSts != nil:
+					assert.Equal(t, tt.wantDefault, tt.cfg.OutgoingAuth.Default.AwsSts.SubjectProviderName,
+						"Default SubjectProviderName mismatch")
 				}
-				// The pointer must not have changed — mutation must be in place.
-				assert.Same(t, beforeDefault, tt.cfg.OutgoingAuth.Default,
-					"Default strategy pointer must not change: InjectSubjectProviderNames should mutate in place")
 			}
 
 			// Verify per-backend strategies.

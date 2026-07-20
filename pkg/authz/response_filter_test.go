@@ -16,11 +16,11 @@ import (
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
@@ -862,4 +862,314 @@ func TestOptimizerPassThroughToolsInResponseFilter(t *testing.T) {
 		assert.NotContains(t, names, "admin_tool",
 			"admin_tool has no permit policy and is not a pass-through tool")
 	})
+}
+
+// TestResponseFilteringWriter_SSE_PerLineFallthrough is a regression test for
+// issue #5257: when an SSE upstream interleaves a non-Response data line (e.g.
+// an MCP notification) or an undecodable data line with a real list response,
+// the filter previously wrote the entire raw upstream payload and returned,
+// leaking the unfiltered list past Cedar. It must instead pass only the
+// offending line through and continue filtering the rest of the stream.
+//
+// The same code path runs for every method covered by
+// requiresResponseFiltering, so each of tools/list, prompts/list, and
+// resources/list is exercised below.
+func TestResponseFilteringWriter_SSE_PerLineFallthrough(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+			`permit(principal, action == Action::"get_prompt", resource == Prompt::"greeting");`,
+			`permit(principal, action == Action::"read_resource", resource == Resource::"data");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]interface{}{"sub": "user1"},
+	}}
+
+	// encodeListResponse marshals a list result type into a JSON-RPC Response
+	// data line.
+	encodeListResponse := func(t *testing.T, result interface{}) string {
+		t.Helper()
+		resultJSON, err := json.Marshal(result)
+		require.NoError(t, err)
+		encoded, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+			ID:     jsonrpc2.Int64ID(1),
+			Result: json.RawMessage(resultJSON),
+		})
+		require.NoError(t, err)
+		return "data: " + string(encoded)
+	}
+
+	// methodCase describes how to build a filterable response for one MCP
+	// list method and how to read the filtered names out of the wire output.
+	type methodCase struct {
+		name             string
+		method           string
+		respLine         string
+		authorizedName   string
+		unauthorizedName string
+		extractNames     func(t *testing.T, result json.RawMessage) []string
+	}
+
+	methodCases := []methodCase{
+		{
+			name:   "tools/list",
+			method: string(mcp.MethodToolsList),
+			respLine: encodeListResponse(t, mcp.ListToolsResult{
+				Tools: []mcp.Tool{
+					{Name: "weather", Description: "Get weather information"},
+					{Name: "admin_tool", Description: "Sensitive admin operations"},
+				},
+			}),
+			authorizedName:   "weather",
+			unauthorizedName: "admin_tool",
+			extractNames: func(t *testing.T, result json.RawMessage) []string {
+				t.Helper()
+				var r mcp.ListToolsResult
+				require.NoError(t, json.Unmarshal(result, &r))
+				names := make([]string, len(r.Tools))
+				for i, tool := range r.Tools {
+					names[i] = tool.Name
+				}
+				return names
+			},
+		},
+		{
+			name:   "prompts/list",
+			method: string(mcp.MethodPromptsList),
+			respLine: encodeListResponse(t, mcp.ListPromptsResult{
+				Prompts: []mcp.Prompt{
+					{Name: "greeting", Description: "Generate greetings"},
+					{Name: "admin_prompt", Description: "Sensitive admin prompt"},
+				},
+			}),
+			authorizedName:   "greeting",
+			unauthorizedName: "admin_prompt",
+			extractNames: func(t *testing.T, result json.RawMessage) []string {
+				t.Helper()
+				var r mcp.ListPromptsResult
+				require.NoError(t, json.Unmarshal(result, &r))
+				names := make([]string, len(r.Prompts))
+				for i, p := range r.Prompts {
+					names[i] = p.Name
+				}
+				return names
+			},
+		},
+		{
+			name:   "resources/list",
+			method: string(mcp.MethodResourcesList),
+			respLine: encodeListResponse(t, mcp.ListResourcesResult{
+				Resources: []mcp.Resource{
+					{URI: "data", Name: "Data Resource"},
+					{URI: "secret", Name: "Sensitive Resource"},
+				},
+			}),
+			authorizedName:   "data",
+			unauthorizedName: "secret",
+			extractNames: func(t *testing.T, result json.RawMessage) []string {
+				t.Helper()
+				var r mcp.ListResourcesResult
+				require.NoError(t, json.Unmarshal(result, &r))
+				names := make([]string, len(r.Resources))
+				for i, res := range r.Resources {
+					names[i] = res.URI
+				}
+				return names
+			},
+		},
+	}
+
+	precedingLineCases := []struct {
+		name string
+		line string
+	}{
+		{
+			name: "non-response data line",
+			// A notifications/* frame is a valid JSON-RPC notification
+			// (no id), so jsonrpc2.DecodeMessage returns a non-Response
+			// message. The buggy path treated this as a signal to dump
+			// rawResponse and return.
+			line: `data: {"jsonrpc":"2.0","method":"notifications/message","params":{"level":"info","data":"warming up"}}`,
+		},
+		{
+			name: "undecodable data line",
+			line: `data: this is not json at all`,
+		},
+	}
+
+	for _, mc := range methodCases {
+		for _, plc := range precedingLineCases {
+			mc, plc := mc, plc
+			t.Run(mc.name+"/"+plc.name, func(t *testing.T) {
+				t.Parallel()
+
+				req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+				require.NoError(t, err)
+				req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+				rr := httptest.NewRecorder()
+				rfw := NewResponseFilteringWriter(rr, authorizer, req, mc.method, nil, nil)
+				rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+				body := strings.Join([]string{plc.line, mc.respLine, ""}, "\n")
+				_, err = rfw.Write([]byte(body))
+				require.NoError(t, err)
+
+				require.NoError(t, rfw.FlushAndFilter())
+
+				out := rr.Body.String()
+
+				// The preceding line must still appear verbatim; pass-through
+				// is the whole point of the fix.
+				assert.Contains(t, out, plc.line,
+					"non-response/undecodable preceding line must pass through unchanged")
+
+				// The real list response must have been filtered. Pull the
+				// last JSON-RPC Response data line out and decode it.
+				var filteredLine string
+				for _, line := range strings.Split(out, "\n") {
+					if strings.HasPrefix(line, "data: {\"jsonrpc\"") && strings.Contains(line, `"result"`) {
+						filteredLine = line
+					}
+				}
+				require.NotEmpty(t, filteredLine, "no JSON-RPC Response data line found in output")
+
+				payload := strings.TrimPrefix(filteredLine, "data: ")
+				msg, err := jsonrpc2.DecodeMessage([]byte(payload))
+				require.NoError(t, err)
+				resp, ok := msg.(*jsonrpc2.Response)
+				require.True(t, ok)
+
+				names := mc.extractNames(t, resp.Result)
+				assert.Contains(t, names, mc.authorizedName, "authorized entry must be retained")
+				assert.NotContains(t, names, mc.unauthorizedName,
+					"unauthorized entry must be filtered; presence indicates the cedar bypass from #5257 is back")
+
+				// And the raw unfiltered payload (the bug used to dump it)
+				// must not appear in the wire output.
+				assert.NotContains(t, out, `"`+mc.unauthorizedName+`"`,
+					"unfiltered list payload leaked into SSE output")
+			})
+		}
+	}
+}
+
+// TestResponseFilteringWriter_SSE_DisguisedResponseFrame is a regression test
+// for a residual of issue #5257: a frame that carries both a method field (so
+// jsonrpc2.DecodeMessage classifies it as a request/notification rather than a
+// Response) and a result field smuggling a real list. Such a frame must be
+// dropped, not passed through, or the unfiltered list leaks past Cedar.
+func TestResponseFilteringWriter_SSE_DisguisedResponseFrame(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]interface{}{"sub": "user1"},
+	}}
+
+	// A genuine, filterable tools/list response on a later line.
+	realResultJSON, err := json.Marshal(mcp.ListToolsResult{
+		Tools: []mcp.Tool{{Name: "weather", Description: "Get weather information"}},
+	})
+	require.NoError(t, err)
+	realResp, err := jsonrpc2.EncodeMessage(&jsonrpc2.Response{
+		ID:     jsonrpc2.Int64ID(2),
+		Result: json.RawMessage(realResultJSON),
+	})
+	require.NoError(t, err)
+
+	// Each frame smuggles a tools/list result outside a clean Response, via a
+	// different upstream-controlled shape. DecodeMessage either classifies them
+	// as non-Response or rejects them outright, so the pre-fix code passed them
+	// through unfiltered. All must be dropped, not leaked.
+	frames := []struct {
+		name    string
+		payload string
+	}{
+		{"method+result non-response", `data: {"jsonrpc":"2.0","method":"notifications/initialized","id":1,"result":{"tools":[{"name":"admin_tool"}]}}`},
+		{"missing jsonrpc tag", `data: {"id":1,"result":{"tools":[{"name":"admin_tool"}]}}`},
+		{"no id", `data: {"jsonrpc":"2.0","result":{"tools":[{"name":"admin_tool"}]}}`},
+		{"non-scalar id", `data: {"jsonrpc":"2.0","id":{"x":1},"result":{"tools":[{"name":"admin_tool"}]}}`},
+		{"batch array", `data: [{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"admin_tool"}]}}]`},
+	}
+
+	for _, f := range frames {
+		f := f
+		t.Run(f.name, func(t *testing.T) {
+			t.Parallel()
+
+			req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+			require.NoError(t, err)
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+			rr := httptest.NewRecorder()
+			rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+			rfw.ResponseWriter.Header().Set("Content-Type", "text/event-stream")
+
+			body := strings.Join([]string{f.payload, "data: " + string(realResp), ""}, "\n")
+			_, err = rfw.Write([]byte(body))
+			require.NoError(t, err)
+			require.NoError(t, rfw.FlushAndFilter())
+
+			out := rr.Body.String()
+			assert.NotContains(t, out, "admin_tool",
+				"smuggled result leaked past the filter")
+			assert.Contains(t, out, "weather",
+				"genuine list response on a later line must still be delivered")
+		})
+	}
+}
+
+// TestResponseFilteringWriter_JSON_DisguisedResponseFrame is the application/json
+// counterpart: the disguised-result bypass is transport-independent, so the JSON
+// path must also fail closed on a smuggled result rather than write it through.
+func TestResponseFilteringWriter_JSON_DisguisedResponseFrame(t *testing.T) {
+	t.Parallel()
+
+	authorizer, err := cedar.NewCedarAuthorizer(cedar.ConfigOptions{
+		Policies: []string{
+			`permit(principal, action == Action::"call_tool", resource == Tool::"weather");`,
+		},
+		EntitiesJSON: `[]`,
+	}, "")
+	require.NoError(t, err)
+
+	identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+		Subject: "user1",
+		Claims:  map[string]interface{}{"sub": "user1"},
+	}}
+
+	// A batch array smuggling a tools/list result. DecodeMessage rejects the
+	// array, so the pre-fix JSON path wrote it through raw.
+	smuggled := `[{"jsonrpc":"2.0","id":1,"result":{"tools":[{"name":"admin_tool"}]}}]`
+
+	req, err := http.NewRequest(http.MethodPost, "/messages", nil)
+	require.NoError(t, err)
+	req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+	rr := httptest.NewRecorder()
+	rfw := NewResponseFilteringWriter(rr, authorizer, req, string(mcp.MethodToolsList), nil, nil)
+	rfw.ResponseWriter.Header().Set("Content-Type", "application/json")
+
+	_, err = rfw.Write([]byte(smuggled))
+	require.NoError(t, err)
+	require.NoError(t, rfw.FlushAndFilter())
+
+	assert.NotContains(t, rr.Body.String(), "admin_tool",
+		"smuggled result on the application/json transport leaked past the filter")
 }

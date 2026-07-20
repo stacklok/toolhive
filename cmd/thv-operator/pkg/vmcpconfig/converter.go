@@ -14,7 +14,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/oidc"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/spectoconfig"
@@ -28,6 +28,11 @@ import (
 const (
 	// authzLabelValueInline is the string value for inline authz configuration
 	authzLabelValueInline = "inline"
+	// AuthzConfigTypeCedarV1 is the MCPAuthzConfig.spec.type value for the Cedar
+	// authorizer. vMCP's incoming-auth middleware is hard-coded to Cedar, so both
+	// the converter and the VirtualMCPServer controller only resolve shared-config
+	// references of this type; any other type fails fast.
+	AuthzConfigTypeCedarV1 = "cedarv1"
 	// conflictResolutionPrefix is the string value for prefix conflict resolution strategy
 	conflictResolutionPrefix = "prefix"
 	// vmcpOIDCClientSecretEnvVar is the environment variable name for the OIDC client secret.
@@ -77,13 +82,18 @@ func NewConverter(oidcResolver oidc.Resolver, k8sClient client.Client) (*Convert
 // when AuthServerConfig is set on the VirtualMCPServer spec.
 func (c *Converter) Convert(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 ) (*vmcpconfig.Config, *authserver.RunConfig, error) {
 	// Start with a deep copy of the embedded config for automatic field passthrough.
 	// This ensures new fields added to config.Config are automatically included
 	// without requiring explicit mapping in this converter.
 	config := vmcp.Spec.Config.DeepCopy()
+
+	// Promoted top-level field takes precedence over spec.config.passthroughHeaders.
+	if len(vmcp.Spec.PassthroughHeaders) > 0 {
+		config.PassthroughHeaders = vmcp.Spec.PassthroughHeaders
+	}
 
 	// Override name with the CR name (authoritative source)
 	config.Name = vmcp.Name
@@ -160,7 +170,7 @@ func (c *Converter) Convert(
 // convertIncomingAuth converts IncomingAuthConfig from CRD to vmcp config.
 func (c *Converter) convertIncomingAuth(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (*vmcpconfig.IncomingAuthConfig, error) {
 	oidcConfig, err := c.resolveOIDCConfig(ctx, vmcp)
 	if err != nil {
@@ -172,27 +182,229 @@ func (c *Converter) convertIncomingAuth(
 		OIDC: oidcConfig,
 	}
 
-	// Convert authorization configuration
-	if vmcp.Spec.IncomingAuth.AuthzConfig != nil {
-		// Map Kubernetes API types to vmcp config types
-		// API "inline" maps to vmcp "cedar"
-		authzType := vmcp.Spec.IncomingAuth.AuthzConfig.Type
-		if authzType == authzLabelValueInline {
-			authzType = "cedar"
-		}
+	// Convert authorization configuration. The inline/configMap authzConfig and
+	// the shared authzConfigRef are mutually exclusive (enforced by CRD
+	// XValidation). Guard here too so enforcement never depends solely on
+	// apiserver CEL: if both are set, fail loud rather than silently letting one
+	// override the other.
+	if vmcp.Spec.IncomingAuth.AuthzConfig != nil && vmcp.Spec.IncomingAuth.AuthzConfigRef != nil {
+		return nil, fmt.Errorf("authzConfig and authzConfigRef are mutually exclusive")
+	}
 
-		incoming.Authz = &vmcpconfig.AuthzConfig{
-			Type: authzType,
+	switch {
+	case vmcp.Spec.IncomingAuth.AuthzConfig != nil:
+		authz, err := c.convertAuthzConfig(ctx, vmcp)
+		if err != nil {
+			return nil, err
 		}
-
-		// Handle inline policies
-		if vmcp.Spec.IncomingAuth.AuthzConfig.Type == authzLabelValueInline && vmcp.Spec.IncomingAuth.AuthzConfig.Inline != nil {
-			incoming.Authz.Policies = vmcp.Spec.IncomingAuth.AuthzConfig.Inline.Policies
+		incoming.Authz = authz
+	case vmcp.Spec.IncomingAuth.AuthzConfigRef != nil:
+		authz, err := c.resolveAuthzConfigRef(ctx, vmcp)
+		if err != nil {
+			return nil, err
 		}
-		// TODO: Load policies from ConfigMap if Type is "configMap"
+		incoming.Authz = authz
 	}
 
 	return incoming, nil
+}
+
+// resolveAuthzConfigRef resolves a referenced MCPAuthzConfig
+// (spec.incomingAuth.authzConfigRef) into a vmcpconfig.AuthzConfig.
+//
+// Only cedarv1 is supported today: vMCP's incoming-auth middleware hard-codes
+// the Cedar authorizer (pkg/vmcp/auth/factory/incoming.go), so a non-Cedar
+// reference fails fast here with a clear error rather than being carried through
+// as inert config that would fail later with an opaque message. Generalising the
+// vMCP runtime to other backends is tracked as a separate follow-up.
+//
+// The referenced config must exist and be Valid; otherwise an error is returned
+// and the caller stops the conversion (and, in the controller, the reconcile).
+func (c *Converter) resolveAuthzConfigRef(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) (*vmcpconfig.AuthzConfig, error) {
+	ref := vmcp.Spec.IncomingAuth.AuthzConfigRef
+
+	authzConfig, err := controllerutil.GetAuthzConfigForWorkload(ctx, c.k8sClient, vmcp.Namespace, ref)
+	if err != nil {
+		return nil, err
+	}
+	if err := controllerutil.ValidateAuthzConfigReady(authzConfig); err != nil {
+		return nil, err
+	}
+
+	if authzConfig.Spec.Type != AuthzConfigTypeCedarV1 {
+		return nil, fmt.Errorf(
+			"MCPAuthzConfig type %q is not yet supported for VirtualMCPServer; only %s is supported",
+			authzConfig.Spec.Type, AuthzConfigTypeCedarV1)
+	}
+
+	cfg, err := controllerutil.BuildAuthzConfigFromRef(authzConfig)
+	if err != nil {
+		return nil, err
+	}
+	opts, err := controllerutil.ExtractCedarAuthzOptions(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("MCPAuthzConfig %s/%s is not a Cedar config: %w",
+			authzConfig.Namespace, authzConfig.Name, err)
+	}
+
+	authz := &vmcpconfig.AuthzConfig{
+		Type:            "cedar",
+		Policies:        opts.Policies,
+		EntitiesJSON:    opts.EntitiesJSON,
+		GroupClaimName:  opts.GroupClaimName,
+		RoleClaimName:   opts.RoleClaimName,
+		GroupEntityType: opts.GroupEntityType,
+	}
+
+	// PrimaryUpstreamProvider is an auth-server (control-plane) property resolved
+	// from spec.authServerConfig, not from the shared MCPAuthzConfig payload —
+	// identical to the inline/configMap path (convertAuthzConfig), which also does
+	// not copy opts.PrimaryUpstreamProvider. resolvePrimaryUpstreamProvider is the
+	// sole authority so a data-plane config author cannot pick the trusted upstream.
+	if err := c.resolvePrimaryUpstreamProvider(vmcp, authz); err != nil {
+		return nil, err
+	}
+
+	return authz, nil
+}
+
+// convertAuthzConfig resolves the AuthzConfig from either the inline spec or a
+// referenced ConfigMap and applies spec-level overrides for the source-agnostic
+// Cedar JWT-claim mapping fields (GroupClaimName, RoleClaimName,
+// GroupEntityType). PrimaryUpstreamProvider lives on
+// spec.authServerConfig.primaryUpstreamProvider and is resolved separately by
+// resolvePrimaryUpstreamProvider. The ConfigMap path uses the shared loader so
+// the same fetch/parse/validate path is exercised here as in the
+// MCPServer/MCPRemoteProxy runner flow.
+func (c *Converter) convertAuthzConfig(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) (*vmcpconfig.AuthzConfig, error) {
+	authzRef := vmcp.Spec.IncomingAuth.AuthzConfig
+
+	// Both "inline" and "configMap" map to vmcp "cedar"; the difference is the
+	// source the policies are loaded from. Unknown values are rejected by the
+	// default arm of the switch below.
+	authz := &vmcpconfig.AuthzConfig{Type: "cedar"}
+
+	// Pull policy content from the chosen source.
+	switch authzRef.Type {
+	case authzLabelValueInline:
+		if authzRef.Inline != nil {
+			authz.Policies = authzRef.Inline.Policies
+			authz.EntitiesJSON = authzRef.Inline.EntitiesJSON
+		}
+
+	case mcpv1beta1.AuthzConfigTypeConfigMap:
+		loaded, err := controllerutil.LoadAuthzConfigFromConfigMap(ctx, c.k8sClient, vmcp.Namespace, authzRef)
+		if err != nil {
+			return nil, err
+		}
+		opts, err := controllerutil.ExtractCedarAuthzOptions(loaded)
+		if err != nil {
+			return nil, fmt.Errorf("authz ConfigMap %s/%s is not a Cedar config: %w",
+				vmcp.Namespace, authzRef.ConfigMap.Name, err)
+		}
+		authz.Policies = opts.Policies
+		authz.EntitiesJSON = opts.EntitiesJSON
+		// ConfigMap-supplied JWT-claim mapping values are the default; spec-level
+		// overrides apply below. PrimaryUpstreamProvider is an auth-server property
+		// (spec.authServerConfig.primaryUpstreamProvider) so it is not read from
+		// the ConfigMap payload here.
+		authz.GroupClaimName = opts.GroupClaimName
+		authz.RoleClaimName = opts.RoleClaimName
+		authz.GroupEntityType = opts.GroupEntityType
+
+	default:
+		// Defense in depth. The CRD enum (configMap;inline) blocks unknown
+		// values at admission today, but the converter is also reachable from
+		// CLI dry-runs, webhooks, and test harnesses where a stale schema or
+		// a future authz source could slip through. Failing here keeps Cedar
+		// from being constructed with an empty policy set (which silently
+		// denies every request).
+		return nil, fmt.Errorf("unsupported authz config type %q", authzRef.Type)
+	}
+
+	// Spec-level overrides for source-agnostic fields. Spec wins over ConfigMap
+	// when both are set — the spec is the control-plane source of truth and the
+	// ConfigMap is data-plane content that may be written by an external
+	// controller.
+	if authzRef.GroupClaimName != "" {
+		authz.GroupClaimName = authzRef.GroupClaimName
+	}
+	if authzRef.RoleClaimName != "" {
+		authz.RoleClaimName = authzRef.RoleClaimName
+	}
+	if authzRef.GroupEntityType != "" {
+		authz.GroupEntityType = authzRef.GroupEntityType
+	}
+
+	if err := c.resolvePrimaryUpstreamProvider(vmcp, authz); err != nil {
+		return nil, err
+	}
+
+	return authz, nil
+}
+
+// resolvePrimaryUpstreamProvider finalises authz.PrimaryUpstreamProvider.
+// Precedence:
+//
+//  1. spec.authServerConfig.primaryUpstreamProvider (canonical home).
+//  2. spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider (deprecated,
+//     read for backward compatibility).
+//  3. First entry of spec.authServerConfig.upstreamProviders, auto-selected.
+//
+// The resolved value is validated against the declared embedded auth server
+// upstreams; an unresolvable value is rejected.
+//
+// validateAuthzUpstreamAvailable in virtualmcpserver_controller.go is the
+// primary user-facing fail-loud point for explicit-provider misconfigurations
+// and also emits the deprecation Warning event. The defense-in-depth check
+// here ensures Convert cannot produce an unresolvable PrimaryUpstreamProvider
+// even if invoked outside the reconcile flow (CLI dry-run, webhook, test
+// harness).
+//
+// Leaving PrimaryUpstreamProvider empty (no upstreams configured AND no
+// explicit override) lets Cedar fall back to claims from the ToolHive-issued
+// token, which matches the historical behaviour before embedded auth servers
+// were supported.
+func (*Converter) resolvePrimaryUpstreamProvider(
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	authz *vmcpconfig.AuthzConfig,
+) error {
+	explicit, _ := vmcp.ExplicitPrimaryUpstreamProvider()
+	if explicit != "" {
+		resolved := authserver.ResolveUpstreamName(explicit)
+		if vmcp.Spec.AuthServerConfig == nil {
+			return fmt.Errorf(
+				"authz primaryUpstreamProvider %q set without an embedded auth server "+
+					"(spec.authServerConfig must be configured)", explicit)
+		}
+		matched := false
+		for _, up := range vmcp.Spec.AuthServerConfig.UpstreamProviders {
+			if authserver.ResolveUpstreamName(up.Name) == resolved {
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			return fmt.Errorf(
+				"authz primaryUpstreamProvider %q does not match any upstream declared "+
+					"on spec.authServerConfig.upstreamProviders", explicit)
+		}
+		authz.PrimaryUpstreamProvider = resolved
+		return nil
+	}
+
+	if vmcp.Spec.AuthServerConfig != nil && len(vmcp.Spec.AuthServerConfig.UpstreamProviders) > 0 {
+		authz.PrimaryUpstreamProvider = authserver.ResolveUpstreamName(
+			vmcp.Spec.AuthServerConfig.UpstreamProviders[0].Name,
+		)
+	}
+	return nil
 }
 
 // resolveOIDCConfig resolves OIDC configuration from an MCPOIDCConfig reference.
@@ -201,7 +413,7 @@ func (c *Converter) convertIncomingAuth(
 // preventing deployment without authentication when OIDC is explicitly requested.
 func (c *Converter) resolveOIDCConfig(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (*vmcpconfig.OIDCConfig, error) {
 	if vmcp.Spec.IncomingAuth == nil {
 		return nil, nil
@@ -239,7 +451,7 @@ func (c *Converter) resolveOIDCConfig(
 // Client secret detection uses the MCPOIDCConfig's inline config rather than OIDCConfigRef.
 func mapResolvedOIDCToVmcpConfigFromRef(
 	resolved *oidc.OIDCConfig,
-	oidcCfg *mcpv1alpha1.MCPOIDCConfig,
+	oidcCfg *mcpv1beta1.MCPOIDCConfig,
 ) *vmcpconfig.OIDCConfig {
 	if resolved == nil {
 		return nil
@@ -260,7 +472,7 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 
 	// MCPOIDCConfig inline type may have a client secret
 	if oidcCfg != nil &&
-		oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
+		oidcCfg.Spec.Type == mcpv1beta1.MCPOIDCConfigTypeInline &&
 		oidcCfg.Spec.Inline != nil &&
 		oidcCfg.Spec.Inline.ClientSecretRef != nil {
 		config.ClientSecretEnv = vmcpOIDCClientSecretEnvVar
@@ -275,8 +487,8 @@ func mapResolvedOIDCToVmcpConfigFromRef(
 // no longer read by the operator — use TelemetryConfigRef instead.
 func (*Converter) normalizeTelemetry(
 	_ context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 ) *telemetry.Config {
 	if vmcp.Spec.TelemetryConfigRef != nil && telemetryCfg != nil {
 		return spectoconfig.NormalizeMCPTelemetryConfig(
@@ -286,18 +498,24 @@ func (*Converter) normalizeTelemetry(
 }
 
 // convertSessionStorage populates SessionStorage from the VirtualMCPServer spec.
-// spec.sessionStorage is the authoritative source; always overwrite whatever
-// the DeepCopy brought in from spec.config.sessionStorage.
+// Falls back to TOOLHIVE_DEFAULT_REDIS_ADDR when spec.sessionStorage is nil.
 // PasswordRef is K8s-specific and is resolved separately; the password is injected
 // as the THV_SESSION_REDIS_PASSWORD environment variable by the deployment builder.
-func convertSessionStorage(vmcp *mcpv1alpha1.VirtualMCPServer) *vmcpconfig.SessionStorageConfig {
+func convertSessionStorage(vmcp *mcpv1beta1.VirtualMCPServer) *vmcpconfig.SessionStorageConfig {
 	if vmcp.Spec.SessionStorage != nil &&
-		vmcp.Spec.SessionStorage.Provider == mcpv1alpha1.SessionStorageProviderRedis {
+		vmcp.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis {
 		return &vmcpconfig.SessionStorageConfig{
 			Provider:  vmcp.Spec.SessionStorage.Provider,
 			Address:   vmcp.Spec.SessionStorage.Address,
 			DB:        vmcp.Spec.SessionStorage.DB,
 			KeyPrefix: vmcp.Spec.SessionStorage.KeyPrefix,
+		}
+	}
+
+	if def := controllerutil.ReadDefaultRedisConfig(); def != nil {
+		return &vmcpconfig.SessionStorageConfig{
+			Provider: mcpv1beta1.SessionStorageProviderRedis,
+			Address:  def.Addr,
 		}
 	}
 	return nil
@@ -307,7 +525,7 @@ func convertSessionStorage(vmcp *mcpv1alpha1.VirtualMCPServer) *vmcpconfig.Sessi
 // VirtualMCPServer spec into an authserver.RunConfig using the shared builder in
 // controllerutil. AllowedAudiences is derived from the resolved incoming OIDC config.
 func (*Converter) convertAuthServerConfig(
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	config *vmcpconfig.Config,
 ) (*authserver.RunConfig, error) {
 	if vmcp.Spec.AuthServerConfig == nil {
@@ -318,6 +536,7 @@ func (*Converter) convertAuthServerConfig(
 		vmcp.Spec.AuthServerConfig,
 		deriveAllowedAudiences(config),
 		deriveScopesSupported(config),
+		deriveResourceURL(config),
 	)
 }
 
@@ -344,6 +563,16 @@ func deriveAllowedAudiences(config *vmcpconfig.Config) []string {
 	return []string{resource}
 }
 
+// deriveResourceURL returns the resource URL from the resolved incoming OIDC config.
+// Returns empty string when OIDC is not configured or Resource is empty.
+// Used to default upstream provider RedirectURIs to {resourceURL}/oauth/callback.
+func deriveResourceURL(config *vmcpconfig.Config) string {
+	if config.IncomingAuth == nil || config.IncomingAuth.OIDC == nil {
+		return ""
+	}
+	return config.IncomingAuth.OIDC.Resource
+}
+
 // deriveScopesSupported returns the scopes from the resolved incoming OIDC config.
 // Returns nil when OIDC is not configured or scopes are empty, which causes the
 // auth server to use its default scopes (["openid", "profile", "email", "offline_access"]).
@@ -360,7 +589,7 @@ func deriveScopesSupported(config *vmcpconfig.Config) []string {
 // convertOutgoingAuthWithDefaults converts OutgoingAuthConfig or returns defaults.
 func (c *Converter) convertOutgoingAuthWithDefaults(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (*vmcpconfig.OutgoingAuthConfig, error) {
 	if vmcp.Spec.OutgoingAuth != nil {
 		return c.convertOutgoingAuth(ctx, vmcp)
@@ -373,7 +602,7 @@ func (c *Converter) convertOutgoingAuthWithDefaults(
 // convertAggregationWithDefaults converts AggregationConfig or returns defaults.
 func (c *Converter) convertAggregationWithDefaults(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (*vmcpconfig.AggregationConfig, error) {
 	if vmcp.Spec.Config.Aggregation != nil {
 		return c.convertAggregation(ctx, vmcp)
@@ -389,7 +618,7 @@ func (c *Converter) convertAggregationWithDefaults(
 // convertOutgoingAuth converts OutgoingAuthConfig from CRD to vmcp config
 func (c *Converter) convertOutgoingAuth(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (*vmcpconfig.OutgoingAuthConfig, error) {
 	outgoing := &vmcpconfig.OutgoingAuthConfig{
 		Source:   vmcp.Spec.OutgoingAuth.Source,
@@ -420,25 +649,25 @@ func (c *Converter) convertOutgoingAuth(
 // convertBackendAuthConfig converts BackendAuthConfig from CRD to vmcp config
 func (c *Converter) convertBackendAuthConfig(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	backendName string,
-	crdConfig *mcpv1alpha1.BackendAuthConfig,
+	crdConfig *mcpv1beta1.BackendAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
 	// If type is "discovered", return unauthenticated strategy
-	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeDiscovered {
+	if crdConfig.Type == mcpv1beta1.BackendAuthTypeDiscovered {
 		return &authtypes.BackendAuthStrategy{
 			Type: authtypes.StrategyTypeUnauthenticated,
 		}, nil
 	}
 
 	// If type is "externalAuthConfigRef", resolve the MCPExternalAuthConfig
-	if crdConfig.Type == mcpv1alpha1.BackendAuthTypeExternalAuthConfigRef {
+	if crdConfig.Type == mcpv1beta1.BackendAuthTypeExternalAuthConfigRef {
 		if crdConfig.ExternalAuthConfigRef == nil {
 			return nil, fmt.Errorf("backend %s: externalAuthConfigRef type requires externalAuthConfigRef field", backendName)
 		}
 
 		// Fetch the MCPExternalAuthConfig resource
-		externalAuthConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+		externalAuthConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 		err := c.k8sClient.Get(ctx, types.NamespacedName{
 			Name:      crdConfig.ExternalAuthConfigRef.Name,
 			Namespace: vmcp.Namespace,
@@ -461,7 +690,7 @@ func (c *Converter) convertBackendAuthConfig(
 // The registry pattern makes adding new auth types easier and ensures conversion happens in one place.
 func (*Converter) convertExternalAuthConfigToStrategy(
 	_ context.Context,
-	externalAuthConfig *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
 	// Use the converter registry to convert to typed strategy
 	registry := converters.DefaultRegistry()
@@ -495,7 +724,7 @@ func (*Converter) convertExternalAuthConfigToStrategy(
 // convertAggregation converts AggregationConfig from config.Config, resolving ToolConfigRef references
 func (c *Converter) convertAggregation(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (*vmcpconfig.AggregationConfig, error) {
 	// Start with a deep copy of the source config
 	srcAgg := vmcp.Spec.Config.Aggregation
@@ -546,7 +775,7 @@ func (*Converter) applyConflictResolutionDefaults(
 // resolveToolConfigRefs resolves ToolConfigRef references in tool configurations
 func (c *Converter) resolveToolConfigRefs(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	srcAgg *vmcpconfig.AggregationConfig,
 	agg *vmcpconfig.AggregationConfig,
 ) error {
@@ -619,7 +848,7 @@ func (c *Converter) resolveToolConfigRef(
 // mergeToolConfigFilter merges filter from MCPToolConfig
 func (*Converter) mergeToolConfigFilter(
 	wtc *vmcpconfig.WorkloadToolConfig,
-	resolvedConfig *mcpv1alpha1.MCPToolConfig,
+	resolvedConfig *mcpv1beta1.MCPToolConfig,
 ) {
 	if len(wtc.Filter) == 0 && len(resolvedConfig.Spec.ToolsFilter) > 0 {
 		wtc.Filter = resolvedConfig.Spec.ToolsFilter
@@ -629,7 +858,7 @@ func (*Converter) mergeToolConfigFilter(
 // mergeToolConfigOverrides merges overrides from MCPToolConfig
 func (*Converter) mergeToolConfigOverrides(
 	wtc *vmcpconfig.WorkloadToolConfig,
-	resolvedConfig *mcpv1alpha1.MCPToolConfig,
+	resolvedConfig *mcpv1beta1.MCPToolConfig,
 ) {
 	if len(resolvedConfig.Spec.ToolsOverride) == 0 {
 		return
@@ -647,7 +876,7 @@ func (*Converter) mergeToolConfigOverrides(
 }
 
 // convertCRDToolOverride converts a CRD ToolOverride to a config ToolOverride.
-func convertCRDToolOverride(src *mcpv1alpha1.ToolOverride) *vmcpconfig.ToolOverride {
+func convertCRDToolOverride(src *mcpv1beta1.ToolOverride) *vmcpconfig.ToolOverride {
 	o := &vmcpconfig.ToolOverride{
 		Name:        src.Name,
 		Description: src.Description,
@@ -669,8 +898,8 @@ func (c *Converter) resolveMCPToolConfig(
 	ctx context.Context,
 	namespace string,
 	name string,
-) (*mcpv1alpha1.MCPToolConfig, error) {
-	toolConfig := &mcpv1alpha1.MCPToolConfig{}
+) (*mcpv1beta1.MCPToolConfig, error) {
+	toolConfig := &mcpv1beta1.MCPToolConfig{}
 	err := c.k8sClient.Get(ctx, types.NamespacedName{
 		Name:      name,
 		Namespace: namespace,
@@ -684,7 +913,7 @@ func (c *Converter) resolveMCPToolConfig(
 // convertAllCompositeTools resolves CompositeToolRefs and merges them with inline CompositeTools.
 func (c *Converter) convertAllCompositeTools(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) ([]vmcpconfig.CompositeToolConfig, error) {
 	// Resolve referenced composite tools
 	referencedTools, err := c.resolveCompositeToolRefs(ctx, vmcp)
@@ -706,14 +935,14 @@ func (c *Converter) convertAllCompositeTools(
 // resolveCompositeToolRefs fetches and converts referenced VirtualMCPCompositeToolDefinition resources.
 func (c *Converter) resolveCompositeToolRefs(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) ([]vmcpconfig.CompositeToolConfig, error) {
 	referencedTools := make([]vmcpconfig.CompositeToolConfig, 0, len(vmcp.Spec.Config.CompositeToolRefs))
 
 	for i := range vmcp.Spec.Config.CompositeToolRefs {
 		ref := &vmcp.Spec.Config.CompositeToolRefs[i]
 		// Fetch the referenced VirtualMCPCompositeToolDefinition
-		compositeToolDef := &mcpv1alpha1.VirtualMCPCompositeToolDefinition{}
+		compositeToolDef := &mcpv1beta1.VirtualMCPCompositeToolDefinition{}
 		key := types.NamespacedName{
 			Name:      ref.Name,
 			Namespace: vmcp.Namespace,
@@ -739,7 +968,7 @@ func (c *Converter) resolveCompositeToolRefs(
 // Since VirtualMCPCompositeToolDefinitionSpec embeds config.CompositeToolConfig directly,
 // this is a simple copy operation.
 func (*Converter) convertCompositeToolDefinition(
-	def *mcpv1alpha1.VirtualMCPCompositeToolDefinition,
+	def *mcpv1beta1.VirtualMCPCompositeToolDefinition,
 ) vmcpconfig.CompositeToolConfig {
 	// The spec directly embeds CompositeToolConfig, so we can return it directly
 	return def.Spec.CompositeToolConfig

@@ -135,7 +135,7 @@ func TestNewIncomingAuthMiddleware(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			authMw, authzMw, authInfo, err := NewIncomingAuthMiddleware(t.Context(), tt.cfg, nil, nil, nil)
+			authMw, authzMw, authInfo, err := NewIncomingAuthMiddleware(t.Context(), tt.cfg, "test-server", nil, nil, nil)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -171,7 +171,7 @@ func TestNewCedarAuthzMiddleware_PropagatesPrimaryUpstreamProvider(t *testing.T)
 		PrimaryUpstreamProvider: providerName,
 	}
 
-	mw, err := newCedarAuthzMiddleware(authzCfg, nil)
+	mw, err := newCedarAuthzMiddleware(authzCfg, "test-server", nil)
 	require.NoError(t, err)
 	require.NotNil(t, mw, "middleware function should not be nil")
 

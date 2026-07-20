@@ -8,7 +8,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 )
 
@@ -17,7 +17,7 @@ import (
 // applies the per-server ServiceName override from the reference, then delegates to
 // NormalizeTelemetryConfig for endpoint normalization and service name defaulting.
 func NormalizeMCPTelemetryConfig(
-	spec *v1alpha1.MCPTelemetryConfigSpec,
+	spec *v1beta1.MCPTelemetryConfigSpec,
 	serviceNameOverride string,
 	defaultServiceName string,
 ) *telemetry.Config {

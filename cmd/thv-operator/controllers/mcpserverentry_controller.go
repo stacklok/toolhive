@@ -6,6 +6,7 @@ package controllers
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -19,7 +20,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
@@ -32,6 +33,10 @@ const (
 
 	// mcpServerEntryCABundleRefField is the field index key for CABundleRef ConfigMap lookups.
 	mcpServerEntryCABundleRefField = "spec.caBundleRef.configMapRef.name"
+
+	// mcpServerEntryHeaderSecretRefField is the field index key for
+	// spec.headerForward.addHeadersFromSecret[*].valueSecretRef.name lookups.
+	mcpServerEntryHeaderSecretRefField = "spec.headerForward.addHeadersFromSecret.valueSecretRef.name"
 )
 
 // MCPServerEntryReconciler reconciles a MCPServerEntry object.
@@ -46,12 +51,13 @@ type MCPServerEntryReconciler struct {
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpgroups,verbs=get;list;watch
 // +kubebuilder:rbac:groups=toolhive.stacklok.dev,resources=mcpexternalauthconfigs,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch
+// +kubebuilder:rbac:groups="",resources=secrets,verbs=get;list;watch
 
 // Reconcile validates referenced resources and updates status conditions.
 func (r *MCPServerEntryReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	ctxLogger := log.FromContext(ctx)
 
-	entry := &mcpv1alpha1.MCPServerEntry{}
+	entry := &mcpv1beta1.MCPServerEntry{}
 	if err := r.Get(ctx, req.NamespacedName, entry); err != nil {
 		if errors.IsNotFound(err) {
 			ctxLogger.Info("MCPServerEntry resource not found. Ignoring since object must be deleted.")
@@ -85,6 +91,12 @@ func (r *MCPServerEntryReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 	allValid = valid && allValid
 
+	valid, err = r.validateHeaderForwardSecretRefs(ctx, entry)
+	if err != nil {
+		return ctrl.Result{}, err
+	}
+	allValid = valid && allValid
+
 	// Compute overall phase and Valid condition
 	r.updateOverallStatus(entry, allValid)
 
@@ -106,10 +118,10 @@ func (r *MCPServerEntryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Set up field index for ExternalAuthConfigRef lookups
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&mcpv1alpha1.MCPServerEntry{},
+		&mcpv1beta1.MCPServerEntry{},
 		mcpServerEntryAuthConfigRefField,
 		func(obj client.Object) []string {
-			entry := obj.(*mcpv1alpha1.MCPServerEntry)
+			entry := obj.(*mcpv1beta1.MCPServerEntry)
 			if entry.Spec.ExternalAuthConfigRef == nil {
 				return nil
 			}
@@ -123,10 +135,10 @@ func (r *MCPServerEntryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Set up field index for CABundleRef ConfigMap lookups
 	if err := mgr.GetFieldIndexer().IndexField(
 		context.Background(),
-		&mcpv1alpha1.MCPServerEntry{},
+		&mcpv1beta1.MCPServerEntry{},
 		mcpServerEntryCABundleRefField,
 		func(obj client.Object) []string {
-			entry := obj.(*mcpv1alpha1.MCPServerEntry)
+			entry := obj.(*mcpv1beta1.MCPServerEntry)
 			if entry.Spec.CABundleRef == nil || entry.Spec.CABundleRef.ConfigMapRef == nil {
 				return nil
 			}
@@ -137,19 +149,55 @@ func (r *MCPServerEntryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			mcpServerEntryCABundleRefField, err)
 	}
 
+	// Set up field index for headerForward Secret refs. Used by the Secret
+	// watch below so a Secret create/update/delete reconciles every entry that
+	// references it — without this index we would have to list all entries on
+	// every Secret event.
+	if err := mgr.GetFieldIndexer().IndexField(
+		context.Background(),
+		&mcpv1beta1.MCPServerEntry{},
+		mcpServerEntryHeaderSecretRefField,
+		func(obj client.Object) []string {
+			entry := obj.(*mcpv1beta1.MCPServerEntry)
+			if entry.Spec.HeaderForward == nil {
+				return nil
+			}
+			seen := make(map[string]struct{}, len(entry.Spec.HeaderForward.AddHeadersFromSecret))
+			names := make([]string, 0, len(entry.Spec.HeaderForward.AddHeadersFromSecret))
+			for _, ref := range entry.Spec.HeaderForward.AddHeadersFromSecret {
+				if ref.ValueSecretRef == nil {
+					continue
+				}
+				if _, ok := seen[ref.ValueSecretRef.Name]; ok {
+					continue
+				}
+				seen[ref.ValueSecretRef.Name] = struct{}{}
+				names = append(names, ref.ValueSecretRef.Name)
+			}
+			return names
+		},
+	); err != nil {
+		return fmt.Errorf("unable to create field index for MCPServerEntry %s: %w",
+			mcpServerEntryHeaderSecretRefField, err)
+	}
+
 	return ctrl.NewControllerManagedBy(mgr).
-		For(&mcpv1alpha1.MCPServerEntry{}).
+		For(&mcpv1beta1.MCPServerEntry{}).
 		Watches(
-			&mcpv1alpha1.MCPExternalAuthConfig{},
+			&mcpv1beta1.MCPExternalAuthConfig{},
 			handler.EnqueueRequestsFromMapFunc(r.findEntriesForAuthConfig),
 		).
 		Watches(
-			&mcpv1alpha1.MCPGroup{},
+			&mcpv1beta1.MCPGroup{},
 			handler.EnqueueRequestsFromMapFunc(r.findEntriesForGroup),
 		).
 		Watches(
 			&corev1.ConfigMap{},
 			handler.EnqueueRequestsFromMapFunc(r.findEntriesForConfigMap),
+		).
+		Watches(
+			&corev1.Secret{},
+			handler.EnqueueRequestsFromMapFunc(r.findEntriesForHeaderSecret),
 		).
 		Complete(r)
 }
@@ -158,19 +206,19 @@ func (r *MCPServerEntryReconciler) SetupWithManager(mgr ctrl.Manager) error {
 // Returns (valid, error). A non-nil error means a transient failure that should be requeued.
 func (r *MCPServerEntryReconciler) validateGroupRef(
 	ctx context.Context,
-	entry *mcpv1alpha1.MCPServerEntry,
+	entry *mcpv1beta1.MCPServerEntry,
 ) (bool, error) {
 	ctxLogger := log.FromContext(ctx)
 	groupName := entry.Spec.GroupRef.GetName()
-	group := &mcpv1alpha1.MCPGroup{}
+	group := &mcpv1beta1.MCPGroup{}
 	groupKey := types.NamespacedName{Namespace: entry.Namespace, Name: groupName}
 
 	if err := r.Get(ctx, groupKey, group); err != nil {
 		if errors.IsNotFound(err) {
 			meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-				Type:               mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated,
+				Type:               mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated,
 				Status:             metav1.ConditionFalse,
-				Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefNotFound,
+				Reason:             mcpv1beta1.ConditionReasonMCPServerEntryGroupRefNotFound,
 				Message:            fmt.Sprintf("MCPGroup '%s' not found in namespace '%s'", groupName, entry.Namespace),
 				ObservedGeneration: entry.Generation,
 			})
@@ -181,11 +229,11 @@ func (r *MCPServerEntryReconciler) validateGroupRef(
 	}
 
 	// Check that the group is ready
-	if group.Status.Phase != mcpv1alpha1.MCPGroupPhaseReady {
+	if group.Status.Phase != mcpv1beta1.MCPGroupPhaseReady {
 		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefNotReady,
+			Reason:             mcpv1beta1.ConditionReasonMCPServerEntryGroupRefNotReady,
 			Message:            fmt.Sprintf("MCPGroup '%s' is not ready (current phase: %s)", groupName, group.Status.Phase),
 			ObservedGeneration: entry.Generation,
 		})
@@ -193,9 +241,9 @@ func (r *MCPServerEntryReconciler) validateGroupRef(
 	}
 
 	meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeMCPServerEntryGroupRefValidated,
+		Type:               mcpv1beta1.ConditionTypeMCPServerEntryGroupRefValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryGroupRefValidated,
+		Reason:             mcpv1beta1.ConditionReasonMCPServerEntryGroupRefValidated,
 		Message:            "Referenced MCPGroup exists and is ready",
 		ObservedGeneration: entry.Generation,
 	})
@@ -206,21 +254,21 @@ func (r *MCPServerEntryReconciler) validateGroupRef(
 // Returns (valid, error). A non-nil error means a transient failure that should be requeued.
 func (r *MCPServerEntryReconciler) validateExternalAuthConfigRef(
 	ctx context.Context,
-	entry *mcpv1alpha1.MCPServerEntry,
+	entry *mcpv1beta1.MCPServerEntry,
 ) (bool, error) {
 	ctxLogger := log.FromContext(ctx)
 	if entry.Spec.ExternalAuthConfigRef == nil {
 		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPServerEntryAuthConfigValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated,
 			Status:             metav1.ConditionTrue,
-			Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryAuthConfigNotConfigured,
+			Reason:             mcpv1beta1.ConditionReasonMCPServerEntryAuthConfigNotConfigured,
 			Message:            "No external auth config reference configured",
 			ObservedGeneration: entry.Generation,
 		})
 		return true, nil
 	}
 
-	authConfig := &mcpv1alpha1.MCPExternalAuthConfig{}
+	authConfig := &mcpv1beta1.MCPExternalAuthConfig{}
 	authKey := types.NamespacedName{
 		Namespace: entry.Namespace,
 		Name:      entry.Spec.ExternalAuthConfigRef.Name,
@@ -229,9 +277,9 @@ func (r *MCPServerEntryReconciler) validateExternalAuthConfigRef(
 	if err := r.Get(ctx, authKey, authConfig); err != nil {
 		if errors.IsNotFound(err) {
 			meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-				Type:               mcpv1alpha1.ConditionTypeMCPServerEntryAuthConfigValidated,
+				Type:               mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated,
 				Status:             metav1.ConditionFalse,
-				Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryAuthConfigNotFound,
+				Reason:             mcpv1beta1.ConditionReasonMCPServerEntryAuthConfigNotFound,
 				Message:            "Referenced MCPExternalAuthConfig not found",
 				ObservedGeneration: entry.Generation,
 			})
@@ -242,9 +290,9 @@ func (r *MCPServerEntryReconciler) validateExternalAuthConfigRef(
 	}
 
 	meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeMCPServerEntryAuthConfigValidated,
+		Type:               mcpv1beta1.ConditionTypeMCPServerEntryAuthConfigValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryAuthConfigValid,
+		Reason:             mcpv1beta1.ConditionReasonMCPServerEntryAuthConfigValid,
 		Message:            "Referenced MCPExternalAuthConfig exists",
 		ObservedGeneration: entry.Generation,
 	})
@@ -255,14 +303,14 @@ func (r *MCPServerEntryReconciler) validateExternalAuthConfigRef(
 // Returns (valid, error). A non-nil error means a transient failure that should be requeued.
 func (r *MCPServerEntryReconciler) validateCABundleRef(
 	ctx context.Context,
-	entry *mcpv1alpha1.MCPServerEntry,
+	entry *mcpv1beta1.MCPServerEntry,
 ) (bool, error) {
 	ctxLogger := log.FromContext(ctx)
 	if entry.Spec.CABundleRef == nil || entry.Spec.CABundleRef.ConfigMapRef == nil {
 		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPServerEntryCABundleRefValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPServerEntryCABundleRefValidated,
 			Status:             metav1.ConditionTrue,
-			Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryCABundleRefNotConfigured,
+			Reason:             mcpv1beta1.ConditionReasonMCPServerEntryCABundleRefNotConfigured,
 			Message:            "No CA bundle reference configured",
 			ObservedGeneration: entry.Generation,
 		})
@@ -278,9 +326,9 @@ func (r *MCPServerEntryReconciler) validateCABundleRef(
 	if err := r.Get(ctx, cmKey, configMap); err != nil {
 		if errors.IsNotFound(err) {
 			meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-				Type:               mcpv1alpha1.ConditionTypeMCPServerEntryCABundleRefValidated,
+				Type:               mcpv1beta1.ConditionTypeMCPServerEntryCABundleRefValidated,
 				Status:             metav1.ConditionFalse,
-				Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryCABundleRefNotFound,
+				Reason:             mcpv1beta1.ConditionReasonMCPServerEntryCABundleRefNotFound,
 				Message:            "Referenced CA bundle ConfigMap not found",
 				ObservedGeneration: entry.Generation,
 			})
@@ -291,10 +339,85 @@ func (r *MCPServerEntryReconciler) validateCABundleRef(
 	}
 
 	meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeMCPServerEntryCABundleRefValidated,
+		Type:               mcpv1beta1.ConditionTypeMCPServerEntryCABundleRefValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryCABundleRefValid,
+		Reason:             mcpv1beta1.ConditionReasonMCPServerEntryCABundleRefValid,
 		Message:            "Referenced CA bundle ConfigMap exists",
+		ObservedGeneration: entry.Generation,
+	})
+	return true, nil
+}
+
+// validateHeaderForwardSecretRefs checks that every Secret referenced by
+// spec.headerForward.addHeadersFromSecret exists AND that the named key
+// inside it is present in the entry's namespace. Skipped (condition removed)
+// when no Secret-backed headers are declared.
+//
+// All ref-level failures are aggregated into one condition message — a user
+// fixing two missing secrets at once should see both surface together rather
+// than one-per-reconcile.
+//
+// Returns (valid, error) where a non-nil error means a transient API
+// failure that should be requeued. Key-not-found and Secret-not-found are
+// surfaced via the condition (valid=false, err=nil).
+func (r *MCPServerEntryReconciler) validateHeaderForwardSecretRefs(
+	ctx context.Context,
+	entry *mcpv1beta1.MCPServerEntry,
+) (bool, error) {
+	ctxLogger := log.FromContext(ctx)
+
+	if entry.Spec.HeaderForward == nil || len(entry.Spec.HeaderForward.AddHeadersFromSecret) == 0 {
+		meta.RemoveStatusCondition(&entry.Status.Conditions,
+			mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated)
+		return true, nil
+	}
+
+	var failures []string
+	for _, ref := range entry.Spec.HeaderForward.AddHeadersFromSecret {
+		if ref.ValueSecretRef == nil {
+			continue
+		}
+		secret := &corev1.Secret{}
+		secretKey := types.NamespacedName{
+			Namespace: entry.Namespace,
+			Name:      ref.ValueSecretRef.Name,
+		}
+		if err := r.Get(ctx, secretKey, secret); err != nil {
+			if errors.IsNotFound(err) {
+				failures = append(failures, fmt.Sprintf(
+					"Secret %q referenced for header %q not found",
+					ref.ValueSecretRef.Name, ref.HeaderName))
+				continue
+			}
+			// Transient API failure (rate-limit, network, etc.) — requeue
+			// rather than condition-flip. The next reconcile will re-validate.
+			ctxLogger.Error(err, "Failed to get referenced header Secret",
+				"secret", ref.ValueSecretRef.Name, "header", ref.HeaderName)
+			return false, err
+		}
+		if _, ok := secret.Data[ref.ValueSecretRef.Key]; !ok {
+			failures = append(failures, fmt.Sprintf(
+				"Secret %q has no key %q referenced for header %q",
+				ref.ValueSecretRef.Name, ref.ValueSecretRef.Key, ref.HeaderName))
+		}
+	}
+
+	if len(failures) > 0 {
+		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
+			Type:               mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated,
+			Status:             metav1.ConditionFalse,
+			Reason:             mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretNotFound,
+			Message:            strings.Join(failures, "; "),
+			ObservedGeneration: entry.Generation,
+		})
+		return false, nil
+	}
+
+	meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
+		Type:               mcpv1beta1.ConditionTypeMCPServerEntryHeaderSecretRefsValidated,
+		Status:             metav1.ConditionTrue,
+		Reason:             mcpv1beta1.ConditionReasonMCPServerEntryHeaderSecretsValid,
+		Message:            "All referenced header Secrets exist with required keys",
 		ObservedGeneration: entry.Generation,
 	})
 	return true, nil
@@ -303,13 +426,13 @@ func (r *MCPServerEntryReconciler) validateCABundleRef(
 // validateRemoteURL checks that the RemoteURL is well-formed and does not target
 // a blocked internal or metadata endpoint (SSRF protection).
 func (*MCPServerEntryReconciler) validateRemoteURL(
-	entry *mcpv1alpha1.MCPServerEntry,
+	entry *mcpv1beta1.MCPServerEntry,
 ) bool {
 	if err := validation.ValidateRemoteURL(entry.Spec.RemoteURL); err != nil {
 		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPServerEntryRemoteURLValidated,
+			Type:               mcpv1beta1.ConditionTypeMCPServerEntryRemoteURLValidated,
 			Status:             metav1.ConditionFalse,
-			Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryRemoteURLInvalid,
+			Reason:             mcpv1beta1.ConditionReasonMCPServerEntryRemoteURLInvalid,
 			Message:            err.Error(),
 			ObservedGeneration: entry.Generation,
 		})
@@ -317,9 +440,9 @@ func (*MCPServerEntryReconciler) validateRemoteURL(
 	}
 
 	meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeMCPServerEntryRemoteURLValidated,
+		Type:               mcpv1beta1.ConditionTypeMCPServerEntryRemoteURLValidated,
 		Status:             metav1.ConditionTrue,
-		Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryRemoteURLValid,
+		Reason:             mcpv1beta1.ConditionReasonMCPServerEntryRemoteURLValid,
 		Message:            "Remote URL is valid",
 		ObservedGeneration: entry.Generation,
 	})
@@ -328,26 +451,26 @@ func (*MCPServerEntryReconciler) validateRemoteURL(
 
 // updateOverallStatus sets the phase and Valid condition based on validation results.
 func (*MCPServerEntryReconciler) updateOverallStatus(
-	entry *mcpv1alpha1.MCPServerEntry,
+	entry *mcpv1beta1.MCPServerEntry,
 	allValid bool,
 ) {
 	if allValid {
-		entry.Status.Phase = mcpv1alpha1.MCPServerEntryPhaseValid
+		entry.Status.Phase = mcpv1beta1.MCPServerEntryPhaseValid
 		meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-			Type:               mcpv1alpha1.ConditionTypeMCPServerEntryValid,
+			Type:               mcpv1beta1.ConditionTypeMCPServerEntryValid,
 			Status:             metav1.ConditionTrue,
-			Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryValid,
+			Reason:             mcpv1beta1.ConditionReasonMCPServerEntryValid,
 			Message:            "All referenced resources are valid",
 			ObservedGeneration: entry.Generation,
 		})
 		return
 	}
 
-	entry.Status.Phase = mcpv1alpha1.MCPServerEntryPhaseFailed
+	entry.Status.Phase = mcpv1beta1.MCPServerEntryPhaseFailed
 	meta.SetStatusCondition(&entry.Status.Conditions, metav1.Condition{
-		Type:               mcpv1alpha1.ConditionTypeMCPServerEntryValid,
+		Type:               mcpv1beta1.ConditionTypeMCPServerEntryValid,
 		Status:             metav1.ConditionFalse,
-		Reason:             mcpv1alpha1.ConditionReasonMCPServerEntryInvalid,
+		Reason:             mcpv1beta1.ConditionReasonMCPServerEntryInvalid,
 		Message:            "One or more referenced resources are missing or invalid",
 		ObservedGeneration: entry.Generation,
 	})
@@ -360,13 +483,13 @@ func (r *MCPServerEntryReconciler) findEntriesForAuthConfig(
 ) []reconcile.Request {
 	ctxLogger := log.FromContext(ctx)
 
-	authConfig, ok := obj.(*mcpv1alpha1.MCPExternalAuthConfig)
+	authConfig, ok := obj.(*mcpv1beta1.MCPExternalAuthConfig)
 	if !ok {
 		ctxLogger.Error(nil, "Object is not an MCPExternalAuthConfig", "object", obj.GetName())
 		return nil
 	}
 
-	entryList := &mcpv1alpha1.MCPServerEntryList{}
+	entryList := &mcpv1beta1.MCPServerEntryList{}
 	if err := r.List(ctx, entryList,
 		client.InNamespace(authConfig.Namespace),
 		client.MatchingFields{mcpServerEntryAuthConfigRefField: authConfig.Name},
@@ -394,18 +517,56 @@ func (r *MCPServerEntryReconciler) findEntriesForGroup(
 ) []reconcile.Request {
 	ctxLogger := log.FromContext(ctx)
 
-	group, ok := obj.(*mcpv1alpha1.MCPGroup)
+	group, ok := obj.(*mcpv1beta1.MCPGroup)
 	if !ok {
 		ctxLogger.Error(nil, "Object is not an MCPGroup", "object", obj.GetName())
 		return nil
 	}
 
-	entryList := &mcpv1alpha1.MCPServerEntryList{}
+	entryList := &mcpv1beta1.MCPServerEntryList{}
 	if err := r.List(ctx, entryList,
 		client.InNamespace(group.Namespace),
 		client.MatchingFields{"spec.groupRef": group.Name},
 	); err != nil {
 		ctxLogger.Error(err, "Failed to list MCPServerEntries for group change")
+		return nil
+	}
+
+	requests := make([]reconcile.Request, len(entryList.Items))
+	for i, entry := range entryList.Items {
+		requests[i] = reconcile.Request{
+			NamespacedName: types.NamespacedName{
+				Namespace: entry.Namespace,
+				Name:      entry.Name,
+			},
+		}
+	}
+	return requests
+}
+
+// findEntriesForHeaderSecret maps Secret changes to MCPServerEntry reconcile
+// requests for entries that reference the Secret in
+// spec.headerForward.addHeadersFromSecret. This ensures that creating the
+// referenced Secret (or rotating its contents) flips the validation condition
+// from false → true within one reconcile, instead of waiting for the resync.
+func (r *MCPServerEntryReconciler) findEntriesForHeaderSecret(
+	ctx context.Context,
+	obj client.Object,
+) []reconcile.Request {
+	ctxLogger := log.FromContext(ctx)
+
+	secret, ok := obj.(*corev1.Secret)
+	if !ok {
+		ctxLogger.Error(nil, "Object is not a Secret", "object", obj.GetName())
+		return nil
+	}
+
+	entryList := &mcpv1beta1.MCPServerEntryList{}
+	if err := r.List(ctx, entryList,
+		client.InNamespace(secret.Namespace),
+		client.MatchingFields{mcpServerEntryHeaderSecretRefField: secret.Name},
+	); err != nil {
+		ctxLogger.Error(err, "Failed to list MCPServerEntries for header Secret change")
 		return nil
 	}
 
@@ -435,7 +596,7 @@ func (r *MCPServerEntryReconciler) findEntriesForConfigMap(
 		return nil
 	}
 
-	entryList := &mcpv1alpha1.MCPServerEntryList{}
+	entryList := &mcpv1beta1.MCPServerEntryList{}
 	if err := r.List(ctx, entryList,
 		client.InNamespace(cm.Namespace),
 		client.MatchingFields{mcpServerEntryCABundleRefField: cm.Name},

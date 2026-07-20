@@ -16,7 +16,6 @@ import (
 
 	s "github.com/stacklok/toolhive/pkg/api"
 	"github.com/stacklok/toolhive/pkg/auth"
-	mcpserver "github.com/stacklok/toolhive/pkg/mcp/server"
 	sentrypkg "github.com/stacklok/toolhive/pkg/sentry"
 	"github.com/stacklok/toolhive/pkg/telemetry"
 )
@@ -26,9 +25,6 @@ var (
 	port                   int
 	enableDocs             bool
 	socketPath             string
-	enableMCPServer        bool
-	mcpServerPort          string
-	mcpServerHost          string
 	sentryDSN              string
 	sentryEnvironment      string
 	sentryTracesSampleRate float64
@@ -129,37 +125,6 @@ var serveCmd = &cobra.Command{
 			}
 		}
 
-		// Optionally start MCP server if experimental flag is enabled
-		if enableMCPServer {
-			fmt.Println("EXPERIMENTAL: Starting embedded MCP server")
-
-			mcpConfig := &mcpserver.Config{
-				Host: mcpServerHost,
-				Port: mcpServerPort,
-			}
-
-			go func() {
-				mcpServer, err := mcpserver.New(ctx, mcpConfig)
-				if err != nil {
-					slog.Error("Failed to create MCP server, continuing without it", "error", err)
-					return
-				}
-
-				go func() {
-					<-ctx.Done()
-					shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-					defer shutdownCancel()
-					if err := mcpServer.Shutdown(shutdownCtx); err != nil {
-						slog.Error("Failed to shutdown MCP server", "error", err)
-					}
-				}()
-
-				if err := mcpServer.Start(); err != nil {
-					slog.Error("MCP server error", "error", err)
-				}
-			}()
-		}
-
 		// Use ServerBuilder directly to set otelEnabled without adding it as a
 		// positional parameter on the Serve() convenience function.
 		nonce, err := s.GenerateNonce()
@@ -192,16 +157,9 @@ func init() {
 	serveCmd.Flags().IntVar(&port, "port", 8080, "Port to bind the server to")
 	serveCmd.Flags().BoolVar(&enableDocs, "openapi", false,
 		"Enable OpenAPI documentation endpoints (/api/openapi.json and /api/doc)")
-	serveCmd.Flags().StringVar(&socketPath, "socket", "", "UNIX socket path to bind the "+
-		"server to (overrides host and port if provided)")
-
-	// Add experimental MCP server flags
-	serveCmd.Flags().BoolVar(&enableMCPServer, "experimental-mcp", false,
-		"EXPERIMENTAL: Enable embedded MCP server for controlling ToolHive")
-	serveCmd.Flags().StringVar(&mcpServerPort, "experimental-mcp-port", mcpserver.DefaultMCPPort,
-		"EXPERIMENTAL: Port for the embedded MCP server")
-	serveCmd.Flags().StringVar(&mcpServerHost, "experimental-mcp-host", "localhost",
-		"EXPERIMENTAL: Host for the embedded MCP server")
+	serveCmd.Flags().StringVar(&socketPath, "socket", "",
+		`UNIX socket path or, on Windows, a named pipe (\\.\pipe\<name>) to bind the `+
+			"server to (overrides host and port if provided)")
 
 	// Add Sentry flags. The DSN and environment also fall back to the SENTRY_DSN
 	// and SENTRY_ENVIRONMENT environment variables respectively, which is the

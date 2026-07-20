@@ -10,8 +10,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
-	"github.com/mark3labs/mcp-go/server"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	"github.com/stacklok/toolhive-core/mcpcompat/server"
 )
 
 // ToolStore defines the interface for storing and searching tools.
@@ -36,6 +36,16 @@ type ToolStore interface {
 	// It is safe to call Close multiple times.
 	Close() error
 }
+
+// Embedding provider identifiers select the wire protocol used to talk to the
+// embedding service. They match config.OptimizerConfig.EmbeddingProvider.
+const (
+	// EmbeddingProviderTEI speaks the HuggingFace Text Embeddings Inference API.
+	EmbeddingProviderTEI = "tei"
+
+	// EmbeddingProviderOpenAI speaks the OpenAI-compatible /embeddings API.
+	EmbeddingProviderOpenAI = "openai"
+)
 
 // EmbeddingClient generates vector embeddings from text.
 // Implementations may use local models, remote APIs, or deterministic fakes.
@@ -69,6 +79,25 @@ type OptimizerConfig struct {
 	// EmbeddingServiceTimeout is the HTTP request timeout for calls to the embedding service.
 	// Zero means use the default timeout (30s).
 	EmbeddingServiceTimeout time.Duration
+
+	// EmbeddingProvider selects the embedding backend wire protocol
+	// (EmbeddingProviderTEI or EmbeddingProviderOpenAI). Empty defaults to TEI.
+	EmbeddingProvider string
+
+	// EmbeddingModel is the model name requested from an OpenAI-compatible
+	// embedding service (e.g. "text-embedding-3-small"). Unused by the TEI
+	// provider, where the model is fixed by the running container.
+	EmbeddingModel string
+
+	// EmbeddingAPIKey is the bearer token sent to an OpenAI-compatible embedding
+	// service. Empty means no Authorization header is sent, which supports
+	// keyless in-cluster gateways. Never populated for the TEI provider.
+	EmbeddingAPIKey string
+
+	// EmbeddingHeaders holds additional HTTP headers sent with every request
+	// to an OpenAI-compatible embedding service. Never populated for the TEI
+	// provider.
+	EmbeddingHeaders map[string]string
 
 	// MaxToolsToReturn limits the number of tools returned by FindTool.
 	MaxToolsToReturn *int

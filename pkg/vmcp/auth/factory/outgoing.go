@@ -1,16 +1,5 @@
-// Copyright 2025 Stacklok, Inc.
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
+// SPDX-FileCopyrightText: Copyright 2025 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
 
 // Package factory provides factory functions for creating vMCP authentication components.
 package factory
@@ -26,15 +15,21 @@ import (
 
 // NewOutgoingAuthRegistry creates an OutgoingAuthRegistry with all available strategies.
 //
-// All strategies are registered upfront since they're cheap and mostly stateless
-// (except token_exchange which has internal caching). This simplifies the factory
-// and eliminates the need for on-demand strategy registration based on configuration.
+// All strategies are registered upfront. Most are stateless; token_exchange and
+// aws_sts maintain an internal per-config cache initialized on first use. This
+// simplifies the factory and eliminates on-demand strategy registration.
 //
 // Registered Strategies:
 //   - "unauthenticated": Default fallback for backends without auth
 //   - "header_injection": Custom HTTP header injection
 //   - "token_exchange": RFC-8693 OAuth 2.0 token exchange
 //   - "upstream_inject": Per-upstream token injection from stored credentials
+//   - "aws_sts": AWS STS AssumeRoleWithWebIdentity + SigV4 request signing
+//   - "obo": On-behalf-of (OBO) Entra token exchange; default stub returns
+//     obo.ErrEnterpriseRequired — an out-of-tree build registers a real
+//     strategy via auth.RegisterOBOStrategy before this function is called.
+//   - "xaa": Cross-Application Access (two-step ID-JAG exchange per
+//     draft-ietf-oauth-identity-assertion-authz-grant)
 //
 // Parameters:
 //   - ctx: Context for any initialization that requires it
@@ -49,7 +44,7 @@ func NewOutgoingAuthRegistry(
 ) (auth.OutgoingAuthRegistry, error) {
 	registry := auth.NewDefaultOutgoingAuthRegistry()
 
-	// Always register all strategies - they're cheap and stateless
+	// Register all strategies upfront.
 	if err := registry.RegisterStrategy(
 		authtypes.StrategyTypeUnauthenticated,
 		strategies.NewUnauthenticatedStrategy(),
@@ -71,6 +66,24 @@ func NewOutgoingAuthRegistry(
 	if err := registry.RegisterStrategy(
 		authtypes.StrategyTypeUpstreamInject,
 		strategies.NewUpstreamInjectStrategy(),
+	); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeAwsSts,
+		strategies.NewAwsStsStrategy(),
+	); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeOBO,
+		auth.NewOBOStrategy(envReader),
+	); err != nil {
+		return nil, err
+	}
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeXAA,
+		strategies.NewXAAStrategy(envReader),
 	); err != nil {
 		return nil, err
 	}

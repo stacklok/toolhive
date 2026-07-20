@@ -61,10 +61,10 @@ func TestUpstreamTokens_IsExpired(t *testing.T) {
 			want:      false,
 		},
 		{
-			name:      "expired - zero expiration time",
+			name:      "zero expiration time treated as non-expiring",
 			expiresAt: time.Time{},
 			checkTime: now,
-			want:      true,
+			want:      false,
 		},
 		{
 			name:      "not expired - zero check time with future expiration",

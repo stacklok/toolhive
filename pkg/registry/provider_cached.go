@@ -6,6 +6,7 @@ package registry
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -112,7 +113,9 @@ func (p *CachedAPIRegistryProvider) GetRegistry() (*types.Registry, error) {
 }
 
 // refreshCache fetches fresh data from the API and updates the cache.
-// If the API fetch fails, returns stale cache if available.
+// Auth errors (ErrRegistryAuthRequired, ErrRegistryUnauthorized) are always
+// propagated — stale cache must never mask a changed authentication state.
+// For transient failures (network blip, 5xx) stale cache is returned if available.
 func (p *CachedAPIRegistryProvider) refreshCache() (*types.Registry, error) {
 	p.cacheMu.Lock()
 	defer p.cacheMu.Unlock()
@@ -120,7 +123,11 @@ func (p *CachedAPIRegistryProvider) refreshCache() (*types.Registry, error) {
 	// Fetch from API
 	registry, err := p.APIRegistryProvider.GetRegistry()
 	if err != nil {
-		// If fetch fails and we have stale cache, return it
+		// Auth errors must propagate — stale cache must not mask a changed auth state.
+		if errors.Is(err, auth.ErrRegistryAuthRequired) || errors.Is(err, api.ErrRegistryUnauthorized) {
+			return nil, err
+		}
+		// Transient failures (network blip, 5xx): degrade gracefully to stale cache.
 		if p.cachedData != nil {
 			return p.cachedData, nil
 		}

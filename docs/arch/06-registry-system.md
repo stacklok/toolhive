@@ -71,14 +71,16 @@ thv run server-name
 ```
 
 **Implementation:**
-- Embedded: `pkg/registry/data/registry.json`
+- Built-in catalog: loaded from the [`github.com/stacklok/toolhive-catalog`](https://github.com/stacklok/toolhive-catalog) package (`pkg/catalog/toolhive`), via `catalog.Upstream()` in `pkg/registry/provider_local.go`
 - Manager: `pkg/registry/provider.go`, `pkg/registry/provider_local.go`, `pkg/registry/provider_remote.go`
 
 ## Registry Format
 
+> **Note**: The JSON examples in this section show the parsed in-memory shape (`types.Registry` in `toolhive-core`), which is what consumers operate on after the upstream payload has been converted. The actual on-disk / wire format is `UpstreamRegistry` (with `$schema`, `version`, `meta.last_updated`, `data.servers`, `data.skills`). See [Upstream MCP Registry Format](#upstream-mcp-registry-format) below for the wire format and how legacy fields map onto it.
+
 ### Top-Level Structure
 
-**Implementation**: `pkg/registry/types.go`
+**Implementation**: `github.com/stacklok/toolhive-core/registry/types/registry_types.go`
 
 ```json
 {
@@ -98,7 +100,7 @@ thv run server-name
 
 ### Server Entry (Container-based)
 
-**Implementation**: `pkg/registry/types.go`
+**Implementation**: `github.com/stacklok/toolhive-core/registry/types/registry_types.go`
 
 ```json
 {
@@ -147,7 +149,7 @@ thv run server-name
 
 ### Remote Server Entry
 
-**Implementation**: `pkg/registry/types.go`
+**Implementation**: `github.com/stacklok/toolhive-core/registry/types/registry_types.go`
 
 ```json
 {
@@ -185,7 +187,7 @@ thv run server-name
 
 ### Group Entry
 
-**Implementation**: `pkg/registry/types.go`
+**Implementation**: `github.com/stacklok/toolhive-core/registry/types/registry_types.go`
 
 ```json
 {
@@ -276,13 +278,15 @@ User overrides take precedence over registry defaults.
 - Stores secrets securely
 - Adds to RunConfig
 
-**Implementation**: `pkg/registry/types.go`
+**Implementation**: `github.com/stacklok/toolhive-core/registry/types/registry_types.go`
 
 ## Custom Registries
 
 Organizations can provide their own registries.
 
 ### File-Based Registry
+
+> **Note**: The snippet below shows the legacy/in-memory shape for readability. On disk, the file must be in the upstream MCP registry format with servers under `data.servers` (see [Upstream MCP Registry Format](#upstream-mcp-registry-format)). Use `thv registry convert --in <file> --in-place` to migrate legacy files.
 
 **Create registry JSON:**
 ```json
@@ -360,7 +364,7 @@ thv config unset-registry
 
 The API endpoint must implement:
 - `GET /v0.1/servers` - List all servers with pagination
-- `GET /v0.1/servers/:name` - Get specific server by reverse-DNS name
+- `GET /v0.1/servers/:name/versions/latest` - Get the latest version of a specific server by reverse-DNS name
 - `GET /v0.1/servers?search=<query>` - Search servers
 - `GET /openapi.yaml` - OpenAPI specification (version 1.0.0)
 
@@ -505,14 +509,14 @@ For complete registry server documentation, see:
 
 - [Registry Server Guides](https://docs.stacklok.com/toolhive/guides-registry/) - Configuration, authentication, deployment
 - [Registry API Reference](https://docs.stacklok.com/toolhive/reference/registry-api) - API endpoint documentation
-- [ToolHive Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-toolhive) - Registry format reference
+- [Upstream Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-upstream) - Registry format reference
 
 
 ## MCPRegistry CRD (Kubernetes)
 
 For Kubernetes deployments, registries managed via `MCPRegistry` CRD.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpregistry_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpregistry_types.go`
 
 ### How configYAML Works
 
@@ -529,7 +533,7 @@ certs) must be mounted into the registry-api container via explicit
 ### Example CRD
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: company-registry
@@ -538,7 +542,6 @@ spec:
   configYAML: |
     sources:
       - name: company-repo
-        format: toolhive
         git:
           repository: https://github.com/company/mcp-registry
           branch: main
@@ -569,7 +572,6 @@ and Kubernetes.
 configYAML: |
   sources:
     - name: my-source
-      format: toolhive
       git:
         repository: https://github.com/example/registry
         branch: main
@@ -604,7 +606,6 @@ spec:
   configYAML: |
     sources:
       - name: private-repo
-        format: toolhive
         git:
           repository: https://github.com/org/private-registry
           branch: main
@@ -653,7 +654,6 @@ spec:
   configYAML: |
     sources:
       - name: production
-        format: toolhive
         file:
           path: /config/registry/production/registry.json
         syncPolicy:
@@ -697,7 +697,6 @@ Sync intervals are configured per-source inside `configYAML`:
 configYAML: |
   sources:
     - name: my-source
-      format: toolhive
       git:
         repository: https://github.com/example/registry
         branch: main
@@ -721,11 +720,11 @@ The operator always creates a registry API deployment for each MCPRegistry:
 **Access:**
 ```bash
 # Within cluster
-curl http://company-registry-api.default.svc.cluster.local:8080/api/v1/registry
+curl http://company-registry-api.default.svc.cluster.local:8080/v0.1/servers
 
 # Via port-forward
 kubectl port-forward svc/company-registry-api 8080:8080
-curl http://localhost:8080/api/v1/registry
+curl http://localhost:8080/v0.1/servers
 ```
 
 **Implementation**: `cmd/thv-operator/pkg/registryapi/`
@@ -784,7 +783,7 @@ data from its configured sources (Git, API, Kubernetes, etc.) at runtime.
 - `repository_url` - Source code URL
 - `tags` - Categorization labels
 
-**Implementation**: `pkg/registry/types.go`
+**Implementation**: `github.com/stacklok/toolhive-core/registry/types/registry_types.go`
 
 ### RemoteServerMetadata (Remote Servers)
 
@@ -803,7 +802,7 @@ data from its configured sources (Git, API, Kubernetes, etc.) at runtime.
 - `repository_url` - Documentation URL
 - `tags` - Categorization labels
 
-**Implementation**: `pkg/registry/types.go`
+**Implementation**: `github.com/stacklok/toolhive-core/registry/types/registry_types.go`
 
 ### Group
 
@@ -828,11 +827,17 @@ data from its configured sources (Git, API, Kubernetes, etc.) at runtime.
 - Organizational structure
 
 **Run all servers in group:**
+
+> **Note**: `thv group run` is deprecated -- registry-based group deployment is no longer supported. The modern path is to create a local group with `thv group create <name>`, then run each server with `thv run <server> --group <name>`.
+
 ```bash
-thv group run data-pipeline  # assuming 'data-pipeline' is defined in your registry
+# Modern path: create a local group, then add servers to it
+thv group create data-pipeline
+thv run data-reader --group data-pipeline
+thv run data-processor --group data-pipeline
 ```
 
-**Implementation**: `pkg/registry/types.go`
+**Implementation**: `github.com/stacklok/toolhive-core/registry/types/registry_types.go`
 
 ## Provenance and Security
 
@@ -870,12 +875,12 @@ thv run weather-server --image-verification enabled
 
 ## Upstream MCP Registry Format
 
-ToolHive supports the upstream [MCP registry format](https://github.com/modelcontextprotocol/registry) alongside the legacy ToolHive format.
+ToolHive consumes registries in the upstream [MCP registry format](https://github.com/modelcontextprotocol/registry). The legacy ToolHive-native format is no longer accepted; existing files can be migrated with `thv registry convert --in <file> --in-place`.
 
 **Key features:**
-1. **Dual format support**: Both ToolHive-native and upstream MCP formats
+1. **Standardized schema**: Upstream MCP server format from the modelcontextprotocol/registry project
 2. **Publisher-provided extensions**: ToolHive-specific metadata via `_meta["io.modelcontextprotocol.registry/publisher-provided"]`
-3. **Backward compatibility**: Legacy format continues to work
+3. **Lossless migration**: Every legacy ToolHive field maps to a publisher-provided extension on the corresponding upstream server entry
 
 ### Publisher-Provided Extensions
 
@@ -912,11 +917,11 @@ ToolHive uses the `io.modelcontextprotocol.registry/publisher-provided` extensio
 ```
 
 For the complete schema definition, see:
-- **Schema file**: `pkg/registry/data/publisher-provided.schema.json`
+- **Schemas**: published in [`stacklok/toolhive-core`](https://github.com/stacklok/toolhive-core) under `registry/types/data/`
 - **Documentation**: `docs/registry/schema.md`
 - **Validation**: `pkg/registry/schema_validation.go`
 
-**Implementation**: `pkg/registry/` (supports both formats)
+**Implementation**: `pkg/registry/`
 
 ## Registry Operations
 
@@ -947,9 +952,14 @@ kubectl get mcpregistry company-registry -o yaml
 ```
 
 **Trigger manual sync:**
-```bash
-kubectl annotate mcpregistry company-registry toolhive.stacklok.dev/sync-trigger=true
-```
+
+Sync is handled internally by the registry server based on each source's
+`syncPolicy` in `configYAML`. The operator itself does not expose a
+trigger annotation in current code — `cmd/thv-operator/REGISTRY.md`
+documents a `toolhive.stacklok.dev/manual-sync` annotation, but no
+corresponding constant or handler exists in
+`cmd/thv-operator/controllers/mcpregistry_controller.go`. To force a
+re-sync, modify `configYAML` (or restart the registry API pod).
 
 **Implementation**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
 
@@ -961,13 +971,13 @@ kubectl annotate mcpregistry company-registry toolhive.stacklok.dev/sync-trigger
 - [Deployment Modes](01-deployment-modes.md) - Registry usage per mode
 - [Groups](07-groups.md) - Groups in registry
 - [Operator Architecture](09-operator-architecture.md) - MCPRegistry CRD
+- [RunConfig and Permissions](05-runconfig-and-permissions.md) - How registry metadata feeds a server's RunConfig
 - [Skills System](12-skills-system.md) - Skills discovery and distribution via registry
 
 ### External Documentation
 - [ToolHive User Documentation](https://docs.stacklok.com/toolhive/) - User-facing guides
 - [Registry Server Documentation](https://docs.stacklok.com/toolhive/guides-registry/) - Enterprise registry server
-- [ToolHive Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-toolhive) - Registry format reference
-- [Upstream Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-upstream) - MCP standard format
+- [Upstream Registry Schema](https://docs.stacklok.com/toolhive/reference/registry-schema-upstream) - MCP standard format used by ToolHive
 - [Registry API Reference](https://docs.stacklok.com/toolhive/reference/registry-api) - API specification
 
 ### Related Repositories

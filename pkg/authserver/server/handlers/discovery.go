@@ -23,7 +23,7 @@ import (
 	"github.com/ory/fosite"
 
 	"github.com/stacklok/toolhive/pkg/authserver/server/crypto"
-	sharedobauth "github.com/stacklok/toolhive/pkg/oauth"
+	sharedobauth "github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // Cache-Control max-age values for discovery endpoints.
@@ -114,6 +114,13 @@ func (h *Handler) buildOAuthMetadata() sharedobauth.AuthorizationServerMetadata 
 		},
 		CodeChallengeMethodsSupported:     []string{crypto.PKCEChallengeMethodS256},
 		TokenEndpointAuthMethodsSupported: []string{sharedobauth.TokenEndpointAuthMethodNone},
+
+		// ClientIDMetadataDocumentSupported is defined in the CIMD draft as an
+		// OAuth AS metadata field (RFC 8414), not in OIDC Discovery 1.0. It is
+		// included here because MCP clients (e.g. VS Code) discover the AS via
+		// /.well-known/openid-configuration and need this flag there to activate
+		// CIMD. Spec-compliant OIDC consumers silently ignore unknown fields.
+		ClientIDMetadataDocumentSupported: h.config.CIMDEnabled,
 	}
 }
 

@@ -11,12 +11,13 @@ import (
 	"net/http"
 	"net/url"
 	"sync"
+	"time"
 
 	"golang.org/x/oauth2"
 
-	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/container"
 	rt "github.com/stacklok/toolhive/pkg/container/runtime"
+	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	transporterrors "github.com/stacklok/toolhive/pkg/transport/errors"
 	"github.com/stacklok/toolhive/pkg/transport/middleware"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/transparent"
@@ -81,6 +82,10 @@ type HTTPTransport struct {
 	// sessionStorage overrides the default in-memory session store when set.
 	// Used for Redis-backed session sharing across replicas.
 	sessionStorage session.Storage
+
+	// sessionTTL overrides the inactivity timeout for sessions managed by the
+	// underlying proxy. Zero uses the proxy's default.
+	sessionTTL time.Duration
 
 	// Transparent proxy
 	proxy types.Proxy
@@ -421,6 +426,9 @@ func (t *HTTPTransport) buildProxyOptions(remoteBasePath, remoteRawQuery string)
 	opts = append(opts, transparent.WithRemoteRawQuery(remoteRawQuery))
 	if t.stateless {
 		opts = append(opts, transparent.WithStateless())
+	}
+	if t.sessionTTL > 0 {
+		opts = append(opts, transparent.WithSessionTTL(t.sessionTTL))
 	}
 	if t.sessionStorage != nil {
 		opts = append(opts, transparent.WithSessionStorage(t.sessionStorage))

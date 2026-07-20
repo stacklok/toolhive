@@ -10,7 +10,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // isEmbeddingServerReady checks whether the referenced EmbeddingServer
@@ -20,14 +20,14 @@ import (
 // to detect the "configured but not ready" case that requires requeue.
 func (r *VirtualMCPServerReconciler) isEmbeddingServerReady(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (*string, error) {
 	name := embeddingServerNameForVMCP(vmcp)
 	if name == "" {
 		return nil, nil // No embedding server configured, skip check
 	}
 
-	es := &mcpv1alpha1.EmbeddingServer{}
+	es := &mcpv1beta1.EmbeddingServer{}
 	err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: vmcp.Namespace}, es)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -36,13 +36,13 @@ func (r *VirtualMCPServerReconciler) isEmbeddingServerReady(
 		return nil, fmt.Errorf("failed to get EmbeddingServer %s: %w", name, err)
 	}
 
-	if es.Status.Phase == mcpv1alpha1.EmbeddingServerPhaseReady && es.Status.ReadyReplicas > 0 {
+	if es.Status.Phase == mcpv1beta1.EmbeddingServerPhaseReady && es.Status.ReadyReplicas > 0 {
 		url := es.Status.URL
 		return &url, nil
 	}
 
 	// Propagate failure so the VirtualMCPServer surfaces it instead of staying Pending
-	if es.Status.Phase == mcpv1alpha1.EmbeddingServerPhaseFailed {
+	if es.Status.Phase == mcpv1beta1.EmbeddingServerPhaseFailed {
 		return nil, fmt.Errorf("EmbeddingServer %s has failed", name)
 	}
 
@@ -55,14 +55,14 @@ func (r *VirtualMCPServerReconciler) isEmbeddingServerReady(
 // Returns empty string if no embedding server is configured.
 func (r *VirtualMCPServerReconciler) resolveEmbeddingServiceURL(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (string, error) {
 	name := embeddingServerNameForVMCP(vmcp)
 	if name == "" {
 		return "", nil
 	}
 
-	es := &mcpv1alpha1.EmbeddingServer{}
+	es := &mcpv1beta1.EmbeddingServer{}
 	if err := r.Get(ctx, types.NamespacedName{Name: name, Namespace: vmcp.Namespace}, es); err != nil {
 		return "", fmt.Errorf("failed to get EmbeddingServer %s: %w", name, err)
 	}
@@ -72,7 +72,7 @@ func (r *VirtualMCPServerReconciler) resolveEmbeddingServiceURL(
 
 // embeddingServerNameForVMCP resolves the EmbeddingServer name for a VirtualMCPServer.
 // Returns empty string if no embedding server is configured.
-func embeddingServerNameForVMCP(vmcp *mcpv1alpha1.VirtualMCPServer) string {
+func embeddingServerNameForVMCP(vmcp *mcpv1beta1.VirtualMCPServer) string {
 	if vmcp.Spec.EmbeddingServerRef != nil {
 		return vmcp.Spec.EmbeddingServerRef.Name
 	}

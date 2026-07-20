@@ -16,16 +16,24 @@ package upstream
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
+
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // testTokenResponse is a test helper to produce token responses.
@@ -214,6 +222,229 @@ func TestNewOAuth2Provider(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "redirect_uri is required")
 	})
+
+	t.Run("unsupported token endpoint auth method returns error", func(t *testing.T) {
+		t.Parallel()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint:   mock.URL + "/authorize",
+			TokenEndpoint:           mock.URL + "/token",
+			TokenEndpointAuthMethod: "private_key_jwt",
+		}
+
+		_, err := NewOAuth2Provider(config)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "private_key_jwt",
+			"construction must fail loudly on a method this client cannot fulfil")
+	})
+}
+
+// TestAuthStyleFromMethod pins the mapping from RFC 7591
+// token_endpoint_auth_method values to oauth2.AuthStyle. Recognised methods
+// (basic/post/none) and the unset case resolve to a definite style; an
+// unrecognised, non-empty method must be rejected (fail loudly) rather than
+// silently degrading to the POST-body default.
+func TestAuthStyleFromMethod(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		method  string
+		want    oauth2.AuthStyle
+		wantErr bool
+	}{
+		{"client_secret_basic maps to header", oauthproto.TokenEndpointAuthMethodClientSecretBasic, oauth2.AuthStyleInHeader, false},
+		{"client_secret_post maps to params", oauthproto.TokenEndpointAuthMethodClientSecretPost, oauth2.AuthStyleInParams, false},
+		{"none maps to params", oauthproto.TokenEndpointAuthMethodNone, oauth2.AuthStyleInParams, false},
+		{"unset maps to params", "", oauth2.AuthStyleInParams, false},
+		{"private_key_jwt is rejected", "private_key_jwt", oauth2.AuthStyleAutoDetect, true},
+		{"unknown method is rejected", "totally_bogus", oauth2.AuthStyleAutoDetect, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := authStyleFromMethod(tt.method)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.method,
+					"error must name the offending method for operator diagnosis")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+// TestNewOAuth2Provider_TokenEndpointAuthMethod verifies that the negotiated
+// token_endpoint_auth_method controls how client credentials are presented at
+// the token endpoint. This is the regression guard for issue #5865: a
+// DCR-registered client whose upstream negotiated client_secret_basic must send
+// its credentials in the HTTP Basic Authorization header, not the POST body, or
+// strict authorization servers (e.g. Ory Hydra) reject the exchange with
+// invalid_client.
+func TestNewOAuth2Provider_TokenEndpointAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	const (
+		clientID     = "dcr-client"
+		clientSecret = "dcr-secret"
+	)
+
+	tests := []struct {
+		name          string
+		authMethod    string
+		wantAuthStyle oauth2.AuthStyle
+		wantBasicAuth bool // credentials expected in the Authorization header
+	}{
+		{
+			name:          "client_secret_basic sends credentials in Basic header",
+			authMethod:    oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+			wantAuthStyle: oauth2.AuthStyleInHeader,
+			wantBasicAuth: true,
+		},
+		{
+			name:          "client_secret_post sends credentials in body",
+			authMethod:    oauthproto.TokenEndpointAuthMethodClientSecretPost,
+			wantAuthStyle: oauth2.AuthStyleInParams,
+			wantBasicAuth: false,
+		},
+		{
+			name:          "unset defaults to credentials in body",
+			authMethod:    "",
+			wantAuthStyle: oauth2.AuthStyleInParams,
+			wantBasicAuth: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			mock := newMockOAuth2Server()
+			t.Cleanup(mock.Close)
+
+			var (
+				gotUser, gotPass string
+				gotBasicAuth     bool
+				gotBodySecret    string
+			)
+			mock.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
+				gotUser, gotPass, gotBasicAuth = r.BasicAuth()
+				if err := r.ParseForm(); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				gotBodySecret = r.PostForm.Get("client_secret")
+
+				w.Header().Set("Content-Type", "application/json")
+				if err := json.NewEncoder(w).Encode(testTokenResponse{
+					AccessToken: "access-token",
+					TokenType:   "Bearer",
+				}); err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+				}
+			}
+
+			config := &OAuth2Config{
+				CommonOAuthConfig: CommonOAuthConfig{
+					ClientID:     clientID,
+					ClientSecret: clientSecret,
+					RedirectURI:  "http://localhost:8080/callback",
+				},
+				AuthorizationEndpoint:   mock.URL + "/authorize",
+				TokenEndpoint:           mock.URL + "/token",
+				TokenEndpointAuthMethod: tt.authMethod,
+			}
+
+			provider, err := NewOAuth2Provider(config)
+			require.NoError(t, err)
+			assert.Equal(t, tt.wantAuthStyle, provider.oauth2Config.Endpoint.AuthStyle,
+				"oauth2 endpoint auth style must reflect the negotiated method")
+
+			_, err = provider.exchangeCodeForTokens(context.Background(), "auth-code", "")
+			require.NoError(t, err)
+
+			if tt.wantBasicAuth {
+				require.True(t, gotBasicAuth, "credentials must be sent in the Basic Authorization header")
+				assert.Equal(t, clientID, gotUser)
+				assert.Equal(t, clientSecret, gotPass)
+				assert.Empty(t, gotBodySecret, "client_secret must not also appear in the POST body")
+			} else {
+				assert.False(t, gotBasicAuth, "no Basic Authorization header expected")
+				assert.Equal(t, clientSecret, gotBodySecret, "client_secret must be sent in the POST body")
+			}
+		})
+	}
+}
+
+// TestBaseOAuth2Provider_RefreshTokens_TokenEndpointAuthMethod verifies that
+// the negotiated auth method also governs the refresh path. RefreshTokens
+// shares the same oauth2.Config.Endpoint.AuthStyle as code exchange, so a
+// client_secret_basic client must present its credentials in the Basic
+// Authorization header on refresh too — this pins the refresh half of the
+// contract documented on authStyleFromMethod so a future change that rebuilds
+// the config or bypasses AuthStyle in RefreshTokens does not ship unnoticed.
+func TestBaseOAuth2Provider_RefreshTokens_TokenEndpointAuthMethod(t *testing.T) {
+	t.Parallel()
+
+	const (
+		clientID     = "dcr-client"
+		clientSecret = "dcr-secret"
+	)
+
+	mock := newMockOAuth2Server()
+	t.Cleanup(mock.Close)
+
+	var (
+		gotUser, gotPass string
+		gotBasicAuth     bool
+		gotBodySecret    string
+	)
+	mock.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
+		gotUser, gotPass, gotBasicAuth = r.BasicAuth()
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		gotBodySecret = r.PostForm.Get("client_secret")
+
+		w.Header().Set("Content-Type", "application/json")
+		if err := json.NewEncoder(w).Encode(testTokenResponse{
+			AccessToken: "refreshed-access-token",
+			TokenType:   "Bearer",
+		}); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+
+	config := &OAuth2Config{
+		CommonOAuthConfig: CommonOAuthConfig{
+			ClientID:     clientID,
+			ClientSecret: clientSecret,
+			RedirectURI:  "http://localhost:8080/callback",
+		},
+		AuthorizationEndpoint:   mock.URL + "/authorize",
+		TokenEndpoint:           mock.URL + "/token",
+		TokenEndpointAuthMethod: oauthproto.TokenEndpointAuthMethodClientSecretBasic,
+	}
+
+	provider, err := NewOAuth2Provider(config)
+	require.NoError(t, err)
+
+	_, err = provider.RefreshTokens(context.Background(), "some-refresh-token", "")
+	require.NoError(t, err)
+
+	require.True(t, gotBasicAuth, "refresh must send credentials in the Basic Authorization header")
+	assert.Equal(t, clientID, gotUser)
+	assert.Equal(t, clientSecret, gotPass)
+	assert.Empty(t, gotBodySecret, "client_secret must not also appear in the refresh POST body")
 }
 
 func TestBaseOAuth2Provider_Type(t *testing.T) {
@@ -406,7 +637,7 @@ func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		tokens, err := provider.exchangeCodeForTokens(ctx, "test-auth-code", "test-verifier")
+		result, err := provider.exchangeCodeForTokens(ctx, "test-auth-code", "test-verifier")
 		require.NoError(t, err)
 
 		// Verify request parameters
@@ -418,12 +649,12 @@ func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 		assert.Equal(t, "http://localhost:8080/callback", receivedParams.Get("redirect_uri"))
 
 		// Verify response
-		assert.Equal(t, "exchanged-access-token", tokens.AccessToken)
-		assert.Equal(t, "exchanged-refresh-token", tokens.RefreshToken)
+		assert.Equal(t, "exchanged-access-token", result.tokens.AccessToken)
+		assert.Equal(t, "exchanged-refresh-token", result.tokens.RefreshToken)
 
 		// Verify expiration is set approximately correctly
 		expectedExpiry := time.Now().Add(7200 * time.Second)
-		assert.WithinDuration(t, expectedExpiry, tokens.ExpiresAt, 10*time.Second)
+		assert.WithinDuration(t, expectedExpiry, result.tokens.ExpiresAt, 10*time.Second)
 	})
 
 	t.Run("handles error response from token endpoint", func(t *testing.T) {
@@ -627,7 +858,7 @@ func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 		assert.Contains(t, err.Error(), "unexpected token_type")
 	})
 
-	t.Run("default expiry when not specified", func(t *testing.T) {
+	t.Run("zero expiry when expires_in absent", func(t *testing.T) {
 		t.Parallel()
 
 		mock := newMockOAuth2Server()
@@ -638,7 +869,7 @@ func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 			resp := testTokenResponse{
 				AccessToken: "token",
 				TokenType:   "Bearer",
-				// ExpiresIn intentionally missing
+				// ExpiresIn intentionally missing — provider issues a non-expiring token
 			}
 			if err := json.NewEncoder(w).Encode(resp); err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -658,12 +889,11 @@ func TestBaseOAuth2Provider_exchangeCodeForTokens(t *testing.T) {
 		provider, err := NewOAuth2Provider(config)
 		require.NoError(t, err)
 
-		tokens, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
+		result, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
 		require.NoError(t, err)
 
-		// Should default to 1 hour
-		expectedExpiry := time.Now().Add(time.Hour)
-		assert.WithinDuration(t, expectedExpiry, tokens.ExpiresAt, 10*time.Second)
+		// No expires_in in the response means the token has no expiry.
+		assert.True(t, result.tokens.ExpiresAt.IsZero(), "ExpiresAt should be zero for non-expiring tokens")
 	})
 }
 
@@ -812,6 +1042,102 @@ func TestBaseOAuth2Provider_RefreshTokens(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "token request failed")
 	})
+
+	t.Run("refresh request includes configured scopes", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
+		var receivedParams url.Values
+		mock.tokenHandler = func(w http.ResponseWriter, r *http.Request) {
+			if err := r.ParseForm(); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			receivedParams = r.PostForm
+
+			w.Header().Set("Content-Type", "application/json")
+			resp := testTokenResponse{
+				AccessToken:  "refreshed-access-token",
+				TokenType:    "Bearer",
+				RefreshToken: "new-refresh-token",
+				ExpiresIn:    3600,
+			}
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+				Scopes: []string{
+					"openid",
+					"profile",
+					"api://example.com/custom:scope",
+				},
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.RefreshTokens(ctx, "old-refresh-token", "")
+		require.NoError(t, err)
+
+		// Scope must be sent on refresh; some ASes drop custom scopes otherwise.
+		sentScopes := strings.Fields(receivedParams.Get("scope"))
+		assert.ElementsMatch(t,
+			[]string{"openid", "profile", "api://example.com/custom:scope"},
+			sentScopes,
+			"refresh request must include the configured scope set verbatim",
+		)
+	})
+
+	t.Run("refresh preserves existing refresh_token when AS does not issue a new one", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
+		mock.tokenHandler = func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			// Response omits refresh_token (allowed by RFC 6749 §6).
+			resp := testTokenResponse{
+				AccessToken: "refreshed-access-token",
+				TokenType:   "Bearer",
+				ExpiresIn:   3600,
+			}
+			if err := json.NewEncoder(w).Encode(resp); err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		tokens, err := provider.RefreshTokens(ctx, "still-valid-refresh-token", "")
+		require.NoError(t, err)
+
+		assert.Equal(t, "refreshed-access-token", tokens.AccessToken)
+		assert.Equal(t, "still-valid-refresh-token", tokens.RefreshToken,
+			"original refresh token must be preserved when response omits one")
+	})
 }
 
 func TestBaseOAuth2Provider_WithOAuth2HTTPClient(t *testing.T) {
@@ -838,9 +1164,9 @@ func TestBaseOAuth2Provider_WithOAuth2HTTPClient(t *testing.T) {
 
 	// Verify the provider works with custom client
 	ctx := context.Background()
-	tokens, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
+	result, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
 	require.NoError(t, err)
-	assert.NotEmpty(t, tokens.AccessToken)
+	assert.NotEmpty(t, result.tokens.AccessToken)
 }
 
 func TestBaseOAuth2Provider_TokenTypeValidation(t *testing.T) {
@@ -972,11 +1298,11 @@ func TestBaseOAuth2Provider_IDToken(t *testing.T) {
 	provider, err := NewOAuth2Provider(config)
 	require.NoError(t, err)
 
-	tokens, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
+	result, err := provider.exchangeCodeForTokens(ctx, "test-code", "")
 	require.NoError(t, err)
 
 	// OAuth2 providers can also return ID tokens if they support hybrid flows
-	assert.Equal(t, "test-id-token.payload.signature", tokens.IDToken)
+	assert.Equal(t, "test-id-token.payload.signature", result.tokens.IDToken)
 }
 
 func Test_validateRedirectURI(t *testing.T) {
@@ -1198,6 +1524,179 @@ func TestBaseOAuth2Provider_ExchangeCodeForIdentity(t *testing.T) {
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "authorization code is required")
 	})
+
+	// When UserInfo is nil, ExchangeCodeForIdentity must synthesize Subject
+	// from the access token. The prefix-tagged Subject + empty Name/Email
+	// are the observable signals that the synthesis branch ran — the
+	// userinfo path populates Name/Email and would never emit a "tk-…" sub.
+	t.Run("synthesizes identity when UserInfo is nil", func(t *testing.T) {
+		t.Parallel()
+
+		mock := newMockOAuth2Server()
+		t.Cleanup(mock.Close)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+			// UserInfo intentionally nil.
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		result, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+
+		require.NotNil(t, result)
+		assert.NotEmpty(t, result.Tokens.AccessToken)
+		// Subject is the prefix-tagged hash of the access token.
+		assert.True(t, strings.HasPrefix(result.Subject, synthesizedSubjectPrefix),
+			"synthesized subject must carry the %q prefix; got %q",
+			synthesizedSubjectPrefix, result.Subject)
+		assert.Equal(t,
+			synthesizeSubjectFromAccessToken(result.Tokens.AccessToken),
+			result.Subject,
+			"subject must be deterministic given the same access token")
+		// Synthesized identities expose no display surface.
+		assert.Empty(t, result.Name)
+		assert.Empty(t, result.Email)
+		// Synthetic=true is what tells the callback handler to bypass UserResolver.
+		assert.True(t, result.Synthetic, "synthesized identities must set Synthetic=true")
+	})
+}
+
+func TestSynthesizeSubjectFromAccessToken(t *testing.T) {
+	t.Parallel()
+
+	t.Run("is deterministic for a given token", func(t *testing.T) {
+		t.Parallel()
+		token := "atlassian-mcp-style-opaque-token-93c"
+		assert.Equal(t,
+			synthesizeSubjectFromAccessToken(token),
+			synthesizeSubjectFromAccessToken(token),
+		)
+	})
+
+	t.Run("differs for different tokens", func(t *testing.T) {
+		t.Parallel()
+		assert.NotEqual(t,
+			synthesizeSubjectFromAccessToken("token-a"),
+			synthesizeSubjectFromAccessToken("token-b"),
+		)
+	})
+
+	t.Run("output shape: prefix + 32 hex chars", func(t *testing.T) {
+		t.Parallel()
+		got := synthesizeSubjectFromAccessToken("any-input")
+		assert.True(t, strings.HasPrefix(got, synthesizedSubjectPrefix))
+		hexPart := strings.TrimPrefix(got, synthesizedSubjectPrefix)
+		assert.Len(t, hexPart, 32, "first 16 bytes of SHA-256 in hex is 32 chars")
+		// Must be valid hex.
+		_, err := hex.DecodeString(hexPart)
+		assert.NoError(t, err)
+	})
+
+}
+
+// TestSynthesizeIdentity exercises the synthesis-mode helper directly,
+// including the empty-access-token guard. The synthesizer itself is a pure
+// hash and would happily emit the well-known sha256("") constant for "" —
+// synthesizeIdentity is the layer that refuses to do so, preventing distinct
+// sessions from collapsing onto a single (UserID, ProviderID) storage bucket.
+func TestSynthesizeIdentity(t *testing.T) {
+	t.Parallel()
+
+	t.Run("rejects empty access token", func(t *testing.T) {
+		t.Parallel()
+		// Defense-in-depth: convertOAuth2Token already catches empty
+		// AccessToken at exchange time, so this guard is unreachable
+		// through the public API today. The test asserts the invariant
+		// regardless, so a future code path that bypasses
+		// convertOAuth2Token cannot silently synthesize the constant
+		// sha256("") subject.
+		got, err := synthesizeIdentity(&Tokens{AccessToken: ""})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, ErrIdentityResolutionFailed)
+		assert.Nil(t, got)
+	})
+
+	t.Run("synthesizes for non-empty access token", func(t *testing.T) {
+		t.Parallel()
+		tokens := &Tokens{AccessToken: "atlassian-mcp-style-opaque-token"}
+		got, err := synthesizeIdentity(tokens)
+		require.NoError(t, err)
+		require.NotNil(t, got)
+		assert.True(t, got.Synthetic, "synthesized identities must set Synthetic=true")
+		assert.Equal(t,
+			synthesizeSubjectFromAccessToken(tokens.AccessToken),
+			got.Subject,
+			"subject must be deterministic given the same access token")
+		assert.Empty(t, got.Name)
+		assert.Empty(t, got.Email)
+		assert.Same(t, tokens, got.Tokens, "tokens reference is preserved")
+	})
+}
+
+func TestIsSynthesizedSubject(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		subject string
+		want    bool
+	}{
+		// Round-trip: predicate must recognize anything the synthesizer emits.
+		{
+			name:    "round-trip on synthesized subject",
+			subject: synthesizeSubjectFromAccessToken("any-opaque-token"),
+			want:    true,
+		},
+		// Real upstream subjects (UUIDs, integer IDs) must not classify as synthesized.
+		{
+			name:    "uuid-shaped subject is not synthesized",
+			subject: "11012b90-98d0-4594-916e-54db832ebe8f",
+			want:    false,
+		},
+		{
+			name:    "integer-shaped subject is not synthesized",
+			subject: "1234567890",
+			want:    false,
+		},
+		{
+			name:    "atlassian-shaped account_id is not synthesized",
+			subject: "5e1234567890abcdef123456",
+			want:    false,
+		},
+		{
+			name:    "empty string is not synthesized",
+			subject: "",
+			want:    false,
+		},
+		// HasPrefix, not substring search.
+		{
+			name:    "tk- in middle of subject is not synthesized",
+			subject: "user-tk-abc",
+			want:    false,
+		},
+		// Predicate is a fast prefix guard, not a digest validator.
+		{
+			name:    "prefix-only string is treated as synthesized",
+			subject: "tk-",
+			want:    true,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, IsSynthesizedSubject(tc.subject))
+		})
+	}
 }
 
 func TestBaseOAuth2Provider_fetchUserInfo(t *testing.T) {
@@ -1788,7 +2287,7 @@ func TestValidateAdditionalAuthorizationParams(t *testing.T) {
 				AdditionalAuthorizationParams: tt.params,
 			}
 
-			err := config.Validate()
+			err := config.ValidateWithInsecure(false)
 
 			if tt.wantErr {
 				require.Error(t, err)
@@ -1865,5 +2364,509 @@ func TestAuthorizationURL_AdditionalAuthorizationParams(t *testing.T) {
 		require.NoError(t, err)
 
 		assert.Equal(t, "caller-value", parsed.Query().Get("custom"))
+	})
+}
+
+// tokenBodyWithUsername is a minimal valid token response body that includes a
+// "username" field used across several identityFromToken test cases.
+const tokenBodyWithUsername = `{"access_token":"a","token_type":"Bearer","username":"u1"}`
+
+// newTokenResponseServer is a test helper that starts an httptest.Server whose
+// /token endpoint returns tokenBody as the JSON response body, and whose
+// /authorize endpoint always returns 200 OK.
+func newTokenResponseServer(t *testing.T, tokenBody string) *httptest.Server {
+	t.Helper()
+	mux := http.NewServeMux()
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(tokenBody))
+	})
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// TestBaseOAuth2Provider_ExchangeCodeForIdentity_IdentityFromToken covers the
+// priority-1 path where IdentityFromToken is configured.
+func TestBaseOAuth2Provider_ExchangeCodeForIdentity_IdentityFromToken(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+
+	t.Run("identityFromToken resolves subject name email", func(t *testing.T) {
+		t.Parallel()
+
+		tokenBody := `{"access_token":"a","token_type":"Bearer","username":"u1","display_name":"User One","email":"u1@example.com"}`
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "username",
+				NamePath:    "display_name",
+				EmailPath:   "email",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "u1", identity.Subject)
+		assert.Equal(t, "User One", identity.Name)
+		assert.Equal(t, "u1@example.com", identity.Email)
+		assert.NotEmpty(t, identity.Tokens.AccessToken)
+		assert.False(t, identity.Synthetic, "IdentityFromToken path must not produce synthetic identities")
+	})
+
+	t.Run("@upstreamjwt modifier resolves identity from JWT-shaped access token", func(t *testing.T) {
+		t.Parallel()
+
+		// RegisterModifiers is called once by TestMain before all tests run.
+		// Do not call it again here: gjson.AddModifier writes to a shared map and
+		// races with concurrent reads in parallel subtests.
+
+		accessToken := makeJWT(`{"sub":"u-jwt-1","name":"JWT User","email":"jwt@example.com"}`)
+		tokenBody := fmt.Sprintf(`{"access_token":%q,"token_type":"Bearer"}`, accessToken)
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "access_token|@upstreamjwt|sub",
+				NamePath:    "access_token|@upstreamjwt|name",
+				EmailPath:   "access_token|@upstreamjwt|email",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "u-jwt-1", identity.Subject)
+		assert.Equal(t, "JWT User", identity.Name)
+		assert.Equal(t, "jwt@example.com", identity.Email)
+		assert.False(t, identity.Synthetic)
+	})
+
+	t.Run("@upstreamjwt modifier accepts hand-forged unsigned JWT", func(t *testing.T) {
+		t.Parallel()
+
+		// Construct a JWT with a garbage signature. The payload is valid base64url-encoded
+		// JSON, but the signature is not the real HMAC/RSA output. This test pins the
+		// intentional no-signature-check behavior. A future contributor who adds
+		// verification must update the trust model docs and this test.
+		header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"HS256","typ":"JWT"}`))
+		payload := base64.RawURLEncoding.EncodeToString([]byte(`{"sub":"forged-subject"}`))
+		forgedJWT := header + "." + payload + ".INVALIDSIG"
+
+		tokenBody := fmt.Sprintf(`{"access_token":%q,"token_type":"Bearer"}`, forgedJWT)
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "access_token|@upstreamjwt|sub",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		// No signature verification — extraction succeeds despite the forged signature.
+		assert.Equal(t, "forged-subject", identity.Subject)
+	})
+
+	t.Run("identityFromToken bypasses userinfo endpoint entirely", func(t *testing.T) {
+		t.Parallel()
+
+		// httptest.Server dispatches each request on its own goroutine, so
+		// the counter must be accessed atomically — t.Errorf inside the
+		// handler is the load-bearing assertion; the counter just gives a
+		// numeric value the final assertion can read race-free.
+		var tripwireCallCount atomic.Int32
+		tripwire := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			tripwireCallCount.Add(1)
+			t.Errorf("userinfo endpoint must NOT be called when identityFromToken is configured")
+		}))
+		t.Cleanup(tripwire.Close)
+
+		tokenSrv := newTokenResponseServer(t, tokenBodyWithUsername)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "username",
+			},
+			// UserInfo is also configured — identityFromToken must win and
+			// the tripwire userinfo server must never be contacted.
+			UserInfo: &UserInfoConfig{
+				EndpointURL: tripwire.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "u1", identity.Subject)
+		assert.Equal(t, int32(0), tripwireCallCount.Load(), "userinfo endpoint must not be called")
+	})
+
+	t.Run("identityFromToken extraction failure returns ErrIdentityResolutionFailed without calling userinfo", func(t *testing.T) {
+		t.Parallel()
+
+		var tripwireCallCount atomic.Int32
+		tripwire := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+			tripwireCallCount.Add(1)
+			t.Errorf("userinfo endpoint must NOT be called when identityFromToken is configured")
+		}))
+		t.Cleanup(tripwire.Close)
+
+		// Token body does NOT contain "missing_path"
+		tokenSrv := newTokenResponseServer(t, tokenBodyWithUsername)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "missing_path",
+			},
+			UserInfo: &UserInfoConfig{
+				EndpointURL: tripwire.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
+		assert.Equal(t, int32(0), tripwireCallCount.Load(), "userinfo endpoint must not be called on extraction failure")
+	})
+
+	t.Run("extraction failure error surfaces the misconfigured path name", func(t *testing.T) {
+		t.Parallel()
+
+		tokenSrv := newTokenResponseServer(t, tokenBodyWithUsername)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				// Path that does not exist in the token response so the extractor
+				// produces a diagnostic that names the path and the failure reason.
+				SubjectPath: "nonexistent_field",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
+		// The error must carry the operator-supplied path name so the
+		// misconfiguration is diagnosable without log access.
+		assert.Contains(t, err.Error(), "nonexistent_field",
+			"error must contain the misconfigured subject path name")
+		assert.Contains(t, err.Error(), "not found",
+			"error must describe why extraction failed")
+	})
+
+	t.Run("userInfo-only path is unchanged when identityFromToken is not set", func(t *testing.T) {
+		t.Parallel()
+
+		userInfoSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"sub":   "u-456",
+				"name":  "Bob",
+				"email": "bob@example.com",
+			})
+		}))
+		t.Cleanup(userInfoSrv.Close)
+
+		tokenBody := `{"access_token":"a","token_type":"Bearer"}`
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			UserInfo: &UserInfoConfig{
+				EndpointURL: userInfoSrv.URL,
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.Equal(t, "u-456", identity.Subject)
+		assert.Equal(t, "Bob", identity.Name)
+		assert.Equal(t, "bob@example.com", identity.Email)
+	})
+
+	t.Run("neither identityFromToken nor userInfo set falls through to synthesis", func(t *testing.T) {
+		t.Parallel()
+
+		tokenBody := `{"access_token":"a","token_type":"Bearer"}`
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		// Both identity surfaces absent — the priority chain falls through to
+		// synthesizeIdentity (PR 5094): a non-PII Subject derived from the
+		// access token, Synthetic=true, no Name/Email.
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		identity, err := provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.NoError(t, err)
+		assert.True(t, identity.Synthetic, "expected synthesized identity when neither IdentityFromToken nor UserInfo is set")
+		assert.True(t, IsSynthesizedSubject(identity.Subject),
+			"expected synthesized subject prefix; got %q", identity.Subject)
+		assert.Empty(t, identity.Name, "synthesized identity has no name")
+		assert.Empty(t, identity.Email, "synthesized identity has no email")
+	})
+
+	t.Run("IdentityFromToken configured does not cause RefreshTokens to fail when identity field is absent", func(t *testing.T) {
+		t.Parallel()
+
+		// Token body intentionally does NOT include "username". If extraction ran on
+		// the refresh path, it would fail (path absent) and RefreshTokens would error.
+		// A successful return proves extraction was NOT run on the refresh path.
+		tokenBody := `{"access_token":"refreshed","token_type":"Bearer","refresh_token":"new-refresh"}`
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				SubjectPath: "username",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		// RefreshTokens must succeed even though "username" is absent from the
+		// response, proving that identity extraction is skipped on the refresh path.
+		tokens, err := provider.RefreshTokens(ctx, "old-refresh-token", "")
+		require.NoError(t, err)
+		assert.Equal(t, "refreshed", tokens.AccessToken)
+	})
+
+	t.Run("error message does not contain token body content", func(t *testing.T) {
+		t.Parallel()
+
+		secretMarker := "SUPER_SECRET_TOKEN_BODY_MARKER_XYZ789"
+		tokenBody := `{"access_token":"` + secretMarker + `","token_type":"Bearer","username":"u1"}`
+		tokenSrv := newTokenResponseServer(t, tokenBody)
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:     "test-client",
+				ClientSecret: "test-secret",
+				RedirectURI:  "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: tokenSrv.URL + "/authorize",
+			TokenEndpoint:         tokenSrv.URL + "/token",
+			IdentityFromToken: &IdentityFromTokenConfig{
+				// Deliberately wrong path to trigger extraction failure.
+				SubjectPath: "missing_field",
+			},
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+
+		_, err = provider.ExchangeCodeForIdentity(ctx, "test-code", "", "")
+		require.Error(t, err)
+		assert.True(t, errors.Is(err, ErrIdentityResolutionFailed))
+		// The error must not leak any part of the token response body.
+		assert.NotContains(t, err.Error(), secretMarker,
+			"error message must not contain token body content")
+	})
+}
+
+func TestNewHTTPClientForHost(t *testing.T) {
+	t.Parallel()
+
+	// privateIP is an RFC-1918 address unlikely to have a listener; used to
+	// trigger the private-IP dial-block without needing a real server.
+	const privateIP = "10.255.255.1"
+
+	tests := []struct {
+		name            string
+		host            string
+		allowPrivateIPs bool
+		// wantPrivateIPBlocked: when true, dialing privateIP must produce the
+		// "private IP address" error; when false, it must not (any other error,
+		// e.g. connection refused or TLS, is fine).
+		wantPrivateIPBlocked bool
+	}{
+		{
+			name:                 "external host with private IPs disallowed blocks private IP dial",
+			host:                 "external.example.com",
+			allowPrivateIPs:      false,
+			wantPrivateIPBlocked: true,
+		},
+		{
+			name:                 "external host with private IPs allowed passes dial guard",
+			host:                 "external.example.com",
+			allowPrivateIPs:      true,
+			wantPrivateIPBlocked: false,
+		},
+		{
+			name:            "localhost always allows private IPs regardless of flag",
+			host:            "localhost",
+			allowPrivateIPs: false,
+			// localhost sets allowInsecure=true which already sets WithPrivateIPs(true)
+			wantPrivateIPBlocked: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			client, err := newHTTPClientForHost(tt.host, tt.allowPrivateIPs, false)
+			require.NoError(t, err)
+			require.NotNil(t, client)
+
+			// Use a short deadline so "allowed" cases don't wait for a real TCP
+			// timeout when dialing the unreachable private IP.
+			ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+			t.Cleanup(cancel)
+
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://"+privateIP+":9999", nil)
+			require.NoError(t, err)
+
+			// The private-IP guard fires synchronously inside the dialer's control
+			// function, before any TCP packets are sent, so the "private IP address"
+			// error is immediate and deterministic when the guard is active.
+			// When the guard is absent the dial proceeds over the network; the
+			// 500 ms context deadline bounds the test. Any non-guard error
+			// (context deadline exceeded, connection refused, TLS) does not contain
+			// "private IP address", so the NotContains assertion is not vacuous:
+			// an incorrectly-active guard would fail the check immediately.
+			_, dialErr := client.Do(req)
+			require.Error(t, dialErr)
+
+			if tt.wantPrivateIPBlocked {
+				assert.Contains(t, dialErr.Error(), "private IP address",
+					"expected private IP to be blocked")
+			} else {
+				assert.NotContains(t, dialErr.Error(), "private IP address",
+					"expected private IP dial to pass the IP guard")
+			}
+		})
+	}
+}
+
+func TestOAuth2Config_AllowPrivateIPs(t *testing.T) {
+	t.Parallel()
+
+	mock := newMockOAuth2Server()
+	t.Cleanup(mock.Close)
+
+	t.Run("AllowPrivateIPs field is propagated to provider", func(t *testing.T) {
+		t.Parallel()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+			AllowPrivateIPs:       true,
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+		require.NotNil(t, provider)
+		assert.True(t, provider.config.AllowPrivateIPs)
+	})
+
+	t.Run("AllowPrivateIPs defaults to false", func(t *testing.T) {
+		t.Parallel()
+
+		config := &OAuth2Config{
+			CommonOAuthConfig: CommonOAuthConfig{
+				ClientID:    "test-client",
+				RedirectURI: "http://localhost:8080/callback",
+			},
+			AuthorizationEndpoint: mock.URL + "/authorize",
+			TokenEndpoint:         mock.URL + "/token",
+		}
+
+		provider, err := NewOAuth2Provider(config)
+		require.NoError(t, err)
+		require.NotNil(t, provider)
+		assert.False(t, provider.config.AllowPrivateIPs)
 	})
 }

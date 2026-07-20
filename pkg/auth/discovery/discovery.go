@@ -27,9 +27,10 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/auth/dcr"
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
 	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // Default timeout constants for authentication operations
@@ -53,10 +54,11 @@ type AuthInfo struct {
 
 // AuthServerInfo contains information about a validated authorization server
 type AuthServerInfo struct {
-	Issuer               string
-	AuthorizationURL     string
-	TokenURL             string
-	RegistrationEndpoint string
+	Issuer                            string
+	AuthorizationURL                  string
+	TokenURL                          string
+	RegistrationEndpoint              string
+	ClientIDMetadataDocumentSupported bool
 }
 
 // Config holds configuration for authentication discovery
@@ -87,13 +89,16 @@ func DetectAuthenticationFromServer(ctx context.Context, targetURI string, confi
 	detectCtx, cancel := context.WithTimeout(ctx, config.Timeout)
 	defer cancel()
 
-	// Make a test request to the target server to see if it returns WWW-Authenticate
+	// Make a test request to the target server to see if it returns WWW-Authenticate.
+	// The remote MCP server is untrusted, so refuse cross-host / scheme-downgrade
+	// redirects to prevent it driving the host into an SSRF (CWE-918).
 	client := &http.Client{
 		Timeout: config.Timeout,
 		Transport: &http.Transport{
 			TLSHandshakeTimeout:   config.TLSHandshakeTimeout,
 			ResponseHeaderTimeout: config.ResponseHeaderTimeout,
 		},
+		CheckRedirect: networking.SameHostRedirectPolicy(),
 	}
 
 	// First try a GET request
@@ -160,7 +165,9 @@ func detectAuthWithRequest(
 		}
 	}
 
-	resp, err := client.Do(req) // #nosec G704 -- targetURI is the MCP server endpoint URL from internal config
+	// #nosec G704 -- targetURI is server-controlled; the client refuses cross-host and
+	// HTTPS->HTTP redirects (networking.SameHostRedirectPolicy) to contain SSRF.
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to make %s request: %w", method, err)
 	}
@@ -214,7 +221,9 @@ func checkWellKnownURIExists(ctx context.Context, client *http.Client, uri strin
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req) // #nosec G704 -- uri is built from the MCP server endpoint for auth discovery
+	// #nosec G704 -- uri is server-controlled; the client refuses cross-host and
+	// HTTPS->HTTP redirects (networking.SameHostRedirectPolicy) to contain SSRF.
+	resp, err := client.Do(req)
 	if err != nil {
 		//nolint:gosec // G706: uri is from server endpoint discovery
 		slog.Debug("Failed to check well-known URI", "uri", uri, "error", err)
@@ -510,6 +519,16 @@ type OAuthFlowConfig struct {
 	Resource             string // RFC 8707 resource indicator (optional)
 	OAuthParams          map[string]string
 	ScopeParamName       string // Override scope query parameter name (e.g., "user_scope" for Slack)
+
+	// AllowPrivateIPs permits the Dynamic Client Registration calls (discovery
+	// fetch and registration POST) to reach private/loopback/link-local
+	// addresses. Callers set it from networking.TargetIsPrivate on the remote
+	// target: when ToolHive is pointed at a private remote the upstream IdP may
+	// legitimately be private too, so its DCR calls must be allowed; otherwise
+	// they are guarded to contain SSRF (CWE-918). This mirrors the
+	// blockPrivateIPs decision the flow already applies to its other discovery
+	// fetches. Defaults to false (guarded).
+	AllowPrivateIPs bool
 }
 
 // OAuthFlowResult contains the result of an OAuth flow
@@ -539,9 +558,10 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		return nil, fmt.Errorf("OAuth flow config cannot be nil")
 	}
 
-	// Resolve port availability BEFORE dynamic registration
-	// This ensures we register the OAuth client with the same port we'll actually use
-
+	// Resolve port availability before registration. DCR clients allow port fallback
+	// because the actual port is registered after selection. Pre-registered and CIMD
+	// clients require the configured port to be available as-is — it is already
+	// published in their IdP application or metadata document redirect URI.
 	if shouldDynamicallyRegisterClient(config) {
 		// For dynamic registration, we can allow fallback to alternative ports
 		// since we can register the client with the actual port we'll use
@@ -555,8 +575,9 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 		}
 		config.CallbackPort = port
 	} else {
-		// For pre-registered clients, use strict port checking
-		// The user likely configured this port in their IdP/app
+		// For pre-registered clients and CIMD, use strict port checking.
+		// The port is either configured in the IdP app or baked into the
+		// redirect URI in the hosted metadata document.
 		if !networking.IsAvailable(config.CallbackPort) {
 			return nil, fmt.Errorf(
 				"specified auth callback port %d is not available - please choose a different port or ensure it's not in use",
@@ -582,31 +603,231 @@ func PerformOAuthFlow(ctx context.Context, issuer string, config *OAuthFlowConfi
 	return newOAuthFlow(ctx, oauthConfig, config)
 }
 
-// handleDynamicRegistration handles the dynamic client registration process
+// handleDynamicRegistration handles the dynamic client registration process.
+//
+// Persistence model (option (b) from #5219): the resolver runs against an
+// in-memory dcr.CredentialStore for the duration of a single CLI
+// invocation, so within one PerformOAuthFlow call concurrent goroutines
+// share the singleflight (proving the inherited "singleflight
+// deduplication" property). Cross-invocation persistence is handled
+// outside the resolver by pkg/auth/remote/handler.go, which reads
+// CachedClientID / CachedClientSecretRef before this code path runs and
+// short-circuits to a refresh-token flow when a usable cached client
+// exists.
+//
+// One consequence of option (b) is that the resolver's RFC 7591 §3.2.1
+// expiry-driven refetch does NOT participate in the CLI's cross-
+// invocation persistence loop: each PerformOAuthFlow call builds a fresh
+// in-memory store, so a "cached but expired" entry from the previous
+// invocation never reaches the resolver. Cross-invocation expiry is also
+// NOT enforced by the remote handler's gate today —
+// HasCachedClientCredentials only checks CachedClientID != "" and does
+// not consult CachedSecretExpiry, so an expired-but-still-cached client
+// gets reused on the next invocation and surfaces as a token-endpoint
+// failure rather than a clean DCR re-registration. Tightening the gate
+// to also check CachedSecretExpiry is open follow-up work; the
+// behaviour today is "cross-invocation expiry is unhandled". Within a
+// single invocation, the resolver's expiry check is still in the loop
+// and would fire if the same call site somehow registered, persisted,
+// and re-queried the in-memory store — but the CLI never does this today.
+//
+// Wrapping the remote handler's secretProvider into a dcr.CredentialStore
+// adapter (option (a)) would close that loop and is the natural follow-up;
+// it was rejected here as out-of-scope churn for sub-issue 4b.
 func handleDynamicRegistration(ctx context.Context, issuer string, config *OAuthFlowConfig) error {
 	discoveredDoc, err := getDiscoveryDocument(ctx, issuer, config)
 	if err != nil {
 		return fmt.Errorf("failed to discover registration endpoint: %w", err)
 	}
 
-	registrationResponse, err := registerDynamicClient(ctx, config, discoveredDoc)
+	// Check if the provider supports Dynamic Client Registration before
+	// invoking the resolver. The CLI-flag hint below is intentional: this
+	// function is CLI-facing (pkg/auth/discovery is not a protocol-level
+	// package) and the flags named here are the correct fallback for
+	// operators who need to supply credentials manually. The
+	// protocol-neutral version of this message lives in
+	// pkg/oauthproto.handleHTTPResponse for the HTTP 404/405/501 paths.
+	if discoveredDoc.RegistrationEndpoint == "" {
+		return fmt.Errorf("this provider does not support Dynamic Client Registration (DCR). " +
+			"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, " +
+			"or register a client manually with the provider")
+	}
+
+	resolution, err := resolveDCRCredentials(ctx, issuer, config, discoveredDoc)
 	if err != nil {
 		return err
 	}
 
-	// Update config with registered client credentials
-	config.ClientID = registrationResponse.ClientID
-	config.ClientSecret = registrationResponse.ClientSecret
+	// Update config with registered client credentials. The remote handler
+	// at pkg/auth/remote/handler.go reads ClientID / ClientSecret off
+	// OAuthFlowResult and persists them into CachedClientID /
+	// CachedClientSecretRef for the next invocation.
+	config.ClientID = resolution.ClientID
+	config.ClientSecret = resolution.ClientSecret
 
-	if discoveredDoc.RegistrationEndpoint != "" {
-		config.AuthorizeURL = discoveredDoc.AuthorizationEndpoint
-		config.TokenURL = discoveredDoc.TokenEndpoint
+	// Surface the resolved authorization / token endpoints to the OAuth
+	// flow. The resolver returns the endpoints it used for registration
+	// (caller-supplied if specified, discovered otherwise), so
+	// downstream OAuth-config construction can rely on these fields
+	// being populated.
+	if resolution.AuthorizationEndpoint != "" {
+		config.AuthorizeURL = resolution.AuthorizationEndpoint
+	}
+	if resolution.TokenEndpoint != "" {
+		config.TokenURL = resolution.TokenEndpoint
 	}
 
 	return nil
 }
 
-// getDiscoveryDocument retrieves the OIDC discovery document
+// resolveDCRCredentials routes the CLI-flow DCR registration through the
+// shared pkg/auth/dcr resolver, inheriting its singleflight deduplication,
+// S256 PKCE gating, RFC 7591 §3.2.1 expiry-driven refetch, bearer-token
+// transport with redirect refusal, and panic recovery.
+//
+// The redirect URI is a loopback per RFC 8252 §7.3 — this is the CLI's
+// existing public-client model, and PublicClient=true tells the resolver
+// to register with token_endpoint_auth_method=none and to refuse when
+// S256 PKCE is not advertised (rather than silently downgrading).
+//
+// Discovery fetch — multi-URL fallback. oauthproto.FetchAuthorizationServerMetadata
+// tries the three well-known URL forms defined by RFC 8414 §3.1 and OIDC
+// Discovery in priority order: RFC 8414 path-insertion
+// (scheme://host/.well-known/oauth-authorization-server/{path}), OIDC
+// issuer-suffix ({issuer}/.well-known/openid-configuration), and bare
+// RFC 8414 (scheme://host/.well-known/oauth-authorization-server). Using
+// this function rather than constructing a single OIDC URL ensures that
+// authorization servers with non-root issuer paths whose metadata lives
+// at the path-insertion URL are correctly reached (fixes #5356).
+// The fetched code_challenge_methods_supported is forwarded to the
+// resolver via dcr.Request so the S256 PKCE gate fires without a
+// second discovery round-trip inside the resolver.
+//
+// Threading code_challenge_methods_supported through AuthServerInfo (and
+// updating every caller of ValidateAndDiscoverAuthServer) would eliminate
+// this fetch on the pre-discovered path and is a natural follow-up.
+func resolveDCRCredentials(
+	ctx context.Context,
+	issuer string,
+	config *OAuthFlowConfig,
+	discoveredDoc *oauthproto.OIDCDiscoveryDocument,
+) (*dcr.Resolution, error) {
+	redirectURI := fmt.Sprintf("http://localhost:%d/callback", config.CallbackPort)
+
+	// dcr.Request.Issuer carries the caller's logical scope for cache
+	// keying. The CLI flow has no separate logical issuer of its own, so
+	// it deliberately reuses the upstream's issuer URL here. This is
+	// safe because the resolver's cache key is (Issuer, UpstreamID,
+	// RedirectURI, ScopesHash) and the CLI always supplies an explicit
+	// loopback RedirectURI per RFC 8252 §7.3 — even if a future
+	// embedded-authserver upstream happened to share Issuer with a CLI
+	// invocation, the distinct RedirectURI keeps the cache keys apart.
+	// UpstreamID (derived by the resolver from the RegistrationEndpoint set
+	// below, or a DiscoveryURL) further distinguishes distinct upstreams.
+	// See the Issuer field doc on dcr.Request for the wider semantics.
+	req := &dcr.Request{
+		Issuer:                issuer,
+		RedirectURI:           redirectURI,
+		Scopes:                config.Scopes,
+		AuthorizationEndpoint: discoveredDoc.AuthorizationEndpoint,
+		TokenEndpoint:         discoveredDoc.TokenEndpoint,
+		PublicClient:          true,
+		// Carry the flow's private-IP decision so DCR shares the same SSRF
+		// posture as the flow's other discovery fetches; without this the DCR
+		// calls would always be guarded and a legitimately private upstream
+		// would be refused. See OAuthFlowConfig.AllowPrivateIPs.
+		AllowPrivateIPs: config.AllowPrivateIPs,
+	}
+
+	// Fetch AS metadata using the multi-URL fallback so non-root issuers
+	// are correctly reached (see function-level doc). discoveredDoc.Issuer
+	// is non-empty for every reachable caller; the else branch is
+	// defence-in-depth for a future refactor that produces an empty-issuer
+	// doc and preserves the pre-existing RegistrationEndpoint-direct path.
+	if discoveredDoc.Issuer != "" {
+		// Guard this fetch the same way pkg/auth/dcr's own outbound calls are
+		// guarded (CWE-918): discoveredDoc.Issuer can be untrusted server input
+		// on some discovery branches (see discoverIssuerAndScopes in
+		// pkg/auth/remote/handler.go), so a nil client here would reopen the
+		// discovery-indirection and DNS-rebinding vectors this PR closes
+		// elsewhere. See networking.NewHostScopedClientBuilder for the guard
+		// policy and pkg/auth/dcr's newGuardedDCRClient for the same pattern.
+		metaHost, parseErr := url.Parse(discoveredDoc.Issuer)
+		if parseErr != nil {
+			return nil, fmt.Errorf("dynamic client registration failed: parse issuer for http client: %w", parseErr)
+		}
+		metaClient, clientErr := networking.NewHostScopedClientBuilder(metaHost.Host, config.AllowPrivateIPs, false).
+			WithDisableKeepAlives(true).
+			Build()
+		if clientErr != nil {
+			return nil, fmt.Errorf("dynamic client registration failed: build metadata http client: %w", clientErr)
+		}
+		metaClient.CheckRedirect = networking.SameHostRedirectPolicy()
+
+		fullMeta, metaErr := oauthproto.FetchAuthorizationServerMetadata(ctx, discoveredDoc.Issuer, metaClient)
+		if metaErr != nil && !errors.Is(metaErr, oauthproto.ErrRegistrationEndpointMissing) {
+			return nil, fmt.Errorf("dynamic client registration failed: discover authorization server metadata: %w", metaErr)
+		}
+		if fullMeta == nil {
+			// Contract violation guard — FetchAuthorizationServerMetadata
+			// guarantees non-nil metadata alongside ErrRegistrationEndpointMissing.
+			return nil, fmt.Errorf("dynamic client registration failed: authorization server metadata unexpectedly nil")
+		}
+		regEndpoint := fullMeta.RegistrationEndpoint
+		if regEndpoint == "" {
+			// Synthesise per nanobot/Hydra convention, mirroring the resolver's
+			// own synthesiseRegistrationEndpoint for the DiscoveryURL branch.
+			u, parseErr := url.Parse(discoveredDoc.Issuer)
+			if parseErr != nil {
+				return nil, fmt.Errorf("dynamic client registration failed: parse issuer for endpoint synthesis: %w", parseErr)
+			}
+			regEndpoint = (&url.URL{
+				Scheme: u.Scheme,
+				Host:   u.Host,
+				Path:   strings.TrimRight(u.Path, "/") + "/register",
+			}).String()
+		}
+		req.RegistrationEndpoint = regEndpoint
+		req.CodeChallengeMethodsSupported = fullMeta.CodeChallengeMethodsSupported
+	} else {
+		req.RegistrationEndpoint = discoveredDoc.RegistrationEndpoint
+	}
+
+	store := dcr.NewInMemoryStore()
+	defer func() {
+		// Close returns nil today (inMemoryStore.Close is sync.Once-guarded
+		// over an in-memory map), but a future change to the underlying
+		// MemoryStorage.Close — e.g., timeout-aware cleanup goroutine
+		// teardown — could surface a real error. Log it at debug rather
+		// than dropping it so a regression is visible without elevating
+		// every CLI-flow shutdown to WARN.
+		if err := store.Close(); err != nil {
+			slog.Debug("dcr: in-memory store close failed", "error", err)
+		}
+	}()
+
+	resolution, err := dcr.ResolveCredentials(ctx, req, store)
+	if err != nil {
+		// Surface the structured error to the boundary log so operators
+		// see one slog.Error record with the step / issuer / redirect_uri
+		// attributes, then wrap with the CLI-facing prefix.
+		dcr.LogStepError(issuer, err)
+		return nil, fmt.Errorf("dynamic client registration failed: %w", err)
+	}
+	return resolution, nil
+}
+
+// getDiscoveryDocument retrieves the OIDC discovery document.
+//
+// The "pre-discovered" short-circuit synthesises a document from
+// OAuthFlowConfig fields populated by earlier discovery in the remote
+// handler (pkg/auth/remote/handler.go via ValidateAndDiscoverAuthServer).
+// On that path the synthesised document carries only the endpoint URLs,
+// NOT the server-capability fields (code_challenge_methods_supported,
+// token_endpoint_auth_methods_supported, scopes_supported) — those
+// remain at their zero values. resolveDCRCredentials handles this by
+// re-issuing a discovery fetch through the resolver (see its doc for
+// the rationale and trade-off).
 func getDiscoveryDocument(
 	ctx context.Context,
 	issuer string,
@@ -625,8 +846,10 @@ func getDiscoveryDocument(
 		}, nil
 	}
 
-	// Fall back to discovering endpoints
-	return oauth.DiscoverOIDCEndpoints(ctx, issuer)
+	// Fall back to discovering endpoints. This fetch precedes the DCR
+	// registration this function's callers are about to perform, so it shares
+	// the same private-IP policy (CWE-918) rather than defaulting to unguarded.
+	return oauth.DiscoverOIDCEndpoints(ctx, issuer, !config.AllowPrivateIPs)
 }
 
 // createOAuthConfig creates the OAuth configuration based on available endpoints
@@ -717,33 +940,17 @@ func newOAuthFlow(ctx context.Context, oauthConfig *oauth.Config, config *OAuthF
 	}, nil
 }
 
-func registerDynamicClient(
-	ctx context.Context,
-	config *OAuthFlowConfig,
-	discoveredDoc *oauthproto.OIDCDiscoveryDocument,
-) (*oauth.DynamicClientRegistrationResponse, error) {
-
-	// Check if the provider supports Dynamic Client Registration
-	if discoveredDoc.RegistrationEndpoint == "" {
-		return nil, fmt.Errorf("this provider does not support Dynamic Client Registration (DCR). " +
-			"Please configure OAuth client credentials using --remote-auth-client-id and --remote-auth-client-secret flags, " +
-			"or register a client manually with the provider")
-	}
-
-	// Use default client name if not provided
-	registrationRequest := oauth.NewDynamicClientRegistrationRequest(config.Scopes, config.CallbackPort)
-
-	// Perform dynamic client registration
-	registrationResponse, err := oauth.RegisterClientDynamically(ctx, discoveredDoc.RegistrationEndpoint, registrationRequest)
-	if err != nil {
-		return nil, fmt.Errorf("dynamic client registration failed: %w", err)
-	}
-
-	return registrationResponse, nil
-}
-
-// FetchResourceMetadata as specified in RFC 9728
-func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC9728AuthInfo, error) {
+// FetchResourceMetadata fetches RFC 9728 protected-resource metadata from a
+// server-supplied URL.
+//
+// The metadataURL originates from untrusted remote-server discovery (the
+// WWW-Authenticate resource_metadata parameter), so the client refuses
+// cross-host and HTTPS->HTTP redirects (CWE-918). When blockPrivateIPs is true
+// it additionally refuses to dial private/loopback/link-local addresses on
+// every hop. Callers set blockPrivateIPs when the operator-configured target is
+// public; when the operator deliberately targets an internal network it is
+// false so legitimately-internal auth metadata stays reachable.
+func FetchResourceMetadata(ctx context.Context, metadataURL string, blockPrivateIPs bool) (*auth.RFC9728AuthInfo, error) {
 	if metadataURL == "" {
 		return nil, fmt.Errorf("metadata URL is empty")
 	}
@@ -759,13 +966,21 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 		return nil, fmt.Errorf("metadata URL must use HTTPS: %s", metadataURL)
 	}
 
-	// Create HTTP client with timeout
+	// The HTTPS check above runs once on the initial URL only, so refuse
+	// cross-host and scheme-downgrade redirects to stop a 30x reaching an
+	// internal address; optionally block private dials on every hop.
+	transport := &http.Transport{
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+	}
+	if blockPrivateIPs {
+		transport.DialContext = networking.NewPrivateIPBlockingDialContext()
+		transport.DisableKeepAlives = true
+	}
 	client := &http.Client{
-		Timeout: DefaultHTTPTimeout,
-		Transport: &http.Transport{
-			TLSHandshakeTimeout:   5 * time.Second,
-			ResponseHeaderTimeout: 5 * time.Second,
-		},
+		Timeout:       DefaultHTTPTimeout,
+		Transport:     transport,
+		CheckRedirect: networking.SameHostRedirectPolicy(),
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, metadataURL, nil)
@@ -775,7 +990,9 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := client.Do(req) // #nosec G704 -- URL is the OIDC well-known metadata endpoint
+	// #nosec G704 -- metadataURL is server-controlled; the client refuses cross-host and
+	// HTTPS->HTTP redirects (networking.SameHostRedirectPolicy) to contain SSRF.
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("failed to fetch metadata: %w", err)
 	}
@@ -815,10 +1032,15 @@ func FetchResourceMetadata(ctx context.Context, metadataURL string) (*auth.RFC97
 // and discover its actual issuer by fetching its metadata.
 // This handles the case where the URL used to fetch metadata differs from the actual issuer
 // (e.g., Stripe's case where https://mcp.stripe.com hosts metadata for https://marketplace.stripe.com)
-func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string) (*AuthServerInfo, error) {
+//
+// When blockPrivateIPs is true the underlying discovery refuses to dial
+// private/loopback/link-local addresses (SSRF guard for server-supplied issuer
+// URLs); callers pass false when the issuer is operator-configured or the
+// configured target is itself internal.
+func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string, blockPrivateIPs bool) (*AuthServerInfo, error) {
 	// Use DiscoverActualIssuer which doesn't validate issuer match
 	// This allows us to discover the real issuer even when it differs from the metadata URL
-	doc, err := oauth.DiscoverActualIssuer(ctx, potentialIssuer)
+	doc, err := oauth.DiscoverActualIssuer(ctx, potentialIssuer, blockPrivateIPs)
 	if err == nil && doc != nil && doc.Issuer != "" {
 		// Found valid authorization server metadata, return the actual issuer and endpoints
 		if doc.Issuer != potentialIssuer {
@@ -828,10 +1050,11 @@ func ValidateAndDiscoverAuthServer(ctx context.Context, potentialIssuer string) 
 		}
 
 		return &AuthServerInfo{
-			Issuer:               doc.Issuer,
-			AuthorizationURL:     doc.AuthorizationEndpoint,
-			TokenURL:             doc.TokenEndpoint,
-			RegistrationEndpoint: doc.RegistrationEndpoint,
+			Issuer:                            doc.Issuer,
+			AuthorizationURL:                  doc.AuthorizationEndpoint,
+			TokenURL:                          doc.TokenEndpoint,
+			RegistrationEndpoint:              doc.RegistrationEndpoint,
+			ClientIDMetadataDocumentSupported: doc.ClientIDMetadataDocumentSupported,
 		}, nil
 	}
 

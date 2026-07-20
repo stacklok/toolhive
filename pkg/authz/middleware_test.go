@@ -14,12 +14,12 @@ import (
 	"testing"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers/cedar"
@@ -331,6 +331,28 @@ func TestMiddleware(t *testing.T) {
 			expectAuthorized: false,
 		},
 		{
+			name:   "Server discover default-denies (not allow-listed)",
+			method: "server/discover",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusForbidden,
+			expectAuthorized: false,
+		},
+		{
+			name:   "Subscriptions listen is always allowed",
+			method: "subscriptions/listen",
+			params: map[string]interface{}{},
+			claims: jwt.MapClaims{
+				"sub":  "user123",
+				"name": "John Doe",
+			},
+			expectStatus:     http.StatusOK,
+			expectAuthorized: true,
+		},
+		{
 			name:   "Sampling createMessage is denied by default (security-sensitive)",
 			method: "sampling/createMessage",
 			params: map[string]interface{}{
@@ -432,6 +454,29 @@ func TestMiddleware(t *testing.T) {
 			assert.Equal(t, tc.expectAuthorized, handlerCalled, "Handler called status does not match expected")
 		})
 	}
+}
+
+// TestSubscriptionsListenIsAllowlistedPendingDelivery guards a deliberate, temporary
+// exception: subscriptions/listen is always-allowed only because notification delivery
+// for it is not yet implemented, so it exposes no data. When delivery lands, this entry
+// must become a real Feature/Operation with per-resource authorization of
+// resourceSubscriptions URIs (see TODO(#5755) in MCPMethodToFeatureOperation) — this test
+// should fail at that point as a reminder to update it deliberately.
+func TestSubscriptionsListenIsAllowlistedPendingDelivery(t *testing.T) {
+	t.Parallel()
+	require.Equal(t, featureOperation{}, MCPMethodToFeatureOperation["subscriptions/listen"])
+}
+
+// TestServerDiscoverIsNotAllowlisted guards a deliberate omission: server/discover must
+// stay absent from MCPMethodToFeatureOperation so it default-denies (403) until Modern
+// serving is wired up with proper response filtering (#5830). Its response enumerates
+// tool/resource descriptors, and re-adding it as always-allowed would let a Cedar-restricted
+// client bypass ResponseFilteringWriter and enumerate the full catalog. This test forces a
+// conscious decision if someone re-adds the entry.
+func TestServerDiscoverIsNotAllowlisted(t *testing.T) {
+	t.Parallel()
+	_, ok := MCPMethodToFeatureOperation["server/discover"]
+	require.False(t, ok, "server/discover must not be allow-listed until Modern serving with response filtering lands (#5830)")
 }
 
 // TestMiddlewareWithGETRequest tests that the middleware doesn't panic with GET requests.

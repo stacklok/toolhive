@@ -2,7 +2,7 @@ processor:
   ignoreTypes: []
   ignoreFields: []
   customMarkers:
-    # Opt-in marker for types outside api/v1alpha1 to be documented
+    # Opt-in marker for types outside api/v1beta1 to be documented
     - name: "gendoc"
       target: type
 render:

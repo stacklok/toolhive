@@ -1,0 +1,510 @@
+// SPDX-FileCopyrightText: Copyright 2026 Stacklok, Inc.
+// SPDX-License-Identifier: Apache-2.0
+
+package client
+
+import (
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/tailscale/hujson"
+
+	"github.com/stacklok/toolhive/pkg/fileutils"
+	"github.com/stacklok/toolhive/pkg/llmgateway"
+)
+
+// llmPlaceholderAPIKey is the static API key written into proxy-mode tool
+// configurations. The localhost reverse proxy accepts any non-empty value.
+const llmPlaceholderAPIKey = "thv-proxy"
+
+// llmPatchOp is a single RFC 6902 JSON Patch operation, marshaled via
+// encoding/json so all string fields are properly escaped.
+type llmPatchOp struct {
+	Op    string          `json:"op"`
+	Path  string          `json:"path"`
+	Value json.RawMessage `json:"value,omitempty"`
+}
+
+// ConfigureLLMGateway patches the tool's LLM-gateway settings file with cfg
+// and returns the absolute path of the patched file.
+//
+// It uses fileutils.WithFileLock so concurrent calls (e.g. two "thv llm setup"
+// invocations) are serialised. Comments and trailing commas in JSONC settings
+// files are preserved via hujson. Writes are crash-safe via AtomicWriteFile.
+func (cm *ClientManager) ConfigureLLMGateway(clientType ClientApp, cfg llmgateway.ApplyConfig) (string, error) {
+	appCfg := cm.lookupClientAppConfig(clientType)
+	if appCfg == nil || appCfg.LLMGatewayMode == "" {
+		return "", fmt.Errorf("client %q does not support LLM gateway configuration", clientType)
+	}
+
+	// Credential-helper clients (Claude Desktop) use a document + selector model
+	// that does not fit JSON-key patching; dispatch to the dedicated writer.
+	if appCfg.LLMGatewayMode == llmgateway.ModeCredentialHelper {
+		return cm.configureCredentialHelper(appCfg, cfg)
+	}
+	// Codex's config is TOML, not JSON, and authenticates via a command-backed
+	// bearer token rather than JSON-Pointer keys; dispatch to its writer.
+	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
+		return cm.configureCodexAuth(appCfg, cfg)
+	}
+
+	path := cm.buildLLMSettingsPath(appCfg)
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return "", fmt.Errorf("creating directory for %s: %w", path, err)
+	}
+
+	err := fileutils.WithFileLock(path, func() error {
+		content, err := readOrInitFile(path, []byte("{}"))
+		if err != nil {
+			return err
+		}
+
+		// Parse with hujson first so that JSONC (comments, trailing commas) is
+		// handled correctly for all subsequent operations.
+		v, err := hujson.Parse(content)
+		if err != nil {
+			return fmt.Errorf("parsing %s: %w", path, err)
+		}
+
+		if err := applyLLMGatewayKeys(&v, appCfg.LLMGatewayKeys, cfg, path); err != nil {
+			return err
+		}
+
+		formatted, err := hujson.Format(v.Pack())
+		if err != nil {
+			return fmt.Errorf("formatting %s: %w", path, err)
+		}
+		return fileutils.AtomicWriteFile(path, formatted, 0o600)
+	})
+	if err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// applyLLMGatewayKeys writes or removes each key spec into v according to cfg.
+// Specs with ClearWhenEmpty=true are removed when their resolved value is empty,
+// allowing conditional keys (e.g. NODE_TLS_REJECT_UNAUTHORIZED) to be cleaned
+// up when the associated flag is cleared.
+func applyLLMGatewayKeys(v *hujson.Value, specs []LLMGatewayKeySpec, cfg llmgateway.ApplyConfig, filePath string) error {
+	// Resolve all values up front so an unknown ValueField fails fast before
+	// any file is modified.
+	values := make([]string, len(specs))
+	for i, spec := range specs {
+		if spec.Literal != "" {
+			values[i] = spec.Literal
+		} else {
+			v, err := llmValueForSpec(spec.ValueField, cfg)
+			if err != nil {
+				return err
+			}
+			values[i] = v
+		}
+	}
+
+	// Ensure ancestors only for specs that will be written (not removed).
+	for i, spec := range specs {
+		if spec.ClearWhenEmpty && values[i] == "" {
+			continue
+		}
+		if err := ensureLLMAncestors(v, spec.JSONPointer, filePath); err != nil {
+			return err
+		}
+	}
+
+	// Standardize once for existence checks in the remove path.
+	standardized, err := hujson.Standardize(v.Pack())
+	if err != nil {
+		return fmt.Errorf("standardizing %s: %w", filePath, err)
+	}
+
+	for i, spec := range specs {
+		value := values[i]
+		if spec.ClearWhenEmpty && value == "" {
+			if err := removeLLMKey(v, spec.JSONPointer, filePath, standardized); err != nil {
+				return err
+			}
+			continue
+		}
+		if err := addLLMKey(v, spec.JSONPointer, value, filePath); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// removeLLMKey removes the key at ptr from v if it exists. standardized is
+// pre-computed hujson.Standardize output used for the existence check.
+func removeLLMKey(v *hujson.Value, ptr, filePath string, standardized []byte) error {
+	if !jsonPointerExists(standardized, ptr) {
+		return nil
+	}
+	patchDoc, err := json.Marshal([]llmPatchOp{{Op: "remove", Path: ptr}})
+	if err != nil {
+		return fmt.Errorf("marshaling remove patch for %s: %w", ptr, err)
+	}
+	if err := v.Patch(patchDoc); err != nil {
+		return fmt.Errorf("removing %s from %s: %w", ptr, filePath, err)
+	}
+	return nil
+}
+
+// addLLMKey writes value to the key at ptr inside v.
+func addLLMKey(v *hujson.Value, ptr, value, filePath string) error {
+	valueJSON, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshaling value for %s: %w", ptr, err)
+	}
+	patchDoc, err := json.Marshal([]llmPatchOp{{Op: "add", Path: ptr, Value: valueJSON}})
+	if err != nil {
+		return fmt.Errorf("marshaling patch for %s: %w", ptr, err)
+	}
+	if err := v.Patch(patchDoc); err != nil {
+		return fmt.Errorf("patching %s in %s: %w", ptr, filePath, err)
+	}
+	return nil
+}
+
+// RevertLLMGateway removes the LLM gateway keys from the tool's settings file.
+// If the file does not exist the call is a no-op. Comments and trailing commas
+// in JSONC settings files are preserved.
+func (cm *ClientManager) RevertLLMGateway(clientType ClientApp, configPath string) error {
+	appCfg := cm.lookupClientAppConfig(clientType)
+	if appCfg == nil || appCfg.LLMGatewayMode == "" {
+		return fmt.Errorf("client %q does not support LLM gateway configuration", clientType)
+	}
+
+	// Credential-helper clients (Claude Desktop) revert via the dedicated writer.
+	if appCfg.LLMGatewayMode == llmgateway.ModeCredentialHelper {
+		return cm.revertCredentialHelper(appCfg, configPath)
+	}
+	// Codex reverts via its dedicated TOML writer.
+	if appCfg.LLMGatewayMode == llmgateway.ModeCodexAuth {
+		return cm.revertCodexAuth(appCfg, configPath)
+	}
+
+	return revertJSONPointerGateway(appCfg, configPath)
+}
+
+// revertJSONPointerGateway removes appCfg.LLMGatewayKeys from configPath, the
+// JSON-Pointer-based revert path shared by every LLM-gateway mode except
+// ModeCredentialHelper and ModeCodexAuth (which use dedicated writers).
+func revertJSONPointerGateway(appCfg *clientAppConfig, configPath string) error {
+	// Guard against a missing file (or deleted parent directory) before trying
+	// to acquire the lock — WithFileLock creates configPath+".lock", which
+	// fails when the directory no longer exists.
+	if _, err := os.Stat(configPath); os.IsNotExist(err) {
+		return nil
+	}
+
+	return fileutils.WithFileLock(configPath, func() error {
+		content, err := os.ReadFile(configPath) // #nosec G304 -- path is caller-supplied config file
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil // file removed between stat and lock acquisition
+			}
+			return fmt.Errorf("reading %s: %w", configPath, err)
+		}
+		if len(content) == 0 {
+			return nil
+		}
+
+		v, err := hujson.Parse(content)
+		if err != nil {
+			return fmt.Errorf("parsing %s: %w", configPath, err)
+		}
+
+		// Standardize once for all existence checks below.
+		standardized, err := hujson.Standardize(v.Pack())
+		if err != nil {
+			return fmt.Errorf("standardizing %s: %w", configPath, err)
+		}
+
+		for _, spec := range appCfg.LLMGatewayKeys {
+			// Skip keys that are already absent — avoids brittle error-string matching.
+			if !jsonPointerExists(standardized, spec.JSONPointer) {
+				continue
+			}
+			patchDoc, err := json.Marshal([]llmPatchOp{{Op: "remove", Path: spec.JSONPointer}})
+			if err != nil {
+				return fmt.Errorf("marshaling patch for %s: %w", spec.JSONPointer, err)
+			}
+			if err := v.Patch(patchDoc); err != nil {
+				return fmt.Errorf("reverting %s from %s: %w", spec.JSONPointer, configPath, err)
+			}
+		}
+
+		formatted, err := hujson.Format(v.Pack())
+		if err != nil {
+			return fmt.Errorf("formatting %s: %w", configPath, err)
+		}
+		return fileutils.AtomicWriteFile(configPath, formatted, 0o600)
+	})
+}
+
+// IsLLMGatewaySupported reports whether clientType has LLM gateway support.
+func (cm *ClientManager) IsLLMGatewaySupported(clientType ClientApp) bool {
+	cfg := cm.lookupClientAppConfig(clientType)
+	return cfg != nil && cfg.LLMGatewayMode != ""
+}
+
+// IsManaged reports whether an MDM/managed-preferences profile is present for
+// the given client. When true, the client reads config from the managed profile
+// and ignores the local config "thv llm setup" writes, so setup warns the user.
+func (cm *ClientManager) IsManaged(clientType ClientApp) bool {
+	cfg := cm.lookupClientAppConfig(clientType)
+	return cfg != nil && managedProfilePresent(cfg.LLMManagedProfileDomain)
+}
+
+// LLMGatewayModeFor returns the client's configured gateway integration mode,
+// or "" when the client is unknown or does not support an LLM gateway.
+func (cm *ClientManager) LLMGatewayModeFor(clientType ClientApp) string {
+	cfg := cm.lookupClientAppConfig(clientType)
+	if cfg == nil {
+		return ""
+	}
+	return cfg.LLMGatewayMode
+}
+
+// DetectedLLMGatewayClients returns the subset of LLM-gateway-capable clients
+// that are installed on this machine. Most clients require their settings
+// directory and, when configured, their binary on $PATH. A client with an
+// LLMInstalledDetector hook (e.g. Codex's desktop app) is also detected when
+// the hook returns true; CLI and desktop evidence still produce one canonical
+// result.
+//
+// Requiring both CLI signals prevents false positives from leftover config
+// directories (e.g. ~/.claude or ~/.gemini) after a tool is uninstalled.
+func (cm *ClientManager) DetectedLLMGatewayClients() []ClientApp {
+	var result []ClientApp
+	for i := range cm.clientIntegrations {
+		cfg := &cm.clientIntegrations[i]
+		if cfg.LLMGatewayMode == "" {
+			continue
+		}
+		if cm.isClientInstalled(cfg) {
+			result = append(result, cfg.ClientType)
+		}
+	}
+	return result
+}
+
+// isClientInstalled reports whether a single LLM-gateway-capable client appears
+// to be installed. The shared check (settings/detection directory exists and,
+// when configured, the binary is on $PATH) is augmented by an optional
+// per-client LLMInstalledDetector hook (e.g. Codex desktop app detection).
+func (cm *ClientManager) isClientInstalled(cfg *clientAppConfig) bool {
+	if cm.sharedCLIDetection(cfg) {
+		return true
+	}
+	if cfg.LLMInstalledDetector == nil {
+		return false
+	}
+	installed, err := cfg.LLMInstalledDetector()
+	if err != nil {
+		// Log the detector failure so it's distinguishable from "not installed"
+		// rather than silently treating a detection error as absence.
+		slog.Warn("LLM client detection hook failed",
+			"client", cfg.ClientType, "error", err)
+		return false
+	}
+	return installed
+}
+
+// sharedCLIDetection implements the generic CLI detection shared by all
+// LLM-gateway-capable clients: the detection directory (or settings directory)
+// must exist, and when LLMBinaryName is set the binary must be found on $PATH.
+func (cm *ClientManager) sharedCLIDetection(cfg *clientAppConfig) bool {
+	// Detection directory: for GUI apps whose settings directory does not
+	// exist until first configured (e.g. Claude Desktop's configLibrary),
+	// LLMDetectRelPath points at a directory that exists once the app is
+	// installed. Otherwise fall back to the settings directory.
+	detectDir := func() string {
+		if cfg.LLMDetectRelPath != nil {
+			return buildConfigFilePath("", cfg.LLMDetectRelPath, cfg.LLMDetectPlatformPrefix, []string{cm.homeDir})
+		}
+		return filepath.Dir(cm.buildLLMSettingsPath(cfg))
+	}()
+	if _, err := os.Stat(detectDir); err != nil {
+		return false
+	}
+	if cfg.LLMBinaryName != "" {
+		if cm.lookPath == nil {
+			return false
+		}
+		if _, err := cm.lookPath(cfg.LLMBinaryName); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+// buildLLMSettingsPath resolves the absolute path to the LLM settings file
+// for the given client using the same PlatformPrefix logic as MCP config paths.
+func (cm *ClientManager) buildLLMSettingsPath(cfg *clientAppConfig) string {
+	return buildConfigFilePath(
+		cfg.LLMSettingsFile,
+		cfg.LLMSettingsRelPath,
+		cfg.LLMSettingsPlatformPrefix,
+		[]string{cm.homeDir},
+	)
+}
+
+// resolveApplyConfigField maps a ValueField name to its runtime value from cfg.
+// Returns (value, true) for any recognized field, ("", false) for unknown ones.
+// This is the single source of truth for ValueField semantics shared by both
+// LLMGatewayKeySpec (settings-file patching) and LLMEnvFileKeySpec (.env injection).
+func resolveApplyConfigField(valueField string, cfg llmgateway.ApplyConfig) (string, bool) {
+	switch valueField {
+	case "GatewayURL":
+		return cfg.GatewayURL, true
+	case "AnthropicBaseURL":
+		// Use the pre-computed Anthropic base URL when available; fall back to
+		// GatewayURL so existing configs continue to work without the prefix.
+		if cfg.AnthropicBaseURL != "" {
+			return cfg.AnthropicBaseURL, true
+		}
+		return cfg.GatewayURL, true
+	case "ProxyBaseURL":
+		return cfg.ProxyBaseURL, true
+	case "ProxyOrigin":
+		return llmgateway.ProxyOriginOf(cfg.ProxyBaseURL), true
+	case "TokenHelperCommand":
+		return cfg.TokenHelperCommand, true
+	case "PlaceholderAPIKey":
+		return llmPlaceholderAPIKey, true
+	case "ClaudeCodeHelperTTLMillis":
+		// Constant, independent of cfg: how often Claude Code re-invokes the
+		// apiKeyHelper. Kept in sync with the token source's preemptive refresh
+		// window (see pkg/llmgateway constants).
+		return strconv.FormatInt(llmgateway.ClaudeCodeHelperTTL.Milliseconds(), 10), true
+	case "NodeTLSRejectUnauthorized":
+		if cfg.TLSSkipVerify {
+			return "0", true
+		}
+		return "", true
+	default:
+		return resolveBedrockField(valueField, cfg)
+	}
+}
+
+// resolveBedrockField resolves the Claude Code bedrock-compat ValueFields. The
+// values are written only in bedrock-compat mode; otherwise they resolve to ""
+// so their ClearWhenEmpty key specs remove the key. Returns (_, false) for any
+// non-bedrock field so the caller can report an unknown ValueField.
+func resolveBedrockField(valueField string, cfg llmgateway.ApplyConfig) (string, bool) {
+	var v string
+	switch valueField {
+	case "BedrockDisableExperimentalBetas":
+		v = "1"
+	case "BedrockHaikuModel":
+		v = cfg.BedrockHaikuModel
+	case "BedrockOpusModel":
+		v = cfg.BedrockOpusModel
+	case "BedrockSonnetModel":
+		v = cfg.BedrockSonnetModel
+	default:
+		return "", false
+	}
+	if !cfg.BedrockCompat {
+		return "", true
+	}
+	return v, true
+}
+
+// llmValueForSpec returns the config value for a settings-file key spec.
+// An unrecognised ValueField is a programming error and returns an error so
+// typos are caught at call time rather than silently written into user config.
+// Use LLMGatewayKeySpec.Literal for constant values.
+func llmValueForSpec(valueField string, cfg llmgateway.ApplyConfig) (string, error) {
+	if v, ok := resolveApplyConfigField(valueField, cfg); ok {
+		return v, nil
+	}
+	return "", fmt.Errorf("unknown ValueField %q in LLMGatewayKeySpec; use Literal for constant values", valueField)
+}
+
+// ensureLLMAncestors walks every ancestor of ptr from root inward and creates
+// any missing intermediate object. For example, for "/a/b/c" it ensures "/a"
+// and then "/a/b" exist, so the final "add" patch for "/a/b/c" never fails
+// because a parent is missing.
+//
+// Existence is checked against standardized JSON (hujson.Standardize strips
+// JSONC comments and trailing commas) so that JSONC input never produces a
+// false "missing" result that would cause an RFC 6902 "add" to replace an
+// existing object.
+func ensureLLMAncestors(v *hujson.Value, ptr, filePath string) error {
+	segments := strings.Split(strings.TrimPrefix(ptr, "/"), "/")
+	if len(segments) <= 1 {
+		return nil // top-level key — no ancestors to create
+	}
+	// Standardize once for all existence checks in this call.
+	standardized, err := hujson.Standardize(v.Pack())
+	if err != nil {
+		return fmt.Errorf("standardizing JSON in %s: %w", filePath, err)
+	}
+
+	ancestor := ""
+	needsCreate := false
+	for _, seg := range segments[:len(segments)-1] {
+		ancestor += "/" + seg
+		// Once a missing ancestor is found, all deeper paths are also absent
+		// (we just created an empty object), so skip further existence checks.
+		if !needsCreate && jsonPointerExists(standardized, ancestor) {
+			continue
+		}
+		needsCreate = true
+		patchDoc, err := json.Marshal([]llmPatchOp{{Op: "add", Path: ancestor, Value: json.RawMessage("{}")}})
+		if err != nil {
+			return fmt.Errorf("marshaling ancestor patch for %s in %s: %w", ancestor, filePath, err)
+		}
+		if err := v.Patch(patchDoc); err != nil {
+			return fmt.Errorf("creating ancestor object %s in %s: %w", ancestor, filePath, err)
+		}
+	}
+	return nil
+}
+
+// jsonPointerExists reports whether the JSON Pointer path resolves to a value
+// in standard (non-JSONC) JSON data.
+// data must already be standardized via hujson.Standardize.
+func jsonPointerExists(data []byte, pointer string) bool {
+	var root any
+	if err := json.Unmarshal(data, &root); err != nil {
+		return false
+	}
+	current := root
+	for _, seg := range strings.Split(strings.TrimPrefix(pointer, "/"), "/") {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return false
+		}
+		current, ok = m[seg]
+		if !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// readOrInitFile reads path and returns its content.
+// When the file is missing or empty it returns defaultContent instead.
+// Returns an error only for real IO failures.
+func readOrInitFile(path string, defaultContent []byte) ([]byte, error) {
+	data, err := os.ReadFile(path) // #nosec G304 -- path is a known tool config file location
+	if err != nil {
+		if os.IsNotExist(err) {
+			return defaultContent, nil
+		}
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	if len(data) == 0 {
+		return defaultContent, nil
+	}
+	return data, nil
+}

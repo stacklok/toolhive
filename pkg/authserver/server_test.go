@@ -8,11 +8,15 @@ import (
 	"crypto/rand"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	storagemocks "github.com/stacklok/toolhive/pkg/authserver/storage/mocks"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	upstreammocks "github.com/stacklok/toolhive/pkg/authserver/upstream/mocks"
@@ -145,9 +149,16 @@ func TestNewServer_Success(t *testing.T) {
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 
-	// Create mocks
-	mockStorage := storagemocks.NewMockStorage(ctrl)
 	mockUpstream := upstreammocks.NewMockOAuth2Provider(ctrl)
+
+	// Use a real MemoryStorage rather than storagemocks.MockStorage: the
+	// constructor type-asserts the storage to storage.DCRCredentialStore (per
+	// the F6 design — Storage no longer embeds DCRCredentialStore), and
+	// generated MockStorage does not implement DCRCredentialStore. This test
+	// exercises the constructor flow, not specific storage method calls, so
+	// a real MemoryStorage is sufficient and keeps the assertion path real.
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
 
 	// Create valid config
 	cfg := Config{
@@ -165,7 +176,7 @@ func TestNewServer_Success(t *testing.T) {
 
 	// Call newServer with the mock factory
 	ctx := context.Background()
-	srv, err := newServer(ctx, cfg, mockStorage, withUpstreamFactory(mockFactory))
+	srv, err := newServer(ctx, cfg, stor, withUpstreamFactory(mockFactory))
 
 	if err != nil {
 		t.Fatalf("newServer() unexpected error: %v", err)
@@ -176,7 +187,101 @@ func TestNewServer_Success(t *testing.T) {
 	if srv.Handler() == nil {
 		t.Error("server.Handler() returned nil")
 	}
-	if srv.IDPTokenStorage() != mockStorage {
+	if srv.IDPTokenStorage() != stor {
 		t.Error("server.IDPTokenStorage() did not return expected storage")
+	}
+}
+
+func TestNewServer_CIMDEnabled_WrapsStorage(t *testing.T) {
+	t.Parallel()
+
+	mockUpstream := upstreammocks.NewMockOAuth2Provider(gomock.NewController(t))
+
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+
+	cfg := Config{
+		Issuer:               "https://example.com",
+		KeyProvider:          keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		HMACSecrets:          &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams:            []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+		AllowedAudiences:     []string{"https://mcp.example.com"},
+		CIMDEnabled:          true,
+		CIMDCacheMaxSize:     16,
+		CIMDCacheFallbackTTL: 5 * time.Minute,
+	}
+
+	mockFactory := func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		return mockUpstream, nil
+	}
+
+	srv, err := newServer(context.Background(), cfg, stor, withUpstreamFactory(mockFactory))
+	if err != nil {
+		t.Fatalf("newServer() unexpected error: %v", err)
+	}
+
+	_, ok := srv.storage.(*storage.CIMDStorageDecorator)
+	if !ok {
+		t.Errorf("expected storage to be *storage.CIMDStorageDecorator when CIMDEnabled=true, got %T", srv.storage)
+	}
+}
+
+// TestNewServer_UpstreamRefresherSharedInstance verifies the wiring this PR
+// fixes: UpstreamTokenRefresher() must return the single refresher constructed
+// in newServer rather than reallocating one per call. The pre-fix accessor
+// rebuilt the refresher (and its singleflight.Group) on every call, so the
+// handler chain-walk path and the runtime token-swap path ended up with
+// independent groups and cross-path refresh deduplication was impossible.
+// A regression that reintroduced per-call allocation would leave the
+// refresher's own singleflight test green, so this asserts instance identity
+// at the server boundary instead.
+func TestNewServer_UpstreamRefresherSharedInstance(t *testing.T) {
+	t.Parallel()
+
+	mockUpstream := upstreammocks.NewMockOAuth2Provider(gomock.NewController(t))
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+
+	cfg := Config{
+		Issuer:           "https://example.com",
+		KeyProvider:      keys.NewGeneratingProvider(keys.DefaultAlgorithm),
+		HMACSecrets:      &servercrypto.HMACSecrets{Current: validHMACSecret()},
+		Upstreams:        []UpstreamConfig{{Name: "default", Type: UpstreamProviderTypeOAuth2, OAuth2Config: validUpstreamConfig()}},
+		AllowedAudiences: []string{"https://mcp.example.com"},
+	}
+	mockFactory := func(_ context.Context, _ *UpstreamConfig) (upstream.OAuth2Provider, error) {
+		return mockUpstream, nil
+	}
+
+	srv, err := newServer(context.Background(), cfg, stor, withUpstreamFactory(mockFactory))
+	require.NoError(t, err)
+
+	first := srv.UpstreamTokenRefresher()
+	require.NotNil(t, first, "refresher must be non-nil when upstreams are configured")
+	// Repeated calls must return the identical instance — i.e. the same
+	// singleflight.Group — not a freshly allocated one.
+	assert.Same(t, first, srv.UpstreamTokenRefresher(),
+		"UpstreamTokenRefresher() must return the shared instance, not reallocate per call")
+	// That instance must be the field stored on the server, which is the same
+	// value wired into the handler via WithUpstreamRefresher in newServer.
+	assert.Same(t, srv.upstreamRefresher, first,
+		"accessor must return the stored instance shared with the handler")
+}
+
+// TestNewUpstreamTokenRefresher_NilWhenNoUpstreams verifies the true-nil
+// interface contract: with no upstreams the constructor must return a nil
+// interface value, not a typed nil (*upstreamTokenRefresher)(nil) wrapped in an
+// interface, so that callers' `== nil` checks (runner, service, handler) work.
+func TestNewUpstreamTokenRefresher_NilWhenNoUpstreams(t *testing.T) {
+	t.Parallel()
+
+	stor := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = stor.Close() })
+
+	refresher := newUpstreamTokenRefresher(nil, stor, 24*time.Hour)
+	// Direct == nil comparison, not assert.Nil: testify's Nil also passes for a
+	// typed nil pointer, which would hide exactly the bug this guards against.
+	if refresher != nil {
+		t.Fatalf("expected a true nil interface, got non-nil %T", refresher)
 	}
 }

@@ -23,7 +23,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
@@ -124,7 +124,7 @@ func NewBackendWatcher(
 
 	// Create runtime scheme and register ToolHive CRDs + core Kubernetes types
 	scheme := runtime.NewScheme()
-	if err := mcpv1alpha1.AddToScheme(scheme); err != nil {
+	if err := mcpv1beta1.AddToScheme(scheme); err != nil {
 		return nil, fmt.Errorf("failed to register ToolHive CRDs to scheme: %w", err)
 	}
 

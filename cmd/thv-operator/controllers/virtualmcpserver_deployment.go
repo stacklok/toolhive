@@ -21,22 +21,30 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	vmcptypes "github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 	"github.com/stacklok/toolhive/pkg/vmcp/workloads"
 )
 
 const (
-	// podTemplateSpecHashAnnotation tracks the SHA256 hash of the user-provided PodTemplateSpec.
-	// Used to detect changes without comparing full rendered templates (which include K8s-defaulted fields).
-	podTemplateSpecHashAnnotation = "toolhive.stacklok.io/podtemplatespec-hash"
+	// imagePullRefsHashAnnotation tracks the SHA256 hash of the desired
+	// imagePullSecrets list — chart-level defaults merged with
+	// vmcp.Spec.ImagePullSecrets — used by buildDeploymentMetadataForVmcp.
+	// Mirrors the podTemplateSpecHashAnnotation pattern to detect drift on
+	// these inputs without re-running strategic-merge logic during
+	// reconciliation. Combined with podTemplateSpecHashAnnotation (which
+	// covers any imagePullSecrets the user added under
+	// spec.podTemplateSpec.spec.imagePullSecrets), this is sufficient to
+	// detect every input that influences the deployed PodSpec.ImagePullSecrets.
+	imagePullRefsHashAnnotation = "toolhive.stacklok.io/imagepullsecrets-hash"
 
 	// Log level configuration
 	logLevelDebug = "debug" // Debug log level value
@@ -126,9 +134,9 @@ var vmcpDiscoveredRBACRules = []rbacv1.PolicyRule{
 // used for CA bundle volumes and OpenTelemetry env vars without redundant API calls.
 func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
-	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) *appsv1.Deployment {
 	ls := labelsForVirtualMCPServer(vmcp.Name)
@@ -162,13 +170,13 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 		volumeMounts = append(volumeMounts, telMounts...)
 	}
 
-	// Add embedded auth server volumes and env vars if configured (inline config)
+	// Add embedded auth server volumes if configured (inline config). The matching
+	// env vars are injected by buildEnvVarsForVmcp above so the drift check stays
+	// symmetric with what is built here (see #5616).
 	if vmcp.Spec.AuthServerConfig != nil {
 		authServerVolumes, authServerMounts := ctrlutil.GenerateAuthServerVolumes(vmcp.Spec.AuthServerConfig)
-		authServerEnvVars := ctrlutil.GenerateAuthServerEnvVars(vmcp.Spec.AuthServerConfig)
 		volumes = append(volumes, authServerVolumes...)
 		volumeMounts = append(volumeMounts, authServerMounts...)
-		env = append(env, authServerEnvVars...)
 	}
 	deploymentLabels, deploymentAnnotations := r.buildDeploymentMetadataForVmcp(ls, vmcp)
 	deploymentTemplateLabels, deploymentTemplateAnnotations := r.buildPodTemplateMetadata(ls, vmcp, vmcpConfigChecksum)
@@ -195,6 +203,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 				Spec: corev1.PodSpec{
 					TerminationGracePeriodSeconds: int64Ptr(vmcpTerminationGracePeriodSeconds),
 					ServiceAccountName:            serviceAccountName,
+					ImagePullSecrets:              r.imagePullSecretsForVMCP(vmcp),
 					Containers: []corev1.Container{{
 						Image:           getVmcpImage(),
 						ImagePullPolicy: corev1.PullIfNotPresent,
@@ -250,7 +259,7 @@ func (r *VirtualMCPServerReconciler) deploymentForVirtualMCPServer(
 
 // buildContainerArgsForVmcp builds the container arguments for vmcp
 func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp(
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) []string {
 	args := []string{
 		"serve",
@@ -272,7 +281,7 @@ func (*VirtualMCPServerReconciler) buildContainerArgsForVmcp(
 // buildVolumesForVmcp builds volumes and volume mounts for vmcp
 func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) ([]corev1.VolumeMount, []corev1.Volume, error) {
 	volumeMounts := []corev1.VolumeMount{}
 	volumes := []corev1.Volume{}
@@ -320,8 +329,8 @@ func (r *VirtualMCPServerReconciler) buildVolumesForVmcp(
 // telemetryCfg is the already-fetched MCPTelemetryConfig (nil when not referenced).
 func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
-	telemetryCfg *mcpv1alpha1.MCPTelemetryConfig,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+	telemetryCfg *mcpv1beta1.MCPTelemetryConfig,
 	typedWorkloads []workloads.TypedWorkload,
 ) ([]corev1.EnvVar, error) {
 	env := []corev1.EnvVar{}
@@ -347,6 +356,17 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 	// Mount outgoing auth secrets
 	env = append(env, r.buildOutgoingAuthEnvVars(ctx, vmcp, typedWorkloads)...)
 
+	// Mount per-(entry, header) env vars for MCPServerEntry headerForward.
+	// Plaintext entries are emitted as literal-value env vars; secret entries
+	// as valueFrom.secretKeyRef. The vMCP runtime walks the well-known prefixes
+	// at startup to reconstruct the per-backend HeaderForwardConfig in static
+	// mode (issue #4996).
+	headerEnv, err := r.buildHeaderForwardEnvVarsForEntries(ctx, vmcp.Namespace, typedWorkloads)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build header forward env vars: %w", err)
+	}
+	env = append(env, headerEnv...)
+
 	// Always mount HMAC secret for session token binding.
 	env = append(env, r.buildHMACSecretEnvVar(vmcp))
 
@@ -360,12 +380,22 @@ func (r *VirtualMCPServerReconciler) buildEnvVarsForVmcp(
 		env = append(env, otelEnv...)
 	}
 
+	// Mount embedded auth server upstream client secrets (and Redis ACL creds).
+	// This must live here, not only in deploymentForVirtualMCPServer, so that the
+	// env-var drift check in containerNeedsUpdate compares against the same set.
+	// Otherwise the live container carries these env vars but the expected set
+	// does not, reflect.DeepEqual never matches, and the operator updates the
+	// Deployment on every reconcile (see #5616).
+	if vmcp.Spec.AuthServerConfig != nil {
+		env = append(env, ctrlutil.GenerateAuthServerEnvVars(vmcp.Spec.AuthServerConfig)...)
+	}
+
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env), nil
 }
 
 // buildOIDCEnvVars builds environment variables for OIDC client secret mounting.
 func (r *VirtualMCPServerReconciler) buildOIDCEnvVars(
-	ctx context.Context, vmcp *mcpv1alpha1.VirtualMCPServer,
+	ctx context.Context, vmcp *mcpv1beta1.VirtualMCPServer,
 ) ([]corev1.EnvVar, error) {
 	var env []corev1.EnvVar
 
@@ -382,7 +412,7 @@ func (r *VirtualMCPServerReconciler) buildOIDCEnvVars(
 				vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
 		}
 		if oidcCfg != nil &&
-			oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
+			oidcCfg.Spec.Type == mcpv1beta1.MCPOIDCConfigTypeInline &&
 			oidcCfg.Spec.Inline != nil &&
 			oidcCfg.Spec.Inline.ClientSecretRef != nil {
 			env = append(env, corev1.EnvVar{
@@ -405,7 +435,7 @@ func (r *VirtualMCPServerReconciler) buildOIDCEnvVars(
 // buildHMACSecretEnvVar builds environment variable for HMAC secret mounting.
 // This secret is used for session token binding in Session Management V2.
 // The operator automatically generates and manages this secret if it doesn't exist.
-func (*VirtualMCPServerReconciler) buildHMACSecretEnvVar(vmcp *mcpv1alpha1.VirtualMCPServer) corev1.EnvVar {
+func (*VirtualMCPServerReconciler) buildHMACSecretEnvVar(vmcp *mcpv1beta1.VirtualMCPServer) corev1.EnvVar {
 	secretName := fmt.Sprintf("%s-hmac-secret", vmcp.Name)
 
 	return corev1.EnvVar{
@@ -422,11 +452,31 @@ func (*VirtualMCPServerReconciler) buildHMACSecretEnvVar(vmcp *mcpv1alpha1.Virtu
 }
 
 // buildRedisPasswordEnvVar returns the THV_SESSION_REDIS_PASSWORD env var when
-// sessionStorage.provider == "redis" and passwordRef is set; returns nil otherwise.
-func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1alpha1.VirtualMCPServer) []corev1.EnvVar {
-	if vmcp.Spec.SessionStorage == nil ||
-		vmcp.Spec.SessionStorage.Provider != mcpv1alpha1.SessionStorageProviderRedis ||
-		vmcp.Spec.SessionStorage.PasswordRef == nil {
+// sessionStorage.provider == "redis" and passwordRef is set, or when
+// TOOLHIVE_DEFAULT_REDIS_SECRET_NAME is set via the global default.
+func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1beta1.VirtualMCPServer) []corev1.EnvVar {
+	if vmcp.Spec.SessionStorage != nil {
+		if vmcp.Spec.SessionStorage.Provider == mcpv1beta1.SessionStorageProviderRedis &&
+			vmcp.Spec.SessionStorage.PasswordRef != nil {
+			return []corev1.EnvVar{{
+				Name: vmcpconfig.RedisPasswordEnvVar,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: vmcp.Spec.SessionStorage.PasswordRef.Name,
+						},
+						Key: vmcp.Spec.SessionStorage.PasswordRef.Key,
+					},
+				},
+			}}
+		}
+		// spec.sessionStorage was set explicitly — never fall through to the
+		// global default regardless of provider.
+		return nil
+	}
+
+	def := ctrlutil.ReadDefaultRedisConfig()
+	if def == nil || def.SecretName == "" {
 		return nil
 	}
 	return []corev1.EnvVar{{
@@ -434,9 +484,9 @@ func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1alpha1.Vi
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
 				LocalObjectReference: corev1.LocalObjectReference{
-					Name: vmcp.Spec.SessionStorage.PasswordRef.Name,
+					Name: def.SecretName,
 				},
-				Key: vmcp.Spec.SessionStorage.PasswordRef.Key,
+				Key: def.SecretKey,
 			},
 		},
 	}}
@@ -445,7 +495,7 @@ func (*VirtualMCPServerReconciler) buildRedisPasswordEnvVar(vmcp *mcpv1alpha1.Vi
 // buildOutgoingAuthEnvVars builds environment variables for outgoing auth secrets.
 func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
 ) []corev1.EnvVar {
 	var env []corev1.EnvVar
@@ -468,25 +518,171 @@ func (r *VirtualMCPServerReconciler) buildOutgoingAuthEnvVars(
 
 	// Mount secret from Default ExternalAuthConfigRef
 	if vmcp.Spec.OutgoingAuth.Default != nil && vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef != nil {
-		defaultSecret, err := r.getExternalAuthConfigSecretEnvVar(
+		defaultSecrets, err := r.getExternalAuthConfigSecretEnvVars(
 			ctx, vmcp.Namespace, vmcp.Spec.OutgoingAuth.Default.ExternalAuthConfigRef.Name)
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.V(1).Info("Failed to get Default ExternalAuthConfig secret, continuing without it",
 				"error", err)
-		} else if defaultSecret != nil {
-			env = append(env, *defaultSecret)
+		} else {
+			env = append(env, defaultSecrets...)
 		}
 	}
 
 	return env
 }
 
+// buildHeaderForwardEnvVarsForEntries iterates entry-type workloads and emits
+// header-forward env vars on the vMCP pod for each entry that declares
+// spec.headerForward.
+//
+// One JSON-encoded manifest env var per backend carries the full
+// HeaderForwardConfig with original header names preserved
+// (TOOLHIVE_HEADER_FORWARD_<NORMALIZED_ENTRY>). Plaintext header values
+// appear inline in the JSON; secret-backed entries carry only the secret
+// identifier — the Secret value rides a sibling
+// TOOLHIVE_SECRET_HEADER_FORWARD_<HEADER>_<ENTRY> env var emitted via
+// valueFrom.secretKeyRef so the value never enters the operator's view of
+// the world and resolves at request time inside resolveHeaderForward via
+// secrets.EnvironmentProvider.
+//
+// Scoping by entry name prevents collisions when multiple entries in the
+// group declare the same header name.
+//
+// Returns (nil, nil) when no entries declare any HeaderForward — the common
+// case, producing no env-var churn on the Deployment spec.
+func (r *VirtualMCPServerReconciler) buildHeaderForwardEnvVarsForEntries(
+	ctx context.Context,
+	namespace string,
+	typedWorkloads []workloads.TypedWorkload,
+) ([]corev1.EnvVar, error) {
+	// Early return if no MCPServerEntry workloads to avoid unnecessary API calls.
+	hasEntries := false
+	for _, workload := range typedWorkloads {
+		if workload.Type == workloads.WorkloadTypeMCPServerEntry {
+			hasEntries = true
+			break
+		}
+	}
+	if !hasEntries {
+		return nil, nil
+	}
+
+	entryMap, err := r.listMCPServerEntriesAsMap(ctx, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list MCPServerEntries: %w", err)
+	}
+
+	var envVars []corev1.EnvVar
+	for _, workload := range typedWorkloads {
+		if workload.Type != workloads.WorkloadTypeMCPServerEntry {
+			continue
+		}
+		entry, found := entryMap[workload.Name]
+		if !found || entry.Spec.HeaderForward == nil {
+			continue
+		}
+
+		manifest, err := buildHeaderForwardManifestForEntry(entry)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build header-forward manifest for entry %q: %w", entry.Name, err)
+		}
+		if manifest != "" {
+			manifestVarName, _ := wirefmt.ManifestEnvVarName(entry.Name)
+			envVars = append(envVars, corev1.EnvVar{
+				Name:  manifestVarName,
+				Value: manifest,
+			})
+		}
+
+		// Secret-backed headers — emit valueFrom.secretKeyRef env vars so
+		// the resolved Secret value never enters the operator's view of the
+		// world. AddHeadersFromSecret is a slice in the v1beta1 API so the
+		// order is already deterministic from the user's manifest.
+		for _, ref := range entry.Spec.HeaderForward.AddHeadersFromSecret {
+			if ref.ValueSecretRef == nil {
+				continue
+			}
+			envVarName, _ := wirefmt.SecretEnvVarName(entry.Name, ref.HeaderName)
+			envVars = append(envVars, corev1.EnvVar{
+				Name: envVarName,
+				ValueFrom: &corev1.EnvVarSource{
+					SecretKeyRef: &corev1.SecretKeySelector{
+						LocalObjectReference: corev1.LocalObjectReference{
+							Name: ref.ValueSecretRef.Name,
+						},
+						Key: ref.ValueSecretRef.Key,
+					},
+				},
+			})
+		}
+	}
+
+	// Sort the resulting env vars by Name. The Kubernetes informer cache
+	// returns items in non-deterministic order (Go map iteration), so
+	// without sorting the env vars appear in a different sequence on each
+	// reconcile. reflect.DeepEqual in containerNeedsUpdate is order-
+	// sensitive, so non-deterministic ordering causes a continuous
+	// deployment update loop. Mirrors the pattern in
+	// discoverExternalAuthConfigSecrets / discoverInlineExternalAuthConfigSecrets.
+	sort.Slice(envVars, func(i, j int) bool {
+		return envVars[i].Name < envVars[j].Name
+	})
+
+	return envVars, nil
+}
+
+// buildHeaderForwardManifestForEntry builds the JSON-encoded manifest for
+// a single MCPServerEntry. AddHeadersFromSecret values carry the secret
+// identifier (HEADER_FORWARD_<H>_<OWNER>) the runtime hands to
+// secrets.EnvironmentProvider at request time; the resolved Secret value
+// itself never appears in the JSON.
+//
+// Returns the empty string when the entry has no plaintext or
+// secret-backed entries — the caller skips emitting the env var in that
+// case to keep Deployment specs minimal.
+func buildHeaderForwardManifestForEntry(entry *mcpv1beta1.MCPServerEntry) (string, error) {
+	if entry == nil || entry.Spec.HeaderForward == nil {
+		return "", nil
+	}
+	src := entry.Spec.HeaderForward
+
+	// Build vmcp.HeaderForwardConfig directly so the JSON shape is the
+	// runtime contract — there is no intermediate operator-side type to
+	// drift away from it. Header keys preserve original casing.
+	manifest := vmcptypes.HeaderForwardConfig{
+		AddPlaintextHeaders: src.AddPlaintextHeaders,
+	}
+	for _, ref := range src.AddHeadersFromSecret {
+		if ref.ValueSecretRef == nil {
+			continue
+		}
+		_, identifier := wirefmt.SecretEnvVarName(entry.Name, ref.HeaderName)
+		if manifest.AddHeadersFromSecret == nil {
+			manifest.AddHeadersFromSecret = make(map[string]string)
+		}
+		manifest.AddHeadersFromSecret[ref.HeaderName] = identifier
+	}
+
+	if len(manifest.AddPlaintextHeaders) == 0 && len(manifest.AddHeadersFromSecret) == 0 {
+		return "", nil
+	}
+
+	// json.Marshal sorts map keys alphabetically by default, giving
+	// deterministic Deployment-spec rendering across reconciles regardless
+	// of Go's randomized map iteration.
+	out, err := json.Marshal(manifest)
+	if err != nil {
+		return "", fmt.Errorf("marshal manifest: %w", err)
+	}
+	return string(out), nil
+}
+
 // discoverExternalAuthConfigSecrets discovers ExternalAuthConfigs from workloads in the group
 // and returns environment variables for their client secrets. This is used for discovered mode.
 func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	typedWorkloads []workloads.TypedWorkload,
 ) []corev1.EnvVar {
 	ctxLogger := log.FromContext(ctx)
@@ -527,16 +723,14 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 		seenConfigs[configName] = true
 
 		// Get the secret env var for this ExternalAuthConfig
-		secretEnvVar, err := r.getExternalAuthConfigSecretEnvVar(ctx, vmcp.Namespace, configName)
+		secretEnvVars, err := r.getExternalAuthConfigSecretEnvVars(ctx, vmcp.Namespace, configName)
 		if err != nil {
 			ctxLogger.V(1).Info("Failed to get ExternalAuthConfig secret, skipping",
 				"externalAuthConfig", configName,
 				"error", err)
 			continue
 		}
-		if secretEnvVar != nil {
-			envVars = append(envVars, *secretEnvVar)
-		}
+		envVars = append(envVars, secretEnvVars...)
 	}
 
 	// Sort by name for deterministic ordering. The Kubernetes informer cache returns
@@ -555,7 +749,7 @@ func (r *VirtualMCPServerReconciler) discoverExternalAuthConfigSecrets(
 // and returns environment variables for their client secrets.
 func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) []corev1.EnvVar {
 	var envVars []corev1.EnvVar
 	seenConfigs := make(map[string]bool) // Track which ExternalAuthConfigs we've already processed
@@ -574,7 +768,7 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 		seenConfigs[configName] = true
 
 		// Get the secret env var for this ExternalAuthConfig
-		secretEnvVar, err := r.getExternalAuthConfigSecretEnvVar(ctx, vmcp.Namespace, configName)
+		secretEnvVars, err := r.getExternalAuthConfigSecretEnvVars(ctx, vmcp.Namespace, configName)
 		if err != nil {
 			ctxLogger := log.FromContext(ctx)
 			ctxLogger.V(1).Info("Failed to get ExternalAuthConfig secret, skipping",
@@ -582,9 +776,7 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 				"error", err)
 			continue
 		}
-		if secretEnvVar != nil {
-			envVars = append(envVars, *secretEnvVar)
-		}
+		envVars = append(envVars, secretEnvVars...)
 	}
 
 	// Sort by name for the same reason as discoverExternalAuthConfigSecrets: Go map
@@ -597,15 +789,21 @@ func (r *VirtualMCPServerReconciler) discoverInlineExternalAuthConfigSecrets(
 	return envVars
 }
 
-// getExternalAuthConfigSecretEnvVar returns an environment variable for secrets
-// from an ExternalAuthConfig (token exchange client secrets or header injection values).
-// Generates unique env var names per ExternalAuthConfig to avoid conflicts when multiple
-// configs of the same type reference different secrets.
-func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
+// getExternalAuthConfigSecretEnvVars returns the environment variables for
+// secrets from an ExternalAuthConfig (token exchange client secrets, header
+// injection values, or — for obo — whatever the registered OBO handler asks
+// for). Generates unique env var names per ExternalAuthConfig to avoid conflicts
+// when multiple configs of the same type reference different secrets.
+//
+// The obo arm forwards every env var the handler returns (matching MCPServer and
+// MCPRemoteProxy) and propagates obo.ErrEnterpriseRequired so the wired-but-
+// disabled state is not masked as a no-op (see #5328); callers log-and-continue
+// on error.
+func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVars(
 	ctx context.Context,
 	namespace string,
 	externalAuthConfigName string,
-) (*corev1.EnvVar, error) {
+) ([]corev1.EnvVar, error) {
 	// Fetch the MCPExternalAuthConfig
 	externalAuthConfig, err := ctrlutil.GetExternalAuthConfigByName(
 		ctx, r.Client, namespace, externalAuthConfigName)
@@ -614,10 +812,10 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 	}
 
 	var envVarName string
-	var secretRef *mcpv1alpha1.SecretKeyRef
+	var secretRef *mcpv1beta1.SecretKeyRef
 
 	switch externalAuthConfig.Spec.Type {
-	case mcpv1alpha1.ExternalAuthTypeTokenExchange:
+	case mcpv1beta1.ExternalAuthTypeTokenExchange:
 		if externalAuthConfig.Spec.TokenExchange == nil {
 			return nil, nil
 		}
@@ -627,7 +825,7 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		envVarName = ctrlutil.GenerateUniqueTokenExchangeEnvVarName(externalAuthConfigName)
 		secretRef = externalAuthConfig.Spec.TokenExchange.ClientSecretRef
 
-	case mcpv1alpha1.ExternalAuthTypeHeaderInjection:
+	case mcpv1beta1.ExternalAuthTypeHeaderInjection:
 		if externalAuthConfig.Spec.HeaderInjection == nil {
 			return nil, nil
 		}
@@ -637,35 +835,47 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 		envVarName = ctrlutil.GenerateUniqueHeaderInjectionEnvVarName(externalAuthConfigName)
 		secretRef = externalAuthConfig.Spec.HeaderInjection.ValueSecretRef
 
-	case mcpv1alpha1.ExternalAuthTypeBearerToken:
+	case mcpv1beta1.ExternalAuthTypeBearerToken:
 		// Bearer token secrets are handled differently (via RemoteAuthConfig in RunConfig)
 		// No environment variable mounting needed for bearer tokens
 		return nil, nil
 
-	case mcpv1alpha1.ExternalAuthTypeUnauthenticated:
+	case mcpv1beta1.ExternalAuthTypeUnauthenticated:
 		// No secrets to mount for unauthenticated
 		return nil, nil
 
-	case mcpv1alpha1.ExternalAuthTypeEmbeddedAuthServer:
+	case mcpv1beta1.ExternalAuthTypeEmbeddedAuthServer:
 		// Embedded auth server secrets are handled separately (via volume mounts, not env vars)
 		// Controller integration will be in a future task
 		return nil, nil
 
-	case mcpv1alpha1.ExternalAuthTypeAWSSts:
+	case mcpv1beta1.ExternalAuthTypeAWSSts:
 		// AWS STS authentication doesn't require secret mounting via env vars
 		// It uses the incoming OIDC token for AssumeRoleWithWebIdentity
 		return nil, nil
 
-	case mcpv1alpha1.ExternalAuthTypeUpstreamInject:
+	case mcpv1beta1.ExternalAuthTypeUpstreamInject:
 		// Upstream inject uses the embedded auth server's upstream tokens at runtime
 		// No secrets to mount via env vars
 		return nil, nil
+
+	case mcpv1beta1.ExternalAuthTypeOBO:
+		// Dispatch through the registered OBO handler, forwarding every env var
+		// it returns. OBOSecretEnvVars propagates obo.ErrEnterpriseRequired in
+		// upstream-only builds (unlike ctrlutil.AddOBOSecretEnvVars, which
+		// swallows it for MCPServer/MCPRemoteProxy builder/drift symmetry); vMCP
+		// must propagate it per #5328 so the wired-but-disabled state is not
+		// masked as a no-op.
+		return ctrlutil.OBOSecretEnvVars(externalAuthConfig)
+
+	case mcpv1beta1.ExternalAuthTypeXAA:
+		return xaaSecretEnvVars(externalAuthConfig, externalAuthConfigName), nil
 
 	default:
 		return nil, nil // Not applicable
 	}
 
-	return &corev1.EnvVar{
+	return []corev1.EnvVar{{
 		Name: envVarName,
 		ValueFrom: &corev1.EnvVarSource{
 			SecretKeyRef: &corev1.SecretKeySelector{
@@ -675,13 +885,45 @@ func (r *VirtualMCPServerReconciler) getExternalAuthConfigSecretEnvVar(
 				Key: secretRef.Key,
 			},
 		},
-	}, nil
+	}}, nil
+}
+
+// xaaSecretEnvVars returns the env vars needed to mount XAA client secrets into
+// the vMCP pod. Returns nil when the XAA spec is absent or has no secret refs.
+func xaaSecretEnvVars(externalAuthConfig *mcpv1beta1.MCPExternalAuthConfig, configName string) []corev1.EnvVar {
+	if externalAuthConfig.Spec.XAA == nil {
+		return nil
+	}
+	var envVars []corev1.EnvVar
+	if ref := externalAuthConfig.Spec.XAA.IDPClientSecretRef; ref != nil {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: ctrlutil.GenerateUniqueXAAIDPSecretEnvVarName(configName),
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+					Key:                  ref.Key,
+				},
+			},
+		})
+	}
+	if ref := externalAuthConfig.Spec.XAA.TargetClientSecretRef; ref != nil {
+		envVars = append(envVars, corev1.EnvVar{
+			Name: ctrlutil.GenerateUniqueXAATargetSecretEnvVarName(configName),
+			ValueFrom: &corev1.EnvVarSource{
+				SecretKeyRef: &corev1.SecretKeySelector{
+					LocalObjectReference: corev1.LocalObjectReference{Name: ref.Name},
+					Key:                  ref.Key,
+				},
+			},
+		})
+	}
+	return envVars
 }
 
 // buildDeploymentMetadataForVmcp builds deployment-level labels and annotations
-func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
+func (r *VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 	baseLabels map[string]string,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (map[string]string, map[string]string) {
 	deploymentLabels := baseLabels
 	deploymentAnnotations := make(map[string]string)
@@ -696,15 +938,47 @@ func (*VirtualMCPServerReconciler) buildDeploymentMetadataForVmcp(
 		}
 	}
 
+	// Store hash of the desired imagePullSecrets list — chart-level defaults
+	// merged with vmcp.Spec.ImagePullSecrets — so deploymentNeedsUpdate can
+	// detect drift on this field. Without this annotation, edits to either
+	// the chart default or spec.imagePullSecrets on an existing CR would not
+	// propagate to the running Deployment because the drift checks compare
+	// individual fields and never look at PodSpec.ImagePullSecrets directly
+	// (the live value is the strategic-merge union with PodTemplateSpec).
+	if hash, err := imagePullSecretsHash(r.imagePullSecretsForVMCP(vmcp)); err == nil && hash != "" {
+		deploymentAnnotations[imagePullRefsHashAnnotation] = hash
+	}
+
 	// TODO: Add support for ResourceOverrides if needed in the future
 
 	return deploymentLabels, deploymentAnnotations
 }
 
+// imagePullSecretsHash returns a deterministic SHA256 hash of the given LocalObjectReference list.
+// The list is normalized by sorting on Name before hashing so that semantically equal slices
+// (same set of secret names, possibly in different order) produce the same hash. Returns an
+// empty string with no error when the list is empty so callers can skip writing the annotation.
+func imagePullSecretsHash(secrets []corev1.LocalObjectReference) (string, error) {
+	if len(secrets) == 0 {
+		return "", nil
+	}
+	normalized := make([]corev1.LocalObjectReference, len(secrets))
+	copy(normalized, secrets)
+	sort.Slice(normalized, func(i, j int) bool {
+		return normalized[i].Name < normalized[j].Name
+	})
+	canonical, err := json.Marshal(normalized)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal imagePullSecrets for hashing: %w", err)
+	}
+	h := sha256.Sum256(canonical)
+	return hex.EncodeToString(h[:]), nil
+}
+
 // buildPodTemplateMetadata builds pod template labels and annotations for vmcp
 func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 	baseLabels map[string]string,
-	_ *mcpv1alpha1.VirtualMCPServer,
+	_ *mcpv1beta1.VirtualMCPServer,
 	vmcpConfigChecksum string,
 ) (map[string]string, map[string]string) {
 	templateLabels := baseLabels
@@ -719,7 +993,7 @@ func (*VirtualMCPServerReconciler) buildPodTemplateMetadata(
 // buildSecurityContextsForVmcp builds pod and container security contexts
 func (r *VirtualMCPServerReconciler) buildSecurityContextsForVmcp(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) (*corev1.PodSecurityContext, *corev1.SecurityContext) {
 	if r.PlatformDetector == nil {
 		r.PlatformDetector = ctrlutil.NewSharedPlatformDetector()
@@ -737,7 +1011,7 @@ func (r *VirtualMCPServerReconciler) buildSecurityContextsForVmcp(
 
 // buildContainerPortsForVmcp builds container port configuration
 func (*VirtualMCPServerReconciler) buildContainerPortsForVmcp(
-	_ *mcpv1alpha1.VirtualMCPServer,
+	_ *mcpv1beta1.VirtualMCPServer,
 ) []corev1.ContainerPort {
 	return []corev1.ContainerPort{{
 		ContainerPort: vmcpDefaultPort,
@@ -749,7 +1023,7 @@ func (*VirtualMCPServerReconciler) buildContainerPortsForVmcp(
 // serviceForVirtualMCPServer returns a VirtualMCPServer Service object
 func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) *corev1.Service {
 	ls := labelsForVirtualMCPServer(vmcp.Name)
 	svcName := vmcpServiceName(vmcp.Name)
@@ -801,7 +1075,7 @@ func (r *VirtualMCPServerReconciler) serviceForVirtualMCPServer(
 // buildServiceMetadataForVmcp builds service labels and annotations
 func (*VirtualMCPServerReconciler) buildServiceMetadataForVmcp(
 	baseLabels map[string]string,
-	_ *mcpv1alpha1.VirtualMCPServer,
+	_ *mcpv1beta1.VirtualMCPServer,
 ) (map[string]string, map[string]string) {
 	serviceLabels := baseLabels
 	serviceAnnotations := make(map[string]string)
@@ -835,7 +1109,7 @@ func getVmcpImage() string {
 //nolint:gocyclo // Secret validation requires checking multiple optional config paths
 func (r *VirtualMCPServerReconciler) validateSecretReferences(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 ) error {
 	// Validate MCPOIDCConfig inline client secret if configured
 	if vmcp.Spec.IncomingAuth != nil && vmcp.Spec.IncomingAuth.OIDCConfigRef != nil {
@@ -846,7 +1120,7 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 				vmcp.Spec.IncomingAuth.OIDCConfigRef.Name, err)
 		}
 		if oidcCfg != nil &&
-			oidcCfg.Spec.Type == mcpv1alpha1.MCPOIDCConfigTypeInline &&
+			oidcCfg.Spec.Type == mcpv1beta1.MCPOIDCConfigTypeInline &&
 			oidcCfg.Spec.Inline != nil &&
 			oidcCfg.Spec.Inline.ClientSecretRef != nil {
 			if err := r.validateSecretKeyRef(ctx, vmcp.Namespace,
@@ -880,10 +1154,44 @@ func (r *VirtualMCPServerReconciler) validateSecretReferences(
 func (*VirtualMCPServerReconciler) validateBackendAuthSecrets(
 	_ context.Context,
 	_ string,
-	_ *mcpv1alpha1.BackendAuthConfig,
+	_ *mcpv1beta1.BackendAuthConfig,
 	_ string,
 ) error {
 	// No backend auth types currently require secret validation
+	return nil
+}
+
+// validateAuthzConfigMapRef pre-validates the referenced authz ConfigMap when
+// spec.incomingAuth.authzConfig.type is "configMap". It uses the same shared loader
+// as the converter so the diagnostic surfaces the same parse/validation errors the
+// converter would later produce, but earlier in the reconcile and as a status condition
+// rather than as a generic conversion failure. Inline and absent authzConfig are no-ops.
+//
+// Also runs ExtractCedarAuthzOptions on the loaded payload so a configMap that
+// parses as a valid authz.Config but isn't Cedar-flavoured (wrong "type" field,
+// or a future HTTP authorizer) is rejected here with AuthzConfigMapInvalid
+// rather than passing pre-validation and then failing opaquely at convert time.
+//
+// Mirrors the pattern in mcpremoteproxy_controller.go's validateK8sRefs.
+func (r *VirtualMCPServerReconciler) validateAuthzConfigMapRef(
+	ctx context.Context,
+	vmcp *mcpv1beta1.VirtualMCPServer,
+) error {
+	if vmcp.Spec.IncomingAuth == nil ||
+		vmcp.Spec.IncomingAuth.AuthzConfig == nil ||
+		vmcp.Spec.IncomingAuth.AuthzConfig.Type != mcpv1beta1.AuthzConfigTypeConfigMap {
+		return nil
+	}
+	cfg, err := ctrlutil.LoadAuthzConfigFromConfigMap(
+		ctx, r.Client, vmcp.Namespace, vmcp.Spec.IncomingAuth.AuthzConfig,
+	)
+	if err != nil {
+		return err
+	}
+	if _, err := ctrlutil.ExtractCedarAuthzOptions(cfg); err != nil {
+		return fmt.Errorf("authz ConfigMap %s/%s is not a Cedar config: %w",
+			vmcp.Namespace, vmcp.Spec.IncomingAuth.AuthzConfig.ConfigMap.Name, err)
+	}
 	return nil
 }
 
@@ -892,7 +1200,7 @@ func (*VirtualMCPServerReconciler) validateBackendAuthSecrets(
 func (r *VirtualMCPServerReconciler) validateSecretKeyRef(
 	ctx context.Context,
 	namespace string,
-	secretRef *mcpv1alpha1.SecretKeyRef,
+	secretRef *mcpv1beta1.SecretKeyRef,
 	secretDesc string,
 ) error {
 	if secretRef == nil {
@@ -926,9 +1234,14 @@ func (r *VirtualMCPServerReconciler) validateSecretKeyRef(
 // - User-provided fields override controller-generated defaults
 // - Arrays are merged based on strategic merge patch rules (e.g., containers merged by name)
 // - The "vmcp" container is preserved from the controller-generated spec
+//
+// Hard-fail policy: any patch failure (marshal, patch apply, unmarshal) is returned as
+// an error that blocks Deployment creation. This is the opposite of the EmbeddingServer
+// caller's soft-fail choice. ApplyPodTemplateSpecPatch is policy-neutral; the choice is
+// at this call site by design.
 func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 	ctx context.Context,
-	vmcp *mcpv1alpha1.VirtualMCPServer,
+	vmcp *mcpv1beta1.VirtualMCPServer,
 	deployment *appsv1.Deployment,
 ) error {
 	ctxLogger := log.FromContext(ctx)
@@ -938,40 +1251,21 @@ func (*VirtualMCPServerReconciler) applyPodTemplateSpecToDeployment(
 		return nil
 	}
 
-	// Validate the PodTemplateSpec and check if there are meaningful customizations
-	builder, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp")
-	if err != nil {
+	// Validate the user-provided PodTemplateSpec is well-formed.
+	// We don't check builder.Build() == nil for "empty" customizations: that helper
+	// only enumerates a subset of PodSpec fields and would skip the patch for
+	// fields like runtimeClassName or topologySpreadConstraints. Strategic merge
+	// patch is a no-op for `{}` anyway, so always running it is safe.
+	if _, err := ctrlutil.NewPodTemplateSpecBuilder(vmcp.Spec.PodTemplateSpec, "vmcp"); err != nil {
 		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
 	}
 
-	if builder.Build() == nil {
-		// No meaningful customizations to apply
-		return nil
-	}
-
-	// Use the raw user JSON directly for strategic merge patch.
-	// This avoids the nil-slice-becomes-empty-array problem that occurs when
-	// we parse JSON into Go structs and re-marshal - Go's json.Marshal converts
-	// nil slices to [], which strategic merge patch interprets as "replace with empty".
-	// By using the raw JSON, we preserve exactly what the user specified.
-	userJSON := vmcp.Spec.PodTemplateSpec.Raw
-
-	originalJSON, err := json.Marshal(deployment.Spec.Template)
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(deployment.Spec.Template, vmcp.Spec.PodTemplateSpec.Raw)
 	if err != nil {
-		return fmt.Errorf("failed to marshal original PodTemplateSpec: %w", err)
+		return err
 	}
 
-	patchedJSON, err := strategicpatch.StrategicMergePatch(originalJSON, userJSON, corev1.PodTemplateSpec{})
-	if err != nil {
-		return fmt.Errorf("failed to apply strategic merge patch: %w", err)
-	}
-
-	var patchedPodTemplateSpec corev1.PodTemplateSpec
-	if err := json.Unmarshal(patchedJSON, &patchedPodTemplateSpec); err != nil {
-		return fmt.Errorf("failed to unmarshal patched PodTemplateSpec: %w", err)
-	}
-
-	deployment.Spec.Template = patchedPodTemplateSpec
+	deployment.Spec.Template = merged
 
 	ctxLogger.V(1).Info("Applied PodTemplateSpec customizations to deployment",
 		"virtualmcpserver", vmcp.Name,
@@ -987,7 +1281,7 @@ const (
 
 // caBundleMountPath returns the mount path for a CA bundle ConfigMap for a given entry name.
 // The key defaults to "ca.crt" if not specified in the CABundleSource.
-func caBundleMountPath(entryName string, caBundleRef *mcpv1alpha1.CABundleSource) string {
+func caBundleMountPath(entryName string, caBundleRef *mcpv1beta1.CABundleSource) string {
 	if caBundleRef == nil {
 		return path.Join(caBundleBasePath, entryName, "ca.crt")
 	}

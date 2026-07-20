@@ -13,9 +13,6 @@ import (
 	"strings"
 	"time"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
 	"github.com/redis/go-redis/v9"
@@ -27,7 +24,10 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/test/e2e/images"
 	"github.com/stacklok/toolhive/test/e2e/thv-operator/testutil"
 )
@@ -38,16 +38,21 @@ const (
 )
 
 // deployRedis creates a single-replica Redis Deployment and ClusterIP Service.
-// Returns after the deployment has at least one ready replica.
-func deployRedis(name string) {
+// Returns after the deployment has at least one ready replica. Pass a non-empty
+// password to configure requirepass authentication; pass "" for no authentication.
+// A non-empty password is required when referencing the Redis address via a
+// Kubernetes secretKeyRef env var — Kubernetes silently skips injection when the
+// secret key value is empty.
+func deployRedis(name string, password ...string) {
 	labels := map[string]string{"app": name}
 
+	var args []string
+	if len(password) > 0 && password[0] != "" {
+		args = []string{"--requirepass", password[0]}
+	}
+
 	deployment := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: defaultNamespace,
-			Labels:    labels,
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace, Labels: labels},
 		Spec: appsv1.DeploymentSpec{
 			Replicas: int32Ptr(1),
 			Selector: &metav1.LabelSelector{MatchLabels: labels},
@@ -57,12 +62,11 @@ func deployRedis(name string) {
 					Containers: []corev1.Container{{
 						Name:  "redis",
 						Image: images.RedisImage,
+						Args:  args,
 						Ports: []corev1.ContainerPort{{ContainerPort: 6379, Name: "redis"}},
 						ReadinessProbe: &corev1.Probe{
 							ProbeHandler: corev1.ProbeHandler{
-								TCPSocket: &corev1.TCPSocketAction{
-									Port: intstr.FromInt32(6379),
-								},
+								TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromInt32(6379)},
 							},
 							InitialDelaySeconds: 2,
 							PeriodSeconds:       3,
@@ -75,17 +79,12 @@ func deployRedis(name string) {
 	gomega.Expect(k8sClient.Create(ctx, deployment)).To(gomega.Succeed())
 
 	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: defaultNamespace,
-		},
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: defaultNamespace},
 		Spec: corev1.ServiceSpec{
 			Selector: labels,
 			Ports: []corev1.ServicePort{{
-				Port:       6379,
-				TargetPort: intstr.FromInt32(6379),
-				Protocol:   corev1.ProtocolTCP,
-				Name:       "redis",
+				Port: 6379, TargetPort: intstr.FromInt32(6379),
+				Protocol: corev1.ProtocolTCP, Name: "redis",
 			}},
 		},
 	}
@@ -99,6 +98,12 @@ func deployRedis(name string) {
 		}
 		return dep.Status.ReadyReplicas > 0
 	}, e2eTimeout, e2ePollInterval).Should(gomega.BeTrue(), "Redis should be ready")
+}
+
+// deployRedisWithPassword deploys Redis with requirepass authentication.
+// Delegates to deployRedis(name, password).
+func deployRedisWithPassword(name, password string) {
+	deployRedis(name, password)
 }
 
 // cleanupRedis removes the Redis Deployment and Service.
@@ -183,6 +188,47 @@ func portForwardToPod(podName string, containerPort int32) (int, func(), error) 
 	return 0, nil, fmt.Errorf("port-forward to %s never became ready on localhost:%d", podName, localPort)
 }
 
+// portForwardToService starts a kubectl port-forward to a Kubernetes Service and
+// returns the local port and a cleanup function. Mirrors portForwardToPod but
+// targets svc/<name> instead of pod/<name>.
+func portForwardToService(serviceName string, servicePort int32) (int, func(), error) {
+	listener, err := net.Listen("tcp", ":0")
+	if err != nil {
+		return 0, nil, fmt.Errorf("failed to find free port: %w", err)
+	}
+	localPort := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+
+	kubeconfigArg := fmt.Sprintf("--kubeconfig=%s", kubeconfig)
+	//nolint:gosec // kubeconfig, serviceName, and ports are test-controlled values
+	cmd := exec.Command("kubectl", kubeconfigArg,
+		"-n", defaultNamespace, "port-forward",
+		fmt.Sprintf("svc/%s", serviceName),
+		fmt.Sprintf("%d:%d", localPort, servicePort))
+	if err := cmd.Start(); err != nil {
+		return 0, nil, fmt.Errorf("failed to start port-forward to svc/%s: %w", serviceName, err)
+	}
+
+	cleanup := func() {
+		if cmd.Process != nil {
+			_ = cmd.Process.Kill()
+			_ = cmd.Wait()
+		}
+	}
+
+	for range 30 {
+		conn, dialErr := net.DialTimeout("tcp", fmt.Sprintf("localhost:%d", localPort), 500*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			return localPort, cleanup, nil
+		}
+		time.Sleep(500 * time.Millisecond)
+	}
+
+	cleanup()
+	return 0, nil, fmt.Errorf("port-forward to svc/%s never became ready on localhost:%d", serviceName, localPort)
+}
+
 // readRedisSessionBackendIDs port-forwards to the Redis pod with label app=redisName,
 // reads the session key keyPrefix+sessionID, and returns only the per-backend session
 // ID entries (keys prefixed with "vmcp.backend.session.").
@@ -262,9 +308,9 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 			redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
 
 			ginkgo.By("Creating MCPServer with replicas=2, backendReplicas=2, Redis session storage")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpServerName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:           images.YardstickServerImage,
 					Transport:       "streamable-http",
 					ProxyPort:       proxyPort,
@@ -272,8 +318,8 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 					Replicas:        &replicas,
 					BackendReplicas: &backendReplicas,
 					SessionAffinity: "None",
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-						Provider: mcpv1alpha1.SessionStorageProviderRedis,
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
+						Provider: mcpv1beta1.SessionStorageProviderRedis,
 						Address:  redisAddr,
 					},
 				},
@@ -293,13 +339,13 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpServerName, Namespace: defaultNamespace},
 			})
 			cleanupRedis(redisName)
 
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerName, Namespace: defaultNamespace}, &mcpv1alpha1.MCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerName, Namespace: defaultNamespace}, &mcpv1beta1.MCPServer{})
 				return apierrors.IsNotFound(err)
 			}, e2eTimeout, e2ePollInterval).Should(gomega.BeTrue())
 		})
@@ -391,17 +437,17 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 			redisAddr := fmt.Sprintf("%s.%s.svc.cluster.local:6379", redisName, defaultNamespace)
 
 			ginkgo.By("Creating MCPServer with replicas=2, Redis session storage, and sessionAffinity=None")
-			gomega.Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPServer{
+			gomega.Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpServerName, Namespace: defaultNamespace},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:           images.YardstickServerImage,
 					Transport:       "streamable-http",
 					ProxyPort:       proxyPort,
 					MCPPort:         8080,
 					Replicas:        &replicas,
 					SessionAffinity: "None",
-					SessionStorage: &mcpv1alpha1.SessionStorageConfig{
-						Provider: mcpv1alpha1.SessionStorageProviderRedis,
+					SessionStorage: &mcpv1beta1.SessionStorageConfig{
+						Provider: mcpv1beta1.SessionStorageProviderRedis,
 						Address:  redisAddr,
 					},
 				},
@@ -421,25 +467,25 @@ var _ = ginkgo.Describe("MCPServer Cross-Replica Session Routing with Redis", fu
 		})
 
 		ginkgo.AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPServer{
+			_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{Name: mcpServerName, Namespace: defaultNamespace},
 			})
 			cleanupRedis(redisName)
 
 			gomega.Eventually(func() bool {
-				err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerName, Namespace: defaultNamespace}, &mcpv1alpha1.MCPServer{})
+				err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerName, Namespace: defaultNamespace}, &mcpv1beta1.MCPServer{})
 				return apierrors.IsNotFound(err)
 			}, e2eTimeout, e2ePollInterval).Should(gomega.BeTrue())
 		})
 
 		ginkgo.It("Should have SessionStorageWarning=False since Redis is configured", func() {
 			gomega.Eventually(func() error {
-				server := &mcpv1alpha1.MCPServer{}
+				server := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpServerName, Namespace: defaultNamespace}, server); err != nil {
 					return err
 				}
 				for _, cond := range server.Status.Conditions {
-					if cond.Type == mcpv1alpha1.ConditionSessionStorageWarning {
+					if cond.Type == mcpv1beta1.ConditionSessionStorageWarning {
 						if string(cond.Status) == "False" {
 							return nil
 						}

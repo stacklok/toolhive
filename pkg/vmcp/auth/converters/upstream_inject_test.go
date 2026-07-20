@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -27,21 +27,21 @@ func TestUpstreamInjectConverter_ConvertToStrategy(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
+		externalAuth *mcpv1beta1.MCPExternalAuthConfig
 		wantStrategy *authtypes.BackendAuthStrategy
 		wantErr      bool
 		errContains  string
 	}{
 		{
 			name: "valid config with ProviderName=github",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-upstream-inject",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeUpstreamInject,
-					UpstreamInject: &mcpv1alpha1.UpstreamInjectSpec{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeUpstreamInject,
+					UpstreamInject: &mcpv1beta1.UpstreamInjectSpec{
 						ProviderName: "github",
 					},
 				},
@@ -56,13 +56,13 @@ func TestUpstreamInjectConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "nil upstream inject spec",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "nil-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type:           mcpv1alpha1.ExternalAuthTypeUpstreamInject,
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type:           mcpv1beta1.ExternalAuthTypeUpstreamInject,
 					UpstreamInject: nil,
 				},
 			},
@@ -96,14 +96,14 @@ func TestUpstreamInjectConverter_ResolveSecrets(t *testing.T) {
 	t.Parallel()
 
 	converter := &UpstreamInjectConverter{}
-	externalAuth := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuth := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-upstream-inject",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeUpstreamInject,
-			UpstreamInject: &mcpv1alpha1.UpstreamInjectSpec{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeUpstreamInject,
+			UpstreamInject: &mcpv1beta1.UpstreamInjectSpec{
 				ProviderName: "github",
 			},
 		},
@@ -130,20 +130,20 @@ func TestUpstreamInjectConverter_Integration(t *testing.T) {
 
 	// Test that upstream inject converter is registered in default registry
 	registry := DefaultRegistry()
-	converter, err := registry.GetConverter(mcpv1alpha1.ExternalAuthTypeUpstreamInject)
+	converter, err := registry.GetConverter(mcpv1beta1.ExternalAuthTypeUpstreamInject)
 	require.NoError(t, err)
 	require.NotNil(t, converter)
 	assert.IsType(t, &UpstreamInjectConverter{}, converter)
 
 	// Test end-to-end conversion using ConvertToStrategy convenience function
-	externalAuth := &mcpv1alpha1.MCPExternalAuthConfig{
+	externalAuth := &mcpv1beta1.MCPExternalAuthConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-upstream-inject",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-			Type: mcpv1alpha1.ExternalAuthTypeUpstreamInject,
-			UpstreamInject: &mcpv1alpha1.UpstreamInjectSpec{
+		Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+			Type: mcpv1beta1.ExternalAuthTypeUpstreamInject,
+			UpstreamInject: &mcpv1beta1.UpstreamInjectSpec{
 				ProviderName: "github",
 			},
 		},

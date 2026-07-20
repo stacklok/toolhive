@@ -44,7 +44,7 @@ stringData:
 
 ---
 # Create MCPGroup for backend servers
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: production-services
@@ -56,7 +56,7 @@ spec:
 
 ---
 # Create backend MCPServer: yardstick with streamable-http transport
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: yardstick-streamable
@@ -83,7 +83,7 @@ spec:
 
 ---
 # Create backend MCPServer: fetch with streamable-http transport
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: fetch
@@ -107,7 +107,7 @@ spec:
 
 ---
 # Create backend MCPServer: yardstick with sse transport
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: yardstick-sse
@@ -133,7 +133,7 @@ spec:
       memory: "64Mi"
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: production-vmcp

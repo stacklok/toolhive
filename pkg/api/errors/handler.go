@@ -44,7 +44,11 @@ func ErrorHandler(fn HandlerWithError) http.HandlerFunc {
 		// Extract HTTP status code from the error
 		code := httperr.Code(err)
 
-		// For 5xx errors, log the full error but return a generic message
+		// For 5xx errors, log the full error and report it to Sentry/OTel.
+		// 500 Internal Server Error may wrap internal details (DB drivers,
+		// container runtimes, connection strings) so we return only the
+		// generic status text. 502/503/504 represent upstream failures the
+		// caller can act on — their messages are safe to return verbatim.
 		if code >= http.StatusInternalServerError {
 			slog.Error("internal server error", "error", err)
 			span := trace.SpanFromContext(r.Context())
@@ -56,11 +60,27 @@ func ErrorHandler(fn HandlerWithError) http.HandlerFunc {
 			// Sentry span processor only creates transactions; call CaptureException
 			// explicitly so 5xx errors also appear as Issues in the Sentry Issues tab.
 			sentrypkg.CaptureException(r, err)
+
+			if isUpstreamStatus(code) {
+				http.Error(w, err.Error(), code)
+				return
+			}
 			http.Error(w, http.StatusText(code), code)
 			return
 		}
 
 		// For 4xx errors, return the error message to the client
 		http.Error(w, err.Error(), code)
+	}
+}
+
+// isUpstreamStatus reports whether code represents an upstream/gateway
+// failure whose error message can safely be returned to the client.
+func isUpstreamStatus(code int) bool {
+	switch code {
+	case http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+		return true
+	default:
+		return false
 	}
 }

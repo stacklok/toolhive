@@ -6,6 +6,7 @@ package remote
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/discovery"
 )
@@ -272,7 +274,7 @@ func TestDiscoverIssuerAndScopes(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 			defer cancel()
 
-			issuer, scopes, authServerInfo, err := handler.discoverIssuerAndScopes(
+			issuer, scopes, authServerInfo, _, err := handler.discoverIssuerAndScopes(
 				ctx,
 				authInfo,
 				remoteURL,
@@ -386,7 +388,7 @@ func TestDiscoverIssuerAndScopes_Security(t *testing.T) {
 		}
 
 		ctx := t.Context()
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
 
 		require.NoError(t, err)
 		// The path traversal should be normalized
@@ -408,7 +410,7 @@ func TestDiscoverIssuerAndScopes_Security(t *testing.T) {
 		defer mockServer.Close()
 
 		ctx := t.Context()
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, mockServer.URL)
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, mockServer.URL)
 
 		require.NoError(t, err)
 		// Should not use the insecure realm, should fall through
@@ -442,7 +444,7 @@ func TestDiscoverIssuerAndScopes_Security(t *testing.T) {
 		ctx, cancel := context.WithTimeout(t.Context(), 1*time.Second)
 		defer cancel()
 
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
 
 		// Should not hang or crash; Priority 3 fails gracefully and falls through to URL-derived issuer
 		require.NoError(t, err)
@@ -465,7 +467,7 @@ func TestTryDiscoverFromWellKnown(t *testing.T) {
 		}
 
 		ctx := t.Context()
-		issuer, scopes, authInfo, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL)
+		issuer, scopes, authInfo, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL, false)
 
 		require.NoError(t, err)
 		assert.Equal(t, mockServer.URL, issuer)                // For localhost, issuer matches server URL
@@ -486,7 +488,7 @@ func TestTryDiscoverFromWellKnown(t *testing.T) {
 		}
 
 		ctx := t.Context()
-		issuer, scopes, _, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL)
+		issuer, scopes, _, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL, false)
 
 		require.NoError(t, err)
 		assert.Equal(t, mockServer.URL, issuer) // For localhost, issuer matches server URL
@@ -503,7 +505,7 @@ func TestTryDiscoverFromWellKnown(t *testing.T) {
 		}
 
 		ctx := t.Context()
-		_, _, _, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL)
+		_, _, _, err := handler.tryDiscoverFromWellKnown(ctx, mockServer.URL, false)
 
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "well-known discovery failed")
@@ -530,7 +532,7 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		issuer, scopes, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
+		issuer, scopes, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
 
 		require.NoError(t, err)
 		assert.Equal(t, "https://configured.example.com", issuer)
@@ -549,7 +551,7 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
 
 		require.NoError(t, err)
 		assert.Equal(t, "https://realm.example.com/oauth", issuer)
@@ -567,7 +569,7 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com")
 
 		require.NoError(t, err)
 		// Should fall through to URL-derived issuer
@@ -585,7 +587,7 @@ func TestDiscoveryPriorityChain(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		issuer, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com/path")
+		issuer, _, _, _, err := handler.discoverIssuerAndScopes(ctx, authInfo, "https://server.example.com/path")
 
 		require.NoError(t, err)
 		assert.Equal(t, "https://server.example.com", issuer)
@@ -672,7 +674,7 @@ func TestTryDiscoverFromResourceMetadata_EmptyScopes(t *testing.T) {
 			metadataURL := metadataServer.URL + "/.well-known/oauth-protected-resource"
 
 			// Call tryDiscoverFromResourceMetadata
-			issuer, scopes, authServerInfo, err := handler.tryDiscoverFromResourceMetadata(ctx, metadataURL)
+			issuer, scopes, authServerInfo, err := handler.tryDiscoverFromResourceMetadata(ctx, metadataURL, false)
 
 			// Verify results
 			require.NoError(t, err, tt.description)
@@ -797,6 +799,88 @@ func TestAuthenticate_BearerTokenPriority(t *testing.T) {
 	assert.Equal(t, "Bearer", token.TokenType)
 }
 
+// retrieveErr constructs an *oauth2.RetrieveError with the given error code,
+// matching what golang.org/x/oauth2 returns for token endpoint errors.
+func retrieveErr(code string) *oauth2.RetrieveError {
+	return &oauth2.RetrieveError{ErrorCode: code}
+}
+
+// TestIsCIMDRejectionError covers the isCIMDRejectionError helper used in the CIMD retry path.
+func TestIsCIMDRejectionError(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "nil error returns false",
+			err:  nil,
+			want: false,
+		},
+		{
+			name: "invalid_client triggers retry",
+			err:  retrieveErr("invalid_client"),
+			want: true,
+		},
+		{
+			name: "unauthorized_client triggers retry",
+			err:  retrieveErr("unauthorized_client"),
+			want: true,
+		},
+		{
+			name: "invalid_request does not trigger retry",
+			err:  retrieveErr("invalid_request"),
+			want: false,
+		},
+		{
+			name: "access_denied does not trigger retry",
+			err:  retrieveErr("access_denied"),
+			want: false,
+		},
+		// Authorization-endpoint rejections — flow.go format: "OAuth error: <code> - <desc>"
+		{
+			name: "auth callback invalid_client triggers retry",
+			err:  fmt.Errorf("OAuth error: invalid_client - client not recognised"),
+			want: true,
+		},
+		{
+			name: "auth callback unauthorized_client triggers retry",
+			err:  fmt.Errorf("OAuth error: unauthorized_client - not allowed"),
+			want: true,
+		},
+		{
+			name: "auth callback invalid_request does not trigger retry",
+			err:  fmt.Errorf("OAuth error: invalid_request - missing param"),
+			want: false,
+		},
+		{
+			name: "auth callback access_denied does not trigger retry",
+			err:  fmt.Errorf("OAuth error: access_denied - user denied"),
+			want: false,
+		},
+		// Non-OAuth errors must not trigger retry.
+		{
+			name: "network error does not trigger retry",
+			err:  fmt.Errorf("dial tcp: connection refused"),
+			want: false,
+		},
+		{
+			name: "timeout error does not trigger retry",
+			err:  fmt.Errorf("OAuth flow timed out after 5m0s - user did not complete authentication"),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tt.want, isCIMDRejectionError(tt.err))
+		})
+	}
+}
+
 // TestAuthenticate_BearerTokenDiscovery tests that bearer token discovery works correctly
 func TestAuthenticate_BearerTokenDiscovery(t *testing.T) {
 	t.Parallel()
@@ -852,4 +936,96 @@ func TestAuthenticate_BearerTokenDiscovery(t *testing.T) {
 		assert.Equal(t, "my-configured-token", token.AccessToken)
 		assert.Equal(t, "Bearer", token.TokenType)
 	})
+}
+
+// TestResolveClientCredentials verifies the credential selection priority in
+// resolveClientCredentials: CachedCIMDClientID > CachedClientID (DCR) >
+// statically-configured ClientID.
+func TestResolveClientCredentials(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		config           *Config
+		wantClientID     string
+		wantClientSecret string
+	}{
+		{
+			name: "CachedCIMDClientID takes precedence over DCR and static credentials",
+			config: &Config{
+				ClientID:           "static-client-id",
+				ClientSecret:       "static-secret",
+				CachedClientID:     "dcr-client-id",
+				CachedCIMDClientID: "https://toolhive.dev/oauth/client-metadata.json",
+			},
+			wantClientID:     "https://toolhive.dev/oauth/client-metadata.json",
+			wantClientSecret: "",
+		},
+		{
+			name: "CachedCIMDClientID returns empty secret (token_endpoint_auth_method=none)",
+			config: &Config{
+				CachedCIMDClientID: "https://toolhive.dev/oauth/client-metadata.json",
+			},
+			wantClientID:     "https://toolhive.dev/oauth/client-metadata.json",
+			wantClientSecret: "",
+		},
+		{
+			// When CachedClientID is set the DCR client_id is used, but because
+			// CachedClientSecretRef is empty (no secret reference stored) the
+			// function falls through to the statically-configured ClientSecret.
+			name: "CachedClientID used when CachedCIMDClientID is empty",
+			config: &Config{
+				ClientID:       "static-client-id",
+				ClientSecret:   "static-secret",
+				CachedClientID: "dcr-client-id",
+			},
+			wantClientID:     "dcr-client-id",
+			wantClientSecret: "static-secret",
+		},
+		{
+			name: "static credentials used when no cached credentials exist",
+			config: &Config{
+				ClientID:     "static-client-id",
+				ClientSecret: "static-secret",
+			},
+			wantClientID:     "static-client-id",
+			wantClientSecret: "static-secret",
+		},
+		{
+			name:             "all empty returns empty strings",
+			config:           &Config{},
+			wantClientID:     "",
+			wantClientSecret: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			h := &Handler{config: tt.config}
+			gotClientID, gotClientSecret := h.resolveClientCredentials(context.Background())
+
+			assert.Equal(t, tt.wantClientID, gotClientID, "clientID mismatch")
+			assert.Equal(t, tt.wantClientSecret, gotClientSecret, "clientSecret mismatch")
+		})
+	}
+}
+
+// TestBuildOAuthFlowConfig_ThreadsAllowPrivateIPs pins that performOAuthFlow's
+// allowPrivateIPs parameter reaches the built OAuthFlowConfig. Without this,
+// a future refactor could silently drop the SSRF-guard decision computed in
+// Authenticate/discoverIssuerAndScopes without any test failing.
+func TestBuildOAuthFlowConfig_ThreadsAllowPrivateIPs(t *testing.T) {
+	t.Parallel()
+
+	h := &Handler{config: &Config{}}
+
+	flowConfig := h.buildOAuthFlowConfig([]string{"openid"}, nil, true)
+	assert.True(t, flowConfig.AllowPrivateIPs,
+		"allowPrivateIPs=true must reach OAuthFlowConfig.AllowPrivateIPs")
+
+	flowConfig = h.buildOAuthFlowConfig([]string{"openid"}, nil, false)
+	assert.False(t, flowConfig.AllowPrivateIPs,
+		"allowPrivateIPs=false must reach OAuthFlowConfig.AllowPrivateIPs")
 }

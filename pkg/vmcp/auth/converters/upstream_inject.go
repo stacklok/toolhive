@@ -9,7 +9,7 @@ import (
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -26,7 +26,7 @@ func (*UpstreamInjectConverter) StrategyType() string {
 // ConvertToStrategy converts an MCPExternalAuthConfig with type "upstreamInject" to a BackendAuthStrategy.
 // It maps the CRD's UpstreamInjectSpec.ProviderName to the runtime UpstreamInjectConfig.ProviderName.
 func (*UpstreamInjectConverter) ConvertToStrategy(
-	externalAuth *mcpv1alpha1.MCPExternalAuthConfig,
+	externalAuth *mcpv1beta1.MCPExternalAuthConfig,
 ) (*authtypes.BackendAuthStrategy, error) {
 	if externalAuth.Spec.UpstreamInject == nil {
 		return nil, fmt.Errorf("upstream inject config is nil")
@@ -44,7 +44,7 @@ func (*UpstreamInjectConverter) ConvertToStrategy(
 // The upstream IDP token is obtained at runtime by the embedded authorization server.
 func (*UpstreamInjectConverter) ResolveSecrets(
 	_ context.Context,
-	_ *mcpv1alpha1.MCPExternalAuthConfig,
+	_ *mcpv1beta1.MCPExternalAuthConfig,
 	_ client.Client,
 	_ string,
 	strategy *authtypes.BackendAuthStrategy,

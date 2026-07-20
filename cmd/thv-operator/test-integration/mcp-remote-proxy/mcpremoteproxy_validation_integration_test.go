@@ -11,7 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remoteproxy", "validation"), func() {
@@ -56,13 +56,13 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 				Create(proxyHelper)
 
 			By("waiting for the proxy to reach Failed phase")
-			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
+			statusHelper.WaitForPhase(proxy.Name, mcpv1beta1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
 			By("verifying the ConfigurationValid condition")
 			statusHelper.WaitForConditionReason(
 				proxy.Name,
-				mcpv1alpha1.ConditionTypeConfigurationValid,
-				mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid,
+				mcpv1beta1.ConditionTypeConfigurationValid,
+				mcpv1beta1.ConditionReasonAuthzPolicySyntaxInvalid,
 				MediumTimeout,
 			)
 		})
@@ -76,13 +76,13 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 				Create(proxyHelper)
 
 			By("waiting for the proxy to reach Failed phase")
-			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
+			statusHelper.WaitForPhase(proxy.Name, mcpv1beta1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
 			By("verifying the ConfigurationValid condition")
 			statusHelper.WaitForConditionReason(
 				proxy.Name,
-				mcpv1alpha1.ConditionTypeConfigurationValid,
-				mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound,
+				mcpv1beta1.ConditionTypeConfigurationValid,
+				mcpv1beta1.ConditionReasonAuthzConfigMapNotFound,
 				MediumTimeout,
 			)
 		})
@@ -94,13 +94,13 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 				Create(proxyHelper)
 
 			By("waiting for the proxy to reach Failed phase")
-			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
+			statusHelper.WaitForPhase(proxy.Name, mcpv1beta1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
 			By("verifying the ConfigurationValid condition")
 			statusHelper.WaitForConditionReason(
 				proxy.Name,
-				mcpv1alpha1.ConditionTypeConfigurationValid,
-				mcpv1alpha1.ConditionReasonHeaderSecretNotFound,
+				mcpv1beta1.ConditionTypeConfigurationValid,
+				mcpv1beta1.ConditionReasonHeaderSecretNotFound,
 				MediumTimeout,
 			)
 		})
@@ -114,7 +114,7 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 				Create(proxyHelper)
 
 			By("waiting for the proxy to reach Failed phase")
-			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
+			statusHelper.WaitForPhase(proxy.Name, mcpv1beta1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
 			By("verifying a Warning event was emitted with AuthzPolicySyntaxInvalid reason")
 			Eventually(func() bool {
@@ -126,7 +126,7 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 				for _, event := range eventList.Items {
 					if event.InvolvedObject.Name == proxy.Name &&
 						event.Type == corev1.EventTypeWarning &&
-						event.Reason == mcpv1alpha1.ConditionReasonAuthzPolicySyntaxInvalid {
+						event.Reason == mcpv1beta1.ConditionReasonAuthzPolicySyntaxInvalid {
 						return true
 					}
 				}
@@ -142,7 +142,7 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 				Create(proxyHelper)
 
 			By("waiting for the proxy to reach Failed phase")
-			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
+			statusHelper.WaitForPhase(proxy.Name, mcpv1beta1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
 			By("verifying a Warning event was emitted")
 			Eventually(func() bool {
@@ -154,7 +154,7 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 				for _, event := range eventList.Items {
 					if event.InvolvedObject.Name == proxy.Name &&
 						event.Type == corev1.EventTypeWarning &&
-						event.Reason == mcpv1alpha1.ConditionReasonAuthzConfigMapNotFound {
+						event.Reason == mcpv1beta1.ConditionReasonAuthzConfigMapNotFound {
 						return true
 					}
 				}
@@ -170,7 +170,7 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 				Create(proxyHelper)
 
 			By("waiting for the proxy to reach Failed phase")
-			statusHelper.WaitForPhase(proxy.Name, mcpv1alpha1.MCPRemoteProxyPhaseFailed, MediumTimeout)
+			statusHelper.WaitForPhase(proxy.Name, mcpv1beta1.MCPRemoteProxyPhaseFailed, MediumTimeout)
 
 			By("verifying a Warning event was emitted")
 			Eventually(func() bool {
@@ -182,7 +182,7 @@ var _ = Describe("MCPRemoteProxy Configuration Validation", Label("k8s", "remote
 				for _, event := range eventList.Items {
 					if event.InvolvedObject.Name == proxy.Name &&
 						event.Type == corev1.EventTypeWarning &&
-						event.Reason == mcpv1alpha1.ConditionReasonHeaderSecretNotFound {
+						event.Reason == mcpv1beta1.ConditionReasonHeaderSecretNotFound {
 						return true
 					}
 				}

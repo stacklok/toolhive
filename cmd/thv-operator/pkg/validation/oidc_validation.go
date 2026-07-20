@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"net/url"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 const (
@@ -35,7 +35,7 @@ const (
 // It ensures that configMapRef is specified when CABundleRef is provided,
 // and that the ConfigMap name is short enough to fit in a Kubernetes volume name.
 // Returns nil if ref is nil (no CA bundle configured).
-func ValidateCABundleSource(ref *mcpv1alpha1.CABundleSource) error {
+func ValidateCABundleSource(ref *mcpv1beta1.CABundleSource) error {
 	if ref == nil {
 		return nil
 	}

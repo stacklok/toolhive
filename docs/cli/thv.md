@@ -42,6 +42,7 @@ thv [flags]
 * [thv group](thv_group.md)	 - Manage logical groupings of MCP servers
 * [thv inspector](thv_inspector.md)	 - Launches the MCP Inspector UI and connects it to the specified MCP server
 * [thv list](thv_list.md)	 - List running MCP servers
+* [thv llm](thv_llm.md)	 - Manage LLM gateway authentication
 * [thv logs](thv_logs.md)	 - Output the logs of an MCP server or manage log files
 * [thv mcp](thv_mcp.md)	 - Interact with MCP servers for debugging
 * [thv proxy](thv_proxy.md)	 - Create a transparent proxy for an MCP server with authentication support
@@ -56,6 +57,8 @@ thv [flags]
 * [thv start](thv_start.md)	 - Start (resume) a tooling server
 * [thv status](thv_status.md)	 - Show detailed status of an MCP server
 * [thv stop](thv_stop.md)	 - Stop one or more MCP servers
+* [thv tui](thv_tui.md)	 - Open the interactive TUI dashboard (experimental)
+* [thv upgrade](thv_upgrade.md)	 - Manage upgrades for MCP server workloads
 * [thv version](thv_version.md)	 - Show the version of ToolHive
 * [thv vmcp](thv_vmcp.md)	 - Run and manage a Virtual MCP Server locally
 

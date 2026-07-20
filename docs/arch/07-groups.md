@@ -69,7 +69,7 @@ Registry groups are predefined collections of servers that can be deployed toget
 - Group deployment creates a runtime group with all member servers
 - Each server maintains its individual identity and configuration
 
-**Implementation**: `pkg/registry/types.go`
+**Implementation**: `github.com/stacklok/toolhive-core/registry/types/registry_types.go`
 
 **Use case**: Deploy complete stacks (e.g., a full data processing pipeline) with a single command, ensuring all required components are available together.
 
@@ -141,3 +141,4 @@ Groups may serve as the foundation for additional features:
 - [Workloads Lifecycle](08-workloads-lifecycle.md) - Group operations
 - [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - Group-based aggregation
 - [Skills System](12-skills-system.md) - Skills organized in groups
+- [Deployment Modes](01-deployment-modes.md) - How groups apply per deployment mode

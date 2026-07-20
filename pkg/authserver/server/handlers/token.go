@@ -98,6 +98,20 @@ func (h *Handler) TokenHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
+	// Renew the registration TTL for public (DCR) clients on a successful token
+	// exchange/refresh. This is the proven-use signal — unlike the unauthenticated
+	// /oauth/authorize client read — so an actively-used public client is not evicted
+	// mid-lifecycle and forced to re-register. Best-effort: a renewal failure must not
+	// fail the token that was just issued. Storage renews only public clients.
+	if client := accessRequest.GetClient(); client != nil {
+		if err := h.storage.RenewClientTTL(ctx, client); err != nil {
+			slog.Warn("failed to renew client registration TTL",
+				"client_id", client.GetID(),
+				"error", err,
+			)
+		}
+	}
+
 	// Write the token response
 	h.provider.WriteAccessResponse(ctx, w, accessRequest, response)
 }

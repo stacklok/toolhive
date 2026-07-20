@@ -6,8 +6,7 @@ package server
 import (
 	"context"
 
-	mcpserver "github.com/mark3labs/mcp-go/server"
-
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
@@ -27,19 +26,14 @@ type SessionManager interface {
 	// connections and replaces the placeholder with a fully-formed MultiSession.
 	CreateSession(ctx context.Context, sessionID string) (vmcpsession.MultiSession, error)
 
-	// GetAdaptedTools returns SDK-format tools for the given session with session-scoped
-	// handlers. This enables session-scoped routing: each tool call goes through the
-	// session's backend connections rather than the global router.
-	GetAdaptedTools(sessionID string) ([]mcpserver.ServerTool, error)
-
-	// GetAdaptedResources returns SDK-format resources for the given session with
-	// session-scoped handlers, analogous to GetAdaptedTools for resources.
-	GetAdaptedResources(sessionID string) ([]mcpserver.ServerResource, error)
-
 	// GetMultiSession retrieves the fully-formed MultiSession for the given session ID.
 	// Returns (nil, false) if the session does not exist or is still a placeholder.
-	// Used to access session-scoped backend tool metadata (e.g. for conflict validation).
-	GetMultiSession(sessionID string) (vmcpsession.MultiSession, bool)
+	//
+	// ctx may carry request-scoped values (e.g. *auth.Identity) that implementations
+	// should forward to storage and backend-restore operations. Implementations must
+	// not let caller cancellation abort an in-progress restore that concurrent
+	// waiters depend on.
+	GetMultiSession(ctx context.Context, sessionID string) (vmcpsession.MultiSession, bool)
 
 	// DecorateSession retrieves the MultiSession for sessionID, applies fn to it,
 	// and stores the result back. Used to stack session decorators (composite tools,

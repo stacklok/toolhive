@@ -67,6 +67,12 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
         │              CONFIGURATION (attaches to any)     │
         │  ToolConfig   MCPExternalAuthConfig              │
         │  MCPOIDCConfig   MCPTelemetryConfig              │
+        │  MCPWebhookConfig                                │
+        └──────────────────────────────────────────────────┘
+
+        ┌──────────────────────────────────────────────────┐
+        │              AUXILIARY                           │
+        │  EmbeddingServer                                 │
         └──────────────────────────────────────────────────┘
 ```
 
@@ -76,7 +82,8 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
 | **Organization** | MCPGroup | Group related servers together |
 | **Aggregation** | VirtualMCPServer, VirtualMCPCompositeToolDefinition | Combine multiple servers into one endpoint |
 | **Discovery** | MCPRegistry | Help clients find available servers |
-| **Configuration** | ToolConfig, MCPExternalAuthConfig, MCPOIDCConfig, MCPTelemetryConfig | Shared config that attaches to any layer |
+| **Configuration** | MCPToolConfig, MCPExternalAuthConfig, MCPOIDCConfig, MCPTelemetryConfig, MCPWebhookConfig | Shared config that attaches to any layer |
+| **Auxiliary** | EmbeddingServer | Supporting infrastructure (e.g., embedding inference for vMCP) |
 
 #### Workload CRDs (Deploy Running Pods)
 
@@ -86,6 +93,7 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
 | **MCPRemoteProxy** | Deployment | Proxy to external/remote MCP servers |
 | **VirtualMCPServer** | Deployment | Aggregates multiple backends into one endpoint |
 | **MCPRegistry** | Deployment | Registry API server for MCP discovery |
+| **EmbeddingServer** | StatefulSet | HuggingFace text-embeddings-inference server (e.g., for vMCP semantic search) |
 
 #### Logical/Configuration CRDs (No Pods)
 
@@ -93,10 +101,11 @@ MCPServer is the fundamental building block. All other CRDs either **organize**,
 |-----|---------|
 | **MCPServerEntry** | Zero-infrastructure declaration of a remote MCP endpoint |
 | **MCPGroup** | Logical grouping of workloads (status tracking only) |
-| **ToolConfig** | Tool filtering and renaming configuration |
+| **MCPToolConfig** | Tool filtering and renaming configuration |
 | **MCPExternalAuthConfig** | Token exchange / header injection configuration |
 | **MCPOIDCConfig** | Shared OIDC provider settings referenced by workload CRDs |
 | **MCPTelemetryConfig** | Shared OpenTelemetry/Prometheus settings referenced by workload CRDs |
+| **MCPWebhookConfig** | Validating/mutating webhook middleware definitions referenced by MCPServer |
 | **VirtualMCPCompositeToolDefinition** | Workflow definitions (webhook validation only) |
 
 ### CRD Relationships
@@ -121,14 +130,15 @@ graph TB
     subgraph "Configuration Only"
         CTD[VirtualMCPCompositeToolDefinition<br/>Webhook validation]
         ExtAuth[MCPExternalAuthConfig<br/>No resources]
-        ToolCfg[ToolConfig<br/>No resources]
+        ToolCfg[MCPToolConfig<br/>No resources]
         OIDCCfg[MCPOIDCConfig<br/>No resources]
         TelCfg[MCPTelemetryConfig<br/>No resources]
+        WebhookCfg[MCPWebhookConfig<br/>No resources]
     end
 
     VMCP -->|groupRef| Group
-    VMCP -->|compositeToolRefs| CTD
-    VMCP -.->|oidcConfigRef| OIDCCfg
+    VMCP -->|config.compositeToolRefs| CTD
+    VMCP -.->|incomingAuth.oidcConfigRef| OIDCCfg
     VMCP -.->|telemetryConfigRef| TelCfg
 
     Server -->|groupRef| Group
@@ -137,6 +147,7 @@ graph TB
     Server -.->|toolConfigRef| ToolCfg
     Server -.->|oidcConfigRef| OIDCCfg
     Server -.->|telemetryConfigRef| TelCfg
+    Server -.->|webhookConfigRef| WebhookCfg
 
     Proxy -->|groupRef| Group
     Proxy -.->|externalAuthConfigRef| ExtAuth
@@ -154,7 +165,7 @@ graph TB
 
 Defines an MCP server deployment, including container images, transports, middleware, and authentication configuration.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpserver_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpserver_types.go`
 
 MCPServer resources support various transport types (stdio, SSE, streamable-http), permission profiles, OIDC authentication, and Cedar-based authorization policies. The operator reconciles these resources into Kubernetes Deployments, Services, and StatefulSets.
 
@@ -176,11 +187,18 @@ For examples, see:
 
 ### MCPRegistry
 
-Manages MCP server registries in Kubernetes, supporting both Git-based and ConfigMap-based registry sources with automatic or manual synchronization.
+Deploys a registry API server that serves MCP server metadata to clients. The registry server itself handles fetching, parsing, and refreshing registry data from upstream sources (Git, files, etc.) — the operator is responsible only for running the server and feeding it configuration.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpregistry_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpregistry_types.go`
 
-MCPRegistry resources can sync registry data from external sources and optionally deploy a registry API service for serving the registry data to other components.
+**Key fields:**
+- `configYAML` (required) — the complete `config.yaml` for the registry server. The operator stores this verbatim in a ConfigMap mounted at `/config/config.yaml` and does NOT parse, validate, or transform it.
+- `volumes` / `volumeMounts` — additional volumes the registry server needs (e.g., a Secret containing Git credentials referenced by file path from `configYAML`).
+- `pgpassSecretRef` — dedicated field for PostgreSQL `.pgpass` credentials (handled via an init container because libpq requires mode 0600).
+- `podTemplateSpec` — pod-level customizations (resources, affinity, tolerations).
+- `imagePullSecrets` — applied to both the Deployment and the operator-managed ServiceAccount.
+
+**Security note**: `configYAML` is stored in a ConfigMap, so credentials must NOT be inlined there. Reference them by file path and mount the corresponding Secret via `volumes` / `volumeMounts`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
 
@@ -190,7 +208,7 @@ For examples, see the [`examples/operator/`](../../examples/operator/) directory
 
 Defines tool filtering and override configuration.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/toolconfig_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/toolconfig_types.go`
 
 MCPToolConfig allows you to filter which tools are exposed by an MCP server and customize tool metadata. See [`examples/operator/mcp-servers/mcpserver_fetch_tools_filter.yaml`](../../examples/operator/mcp-servers/mcpserver_fetch_tools_filter.yaml) for a complete example.
 
@@ -202,7 +220,7 @@ MCPToolConfig allows you to filter which tools are exposed by an MCP server and 
 
 Manages external authentication configurations that can be shared across multiple MCPServer resources.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`
 
 MCPExternalAuthConfig allows you to define reusable authentication configurations that can be referenced by multiple MCPServer and MCPRemoteProxy resources. When using the embedded auth server type, the `storage` field supports configuring Redis Sentinel as a shared storage backend for horizontal scaling. See [Auth Server Storage](11-auth-server-storage.md) for details.
 
@@ -218,7 +236,7 @@ MCPExternalAuthConfig resources can be referenced via two paths:
 
 Defines shared OIDC provider configuration that can be referenced by multiple workload CRDs (MCPServer, MCPRemoteProxy, VirtualMCPServer) in the same namespace.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpoidcconfig_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpoidcconfig_types.go`
 
 MCPOIDCConfig eliminates OIDC configuration duplication — define an identity provider once and reference it from any number of workloads. A single issuer URL change updates all referencing workloads automatically.
 
@@ -233,7 +251,7 @@ MCPOIDCConfig eliminates OIDC configuration duplication — define an identity p
 
 **Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads` tracking which resources reference this config. Deletion is blocked while references exist (finalizer pattern).
 
-**Referenced by**: MCPServer, MCPRemoteProxy, VirtualMCPServer (via `oidcConfigRef`)
+**Referenced by**: MCPServer and MCPRemoteProxy (via `spec.oidcConfigRef`); VirtualMCPServer (via `spec.incomingAuth.oidcConfigRef`)
 
 **Controller**: `cmd/thv-operator/controllers/mcpoidcconfig_controller.go`
 
@@ -243,7 +261,7 @@ For examples, see [`examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.
 
 Defines shared OpenTelemetry and Prometheus configuration that can be referenced by multiple MCPServer resources in the same namespace.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcptelemetryconfig_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcptelemetryconfig_types.go`
 
 MCPTelemetryConfig centralises telemetry infrastructure settings (collector endpoint, sampling rate, headers) so they can be managed once for a fleet of MCP servers.
 
@@ -259,6 +277,35 @@ MCPTelemetryConfig centralises telemetry infrastructure settings (collector endp
 **Controller**: `cmd/thv-operator/controllers/mcptelemetryconfig_controller.go`
 
 For examples, see [`examples/operator/mcp-servers/mcpserver_fetch_otel.yaml`](../../examples/operator/mcp-servers/mcpserver_fetch_otel.yaml).
+
+### MCPWebhookConfig
+
+Defines reusable validating and mutating webhook middleware configurations that can be referenced by MCPServer resources.
+
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpwebhookconfig_types.go`
+
+MCPWebhookConfig declares one or more `validating` and/or `mutating` webhooks (URL, timeout, failure policy, optional TLS, optional HMAC signing). At least one webhook must be defined (CEL-enforced). The MCPServer references it via `spec.webhookConfigRef`, and the proxy-runner injects the corresponding middleware into the request chain.
+
+**Key features:**
+- Per-webhook `failurePolicy` (`fail` or `ignore`) for handling webhook errors
+- Optional `tlsConfig` with CA bundle, mTLS client cert, or `insecureSkipVerify`
+- Optional `hmacSecretRef` adds the `X-Toolhive-Signature` header to outgoing payloads
+
+**Status fields** include a `Ready` condition, `configHash` for change detection, and `referencingWorkloads`.
+
+**Referenced by**: MCPServer (via `webhookConfigRef`)
+
+**Controller**: `cmd/thv-operator/controllers/mcpwebhookconfig_controller.go`
+
+### EmbeddingServer
+
+Deploys a HuggingFace text-embeddings-inference container as a StatefulSet, used by VirtualMCPServer for features such as semantic tool search.
+
+**Implementation**: `cmd/thv-operator/api/v1beta1/embeddingserver_types.go`
+
+EmbeddingServer encapsulates the model (defaulting to `BAAI/bge-small-en-v1.5`), image, port, optional HuggingFace token, and an optional persistent model cache. The operator reconciles each EmbeddingServer into a StatefulSet plus Service.
+
+**Controller**: `cmd/thv-operator/controllers/embeddingserver_controller.go`
 
 ### MCPRemoteProxy
 
@@ -279,7 +326,7 @@ OIDC is optional — omit `oidcConfigRef` for unauthenticated proxies.
 
 ```yaml
 # MCPRemoteProxy with embedded auth server (incoming) + AWS STS (outgoing)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRemoteProxy
 metadata:
   name: bedrock-proxy
@@ -292,7 +339,7 @@ spec:
     name: bedrock-sts-config      # type: awsSts
 ```
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpremoteproxy_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpremoteproxy_types.go`
 
 **Controller**: `cmd/thv-operator/controllers/mcpremoteproxy_controller.go`
 
@@ -310,7 +357,7 @@ The MCPServerEntry controller is validation-only: it validates that referenced r
 
 MCPServerEntry backends are discovered by vMCP in both static mode (listed at startup) and dynamic mode (watched by the BackendReconciler). In dynamic mode, ConfigMap changes trigger re-reconciliation of affected MCPServerEntry backends via a field-indexed watch on `spec.caBundleRef.configMapRef.name`.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpserverentry_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpserverentry_types.go`
 
 **Controller**: `cmd/thv-operator/controllers/mcpserverentry_controller.go`
 
@@ -318,13 +365,13 @@ MCPServerEntry backends are discovered by vMCP in both static mode (listed at st
 
 Logically groups MCPServer resources together for organizational purposes.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/mcpgroup_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/mcpgroup_types.go`
 
 MCPGroup resources allow grouping related MCP servers. Servers reference their group using the `groupRef` typed struct (`MCPGroupRef`) in MCPServer spec. The group tracks member servers in its status.
 
 **Status fields** include phase (Ready, Pending, Failed), list of server names, and server count.
 
-**Referenced by MCPServer** using `spec.groupRef.name`.
+**Referenced by**: MCPServer, MCPRemoteProxy, MCPServerEntry, and VirtualMCPServer using `spec.groupRef.name`.
 
 **Controller**: `cmd/thv-operator/controllers/mcpgroup_controller.go`
 
@@ -332,7 +379,7 @@ MCPGroup resources allow grouping related MCP servers. Servers reference their g
 
 Aggregates multiple MCPServer resources from an MCPGroup into a single unified MCP server interface with advanced composition capabilities.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/virtualmcpserver_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/virtualmcpserver_types.go`
 
 VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, and prompts from multiple backend MCPServers. It provides:
 
@@ -401,11 +448,11 @@ VirtualMCPServer creates a virtual MCP server that aggregates tools, resources, 
 
 Defines reusable composite tool workflows that can be shared across multiple VirtualMCPServers.
 
-**Implementation**: `cmd/thv-operator/api/v1alpha1/virtualmcpcompositetooldefinition_types.go`
+**Implementation**: `cmd/thv-operator/api/v1beta1/virtualmcpcompositetooldefinition_types.go`
 
 Composite tools orchestrate calls to multiple backend tools in sequence or parallel, enabling complex workflows without client awareness of the underlying backends. Workflow steps form a DAG (Directed Acyclic Graph) with support for conditional execution and error handling.
 
-**Referenced by**: VirtualMCPServer (via `spec.compositeToolRefs`)
+**Referenced by**: VirtualMCPServer (via `spec.config.compositeToolRefs`)
 
 **Status fields** track validation status and which VirtualMCPServers reference the definition.
 
@@ -414,6 +461,10 @@ For examples, see the [`examples/operator/`](../../examples/operator/) directory
 For complete examples of all CRDs, see the [`examples/operator/mcp-servers/`](../../examples/operator/mcp-servers/) directory.
 
 ## Operator Components
+
+### Entry Point
+
+The operator binary's `main` package delegates to `cmd/thv-operator/app/app.go`. `Run()` performs flag parsing, manager construction, and leader-election setup, then calls `setupControllersAndWebhooks`, which fans out to `setupServerControllers` (MCPServer, MCPRemoteProxy, MCPServerEntry, MCPGroup, and shared config CRDs), `setupRegistryController` (MCPRegistry), and `setupAggregationControllers` (VirtualMCPServer, VirtualMCPCompositeToolDefinition, EmbeddingServer). Webhooks are registered alongside their controllers.
 
 ### Controller
 
@@ -489,17 +540,16 @@ graph LR
 5. Apply middleware chain
 6. Forward traffic to StatefulSet pods
 
-**Command:**
-```bash
-thv-proxyrunner run
-```
+**Container invocation:**
+
+The operator sets `Container.Args` (not `Command`) on the proxy-runner Deployment. The image's default entrypoint runs the `thv-proxyrunner` binary; the operator passes `run` as the first argument, optionally followed by `--k8s-pod-patch=<json>` when the user supplied a `podTemplateSpec`, then the MCP image reference. See `deploymentForMCPServer` in `cmd/thv-operator/controllers/mcpserver_controller.go`.
 
 **Environment:**
 - `KUBERNETES_SERVICE_HOST` - Detects K8s environment
 - RunConfig path from mount
 - In-cluster Kubernetes client
 
-**Implementation**: `cmd/thv-proxyrunner/app/commands.go`
+**Implementation**: `cmd/thv-proxyrunner/app/commands.go` (cobra wiring), `cmd/thv-proxyrunner/app/run.go` (`run` command logic)
 
 ## Design Principles
 
@@ -543,7 +593,7 @@ spec:
 
 **Why**: Simple Phase + Ready condition + ReadyReplicas + URL, enables `kubectl wait --for=condition=Ready`
 
-**Implementation**: `cmd/thv-operator/controllers/mcpregistry_controller.go`
+**Implementation**: `cmd/thv-operator/pkg/controllerutil/status.go` (`MutateAndPatchStatus` merge-patch helper used by all CRD controllers)
 
 ## MCPRegistry Controller
 
@@ -552,84 +602,50 @@ spec:
 ```mermaid
 graph TB
     MCPReg[MCPRegistry CRD] --> Controller[Controller]
-    Controller --> Source[Source Handler]
+    Controller --> Manager[Registry API Manager]
 
-    Source -->|git| Git[Git Clone]
-    Source -->|configmap| CM[Read ConfigMap]
+    Manager --> CM[ConfigMap<br/>raw configYAML]
+    Manager --> SA[ServiceAccount + Role/RoleBinding]
+    Manager --> Deploy[Deployment<br/>thv-registry-api]
+    Manager --> SVC[Service]
 
-    Git --> Storage[Storage Manager]
-    CM --> Storage
+    Deploy -.mounts.-> CM
 
-    Storage --> ConfigMap[ConfigMap Storage]
-    Controller --> API[Registry API Service]
-
-    API --> Deploy[Deployment]
-    API --> SVC[Service]
+    Source[Registry source<br/>Git / file / DB] -->|fetched at runtime| Deploy
 
     style Controller fill:#5c6bc0
-    style Storage fill:#e3f2fd
-    style API fill:#ba68c8
+    style Manager fill:#e3f2fd
+    style Deploy fill:#ba68c8
 ```
 
-### Source Handlers
+The operator is intentionally thin: it materialises a Deployment, Service, ServiceAccount, RBAC, and a config ConfigMap. All registry-source logic (Git cloning, file watching, database access, refresh scheduling) lives in the registry-api server and is driven entirely by the `configYAML` the user supplies.
 
-**Git source**: `cmd/thv-operator/pkg/sources/git.go`
-- Clones repository
-- Reads registry.json
-- Calculates hash for change detection
+### Registry API Manager
 
-**ConfigMap source**: `cmd/thv-operator/pkg/sources/configmap.go`
-- Reads from existing ConfigMap
-- Watches for updates
+The MCPRegistry controller delegates workload management to a Manager that creates the ConfigMap, ServiceAccount, RBAC, Deployment, and Service for the registry-api server.
 
-**Storage Manager**: `cmd/thv-operator/pkg/sources/storage_manager.go`
-- Creates ConfigMap with key `registry.json` containing full registry data
-- Sync operations are handled by the registry server itself
+**Implementation entry point**: `cmd/thv-operator/pkg/registryapi/manager.go`
 
-**Interface**: `cmd/thv-operator/pkg/sources/types.go`
+Supporting files in `cmd/thv-operator/pkg/registryapi/`:
+- `deployment.go` — builds the registry-api Deployment
+- `service.go` — builds the Service
+- `rbac.go` — builds the ServiceAccount, Role, and RoleBinding
+- `podtemplatespec.go` — merges user-supplied `podTemplateSpec` into the generated PodSpec
+- `config/raw_config.go` — wraps the raw `configYAML` in a ConfigMap (no parsing)
 
-### Storage Manager
+### Config Delivery
 
-**Purpose**: Persist registry data in cluster
+The operator passes `spec.configYAML` verbatim into a ConfigMap (`<registry-name>-registry-server-config`) and mounts it at `/config/config.yaml`. A content-checksum annotation on the ConfigMap triggers Deployment rollouts when the YAML changes.
 
-**Implementation**: `cmd/thv-operator/pkg/sources/storage_manager.go`
-
-**Storage**: ConfigMap with owner reference
-
-**Format:**
 ```yaml
 data:
-  registry.json: |
-    { full registry data }
+  config.yaml: |
+    { raw user-supplied configYAML }
 ```
 
-Sync operations are handled by the registry server, not the operator.
+### Refresh Behavior
 
-### Sync Policy
-
-**Automatic sync:**
-```yaml
-spec:
-  syncPolicy:
-    interval: 1h
-```
-
-Operator syncs every hour. The presence of `syncPolicy` with an `interval` enables automatic synchronization.
-
-**Manual sync:**
-
-Omit the `syncPolicy` field entirely.
-
-Trigger: Add or update annotation `toolhive.stacklok.dev/sync-trigger=<unique-value>` where the value can be any non-empty string. The operator triggers sync when this value changes, allowing multiple manual syncs by using different values (e.g., timestamps, counters).
-
-### Registry API Service
-
-When enabled, operator creates:
-- Deployment running `thv-registry-api`
-- Service exposing API
-- ConfigMap mount with registry data
-
-**Implementation**: `cmd/thv-operator/pkg/registryapi/service.go`
+Refresh policy, source location, and credentials are all defined inside `configYAML` and interpreted by the registry-api server. The operator does not poll, schedule, or trigger registry syncs.
 
 ## Configuration References
 
@@ -640,7 +656,7 @@ The preferred approach is to define OIDC and telemetry settings in dedicated con
 **MCPOIDCConfig reference:**
 ```yaml
 # Define shared OIDC config once
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPOIDCConfig
 metadata:
   name: corporate-idp
@@ -665,7 +681,7 @@ spec:
 **MCPTelemetryConfig reference:**
 ```yaml
 # Define shared telemetry config once
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPTelemetryConfig
 metadata:
   name: shared-otel
@@ -713,4 +729,5 @@ spec:
 - [Core Concepts](02-core-concepts.md) - Operator concepts
 - [Registry System](06-registry-system.md) - MCPRegistry CRD
 - [Virtual MCP Server Architecture](10-virtual-mcp-architecture.md) - VirtualMCPServer details
+- [Transport Architecture](03-transport-architecture.md) - Transport and proxy setup the proxy-runner performs in-cluster
 - Operator Design: `cmd/thv-operator/DESIGN.md`

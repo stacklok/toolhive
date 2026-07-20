@@ -68,11 +68,13 @@ Detailed documentation of the ToolHive release workflow chain.
    - Version in commit message matches VERSION file
 3. Check if tag already exists (skip if so)
 4. Create annotated git tag `vX.Y.Z`
-5. Push tag using `RELEASE_TOKEN` (PAT required to trigger downstream workflows)
+5. Push tag using a GitHub App installation token (required to trigger downstream workflows; `GITHUB_TOKEN`-authored events do not)
 6. Create GitHub Release with auto-generated notes
 
 **Requirements**:
-- `RELEASE_TOKEN` secret (PAT with repo access)
+- GitHub App installed on the repo with `contents: write` permission
+- `RELEASE_APP_CLIENT_ID` repository **variable** (the app's Client ID)
+- `RELEASE_APP_PRIVATE_KEY` repository **secret** (the app's private key in PEM)
 
 ## Workflow 3: releaser.yml
 
@@ -162,7 +164,8 @@ If a previous Create Release PR run failed after creating the branch but before 
 ### Tag creation fails
 
 - Tag may already exist: `git tag | grep vX.Y.Z`
-- RELEASE_TOKEN may be expired or lack permissions
+- Release GitHub App may be uninstalled, or the `RELEASE_APP_CLIENT_ID` variable / `RELEASE_APP_PRIVATE_KEY` secret may be missing or stale
+- App may lack `contents: write` permission on the repo
 
 ### Releaser workflow fails
 

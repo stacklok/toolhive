@@ -20,7 +20,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi/config"
 )
@@ -78,9 +78,9 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 	DescribeTable("Registry Server Config Creation for Different Sources",
 		func(
 			registryName string,
-			setupRegistry func() *mcpv1alpha1.MCPRegistry,
+			setupRegistry func() *mcpv1beta1.MCPRegistry,
 			expectedConfigContent map[string]string,
-			verifySourceVolume func(*appsv1.Deployment, *mcpv1alpha1.MCPRegistry),
+			verifySourceVolume func(*appsv1.Deployment, *mcpv1beta1.MCPRegistry),
 		) {
 			By("creating an MCPRegistry resource")
 			registry := setupRegistry()
@@ -131,15 +131,15 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 			// In envtest, the deployment won't actually be ready, so expect Pending phase
 			// but verify that sync is complete and API deployment is in progress
 			Expect(registry.Status.Phase).To(BeElementOf(
-				mcpv1alpha1.MCPRegistryPhasePending, // API deployment in progress
-				mcpv1alpha1.MCPRegistryPhaseReady,   // If somehow API becomes ready
+				mcpv1beta1.MCPRegistryPhasePending, // API deployment in progress
+				mcpv1beta1.MCPRegistryPhaseReady,   // If somehow API becomes ready
 			))
 
 			// Verify ObservedGeneration is set after reconciliation
 			Expect(registry.Status.ObservedGeneration).To(Equal(registry.Generation))
 
 			// Verify phase and URL
-			if registry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseReady {
+			if registry.Status.Phase == mcpv1beta1.MCPRegistryPhaseReady {
 				Expect(registry.Status.URL).To(Equal(fmt.Sprintf("http://%s.%s.svc.cluster.local:8080", apiResourceName, testNamespace)))
 			}
 
@@ -180,7 +180,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 
 		Entry("ConfigMap Source",
 			"test-config-registry",
-			func() *mcpv1alpha1.MCPRegistry {
+			func() *mcpv1beta1.MCPRegistry {
 				configMap := configMapHelper.CreateSampleToolHiveRegistry("test-config")
 				return registryHelper.NewRegistryBuilder("test-config-registry").
 					WithConfigMapSource(configMap.Name, "registry.json").
@@ -193,7 +193,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				"path":     "/config/registry/default/registry.json",
 				"interval": "1h",
 			},
-			func(deployment *appsv1.Deployment, registry *mcpv1alpha1.MCPRegistry) {
+			func(deployment *appsv1.Deployment, registry *mcpv1beta1.MCPRegistry) {
 				// ConfigMap sources need the source data volume
 				testHelpers.verifySourceDataVolume(deployment, registry)
 			},
@@ -201,7 +201,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 
 		Entry("Git Source",
 			"test-git-registry",
-			func() *mcpv1alpha1.MCPRegistry {
+			func() *mcpv1beta1.MCPRegistry {
 				return registryHelper.NewRegistryBuilder("test-git-registry").
 					WithGitSource(
 						"https://github.com/mcp-servers/example-registry.git",
@@ -217,7 +217,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				"interval":   "2h",
 			},
 
-			func(deployment *appsv1.Deployment, _ *mcpv1alpha1.MCPRegistry) {
+			func(deployment *appsv1.Deployment, _ *mcpv1beta1.MCPRegistry) {
 				// Git sources should NOT have the source data volume
 				testHelpers.verifyNoSourceDataVolume(deployment, "Git")
 			},
@@ -225,7 +225,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 
 		Entry("API Source",
 			"test-api-registry",
-			func() *mcpv1alpha1.MCPRegistry {
+			func() *mcpv1beta1.MCPRegistry {
 				return registryHelper.NewRegistryBuilder("test-api-registry").
 					WithAPISource("http://registry-api.default.svc.cluster.local:8080/api").
 					WithSyncPolicy("30m").
@@ -235,7 +235,7 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				"endpoint": "http://registry-api.default.svc.cluster.local:8080/api",
 				"interval": "30m",
 			},
-			func(deployment *appsv1.Deployment, _ *mcpv1alpha1.MCPRegistry) {
+			func(deployment *appsv1.Deployment, _ *mcpv1beta1.MCPRegistry) {
 				// API sources should NOT have the source data volume
 				testHelpers.verifyNoSourceDataVolume(deployment, "API")
 			},
@@ -374,12 +374,12 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				})},
 			}
 
-			registry := &mcpv1alpha1.MCPRegistry{
+			registry := &mcpv1beta1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "multi-cm-volumes-test",
 					Namespace: testNamespace,
 				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
+				Spec: mcpv1beta1.MCPRegistrySpec{
 					ConfigYAML:   configYAML,
 					Volumes:      volumes,
 					VolumeMounts: volumeMounts,
@@ -544,12 +544,12 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				ReadOnly:  true,
 			}
 
-			registry := &mcpv1alpha1.MCPRegistry{
+			registry := &mcpv1beta1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "git-auth-test",
 					Namespace: testNamespace,
 				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
+				Spec: mcpv1beta1.MCPRegistrySpec{
 					ConfigYAML:   gitConfigYAML,
 					Volumes:      []apiextensionsv1.JSON{{Raw: mustMarshalJSON(secretVol)}},
 					VolumeMounts: []apiextensionsv1.JSON{{Raw: mustMarshalJSON(secretMount)}},
@@ -672,12 +672,12 @@ var _ = Describe("MCPRegistry Server Config (Consolidated)", Label("k8s", "regis
 				})},
 			}
 
-			registry := &mcpv1alpha1.MCPRegistry{
+			registry := &mcpv1beta1.MCPRegistry{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "multi-git-auth-test",
 					Namespace: testNamespace,
 				},
-				Spec: mcpv1alpha1.MCPRegistrySpec{
+				Spec: mcpv1beta1.MCPRegistrySpec{
 					ConfigYAML:   multiGitConfigYAML,
 					Volumes:      volumes,
 					VolumeMounts: volumeMounts,
@@ -896,7 +896,7 @@ func (*serverConfigTestHelpers) verifyContainerArguments(deployment *appsv1.Depl
 }
 
 // verifyConfigMapOwnership verifies the ConfigMap is owned by the MCPRegistry
-func (*serverConfigTestHelpers) verifyConfigMapOwnership(configMap *corev1.ConfigMap, registry *mcpv1alpha1.MCPRegistry) {
+func (*serverConfigTestHelpers) verifyConfigMapOwnership(configMap *corev1.ConfigMap, registry *mcpv1beta1.MCPRegistry) {
 	Expect(configMap.OwnerReferences).To(HaveLen(1))
 	Expect(configMap.OwnerReferences[0].Kind).To(Equal("MCPRegistry"))
 	Expect(configMap.OwnerReferences[0].Name).To(Equal(registry.Name))
@@ -931,7 +931,7 @@ func (*serverConfigTestHelpers) verifyNoSourceDataVolume(deployment *appsv1.Depl
 
 // verifySourceDataVolume verifies the source data ConfigMap volume for ConfigMap sources
 // by checking the user-provided Volumes/VolumeMounts on the registry spec.
-func (*serverConfigTestHelpers) verifySourceDataVolume(deployment *appsv1.Deployment, registry *mcpv1alpha1.MCPRegistry) {
+func (*serverConfigTestHelpers) verifySourceDataVolume(deployment *appsv1.Deployment, registry *mcpv1beta1.MCPRegistry) {
 	// Parse volumes from the registry spec to understand expected volume configuration
 	userVolumes, err := registry.Spec.ParseVolumes()
 	Expect(err).NotTo(HaveOccurred())
@@ -1020,17 +1020,17 @@ func (h *serverConfigTestHelpers) verifyPodTemplateValidCondition(registryName s
 		if err != nil {
 			return false
 		}
-		condition := meta.FindStatusCondition(updatedRegistry.Status.Conditions, mcpv1alpha1.ConditionPodTemplateValid)
+		condition := meta.FindStatusCondition(updatedRegistry.Status.Conditions, mcpv1beta1.ConditionPodTemplateValid)
 		if condition == nil {
 			return false
 		}
 
 		if expectedValid {
 			return condition.Status == metav1.ConditionTrue &&
-				condition.Reason == mcpv1alpha1.ConditionReasonPodTemplateValid
+				condition.Reason == mcpv1beta1.ConditionReasonPodTemplateValid
 		}
 		return condition.Status == metav1.ConditionFalse &&
-			condition.Reason == mcpv1alpha1.ConditionReasonPodTemplateInvalid
+			condition.Reason == mcpv1beta1.ConditionReasonPodTemplateInvalid
 	}, MediumTimeout, DefaultPollingInterval).Should(BeTrue(),
 		fmt.Sprintf("PodTemplateValid condition should be %v", expectedValid))
 }
@@ -1042,7 +1042,7 @@ func (h *serverConfigTestHelpers) verifyRegistryFailedWithInvalidPodTemplate(reg
 		if err != nil {
 			return false
 		}
-		return updatedRegistry.Status.Phase == mcpv1alpha1.MCPRegistryPhaseFailed &&
+		return updatedRegistry.Status.Phase == mcpv1beta1.MCPRegistryPhaseFailed &&
 			strings.Contains(updatedRegistry.Status.Message, "Invalid PodTemplateSpec")
 	}, MediumTimeout, DefaultPollingInterval).Should(BeTrue(),
 		"MCPRegistry should be in Failed phase with Invalid PodTemplateSpec message")

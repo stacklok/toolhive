@@ -36,13 +36,14 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
-	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
+	authfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
 	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
+	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
 	"github.com/stacklok/toolhive/pkg/vmcp/config"
-	"github.com/stacklok/toolhive/pkg/vmcp/discovery"
 	"github.com/stacklok/toolhive/pkg/vmcp/health"
 	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
+	ratelimitfactory "github.com/stacklok/toolhive/pkg/vmcp/ratelimit/factory"
 	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
@@ -68,6 +69,10 @@ type ServeConfig struct {
 	// EnableAudit enables audit logging with default configuration when
 	// the loaded config does not already define an audit section.
 	EnableAudit bool
+
+	// SessionTTL is the inactivity timeout for vMCP sessions.
+	// Zero uses the server default (30m). Negative values fail validation.
+	SessionTTL time.Duration
 
 	// Optimizer tier selection (Phase 4 — flag-driven).
 	// EnableOptimizer enables Tier 1 FTS5 keyword search (find_tool / call_tool).
@@ -113,6 +118,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	if err := cfg.validateQuickModeHost(); err != nil {
 		return err
 	}
+	if cfg.SessionTTL < 0 {
+		return fmt.Errorf("session-ttl must be non-negative, got %s", cfg.SessionTTL)
+	}
 
 	// Load and validate configuration — file path takes precedence over group quick mode.
 	vmcpCfg, err := func() (*config.Config, error) {
@@ -146,9 +154,11 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		}
 	}
 
-	// Auto-populate SubjectProviderName on any token_exchange strategy that
+	// Auto-populate SubjectProviderName on backend auth strategies that
 	// omitted it when an embedded auth server is active.
-	config.InjectSubjectProviderNames(vmcpCfg, authServerRC)
+	if err := config.InjectSubjectProviderNames(vmcpCfg, authServerRC); err != nil {
+		return fmt.Errorf("failed to default outgoing auth subject provider names: %w", err)
+	}
 
 	// Construct embedded authorization server if configured.
 	var embeddedAuthServer *authserverrunner.EmbeddedAuthServer
@@ -201,11 +211,6 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	// DynamicRegistry tracks backends for dynamic discovery in Kubernetes mode.
 	dynamicRegistry := vmcp.NewDynamicRegistry(backends)
 	backendRegistry := vmcp.BackendRegistry(dynamicRegistry)
-
-	discoveryMgr, err := discovery.NewManager(agg)
-	if err != nil {
-		return fmt.Errorf("failed to create discovery manager: %w", err)
-	}
 	slog.Info("dynamic backend registry enabled for Kubernetes environment")
 
 	// Backend watcher for dynamic backend discovery.
@@ -240,10 +245,20 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		slog.Info("kubernetes backend watcher started for dynamic backend discovery")
 	}
 
-	// Create router.
-	rtr := vmcprouter.NewDefaultRouter()
+	// Workflow validation in core.New needs a non-nil Router, but the core routes per-call
+	// via NewSessionRouter and validation does not route — so an empty session router suffices.
+	rtr := vmcprouter.NewSessionRouter(&vmcp.RoutingTable{})
 
 	slog.Info(fmt.Sprintf("Setting up incoming authentication (type: %s)", vmcpCfg.IncomingAuth.Type))
+
+	if vmcpCfg.IncomingAuth.Type == config.IncomingAuthTypeAnonymous {
+		slog.Warn(
+			"vMCP is configured with anonymous incoming auth; all anonymous sessions share a single sentinel binding, "+
+				"so possession of a session ID is sufficient to act as that session from any source. "+
+				"Anonymous mode is intended for development only.",
+			"incoming_auth_type", config.IncomingAuthTypeAnonymous,
+		)
+	}
 
 	// Configure health monitoring if enabled.
 	var healthMonitorConfig *health.MonitorConfig
@@ -329,18 +344,16 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	envReader := &env.OSReader{}
-	sessionFactory, err := createSessionFactory(
-		envReader.Getenv("VMCP_SESSION_HMAC_SECRET"),
-		runtime.IsKubernetesRuntimeWithEnv(envReader),
-		outgoingRegistry,
-		agg,
-	)
-	if err != nil {
-		return err
+	if hmacSecret := envReader.Getenv("VMCP_SESSION_HMAC_SECRET"); hmacSecret != "" {
+		slog.Debug("VMCP_SESSION_HMAC_SECRET is set but no longer used after #5306; ignoring",
+			"env_var", "VMCP_SESSION_HMAC_SECRET")
 	}
+	// The factory never aggregates — the core is the single source of capability
+	// aggregation (agg feeds it via Config.Aggregator below).
+	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry)
 
-	// When the optimizer is enabled, its meta-tools must pass through the authz
-	// response filter so they appear in tools/list.
+	// When the optimizer is enabled, its meta-tools are pass-through tools.
+	// Authz uses this for optimizer-aware authorization/filtering.
 	var passThroughTools map[string]struct{}
 	if optCfg != nil {
 		passThroughTools = map[string]struct{}{
@@ -360,22 +373,58 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	authMiddleware, authzMiddleware, authInfoHandler, err :=
-		factory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, passThroughTools, upstreamReader, keyProvider)
+		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools, upstreamReader, keyProvider)
 	if err != nil {
 		return fmt.Errorf("failed to create authentication middleware: %w", err)
 	}
 
+	// Build the authorizer-agnostic authz config the core admission seam consumes. It is
+	// the same config the HTTP authz middleware above is built from; server.New routes
+	// through Serve, which ignores the (vestigial) AuthzMiddleware and enforces authz in
+	// the core from this config instead. Nil when no Cedar policies are configured
+	// (allow-all parity).
+	authzConfig, err := authfactory.BuildAuthzConfig(vmcpCfg.IncomingAuth.Authz)
+	if err != nil {
+		return fmt.Errorf("failed to build authorization config: %w", err)
+	}
+
 	slog.Info(fmt.Sprintf("Incoming authentication configured: %s", vmcpCfg.IncomingAuth.Type))
 
-	serverCfg := &vmcpserver.Config{
+	namespace := vmcpNamespace()
+	rateLimiter, rateLimitCleanup, err := ratelimitfactory.NewLimiter(ctx, ratelimitfactory.Config{
+		Namespace:      namespace,
+		ServerName:     vmcpCfg.Name,
+		RateLimiting:   vmcpCfg.RateLimiting,
+		SessionStorage: vmcpCfg.SessionStorage,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create rate limiter: %w", err)
+	}
+	if rateLimitCleanup != nil {
+		defer func() {
+			if closeErr := rateLimitCleanup(context.Background()); closeErr != nil {
+				slog.Error(fmt.Sprintf("failed to close rate limiter: %v", closeErr))
+			}
+		}()
+	}
+
+	// Resolve transport defaults once here at the composition root: the
+	// vMCP config edge is the single place flags/CRD/YAML become a fully-resolved
+	// Config, so server.New, Serve, and the derive* helpers downstream are pure
+	// pass-through. WithDefaults fills any unset Host/EndpointPath/SessionTTL/Name/
+	// Version (EndpointPath in particular is never set by the CLI).
+	serverCfg := vmcpserver.WithDefaults(&vmcpserver.Config{
 		Name:                    vmcpCfg.Name,
 		Version:                 versions.Version,
 		GroupRef:                vmcpCfg.Group,
 		Host:                    cfg.Host,
 		Port:                    cfg.Port,
+		SessionTTL:              cfg.SessionTTL,
 		AuthMiddleware:          authMiddleware,
 		AuthzMiddleware:         authzMiddleware,
 		AuthInfoHandler:         authInfoHandler,
+		PassthroughHeaders:      vmcpCfg.PassthroughHeaders,
+		RateLimiter:             rateLimiter,
 		AuthServer:              embeddedAuthServer,
 		TelemetryProvider:       telemetryProvider,
 		AuditConfig:             vmcpCfg.Audit,
@@ -384,9 +433,15 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		Watcher:                 nil, // set below if backendWatcher is non-nil
 		StatusReporter:          statusReporter,
 		OptimizerConfig:         optCfg,
+		CodeModeConfig:          codemode.FromConfig(vmcpCfg.CodeMode),
 		SessionFactory:          sessionFactory,
 		SessionStorage:          vmcpCfg.SessionStorage,
-	}
+		// Core collaborators: server.New routes through core.New + Serve, so the core
+		// is the single aggregator and authorizer. The aggregator is the same instance
+		// that backs discovery; Authz feeds the core admission seam (nil = allow-all).
+		Aggregator: agg,
+		Authz:      authzConfig,
+	})
 
 	// Assign Watcher only when backendWatcher is non-nil. A typed nil
 	// *k8s.BackendWatcher assigned to the Watcher interface produces a
@@ -404,8 +459,8 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		slog.Info(fmt.Sprintf("Loaded %d composite tool workflow definitions", len(workflowDefs)))
 	}
 
-	// Create server with discovery manager, backend registry, and workflow definitions.
-	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, discoveryMgr, backendRegistry, workflowDefs)
+	// Create server with the backend registry and workflow definitions.
+	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, backendRegistry, workflowDefs)
 	if err != nil {
 		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
 	}
@@ -521,6 +576,14 @@ func generateQuickModeConfig(groupRef string) (*config.Config, error) {
 	return cfg, nil
 }
 
+func vmcpNamespace() string {
+	namespace := os.Getenv("VMCP_NAMESPACE")
+	if namespace == "" {
+		return "local"
+	}
+	return namespace
+}
+
 // loadAuthServerConfig loads the auth server RunConfig from a sibling file
 // alongside the main config. The operator serializes authserver.RunConfig as a
 // separate ConfigMap key (authserver-config.yaml).
@@ -552,7 +615,7 @@ func discoverBackends(
 ) ([]vmcp.Backend, vmcp.BackendClient, vmcpauth.OutgoingAuthRegistry, error) {
 	slog.Info("initializing outgoing authentication")
 	envReader := &env.OSReader{}
-	outgoingRegistry, err := factory.NewOutgoingAuthRegistry(ctx, envReader)
+	outgoingRegistry, err := authfactory.NewOutgoingAuthRegistry(ctx, envReader)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
 	}
@@ -566,10 +629,21 @@ func discoverBackends(
 	if len(cfg.Backends) > 0 {
 		// Static mode: use pre-configured backends from config.
 		slog.Info(fmt.Sprintf("Static mode: using %d pre-configured backends", len(cfg.Backends)))
+
+		// Reconstruct per-backend HeaderForwardConfig from env vars the
+		// operator emitted on this pod. Plaintext header values are inline
+		// in the JSON manifest; secret-backed headers carry only identifiers
+		// here and resolve later via secrets.EnvironmentProvider at request
+		// time. Map keys are the normalized entry segment from the env-var
+		// suffix; the discoverer normalizes Backend.Name through
+		// ctrlutil.NormalizeHeaderForEnvVar to look up the matching entry.
+		// Returns an empty map when no entry in the group declared
+		// headerForward — the common case.
 		discoverer = aggregator.NewUnifiedBackendDiscovererWithStaticBackends(
 			cfg.Backends,
 			cfg.OutgoingAuth,
 			cfg.Group,
+			readHeaderForwardFromEnv(os.Environ()),
 		)
 	} else {
 		// Dynamic mode: discover backends at runtime from the active workload manager (K8s or local).
@@ -624,53 +698,4 @@ func runDiscovery(
 
 	slog.Info(fmt.Sprintf("Discovered %d backends", len(backends)))
 	return backends, backendClient, outgoingRegistry, nil
-}
-
-// createSessionFactory creates a MultiSessionFactory with HMAC-SHA256 token binding.
-// The HMAC secret and Kubernetes detection are passed in as parameters (typically sourced
-// from the VMCP_SESSION_HMAC_SECRET environment variable and runtime environment detection
-// by the caller).
-//
-// Behavior:
-//   - If hmacSecret is non-empty: validates length and creates factory with the secret.
-//   - If running in Kubernetes without secret: returns error (production safety requirement).
-//   - Otherwise: logs warning and creates factory with default insecure secret.
-func createSessionFactory(
-	hmacSecret string,
-	isKubernetes bool,
-	outgoingRegistry vmcpauth.OutgoingAuthRegistry,
-	agg aggregator.Aggregator,
-) (vmcpsession.MultiSessionFactory, error) {
-	const minRecommendedSecretLen = 32
-
-	opts := []vmcpsession.MultiSessionFactoryOption{}
-	if agg != nil {
-		opts = append(opts, vmcpsession.WithAggregator(agg))
-	}
-
-	if hmacSecret != "" {
-		if secretLen := len(hmacSecret); secretLen < minRecommendedSecretLen {
-			// G706: Safe - only logging integer length, not the secret itself.
-			slog.Warn( //nolint:gosec
-				"HMAC secret is shorter than recommended length - consider using a longer secret",
-				"actual_length", secretLen,
-				"recommended_length", minRecommendedSecretLen,
-			)
-		}
-		slog.Info("using provided HMAC secret for session token binding")
-		opts = append(opts, vmcpsession.WithHMACSecret([]byte(hmacSecret)))
-		return vmcpsession.NewSessionFactory(outgoingRegistry, opts...), nil
-	}
-
-	// No secret provided — fail fast in Kubernetes (production environment).
-	if isKubernetes {
-		return nil, fmt.Errorf(
-			"an HMAC secret is required when running in Kubernetes (set VMCP_SESSION_HMAC_SECRET). " +
-				"Generate a secure secret with: openssl rand -base64 32",
-		)
-	}
-
-	// Development mode: use default insecure secret with warning.
-	slog.Warn("no HMAC secret provided - using default insecure secret (NOT recommended for production)")
-	return vmcpsession.NewSessionFactory(outgoingRegistry, opts...), nil
 }

@@ -12,7 +12,6 @@ import (
 	"fmt"
 
 	"gopkg.in/yaml.v3"
-	"k8s.io/apimachinery/pkg/runtime"
 )
 
 // Data stores JSON-compatible data of type T. It supports both JSON and YAML
@@ -132,6 +131,7 @@ func (d *Data[T]) DeepCopy() *Data[T] {
 // Any is a type alias for Data[any], storing arbitrary JSON values.
 // This is the most flexible type, suitable when the JSON structure is unknown.
 //
+// +gendoc
 // +kubebuilder:pruning:PreserveUnknownFields
 // +kubebuilder:validation:Type=object
 type Any = Data[any]
@@ -139,14 +139,10 @@ type Any = Data[any]
 // Map is a type alias for Data[map[string]any], storing JSON objects.
 // Use this when you know the data will always be a JSON object (not array, string, etc.).
 //
+// +gendoc
 // +kubebuilder:pruning:PreserveUnknownFields
 // +kubebuilder:validation:Type=object
 type Map = Data[map[string]any]
-
-// NewData creates a Data[T] from a value.
-func NewData[T any](v T) Data[T] {
-	return Data[T]{Value: v}
-}
 
 // NewAny creates an Any (Data[any]) from a value.
 // This is a convenience function for tests and programmatic use.
@@ -157,42 +153,6 @@ func NewAny(v any) Any {
 // NewMap creates a Map (Data[map[string]any]) from a map.
 func NewMap(m map[string]any) Map {
 	return Map{Value: m}
-}
-
-// MustParse parses a JSON string into an Any.
-// This is a convenience function for tests. Panics if parsing fails.
-func MustParse(jsonStr string) Any {
-	var v any
-	if err := stdjson.Unmarshal([]byte(jsonStr), &v); err != nil {
-		panic(fmt.Sprintf("json.MustParse: failed to parse JSON: %v", err))
-	}
-	return Any{Value: v}
-}
-
-// FromRawExtension creates an Any from runtime.RawExtension.
-// Returns an error if the JSON cannot be unmarshaled.
-func FromRawExtension(ext runtime.RawExtension) (Any, error) {
-	if len(ext.Raw) == 0 {
-		return Any{}, nil
-	}
-	var v any
-	if err := stdjson.Unmarshal(ext.Raw, &v); err != nil {
-		return Any{}, fmt.Errorf("failed to unmarshal RawExtension: %w", err)
-	}
-	return Any{Value: v}, nil
-}
-
-// MapFromRawExtension creates a Map from runtime.RawExtension.
-// Returns an error if the JSON cannot be unmarshaled.
-func MapFromRawExtension(ext runtime.RawExtension) (Map, error) {
-	if len(ext.Raw) == 0 {
-		return Map{}, nil
-	}
-	var v map[string]any
-	if err := stdjson.Unmarshal(ext.Raw, &v); err != nil {
-		return Map{}, fmt.Errorf("failed to unmarshal RawExtension as map: %w", err)
-	}
-	return Map{Value: v}, nil
 }
 
 // ToMap returns the data as a map[string]any.

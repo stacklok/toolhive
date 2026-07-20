@@ -182,7 +182,7 @@ spec:
 
     - patch:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: VirtualMCPServer
           metadata:
             name: test-vmcp-controller

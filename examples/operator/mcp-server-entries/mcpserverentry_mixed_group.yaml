@@ -5,7 +5,7 @@
 # both types transparently.
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: engineering-team
@@ -15,7 +15,7 @@ spec:
 
 ---
 # Local container-based MCP server
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: github-mcp
@@ -28,7 +28,7 @@ spec:
 
 ---
 # Remote MCP server (no pods deployed)
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServerEntry
 metadata:
   name: context7
@@ -41,7 +41,7 @@ spec:
 
 ---
 # VirtualMCPServer aggregates both backends
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: eng-tools

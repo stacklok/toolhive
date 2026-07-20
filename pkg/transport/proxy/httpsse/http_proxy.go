@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -22,12 +23,22 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/ssecommon"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
+
+// defaultReadTimeout bounds reading the entire request (headers + body) on the
+// proxy http.Server, mitigating slow-upload connection exhaustion. It does not
+// affect SSE responses, which stream on the response side. Matches the vMCP
+// server default. WriteTimeout is intentionally not set: it would sever
+// long-lived SSE response streams, and the request-read side (the DoS vector) is
+// already bounded by ReadTimeout.
+const defaultReadTimeout = 30 * time.Second
 
 // Proxy defines the interface for proxying messages between clients and destinations.
 type Proxy interface {
@@ -73,6 +84,26 @@ type HTTPSSEProxy struct {
 
 	// Session manager for SSE clients
 	sessionManager *session.Manager
+
+	// sessionTTL is the resolved inactivity timeout for the session manager.
+	// Defaults to session.DefaultSessionTTL; overridable via WithSessionTTL.
+	sessionTTL time.Duration
+
+	// readTimeout is the resolved http.Server.ReadTimeout for this proxy.
+	// Defaults to defaultReadTimeout; overridable via WithReadTimeout.
+	readTimeout time.Duration
+
+	// sessionStorage is the optional custom storage backend for the session manager.
+	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
+	sessionStorage session.Storage
+
+	// authInfoHandler is the optional RFC 9728 OAuth protected resource discovery handler.
+	// When nil, /.well-known/ returns a clean JSON 404. Set via WithAuthInfoHandler.
+	authInfoHandler http.Handler
+
+	// prefixHandlers contains additional HTTP handlers mounted outside the middleware chain.
+	// Keys are URL path prefixes. Set via WithPrefixHandlers.
+	prefixHandlers map[string]http.Handler
 
 	// liveSSESessions tracks active SSE connections local to this instance.
 	// Keys are clientID strings; values are *session.SSESession.
@@ -121,11 +152,46 @@ func WithSessionStorage(storage session.Storage) Option {
 		if storage == nil {
 			return
 		}
-		if p.sessionManager != nil {
-			_ = p.sessionManager.Stop()
+		p.sessionStorage = storage
+	}
+}
+
+// WithSessionTTL overrides the session inactivity timeout used by this proxy.
+// Zero or negative values are ignored so the constructor's default is preserved.
+func WithSessionTTL(ttl time.Duration) Option {
+	return func(p *HTTPSSEProxy) {
+		if ttl <= 0 {
+			return
 		}
-		sseFactory := func(id string) session.Session { return session.NewSSESession(id) }
-		p.sessionManager = session.NewManagerWithStorage(session.DefaultSessionTTL, sseFactory, storage)
+		p.sessionTTL = ttl
+	}
+}
+
+// WithReadTimeout overrides http.Server.ReadTimeout for this proxy, which bounds
+// reading the entire request (headers + body). Zero or negative values are
+// ignored so the constructor's default (defaultReadTimeout) is preserved.
+func WithReadTimeout(d time.Duration) Option {
+	return func(p *HTTPSSEProxy) {
+		if d <= 0 {
+			return
+		}
+		p.readTimeout = d
+	}
+}
+
+// WithAuthInfoHandler sets the RFC 9728 OAuth protected resource discovery handler.
+// When nil (the default), requests to /.well-known/ return a clean JSON 404.
+func WithAuthInfoHandler(h http.Handler) Option {
+	return func(p *HTTPSSEProxy) {
+		p.authInfoHandler = h
+	}
+}
+
+// WithPrefixHandlers sets additional HTTP handlers that are mounted outside the
+// middleware chain, keyed by URL path prefix.
+func WithPrefixHandlers(handlers map[string]http.Handler) Option {
+	return func(p *HTTPSSEProxy) {
+		p.prefixHandlers = maps.Clone(handlers)
 	}
 }
 
@@ -138,11 +204,6 @@ func NewHTTPSSEProxy(
 	middlewares []types.NamedMiddleware,
 	opts ...Option,
 ) *HTTPSSEProxy {
-	// Create a factory for SSE sessions
-	sseFactory := func(id string) session.Session {
-		return session.NewSSESession(id)
-	}
-
 	proxy := &HTTPSSEProxy{
 		middlewares:       middlewares,
 		host:              host,
@@ -150,13 +211,22 @@ func NewHTTPSSEProxy(
 		trustProxyHeaders: trustProxyHeaders,
 		shutdownCh:        make(chan struct{}),
 		messageCh:         make(chan jsonrpc2.Message, 100),
-		sessionManager:    session.NewManager(session.DefaultSessionTTL, sseFactory),
+		sessionTTL:        session.DefaultSessionTTL,
+		readTimeout:       defaultReadTimeout,
 		pendingMessages:   []*ssecommon.PendingSSEMessage{},
 		prometheusHandler: prometheusHandler,
 	}
 
 	for _, opt := range opts {
 		opt(proxy)
+	}
+
+	// Construct the session manager once, after options have resolved sessionTTL and sessionStorage.
+	sseFactory := func(id string) session.Session { return session.NewSSESession(id) }
+	if proxy.sessionStorage != nil {
+		proxy.sessionManager = session.NewManagerWithStorage(proxy.sessionTTL, sseFactory, proxy.sessionStorage)
+	} else {
+		proxy.sessionManager = session.NewManager(proxy.sessionTTL, sseFactory)
 	}
 
 	// Create MCP pinger and health checker
@@ -180,9 +250,27 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	// Create a new HTTP server
 	mux := http.NewServeMux()
 
+	// Mount prefix handlers (e.g. embedded auth server routes) outside the middleware chain.
+	// RFC 9728 requires discovery endpoints to be reachable without authentication.
+	for prefix, h := range p.prefixHandlers {
+		mux.Handle(prefix, h)
+		slog.Debug("mounted prefix handler", "prefix", prefix)
+	}
+
+	// Mount RFC 9728 OAuth protected resource discovery endpoint (no middlewares).
+	// Always register so OAuth discovery gets a clean JSON 404 when auth is off.
+	wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler)
+	mux.Handle("/.well-known/", wellKnownHandler)
+	if p.authInfoHandler != nil {
+		slog.Debug("rfc 9728 OAuth discovery endpoint enabled at /.well-known/oauth-protected-resource")
+	}
+
 	// Add handlers for SSE and JSON-RPC with middlewares
 	// At some point we should add support for Streamable HTTP transport here
 	// https://modelcontextprotocol.io/specification/2025-03-26/basic/transports#streamable-http
+	// The SSE endpoint serves a long-lived GET stream. No http.Server.WriteTimeout
+	// is set on this proxy, so the stream is not bounded on the write side; the
+	// request-read phase is bounded by ReadTimeout.
 	mux.Handle(ssecommon.HTTPSSEEndpoint, applyMiddlewares(
 		http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if r.Method != http.MethodGet {
@@ -221,6 +309,7 @@ func (p *HTTPSSEProxy) Start(_ context.Context) error {
 	p.server = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second, // Prevent Slowloris attacks
+		ReadTimeout:       p.readTimeout,    // Bound slow body uploads
 	}
 
 	// Store the actual address
@@ -355,7 +444,10 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("Access-Control-Allow-Origin", "*")
+	// CORS headers deliberately omitted: the origin middleware
+	// (pkg/transport/middleware/origin) enforces Origin validation per
+	// MCP 2025-11-25 §"Security Warning". Reflecting Origin or emitting
+	// `*` here would bypass that protection.
 
 	// Create a unique client ID
 	clientID := uuid.New().String()
@@ -429,7 +521,9 @@ func (p *HTTPSSEProxy) handleSSEConnection(w http.ResponseWriter, r *http.Reques
 			}
 			flusher.Flush()
 		case <-keepAliveTicker.C:
-			// Send SSE comment as keep-alive
+			// Refresh session TTL while the SSE socket is open so the cleanup
+			// goroutine does not evict clients that haven't sent a POST recently.
+			p.sessionManager.Get(clientID)
 			if _, err := fmt.Fprint(w, ": keep-alive\n\n"); err != nil {
 				slog.Debug("failed to write keep-alive", "error", err)
 				return
@@ -475,6 +569,13 @@ func (p *HTTPSSEProxy) handlePostRequest(w http.ResponseWriter, r *http.Request)
 	// Read the request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		// A body that exceeds the configured limit without a Content-Length
+		// (e.g. chunked) trips http.MaxBytesReader here rather than at the
+		// early Content-Length check. Surface it as 413, not 500.
+		if bodylimit.IsRequestTooLarge(err) {
+			http.Error(w, "Request Entity Too Large", http.StatusRequestEntityTooLarge)
+			return
+		}
 		http.Error(w, fmt.Sprintf("Error reading request body: %v", err), http.StatusInternalServerError)
 		return
 	}

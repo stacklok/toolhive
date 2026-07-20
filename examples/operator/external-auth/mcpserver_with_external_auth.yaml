@@ -1,6 +1,6 @@
 # MCPServer with external authentication configuration
 # This example shows how to configure an MCP server to use external authentication
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: fetch-with-auth

@@ -50,7 +50,7 @@ The `--format k8s` option automatically converts to MCPServer CRD format.
 Review the exported YAML and make any necessary adjustments:
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: my-server
@@ -163,7 +163,7 @@ Create an MCPGroup to organize the backends:
 
 ```yaml
 # mcp-group.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: my-services
@@ -178,7 +178,7 @@ Add `groupRef` to each exported MCPServer:
 
 ```yaml
 # github.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: github
@@ -200,7 +200,7 @@ Create a VirtualMCPServer to aggregate the backends:
 
 ```yaml
 # virtual-mcp-server.yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: my-vmcp
@@ -341,8 +341,8 @@ The preferred approach is to create a shared `MCPOIDCConfig` resource and refere
 See example configurations:
 
 - [mcpserver_with_oidcconfig_ref.yaml](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml) — Shared MCPOIDCConfig (preferred)
-- [mcpserver_with_inline_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_inline_oidc.yaml) — Inline OIDC (deprecated)
-- [mcpserver_with_kubernetes_oidc.yaml](../../examples/operator/mcp-servers/mcpserver_with_kubernetes_oidc.yaml) — Kubernetes SA OIDC (deprecated inline variant)
+
+Inline OIDC and Kubernetes SA OIDC variants were deprecated and removed; use `MCPOIDCConfig` references instead.
 
 #### Scenario 3: Grouped Servers (CLI) → VirtualMCPServer (K8s)
 
@@ -362,7 +362,7 @@ thv export backend2 ./backend2.yaml --format k8s
 
 # Create manifests (add groupRef to each backend YAML)
 cat > resources.yaml <<EOF
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: services
@@ -370,7 +370,7 @@ metadata:
 # Include backend1.yaml content with groupRef: {name: services}
 # Include backend2.yaml content with groupRef: {name: services}
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: services-vmcp
@@ -438,7 +438,7 @@ For remote MCP servers that don't need a dedicated proxy, use `MCPServerEntry` i
 
 **Before (MCPRemoteProxy — deploys a proxy pod):**
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRemoteProxy
 metadata:
   name: context7
@@ -452,7 +452,7 @@ spec:
 
 **After (MCPServerEntry — zero infrastructure):**
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServerEntry
 metadata:
   name: context7
@@ -624,6 +624,71 @@ Then gradually add restrictions. Common Cedar policy issues:
 - Check syntax is correct
 - Verify attribute names match token claims
 - Test policies with different user roles
+
+**Multiple upstream IDPs**: when `spec.authServerConfig` declares more than
+one `upstreamProviders` entry, Cedar evaluates claims from the first one by
+default. Pin a specific provider explicitly via
+`spec.authServerConfig.primaryUpstreamProvider`:
+
+```yaml
+spec:
+  authServerConfig:
+    issuer: https://vmcp.example.com
+    primaryUpstreamProvider: okta   # must match one of the configured upstreams
+    upstreamProviders:
+      - name: okta
+        type: oidc
+        # ...
+      - name: github
+        type: oauth2
+        # ...
+  incomingAuth:
+    authzConfig:
+      type: inline
+      inline:
+        policies:
+          - 'permit(principal, action, resource);'
+```
+
+> **Migration: `primaryUpstreamProvider` location**
+>
+> The field used to live under
+> `spec.incomingAuth.authzConfig.inline.primaryUpstreamProvider`. It has
+> moved to `spec.authServerConfig.primaryUpstreamProvider` to sit next to
+> the `upstreamProviders` list it selects from. The old location is read
+> for one release for backward compatibility; the controller emits a
+> Warning event with reason `AuthzPrimaryUpstreamProviderDeprecated`
+> whenever it consumes the deprecated location. Move the value to the new
+> location to clear the warning. The deprecated field is planned for
+> removal one release after the deprecation cycle.
+
+**Authorization policy errors**: misconfigured authz surfaces on the
+`AuthConfigured` condition with one of:
+
+* `AuthzConfigMapNotFound`: the ConfigMap referenced by
+  `spec.incomingAuth.authzConfig.configMap` does not exist in the
+  namespace. Create it before reconciling, or fix the name.
+* `AuthzConfigMapInvalid`: the ConfigMap exists but the payload is
+  missing the configured key, empty, malformed YAML/JSON, fails Cedar
+  validation, or is a registered non-Cedar authorizer (vMCP supports
+  Cedar only). Check the payload shape (see the Cedar v1 schema in the
+  example above).
+
+**Enterprise Cedar policies that deny every request**: when a policy
+walks a transitive hierarchy like `Client → ClaimGroup → PlatformRole`,
+both Cedar JWT-claim mapping settings and the static entity store must
+agree on the entity type. The configuration fields live on
+`spec.incomingAuth.authzConfig`:
+
+* `groupClaimName` / `roleClaimName`: JWT claim keys to extract.
+* `groupEntityType`: Cedar entity type used for principal parent UIDs.
+  Must match the entity type used in `entitiesJson` (e.g. `ClaimGroup`
+  rather than the default `THVGroup`).
+
+For configMap-sourced authz, the same fields can be set in the
+ConfigMap payload (`cedar.group_claim_name`, `cedar.role_claim_name`,
+`cedar.group_entity_type`); spec-level values on `authzConfig` override
+the ConfigMap when set.
 
 ### Backend Discovery Issues
 

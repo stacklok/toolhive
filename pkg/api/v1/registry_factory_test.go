@@ -21,36 +21,34 @@ import (
 	"github.com/stacklok/toolhive/pkg/registry"
 )
 
-// writeFactorySentinelRegistry creates a legacy-format registry JSON file with a
-// single server named sentinelName and a YAML config pointing to it.
+// writeFactorySentinelRegistry creates an upstream-format registry JSON file
+// with a single server named sentinelName and a YAML config pointing to it.
 // Returns the config file path.
 func writeFactorySentinelRegistry(t *testing.T, sentinelName string) string {
 	t.Helper()
 
 	dir := t.TempDir()
 
-	// Write legacy registry JSON with the sentinel server.
-	type serverEntry struct {
-		Image       string `json:"image"`
-		Description string `json:"description"`
-	}
-	type registryFile struct {
-		Version     string                 `json:"version"`
-		LastUpdated string                 `json:"last_updated"`
-		Servers     map[string]serverEntry `json:"servers"`
-	}
-
-	regData, err := json.Marshal(registryFile{
-		Version:     "1.0.0",
-		LastUpdated: "2025-01-01T00:00:00Z",
-		Servers: map[string]serverEntry{
-			sentinelName: {
-				Image:       "factory/server:latest",
-				Description: "Factory sentinel server",
-			},
-		},
-	})
-	require.NoError(t, err)
+	regData := []byte(`{
+		"$schema": "https://example.com/schema.json",
+		"version": "1.0.0",
+		"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+		"data": {
+			"servers": [
+				{
+					"name": "` + sentinelName + `",
+					"description": "Factory sentinel server",
+					"packages": [
+						{
+							"registryType": "oci",
+							"identifier": "factory/server:latest",
+							"transport": {"type": "stdio"}
+						}
+					]
+				}
+			]
+		}
+	}`)
 
 	registryPath := filepath.Join(dir, "registry.json")
 	require.NoError(t, os.WriteFile(registryPath, regData, 0600))

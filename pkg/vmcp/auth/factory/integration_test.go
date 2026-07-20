@@ -17,7 +17,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"github.com/stacklok/toolhive-core/env"
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth/converters"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
@@ -44,7 +44,7 @@ func TestHeaderInjectionIntegration(t *testing.T) {
 		// Step 2: Create a fake Kubernetes client with a secret
 		scheme := runtime.NewScheme()
 		_ = corev1.AddToScheme(scheme)
-		_ = mcpv1alpha1.AddToScheme(scheme)
+		_ = mcpv1beta1.AddToScheme(scheme)
 
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -62,16 +62,16 @@ func TestHeaderInjectionIntegration(t *testing.T) {
 			Build()
 
 		// Step 3: Create MCPExternalAuthConfig
-		authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-auth",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-				HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+				HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 					HeaderName: "X-API-Key",
-					ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+					ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 						Name: "test-api-key",
 						Key:  "key",
 					},
@@ -127,7 +127,7 @@ func TestHeaderInjectionIntegration(t *testing.T) {
 		// Create fake client with secret
 		scheme := runtime.NewScheme()
 		_ = corev1.AddToScheme(scheme)
-		_ = mcpv1alpha1.AddToScheme(scheme)
+		_ = mcpv1beta1.AddToScheme(scheme)
 
 		secret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{
@@ -145,16 +145,16 @@ func TestHeaderInjectionIntegration(t *testing.T) {
 			Build()
 
 		// Create auth config with custom header
-		authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "custom-auth",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-				HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+				HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 					HeaderName: "X-Custom-Auth-Token",
-					ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+					ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 						Name: "custom-header-secret",
 						Key:  "token",
 					},
@@ -191,23 +191,23 @@ func TestHeaderInjectionIntegration(t *testing.T) {
 		// Create empty fake client (no secrets)
 		scheme := runtime.NewScheme()
 		_ = corev1.AddToScheme(scheme)
-		_ = mcpv1alpha1.AddToScheme(scheme)
+		_ = mcpv1beta1.AddToScheme(scheme)
 
 		fakeClient := fake.NewClientBuilder().
 			WithScheme(scheme).
 			Build()
 
 		// Create auth config referencing non-existent secret
-		authConfig := &mcpv1alpha1.MCPExternalAuthConfig{
+		authConfig := &mcpv1beta1.MCPExternalAuthConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "missing-secret-auth",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-				Type: mcpv1alpha1.ExternalAuthTypeHeaderInjection,
-				HeaderInjection: &mcpv1alpha1.HeaderInjectionConfig{
+			Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+				Type: mcpv1beta1.ExternalAuthTypeHeaderInjection,
+				HeaderInjection: &mcpv1beta1.HeaderInjectionConfig{
 					HeaderName: "X-API-Key",
-					ValueSecretRef: &mcpv1alpha1.SecretKeyRef{
+					ValueSecretRef: &mcpv1beta1.SecretKeyRef{
 						Name: "non-existent-secret",
 						Key:  "key",
 					},

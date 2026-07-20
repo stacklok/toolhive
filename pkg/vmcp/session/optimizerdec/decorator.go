@@ -10,8 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/mark3labs/mcp-go/mcp"
-
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
@@ -54,31 +53,41 @@ type optimizerDecorator struct {
 // which routes through the instrumented optimizer (telemetry, traces, metrics).
 func NewDecorator(sess sessiontypes.MultiSession, opt optimizer.Optimizer) sessiontypes.MultiSession {
 	return &optimizerDecorator{
-		MultiSession: sess,
-		opt:          opt,
-		optimizerTools: []vmcp.Tool{
-			{
-				Name: FindToolName,
-				Description: "Find and return tools that can help accomplish the user's request. " +
-					"This searches available MCP server tools using semantic and keyword-based matching. " +
-					"Use this function when you need to: " +
-					"(1) discover what tools are available for a specific task, " +
-					"(2) find the right tool(s) before attempting to solve a problem, " +
-					"(3) check if required functionality exists in the current environment. " +
-					"Returns matching tools ranked by relevance including their names, descriptions, " +
-					"required parameters and schemas, plus token efficiency metrics showing " +
-					"baseline_tokens, returned_tokens, and savings_percent. " +
-					"Always call this before call_tool to discover the correct tool name and parameter schema.",
-				InputSchema: findToolInputSchema,
-			},
-			{
-				Name: CallToolName,
-				Description: "Execute a specific tool with the provided parameters. " +
-					"Use this function to run a tool after identifying it with find_tool. " +
-					"Important: always use find_tool first to get the correct tool_name " +
-					"and parameter schema before calling this function.",
-				InputSchema: callToolInputSchema,
-			},
+		MultiSession:   sess,
+		opt:            opt,
+		optimizerTools: OptimizerTools(),
+	}
+}
+
+// OptimizerTools returns the find_tool and call_tool meta-tool definitions (name,
+// description, input schema) that replace the full backend tool list in optimizer
+// mode. The definitions are shared so that the legacy MultiSession decorator (this
+// package) and the Serve-path optimizer wiring (pkg/vmcp/server) advertise an
+// identical pair; each consumer wires its own handlers around these definitions.
+// A fresh slice is returned on every call so callers cannot mutate shared state.
+func OptimizerTools() []vmcp.Tool {
+	return []vmcp.Tool{
+		{
+			Name: FindToolName,
+			Description: "Find and return tools that can help accomplish the user's request. " +
+				"This searches available MCP server tools using semantic and keyword-based matching. " +
+				"Use this function when you need to: " +
+				"(1) discover what tools are available for a specific task, " +
+				"(2) find the right tool(s) before attempting to solve a problem, " +
+				"(3) check if required functionality exists in the current environment. " +
+				"Returns matching tools ranked by relevance including their names, descriptions, " +
+				"required parameters and schemas, plus token efficiency metrics showing " +
+				"baseline_tokens, returned_tokens, and savings_percent. " +
+				"Always call this before call_tool to discover the correct tool name and parameter schema.",
+			InputSchema: findToolInputSchema,
+		},
+		{
+			Name: CallToolName,
+			Description: "Execute a specific tool with the provided parameters. " +
+				"Use this function to run a tool after identifying it with find_tool. " +
+				"Important: always use find_tool first to get the correct tool_name " +
+				"and parameter schema before calling this function.",
+			InputSchema: callToolInputSchema,
 		},
 	}
 }

@@ -5,14 +5,10 @@
 # HTTP from another registry server, so no volumes or volume mounts are
 # needed -- the registry server handles the network call internally.
 #
-# API sources must use "format: upstream" because the remote registry
-# serves data in the upstream registry server format (not the legacy
-# toolhive JSON format).
-#
 # This is functionally equivalent to mcpregistry-api-basic.yaml but uses
 # the decoupled configYAML path instead of the legacy typed fields.
 
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPRegistry
 metadata:
   name: api-configyaml
@@ -22,7 +18,6 @@ spec:
   configYAML: |
     sources:
       - name: upstream
-        format: upstream
         api:
           # Base API URL for the upstream registry server
           endpoint: http://upstream-registry.default.svc.cluster.local:8080

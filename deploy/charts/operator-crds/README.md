@@ -1,6 +1,6 @@
 # ToolHive Operator CRDs Helm Chart
 
-![Version: 0.21.0](https://img.shields.io/badge/Version-0.21.0-informational?style=flat-square)
+![Version: 0.40.1](https://img.shields.io/badge/Version-0.40.1-informational?style=flat-square)
 ![Type: application](https://img.shields.io/badge/Type-application-informational?style=flat-square)
 
 A Helm chart for installing the ToolHive Operator CRDs into Kubernetes.
@@ -81,10 +81,11 @@ This is a one-time operation. After patching, future upgrades will work as long 
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| crds | object | `{"install":{"registry":true,"server":true,"virtualMcp":true},"keep":true}` | CRD installation configuration |
-| crds.install | object | `{"registry":true,"server":true,"virtualMcp":true}` | Feature flags for CRD groups |
-| crds.install.registry | bool | `true` | Install Registry CRDs (mcpregistries) |
-| crds.install.server | bool | `true` | Install Server CRDs (mcpservers, mcpremoteproxies, mcptoolconfigs, mcpgroups) |
-| crds.install.virtualMcp | bool | `true` | Install VirtualMCP CRDs (virtualmcpservers, virtualmcpcompositetooldefinitions) |
+| crds | object | `{"install":true,"keep":true}` | CRD installation configuration |
+| crds.install | bool | `true` | Whether to install the CRDs in this chart |
 | crds.keep | bool | `true` | Whether to add the "helm.sh/resource-policy: keep" annotation to CRDs When true, CRDs will not be deleted when the Helm release is uninstalled |
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this chart.
 

@@ -5,22 +5,25 @@ package backend
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"time"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	mcptransport "github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
-
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	mcptransport "github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward"
+	"github.com/stacklok/toolhive/pkg/vmcp/internal/pagination"
 )
 
 const (
@@ -56,15 +59,37 @@ func (a *authRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) 
 	return a.base.RoundTrip(reqClone)
 }
 
-// identityRoundTripper propagates the caller's identity to outgoing backend requests.
+// identityRoundTripper propagates a fallback identity to outgoing backend
+// requests when the request context carries none. It is the session-backed
+// twin of identityPropagatingRoundTripper in pkg/vmcp/client/client.go, which
+// holds the canonical description of the #5323 fallback-only identity
+// invariant.
+//
+// Differences from the canonical twin:
+//   - No isHealthCheck propagation. Health probes do not flow through
+//     session-backed clients — they go through the per-call client in
+//     pkg/vmcp/client. If a future change routes health probes through this
+//     connector, mirror the isHealthCheck pattern from client.go so the
+//     Close() DELETE built from context.Background() retains the marker.
+//
+// Consolidation is tracked by #5333; until then, keep the fallback-only
+// invariant in sync across both implementations.
 type identityRoundTripper struct {
-	base     http.RoundTripper
-	identity *auth.Identity
+	base http.RoundTripper
+	// fallbackIdentity is injected only when req.Context() carries no identity.
+	// It must never override a non-nil identity present on the request context.
+	//
+	// Shared across all concurrent RoundTrip invocations on this transport; the
+	// pointed-to *auth.Identity (including UpstreamTokens) MUST be treated as
+	// immutable — see pkg/auth/identity.go.
+	fallbackIdentity *auth.Identity
 }
 
+// RoundTrip preserves any identity already on req.Context() and only injects
+// the captured fallback when the request context carries no identity.
 func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
-	if i.identity != nil {
-		ctx := auth.WithIdentity(req.Context(), i.identity)
+	if _, hasIdentity := auth.IdentityFromContext(req.Context()); !hasIdentity && i.fallbackIdentity != nil {
+		ctx := auth.WithIdentity(req.Context(), i.fallbackIdentity)
 		req = req.Clone(ctx)
 	}
 	return i.base.RoundTrip(req)
@@ -73,7 +98,7 @@ func (i *identityRoundTripper) RoundTrip(req *http.Request) (*http.Response, err
 // Compile-time assertion: mcpSession must implement Session.
 var _ Session = (*mcpSession)(nil)
 
-// mcpSession wraps a persistent mark3labs MCP client for one backend.
+// mcpSession wraps a persistent mcpcompat MCP client for one backend.
 // It is created once per backend during MakeSession and closed when the session ends.
 //
 // Phase 1 limitation — no reconnection: if the underlying transport drops
@@ -195,19 +220,25 @@ func (c *mcpSession) GetPrompt(
 //
 // registry provides the authentication strategy for outgoing backend requests.
 // Pass a registry configured with the "unauthenticated" strategy to disable auth.
+//
+// A single secrets.EnvironmentProvider is constructed once per connector and
+// shared across every session it creates; its lifetime matches the connector's.
+// It is consumed by BuildHeaderForwardTripper to resolve secret-backed entries
+// in target.HeaderForward.
 func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
 	sessionHint string,
 ) (Session, *vmcp.CapabilityList, error) {
+	provider := secrets.NewEnvironmentProvider()
 	return func(
 		ctx context.Context,
 		target *vmcp.BackendTarget,
 		identity *auth.Identity,
 		sessionHint string,
 	) (Session, *vmcp.CapabilityList, error) {
-		c, err := createMCPClient(target, identity, registry, sessionHint)
+		c, err := createMCPClient(ctx, target, identity, registry, sessionHint, provider)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to create MCP client for backend %s: %w", target.WorkloadID, err)
 		}
@@ -220,7 +251,7 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 
 		// Extract the backend-assigned session ID when the transport supports it.
 		// Streamable-HTTP servers send an Mcp-Session-Id response header during
-		// Initialize; the mark3labs transport captures it internally and exposes
+		// Initialize; the mcpcompat transport captures it internally and exposes
 		// it via GetSessionId(). SSE transports do not assign a session ID, so
 		// the field remains empty for those backends.
 		var backendSessionID string
@@ -232,16 +263,22 @@ func NewHTTPConnector(registry vmcpauth.OutgoingAuthRegistry) func(
 	}
 }
 
-// createMCPClient builds and starts a mark3labs MCP client for target.
+// createMCPClient builds and starts a mcpcompat MCP client for target.
 // The transport is started with context.Background() so its lifetime is bound
 // to client.Close(), not to any caller-supplied init context.
 // sessionHint, when non-empty, is passed as the initial Mcp-Session-Id for
 // streamable-HTTP transports so the backend can resume an existing session.
+//
+// ctx is used only to resolve secret-backed entries in target.HeaderForward at
+// client-creation time; the transport itself is started with context.Background()
+// as described above. provider supplies values for those secret-backed headers.
 func createMCPClient(
+	ctx context.Context,
 	target *vmcp.BackendTarget,
 	identity *auth.Identity,
 	registry vmcpauth.OutgoingAuthRegistry,
 	sessionHint string,
+	provider secrets.Provider,
 ) (*mcpclient.Client, error) {
 	// Resolve and validate the auth strategy once at client creation time.
 	strategyName := authtypes.StrategyTypeUnauthenticated
@@ -258,7 +295,15 @@ func createMCPClient(
 
 	slog.Debug("Applied authentication strategy", "strategy", strategy.Name(), "backendID", target.WorkloadID)
 
-	// Build shared transport chain: auth → identity propagation.
+	// Build shared transport chain (innermost first → outermost):
+	//   http.DefaultTransport → authRoundTripper → identityRoundTripper → headerForwardRoundTripper
+	// On an outbound request, the outermost stage runs first: header-forward
+	// injects its headers onto a request that does not yet carry auth/identity
+	// headers, then inner stages run and call Set() unconditionally so any
+	// overlapping name they care about (Authorization, identity headers) wins on
+	// the wire. Restricted header names (Host, hop-by-hop, X-Forwarded-*) are
+	// rejected at resolve time by resolveHeaderForward, so user-supplied
+	// HeaderForward cannot inject them in the first place.
 	// The per-transport sections below may add a size-limiting wrapper on top.
 	base := http.RoundTripper(http.DefaultTransport)
 	base = &authRoundTripper{
@@ -267,7 +312,24 @@ func createMCPClient(
 		authConfig:   target.AuthConfig,
 		target:       target,
 	}
-	base = &identityRoundTripper{base: base, identity: identity}
+	// The identity captured here is a fallback used only when the per-request
+	// context carries no identity (e.g. mcp-go's Close() DELETE built from
+	// context.Background()). Normal backend requests preserve the freshly
+	// refreshed identity placed on the request context by
+	// auth.TokenValidator.Middleware (see issue #5323).
+	base = &identityRoundTripper{base: base, fallbackIdentity: identity}
+	// Forwarded headers ride the request context (set by headerforward.CaptureMiddleware
+	// at the vMCP server's incoming edge) and are merged into the per-session backend
+	// header-forward config here. The session is created once per request, so the
+	// captured headers are stable for the session's lifetime.
+	mergedHeaderForward, err := mergeForwardedHeaders(target.HeaderForward, headerforward.ForwardedHeadersFromContext(ctx))
+	if err != nil {
+		return nil, fmt.Errorf("backend %s: %w", target.WorkloadID, err)
+	}
+	base, err = headerforward.BuildHeaderForwardTripper(ctx, base, mergedHeaderForward, provider, target.WorkloadID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build header-forward transport for backend %s: %w", target.WorkloadID, err)
+	}
 
 	var c *mcpclient.Client
 	switch target.TransportType {
@@ -278,7 +340,7 @@ func createMCPClient(
 		// request/response pair, so a per-response body size limit is safe and
 		// correct. http.Client.Timeout provides a hard wall-clock deadline;
 		// WithHTTPTimeout additionally wraps each SDK request in a
-		// context.WithTimeout so the mark3labs transport surfaces a descriptive
+		// context.WithTimeout so the mcpcompat transport surfaces a descriptive
 		// error before the stdlib deadline fires. Both are set to
 		// defaultBackendRequestTimeout: defense-in-depth.
 		sizeLimited := httpRoundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -367,59 +429,27 @@ func initAndQueryCapabilities(
 	caps := &vmcp.CapabilityList{}
 
 	if serverCaps.Tools != nil {
-		toolsResult, listErr := c.ListTools(ctx, mcp.ListToolsRequest{})
-		if listErr != nil {
-			return nil, fmt.Errorf("list tools failed: %w", listErr)
+		tools, err := queryBackendTools(ctx, c, target)
+		if err != nil {
+			return nil, err
 		}
-		for _, t := range toolsResult.Tools {
-			caps.Tools = append(caps.Tools, vmcp.Tool{
-				Name:         t.Name,
-				Description:  t.Description,
-				InputSchema:  conversion.ConvertToolInputSchema(t.InputSchema),
-				OutputSchema: conversion.ConvertToolOutputSchema(t.OutputSchema),
-				Annotations:  conversion.ConvertToolAnnotations(t.Annotations),
-				BackendID:    target.WorkloadID,
-			})
-		}
+		caps.Tools = tools
 	}
 
 	if serverCaps.Resources != nil {
-		resResult, listErr := c.ListResources(ctx, mcp.ListResourcesRequest{})
-		if listErr != nil {
-			return nil, fmt.Errorf("list resources failed: %w", listErr)
+		resources, err := queryBackendResources(ctx, c, target)
+		if err != nil {
+			return nil, err
 		}
-		for _, r := range resResult.Resources {
-			caps.Resources = append(caps.Resources, vmcp.Resource{
-				URI:         r.URI,
-				Name:        r.Name,
-				Description: r.Description,
-				MimeType:    r.MIMEType,
-				BackendID:   target.WorkloadID,
-			})
-		}
+		caps.Resources = resources
 	}
 
 	if serverCaps.Prompts != nil {
-		promptsResult, listErr := c.ListPrompts(ctx, mcp.ListPromptsRequest{})
-		if listErr != nil {
-			return nil, fmt.Errorf("list prompts failed: %w", listErr)
+		prompts, err := queryBackendPrompts(ctx, c, target)
+		if err != nil {
+			return nil, err
 		}
-		for _, p := range promptsResult.Prompts {
-			args := make([]vmcp.PromptArgument, len(p.Arguments))
-			for j, a := range p.Arguments {
-				args[j] = vmcp.PromptArgument{
-					Name:        a.Name,
-					Description: a.Description,
-					Required:    a.Required,
-				}
-			}
-			caps.Prompts = append(caps.Prompts, vmcp.Prompt{
-				Name:        p.Name,
-				Description: p.Description,
-				Arguments:   args,
-				BackendID:   target.WorkloadID,
-			})
-		}
+		caps.Prompts = prompts
 	}
 
 	slog.Debug("Backend capabilities",
@@ -430,4 +460,121 @@ func initAndQueryCapabilities(
 	)
 
 	return caps, nil
+}
+
+// queryBackendTools lists the backend's tools, following MCP pagination cursors so a
+// backend that paginates (mcpcompat paginates at DefaultPageSize=1000) contributes its
+// complete tool set rather than only the first page.
+func queryBackendTools(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Tool, error) {
+	tools, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Tool, mcp.Cursor, error) {
+		req := mcp.ListToolsRequest{}
+		req.Params.Cursor = cursor
+		result, err := c.ListTools(ctx, req)
+		if err != nil {
+			return nil, "", err
+		}
+		return result.Tools, result.NextCursor, nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list tools failed: %w", err)
+	}
+	out := make([]vmcp.Tool, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, vmcp.Tool{
+			Name:         t.Name,
+			Description:  t.Description,
+			InputSchema:  conversion.ConvertToolInputSchema(t.InputSchema),
+			OutputSchema: conversion.ConvertToolOutputSchema(t.OutputSchema),
+			Annotations:  conversion.ConvertToolAnnotations(t.Annotations),
+			BackendID:    target.WorkloadID,
+		})
+	}
+	return out, nil
+}
+
+// queryBackendResources lists the backend's resources with cursor-following pagination.
+// A backend that advertises the resources capability but does not implement
+// resources/list (JSON-RPC -32601, e.g. Atlassian Rovo, see #5231) is tolerated: it
+// returns no resources instead of failing the whole discovery. HTTP-level method absence
+// remains fatal.
+func queryBackendResources(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Resource, error) {
+	resources, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Resource, mcp.Cursor, error) {
+		req := mcp.ListResourcesRequest{}
+		req.Params.Cursor = cursor
+		result, err := c.ListResources(ctx, req)
+		if err != nil {
+			return nil, "", err
+		}
+		return result.Resources, result.NextCursor, nil
+	})
+	if errors.Is(err, mcp.ErrMethodNotFound) {
+		slog.Warn("backend advertised resources capability but does not implement resources/list",
+			"backendID", target.WorkloadID, "name", target.WorkloadName, "baseURL", target.BaseURL, "method", "resources/list")
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list resources failed: %w", err)
+	}
+	out := make([]vmcp.Resource, 0, len(resources))
+	for _, r := range resources {
+		out = append(out, vmcp.Resource{
+			URI:         r.URI,
+			Name:        r.Name,
+			Description: r.Description,
+			MimeType:    r.MIMEType,
+			BackendID:   target.WorkloadID,
+		})
+	}
+	return out, nil
+}
+
+// queryBackendPrompts lists the backend's prompts with cursor-following pagination.
+// Like queryBackendResources, it tolerates a -32601 from a backend that advertises the
+// prompts capability without implementing prompts/list.
+func queryBackendPrompts(ctx context.Context, c *mcpclient.Client, target *vmcp.BackendTarget) ([]vmcp.Prompt, error) {
+	prompts, err := pagination.ListAll(ctx, func(ctx context.Context, cursor mcp.Cursor) ([]mcp.Prompt, mcp.Cursor, error) {
+		req := mcp.ListPromptsRequest{}
+		req.Params.Cursor = cursor
+		result, err := c.ListPrompts(ctx, req)
+		if err != nil {
+			return nil, "", err
+		}
+		return result.Prompts, result.NextCursor, nil
+	})
+	if errors.Is(err, mcp.ErrMethodNotFound) {
+		slog.Warn("backend advertised prompts capability but does not implement prompts/list",
+			"backendID", target.WorkloadID, "name", target.WorkloadName, "baseURL", target.BaseURL, "method", "prompts/list")
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list prompts failed: %w", err)
+	}
+	out := make([]vmcp.Prompt, 0, len(prompts))
+	for _, p := range prompts {
+		args := make([]vmcp.PromptArgument, len(p.Arguments))
+		for j, a := range p.Arguments {
+			args[j] = vmcp.PromptArgument{
+				Name:        a.Name,
+				Description: a.Description,
+				Required:    a.Required,
+			}
+		}
+		out = append(out, vmcp.Prompt{
+			Name:        p.Name,
+			Description: p.Description,
+			Arguments:   args,
+			BackendID:   target.WorkloadID,
+		})
+	}
+	return out, nil
+}
+
+// mergeForwardedHeaders returns a HeaderForwardConfig that combines the static
+// backend configuration (base) with any per-request forwarded headers captured
+// from the caller's request (see headerforward.CaptureMiddleware).
+// Delegates to headerforward.MergeForwardedHeaders, which is the shared
+// implementation used by both this connector and the shared backend client
+// (pkg/vmcp/client).
+func mergeForwardedHeaders(base *vmcp.HeaderForwardConfig, forwarded map[string]string) (*vmcp.HeaderForwardConfig, error) {
+	return headerforward.MergeForwardedHeaders(base, forwarded)
 }

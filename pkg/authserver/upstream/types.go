@@ -28,7 +28,17 @@ type Identity struct {
 	// Tokens contains the tokens obtained from the upstream IDP.
 	Tokens *Tokens
 
-	// Subject is the canonical user identifier from the upstream IDP (the "sub" claim).
+	// Subject is the canonical user identifier carried into session storage
+	// and issued JWTs. Source by provider type:
+	//   - OIDC: "sub" from the validated ID token.
+	//   - OAuth2 with userInfo: "sub" (or field-mapped) from userinfo.
+	//   - OAuth2 without userInfo: synthesized "tk-…" value derived from the
+	//     access token (Synthetic=true; see synthesizeSubjectFromAccessToken).
+	//
+	// Stability: stable across refresh-token rotation that preserves the
+	// access token; in synthesis mode it rotates per fresh authorization
+	// code flow, so callers must treat synthesized Subjects as ephemeral
+	// session keys, not stable per-user identifiers.
 	Subject string
 
 	// Name is the user's display name from the upstream IDP (optional).
@@ -36,6 +46,25 @@ type Identity struct {
 
 	// Email is the user's email address from the upstream IDP (optional).
 	Email string
+
+	// Synthetic is true when Subject was generated locally because the
+	// upstream has no userinfo or ID-token-derived identity. Synthetic
+	// subjects rotate per re-auth; callers MUST NOT persist them as stable
+	// per-user keys (doing so grows `users` without bound). Use the
+	// synthesized Subject as an ephemeral session key only.
+	Synthetic bool
+
+	// Claims holds the raw claims resolved from the upstream IDP for this
+	// identity, for downstream authorization-policy inputs. Source by provider
+	// type:
+	//   - OIDC: all claims from the validated ID token.
+	//   - OAuth2 with userInfo: all claims from the userinfo response.
+	//   - OAuth2 with identityFromToken, or synthetic OAuth2: nil — those paths
+	//     resolve only scalar subject/name/email (or nothing), with no structured
+	//     claim set to carry.
+	// These are informational enrichment only: they are NOT used for user
+	// resolution or token storage. May be nil.
+	Claims map[string]any
 }
 
 // ErrIdentityResolutionFailed indicates identity could not be determined.

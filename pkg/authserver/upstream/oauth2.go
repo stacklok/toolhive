@@ -18,6 +18,8 @@ package upstream
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,15 +28,13 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
-	"os"
 	"strings"
-	"time"
 
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/authserver/oauthparams"
 	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -90,9 +90,6 @@ type OAuth2Provider interface {
 	RefreshTokens(ctx context.Context, refreshToken, expectedSubject string) (*Tokens, error)
 }
 
-// defaultTokenExpiration is the default token lifetime when expires_in is not specified.
-const defaultTokenExpiration = time.Hour
-
 // CommonOAuthConfig contains fields shared by all OAuth provider types.
 // This provides compile-time type safety by separating OIDC and OAuth2 configuration.
 type CommonOAuthConfig struct {
@@ -122,8 +119,9 @@ type CommonOAuthConfig struct {
 	AdditionalAuthorizationParams map[string]string `json:"additional_authorization_params,omitempty" yaml:"additional_authorization_params,omitempty"`
 }
 
-// Validate checks that CommonOAuthConfig has all required fields.
-func (c *CommonOAuthConfig) Validate() error {
+// ValidateWithInsecure validates CommonOAuthConfig, allowing http:// redirect URIs for
+// non-loopback hosts when insecureAllowHTTP is true.
+func (c *CommonOAuthConfig) ValidateWithInsecure(insecureAllowHTTP bool) error {
 	if c.ClientID == "" {
 		return errors.New("client_id is required")
 	}
@@ -132,6 +130,9 @@ func (c *CommonOAuthConfig) Validate() error {
 	}
 	if err := oauthparams.Validate(c.AdditionalAuthorizationParams); err != nil {
 		return err
+	}
+	if insecureAllowHTTP {
+		return oauthproto.ValidateRedirectURI(c.RedirectURI, oauthproto.RedirectURIPolicyAllowHTTP)
 	}
 	return validateRedirectURI(c.RedirectURI)
 }
@@ -146,6 +147,18 @@ type OAuth2Config struct {
 	// TokenEndpoint is the URL for the OAuth token endpoint.
 	TokenEndpoint string `json:"token_endpoint" yaml:"token_endpoint"`
 
+	// TokenEndpointAuthMethod is the RFC 7591 client authentication method used
+	// at the token endpoint; see authStyleFromMethod for the mapping to
+	// oauth2.AuthStyle and the rationale. When empty, the historical default
+	// (POST body) is used.
+	//
+	// Only the DCR path populates this, via applyResolutionToOAuth2Config.
+	// OAuth2UpstreamRunConfig has no corresponding field, so a statically-
+	// configured upstream cannot set it and always gets the default — an
+	// intentional limitation scoped to issue #5865 (DCR-negotiated clients).
+	//nolint:lll // field tags require full JSON+YAML names
+	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty" yaml:"token_endpoint_auth_method,omitempty"`
+
 	// UserInfo contains configuration for fetching user information (optional).
 	// When nil, the provider does not support UserInfo fetching.
 	UserInfo *UserInfoConfig `json:"userinfo,omitempty" yaml:"userinfo,omitempty"`
@@ -154,7 +167,27 @@ type OAuth2Config struct {
 	// When set, the provider performs the token exchange HTTP call directly (bypassing
 	// golang.org/x/oauth2) and extracts fields using gjson dot-notation paths.
 	// When nil, standard OAuth 2.0 token response parsing is used.
+	// See also: IdentityFromToken for extracting user identity from the same response.
 	TokenResponseMapping *TokenResponseMapping `json:"token_response_mapping,omitempty" yaml:"token_response_mapping,omitempty"`
+
+	// IdentityFromToken extracts user identity from the token-endpoint response
+	// body when the upstream provider includes identity claims there (e.g.,
+	// Snowflake's `username`, Slack's `authed_user.id`). When set, the embedded
+	// auth server skips the userinfo HTTP call entirely. See the CRD type
+	// (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) for the
+	// authoritative trust-model and uniqueness documentation.
+	IdentityFromToken *IdentityFromTokenConfig `json:"identity_from_token,omitempty" yaml:"identity_from_token,omitempty"`
+
+	// InsecureAllowHTTP permits http:// authorization_endpoint and token_endpoint
+	// URLs for non-localhost hosts. Set only for trusted in-cluster deployments.
+	InsecureAllowHTTP bool `json:"insecure_allow_http,omitempty" yaml:"insecure_allow_http,omitempty"`
+
+	// AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+	// private IP ranges (RFC-1918, link-local). Use only when the upstream is
+	// hosted inside the same cluster and has no public endpoint. HTTP-scheme
+	// restrictions are unchanged — HTTPS is still required for non-localhost hosts.
+	// Defaults to false.
+	AllowPrivateIPs bool `json:"allow_private_ips,omitempty" yaml:"allow_private_ips,omitempty"`
 }
 
 // TokenResponseMapping configures extraction of token fields from non-standard
@@ -173,18 +206,25 @@ type TokenResponseMapping struct {
 	ExpiresInPath string
 }
 
-// Validate checks that OAuth2Config has all required fields.
+// Validate checks that OAuth2Config has all required fields, respecting
+// c.InsecureAllowHTTP when set.
 func (c *OAuth2Config) Validate() error {
+	return c.ValidateWithInsecure(c.InsecureAllowHTTP)
+}
+
+// ValidateWithInsecure is like Validate but allows http:// endpoints when
+// insecureAllowHTTP is true (for trusted in-cluster deployments).
+func (c *OAuth2Config) ValidateWithInsecure(insecureAllowHTTP bool) error {
 	if c.AuthorizationEndpoint == "" {
 		return errors.New("authorization_endpoint is required for OAuth2 providers")
 	}
-	if err := networking.ValidateEndpointURL(c.AuthorizationEndpoint); err != nil {
+	if err := networking.ValidateEndpointURLWithInsecure(c.AuthorizationEndpoint, insecureAllowHTTP); err != nil {
 		return fmt.Errorf("invalid authorization_endpoint: %w", err)
 	}
 	if c.TokenEndpoint == "" {
 		return errors.New("token_endpoint is required for OAuth2 providers")
 	}
-	if err := networking.ValidateEndpointURL(c.TokenEndpoint); err != nil {
+	if err := networking.ValidateEndpointURLWithInsecure(c.TokenEndpoint, insecureAllowHTTP); err != nil {
 		return fmt.Errorf("invalid token_endpoint: %w", err)
 	}
 	if c.UserInfo != nil {
@@ -197,7 +237,12 @@ func (c *OAuth2Config) Validate() error {
 			return errors.New("token_response_mapping.access_token_path is required when token_response_mapping is set")
 		}
 	}
-	return c.CommonOAuthConfig.Validate()
+	if c.IdentityFromToken != nil {
+		if c.IdentityFromToken.SubjectPath == "" {
+			return errors.New("identity_from_token.subject_path is required when identity_from_token is set")
+		}
+	}
+	return c.CommonOAuthConfig.ValidateWithInsecure(insecureAllowHTTP)
 }
 
 // validateRedirectURI validates an OAuth redirect URI per RFC 6749 and RFC 8252.
@@ -220,13 +265,6 @@ func convertOAuth2Token(token *oauth2.Token) (*Tokens, error) {
 		return nil, fmt.Errorf("unexpected token_type: expected \"Bearer\", got %q", token.TokenType)
 	}
 
-	// Calculate expiration time
-	expiresAt := token.Expiry
-	if expiresAt.IsZero() {
-		// Default to 1 hour if not specified
-		expiresAt = time.Now().Add(defaultTokenExpiration)
-	}
-
 	// Extract ID token from extras (OIDC providers include it here)
 	var idToken string
 	if idTokenVal := token.Extra("id_token"); idTokenVal != nil {
@@ -239,7 +277,7 @@ func convertOAuth2Token(token *oauth2.Token) (*Tokens, error) {
 		AccessToken:  token.AccessToken,
 		RefreshToken: token.RefreshToken,
 		IDToken:      idToken,
-		ExpiresAt:    expiresAt,
+		ExpiresAt:    token.Expiry,
 	}, nil
 }
 
@@ -271,16 +309,23 @@ func WithOAuth2HTTPClient(client *http.Client) OAuth2ProviderOption {
 //
 // IMPORTANT: Callers must ensure config is non-nil before calling this function.
 func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAuth2Provider, error) {
-	if err := config.Validate(); err != nil {
+	if err := config.ValidateWithInsecure(config.InsecureAllowHTTP); err != nil {
 		return nil, fmt.Errorf("invalid config: %w", err)
 	}
 
-	httpClient, err := newHTTPClientForHost(hostForClient)
+	httpClient, err := newHTTPClientForHost(hostForClient, config.AllowPrivateIPs, config.InsecureAllowHTTP)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create HTTP client: %w", err)
 	}
 
-	// Create the oauth2.Config for use with golang.org/x/oauth2 library
+	// AuthStyle is derived from the negotiated token_endpoint_auth_method
+	// rather than hardcoded — see authStyleFromMethod.
+	authStyle, err := authStyleFromMethod(config.TokenEndpointAuthMethod)
+	if err != nil {
+		return nil, err
+	}
+
+	// Create the oauth2.Config for use with golang.org/x/oauth2 library.
 	oauth2Cfg := &oauth2.Config{
 		ClientID:     config.ClientID,
 		ClientSecret: config.ClientSecret,
@@ -289,7 +334,7 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		Endpoint: oauth2.Endpoint{
 			AuthURL:   config.AuthorizationEndpoint,
 			TokenURL:  config.TokenEndpoint,
-			AuthStyle: oauth2.AuthStyleInParams, // Send client credentials in POST body
+			AuthStyle: authStyle,
 		},
 	}
 
@@ -298,6 +343,47 @@ func newBaseOAuth2Provider(config *OAuth2Config, hostForClient string) (*BaseOAu
 		oauth2Config: oauth2Cfg,
 		httpClient:   httpClient,
 	}, nil
+}
+
+// authStyleFromMethod maps an RFC 7591 token_endpoint_auth_method to the
+// oauth2.AuthStyle the golang.org/x/oauth2 library uses when presenting client
+// credentials at the token endpoint:
+//
+//   - client_secret_basic → AuthStyleInHeader (HTTP Basic Authorization header)
+//   - client_secret_post  → AuthStyleInParams (credentials in the POST body)
+//   - none / "" (unset)   → AuthStyleInParams (historical default, no secret)
+//
+// This is the single home for the auth-method rationale. For DCR-registered
+// clients the method is copied from the negotiated
+// dcr.Resolution.TokenEndpointAuthMethod so the exchange respects whatever the
+// upstream advertised — some authorization servers (e.g. Ory Hydra) default
+// confidential clients to client_secret_basic and reject client_secret_post
+// outright (issue #5865). The same AuthStyle governs the refresh path, which
+// shares this oauth2.Config.
+//
+// AuthStyleAutoDetect is deliberately not used for the default: its Basic-auth
+// probe can consume a single-use authorization code against strict servers that
+// reject Basic auth, the same failure pkg/auth/oauth/flow.go sidesteps by
+// pinning AuthStyleInParams for public clients.
+//
+// An unrecognised, non-empty method (e.g. private_key_jwt or tls_client_auth,
+// which the DCR resolver can negotiate but this client cannot fulfil) returns
+// an error rather than silently degrading to POST-body credentials, per the
+// "fail loudly on unrecognised enum values" convention in
+// .claude/rules/go-style.md. Silently falling back would send an unusable
+// credential and reproduce the opaque invalid_client symptom class issue #5865
+// was written to eliminate.
+func authStyleFromMethod(method string) (oauth2.AuthStyle, error) {
+	switch method {
+	case oauthproto.TokenEndpointAuthMethodClientSecretBasic:
+		return oauth2.AuthStyleInHeader, nil
+	case oauthproto.TokenEndpointAuthMethodClientSecretPost,
+		oauthproto.TokenEndpointAuthMethodNone,
+		"":
+		return oauth2.AuthStyleInParams, nil
+	default:
+		return oauth2.AuthStyleAutoDetect, fmt.Errorf("unsupported token_endpoint_auth_method %q", method)
+	}
 }
 
 // NewOAuth2Provider creates a new pure OAuth 2.0 provider.
@@ -330,6 +416,16 @@ func NewOAuth2Provider(config *OAuth2Config, opts ...OAuth2ProviderOption) (*Bas
 		"authorization_endpoint", config.AuthorizationEndpoint,
 		"token_endpoint", config.TokenEndpoint,
 	)
+
+	if config.UserInfo == nil && config.IdentityFromToken == nil {
+		// Surface synthesis mode at construction so operators see it once
+		// per provider rather than only inferring from missing claims later.
+		slog.Warn("oauth2 upstream has no userinfo configured; using synthesis mode "+
+			"(non-PII subject from access token, no Name/Email). Configure "+
+			"userInfo if a real identity endpoint exists.",
+			"authorization_endpoint", config.AuthorizationEndpoint,
+		)
+	}
 
 	return p, nil
 }
@@ -399,46 +495,176 @@ func (p *BaseOAuth2Provider) buildAuthorizationURL(
 }
 
 // ExchangeCodeForIdentity exchanges an authorization code for tokens and resolves
-// the user's identity in a single atomic operation.
-// For pure OAuth2 providers, identity is resolved via the UserInfo endpoint.
-// The nonce parameter is ignored for pure OAuth2 providers (no ID token validation).
+// the user's identity in a single atomic operation. For pure OAuth2 providers
+// (no ID token) the priority chain is:
+//
+//  1. IdentityFromToken (operator opt-in): extract identity claims from the
+//     token-endpoint response body using gjson paths. The userinfo HTTP call
+//     is skipped entirely.
+//  2. UserInfo endpoint: fetch identity from the configured userinfo URL.
+//  3. Synthesis: when neither is configured, synthesizeIdentity derives a
+//     non-PII Subject from the access token (rejects empty tokens to prevent
+//     the well-known sha256("") collision). Name and Email are empty;
+//     Synthetic=true tells the callback handler to bypass UserResolver
+//     because the subject rotates per access token.
+//
+// The nonce parameter is ignored (no ID token to validate).
 func (p *BaseOAuth2Provider) ExchangeCodeForIdentity(ctx context.Context, code, codeVerifier, _ string) (*Identity, error) {
-	tokens, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
+	exchanged, err := p.exchangeCodeForTokens(ctx, code, codeVerifier)
 	if err != nil {
 		return nil, err
 	}
 
-	userInfo, err := p.fetchUserInfo(ctx, tokens.AccessToken)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
-	}
-	if userInfo == nil || userInfo.Subject == "" {
-		return nil, ErrIdentityResolutionFailed
+	// Priority 1: identityFromToken (configured by operator).
+	if p.config.IdentityFromToken != nil {
+		if exchanged.identity == nil {
+			// The rewriter logged the extraction failure at WARN with the
+			// operator-supplied path. Surface the same error here so callers
+			// can report it without requiring WARN-level log access.
+			if exchanged.extractionErr != nil {
+				return nil, exchanged.extractionErr
+			}
+			// Defense-in-depth: the rewriter guarantees one of extractedIdentity or
+			// extractionErr is set when the token endpoint returns 200. This branch
+			// fires only if that invariant is ever relaxed (e.g., a non-200-success
+			// status the oauth2 library accepts, or a future rewriter change).
+			return nil, fmt.Errorf(
+				"%w: identityFromToken configured but extraction failed",
+				ErrIdentityResolutionFailed,
+			)
+		}
+		return &Identity{
+			Tokens:  exchanged.tokens,
+			Subject: exchanged.identity.Subject,
+			Name:    exchanged.identity.Name,
+			Email:   exchanged.identity.Email,
+		}, nil
 	}
 
+	// Priority 2: userInfo (existing behavior).
+	if p.config.UserInfo != nil {
+		userInfo, err := p.fetchUserInfo(ctx, exchanged.tokens.AccessToken)
+		if err != nil {
+			return nil, fmt.Errorf("%w: %w", ErrIdentityResolutionFailed, err)
+		}
+		if userInfo == nil || userInfo.Subject == "" {
+			return nil, ErrIdentityResolutionFailed
+		}
+		return &Identity{
+			Tokens:  exchanged.tokens,
+			Subject: userInfo.Subject,
+			Name:    userInfo.Name,
+			Email:   userInfo.Email,
+			Claims:  userInfo.Claims,
+		}, nil
+	}
+
+	// Priority 3: synthesis (PR 5094). Subject derived from access token; rotates
+	// per token. The callback handler treats Synthetic=true as opt-out from the
+	// user-resolver to avoid creating a fresh users row on every re-auth.
+	return synthesizeIdentity(exchanged.tokens)
+}
+
+// synthesizedSubjectPrefix tags subjects produced by
+// synthesizeSubjectFromAccessToken. The prefix is part of the package's
+// externally observable contract; downstream code should recognize
+// synthesized subjects via the exported IsSynthesizedSubject predicate
+// rather than this constant.
+const synthesizedSubjectPrefix = "tk-"
+
+// IsSynthesizedSubject reports whether subject was produced by the
+// synthesis-mode fallback (vs. resolved from a userinfo endpoint or ID
+// token). Use this for code paths that only see the bare subject string —
+// e.g., JWT claim consumers, audit pipelines, status conditions. Callers
+// holding an *Identity should prefer Identity.Synthetic, which is set at
+// the same source of truth.
+//
+// Purely structural — checks the prefix only, does not validate the digest.
+func IsSynthesizedSubject(subject string) bool {
+	return strings.HasPrefix(subject, synthesizedSubjectPrefix)
+}
+
+// synthesizeSubjectFromAccessToken returns a stable, opaque identifier
+// derived from an access token, for OAuth2 upstreams with no userinfo
+// endpoint. Output: synthesizedSubjectPrefix + lowercase hex of the first
+// 16 bytes of SHA-256(accessToken) — 35 chars total, e.g.
+// "tk-89abcdef0123456789abcdef01234567".
+//
+// The output is non-PII assuming the upstream issues opaque (non-JWT)
+// bearer tokens; the digest reveals nothing about the input beyond what an
+// attacker holding a candidate token could confirm by re-hashing. 16 bytes
+// is sufficient collision resistance for a session-key role.
+//
+// Only reached when OAuth2Config.UserInfo is nil. OIDC providers always
+// have an ID-token-derived subject. Callers must reject empty access
+// tokens — sha256("") is a well-known constant, and synthesizing a
+// subject from it would collapse distinct sessions onto a single
+// storage bucket. synthesizeIdentity enforces this invariant.
+func synthesizeSubjectFromAccessToken(accessToken string) string {
+	sum := sha256.Sum256([]byte(accessToken))
+	return synthesizedSubjectPrefix + hex.EncodeToString(sum[:16])
+}
+
+// synthesizeIdentity builds a synthesized Identity for an OAuth2 upstream
+// with no userinfo endpoint. Returns ErrIdentityResolutionFailed when the
+// access token is empty: sha256("") is the well-known constant
+// e3b0c44298fc1c14…, so synthesizing a subject from an empty token would
+// collapse every affected session onto a single (UserID, ProviderID)
+// storage bucket — a cross-tenant state-mixing hazard. Defense-in-depth:
+// convertOAuth2Token already rejects empty AccessToken at exchange time,
+// so this guard is unreachable today through ExchangeCodeForIdentity. It
+// exists so a future code path (e.g., a custom token-response mapping
+// that drops the field) cannot bypass the invariant.
+func synthesizeIdentity(tokens *Tokens) (*Identity, error) {
+	if tokens.AccessToken == "" {
+		return nil, fmt.Errorf("%w: empty access token, cannot synthesize subject", ErrIdentityResolutionFailed)
+	}
 	return &Identity{
-		Tokens:  tokens,
-		Subject: userInfo.Subject,
-		Name:    userInfo.Name,
-		Email:   userInfo.Email,
+		Tokens:    tokens,
+		Subject:   synthesizeSubjectFromAccessToken(tokens.AccessToken),
+		Synthetic: true,
 	}, nil
 }
 
+// tokenExchangeResult bundles the outputs of a successful token exchange:
+// the obtained tokens, any identity extracted from the token response body,
+// and any error from the identity extraction step. The exchange-level error
+// is returned as the function's own error return value.
+//
+// extractionErr is populated when IdentityFromToken is configured but the
+// extractor could not resolve the subject path. It carries operator-actionable
+// diagnostics (path name, type description) and already wraps
+// ErrIdentityResolutionFailed. The caller must check extractionErr when
+// identity is nil and IdentityFromToken is set.
+type tokenExchangeResult struct {
+	tokens        *Tokens
+	identity      *partialIdentity
+	extractionErr error
+}
+
 // exchangeCodeForTokens exchanges an authorization code for tokens with the upstream IDP.
-func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, codeVerifier string) (*Tokens, error) {
+// It returns a tokenExchangeResult containing the tokens, any identity extracted from
+// the token response body, and any extraction error. The function error is the
+// exchange-level error (network, HTTP, token parsing).
+func (p *BaseOAuth2Provider) exchangeCodeForTokens(
+	ctx context.Context, code, codeVerifier string,
+) (*tokenExchangeResult, error) {
 	if code == "" {
 		return nil, errors.New("authorization code is required")
 	}
 
-	slog.Info("exchanging authorization code for tokens",
+	slog.Debug("exchanging authorization code for tokens",
 		"token_endpoint", p.config.TokenEndpoint,
 		"has_pkce_verifier", codeVerifier != "",
 	)
 
-	// Wrap HTTP client with token response rewriter if mapping is configured.
-	// This normalizes non-standard responses (e.g., GovSlack's nested fields)
-	// before the oauth2 library parses them, keeping the standard exchange flow.
-	httpClient := wrapHTTPClientWithMapping(p.httpClient, p.config.TokenResponseMapping, p.config.TokenEndpoint)
+	// Wrap HTTP client with token response rewriter if mapping or identity extraction
+	// is configured. At auth-code time, both mapping (field normalization) and
+	// identityCfg (identity extraction) may be active together. Keep a reference to
+	// the rewriter so we can read extractedIdentity and extractionErr after Exchange returns.
+	httpClient, rewriter := wrapHTTPClientForTokenExchange(
+		p.httpClient, p.config.TokenResponseMapping, p.config.IdentityFromToken, p.config.TokenEndpoint,
+	)
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
 	// Build exchange options
@@ -457,37 +683,62 @@ func (p *BaseOAuth2Provider) exchangeCodeForTokens(ctx context.Context, code, co
 		return nil, err
 	}
 
-	slog.Info("authorization code exchange successful",
+	slog.Debug("authorization code exchange successful",
 		"has_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 
-	return tokens, nil
+	// Read any identity and extraction error captured by the rewriter during the
+	// token round-trip. rewriter is nil when neither mapping nor identityCfg is
+	// configured; nil-safe.
+	result := &tokenExchangeResult{tokens: tokens}
+	if rewriter != nil {
+		result.identity = rewriter.extractedIdentity
+		result.extractionErr = rewriter.extractionErr
+	}
+
+	return result, nil
 }
 
 // RefreshTokens refreshes the upstream IDP tokens.
+//
+// Sends `scope` explicitly. RFC 6749 §6 makes the param optional and says the
+// AS SHOULD preserve original scopes on omission, but some ASes (notably
+// Entra ID v1) silently narrow refreshed tokens to the user's default consent
+// set when `scope` is omitted, dropping custom resource scopes.
+//
+// Uses oauth2.Config.Exchange with SetAuthURLParam overrides (mirroring the
+// pattern in pkg/auth/oauth/non_caching_refresher.go) because the standard
+// library's TokenSource refresh path doesn't expose a way to inject scope.
+// The empty code= side-effect is tolerated — ASes dispatch on grant_type first.
 func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ string) (*Tokens, error) {
 	if refreshToken == "" {
 		return nil, errors.New("refresh token is required")
 	}
 
-	slog.Info("refreshing tokens",
+	slog.Debug("refreshing tokens",
 		"token_endpoint", p.config.TokenEndpoint,
+		"scope_count", len(p.oauth2Config.Scopes),
 	)
 
 	// Wrap HTTP client with token response rewriter if mapping is configured.
-	httpClient := wrapHTTPClientWithMapping(p.httpClient, p.config.TokenResponseMapping, p.config.TokenEndpoint)
+	// Identity extraction (identityCfg) is intentionally nil here: per Snowflake's
+	// contract and the general design, the username/identity field is only present
+	// in the initial auth-code response and is omitted on refresh. Identity is
+	// cached at auth-code time and read from session storage on subsequent requests.
+	// The rewriter is discarded because refresh does not produce identity.
+	httpClient, _ := wrapHTTPClientForTokenExchange(p.httpClient, p.config.TokenResponseMapping, nil, p.config.TokenEndpoint)
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, httpClient)
 
-	// Create an expired token with the refresh token to trigger refresh
-	expiredToken := &oauth2.Token{
-		RefreshToken: refreshToken,
-		Expiry:       time.Now().Add(-time.Hour), // Expired token forces refresh
+	opts := []oauth2.AuthCodeOption{
+		oauth2.SetAuthURLParam("grant_type", "refresh_token"),
+		oauth2.SetAuthURLParam("refresh_token", refreshToken),
+	}
+	if len(p.oauth2Config.Scopes) > 0 {
+		opts = append(opts, oauth2.SetAuthURLParam("scope", strings.Join(p.oauth2Config.Scopes, " ")))
 	}
 
-	// Use TokenSource to get a new token via refresh
-	tokenSource := p.oauth2Config.TokenSource(ctx, expiredToken)
-	token, err := tokenSource.Token()
+	token, err := p.oauth2Config.Exchange(ctx, "", opts...)
 	if err != nil {
 		return nil, formatOAuth2Error(err, "token request failed")
 	}
@@ -496,10 +747,16 @@ func (p *BaseOAuth2Provider) RefreshTokens(ctx context.Context, refreshToken, _ 
 	if err != nil {
 		return nil, err
 	}
+	// AS may not issue a new refresh token (RFC 6749 §6); preserve the old one.
+	if tokens.RefreshToken == "" {
+		tokens.RefreshToken = refreshToken
+	}
 
-	slog.Info("token refresh successful",
-		"has_new_refresh_token", tokens.RefreshToken != "",
-		"expires_at", tokens.ExpiresAt.Format(time.RFC3339),
+	slog.Debug("token refresh successful",
+		// Read from token (pre-§6-fallback) so the log accurately reflects
+		// whether the AS rotated the refresh token vs the fallback kicking in.
+		"has_new_refresh_token", token.RefreshToken != "",
+		"expires_at", expiresAtLogValue(tokens.ExpiresAt),
 	)
 
 	return tokens, nil
@@ -629,11 +886,23 @@ func formatOAuth2Error(err error, prefix string) error {
 // newHTTPClientForHost creates an HTTP client configured for the given host.
 // It enables HTTP and private IPs only for localhost (development/testing),
 // or when INSECURE_DISABLE_URL_VALIDATION is set (e.g. Kubernetes dev environments).
-func newHTTPClientForHost(host string) (*http.Client, error) {
-	allowInsecure := networking.IsLocalhost(host) ||
-		strings.EqualFold(os.Getenv("INSECURE_DISABLE_URL_VALIDATION"), "true")
-	return networking.NewHttpClientBuilder().
-		WithInsecureAllowHTTP(allowInsecure).
-		WithPrivateIPs(allowInsecure).
-		Build()
+// allowPrivateIPs widens only the private-IP gate: it permits connections to
+// RFC-1918/link-local addresses (e.g. in-cluster providers) without enabling
+// the HTTP scheme for non-localhost hosts.
+//
+// The host-scoped guard policy lives in networking.NewHostScopedClientBuilder
+// so this provider path and the DCR resolver share one implementation.
+//
+// Unlike the DCR resolver's guarded client, this one deliberately leaves
+// keep-alive enabled: the returned client is stored on BaseOAuth2Provider and
+// reused for many token-refresh/userinfo calls over the provider's lifetime
+// against a single operator-configured host, so disabling keep-alive here
+// would pay a fresh TCP+TLS handshake on every call. This trades a narrower
+// window — a DNS change for that fixed host between connection reuses is not
+// re-checked mid-lifetime — for avoiding that cost on a hot path; the DCR
+// resolver's per-request-host, low-frequency calls don't have the same
+// trade-off, hence the difference. If this provider's threat model changes
+// (e.g. it starts dialing caller-varying hosts), revisit this decision.
+func newHTTPClientForHost(host string, allowPrivateIPs, insecureAllowHTTP bool) (*http.Client, error) {
+	return networking.NewHostScopedClientBuilder(host, allowPrivateIPs, insecureAllowHTTP).Build()
 }

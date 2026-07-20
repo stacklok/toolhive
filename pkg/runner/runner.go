@@ -17,6 +17,7 @@ import (
 
 	"golang.org/x/oauth2"
 
+	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
@@ -166,6 +167,24 @@ func (c *RunConfig) GetPort() int {
 //
 //nolint:gocyclo // This function is complex but manageable
 func (r *Runner) Run(ctx context.Context) error {
+	// Resolve session TTL once so both the transport proxy and Redis storage use
+	// the same effective value, rather than each applying their own zero-fallback
+	// independently. SessionTTL is stored as a Go duration string so the
+	// runconfig wire format does not depend on nanosecond integers.
+	effectiveSessionTTL := session.DefaultSessionTTL
+	if r.Config.SessionTTL != "" {
+		parsed, err := time.ParseDuration(r.Config.SessionTTL)
+		if err != nil {
+			return fmt.Errorf("invalid session_ttl %q: %w", r.Config.SessionTTL, err)
+		}
+		if parsed < 0 {
+			return fmt.Errorf("session_ttl must be non-negative, got %s", parsed)
+		}
+		if parsed > 0 {
+			effectiveSessionTTL = parsed
+		}
+	}
+
 	// Create transport with runtime
 	transportConfig := types.Config{
 		Type:              r.Config.Transport,
@@ -177,6 +196,7 @@ func (r *Runner) Run(ctx context.Context) error {
 		Debug:             r.Config.Debug,
 		TrustProxyHeaders: r.Config.TrustProxyHeaders,
 		EndpointPrefix:    r.Config.EndpointPrefix,
+		SessionTTL:        effectiveSessionTTL,
 	}
 
 	// Set proxy mode for stdio transport
@@ -243,6 +263,27 @@ func (r *Runner) Run(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("failed to add header forward middleware: %w", err)
 		}
+	}
+
+	// Origin-header validation (DNS-rebinding protection per MCP 2025-11-25
+	// §"Security Warning") is wired here, after both middleware-population
+	// paths, because it is the single place where Host/Port/AllowedOrigins are
+	// fully resolved: the CLI builder (WithMiddlewareFromFlags) defers port
+	// resolution to validateConfig, so the effective port is not known at
+	// builder time.
+	var err error
+	r.Config.MiddlewareConfigs, err = prependOriginMiddleware(r.Config.MiddlewareConfigs, r.Config)
+	if err != nil {
+		return fmt.Errorf("failed to add origin middleware: %w", err)
+	}
+
+	// Body-size limit is always the outermost middleware, regardless of how the
+	// chain was assembled (PopulateMiddlewareConfigs above, or WithMiddlewareFromFlags
+	// which pre-populates the slice and takes the else branch). Idempotent, so the
+	// operator/Populate path is a no-op here.
+	r.Config.MiddlewareConfigs, err = addBodyLimitMiddleware(r.Config.MiddlewareConfigs)
+	if err != nil {
+		return fmt.Errorf("failed to add body limit middleware: %w", err)
 	}
 
 	// Initialize embedded auth server if configured.
@@ -341,6 +382,7 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.Config.TargetHost,
 			r.Config.Publish,
 			scalingConfig,
+			r.Config.MCPServerGeneration,
 		)
 		if err != nil {
 			return fmt.Errorf("failed to set up workload: %w", err)
@@ -362,12 +404,11 @@ func (r *Runner) Run(ctx context.Context) error {
 		if keyPrefix == "" {
 			keyPrefix = "thv:proxy:session:"
 		}
-		storage, err := session.NewRedisStorage(ctx, session.RedisConfig{
-			Addr:      redisCfg.Address,
-			Password:  os.Getenv(session.RedisPasswordEnvVar),
-			DB:        int(redisCfg.DB),
-			KeyPrefix: keyPrefix,
-		}, session.DefaultSessionTTL)
+		storage, err := session.NewRedisStorage(ctx, tcredis.Config{
+			Addr:     redisCfg.Address,
+			Password: os.Getenv(session.RedisPasswordEnvVar),
+			DB:       int(redisCfg.DB),
+		}, keyPrefix, effectiveSessionTTL)
 		if err != nil {
 			return fmt.Errorf("failed to create Redis session storage: %w", err)
 		}
@@ -401,7 +442,25 @@ func (r *Runner) Run(ctx context.Context) error {
 			r.monitoringCtx, r.monitoringCancel = context.WithCancel(ctx)
 			// Create adapter to bridge statuses.StatusManager to auth.StatusUpdater
 			adapter := &statusManagerAdapter{sm: r.statusManager}
-			r.authenticatedTokenSource = auth.NewMonitoredTokenSource(r.monitoringCtx, tokenSource, r.Config.BaseName, adapter)
+
+			// Capture the upstream issuer and resolved client_id so the DCR
+			// remediation warning emitted by isTransientNetworkError on a
+			// permanent 4xx (indicating a stale RFC 7591 registration)
+			// carries enough context for an operator to identify which
+			// upstream AS + client_id to re-register. Precedence (cached
+			// CIMD > cached DCR > static) lives next to
+			// resolveClientCredentials in pkg/auth/remote so both call
+			// sites stay in sync.
+			upstream, clientID := r.Config.RemoteAuthConfig.LogContext()
+
+			r.authenticatedTokenSource = auth.NewMonitoredTokenSource(
+				r.monitoringCtx,
+				tokenSource,
+				r.Config.BaseName,
+				upstream,
+				clientID,
+				adapter,
+			)
 			tokenSource = r.authenticatedTokenSource
 			r.authenticatedTokenSource.StartBackgroundMonitoring()
 		}
@@ -496,8 +555,11 @@ func (r *Runner) Run(ctx context.Context) error {
 	// can cause issues as the behavior is not specified by the MCP spec
 	if transportType != "stdio" {
 		// Repeatedly try calling initialize until it succeeds (up to 5 minutes)
-		// Some servers (like mcp-optimizer) can take significant time to start up
-		if err := waitForInitializeSuccess(ctx, serverURL, transportType, 5*time.Minute); err != nil {
+		// Some servers (like mcp-optimizer) can take significant time to start up.
+		// When OIDC auth is configured, the local proxy rejects the unauthenticated
+		// probe with 401/403, which still indicates the server is ready.
+		authExpected := r.Config.OIDCConfig != nil
+		if err := waitForInitializeSuccess(ctx, serverURL, transportType, authExpected, 5*time.Minute); err != nil {
 			slog.Warn("initialize not successful, but continuing", "error", err)
 			// Continue anyway to maintain backward compatibility, but log a warning
 		}
@@ -842,11 +904,40 @@ func (r *Runner) Cleanup(ctx context.Context) error {
 	return lastErr
 }
 
+// isReadyStatus reports whether an HTTP status code from the readiness probe indicates
+// the MCP server is ready. A 200 always means ready. When authExpected is true, a 401 or
+// 403 also means ready: it proves the local proxy listener is up and its auth middleware
+// is enforcing credentials against the unauthenticated probe.
+//
+// Today ToolHive's OIDC validator rejects the tokenless probe with 401; 403 is accepted
+// defensively to cover upstream IdP or edge behavior, not any current ToolHive code path.
+func isReadyStatus(statusCode int, authExpected bool) bool {
+	if statusCode == http.StatusOK {
+		return true
+	}
+	return authExpected && (statusCode == http.StatusUnauthorized || statusCode == http.StatusForbidden)
+}
+
 // waitForInitializeSuccess repeatedly checks if the MCP server is ready to accept requests.
 // This prevents timing issues where clients try to connect before the server is fully ready.
 // It makes repeated attempts with exponential backoff up to a maximum timeout.
+//
+// The probe is unauthenticated and targets ToolHive's own local proxy. When authExpected
+// is true (the workload has OIDC configured), an HTTP 401 or 403 is treated as "ready":
+// it proves the proxy listener is up and the auth middleware is enforcing credentials. When
+// authExpected is false, only HTTP 200 is accepted.
+//
+// Note that in the OIDC case readiness reflects only the proxy/auth layer being up — the
+// auth middleware rejects the probe before the request reaches the backend, so this probe
+// does not confirm backend MCP server initialization.
+//
 // Note: This function should not be called for STDIO transport.
-func waitForInitializeSuccess(ctx context.Context, serverURL, transportType string, maxWaitTime time.Duration) error {
+func waitForInitializeSuccess(
+	ctx context.Context,
+	serverURL, transportType string,
+	authExpected bool,
+	maxWaitTime time.Duration,
+) error {
 	// Determine the endpoint and method to use based on transport type
 	var endpoint string
 	var method string
@@ -918,11 +1009,10 @@ func waitForInitializeSuccess(ctx context.Context, serverURL, transportType stri
 				//nolint:errcheck // Ignoring close error on response body in error path
 				defer resp.Body.Close()
 
-				// For GET (SSE), accept 200 OK
-				// For POST (streamable-http), also accept 200 OK
-				if resp.StatusCode == http.StatusOK {
+				if isReadyStatus(resp.StatusCode, authExpected) {
 					elapsed := time.Since(startTime)
-					slog.Debug("MCP server is ready", "elapsed", elapsed, "attempt", attempt)
+					slog.Debug("MCP server is ready", //nolint:gosec // G706: status code and attempt are integers
+						"elapsed", elapsed, "attempt", attempt, "status_code", resp.StatusCode)
 					return nil
 				}
 

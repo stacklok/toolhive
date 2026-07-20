@@ -98,6 +98,9 @@ func InjectUpstreamProvider(src *authorizers.Config, providerName string) (*auth
 // Factory implements the authorizers.AuthorizerFactory interface for Cedar.
 type Factory struct{}
 
+// ConfigKey returns the JSON key for Cedar-specific configuration ("cedar").
+func (*Factory) ConfigKey() string { return "cedar" }
+
 // ValidateConfig validates the Cedar-specific configuration.
 // It receives the full raw config and extracts the Cedar-specific portion.
 func (*Factory) ValidateConfig(rawConfig json.RawMessage) error {
@@ -201,9 +204,50 @@ type ConfigOptions struct {
 
 	// RoleClaimName is the JWT claim key that contains role membership for the
 	// principal. When set, the claim is extracted separately from GroupClaimName
-	// and both are mapped to Cedar THVGroup entities.
+	// and both are mapped to the configured group entity type (default "THVGroup").
 	// When empty, no role extraction is performed (backward compatible).
 	RoleClaimName string `json:"role_claim_name,omitempty" yaml:"role_claim_name,omitempty"`
+
+	// GroupEntityType is the Cedar entity type name used for Client parent UIDs
+	// synthesised from JWT group/role claims. Defaults to "THVGroup" when empty,
+	// preserving the original behaviour. Must be a valid Cedar identifier — namespaced
+	// names (e.g. "Platform::Group") are not yet supported and are rejected at
+	// construction. See issue #5072.
+	GroupEntityType string `json:"group_entity_type,omitempty" yaml:"group_entity_type,omitempty"`
+}
+
+// validateGroupEntityType validates a GroupEntityType value. Empty string is
+// valid — it means "use the default" and is resolved by NewEntityFactory.
+// Non-empty values must:
+//   - not contain Cedar's "::" namespace separator (out of scope per #5072), and
+//   - parse cleanly as a Cedar identifier when used as an entity type in a
+//     synthetic policy. We delegate the identifier-grammar check to cedar-go's
+//     policy parser so that future grammar refinements in upstream cedar-go are
+//     picked up automatically — this is the source of truth for Cedar identifier
+//     validity. Hand-rolling the grammar (reserved words, ANYIDENT regex,
+//     __cedar prefix) duplicates rules cedar-go already enforces.
+func validateGroupEntityType(s string) error {
+	if s == "" {
+		return nil
+	}
+
+	// Check for namespace separator first: namespaced types are out of scope.
+	// This must run before the cedar-go round-trip because the Cedar parser
+	// accepts "Foo::Bar" as a valid namespaced type, but we reject it for
+	// project-specific reasons.
+	if strings.Contains(s, "::") {
+		return fmt.Errorf("group_entity_type %q contains \"::\": namespaced entity types are not yet supported", s)
+	}
+
+	// Round-trip through cedar-go's policy parser. If the synthesized policy
+	// text fails to parse, the type name violates Cedar's identifier grammar
+	// (reserved word, invalid character, leading digit, etc.).
+	synth := fmt.Sprintf(`permit(principal in %s::"x", action, resource);`, s)
+	var p cedar.Policy
+	if err := p.UnmarshalCedar([]byte(synth)); err != nil {
+		return fmt.Errorf("group_entity_type %q is not a valid Cedar identifier: %w", s, err)
+	}
+	return nil
 }
 
 // NewCedarAuthorizer creates a new Cedar authorizer.
@@ -212,10 +256,14 @@ type ConfigOptions struct {
 // If a second runtime-injected value is needed, bundle both into a
 // RuntimeContext struct to keep the factory interface stable.
 func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.Authorizer, error) {
+	if err := validateGroupEntityType(options.GroupEntityType); err != nil {
+		return nil, err
+	}
+
 	authorizer := &Authorizer{
 		policySet:               cedar.NewPolicySet(),
 		entities:                cedar.EntityMap{},
-		entityFactory:           NewEntityFactory(),
+		entityFactory:           NewEntityFactory(cedar.EntityType(options.GroupEntityType)),
 		primaryUpstreamProvider: options.PrimaryUpstreamProvider,
 		groupClaimName:          options.GroupClaimName,
 		roleClaimName:           options.RoleClaimName,
@@ -242,6 +290,23 @@ func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.A
 	if options.EntitiesJSON != "" {
 		if err := json.Unmarshal([]byte(options.EntitiesJSON), &authorizer.entities); err != nil {
 			return nil, fmt.Errorf("failed to parse entities JSON: %w", err)
+		}
+
+		// Warn once if entities_json contains stale THVGroup entities while
+		// GroupEntityType is configured to a different type. Cedar's `in` operator
+		// compares entity UIDs by type name, so the pre-loaded THVGroup entities will
+		// never match the synthesised parents and any policy referencing them will
+		// silently deny every request.
+		if options.GroupEntityType != "" && options.GroupEntityType != string(EntityTypeTHVGroup) {
+			for uid := range authorizer.entities {
+				if uid.Type == EntityTypeTHVGroup {
+					slog.Warn("Cedar entities_json contains THVGroup entities but GroupEntityType is set to a different value; "+
+						"synthesised group parents will not match these pre-loaded entities and policies that reference them will silently deny",
+						"configured_group_entity_type", options.GroupEntityType,
+						"stale_entity_uid", uid.String())
+					break
+				}
+			}
 		}
 	}
 
@@ -325,9 +390,10 @@ func (a *Authorizer) GetEntityFactory() *EntityFactory {
 // - resource: The object being accessed (e.g., "Tool::weather")
 // - context: Additional information about the request
 //
-// Note: group-based Cedar policies (e.g. "principal in THVGroup::\"eng\"") require
-// that THVGroup parent entities are included in the entity map. See #4768 for the
-// group parent wiring that will set these up via CreatePrincipalEntity.
+// Note: group-based Cedar policies (e.g. "principal in THVGroup::\"eng\"" with the
+// default group entity type — see ConfigOptions.GroupEntityType) require that
+// group parent entities are included in the entity map. See #4768 for the group
+// parent wiring that will set these up via CreatePrincipalEntity.
 // - entities: Optional Cedar entity map with attributes
 func (a *Authorizer) IsAuthorized(
 	principal, action, resource string,
@@ -429,6 +495,30 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 		}
 		parsedClaims, err := parseUpstreamJWTClaims(upstreamToken)
 		if err != nil {
+			// Distinguish "not JWT-shaped" (opaque OAuth 2.0 access token —
+			// Google's ya29.*, GitHub's gho_*, etc.) from "JWT-shaped but
+			// malformed/tampered" (a JWT with three segments that fails to
+			// parse). Only fall back for the former; preserve the deny for
+			// the latter so a tampered upstream JWT cannot bypass policy.
+			//
+			// The embedded auth server already mirrors the upstream OIDC
+			// sub/email/name claims into its issued AS token (see
+			// pkg/authserver/server/session/session.go). For opaque-token
+			// providers, falling back to identity.Claims preserves identity
+			// for policies referencing standard OIDC claims; policies that
+			// reference upstream-only claims (groups, hd, custom namespaced
+			// claims) will see those attributes as absent and must be
+			// authored defensively (`has(claim_groups) && ...`).
+			if !looksLikeJWT(upstreamToken) {
+				// The Warn shares claimKeyLog with logClaimKeys below so a busy
+				// Google/GitHub deployment does not emit one line per tool call.
+				a.claimKeyLog.Do(func() {
+					slog.Warn("upstream token is not a JWT; falling back to request-token claims for Cedar evaluation",
+						"provider", a.primaryUpstreamProvider)
+				})
+				a.logClaimKeys("token-fallback", jwt.MapClaims(identity.Claims))
+				return jwt.MapClaims(identity.Claims), nil
+			}
 			return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
 				a.primaryUpstreamProvider, err)
 		}
@@ -439,6 +529,13 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 	claims := jwt.MapClaims(identity.Claims)
 	a.logClaimKeys("token", claims)
 	return claims, nil
+}
+
+// looksLikeJWT returns true when the token has the three-segment shape of a
+// JOSE-compact-serialized JWT (`header.payload.signature`). It does not
+// validate the contents; the parser handles that.
+func looksLikeJWT(tokenStr string) bool {
+	return strings.Count(tokenStr, ".") == 2
 }
 
 // logClaimKeys emits a rate-limited DEBUG log listing the JWT claim keys
@@ -567,7 +664,9 @@ func (a *Authorizer) authorizeToolCall(
 	})
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -604,7 +703,9 @@ func (a *Authorizer) authorizePromptGet(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -644,7 +745,9 @@ func (a *Authorizer) authorizeResourceRead(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -682,7 +785,9 @@ func (a *Authorizer) authorizeFeatureList(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -755,8 +860,9 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 	}
 
 	// Extract groups from the group claim (or well-known defaults) and the
-	// role claim, merge, and dedup. Both claim sources map to Cedar THVGroup
-	// entities. Extraction runs BEFORE preprocessClaims so the raw claim
+	// role claim, merge, and dedup. Both claim sources map to the configured
+	// group entity type (default "THVGroup"). Extraction runs BEFORE
+	// preprocessClaims so the raw claim
 	// values are available.
 	// The identity pointer is not mutated here because Identity MUST NOT be
 	// modified after it is placed in the request context (concurrent reads).

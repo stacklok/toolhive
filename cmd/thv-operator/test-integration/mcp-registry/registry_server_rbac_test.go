@@ -12,7 +12,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 )
 
@@ -49,9 +49,9 @@ var _ = Describe("MCPRegistry RBAC Resources", Label("k8s", "registry", "rbac"),
 				Create(registryHelper)
 
 			// Wait for registry to be reconciled
-			statusHelper.WaitForPhaseAny(registry.Name, []mcpv1alpha1.MCPRegistryPhase{
-				mcpv1alpha1.MCPRegistryPhaseReady,
-				mcpv1alpha1.MCPRegistryPhasePending,
+			statusHelper.WaitForPhaseAny(registry.Name, []mcpv1beta1.MCPRegistryPhase{
+				mcpv1beta1.MCPRegistryPhaseReady,
+				mcpv1beta1.MCPRegistryPhasePending,
 			}, MediumTimeout)
 
 			resourceName := registryapi.GetServiceAccountName(registry)

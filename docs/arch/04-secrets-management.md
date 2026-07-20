@@ -26,7 +26,9 @@ graph LR
 
 ## Provider Types
 
-**Implementation**: `pkg/secrets/types.go`
+**Implementation**:
+- `pkg/secrets/factory.go` (`ProviderType` enum: `EncryptedType`, `OnePasswordType`, `EnvironmentType`)
+- `pkg/secrets/types.go` defines the `Provider` interface (the contract every provider implements) and the `EnvVarPrefix` constant (`"TOOLHIVE_SECRET_"`) used by the environment provider
 
 ### 1. Encrypted
 
@@ -67,19 +69,19 @@ In Kubernetes/operator mode, ToolHive uses **native Kubernetes Secrets** instead
 MCPServer resources reference Kubernetes Secrets via `SecretRef`. Secrets are injected as environment variables using Kubernetes `SecretKeyRef`.
 
 **Implementation**:
-- CRD types: `cmd/thv-operator/api/v1alpha1/mcpserver_types.go`
-- Pod builder: `cmd/thv-operator/controllers/mcpserver_podtemplatespec_builder.go`
+- CRD types: `cmd/thv-operator/api/v1beta1/mcpserver_types.go`
+- Pod builder: `cmd/thv-operator/pkg/controllerutil/podtemplatespec_builder.go`
 
 ### External Authentication Secrets
 
 OAuth/OIDC client secrets are stored in Kubernetes Secrets and referenced using `SecretKeyRef`:
 
 1. **Token Exchange (MCPExternalAuthConfig)**: OAuth 2.0 client secrets for RFC-8693 token exchange flows
-   - **Implementation**: `cmd/thv-operator/api/v1alpha1/mcpexternalauthconfig_types.go`
+   - **Implementation**: `cmd/thv-operator/api/v1beta1/mcpexternalauthconfig_types.go`
    - **Secret injection**: `cmd/thv-operator/pkg/controllerutil/tokenexchange.go`
 
 2. **OIDC Authentication (MCPOIDCConfig)**: OIDC client secrets for token introspection
-   - **CRD field**: `InlineOIDCSharedConfig.ClientSecretRef` in `cmd/thv-operator/api/v1alpha1/mcpoidcconfig_types.go`
+   - **CRD field**: `spec.inline.clientSecretRef` on the `MCPOIDCConfig` resource (Go: `MCPOIDCConfig.Spec.Inline.ClientSecretRef`, where `Inline` is of type `*InlineOIDCSharedConfig`), defined in `cmd/thv-operator/api/v1beta1/mcpoidcconfig_types.go`
    - **Secret injection**: `cmd/thv-operator/pkg/controllerutil/oidc.go`
    - **Runtime loading**: `pkg/auth/token.go` (via `TOOLHIVE_OIDC_CLIENT_SECRET` environment variable)
 
@@ -134,7 +136,7 @@ thv run my-server --secret "api-key,target=API_KEY"
 - Log exposure: ✅
 - Malicious container: ❌ (has env access)
 
-**Implementation**: `pkg/secrets/aes/aes.go`, `pkg/secrets/keyring/`
+**Implementation**: `pkg/secrets/aes/aes.go` (AES-256-GCM), `pkg/secrets/keyring/` (OS keyring storage), `pkg/secrets/factory.go` (SHA-256 key derivation via `sha256.Sum256(secretsPassword)`)
 
 ## Integration Points
 

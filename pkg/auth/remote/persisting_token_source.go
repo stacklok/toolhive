@@ -12,6 +12,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // TokenPersister is a callback function that persists OAuth refresh tokens.
@@ -98,7 +99,11 @@ func CreateTokenSourceFromCached(
 	if resource != "" {
 		base = oauth.NewResourceTokenSource(config, token, resource)
 	} else {
-		base = config.TokenSource(context.TODO(), token)
+		// Inject an HTTP client whose transport sets the ToolHive User-Agent
+		// so the oauth2 library does not fall back to Go-http-client/2.0 on
+		// token refresh requests.
+		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, oauthproto.NewHTTPClient())
+		base = config.TokenSource(ctx, token)
 	}
 
 	return oauth2.ReuseTokenSource(token, base)

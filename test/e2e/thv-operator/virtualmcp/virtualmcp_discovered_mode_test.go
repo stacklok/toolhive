@@ -12,14 +12,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -49,13 +50,13 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			"Test MCP Group for VirtualMCP discovered mode E2E tests", timeout, pollingInterval)
 
 		By("Creating first backend MCPServer - fetch (streamable-http)")
-		backend1 := &mcpv1alpha1.MCPServer{
+		backend1 := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend1Name,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.MCPServerSpec{
+				GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.GofetchServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -65,13 +66,13 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		Expect(k8sClient.Create(ctx, backend1)).To(Succeed())
 
 		By("Creating second backend MCPServer - osv (streamable-http)")
-		backend2 := &mcpv1alpha1.MCPServer{
+		backend2 := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend2Name,
 				Namespace: testNamespace,
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
-				GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+			Spec: mcpv1beta1.MCPServerSpec{
+				GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				Image:     images.OSVMCPServerImage,
 				Transport: "streamable-http",
 				ProxyPort: 8080,
@@ -82,7 +83,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 
 		By("Waiting for backend MCPServers to be ready")
 		Eventually(func() error {
-			server := &mcpv1alpha1.MCPServer{}
+			server := &mcpv1beta1.MCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      backend1Name,
 				Namespace: testNamespace,
@@ -92,14 +93,14 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			}
 
 			// Check for Running phase
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
+			if server.Status.Phase == mcpv1beta1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend 1 not ready yet, phase: %s", server.Status.Phase)
 		}, timeout, pollingInterval).Should(Succeed(), "Backend 1 should be ready")
 
 		Eventually(func() error {
-			server := &mcpv1alpha1.MCPServer{}
+			server := &mcpv1beta1.MCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      backend2Name,
 				Namespace: testNamespace,
@@ -109,7 +110,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			}
 
 			// Check for Running phase
-			if server.Status.Phase == mcpv1alpha1.MCPServerPhaseReady {
+			if server.Status.Phase == mcpv1beta1.MCPServerPhaseReady {
 				return nil
 			}
 			return fmt.Errorf("backend 2 not ready yet, phase: %s", server.Status.Phase)
@@ -120,26 +121,22 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		By("Backend MCPServers are running (ClusterIP services)")
 
 		By("Creating VirtualMCPServer in discovered mode")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					// Discovered mode is the default - tools from all backends in the group are automatically discovered
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix", // Use prefix strategy to avoid conflicts
-					},
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				// Discovered mode is the default - tools from all backends in the group are automatically discovered
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix", // Use prefix strategy to avoid conflicts
 				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -159,18 +156,13 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace)
 		if err := k8sClient.Delete(ctx, vmcpServer); err != nil {
 			GinkgoWriter.Printf("Warning: failed to delete VirtualMCPServer: %v\n", err)
 		}
 
 		By("Cleaning up backend MCPServers")
-		backend1 := &mcpv1alpha1.MCPServer{
+		backend1 := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend1Name,
 				Namespace: testNamespace,
@@ -180,7 +172,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			GinkgoWriter.Printf("Warning: failed to delete backend 1: %v\n", err)
 		}
 
-		backend2 := &mcpv1alpha1.MCPServer{
+		backend2 := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backend2Name,
 				Namespace: testNamespace,
@@ -191,7 +183,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 		}
 
 		By("Cleaning up MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
+		mcpGroup := &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,
@@ -392,7 +384,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 
 	Context("when verifying discovered mode behavior", func() {
 		It("should have correct aggregation configuration", func() {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -424,7 +416,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 
 		AfterAll(func() {
 			// Clean up the dynamic backend
-			backend3 := &mcpv1alpha1.MCPServer{
+			backend3 := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      backend3Name,
 					Namespace: testNamespace,
@@ -473,13 +465,13 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 
 		It("should detect new backend and update tool list", func() {
 			By("Adding third backend MCPServer")
-			backend3 := &mcpv1alpha1.MCPServer{
+			backend3 := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      backend3Name,
 					Namespace: testNamespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					GroupRef:  &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+				Spec: mcpv1beta1.MCPServerSpec{
+					GroupRef:  &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 					Image:     images.GofetchServerImage,
 					Transport: "streamable-http",
 					ProxyPort: 8080,
@@ -490,7 +482,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 
 			By("Waiting for new backend to be ready")
 			Eventually(func() error {
-				server := &mcpv1alpha1.MCPServer{}
+				server := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      backend3Name,
 					Namespace: testNamespace,
@@ -498,7 +490,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 				if err != nil {
 					return err
 				}
-				if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+				if server.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 					return fmt.Errorf("backend not ready, phase: %s", server.Status.Phase)
 				}
 				return nil
@@ -595,7 +587,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 			GinkgoWriter.Printf("Before removal: %d tools\n", toolCountBefore)
 
 			By("Removing backend2 (osv)")
-			backend2 := &mcpv1alpha1.MCPServer{
+			backend2 := &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      backend2Name,
 					Namespace: testNamespace,
@@ -605,7 +597,7 @@ var _ = Describe("VirtualMCPServer Discovered Mode", Ordered, func() {
 
 			By("Waiting for backend deletion")
 			Eventually(func() bool {
-				server := &mcpv1alpha1.MCPServer{}
+				server := &mcpv1beta1.MCPServer{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      backend2Name,
 					Namespace: testNamespace,

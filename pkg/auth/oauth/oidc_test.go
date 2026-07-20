@@ -19,7 +19,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/toolhive/pkg/networking"
-	oauthproto "github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 const (
@@ -1123,7 +1123,7 @@ func TestDiscoverOIDCEndpoints_Production(t *testing.T) {
 					},
 				}
 			}
-			doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false)
+			doc, err := discoverOIDCEndpointsWithClient(ctx, issuer, client, false, false)
 
 			if tt.expectError {
 				require.Error(t, err)

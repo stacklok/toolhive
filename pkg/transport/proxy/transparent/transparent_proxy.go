@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -259,7 +260,7 @@ func WithRemoteRawQuery(rawQuery string) Option {
 }
 
 // WithStateless configures the proxy for stateless streamable-HTTP servers.
-// In stateless mode, incoming GET and DELETE requests receive 405 Method Not Allowed
+// In stateless mode, incoming GET, HEAD, and DELETE requests receive 405 Method Not Allowed
 // instead of being forwarded, and health checks use POST ping instead of GET.
 func WithStateless() Option {
 	return func(p *TransparentProxy) {
@@ -586,12 +587,25 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	isMCP := strings.HasPrefix(path, "/mcp")
 	isJSON := strings.Contains(req.Header.Get("Content-Type"), "application/json")
 	sawInitialize := false
+	revision := mcp.RevisionLegacy
 
 	if len(reqBody) > 0 &&
 		((isMCP && isJSON) ||
 			t.p.transportType == types.TransportTypeStreamableHTTP.String()) {
-		sawInitialize = t.detectInitialize(reqBody)
+		method, params, id, singleRequest, isInit := t.parseRPCRequest(reqBody)
+		sawInitialize = isInit
+		if singleRequest {
+			meta := mcp.ExtractMeta(params)
+			rev, cerr := mcp.ClassifyRevision(method, meta, req.Header.Get("MCP-Protocol-Version"))
+			if cerr != nil {
+				// Malformed Modern request: reject before the backend is ever contacted.
+				return mcp.ClassificationErrorResponse(req, id, cerr), nil
+			}
+			revision = rev
+		}
 	}
+	//nolint:gosec // G706: logging target URI from config
+	slog.Debug("classified request revision", "modern", revision == mcp.RevisionModern, "target", t.p.targetURI)
 
 	// Guard: reject non-initialize requests with unknown session IDs.
 	// When multiple proxyrunner replicas share a Redis session store,
@@ -737,6 +751,14 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 			t.p.setServerInitialized()
 			return resp, nil
 		}
+
+		// Modern (2026-07-28, stateless) has no initialize handshake, so use the
+		// first successful (HTTP 200) Modern request as the readiness signal: it
+		// lets the background health monitor begin probing this backend, which
+		// otherwise never starts for a pure-Modern server. See #5831.
+		if revision == mcp.RevisionModern && !t.p.serverInitialized() {
+			t.p.setServerInitialized()
+		}
 	}
 
 	return resp, nil
@@ -779,36 +801,56 @@ func readRequestBody(req *http.Request) ([]byte, error) {
 	return reqBody, nil
 }
 
-func (t *tracingTransport) detectInitialize(body []byte) bool {
+// parseRPCRequest parses a POST body as a JSON-RPC request in a single pass.
+//
+// If the body is a single JSON-RPC object, method/params/id are populated
+// from it and singleRequest reports whether it is a real request (has both a
+// method and a valid, non-null id) as opposed to a notification (no id) or a
+// response-shaped body (no method) — either of which is not eligible for
+// mcp.ClassifyRevision. sawInitialize reports whether method == "initialize".
+//
+// If the body is not a single JSON object (e.g. a JSON-RPC batch), method,
+// params and id are zero and singleRequest is false: batches are never
+// classified. sawInitialize is still computed by scanning the batch for any
+// member whose method is "initialize", preserving prior behavior.
+func (t *tracingTransport) parseRPCRequest(
+	body []byte,
+) (method string, params, id json.RawMessage, singleRequest, sawInitialize bool) {
+	type rpcRequest struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+		ID     json.RawMessage `json:"id"`
+	}
+
+	var single rpcRequest
+	if err := json.Unmarshal(body, &single); err == nil {
+		sawInitialize = single.Method == "initialize"
+		if sawInitialize {
+			//nolint:gosec // G706: logging target URI from config
+			slog.Debug("detected initialize method call", "target", t.p.targetURI)
+		}
+		singleRequest = single.Method != "" && len(single.ID) > 0 && string(single.ID) != "null"
+		return single.Method, single.Params, single.ID, singleRequest, sawInitialize
+	}
+
+	// JSON-RPC batch: array of objects. Only sawInitialize is computed; a
+	// batch is never eligible for revision classification.
 	type rpcMethod struct {
 		Method string `json:"method"`
 	}
-
-	// Single JSON-RPC object.
-	var single rpcMethod
-	if err := json.Unmarshal(body, &single); err == nil {
-		if single.Method == "initialize" {
-			//nolint:gosec // G706: logging target URI from config
-			slog.Debug("detected initialize method call", "target", t.p.targetURI)
-			return true
-		}
-		return false
-	}
-
-	// JSON-RPC batch: array of objects. Return true if any member is initialize.
 	var batch []rpcMethod
 	if err := json.Unmarshal(body, &batch); err != nil {
 		slog.Debug("failed to parse JSON-RPC body", "error", err)
-		return false
+		return "", nil, nil, false, false
 	}
 	for _, rpc := range batch {
 		if rpc.Method == "initialize" {
 			//nolint:gosec // G706: logging target URI from config
 			slog.Debug("detected initialize method call in batch", "target", t.p.targetURI)
-			return true
+			return "", nil, nil, false, true
 		}
 	}
-	return false
+	return "", nil, nil, false, false
 }
 
 // podBackendURL constructs a backend URL that targets the specific pod IP captured
@@ -1225,10 +1267,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// 5. Catch-all proxy handler (least specific - ServeMux routing handles precedence)
 	// Note: No manual path checking needed - ServeMux longest-match routing ensures
 	// more specific paths registered above take precedence over this catch-all.
-	// In stateless mode, wrap with a method gate that rejects GET/DELETE with 405.
-	if p.stateless {
-		finalHandler = statelessMethodGate(finalHandler)
-	}
+	finalHandler = p.methodGate(finalHandler)
 	mux.Handle("/", finalHandler)
 
 	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
@@ -1485,15 +1524,27 @@ func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
 }
 
-// statelessMethodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405.
-// Used in stateless mode where the server only supports POST.
-// HEAD is blocked alongside GET because HEAD is semantically a GET without a response body;
-// a server that cannot handle GET will not handle HEAD either.
-func statelessMethodGate(next http.Handler) http.Handler {
+// methodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405
+// when the proxy is running stateless (--stateless) or the request is tagged
+// with the Modern (stateless-only) MCP-Protocol-Version: neither has any
+// protocol use for GET/HEAD/DELETE, since Modern is unary request/response
+// over POST only.
+//
+// This check runs outermost, before auth and any other middleware: a method
+// rejection needs no identity and reveals nothing auth-gated. It is
+// deliberately header-only and never reads or otherwise touches r.Body, so it
+// must not call mcp.ClassifyRevision (which requires a body) or consume the
+// body in any way — doing so would break the body for downstream handlers.
+//
+// HEAD is blocked alongside GET because HEAD is semantically a GET without a
+// response body; a server that cannot handle GET will not handle HEAD either.
+func (p *TransparentProxy) methodGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodDelete {
+		isGateableMethod := r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodDelete
+		isModern := r.Header.Get("MCP-Protocol-Version") == mcp.MCPVersionModern
+		if isGateableMethod && (p.stateless || isModern) {
 			w.Header().Set("Allow", "POST, OPTIONS")
-			http.Error(w, "method not allowed: server is stateless (POST only)", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed: server is stateless / stateless MCP revision (POST only)", http.StatusMethodNotAllowed)
 			return
 		}
 		next.ServeHTTP(w, r)

@@ -35,6 +35,14 @@ cleanup() {
   # results artifact, not just the client-side checks.json.
   mkdir -p "${RESULTS_DIR}"
   "${THV_BINARY}" logs --proxy "${SERVER_NAME}" > "${RESULTS_DIR}/proxy-logs.txt" 2>&1 || true
+  # Backend (Node everything-server) logs: the proxy log cannot show whether the
+  # backend emitted the server->client sampling/createMessage request (SSE bodies
+  # are not logged), so capture the container's own stdout/stderr. This is the
+  # missing leg for diagnosing the tools-call-sampling round-trip flake. Must run
+  # before `thv rm`, which destroys the container.
+  "${THV_BINARY}" logs "${SERVER_NAME}" > "${RESULTS_DIR}/backend-logs.txt" 2>&1 || true
+  backend_ctr="$(docker ps -a --filter "ancestor=${IMAGE}" --format '{{.Names}}' 2>/dev/null | head -1)"
+  [ -n "${backend_ctr}" ] && docker logs "${backend_ctr}" > "${RESULTS_DIR}/backend-docker-logs.txt" 2>&1 || true
   "${THV_BINARY}" rm "${SERVER_NAME}" >/dev/null 2>&1 || true
   [ -n "${CLONE_DIR}" ] && rm -rf "${CLONE_DIR}" || true
 }
@@ -66,7 +74,7 @@ docker build -t "${IMAGE}" "${SERVER_DIR}"
 echo "==> Starting server through ToolHive"
 "${THV_BINARY}" rm -f "${SERVER_NAME}" >/dev/null 2>&1 || true
 "${THV_BINARY}" run "${IMAGE}" \
-  --transport streamable-http --target-port 3000 --name "${SERVER_NAME}"
+  --transport streamable-http --target-port 3000 --name "${SERVER_NAME}" --debug
 
 echo "==> Resolving proxy URL"
 URL=""

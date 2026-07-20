@@ -105,9 +105,15 @@ func WithDialControl(control func(network, address string, c syscall.RawConn) er
 // httpBackendClient implements vmcp.BackendClient using stacklok/toolhive-core/mcpcompat HTTP client.
 // It supports streamable-HTTP and SSE transports for backend MCP servers.
 type httpBackendClient struct {
-	// clientFactory creates MCP clients for backends.
+	// clientFactory creates MCP clients for backends. The forwarding flag is set
+	// only for the tools/call path — the sole operation during which a backend
+	// may issue server->client requests/notifications (elicitation, sampling,
+	// progress, logging). It gates the continuous-listening SSE stream and the
+	// forwarding handlers so that aggregation/list/read/prompt/complete calls do
+	// NOT open a standalone GET stream (which hangs backends that don't support
+	// one — see the multi-backend optimizer regression).
 	// Abstracted as a function to enable testing with mock clients.
-	clientFactory func(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error)
+	clientFactory func(ctx context.Context, target *vmcp.BackendTarget, forwarding bool) (*client.Client, error)
 
 	// registry manages authentication strategies for outgoing requests to backend MCP servers.
 	// Must not be nil - use UnauthenticatedStrategy for no authentication.
@@ -409,7 +415,58 @@ func (h *httpBackendClient) resolveAuthStrategy(target *vmcp.BackendTarget) (vmc
 }
 
 // defaultClientFactory creates mcpcompat MCP clients for different transport types.
-func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
+// newStreamableHTTPClient builds a streamable-HTTP backend client. It bounds the
+// response body size and — only when forwarding is requested (the tools/call path)
+// and forwarders are bound — enables continuous listening plus the elicitation/
+// sampling handlers so a backend's mid-call server->client traffic reaches the
+// downstream client. Non-forwarding calls get the plain client (no standalone GET
+// stream), which is byte-for-byte the pre-forwarding construction.
+func (*httpBackendClient) newStreamableHTTPClient(
+	ctx context.Context, target *vmcp.BackendTarget,
+	baseTransport http.RoundTripper, forwarding bool, fwd *boundForwarders,
+) (*client.Client, error) {
+	// For streamable-HTTP each MCP call is a single bounded HTTP request/response
+	// pair, so a per-response body size limit is safe.
+	sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		resp, err := baseTransport.RoundTrip(req)
+		if err != nil {
+			return nil, err
+		}
+		resp.Body = struct {
+			io.Reader
+			io.Closer
+		}{
+			Reader: io.LimitReader(resp.Body, maxResponseSize),
+			Closer: resp.Body,
+		}
+		return resp, nil
+	})
+	httpClient := &http.Client{
+		Transport: sizeLimitedTransport,
+		Timeout:   30 * time.Second,
+	}
+	transportOpts := []transport.StreamableHTTPCOption{
+		transport.WithHTTPTimeout(30 * time.Second),
+		transport.WithHTTPBasicClient(httpClient),
+	}
+	if fwd != nil && forwarding {
+		// A backend's mid-call elicitation/sampling request is routed by the go-sdk
+		// onto the standalone SSE stream (the shim server replies with
+		// application/json), so the backend client must hold that stream open for the
+		// request to arrive and be answered. Only enabled for the tools/call path:
+		// opening this GET stream against a backend that does not support one hangs
+		// the call, so aggregation/list/read/prompt/complete must not enable it.
+		transportOpts = append(transportOpts, transport.WithContinuousListening())
+		return client.NewStreamableHttpClientWithOpts(
+			target.BaseURL, transportOpts, forwardingClientOptions(ctx, fwd),
+		)
+	}
+	return client.NewStreamableHttpClient(target.BaseURL, transportOpts...)
+}
+
+func (h *httpBackendClient) defaultClientFactory(
+	ctx context.Context, target *vmcp.BackendTarget, forwarding bool,
+) (*client.Client, error) {
 	// Build transport chain (outermost to innermost, request execution order):
 	// size limit (response body) → trace propagation → identity propagation → authentication → HTTP
 	//
@@ -517,43 +574,7 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	switch target.TransportType {
 	case "streamable-http", "streamable":
 		// "streamable" is a legacy alias for "streamable-http".
-		//
-		// For streamable-HTTP each MCP call is a single bounded HTTP
-		// request/response pair, so a per-response body size limit is safe.
-		sizeLimitedTransport := roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			resp, err := baseTransport.RoundTrip(req)
-			if err != nil {
-				return nil, err
-			}
-			resp.Body = struct {
-				io.Reader
-				io.Closer
-			}{
-				Reader: io.LimitReader(resp.Body, maxResponseSize),
-				Closer: resp.Body,
-			}
-			return resp, nil
-		})
-		httpClient := &http.Client{
-			Transport: sizeLimitedTransport,
-			Timeout:   30 * time.Second,
-		}
-		transportOpts := []transport.StreamableHTTPCOption{
-			transport.WithHTTPTimeout(30 * time.Second),
-			transport.WithHTTPBasicClient(httpClient),
-		}
-		if fwd != nil {
-			// A backend's mid-call elicitation/sampling request is routed by the
-			// go-sdk onto the standalone SSE stream (the shim server replies with
-			// application/json), so the backend client must hold that stream open
-			// for the request to arrive and be answered.
-			transportOpts = append(transportOpts, transport.WithContinuousListening())
-			c, err = client.NewStreamableHttpClientWithOpts(
-				target.BaseURL, transportOpts, forwardingClientOptions(ctx, fwd),
-			)
-		} else {
-			c, err = client.NewStreamableHttpClient(target.BaseURL, transportOpts...)
-		}
+		c, err = h.newStreamableHTTPClient(ctx, target, baseTransport, forwarding, fwd)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create streamable-http client: %w", err)
 		}
@@ -580,7 +601,7 @@ func (h *httpBackendClient) defaultClientFactory(ctx context.Context, target *vm
 	// after this factory returns) so a backend's mid-call progress/logging
 	// notifications are relayed to the downstream client. OnNotification is a
 	// post-construction method, so it applies to both transports.
-	if fwd != nil && fwd.notifier != nil {
+	if fwd != nil && forwarding && fwd.notifier != nil {
 		c.OnNotification(newNotificationForwarder(ctx, fwd.notifier))
 	}
 
@@ -835,7 +856,7 @@ func (h *httpBackendClient) ListCapabilities(ctx context.Context, target *vmcp.B
 	slog.Debug("querying capabilities from backend", "backend", target.WorkloadName, "url", target.BaseURL)
 
 	// Create a client for this backend (not yet initialized)
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -968,7 +989,7 @@ func (h *httpBackendClient) CallTool(
 	slog.Debug("calling tool on backend", "tool", toolName, "backend", target.WorkloadName)
 
 	// Create a client for this backend
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, true)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -1078,7 +1099,7 @@ func (h *httpBackendClient) ReadResource(
 	slog.Debug("reading resource from backend", "resource", uri, "backend", target.WorkloadName)
 
 	// Create a client for this backend
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -1131,7 +1152,7 @@ func (h *httpBackendClient) GetPrompt(
 	slog.Debug("getting prompt from backend", "prompt", name, "backend", target.WorkloadName)
 
 	// Create a client for this backend
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}
@@ -1186,7 +1207,7 @@ func (h *httpBackendClient) Complete(
 		"ref_type", ref.Type, "backend", target.WorkloadName)
 
 	// Create a client for this backend
-	c, err := h.clientFactory(ctx, target)
+	c, err := h.clientFactory(ctx, target, false)
 	if err != nil {
 		return nil, wrapBackendError(err, target.WorkloadID, "create client")
 	}

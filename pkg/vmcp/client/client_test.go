@@ -54,7 +54,7 @@ func TestHTTPBackendClient_ListCapabilities_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("factory error")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 
@@ -331,7 +331,7 @@ func TestDefaultClientFactory_UnsupportedTransport(t *testing.T) {
 			require.NoError(t, err)
 			httpClient := backendClient.(*httpBackendClient)
 
-			_, err = httpClient.defaultClientFactory(context.Background(), target)
+			_, err = httpClient.defaultClientFactory(context.Background(), target, false)
 
 			require.Error(t, err)
 			assert.ErrorIs(t, err, vmcp.ErrUnsupportedTransport)
@@ -347,7 +347,7 @@ func TestHTTPBackendClient_CallTool_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("connection failed")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 
@@ -377,7 +377,7 @@ func TestHTTPBackendClient_ReadResource_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("connection failed")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 
@@ -407,7 +407,7 @@ func TestHTTPBackendClient_GetPrompt_WithMockFactory(t *testing.T) {
 		t.Parallel()
 
 		expectedErr := errors.New("connection failed")
-		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget) (*client.Client, error) {
+		mockFactory := func(_ context.Context, _ *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			return nil, expectedErr
 		}
 

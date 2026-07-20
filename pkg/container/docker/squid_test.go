@@ -205,6 +205,9 @@ func TestCreateTempIngressSquidConf_Basics(t *testing.T) {
 	assert.Contains(t, s, "\n# Reverse proxy setup for port 8080\n")
 	assert.Contains(t, s, "http_port 0.0.0.0:18080 accel defaultsite=svc-example")
 	assert.Contains(t, s, "cache_peer svc-example parent 8080 0 no-query originserver name=origin_8080")
+	// standby=2 pre-warms upstream connections so a cold first GET SSE stream is
+	// not reordered behind a later POST (fixes the sampling conformance flake).
+	assert.Contains(t, s, "connect-timeout=5 connect-fail-limit=5 standby=2")
 	assert.Contains(t, s, "acl site_8080 dstdomain svc-example")
 	assert.Contains(t, s, "http_access allow site_8080")
 	assert.True(t, strings.HasSuffix(strings.TrimSpace(s), "http_access deny all"))

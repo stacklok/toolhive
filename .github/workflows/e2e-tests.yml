@@ -191,6 +191,7 @@ jobs:
         if: always()
         env:
           THV_BINARY: ${{ github.workspace }}/bin/thv
+          SAMPLING_COMPARE_N: "8"
         run: ./test/conformance/compare-sampling.sh
 
       - name: Upload conformance results

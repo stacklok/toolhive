@@ -3,7 +3,10 @@
 
 package mcp
 
-import "fmt"
+import (
+	"encoding/json"
+	"fmt"
+)
 
 // Revision identifies which MCP protocol era a request belongs to.
 type Revision int
@@ -242,6 +245,33 @@ func ClassifyRevision(method string, meta map[string]any, protoHeader string) (R
 	}
 
 	return RevisionModern, nil
+}
+
+// ExtractMeta pulls the "_meta" object out of raw JSON-RPC request params, for
+// use with ClassifyRevision. It is deliberately tolerant: absent params, params
+// that don't decode as a JSON object, or a "_meta" value that isn't itself an
+// object all yield a nil map rather than an error. Only a well-formed object
+// "_meta" is returned.
+func ExtractMeta(params json.RawMessage) map[string]any {
+	if len(params) == 0 {
+		return nil
+	}
+	var paramsMap map[string]any
+	if err := json.Unmarshal(params, &paramsMap); err != nil {
+		return nil
+	}
+	return metaFromParamsMap(paramsMap)
+}
+
+// metaFromParamsMap reports the "_meta" value of an already-decoded JSON-RPC
+// params map, if it decodes as a JSON object. A missing key or a wrong-typed
+// value (e.g. a string or number) both yield nil.
+func metaFromParamsMap(paramsMap map[string]any) map[string]any {
+	meta, ok := paramsMap["_meta"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return meta
 }
 
 // hasModernSignal reports whether the request signals the Modern revision:

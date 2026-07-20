@@ -252,13 +252,7 @@ func extractResourceAndArguments(method string, params json.RawMessage) (string,
 		return getStaticResourceID(method), nil, nil
 	}
 
-	// Extract _meta field if present
-	var meta map[string]interface{}
-	if metaRaw, ok := paramsMap["_meta"]; ok {
-		if metaMap, ok := metaRaw.(map[string]interface{}); ok {
-			meta = metaMap
-		}
-	}
+	meta := metaFromParamsMap(paramsMap)
 
 	resourceID, arguments := processMethodWithHandler(method, paramsMap)
 	return resourceID, arguments, meta

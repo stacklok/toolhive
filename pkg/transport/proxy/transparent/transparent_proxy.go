@@ -172,21 +172,6 @@ const (
 	// Matches the value used by the vMCP server.
 	defaultReadTimeout = 30 * time.Second
 
-	// upstreamMaxIdleConnsPerHost bounds the transparent proxy's upstream
-	// connection pool and doubles as the number of connections pre-warmed at
-	// startup (see warmUpstreamConnections). On a cold start, the client's
-	// standalone GET (SSE stream) and tools/call POST are forwarded to the
-	// upstream on separate connections; without a warm pool, the GET's
-	// connection pays inline dial latency and can lose the race to establish
-	// the SSE stream before the backend's tool handler sends a server-to-client
-	// request on it. This is the Go-proxy analog of the Squid ingress
-	// cache_peer standby=2 setting.
-	upstreamMaxIdleConnsPerHost = 4
-
-	// upstreamIdleConnTimeout bounds how long the upstream transport keeps
-	// warmed idle connections before closing them.
-	upstreamIdleConnTimeout = 90 * time.Second
-
 	// HealthCheckIntervalEnvVar is the environment variable name for configuring health check interval.
 	HealthCheckIntervalEnvVar = "TOOLHIVE_HEALTH_CHECK_INTERVAL"
 
@@ -1186,15 +1171,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		},
 	}
 
-	// Clone rather than mutate http.DefaultTransport: it's shared process-wide,
-	// and setting a small MaxIdleConnsPerHost here would starve every other
-	// consumer of the global default.
-	upstreamTransport := http.DefaultTransport.(*http.Transport).Clone()
-	upstreamTransport.MaxIdleConns = upstreamMaxIdleConnsPerHost
-	upstreamTransport.MaxIdleConnsPerHost = upstreamMaxIdleConnsPerHost
-	upstreamTransport.IdleConnTimeout = upstreamIdleConnTimeout
-
-	proxy.Transport = newTracingTransport(upstreamTransport, p)
+	proxy.Transport = newTracingTransport(http.DefaultTransport, p)
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		return p.modifyResponse(resp)
 	}
@@ -1290,50 +1267,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 		go p.monitorHealth(ctx)
 	}
 
-	// Pre-warm the upstream connection pool now that the listener is up.
-	// Runs in the background so a slow or unreachable upstream never delays
-	// Start() or blocks real client traffic.
-	go warmUpstreamConnections(upstreamTransport, p.targetURI)
-
 	return nil
-}
-
-// warmUpstreamConnections seeds the upstream transport's idle connection pool
-// with a burst of concurrent, side-effect-free requests before real client
-// traffic arrives, so the first standalone GET and the first POST forwarded
-// to the upstream can both reuse an already-established connection instead
-// of racing a cold TCP+dial.
-//
-// Each warmup request is a bare GET to targetURI with no Mcp-Session-Id
-// header. A streamable-HTTP backend rejects this (400 "invalid session")
-// without creating a session, but the underlying connection is still
-// established and returned to transport's idle pool. Failures are logged and
-// otherwise ignored: the proxy must still start even if the upstream isn't
-// reachable yet.
-func warmUpstreamConnections(transport http.RoundTripper, targetURI string) {
-	client := &http.Client{Transport: transport, Timeout: 5 * time.Second}
-
-	var wg sync.WaitGroup
-	for i := 0; i < upstreamMaxIdleConnsPerHost; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, targetURI, nil)
-			if err != nil {
-				slog.Debug("failed to build upstream connection warmup request", "error", err)
-				return
-			}
-			//nolint:gosec // G704: targetURI is the configured backend MCP server
-			resp, err := client.Do(req)
-			if err != nil {
-				slog.Debug("upstream connection warmup request failed", "target", targetURI, "error", err)
-				return
-			}
-			_, _ = io.Copy(io.Discard, resp.Body)
-			_ = resp.Body.Close()
-		}()
-	}
-	wg.Wait()
 }
 
 // ListenerAddr returns the network address the proxy is listening on.

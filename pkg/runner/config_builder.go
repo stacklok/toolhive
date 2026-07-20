@@ -656,10 +656,10 @@ func WithMiddlewareFromFlags(
 		var middlewareConfigs []types.MiddlewareConfig
 
 		// NOTE: order matters here. Specifically, these routines use append
-		// to add new middleware configs, but once these routines are called,
-		// inside the proxy, they are applied in reverse order, so the first
-		// being added here is effectively the last being called at HTTP
-		// request time.
+		// to add new middleware configs. The proxy wraps the handler in
+		// reverse slice order (see applyMiddlewares), so the first entry
+		// added here is the OUTERMOST wrapper and runs first at HTTP request
+		// time; the last entry runs closest to the handler.
 		//
 		// We should avoid doing this and a better pattern would be to let the
 		// actual proxy determine the order of application of middlewares, since
@@ -696,16 +696,20 @@ func WithMiddlewareFromFlags(
 			return err
 		}
 
-		// Add optional middlewares
+		// Add optional middlewares. Audit is added BEFORE authorization so it
+		// wraps it at request time: authorization denials (403) must still
+		// produce an audit event with outcome "denied".
 		middlewareConfigs = addTelemetryMiddleware(middlewareConfigs, telemetryConfig, serverName, transportType)
+		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 		var authzErr error
 		middlewareConfigs, authzErr = addAuthzMiddleware(middlewareConfigs, authzConfigPath, b.config.EmbeddedAuthServerConfig)
 		if authzErr != nil {
 			return authzErr
 		}
-		middlewareConfigs = addAuditMiddleware(middlewareConfigs, enableAudit, auditConfigPath, serverName, transportType)
 
-		// Add recovery middleware (always present, added last to be outermost wrapper)
+		// Add recovery middleware (always present, added last so it is the
+		// innermost wrapper, executing closest to the handler — matching
+		// PopulateMiddlewareConfigs)
 		middlewareConfigs = addRecoveryMiddleware(middlewareConfigs)
 
 		// Set the populated middleware configs
@@ -939,9 +943,10 @@ func addAuditMiddleware(
 	return middlewareConfigs
 }
 
-// addRecoveryMiddleware adds recovery middleware (always present, added last to be outermost wrapper)
-// Middleware is applied in reverse order, so adding last means it executes first
-// and catches panics from all other middleware and handlers.
+// addRecoveryMiddleware adds recovery middleware (always present, added last).
+// The proxy wraps the handler in reverse slice order, so the last entry is the
+// INNERMOST wrapper: it catches panics from the handler itself, but not from
+// middleware added earlier in the slice (which wrap it).
 func addRecoveryMiddleware(middlewareConfigs []types.MiddlewareConfig) []types.MiddlewareConfig {
 	recoveryConfig, err := types.NewMiddlewareConfig(recovery.MiddlewareType, nil)
 	if err != nil {
@@ -1255,11 +1260,15 @@ func (b *runConfigBuilder) reconcileNetworkIsolation() error {
 
 	// host (or other non-bridge) is less restrictive than isolation, so dropping
 	// it reduces confinement. Fail fast when it was explicitly requested.
+	//
+	// The mode may come from --permission-profile rather than --network, so the
+	// message names the resolved mode instead of assuming a flag the user may
+	// never have passed. See #5794 review discussion.
 	if b.isolateNetworkExplicit {
 		return fmt.Errorf(
-			"network isolation cannot be enforced with --network %s: "+
-				"drop --network %s to keep enforced isolation, or pass --isolate-network=false to keep %s networking",
-			mode, mode, mode)
+			"network isolation cannot be enforced with the resolved network mode %q: "+
+				"use a bridge network mode to keep enforced isolation, or pass --isolate-network=false to keep %q networking",
+			mode, mode)
 	}
 
 	c.IsolateNetwork = false

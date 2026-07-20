@@ -1354,6 +1354,44 @@ func TestPopulateMiddlewareConfigs_FullCoverage(t *testing.T) {
 	assert.True(t, typeIndex[audit.MiddlewareType])
 }
 
+// TestPopulateMiddlewareConfigs_AuditBeforeAuthz pins the ordering invariant
+// that the audit middleware precedes authorization in the config slice.
+// Earlier entries wrap later ones at request time, so audit must wrap authz
+// for an authorization denial (403) to still produce an audit event with
+// outcome "denied". It must in turn come after auth and the MCP parser, which
+// provide the identity and parsed MCP data the audit event is built from.
+func TestPopulateMiddlewareConfigs_AuditBeforeAuthz(t *testing.T) {
+	t.Parallel()
+
+	config := &RunConfig{
+		AuthzConfig: &authz.Config{},
+		AuditConfig: &audit.Config{Component: "test-component"},
+	}
+
+	require.NoError(t, PopulateMiddlewareConfigs(config))
+
+	typeIndex := make(map[string]int, len(config.MiddlewareConfigs))
+	for i, mw := range config.MiddlewareConfigs {
+		typeIndex[mw.Type] = i
+	}
+
+	auditIdx, ok := typeIndex[audit.MiddlewareType]
+	require.True(t, ok, "audit middleware must be present")
+	authzIdx, ok := typeIndex[authz.MiddlewareType]
+	require.True(t, ok, "authz middleware must be present")
+	authIdx, ok := typeIndex[auth.MiddlewareType]
+	require.True(t, ok, "auth middleware must be present")
+	parserIdx, ok := typeIndex[mcp.ParserMiddlewareType]
+	require.True(t, ok, "MCP parser middleware must be present")
+
+	assert.Less(t, auditIdx, authzIdx,
+		"audit must precede authz so authorization denials are audited")
+	assert.Less(t, authIdx, auditIdx,
+		"auth must precede audit so the identity is available to audit events")
+	assert.Less(t, parserIdx, auditIdx,
+		"MCP parser must precede audit so parsed MCP data is available to audit events")
+}
+
 // TestPopulateMiddlewareConfigs_StripAuthOrdering pins the ordering invariant
 // for strip-auth: the auth middleware must precede it in the chain so the
 // client JWT is fully validated (and the identity stored in the request

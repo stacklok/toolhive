@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/proxy/socket"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
@@ -259,7 +260,7 @@ func WithRemoteRawQuery(rawQuery string) Option {
 }
 
 // WithStateless configures the proxy for stateless streamable-HTTP servers.
-// In stateless mode, incoming GET and DELETE requests receive 405 Method Not Allowed
+// In stateless mode, incoming GET, HEAD, and DELETE requests receive 405 Method Not Allowed
 // instead of being forwarded, and health checks use POST ping instead of GET.
 func WithStateless() Option {
 	return func(p *TransparentProxy) {
@@ -1225,10 +1226,7 @@ func (p *TransparentProxy) Start(ctx context.Context) error {
 	// 5. Catch-all proxy handler (least specific - ServeMux routing handles precedence)
 	// Note: No manual path checking needed - ServeMux longest-match routing ensures
 	// more specific paths registered above take precedence over this catch-all.
-	// In stateless mode, wrap with a method gate that rejects GET/DELETE with 405.
-	if p.stateless {
-		finalHandler = statelessMethodGate(finalHandler)
-	}
+	finalHandler = p.methodGate(finalHandler)
 	mux.Handle("/", finalHandler)
 
 	// Use ListenConfig with SO_REUSEADDR to allow port reuse after unclean shutdown
@@ -1485,15 +1483,27 @@ func (*TransparentProxy) ForwardResponseToClients(_ context.Context, _ jsonrpc2.
 	return fmt.Errorf("ForwardResponseToClients not implemented for TransparentProxy")
 }
 
-// statelessMethodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405.
-// Used in stateless mode where the server only supports POST.
-// HEAD is blocked alongside GET because HEAD is semantically a GET without a response body;
-// a server that cannot handle GET will not handle HEAD either.
-func statelessMethodGate(next http.Handler) http.Handler {
+// methodGate wraps a handler to reject GET, HEAD, and DELETE requests with 405
+// when the proxy is running stateless (--stateless) or the request is tagged
+// with the Modern (stateless-only) MCP-Protocol-Version: neither has any
+// protocol use for GET/HEAD/DELETE, since Modern is unary request/response
+// over POST only.
+//
+// This check runs outermost, before auth and any other middleware: a method
+// rejection needs no identity and reveals nothing auth-gated. It is
+// deliberately header-only and never reads or otherwise touches r.Body, so it
+// must not call mcp.ClassifyRevision (which requires a body) or consume the
+// body in any way — doing so would break the body for downstream handlers.
+//
+// HEAD is blocked alongside GET because HEAD is semantically a GET without a
+// response body; a server that cannot handle GET will not handle HEAD either.
+func (p *TransparentProxy) methodGate(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodDelete {
+		isGateableMethod := r.Method == http.MethodGet || r.Method == http.MethodHead || r.Method == http.MethodDelete
+		isModern := r.Header.Get("MCP-Protocol-Version") == mcp.MCPVersionModern
+		if isGateableMethod && (p.stateless || isModern) {
 			w.Header().Set("Allow", "POST, OPTIONS")
-			http.Error(w, "method not allowed: server is stateless (POST only)", http.StatusMethodNotAllowed)
+			http.Error(w, "method not allowed: server is stateless / stateless MCP revision (POST only)", http.StatusMethodNotAllowed)
 			return
 		}
 		next.ServeHTTP(w, r)

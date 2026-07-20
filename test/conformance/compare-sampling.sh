@@ -22,7 +22,7 @@ set -uo pipefail
 
 CONFORMANCE_VERSION="${CONFORMANCE_VERSION:-0.1.16}"
 THV_BINARY="${THV_BINARY:-thv}"
-N="${SAMPLING_COMPARE_N:-6}"
+N="${SAMPLING_COMPARE_N:-4}"
 IMAGE="mcp-conformance-server:ci"
 DIRECT_NAME="conf-cmp-direct"
 PROXY_NAME="conf-cmp-proxy"
@@ -58,8 +58,11 @@ wait_ready() { # $1=url
 tally() { # $1=label $2=url -> echoes "<label>: <fail> / <N> failed"; sets _fail
   local label="$1" url="$2" fail=0 r
   for i in $(seq 1 "$N"); do
+    # Run the FULL active suite, not --scenario: the sampling flake only
+    # reproduces in the full-suite context (isolated --scenario completes in
+    # ~1s and never hits the 60s hang). Grep the suite summary line.
     out="$(npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
-      --url "${url}" --scenario tools-call-sampling -o /tmp/cmp-results 2>&1 || true)"
+      --url "${url}" --suite active -o /tmp/cmp-results 2>&1 || true)"
     if echo "$out" | grep -qE "✓ tools-call-sampling"; then r=PASS
     elif echo "$out" | grep -qE "✗ tools-call-sampling"; then r=FAIL; fail=$((fail+1))
     else r=UNKNOWN; fi

@@ -341,8 +341,16 @@ func TestDefaultAggregator_MergeCapabilities(t *testing.T) {
 		require.NotNil(t, target)
 		assert.Equal(t, "backend1", target.WorkloadID)
 		assert.Equal(t, "http://backend1:8080", target.BaseURL)
-		// The original URI template is preserved for forwarding to the backend.
-		assert.Equal(t, "file:///logs/{date}.txt", target.OriginalCapabilityName)
+		// OriginalCapabilityName must be EMPTY so a resources/read routed via this
+		// template forwards the client's CONCRETE, already-expanded URI to the
+		// backend verbatim (the backend does its own expansion). If it were set to
+		// the template, GetBackendCapabilityName would replace the concrete URI with
+		// the unexpanded template and the backend would return unsubstituted content
+		// (conformance: "Parameter substitution not reflected in content").
+		assert.Empty(t, target.OriginalCapabilityName)
+		assert.Equal(t, "file:///logs/2025-01-01.txt",
+			target.GetBackendCapabilityName("file:///logs/2025-01-01.txt"),
+			"a concrete expanded URI must pass through to the backend unchanged")
 	})
 }
 

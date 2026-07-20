@@ -382,20 +382,25 @@ func (a *defaultAggregator) MergeCapabilities(
 
 	// Add resource templates to routing table, keyed by URI-template string.
 	// Pass-through, mirroring resources: no URI-template rewriting.
+	//
+	// OriginalCapabilityName is intentionally left empty. A resources/read routed
+	// via a template carries the client's CONCRETE, already-expanded URI (e.g.
+	// file:///logs/2025-01-01.txt); the backend performs its own template
+	// expansion, so that concrete URI must reach it verbatim. Setting
+	// OriginalCapabilityName to the template string would make
+	// GetBackendCapabilityName replace the concrete URI with the unexpanded
+	// template, and the backend would return unsubstituted content. vMCP does not
+	// rename templates, so no name translation is needed here.
 	for _, template := range resolved.ResourceTemplates {
 		backend := registry.Get(ctx, template.BackendID)
 		if backend == nil {
 			slog.Warn("backend not found in registry for resource template, creating minimal target",
 				"backend", template.BackendID, "resource_template", template.URITemplate)
 			routingTable.ResourceTemplates[template.URITemplate] = &vmcp.BackendTarget{
-				WorkloadID:             template.BackendID,
-				OriginalCapabilityName: template.URITemplate,
+				WorkloadID: template.BackendID,
 			}
 		} else {
-			target := vmcp.BackendToTarget(backend)
-			// Store the original URI template for forwarding to backend.
-			target.OriginalCapabilityName = template.URITemplate
-			routingTable.ResourceTemplates[template.URITemplate] = target
+			routingTable.ResourceTemplates[template.URITemplate] = vmcp.BackendToTarget(backend)
 		}
 	}
 

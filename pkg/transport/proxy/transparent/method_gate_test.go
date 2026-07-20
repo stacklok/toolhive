@@ -19,13 +19,6 @@ import (
 func TestMethodGate(t *testing.T) {
 	t.Parallel()
 
-	var gotBody string
-	inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		gotBody = string(body)
-		w.WriteHeader(http.StatusOK)
-	})
-
 	tests := []struct {
 		name           string
 		stateless      bool
@@ -58,7 +51,13 @@ func TestMethodGate(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 
-			gotBody = ""
+			var gotBody string
+			inner := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body, _ := io.ReadAll(r.Body)
+				gotBody = string(body)
+				w.WriteHeader(http.StatusOK)
+			})
+
 			p := &TransparentProxy{stateless: tc.stateless}
 			handler := p.methodGate(inner)
 			rec := httptest.NewRecorder()

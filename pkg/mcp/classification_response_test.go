@@ -148,3 +148,18 @@ func TestClassificationError(t *testing.T) {
 		})
 	}
 }
+
+// TestClassificationErrorBodyMarshalFallback verifies the defensive fallback:
+// if the response fails to marshal (unreachable in production, where requestID
+// is always a json.RawMessage), classificationErrorBody still returns a valid
+// JSON-RPC error rather than an empty body. A channel is not JSON-marshalable,
+// so it forces json.Marshal to fail.
+func TestClassificationErrorBodyMarshalFallback(t *testing.T) {
+	t.Parallel()
+
+	const want = `{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params"},"id":null}`
+	got := classificationErrorBody(make(chan int), errors.New("boom"))
+	if string(got) != want {
+		t.Fatalf("fallback body = %s, want %s", got, want)
+	}
+}

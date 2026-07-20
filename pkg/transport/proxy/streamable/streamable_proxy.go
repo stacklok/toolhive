@@ -784,7 +784,7 @@ func (p *HTTPProxy) resolveSessionForRequest(
 	protoHeader := r.Header.Get("MCP-Protocol-Version")
 	rev, err := mcp.ClassifyRevision(req.Method, meta, protoHeader)
 	if err != nil {
-		writeClassificationError(w, req.ID.Raw(), err)
+		mcp.WriteClassificationError(w, req.ID.Raw(), err)
 		return "", false, err
 	}
 
@@ -839,49 +839,6 @@ func (p *HTTPProxy) resolveSessionForRequest(
 		return "", false, fmt.Errorf("session not found")
 	}
 	return sessID, false, nil
-}
-
-// writeClassificationError renders an mcp.ClassifyRevision error as an HTTP 400
-// JSON-RPC error response, modeled on session.NotFoundBody/WriteNotFound: the
-// body is marshaled first (with a hand-crafted fallback on marshal failure) so
-// headers and status are only written once a valid body is ready.
-// It uses the error's Code(), Error() message, and Data() (when non-empty) if
-// the error implements mcp.CodedError, falling back to the standard JSON-RPC
-// Invalid Params code otherwise -- a fallback that is currently unreachable,
-// since every error ClassifyRevision returns implements mcp.CodedError.
-func writeClassificationError(w http.ResponseWriter, requestID any, err error) {
-	code := mcp.CodeInvalidParams
-	var coded mcp.CodedError
-	var data map[string]any
-	if errors.As(err, &coded) {
-		code = coded.Code()
-		data = coded.Data()
-	}
-
-	errBody := map[string]any{
-		"code":    code,
-		"message": err.Error(),
-	}
-	if len(data) > 0 {
-		errBody["data"] = data
-	}
-	resp := map[string]any{
-		"jsonrpc": "2.0",
-		"error":   errBody,
-		"id":      requestID,
-	}
-
-	body, marshalErr := json.Marshal(resp)
-	if marshalErr != nil {
-		// This should never happen with simple map types, but return a
-		// hand-crafted fallback to guarantee a valid JSON-RPC error.
-		body = []byte(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params"},"id":null}`)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusBadRequest)
-	//nolint:gosec // G104: writing a JSON-RPC error response to an HTTP client
-	_, _ = w.Write(body)
 }
 
 func isBatch(body []byte) bool {

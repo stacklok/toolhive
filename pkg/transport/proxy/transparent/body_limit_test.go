@@ -52,7 +52,7 @@ func TestTransparentProxy_RejectsOversizedBody(t *testing.T) {
 		"127.0.0.1", 0, backend.URL,
 		nil, nil, nil,
 		false, false, "sse",
-		nil, nil, "", false,
+		nil, nil, nil, "", false,
 		chain,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

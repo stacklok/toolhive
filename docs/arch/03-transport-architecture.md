@@ -213,8 +213,8 @@ All proxy types integrate with the middleware chain:
 graph LR
     Client[Client Request] --> MW1[Middleware 1<br/>Auth]
     MW1 --> MW2[Middleware 2<br/>Parser]
-    MW2 --> MW3[Middleware 3<br/>Authz]
-    MW3 --> MW4[Middleware 4<br/>Audit]
+    MW2 --> MW3[Middleware 3<br/>Audit]
+    MW3 --> MW4[Middleware 4<br/>Authz]
     MW4 --> Proxy[Proxy Handler]
     Proxy --> Container[MCP Server]
 
@@ -226,9 +226,9 @@ graph LR
 ```
 
 **Implementation:**
-- `pkg/transport/types/transport.go` - MiddlewareFunction type
-- Middleware applied in reverse order (last registered = outermost)
-- Each transport type accepts `[]MiddlewareFunction` in constructor
+- `pkg/transport/types/transport.go` - `MiddlewareFunction` and `NamedMiddleware` types
+- Middleware wraps the handler in reverse registration order, so the first registered entry is the outermost wrapper and runs first at request time
+- Each transport type accepts `[]NamedMiddleware` in constructor (each wraps a `MiddlewareFunction` with its name for logging)
 
 ## Remote MCP Server Proxying
 
@@ -446,24 +446,22 @@ ToolHive uses two port concepts:
 
 ### MCP Environment Variables
 
-**Implementation**: `pkg/transport/http.go`
+**Implementation**: `pkg/environment/environment.go` sets `MCP_TRANSPORT`, `MCP_PORT`, and `FASTMCP_PORT` for the CLI/local path. `pkg/runtime/setup.go` sets all four variables (`MCP_TRANSPORT`, `MCP_PORT`, `FASTMCP_PORT`, and `MCP_HOST`) when deploying workloads through the runtime (used by both local and Kubernetes/proxy-runner paths). The `TargetHost` default of `127.0.0.1` (`transport.LocalhostIPv4`) is established by `WithTargetHost` in `pkg/runner/config_builder.go` (around line 204), not by the env-emitting code — both code paths simply read `RunConfig.TargetHost`.
 
 Environment variables set automatically for container configuration:
 
 - `MCP_TRANSPORT`: Transport type (stdio, sse, streamable-http)
 - `MCP_PORT`: Target port (for SSE/Streamable HTTP)
-- `MCP_HOST`: Target host - always `127.0.0.1` (both local and Kubernetes)
+- `MCP_HOST`: Target host - defaults to `127.0.0.1` (`transport.LocalhostIPv4`), with the default applied by `WithTargetHost` in `pkg/runner/config_builder.go` when `RunConfig.TargetHost` is empty
 - `FASTMCP_PORT`: Alias for `MCP_PORT` (legacy support)
 
 **Architecture distinction:**
-- **Target host** (`MCP_HOST` env var): Where container listens - always `127.0.0.1`
-- **Proxy host**: Where proxy binds - `127.0.0.1` in local mode, `0.0.0.0` in Kubernetes for cluster access
+- **Target host** (`MCP_HOST` env var): Where the container's MCP server listens - defaults to `127.0.0.1`
+- **Proxy host**: Where the proxy binds - `127.0.0.1` in local mode, `0.0.0.0` in Kubernetes for cluster access
 
 **Merge strategy**:
 - User-provided values take precedence
 - ToolHive sets deployment-appropriate defaults
-
-**Reference**: PR #1890 - Runtime Authoring Guide
 
 ## Container Attach (Stdio Transport)
 
@@ -484,7 +482,7 @@ stdin, stdout, err := t.deployer.AttachToWorkload(ctx, t.containerName)
 5. **Framing** - Newline-delimited JSON-RPC messages
 
 **Monitoring:**
-- Container monitor detects exit: `pkg/container/docker/monitor.go`
+- Container monitor detects exit: `pkg/container/runtime/monitor.go`
 - Proxy automatically stopped on container exit
 - Workload status updated
 
@@ -618,14 +616,14 @@ thv run --transport sse --endpoint-prefix /playwright playwright
 
 **Kubernetes CRD:**
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 spec:
   endpointPrefix: /playwright
   trustProxyHeaders: true
 ```
 
-**Implementation**: `pkg/transport/proxy/transparent/transparent_proxy.go` - `rewriteEndpointURL()`, `getSSERewriteConfig()`
+**Implementation**: `pkg/transport/proxy/transparent/sse_response_processor.go` - `rewriteEndpointURL()`, `getSSERewriteConfig()`
 
 ## Transport Factory
 
@@ -657,3 +655,4 @@ func (*Factory) Create(config types.Config) (types.Transport, error) {
 - [Deployment Modes](01-deployment-modes.md) - How transports work in each mode
 - [RunConfig and Permissions](05-runconfig-and-permissions.md) - Transport configuration
 - [Core Concepts](02-core-concepts.md) - Transport concepts and terminology
+- [Operator Architecture](09-operator-architecture.md) - How the operator and proxy-runner set up transports in Kubernetes

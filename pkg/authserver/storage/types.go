@@ -16,11 +16,15 @@
 // OAuth authorization server.
 package storage
 
-//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage
+//go:generate mockgen -destination=mocks/mock_storage.go -package=mocks -source=types.go Storage,PendingAuthorizationStorage,ClientRegistry,UpstreamTokenStorage,UpstreamTokenRefresher,UserStorage,DCRCredentialStore
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"slices"
+	"sort"
 	"time"
 
 	"github.com/ory/fosite"
@@ -61,7 +65,19 @@ type UpstreamTokens struct {
 	AccessToken  string //nolint:gosec // G117: field legitimately holds sensitive data
 	RefreshToken string //nolint:gosec // G117: field legitimately holds sensitive data
 	IDToken      string
-	ExpiresAt    time.Time
+	// ExpiresAt is when the access token expires. Zero value means the provider
+	// did not assert an expiry; callers must treat it as non-expiring.
+	ExpiresAt time.Time
+	// SessionExpiresAt is the Fosite session expiry time. The callback handler
+	// sets it from RefreshTokenLifespan on every initial write; the refresher
+	// carries it forward unchanged on each subsequent refresh, and defensively
+	// re-anchors it on legacy rows where both ExpiresAt and SessionExpiresAt
+	// are zero. Storage backends use it as a fallback storage lifetime when
+	// ExpiresAt is zero (non-expiring upstream token), bounding the row to the
+	// Fosite session. Set unconditionally — including for tokens with their own
+	// ExpiresAt — so the refresh path is safe even if the upstream provider stops
+	// asserting expires_in on a later rotation.
+	SessionExpiresAt time.Time
 
 	// Security binding fields - validated on lookup to prevent cross-session attacks
 
@@ -70,9 +86,11 @@ type UpstreamTokens struct {
 	// In multi-IDP scenarios, the same UserID may have tokens from multiple providers.
 	UserID string
 
-	// UpstreamSubject is the "sub" claim from the upstream IDP's ID token.
-	// This enables validation that tokens match the expected upstream identity
-	// and supports audit logging of which upstream identity was used.
+	// UpstreamSubject is the resolved subject of the upstream IDP's ID token:
+	// the "sub" claim by default, or the provider's configured SubjectClaim
+	// (e.g. Entra's "oid"). This enables validation that tokens match the
+	// expected upstream identity and supports audit logging of which upstream
+	// identity was used.
 	UpstreamSubject string
 
 	// ClientID is the OAuth client that initiated the authorization.
@@ -81,9 +99,293 @@ type UpstreamTokens struct {
 }
 
 // IsExpired returns true if the access token has expired.
+// Returns true for nil receivers (treating nil tokens as expired).
+// Zero ExpiresAt means the provider did not assert an expiry; returns false.
 // The now parameter allows for deterministic testing.
+//
+// This method is intended for storage eviction decisions only — it checks exact
+// expiry with no preemptive buffer. For "should I refresh before using?" decisions,
+// use upstream.Tokens.IsExpiredAt which includes a preemptive buffer window.
 func (t *UpstreamTokens) IsExpired(now time.Time) bool {
-	return now.After(t.ExpiresAt)
+	if t == nil {
+		return true
+	}
+	return !t.ExpiresAt.IsZero() && now.After(t.ExpiresAt)
+}
+
+// DCRKey is the canonical lookup key for a DCR registration. The tuple is
+// designed so that any backend (in-memory or Redis) serialises it identically
+// without redefining the canonical form. ScopesHash is used rather than a raw
+// scope slice so the key is comparable, fixed-size, and order-insensitive.
+//
+// The key lives in the storage package because both MemoryStorage and the
+// future Redis backend must hash keys identically; keeping the canonical form
+// next to the persistence implementations prevents drift.
+type DCRKey struct {
+	// Issuer is the registration consumer's issuer identifier. The dual
+	// semantic depends on the consumer profile:
+	//   - Embedded authorization server: its OWN local issuer (the embedded
+	//     authserver that performed the registration).
+	//   - CLI / direct OAuth flow: the UPSTREAM authorization server's
+	//     issuer, because the CLI has no separate local issuer of its own.
+	// The cache is keyed by this value because two different consumers
+	// registering against the same upstream are distinct OAuth clients and
+	// must not share credentials. The (Issuer, UpstreamID, RedirectURI,
+	// ScopesHash) tuple keeps the two consumer profiles' entries apart via
+	// the RedirectURI component (the embedded authserver registers an
+	// AS-origin callback while the CLI registers a loopback callback per
+	// RFC 8252 §7.3 — the two address spaces are disjoint), so a collision
+	// between profiles is impossible by construction even when the
+	// upstream is the same. Public-client vs confidential-client
+	// separation rides on that same disjoint-RedirectURI property at both
+	// the persistent-cache and in-process singleflight layers; encoding it on
+	// the key would invalidate every existing Redis-cached entry across a
+	// deployment without buying additional protection. If a future
+	// consumer brings the two address spaces into collision the key
+	// format must gain a consumer-identifier component alongside an
+	// explicit migration story.
+	Issuer string
+
+	// UpstreamID identifies the upstream authorization server this
+	// registration is bound to, disambiguating upstreams that share the
+	// consumer's Issuer, RedirectURI, and scope set. Within a single
+	// embedded authserver every OAuth2 upstream shares the authserver's own
+	// Issuer and the one defaulted {issuer}/oauth/callback RedirectURI, so
+	// before this component existed two upstreams configured with equal
+	// scopes collided on one cache entry — the second read back the first's
+	// dynamically-registered client_id / client_secret and never registered
+	// with its own authorization server (issue #5823).
+	//
+	// The value is the upstream's registration identity: the upstream issuer
+	// recovered from the consumer's discovery URL, or the registration
+	// endpoint URL when the consumer configured one directly. It is derived
+	// by the dcr resolver from the Request; do not hand-build it at call
+	// sites.
+	//
+	// On the discovery-URL path this is the derived issuer, so it identifies
+	// the authorization server rather than the exact discovery URL: two
+	// configs that resolve to the same issuer intentionally share one
+	// registration. It does not fully disambiguate the nonstandard case of a
+	// single issuer exposing distinct registration endpoints under custom
+	// (non-well-known) discovery paths — see resolveUpstreamKeyIdentity in
+	// pkg/auth/dcr for the full rationale.
+	UpstreamID string
+
+	// RedirectURI is the redirect URI registered with the upstream
+	// authorization server. Embedded-authserver callers register an
+	// AS-origin callback; CLI callers register an RFC 8252 loopback
+	// callback. The two address spaces are disjoint, which is what makes
+	// the per-consumer cache namespace structurally safe today.
+	RedirectURI string
+
+	// ScopesHash is the SHA-256 hex digest of the sorted, deduplicated scope
+	// list. Use ScopesHash() to compute this value — do NOT hash scopes by
+	// hand at call sites; the canonical form must be a single source of truth
+	// so the key matches across processes and backends.
+	ScopesHash string
+}
+
+// ScopesHash returns the SHA-256 hex digest of the canonical OAuth scope set,
+// suitable for use as DCRKey.ScopesHash.
+//
+// Canonicalisation:
+//  1. Sort ascending so the digest is order-insensitive — e.g.
+//     []string{"openid", "profile"} and []string{"profile", "openid"} hash to
+//     the same value.
+//  2. Deduplicate so that []string{"openid"} and []string{"openid", "openid"}
+//     hash to the same value. An OAuth scope set is a set, not a multiset
+//     (RFC 6749 §3.3), and without deduplication a caller that accidentally
+//     duplicated a scope would miss cache entries and trigger redundant
+//     RFC 7591 registrations.
+//  3. Join with newlines (a character not valid in OAuth scope tokens per
+//     RFC 6749 §3.3) to avoid collision between e.g. ["ab", "c"] and
+//     ["a", "bc"].
+//
+// nil and empty slice both canonicalise to the same hash.
+func ScopesHash(scopes []string) string {
+	sorted := slices.Clone(scopes)
+	sort.Strings(sorted)
+	sorted = slices.Compact(sorted)
+
+	h := sha256.New()
+	for i, s := range sorted {
+		if i > 0 {
+			_, _ = h.Write([]byte("\n"))
+		}
+		_, _ = h.Write([]byte(s))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// validateDCRCredentialsForStore enforces the rejection contract that every
+// DCRCredentialStore implementation must apply before persisting. Extracting
+// it as a free function called by every backend prevents the validation set
+// from drifting across implementations: a record that fails loud against one
+// backend cannot silently persist against another.
+//
+// Rejected inputs: nil creds, an unpopulated Key (empty Issuer, UpstreamID,
+// RedirectURI, or ScopesHash), and missing RFC 7591 mandatory response fields
+// (ClientID, AuthorizationEndpoint, TokenEndpoint). An empty ScopesHash is
+// rejected because the canonical digest of any scope set — including the
+// empty-scope set via ScopesHash(nil) — is non-empty, so an empty string can
+// only be a caller bug. An empty UpstreamID is rejected because the resolver
+// always derives it from the Request (issue #5823); an empty value here would
+// re-open the cross-upstream collision it was added to close. ClientSecret is
+// left permissive because RFC 7591 §2 public clients (auth method "none")
+// legitimately register without a secret.
+func validateDCRCredentialsForStore(creds *DCRCredentials) error {
+	if creds == nil {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials cannot be nil")
+	}
+	if creds.Key.Issuer == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials key issuer cannot be empty")
+	}
+	if creds.Key.UpstreamID == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials key upstream_id cannot be empty")
+	}
+	if creds.Key.RedirectURI == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials key redirect_uri cannot be empty")
+	}
+	if creds.Key.ScopesHash == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials key scopes_hash cannot be empty")
+	}
+	if creds.ClientID == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials client_id cannot be empty")
+	}
+	if creds.AuthorizationEndpoint == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials authorization_endpoint cannot be empty")
+	}
+	if creds.TokenEndpoint == "" {
+		return fosite.ErrInvalidRequest.WithHint("dcr credentials token_endpoint cannot be empty")
+	}
+	return nil
+}
+
+// DCRCredentials is the persisted form of an RFC 7591 Dynamic Client
+// Registration result. All fields are populated from the upstream's DCR
+// response. The RFC 7592 management fields (RegistrationAccessToken,
+// RegistrationClientURI) are preserved verbatim so future rotation /
+// management flows can use them.
+//
+// # Defensive copy
+//
+// Callers receive a defensive copy from the store. Mutations on the returned
+// value do not affect persisted state, and mutations on a value passed to
+// StoreDCRCredentials are not observed by subsequent reads. This matches the
+// UpstreamTokens contract.
+//
+// # Lifetime
+//
+// Entries are long-lived — RFC 7591 client registrations do not expire unless
+// the upstream asserts client_secret_expires_at. The in-memory backend
+// retains entries for the process lifetime and is intentionally excluded from
+// the periodic cleanup loop. The Redis backend applies TTL via SET with a
+// duration when ClientSecretExpiresAt is non-zero.
+//
+// # Converter contract
+//
+// MUST update both converters in
+// pkg/auth/dcr/store.go (resolutionToCredentials and
+// credentialsToResolution) when adding, renaming, or removing a field
+// here. The two converters are the only translation seam between this
+// persisted type and the dcr-package *dcr.Resolution; a field added here
+// without a paired converter update will silently fail to round-trip
+// across an authserver restart. The round-trip behaviour is pinned by
+// TestResolutionCredentialsRoundTrip in
+// pkg/auth/dcr/store_test.go.
+type DCRCredentials struct {
+	// Key is the canonical cache key: (Issuer, UpstreamID, RedirectURI, ScopesHash).
+	Key DCRKey
+
+	// ProviderName is the upstream's UpstreamRunConfig.Name. Debug / audit
+	// only — never used as a primary key. Two upstreams with different
+	// ProviderName but identical Key share one credential record.
+	ProviderName string
+
+	ClientID                string
+	ClientSecret            string //nolint:gosec // G117: field legitimately holds sensitive data
+	TokenEndpointAuthMethod string
+
+	// RegistrationAccessToken and RegistrationClientURI are RFC 7592 fields
+	// captured for future management operations (rotation, deletion).
+	RegistrationAccessToken string //nolint:gosec // G117: field legitimately holds sensitive data
+	RegistrationClientURI   string
+
+	AuthorizationEndpoint string
+	TokenEndpoint         string
+
+	// CreatedAt is the wall-clock time at which the registration completed.
+	// Used to compute staleness for observability — the cache itself does
+	// not expire entries based on age (see ClientSecretExpiresAt for the
+	// authoritative expiry signal).
+	CreatedAt time.Time
+
+	// ClientSecretExpiresAt is the RFC 7591 §3.2.1 client_secret_expires_at
+	// value converted from int64 epoch seconds to time.Time. The wire
+	// convention is that 0 means "the secret does not expire"; this struct
+	// represents that as the zero time.Time so callers can use IsZero()
+	// rather than special-casing 0.
+	//
+	// When non-zero, this is the authoritative signal a backend uses to TTL
+	// the persisted entry: the Redis backend plumbs it through SET with a
+	// duration so the row evicts before the upstream rejects the secret at the
+	// token endpoint. The in-memory backend ignores this field — entries
+	// persist for the process lifetime and the resolver re-checks the
+	// expiry on read.
+	ClientSecretExpiresAt time.Time
+}
+
+// DCRCredentialStore is a narrow, segregated interface for persisting
+// dynamic-client-registration credentials. Both MemoryStorage and
+// RedisStorage implement it; an authserver backed by Redis shares DCR
+// credentials across replicas and restarts.
+//
+// # Cross-replica limitation
+//
+// Sharing DCR credentials does NOT imply cross-replica session / token
+// delivery. Callers that need that must still route through the proxy runner
+// and (if applicable) pin sessions to a replica.
+//
+// # Defensive copy
+//
+// Implementations MUST defensively copy on both Store and Get so caller
+// mutations cannot reach persisted state and vice versa, mirroring the
+// UpstreamTokens contract.
+//
+// # TTL handling
+//
+// Implementations SHOULD honor a non-zero DCRCredentials.ClientSecretExpiresAt
+// as a backend-level TTL when the underlying store supports one (e.g. Redis
+// SET with a duration) so an entry evicts before the upstream rejects the
+// secret at the token endpoint. Backends without a native TTL (e.g. the
+// in-memory backend) retain the field verbatim and rely on the caller —
+// typically the runner's resolver — to re-check expiry on read; see
+// MemoryStorage.GetDCRCredentials.
+// A zero ClientSecretExpiresAt means the upstream did not assert an expiry
+// and no TTL is applied.
+//
+// # Why the key is embedded in DCRCredentials
+//
+// StoreDCRCredentials takes a single (ctx, creds) argument rather than the
+// (ctx, key, value) shape used by sibling Store* methods on Storage. The
+// DCRKey is embedded as DCRCredentials.Key so the persisted blob is
+// self-describing: a Redis SCAN, an admin-tool dump, or a cross-replica
+// reconciliation path can identify a record's logical cache slot
+// (Issuer, UpstreamID, RedirectURI, ScopesHash) from the value alone, without
+// reconstructing it from a separately-passed key. This is a deliberate
+// asymmetry with the rest of the package — callers must populate creds.Key
+// before Store, and implementations validate it (see MemoryStorage docs
+// for the rejected-input list).
+type DCRCredentialStore interface {
+	// GetDCRCredentials returns the credentials for the given key.
+	// Returns ErrNotFound (wrapped) if no entry exists for the key.
+	// The returned value is a defensive copy.
+	GetDCRCredentials(ctx context.Context, key DCRKey) (*DCRCredentials, error)
+
+	// StoreDCRCredentials persists the credentials, overwriting any existing
+	// entry for the same Key. See the interface-level "TTL handling" section
+	// for the contract on ClientSecretExpiresAt.
+	StoreDCRCredentials(ctx context.Context, creds *DCRCredentials) error
 }
 
 // User represents a user account in the authorization server.
@@ -179,6 +481,24 @@ type PendingAuthorization struct {
 	// Empty on the first leg; populated after the first callback for subsequent legs.
 	ResolvedUserEmail string
 
+	// SingleLeg scopes this authorization to exactly one upstream. When true, the
+	// callback issues the authorization code as soon as this leg completes instead
+	// of consulting nextMissingUpstream to continue the chain. This lets a caller
+	// connect a single specific provider without other configured-but-tokenless
+	// upstreams hijacking the flow into a full chain walk. Defaults to false, which
+	// preserves the multi-upstream chaining behavior.
+	SingleLeg bool
+
+	// ChainUpstreams is the ordered, effective set of upstream provider names this
+	// authorization must walk, always led by the required first upstream. It is
+	// computed once when the first leg resolves — narrowed by the optional upstream
+	// filter when one is configured — and carried forward across subsequent legs so
+	// the filter is not re-run per leg. Empty on the first leg's inbound pending;
+	// populated on every subsequent leg. A subsequent leg that arrives with this
+	// unset (e.g. a pending written before this field existed) is rejected rather
+	// than recomputed, so the filter is never re-run against a later leg's context.
+	ChainUpstreams []string
+
 	// CreatedAt is when the pending authorization was created.
 	CreatedAt time.Time
 }
@@ -212,6 +532,15 @@ type ClientRegistry interface {
 	// This supports both static configuration and dynamic client registration (RFC 7591).
 	// Returns ErrAlreadyExists if a client with the same ID already exists.
 	RegisterClient(ctx context.Context, client fosite.Client) error
+
+	// RenewClientTTL extends the registration TTL of a public (DCR) client so an
+	// actively-used client is not evicted mid-lifecycle and forced to re-register.
+	// Call it on a proven-use signal (e.g. a successful token exchange), NOT on an
+	// unauthenticated client read such as the /oauth/authorize lookup. Implementations
+	// renew only public clients; confidential clients have no TTL. Backends without a
+	// native TTL (the in-memory backend) treat this as a no-op. A renewal failure is
+	// non-fatal to the caller's primary operation.
+	RenewClientTTL(ctx context.Context, client fosite.Client) error
 }
 
 // UpstreamTokenStorage provides storage for tokens obtained from upstream identity providers.
@@ -219,8 +548,10 @@ type ClientRegistry interface {
 // middleware that needs to retrieve upstream tokens (e.g., token swap middleware that
 // replaces JWT auth with upstream IDP tokens for backend requests).
 //
-// Tokens are keyed by (sessionID, providerName) to support multiple upstream providers
-// per session. Each provider's tokens are stored and retrieved independently.
+// Tokens are keyed primarily by (sessionID, providerName) to support multiple upstream
+// providers per session. Each provider's tokens are stored and retrieved independently.
+// A secondary lookup by (userID, providerID) is exposed via GetLatestUpstreamTokensForUser;
+// see that method for usage and security contract.
 type UpstreamTokenStorage interface {
 	// StoreUpstreamTokens stores the upstream IDP tokens for a session and provider.
 	// The providerName identifies which upstream provider these tokens belong to.
@@ -242,6 +573,47 @@ type UpstreamTokenStorage interface {
 	// DeleteUpstreamTokens removes all upstream IDP tokens for a session (all providers).
 	// Returns ErrNotFound if the session does not exist.
 	DeleteUpstreamTokens(ctx context.Context, sessionID string) error
+
+	// DeleteUpstreamTokensForProvider removes tokens for a single (sessionID, providerName),
+	// leaving sibling providers' rows intact. Deleting an absent row is NOT an error (nil).
+	// Used as best-effort cleanup of a refresh token rotated at the IdP but not persisted.
+	DeleteUpstreamTokensForProvider(ctx context.Context, sessionID, providerName string) error
+
+	// GetLatestUpstreamTokensForUser returns the most recently stored upstream tokens
+	// for (userID, providerID) across any session. The "latest" winner is determined
+	// by treating non-expiring rows (zero ExpiresAt — providers like Slack and GitHub
+	// OAuth Apps that genuinely never expire) as the strongest candidate, falling
+	// back to ExpiresAt descending among finite-expiry rows. This aligns with the
+	// rest of the package treating zero ExpiresAt as "alive forever" (see IsExpired,
+	// cleanupExpired, marshalUpstreamTokensWithTTL). Both backends use the same
+	// rule so the carry-forward decision is consistent regardless of deployment
+	// shape.
+	//
+	// This is a secondary lookup that intentionally bypasses the primary
+	// (sessionID, providerName) key. It is used by the OAuth callback to preserve a
+	// previously-issued refresh token when the upstream IdP omits refresh_token on
+	// re-authorization (e.g. Google without prompt=consent). When a sessionID is
+	// available, callers should use GetUpstreamTokens instead. This method mirrors
+	// the preservation pattern in upstreamTokenRefresher.RefreshAndStore.
+	//
+	// # Liveness
+	//
+	// The returned tokens may be expired. Callers MUST NOT assume liveness; they
+	// must handle the expired case (typically by reading only the RefreshToken,
+	// which remains usable past the access token's expiry). This method does NOT
+	// return ErrExpired and the implementation MUST NOT filter expired rows.
+	//
+	// # Cross-identity safety
+	//
+	// The returned record is NOT filtered by upstream subject. The same internal
+	// UserID can in principle map to multiple upstream subjects on the same provider
+	// (account-linking edge cases or data-integrity issues). Callers MUST verify
+	// that prior.UpstreamSubject == currentProviderSubject before reusing any
+	// credential from the returned record. The OAuth callback applies this guard;
+	// other future callers must do the same.
+	//
+	// Returns ErrNotFound if no record exists for the (userID, providerID) pair.
+	GetLatestUpstreamTokensForUser(ctx context.Context, userID, providerID string) (*UpstreamTokens, error)
 }
 
 // UpstreamTokenRefresher can refresh expired upstream tokens using their stored refresh token.
@@ -339,6 +711,19 @@ type UserStorage interface {
 type Storage interface {
 	// Embed segregated interfaces for IDP tokens, pending authorizations, client registry,
 	// and user management for multi-IDP support.
+	//
+	// DCRCredentialStore is intentionally NOT embedded here: doing so would
+	// promote GetDCRCredentials / StoreDCRCredentials onto every consumer of
+	// storage.Storage (handlers, server, registration, etc.), broadening the
+	// surface that can read raw client_secret / registration_access_token even
+	// when those consumers have no DCR responsibility. Code that legitimately
+	// needs DCR access (the runner and authserver constructors) obtains it
+	// via an explicit `stor.(DCRCredentialStore)` type assertion at the
+	// boundary; the per-backend `var _ DCRCredentialStore = (*MemoryStorage)(nil)`
+	// and `var _ DCRCredentialStore = (*RedisStorage)(nil)` checks in
+	// memory.go / redis.go provide the compile-time guarantee that production
+	// backends satisfy the interface, so the runtime assertion is provably
+	// safe at the boundary while keeping the wider Storage surface narrow.
 	UpstreamTokenStorage
 	PendingAuthorizationStorage
 	ClientRegistry

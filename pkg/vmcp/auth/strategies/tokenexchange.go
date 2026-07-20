@@ -16,7 +16,7 @@ import (
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/auth"
-	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
+	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 	healthcontext "github.com/stacklok/toolhive/pkg/vmcp/health/context"
 )

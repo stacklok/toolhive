@@ -14,12 +14,16 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/go-git/go-git/v5/plumbing/object"
+
 	"github.com/stacklok/toolhive/pkg/git"
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
-// cloneTimeout is the maximum time allowed for cloning a git repository.
-const cloneTimeout = 2 * time.Minute
+// CloneTimeout is the maximum time allowed for cloning a git repository.
+// Exported so callers (e.g. pluginsvc.installFromGit) can reuse the same
+// timeout without duplicating the constant.
+const CloneTimeout = 2 * time.Minute
 
 // semverLike matches refs that look like semantic version tags (v1.0, v1.2.3, v1.2.3-rc1, etc.).
 // Requires at least one dot-separated numeric segment after the major version to avoid matching
@@ -76,12 +80,14 @@ type defaultResolver struct {
 	fixedClient git.Client
 }
 
-// clientForURL returns a git client appropriate for the given clone URL.
-// If a fixed client was provided (testing), it is returned as-is.
-// Otherwise, a new client is created with host-scoped auth from the environment.
-func (r *defaultResolver) clientForURL(cloneURL string) git.Client {
-	if r.fixedClient != nil {
-		return r.fixedClient
+// ClientForURL returns a git client for the given clone URL. When fixedClient
+// is non-nil it is returned as-is (testing); otherwise a new client is created
+// with host-scoped auth from the environment. Exported so
+// pluginsvc.installFromGit can reuse the same auth-resolution path without
+// duplicating clientForURL.
+func ClientForURL(cloneURL string, fixedClient git.Client) git.Client {
+	if fixedClient != nil {
+		return fixedClient
 	}
 	auth := ResolveAuth(cloneURL)
 	var opts []git.ClientOption
@@ -91,31 +97,38 @@ func (r *defaultResolver) clientForURL(cloneURL string) git.Client {
 	return git.NewDefaultGitClient(opts...)
 }
 
-// Resolve clones a git repository and extracts skill files from it.
-func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*ResolveResult, error) {
-	// Enforce a clone timeout to prevent indefinite hangs from slow/malicious servers.
-	ctx, cancel := context.WithTimeout(ctx, cloneTimeout)
-	defer cancel()
-
-	// Build clone config from the git reference
-	cloneConfig := &git.CloneConfig{
-		URL: ref.URL,
-	}
+// CloneConfigForRef classifies ref as commit/tag/branch and returns the
+// matching git.CloneConfig (with URL set from ref.URL). Exported so
+// pluginsvc.installFromGit can reuse the same ref-classification logic
+// without duplicating semverLike/isHex.
+func CloneConfigForRef(ref *GitReference) *git.CloneConfig {
+	cfg := &git.CloneConfig{URL: ref.URL}
 	if ref.Ref != "" {
 		switch {
 		case len(ref.Ref) == 40 && isHex(ref.Ref):
 			// Full commit hash → checkout specific commit
-			cloneConfig.Commit = ref.Ref
+			cfg.Commit = ref.Ref
 		case semverLike.MatchString(ref.Ref):
 			// Semver-like pattern (v1.0.0) → clone as tag
-			cloneConfig.Tag = ref.Ref
+			cfg.Tag = ref.Ref
 		default:
 			// Everything else → treat as branch
-			cloneConfig.Branch = ref.Ref
+			cfg.Branch = ref.Ref
 		}
 	}
+	return cfg
+}
 
-	client := r.clientForURL(ref.URL)
+// Resolve clones a git repository and extracts skill files from it.
+func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*ResolveResult, error) {
+	// Enforce a clone timeout to prevent indefinite hangs from slow/malicious servers.
+	ctx, cancel := context.WithTimeout(ctx, CloneTimeout)
+	defer cancel()
+
+	// Build clone config from the git reference
+	cloneConfig := CloneConfigForRef(ref)
+
+	client := ClientForURL(ref.URL, r.fixedClient)
 
 	repoInfo, err := client.Clone(ctx, cloneConfig)
 	if err != nil {
@@ -151,9 +164,9 @@ func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*Reso
 		return nil, fmt.Errorf("invalid skill name in SKILL.md: %w", err)
 	}
 
-	// Collect all files in the skill directory.
-	// For now, we read SKILL.md as the primary file. Additional files in the
-	// skill directory are discovered by listing the tree entries.
+	// Collect all files in the skill directory, recursively walking nested
+	// subtrees so that companion files in subdirectories (e.g. references/,
+	// scripts/) are included in the resolved skill bundle.
 	files, err := r.collectFiles(repoInfo, ref.Path)
 	if err != nil {
 		return nil, fmt.Errorf("collecting skill files: %w", err)
@@ -166,7 +179,12 @@ func (r *defaultResolver) Resolve(ctx context.Context, ref *GitReference) (*Reso
 	}, nil
 }
 
-// collectFiles reads all files from the given path in the repository.
+// collectFiles reads all files from the given path in the repository,
+// walking nested subtrees recursively. Returned paths are forward-slash
+// relative to basePath. WriteContainedFile creates parent directories and
+// guards against path traversal; the in-memory clone is bounded by
+// LimitedFs in pkg/git, and the OCI packager re-asserts file count and
+// total size limits independently.
 func (*defaultResolver) collectFiles(repoInfo *git.RepositoryInfo, basePath string) ([]FileEntry, error) {
 	ref, err := repoInfo.Repository.Head()
 	if err != nil {
@@ -183,7 +201,6 @@ func (*defaultResolver) collectFiles(repoInfo *git.RepositoryInfo, basePath stri
 		return nil, fmt.Errorf("getting tree: %w", err)
 	}
 
-	// Navigate to subdirectory if specified
 	if basePath != "" {
 		tree, err = tree.Tree(basePath)
 		if err != nil {
@@ -192,32 +209,22 @@ func (*defaultResolver) collectFiles(repoInfo *git.RepositoryInfo, basePath stri
 	}
 
 	var files []FileEntry
-	for _, entry := range tree.Entries {
-		// Skip directories — we only want files at the top level of the skill dir.
-		// Nested subdirectories are not part of the skill spec today.
-		// WriteFiles includes MkdirAll as defense-in-depth for containment safety.
-		if entry.Mode == 0040000 {
-			continue
-		}
-
-		file, fileErr := tree.File(entry.Name)
-		if fileErr != nil {
-			return nil, fmt.Errorf("reading file %q: %w", entry.Name, fileErr)
-		}
-
-		content, contentErr := file.Contents()
+	err = tree.Files().ForEach(func(f *object.File) error {
+		content, contentErr := f.Contents()
 		if contentErr != nil {
-			return nil, fmt.Errorf("reading content of %q: %w", entry.Name, contentErr)
+			return fmt.Errorf("reading content of %q: %w", f.Name, contentErr)
 		}
 
 		// All files are capped to 0644 by the writer; set a uniform mode here.
-		mode := fs.FileMode(0644)
-
 		files = append(files, FileEntry{
-			Path:    entry.Name,
+			Path:    f.Name,
 			Content: []byte(content),
-			Mode:    mode,
+			Mode:    fs.FileMode(0644),
 		})
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("iterating tree: %w", err)
 	}
 
 	return files, nil

@@ -22,6 +22,12 @@ func WriteFiles(files []FileEntry, targetDir string, force bool) error {
 	// Sanitize targetDir early so all downstream os calls use the clean path.
 	targetDir = filepath.Clean(targetDir)
 
+	// Ensure the parent directory exists before acquiring the lock.
+	// WithFileLock opens targetDir+".lock", which requires the parent to exist.
+	if err := os.MkdirAll(filepath.Dir(targetDir), skills.DirPermissions); err != nil {
+		return fmt.Errorf("creating parent directory: %w", err)
+	}
+
 	return fileutils.WithFileLock(targetDir, func() error {
 		// Handle existing directory
 		if _, statErr := os.Stat(targetDir); statErr == nil { // lgtm[go/path-injection] #nosec G304

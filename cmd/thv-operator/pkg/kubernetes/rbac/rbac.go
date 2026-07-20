@@ -79,11 +79,18 @@ func (c *Client) UpsertServiceAccount(ctx context.Context, serviceAccount *corev
 // Returns the operation result (Created, Updated, or Unchanged) and any error.
 //
 // IMPORTANT: This function preserves existing Secrets and ImagePullSecrets fields
-// when the desired values are nil. This is critical for OpenShift compatibility,
-// where the openshift-controller-manager automatically manages these fields by
-// creating kubernetes.io/service-account-token and kubernetes.io/dockercfg secrets.
-// Overwriting these fields with nil causes OpenShift to create new secrets on each
-// reconciliation, leading to unbounded secret accumulation.
+// when the desired values are nil OR an empty slice. This is critical for OpenShift
+// compatibility, where the openshift-controller-manager automatically manages these
+// fields by creating kubernetes.io/service-account-token and kubernetes.io/dockercfg
+// secrets. Overwriting these fields with nil causes OpenShift to create new secrets
+// on each reconciliation, leading to unbounded secret accumulation.
+//
+// An empty (non-nil) slice is treated identically to nil: tooling like kustomize,
+// helm, or ArgoCD overlays can produce []LocalObjectReference{} unintentionally,
+// and silently wiping platform-managed pull secrets in that case is destructive
+// and undiagnosable from the CRD field's docs. Callers that need to truly clear
+// the SA's existing pull secrets must do so out of band (e.g., delete & recreate
+// the ServiceAccount).
 // See: https://github.com/operator-framework/operator-sdk/issues/6494
 func (c *Client) upsertServiceAccount(
 	ctx context.Context,
@@ -118,10 +125,14 @@ func (c *Client) upsertServiceAccount(
 		// fields by creating token and dockercfg secrets. If we overwrite them with
 		// nil/empty values, OpenShift will detect the SA as "missing dockercfg" and
 		// create new secrets, while the old ones become orphaned.
-		if desiredImagePullSecrets != nil {
+		//
+		// An empty (non-nil) slice is treated as "not set" — the same as nil — so
+		// tooling that emits []LocalObjectReference{} during overlays/patches doesn't
+		// silently wipe platform-managed pull secrets.
+		if len(desiredImagePullSecrets) > 0 {
 			existing.ImagePullSecrets = desiredImagePullSecrets
 		}
-		if desiredSecrets != nil {
+		if len(desiredSecrets) > 0 {
 			existing.Secrets = desiredSecrets
 		}
 

@@ -54,6 +54,22 @@ var MCPMethodToFeatureOperation = map[string]featureOperation{
 	"features/list": {Feature: "", Operation: authorizers.MCPOperationList}, // Capability discovery
 	"roots/list":    {Feature: "", Operation: ""},                           // Root directory discovery
 
+	// server/discover is intentionally NOT allow-listed: it default-denies (403) for now.
+	// Its response enumerates tool/resource descriptors and would bypass
+	// ResponseFilteringWriter (which only filters tools/list, prompts/list, resources/list,
+	// and find_tool). When Modern serving is wired up (#5830), add it as allow +
+	// response-filter, not always-allowed.
+
+	// Subscriptions - always allowed for now. This method carries no single resource
+	// identifier the parser extracts (params are a notification-type filter with an
+	// optional resourceSubscriptions array), so routing it through Cedar with an empty
+	// ResourceID would risk matching a broad allow rule. Notification delivery and
+	// per-resource authorization of resourceSubscriptions URIs are future work.
+	//
+	// TODO(#5755): when subscription notification delivery is implemented, replace this
+	// always-allowed entry with real per-resource authorization of resourceSubscriptions URIs.
+	"subscriptions/listen": {Feature: "", Operation: ""},
+
 	// Logging and client preferences - always allowed
 	"logging/setLevel": {Feature: "", Operation: ""}, // Client preference for server logging
 
@@ -124,7 +140,7 @@ func handleUnauthorized(w http.ResponseWriter, msgID interface{}, err error) {
 
 	errorResponse := &jsonrpc2.Response{
 		ID:    id,
-		Error: jsonrpc2.NewError(403, errorMsg),
+		Error: jsonrpc2.NewError(mcp.JSONRPCCodeDenied, errorMsg),
 	}
 
 	// Set the response headers

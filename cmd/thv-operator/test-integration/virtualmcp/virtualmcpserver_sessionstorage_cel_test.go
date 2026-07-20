@@ -5,38 +5,35 @@
 package controllers
 
 import (
+	"time"
+
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
-func newVirtualMCPServerWithSessionStorage(name string, ss *mcpv1alpha1.SessionStorageConfig) *mcpv1alpha1.VirtualMCPServer {
-	return &mcpv1alpha1.VirtualMCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      name,
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.VirtualMCPServerSpec{
-			GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group"},
-			IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-				Type: "anonymous",
-			},
-			Config: vmcpconfig.Config{
-				Group: "test-group",
-			},
-			SessionStorage: ss,
-		},
-	}
+func newVirtualMCPServerWithSessionStorage(name string, ss *mcpv1beta1.SessionStorageConfig) *mcpv1beta1.VirtualMCPServer {
+	return v1beta1test.NewVirtualMCPServer(name, "default",
+		v1beta1test.WithVMCPGroupRef("test-group"),
+		v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+			Type: "anonymous",
+		}),
+		v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+			Group: "test-group",
+		}),
+		v1beta1test.WithVMCPSessionStorage(ss),
+	)
 }
 
 var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 	Label("k8s", "cel", "validation"), func() {
 		Context("provider=redis", func() {
 			It("should reject when address is missing", func() {
-				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-no-addr", &mcpv1alpha1.SessionStorageConfig{
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-no-addr", &mcpv1beta1.SessionStorageConfig{
 					Provider: "redis",
 				})
 				err := k8sClient.Create(ctx, vmcp)
@@ -45,7 +42,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 			})
 
 			It("should reject when address is empty string", func() {
-				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-empty-addr", &mcpv1alpha1.SessionStorageConfig{
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-empty-addr", &mcpv1beta1.SessionStorageConfig{
 					Provider: "redis",
 					Address:  "",
 				})
@@ -54,7 +51,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 			})
 
 			It("should accept when address is set", func() {
-				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-with-addr", &mcpv1alpha1.SessionStorageConfig{
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-with-addr", &mcpv1beta1.SessionStorageConfig{
 					Provider: "redis",
 					Address:  "redis:6379",
 				})
@@ -63,7 +60,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 			})
 
 			It("should reject negative DB number", func() {
-				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-neg-db", &mcpv1alpha1.SessionStorageConfig{
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-redis-neg-db", &mcpv1beta1.SessionStorageConfig{
 					Provider: "redis",
 					Address:  "redis:6379",
 					DB:       -1,
@@ -75,7 +72,7 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 
 		Context("provider=memory", func() {
 			It("should accept without address", func() {
-				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-memory-no-addr", &mcpv1alpha1.SessionStorageConfig{
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-memory-no-addr", &mcpv1beta1.SessionStorageConfig{
 					Provider: "memory",
 				})
 				err := k8sClient.Create(ctx, vmcp)
@@ -104,6 +101,62 @@ var _ = Describe("CEL Validation for SessionStorageConfig on VirtualMCPServer",
 				vmcp.Spec.Replicas = &replicas
 				err := k8sClient.Create(ctx, vmcp)
 				Expect(err).To(HaveOccurred())
+			})
+		})
+
+		Context("rateLimiting", func() {
+			It("should reject rate limiting without redis session storage", func() {
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-rl-no-redis", nil)
+				vmcp.Spec.Config.RateLimiting = &mcpv1beta1.RateLimitConfig{
+					Shared: &mcpv1beta1.RateLimitBucket{
+						MaxTokens:    1,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				}
+
+				err := k8sClient.Create(ctx, vmcp)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("config.rateLimiting requires sessionStorage with provider 'redis'"))
+			})
+
+			It("should reject perUser rate limiting with anonymous auth", func() {
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-rl-peruser-anon", &mcpv1beta1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6379",
+				})
+				vmcp.Spec.Config.RateLimiting = &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
+						MaxTokens:    1,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				}
+
+				err := k8sClient.Create(ctx, vmcp)
+				Expect(err).To(HaveOccurred())
+				Expect(err.Error()).To(ContainSubstring("config.rateLimiting.perUser requires incomingAuth.type oidc"))
+			})
+
+			It("should accept perUser rate limiting with oidc auth and redis session storage", func() {
+				vmcp := newVirtualMCPServerWithSessionStorage("vmcp-rl-peruser-oidc", &mcpv1beta1.SessionStorageConfig{
+					Provider: "redis",
+					Address:  "redis:6379",
+				})
+				vmcp.Spec.IncomingAuth = &mcpv1beta1.IncomingAuthConfig{
+					Type: "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+						Name:     "oidc",
+						Audience: "test-audience",
+					},
+				}
+				vmcp.Spec.Config.RateLimiting = &mcpv1beta1.RateLimitConfig{
+					PerUser: &mcpv1beta1.RateLimitBucket{
+						MaxTokens:    1,
+						RefillPeriod: metav1.Duration{Duration: time.Minute},
+					},
+				}
+
+				err := k8sClient.Create(ctx, vmcp)
+				Expect(err).NotTo(HaveOccurred())
 			})
 		})
 	})

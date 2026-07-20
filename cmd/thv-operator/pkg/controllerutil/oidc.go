@@ -11,7 +11,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // GetOIDCConfigForServer fetches the MCPOIDCConfig referenced by an MCPServer.
@@ -20,13 +20,13 @@ func GetOIDCConfigForServer(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
-	ref *mcpv1alpha1.MCPOIDCConfigReference,
-) (*mcpv1alpha1.MCPOIDCConfig, error) {
+	ref *mcpv1beta1.MCPOIDCConfigReference,
+) (*mcpv1beta1.MCPOIDCConfig, error) {
 	if ref == nil {
 		return nil, nil
 	}
 
-	oidcConfig := &mcpv1alpha1.MCPOIDCConfig{}
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{}
 	if err := c.Get(ctx, types.NamespacedName{
 		Name:      ref.Name,
 		Namespace: namespace,
@@ -44,7 +44,7 @@ func GenerateOIDCClientSecretEnvVar(
 	ctx context.Context,
 	c client.Client,
 	namespace string,
-	clientSecretRef *mcpv1alpha1.SecretKeyRef,
+	clientSecretRef *mcpv1beta1.SecretKeyRef,
 ) (*corev1.EnvVar, error) {
 	if clientSecretRef == nil {
 		return nil, nil

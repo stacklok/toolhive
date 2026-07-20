@@ -4,8 +4,10 @@
 package telemetry
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1718,6 +1720,68 @@ func TestHTTPMiddleware_LegacyAttributes_Disabled(t *testing.T) {
 			},
 		},
 		{
+			name: "addMethodSpecificAttributes - Modern clientInfo sets mcp.client.name on non-initialize span",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				parsedMCP := &mcpparser.ParsedMCPRequest{
+					Method:     "tools/call",
+					ResourceID: "github_search",
+					ClientInfo: map[string]interface{}{"name": "acme-client", "version": "1.0"},
+				}
+
+				middleware.addMethodSpecificAttributes(span, parsedMCP)
+
+				assert.Equal(t, "acme-client", span.attributes["mcp.client.name"])
+			},
+		},
+		{
+			name: "addMethodSpecificAttributes - nil ClientInfo on non-initialize method sets nothing (Legacy no-op)",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				parsedMCP := &mcpparser.ParsedMCPRequest{
+					Method: "tools/list",
+				}
+
+				middleware.addMethodSpecificAttributes(span, parsedMCP)
+
+				assert.NotContains(t, span.attributes, "mcp.client.name")
+			},
+		},
+		{
+			name: "addMethodSpecificAttributes - Legacy initialize still sets mcp.client.name from ResourceID",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				parsedMCP := &mcpparser.ParsedMCPRequest{
+					Method:     "initialize",
+					ResourceID: "legacy-client",
+				}
+
+				middleware.addMethodSpecificAttributes(span, parsedMCP)
+
+				assert.Equal(t, "legacy-client", span.attributes["mcp.client.name"])
+			},
+		},
+		{
+			name: "addMethodSpecificAttributes - ClientInfo present but name missing or non-string sets nothing, no panic",
+			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
+				t.Helper()
+				parsedMCP := &mcpparser.ParsedMCPRequest{
+					Method:     "tools/call",
+					ClientInfo: map[string]interface{}{"version": "1.0"},
+				}
+				assert.NotPanics(t, func() {
+					middleware.addMethodSpecificAttributes(span, parsedMCP)
+				})
+				assert.NotContains(t, span.attributes, "mcp.client.name")
+
+				parsedMCP.ClientInfo = map[string]interface{}{"name": 42}
+				assert.NotPanics(t, func() {
+					middleware.addMethodSpecificAttributes(span, parsedMCP)
+				})
+				assert.NotContains(t, span.attributes, "mcp.client.name")
+			},
+		},
+		{
 			name: "finalizeSpan - new response names, no legacy",
 			testFunc: func(t *testing.T, middleware *HTTPMiddleware, span *mockSpan) {
 				t.Helper()
@@ -2205,6 +2269,127 @@ func TestHTTPMiddleware_OperationDuration(t *testing.T) {
 
 			// Verify metrics
 			tt.verifyMetric(t, rm)
+		})
+	}
+}
+
+// TestHTTPMiddleware_UnknownMethodWarning pins down the truth table for the
+// "method could not be determined" diagnostic introduced in #3687 and refined
+// in #4451:
+//
+//	HTTP method | parsed MCP method | warn? | record operation duration?
+//	------------+-------------------+-------+---------------------------
+//	POST        | tools/call        | no    | yes
+//	POST        | <none>            | yes   | no
+//	GET         | <none>            | no    | no
+//	DELETE      | <none>            | no    | no
+//
+// GET (SSE stream open) and DELETE (session termination) are valid Streamable
+// HTTP lifecycle requests with no JSON-RPC body, so warning on them produces
+// noise rather than signal. POST without a parsed method retains the warning
+// because it indicates a real misconfiguration on the JSON-RPC path.
+//
+// Subtests redirect slog.Default (process-global), so they must not run in
+// parallel.
+//
+//nolint:paralleltest,tparallel // Subtests redirect slog.Default, which is process-global state
+func TestHTTPMiddleware_UnknownMethodWarning(t *testing.T) {
+	tests := []struct {
+		name         string
+		httpMethod   string
+		mcpRequest   *mcpparser.ParsedMCPRequest
+		expectWarn   bool
+		expectMetric bool
+	}{
+		{
+			name:       "POST with parsed MCP method records duration and does not warn",
+			httpMethod: http.MethodPost,
+			mcpRequest: &mcpparser.ParsedMCPRequest{
+				Method:    "tools/call",
+				ID:        "1",
+				IsRequest: true,
+			},
+			expectWarn:   false,
+			expectMetric: true,
+		},
+		{
+			name:         "POST without parsed MCP method warns and does not record duration",
+			httpMethod:   http.MethodPost,
+			mcpRequest:   nil,
+			expectWarn:   true,
+			expectMetric: false,
+		},
+		{
+			name:         "GET to /mcp does not warn (SSE stream open)",
+			httpMethod:   http.MethodGet,
+			mcpRequest:   nil,
+			expectWarn:   false,
+			expectMetric: false,
+		},
+		{
+			name:         "DELETE to /mcp does not warn (session termination)",
+			httpMethod:   http.MethodDelete,
+			mcpRequest:   nil,
+			expectWarn:   false,
+			expectMetric: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			handler := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})
+			orig := slog.Default()
+			slog.SetDefault(slog.New(handler))
+			t.Cleanup(func() { slog.SetDefault(orig) })
+
+			reader := sdkmetric.NewManualReader()
+			meterProvider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
+
+			middleware := NewHTTPMiddleware(
+				Config{ServiceName: "test-service", ServiceVersion: "1.0.0"},
+				tracenoop.NewTracerProvider(),
+				meterProvider,
+				"test-server",
+				"streamable-http",
+			)
+
+			wrappedHandler := middleware(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusOK)
+			}))
+
+			req := httptest.NewRequest(tt.httpMethod, "/mcp", nil)
+			if tt.mcpRequest != nil {
+				ctx := context.WithValue(req.Context(), mcpparser.MCPRequestContextKey, tt.mcpRequest)
+				req = req.WithContext(ctx)
+			}
+			rec := httptest.NewRecorder()
+			wrappedHandler.ServeHTTP(rec, req)
+
+			logged := buf.String()
+			if tt.expectWarn {
+				require.Contains(t, logged, "mcp method could not be determined",
+					"expected WARN for %s with no parsed MCP method", tt.httpMethod)
+				// Operators rely on these attributes to identify the offending traffic.
+				assert.Contains(t, logged, `"http_method":"`+tt.httpMethod+`"`)
+				assert.Contains(t, logged, `"path":"/mcp"`)
+			} else {
+				assert.NotContains(t, logged, "mcp method could not be determined",
+					"unexpected WARN for %s /mcp", tt.httpMethod)
+			}
+
+			var rm metricdata.ResourceMetrics
+			require.NoError(t, reader.Collect(context.Background(), &rm))
+			var hasOperationDuration bool
+			for _, sm := range rm.ScopeMetrics {
+				for _, m := range sm.Metrics {
+					if m.Name == metricOperationDuration {
+						hasOperationDuration = true
+					}
+				}
+			}
+			assert.Equal(t, tt.expectMetric, hasOperationDuration,
+				"mcp.server.operation.duration presence should match expectation")
 		})
 	}
 }

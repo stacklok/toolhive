@@ -13,7 +13,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 var _ = Describe("MCPGroup Controller Integration Tests", func() {
@@ -26,10 +26,10 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 		var (
 			namespace     string
 			mcpGroupName  string
-			mcpGroup      *mcpv1alpha1.MCPGroup
-			server1       *mcpv1alpha1.MCPServer
-			server2       *mcpv1alpha1.MCPServer
-			serverNoGroup *mcpv1alpha1.MCPServer
+			mcpGroup      *mcpv1beta1.MCPGroup
+			server1       *mcpv1beta1.MCPServer
+			server2       *mcpv1beta1.MCPServer
+			serverNoGroup *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -45,36 +45,36 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
 
 			// Create MCPServers first
-			server1 = &mcpv1alpha1.MCPServer{
+			server1 = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "server1",
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server1)).Should(Succeed())
 
-			server2 = &mcpv1alpha1.MCPServer{
+			server2 = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "server2",
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server2)).Should(Succeed())
 
-			serverNoGroup = &mcpv1alpha1.MCPServer{
+			serverNoGroup = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "server-no-group",
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image: "example/mcp-server:latest",
 					// No GroupRef
 				},
@@ -83,47 +83,47 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 
 			// Update server statuses to Running
 			Eventually(func() error {
-				freshServer := &mcpv1alpha1.MCPServer{}
+				freshServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server1.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
+				freshServer.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
 			Eventually(func() error {
-				freshServer := &mcpv1alpha1.MCPServer{}
+				freshServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server2.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
+				freshServer.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
 			// Verify the statuses were updated
 			Eventually(func() bool {
-				freshServer := &mcpv1alpha1.MCPServer{}
+				freshServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server1.Name, Namespace: namespace}, freshServer); err != nil {
 					return false
 				}
-				return freshServer.Status.Phase == mcpv1alpha1.MCPServerPhaseReady
+				return freshServer.Status.Phase == mcpv1beta1.MCPServerPhaseReady
 			}, timeout, interval).Should(BeTrue())
 
 			Eventually(func() bool {
-				freshServer := &mcpv1alpha1.MCPServer{}
+				freshServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server2.Name, Namespace: namespace}, freshServer); err != nil {
 					return false
 				}
-				return freshServer.Status.Phase == mcpv1alpha1.MCPServerPhaseReady
+				return freshServer.Status.Phase == mcpv1beta1.MCPServerPhaseReady
 			}, timeout, interval).Should(BeTrue())
 
 			// Now create the MCPGroup
-			mcpGroup = &mcpv1alpha1.MCPGroup{
+			mcpGroup = &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
+				Spec: mcpv1beta1.MCPGroupSpec{
 					Description: "Test group for integration tests",
 				},
 			}
@@ -149,7 +149,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 		It("Should find existing MCPServers and update status", func() {
 			// Check that the group found both servers
 			Eventually(func() int32 {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
@@ -160,8 +160,8 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 			}, timeout, interval).Should(Equal(int32(2)))
 
 			// The group should be Ready after successful reconciliation
-			Eventually(func() mcpv1alpha1.MCPGroupPhase {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+			Eventually(func() mcpv1beta1.MCPGroupPhase {
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
@@ -169,11 +169,11 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 					return ""
 				}
 				return updatedGroup.Status.Phase
-			}, timeout, interval).Should(Equal(mcpv1alpha1.MCPGroupPhaseReady))
+			}, timeout, interval).Should(Equal(mcpv1beta1.MCPGroupPhaseReady))
 
 			// Verify ObservedGeneration is set after reconciliation
 			Eventually(func() int64 {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
@@ -184,7 +184,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 			}, timeout, interval).Should(Equal(mcpGroup.Generation))
 
 			// Verify the servers are in the group
-			updatedGroup := &mcpv1alpha1.MCPGroup{}
+			updatedGroup := &mcpv1beta1.MCPGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpGroupName,
 				Namespace: namespace,
@@ -199,8 +199,8 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 		var (
 			namespace    string
 			mcpGroupName string
-			mcpGroup     *mcpv1alpha1.MCPGroup
-			newServer    *mcpv1alpha1.MCPServer
+			mcpGroup     *mcpv1beta1.MCPGroup
+			newServer    *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -216,12 +216,12 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
 
 			// Create MCPGroup first
-			mcpGroup = &mcpv1alpha1.MCPGroup{
+			mcpGroup = &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
+				Spec: mcpv1beta1.MCPGroupSpec{
 					Description: "Test group for new server",
 				},
 			}
@@ -229,12 +229,12 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 
 			// Wait for initial reconciliation
 			Eventually(func() bool {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				}, updatedGroup)
-				return err == nil && updatedGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
+				return err == nil && updatedGroup.Status.Phase == mcpv1beta1.MCPGroupPhaseReady
 			}, timeout, interval).Should(BeTrue())
 		})
 
@@ -256,14 +256,14 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 
 		It("Should trigger MCPGroup reconciliation when server is created", func() {
 			// Create new server with groupRef
-			newServer = &mcpv1alpha1.MCPServer{
+			newServer = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "new-server",
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, newServer)).Should(Succeed())
@@ -273,13 +273,13 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: newServer.Name, Namespace: namespace}, newServer); err != nil {
 					return err
 				}
-				newServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
+				newServer.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, newServer)
 			}, timeout, interval).Should(Succeed())
 
 			// Wait for MCPGroup to be updated
 			Eventually(func() bool {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
@@ -289,11 +289,11 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 				}
 
 				return updatedGroup.Status.ServerCount == 1 &&
-					updatedGroup.Status.Phase == mcpv1alpha1.MCPGroupPhaseReady
+					updatedGroup.Status.Phase == mcpv1beta1.MCPGroupPhaseReady
 			}, timeout, interval).Should(BeTrue())
 
 			// Verify the server is in the group
-			updatedGroup := &mcpv1alpha1.MCPGroup{}
+			updatedGroup := &mcpv1beta1.MCPGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpGroupName,
 				Namespace: namespace,
@@ -307,9 +307,9 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 		var (
 			namespace    string
 			mcpGroupName string
-			mcpGroup     *mcpv1alpha1.MCPGroup
-			server1      *mcpv1alpha1.MCPServer
-			server2      *mcpv1alpha1.MCPServer
+			mcpGroup     *mcpv1beta1.MCPGroup
+			server1      *mcpv1beta1.MCPServer
+			server2      *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -325,56 +325,56 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
 
 			// Create MCPServers
-			server1 = &mcpv1alpha1.MCPServer{
+			server1 = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "server1",
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server1)).Should(Succeed())
 
-			server2 = &mcpv1alpha1.MCPServer{
+			server2 = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "server2",
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server2)).Should(Succeed())
 
 			// Update server statuses to Running
 			Eventually(func() error {
-				freshServer := &mcpv1alpha1.MCPServer{}
+				freshServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server1.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
+				freshServer.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
 			Eventually(func() error {
-				freshServer := &mcpv1alpha1.MCPServer{}
+				freshServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server2.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
+				freshServer.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
 			// Create MCPGroup
-			mcpGroup = &mcpv1alpha1.MCPGroup{
+			mcpGroup = &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
+				Spec: mcpv1beta1.MCPGroupSpec{
 					Description: "Test group for server deletion",
 				},
 			}
@@ -382,7 +382,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 
 			// Wait for initial reconciliation with both servers
 			Eventually(func() bool {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
@@ -413,19 +413,19 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 			// The MCPGroup should remain Ready because it can successfully list servers
 			// in the namespace. The MCPGroup phase is based on the ability to query
 			// servers, not on the state or count of servers.
-			updatedGroup := &mcpv1alpha1.MCPGroup{}
+			updatedGroup := &mcpv1beta1.MCPGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpGroupName,
 				Namespace: namespace,
 			}, updatedGroup)).Should(Succeed())
 
 			// The MCPGroup should be Ready with 2 servers
-			Expect(updatedGroup.Status.Phase).To(Equal(mcpv1alpha1.MCPGroupPhaseReady))
+			Expect(updatedGroup.Status.Phase).To(Equal(mcpv1beta1.MCPGroupPhaseReady))
 			Expect(updatedGroup.Status.ServerCount).To(Equal(int32(2)))
 
 			// Trigger a reconciliation by updating the MCPGroup spec
 			Eventually(func() error {
-				freshGroup := &mcpv1alpha1.MCPGroup{}
+				freshGroup := &mcpv1beta1.MCPGroup{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpGroupName, Namespace: namespace}, freshGroup); err != nil {
 					return err
 				}
@@ -434,8 +434,8 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 			}, timeout, interval).Should(Succeed())
 
 			// After reconciliation, the MCPGroup should still be Ready
-			Eventually(func() mcpv1alpha1.MCPGroupPhase {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+			Eventually(func() mcpv1beta1.MCPGroupPhase {
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
@@ -443,7 +443,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 					return ""
 				}
 				return updatedGroup.Status.Phase
-			}, timeout, interval).Should(Equal(mcpv1alpha1.MCPGroupPhaseReady))
+			}, timeout, interval).Should(Equal(mcpv1beta1.MCPGroupPhaseReady))
 		})
 	})
 
@@ -451,9 +451,9 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 		var (
 			namespace    string
 			mcpGroupName string
-			mcpGroup     *mcpv1alpha1.MCPGroup
-			server1      *mcpv1alpha1.MCPServer
-			server2      *mcpv1alpha1.MCPServer
+			mcpGroup     *mcpv1beta1.MCPGroup
+			server1      *mcpv1beta1.MCPServer
+			server2      *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -469,56 +469,56 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, ns)).Should(Succeed())
 
 			// Create MCPServers
-			server1 = &mcpv1alpha1.MCPServer{
+			server1 = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "server1",
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server1)).Should(Succeed())
 
-			server2 = &mcpv1alpha1.MCPServer{
+			server2 = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "server2",
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, server2)).Should(Succeed())
 
 			// Update server statuses to Running
 			Eventually(func() error {
-				freshServer := &mcpv1alpha1.MCPServer{}
+				freshServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server1.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
+				freshServer.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
 			Eventually(func() error {
-				freshServer := &mcpv1alpha1.MCPServer{}
+				freshServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server2.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
+				freshServer.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
 			// Create MCPGroup
-			mcpGroup = &mcpv1alpha1.MCPGroup{
+			mcpGroup = &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpGroupName,
 					Namespace: namespace,
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
+				Spec: mcpv1beta1.MCPGroupSpec{
 					Description: "Test group for state changes",
 				},
 			}
@@ -526,7 +526,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 
 			// Wait for initial reconciliation - the group should find the servers
 			Eventually(func() int32 {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
@@ -555,18 +555,18 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 		It("Should remain Ready when reconciled after server status changes", func() {
 			// Update server1 status to Failed
 			Eventually(func() error {
-				freshServer := &mcpv1alpha1.MCPServer{}
+				freshServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: server1.Name, Namespace: namespace}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseFailed
+				freshServer.Status.Phase = mcpv1beta1.MCPServerPhaseFailed
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
 			// Status changes don't trigger MCPGroup reconciliation, so we need to trigger it
 			// by updating the MCPGroup spec (e.g., adding/updating description)
 			Eventually(func() error {
-				freshGroup := &mcpv1alpha1.MCPGroup{}
+				freshGroup := &mcpv1beta1.MCPGroup{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: mcpGroupName, Namespace: namespace}, freshGroup); err != nil {
 					return err
 				}
@@ -576,8 +576,8 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 
 			// The MCPGroup should still be Ready because it doesn't check individual server phases
 			// (it only checks if servers exist). This reflects the simplified controller logic.
-			Eventually(func() mcpv1alpha1.MCPGroupPhase {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+			Eventually(func() mcpv1beta1.MCPGroupPhase {
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespace,
@@ -585,10 +585,10 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 					return ""
 				}
 				return updatedGroup.Status.Phase
-			}, timeout, interval).Should(Equal(mcpv1alpha1.MCPGroupPhaseReady))
+			}, timeout, interval).Should(Equal(mcpv1beta1.MCPGroupPhaseReady))
 
 			// Verify both servers are still counted
-			updatedGroup := &mcpv1alpha1.MCPGroup{}
+			updatedGroup := &mcpv1beta1.MCPGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpGroupName,
 				Namespace: namespace,
@@ -602,9 +602,9 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 			namespaceA   string
 			namespaceB   string
 			mcpGroupName string
-			mcpGroupA    *mcpv1alpha1.MCPGroup
-			serverA      *mcpv1alpha1.MCPServer
-			serverB      *mcpv1alpha1.MCPServer
+			mcpGroupA    *mcpv1beta1.MCPGroup
+			serverA      *mcpv1beta1.MCPServer
+			serverB      *mcpv1beta1.MCPServer
 		)
 
 		BeforeAll(func() {
@@ -628,57 +628,57 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 			Expect(k8sClient.Create(ctx, nsB)).Should(Succeed())
 
 			// Create server in namespace A
-			serverA = &mcpv1alpha1.MCPServer{
+			serverA = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "server-a",
 					Namespace: namespaceA,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName},
 				},
 			}
 			Expect(k8sClient.Create(ctx, serverA)).Should(Succeed())
 
 			// Create server in namespace B with same group name
-			serverB = &mcpv1alpha1.MCPServer{
+			serverB = &mcpv1beta1.MCPServer{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "server-b",
 					Namespace: namespaceB,
 				},
-				Spec: mcpv1alpha1.MCPServerSpec{
+				Spec: mcpv1beta1.MCPServerSpec{
 					Image:    "example/mcp-server:latest",
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName}, // Same group name, different namespace
+					GroupRef: &mcpv1beta1.MCPGroupRef{Name: mcpGroupName}, // Same group name, different namespace
 				},
 			}
 			Expect(k8sClient.Create(ctx, serverB)).Should(Succeed())
 
 			// Update server statuses
 			Eventually(func() error {
-				freshServer := &mcpv1alpha1.MCPServer{}
+				freshServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: serverA.Name, Namespace: namespaceA}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
+				freshServer.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
 			Eventually(func() error {
-				freshServer := &mcpv1alpha1.MCPServer{}
+				freshServer := &mcpv1beta1.MCPServer{}
 				if err := k8sClient.Get(ctx, types.NamespacedName{Name: serverB.Name, Namespace: namespaceB}, freshServer); err != nil {
 					return err
 				}
-				freshServer.Status.Phase = mcpv1alpha1.MCPServerPhaseReady
+				freshServer.Status.Phase = mcpv1beta1.MCPServerPhaseReady
 				return k8sClient.Status().Update(ctx, freshServer)
 			}, timeout, interval).Should(Succeed())
 
 			// Create MCPGroup in namespace A
-			mcpGroupA = &mcpv1alpha1.MCPGroup{
+			mcpGroupA = &mcpv1beta1.MCPGroup{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      mcpGroupName,
 					Namespace: namespaceA,
 				},
-				Spec: mcpv1alpha1.MCPGroupSpec{
+				Spec: mcpv1beta1.MCPGroupSpec{
 					Description: "Test group in namespace A",
 				},
 			}
@@ -710,7 +710,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 		It("Should only include servers from the same namespace", func() {
 			// Wait for reconciliation
 			Eventually(func() bool {
-				updatedGroup := &mcpv1alpha1.MCPGroup{}
+				updatedGroup := &mcpv1beta1.MCPGroup{}
 				err := k8sClient.Get(ctx, types.NamespacedName{
 					Name:      mcpGroupName,
 					Namespace: namespaceA,
@@ -719,7 +719,7 @@ var _ = Describe("MCPGroup Controller Integration Tests", func() {
 			}, timeout, interval).Should(BeTrue())
 
 			// Verify only server-a is in the group
-			updatedGroup := &mcpv1alpha1.MCPGroup{}
+			updatedGroup := &mcpv1beta1.MCPGroup{}
 			Expect(k8sClient.Get(ctx, types.NamespacedName{
 				Name:      mcpGroupName,
 				Namespace: namespaceA,

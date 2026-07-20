@@ -6,6 +6,7 @@ package kubernetes
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -193,7 +194,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 
 			// Deploy the workload
 			_, err := client.DeployWorkload(
-				context.Background(),
+				t.Context(),
 				"test-image",
 				"test-container",
 				[]string{"test-command"},
@@ -215,7 +216,7 @@ func TestCreateContainerWithPodTemplatePatch(t *testing.T) {
 
 			// Get the created StatefulSet
 			statefulSet, err := clientset.AppsV1().StatefulSets("default").Get(
-				context.Background(),
+				t.Context(),
 				"test-container",
 				metav1.GetOptions{},
 			)
@@ -729,7 +730,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 
 			// Deploy the workload
 			_, err := client.DeployWorkload(
-				context.Background(),
+				t.Context(),
 				tc.image,
 				"test-container",
 				tc.command,
@@ -751,7 +752,7 @@ func TestCreateContainerWithMCP(t *testing.T) {
 
 			// Get the created StatefulSet
 			statefulSet, err := clientset.AppsV1().StatefulSets("default").Get(
-				context.Background(),
+				t.Context(),
 				"test-container",
 				metav1.GetOptions{},
 			)
@@ -893,6 +894,94 @@ func TestDeployWorkloadCreatesBackendServices(t *testing.T) {
 	}
 }
 
+// TestDeployWorkloadEnvVarOrderingDeterministic verifies that DeployWorkload
+// produces an env list in deterministic (sorted) order regardless of Go map
+// iteration randomness. Without this, the StatefulSet pod template hash
+// flapped between reconciles, triggering needless pod rollouts (#5063).
+func TestDeployWorkloadEnvVarOrderingDeterministic(t *testing.T) {
+	t.Parallel()
+
+	containerName := "test-svc"
+	envVars := map[string]string{
+		"ULI_MCP_TOKEN": "tok",
+		"MCP_PORT":      "8080",
+		"MCP_TRANSPORT": "streamable-http",
+		"MCP_HOST":      "0.0.0.0",
+		"FASTMCP_PORT":  "8080",
+	}
+
+	deploy := func() []corev1.EnvVar {
+		mockStatefulSet := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: containerName, Namespace: "default", UID: "test-uid",
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To(int32(1)),
+				Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{}}},
+			},
+			Status: appsv1.StatefulSetStatus{ReadyReplicas: 1},
+		}
+		clientset := fake.NewClientset(mockStatefulSet)
+		fakeConfig := &rest.Config{Host: "https://fake-k8s-api.example.com"}
+		mockDetector := &mockPlatformDetector{platform: PlatformKubernetes}
+
+		client := NewClientWithConfigAndPlatformDetector(clientset, fakeConfig, mockDetector)
+		client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+		client.namespaceFunc = func() string { return "default" }
+
+		options := runtime.NewDeployWorkloadOptions()
+		options.PortBindings = map[string][]runtime.PortBinding{"8080/tcp": {{HostPort: "8080"}}}
+
+		_, err := client.DeployWorkload(
+			t.Context(),
+			"test-image",
+			containerName,
+			[]string{"serve"},
+			envVars,
+			map[string]string{"app": containerName},
+			nil,
+			"streamable-http",
+			options,
+			false,
+		)
+		require.NoError(t, err)
+
+		sts, err := clientset.AppsV1().StatefulSets("default").Get(t.Context(), containerName, metav1.GetOptions{})
+		require.NoError(t, err)
+		var mcp *corev1.Container
+		for i := range sts.Spec.Template.Spec.Containers {
+			if sts.Spec.Template.Spec.Containers[i].Name == mcpContainerName {
+				mcp = &sts.Spec.Template.Spec.Containers[i]
+				break
+			}
+		}
+		require.NotNil(t, mcp, "mcp container should exist on the StatefulSet")
+		return mcp.Env
+	}
+
+	// Sorted ordering is the contract; assert against it explicitly so the
+	// reason for the order is documented in the test, not just stable across runs.
+	expected := []string{"FASTMCP_PORT", "MCP_HOST", "MCP_PORT", "MCP_TRANSPORT", "ULI_MCP_TOKEN"}
+
+	first := deploy()
+	firstNames := make([]string, len(first))
+	for i, e := range first {
+		firstNames[i] = e.Name
+	}
+	assert.Equal(t, expected, firstNames, "first DeployWorkload should produce sorted env order")
+
+	// Run multiple times to catch any non-determinism that would slip through
+	// a single-call test (Go map iteration order is randomized per call).
+	for i := 0; i < 10; i++ {
+		got := deploy()
+		gotNames := make([]string, len(got))
+		for j, e := range got {
+			gotNames[j] = e.Name
+		}
+		assert.Equal(t, expected, gotNames, "iteration %d: env order must be deterministic", i)
+	}
+}
+
 // TestAttachToWorkloadExitFunc tests that the exit function is properly configured
 // and can be mocked for testing
 func TestAttachToWorkloadExitFunc(t *testing.T) {
@@ -959,7 +1048,7 @@ func TestAttachToWorkloadNoPodFound(t *testing.T) {
 	client.namespaceFunc = func() string { return defaultNamespace }
 
 	// Call AttachToWorkload with a workload that has no pods
-	_, _, err := client.AttachToWorkload(context.Background(), "nonexistent-workload")
+	_, _, err := client.AttachToWorkload(t.Context(), "nonexistent-workload")
 
 	// Should return error immediately (no pods found)
 	require.Error(t, err)
@@ -1302,7 +1391,7 @@ func TestDeployWorkloadBackendReplicas(t *testing.T) {
 		client.namespaceFunc = func() string { return defaultNamespace }
 
 		_, err := client.DeployWorkload(
-			context.Background(),
+			t.Context(),
 			"test-image", "test-container", nil,
 			map[string]string{}, map[string]string{},
 			nil, "streamable-http", options, false,
@@ -1310,7 +1399,7 @@ func TestDeployWorkloadBackendReplicas(t *testing.T) {
 		require.NoError(t, err)
 
 		sts, err := clientset.AppsV1().StatefulSets(defaultNamespace).Get(
-			context.Background(), "test-container", metav1.GetOptions{},
+			t.Context(), "test-container", metav1.GetOptions{},
 		)
 		require.NoError(t, err)
 		return sts
@@ -1366,4 +1455,257 @@ func TestDeployWorkloadBackendReplicas(t *testing.T) {
 		require.NotNil(t, sts.Spec.Replicas)
 		assert.Equal(t, int32(0), *sts.Spec.Replicas)
 	})
+}
+
+func TestDeployWorkload_RunConfigMCPServerGenerationGate(t *testing.T) {
+	t.Parallel()
+
+	const containerName = "test-container"
+	const oursGen = int64(100)
+	oursFormatted := strconv.FormatInt(oursGen, 10)
+
+	// seededImage is distinct from the image passed to DeployWorkload so the
+	// "skipped apply" case can assert the seeded spec was NOT overwritten.
+	const seededImage = "seeded-image:pre-existing"
+	const deployImage = "test-image"
+
+	newSeededSTS := func(annotation string) *appsv1.StatefulSet {
+		sts := &appsv1.StatefulSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      containerName,
+				Namespace: defaultNamespace,
+			},
+			Spec: appsv1.StatefulSetSpec{
+				Replicas: ptr.To(int32(1)),
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{
+							Name:  mcpContainerName,
+							Image: seededImage,
+						}},
+					},
+				},
+			},
+			Status: appsv1.StatefulSetStatus{ReadyReplicas: 1},
+		}
+		if annotation != "" {
+			sts.Spec.Template.Annotations = map[string]string{
+				RunConfigMCPServerGenerationAnnotation: annotation,
+			}
+		}
+		return sts
+	}
+
+	testCases := []struct {
+		name             string
+		seedSTS          bool
+		seedAnnotation   string
+		optionsGen       int64
+		expectApply      bool
+		wantAnnotation   string // expected annotation value on STS after call
+		wantAnnotationIs string // "missing" | "equal" — how to interpret wantAnnotation
+	}{
+		{
+			name:             "no_existing_sts",
+			seedSTS:          false,
+			optionsGen:       oursGen,
+			expectApply:      true,
+			wantAnnotation:   oursFormatted,
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "existing_sts_no_annotation",
+			seedSTS:          true,
+			seedAnnotation:   "",
+			optionsGen:       oursGen,
+			expectApply:      true,
+			wantAnnotation:   oursFormatted,
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "existing_sts_older_annotation",
+			seedSTS:          true,
+			seedAnnotation:   strconv.FormatInt(int64(50), 10),
+			optionsGen:       oursGen,
+			expectApply:      true,
+			wantAnnotation:   oursFormatted,
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "existing_sts_equal_annotation",
+			seedSTS:          true,
+			seedAnnotation:   oursFormatted,
+			optionsGen:       oursGen,
+			expectApply:      true,
+			wantAnnotation:   oursFormatted,
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "existing_sts_newer_annotation",
+			seedSTS:          true,
+			seedAnnotation:   strconv.FormatInt(int64(200), 10),
+			optionsGen:       oursGen,
+			expectApply:      false,
+			wantAnnotation:   strconv.FormatInt(int64(200), 10),
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "existing_sts_unparsable_annotation",
+			seedSTS:          true,
+			seedAnnotation:   "not-a-number",
+			optionsGen:       oursGen,
+			expectApply:      true,
+			wantAnnotation:   oursFormatted,
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "zero_options_generation",
+			seedSTS:          true,
+			seedAnnotation:   strconv.FormatInt(int64(200), 10),
+			optionsGen:       int64(0),
+			expectApply:      true,
+			wantAnnotation:   strconv.FormatInt(int64(200), 10),
+			wantAnnotationIs: "equal",
+		},
+		{
+			name:             "zero_options_generation_no_existing_sts",
+			seedSTS:          false,
+			optionsGen:       int64(0),
+			expectApply:      true,
+			wantAnnotationIs: "missing",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			var clientset *fake.Clientset
+			if tc.seedSTS {
+				clientset = fake.NewClientset(newSeededSTS(tc.seedAnnotation))
+			} else {
+				clientset = fake.NewClientset()
+			}
+
+			client := NewClientWithConfigAndPlatformDetector(
+				clientset,
+				&rest.Config{Host: "https://fake-k8s-api.example.com"},
+				&mockPlatformDetector{platform: PlatformKubernetes},
+			)
+			client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+			client.namespaceFunc = func() string { return defaultNamespace }
+
+			options := runtime.NewDeployWorkloadOptions()
+			options.RunConfigMCPServerGeneration = tc.optionsGen
+
+			_, err := client.DeployWorkload(
+				t.Context(),
+				deployImage, containerName, nil,
+				map[string]string{}, map[string]string{},
+				nil, "streamable-http", options, false,
+			)
+			require.NoError(t, err)
+
+			sts, getErr := clientset.AppsV1().StatefulSets(defaultNamespace).Get(
+				t.Context(), containerName, metav1.GetOptions{},
+			)
+
+			if !tc.expectApply {
+				// Apply was gated off. The seeded STS should still exist with its
+				// original image and annotation untouched.
+				require.NoError(t, getErr)
+				require.NotEmpty(t, sts.Spec.Template.Spec.Containers)
+				assert.Equal(t, seededImage, sts.Spec.Template.Spec.Containers[0].Image,
+					"seeded image should be preserved when apply is gated")
+				assert.Equal(t, tc.seedAnnotation,
+					sts.Spec.Template.Annotations[RunConfigMCPServerGenerationAnnotation],
+					"seeded annotation should be preserved when apply is gated")
+				return
+			}
+
+			// Apply should have occurred.
+			require.NoError(t, getErr)
+			switch tc.wantAnnotationIs {
+			case "missing":
+				_, present := sts.Spec.Template.Annotations[RunConfigMCPServerGenerationAnnotation]
+				assert.False(t, present,
+					"annotation should not be added when options.RunConfigMCPServerGeneration is zero")
+			case "equal":
+				got := sts.Spec.Template.Annotations[RunConfigMCPServerGenerationAnnotation]
+				// Compare as int64 so a formatting mismatch (e.g. "+100" vs "100") doesn't
+				// cause a false positive; the canonical representation is strconv.FormatInt.
+				wantInt, werr := strconv.ParseInt(tc.wantAnnotation, 10, 64)
+				require.NoError(t, werr, "test expected annotation must be a parseable int64")
+				gotInt, gerr := strconv.ParseInt(got, 10, 64)
+				require.NoError(t, gerr, "annotation on STS must be a parseable int64, got %q", got)
+				assert.Equal(t, wantInt, gotInt,
+					"annotation value mismatch: got %q, want %q", got, tc.wantAnnotation)
+			}
+		})
+	}
+}
+
+// TestDeployWorkload_EqualGenerationDifferentImageClobbers documents the
+// regression mode for issue #5360. Two proxyrunner pods coexist during a
+// rolling update; both have read the same MCPServerGeneration N from the
+// live-mounted RunConfig ConfigMap, but each holds a different image in
+// its CLI positional arg (frozen at pod creation). The gate at
+// shouldSkipStatefulSetApply uses strict-greater-than, so equal
+// generations cannot distinguish the callers — the stale-image apply
+// lands successfully and clobbers the fresh-image apply.
+//
+// The fix is upstream of this layer: freeze MCPServerGeneration per pod
+// (downward-API env var) so the two callers carry different ourGen
+// values and the gate fires correctly. This test pins down what the gate
+// cannot defend against alone; it continues to pass after the fix
+// because the production scenario it models can no longer occur.
+func TestDeployWorkload_EqualGenerationDifferentImageClobbers(t *testing.T) {
+	t.Parallel()
+
+	const containerName = "test-container"
+	const gen = int64(100)
+	const freshImage = "fresh-image:new"
+	const staleImage = "stale-image:old"
+
+	clientset := fake.NewClientset()
+	client := NewClientWithConfigAndPlatformDetector(
+		clientset,
+		&rest.Config{Host: "https://fake-k8s-api.example.com"},
+		&mockPlatformDetector{platform: PlatformKubernetes},
+	)
+	client.waitForStatefulSetReadyFunc = mockWaitForStatefulSetReady
+	client.namespaceFunc = func() string { return defaultNamespace }
+
+	options := runtime.NewDeployWorkloadOptions()
+	options.RunConfigMCPServerGeneration = gen
+
+	// Fresh-image proxyrunner pod applies first.
+	_, err := client.DeployWorkload(
+		t.Context(),
+		freshImage, containerName, nil,
+		map[string]string{}, map[string]string{},
+		nil, "streamable-http", options, false,
+	)
+	require.NoError(t, err)
+
+	// Stale-image proxyrunner pod (restarted old-RS pod that re-read the
+	// live ConfigMap) applies second with the SAME generation.
+	_, err = client.DeployWorkload(
+		t.Context(),
+		staleImage, containerName, nil,
+		map[string]string{}, map[string]string{},
+		nil, "streamable-http", options, false,
+	)
+	require.NoError(t, err)
+
+	sts, err := clientset.AppsV1().StatefulSets(defaultNamespace).Get(
+		t.Context(), containerName, metav1.GetOptions{},
+	)
+	require.NoError(t, err)
+	require.NotEmpty(t, sts.Spec.Template.Spec.Containers)
+	assert.Equal(t, staleImage, sts.Spec.Template.Spec.Containers[0].Image,
+		"stale apply must clobber the fresh image when generations are equal; "+
+			"the gate cannot defend against this and the fix must live upstream "+
+			"(see issue #5360)")
 }

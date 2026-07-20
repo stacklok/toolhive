@@ -16,7 +16,7 @@
 
 ---
 # Step 1: Create MCPGroup first
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPGroup
 metadata:
   name: my-services
@@ -26,7 +26,7 @@ spec:
 
 ---
 # Step 2: Create MCPServer backend that references the group
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: yardstick-simple
@@ -47,7 +47,7 @@ spec:
 
 ---
 # Step 3: Create VirtualMCPServer
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: simple-vmcp

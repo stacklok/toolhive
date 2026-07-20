@@ -12,6 +12,7 @@ import (
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/toolhive/pkg/auth/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
 // TokenPersister is a callback function that persists OAuth refresh tokens.
@@ -20,8 +21,26 @@ import (
 type TokenPersister func(refreshToken string, expiry time.Time) error
 
 // ClientCredentialsPersister is called when DCR client credentials need to be persisted.
-// This is used to store client_id and client_secret obtained during Dynamic Client Registration.
-type ClientCredentialsPersister func(clientID, clientSecret string) error
+// This is used to store client_id, client_secret, and renewal metadata obtained during
+// Dynamic Client Registration (RFC 7591) and needed for secret renewal (RFC 7592).
+//
+// Parameters:
+//   - clientID: the registered client ID (public, stored as plain text)
+//   - clientSecret: the registered client secret (sensitive, stored via secret manager)
+//   - secretExpiry: when the client secret expires; zero value means it never expires
+//   - registrationAccessToken: bearer token for RFC 7592 management operations (sensitive)
+//   - registrationClientURI: endpoint for RFC 7592 client update/read operations (plain text)
+//   - tokenEndpointAuthMethod: the auth method used for the token endpoint (e.g., "client_secret_basic", "none")
+//   - registeredCallbackPort: the callback port used in the original DCR redirect URI
+type ClientCredentialsPersister func(
+	clientID string,
+	clientSecret string,
+	secretExpiry time.Time,
+	registrationAccessToken string,
+	registrationClientURI string,
+	tokenEndpointAuthMethod string,
+	registeredCallbackPort int,
+) error
 
 // PersistingTokenSource wraps an oauth2.TokenSource and persists tokens
 // whenever they are refreshed. This enables session restoration across
@@ -98,7 +117,11 @@ func CreateTokenSourceFromCached(
 	if resource != "" {
 		base = oauth.NewResourceTokenSource(config, token, resource)
 	} else {
-		base = config.TokenSource(context.TODO(), token)
+		// Inject an HTTP client whose transport sets the ToolHive User-Agent
+		// so the oauth2 library does not fall back to Go-http-client/2.0 on
+		// token refresh requests.
+		ctx := context.WithValue(context.Background(), oauth2.HTTPClient, oauthproto.NewHTTPClient())
+		base = config.TokenSource(ctx, token)
 	}
 
 	return oauth2.ReuseTokenSource(token, base)

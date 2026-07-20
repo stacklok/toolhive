@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -98,6 +99,9 @@ func InjectUpstreamProvider(src *authorizers.Config, providerName string) (*auth
 // Factory implements the authorizers.AuthorizerFactory interface for Cedar.
 type Factory struct{}
 
+// ConfigKey returns the JSON key for Cedar-specific configuration ("cedar").
+func (*Factory) ConfigKey() string { return "cedar" }
+
 // ValidateConfig validates the Cedar-specific configuration.
 // It receives the full raw config and extracts the Cedar-specific portion.
 func (*Factory) ValidateConfig(rawConfig json.RawMessage) error {
@@ -146,6 +150,16 @@ var (
 // ClientIDContextKey is the key used to store client ID in the context.
 type ClientIDContextKey struct{}
 
+// claimPrefix namespaces every JWT claim in the Cedar context/principal
+// attributes. claimSetPrefix namespaces the synthetic multi-valued-claim Sets.
+// They are deliberately disjoint: because every JWT claim is emitted under
+// claimPrefix, a token can never produce a claimSetPrefix key, so the synthetic
+// Sets cannot be shadowed or spoofed by claim content.
+const (
+	claimPrefix    = "claim_"
+	claimSetPrefix = "claimset_"
+)
+
 // Authorizer authorizes MCP operations using Cedar policies.
 type Authorizer struct {
 	// Cedar policy set
@@ -176,6 +190,10 @@ type Authorizer struct {
 	// claimKeyLog rate-limits the diagnostic log of resolved JWT claim keys
 	// so it emits at most once per 30 seconds instead of once per authorization check.
 	claimKeyLog *syncutil.AtMost
+	// multiValuedClaims lists JWT claim names normalized to a canonical unpadded
+	// space-delimited string, plus a companion Cedar Set, before Cedar evaluation.
+	// See ConfigOptions.MultiValuedClaims.
+	multiValuedClaims []string
 }
 
 // ConfigOptions represents the Cedar-specific authorization configuration options.
@@ -201,9 +219,87 @@ type ConfigOptions struct {
 
 	// RoleClaimName is the JWT claim key that contains role membership for the
 	// principal. When set, the claim is extracted separately from GroupClaimName
-	// and both are mapped to Cedar THVGroup entities.
+	// and both are mapped to the configured group entity type (default "THVGroup").
 	// When empty, no role extraction is performed (backward compatible).
 	RoleClaimName string `json:"role_claim_name,omitempty" yaml:"role_claim_name,omitempty"`
+
+	// GroupEntityType is the Cedar entity type name used for Client parent UIDs
+	// synthesised from JWT group/role claims. Defaults to "THVGroup" when empty,
+	// preserving the original behaviour. Must be a valid Cedar identifier — namespaced
+	// names (e.g. "Platform::Group") are not yet supported and are rejected at
+	// construction. See issue #5072.
+	GroupEntityType string `json:"group_entity_type,omitempty" yaml:"group_entity_type,omitempty"`
+
+	// MultiValuedClaims lists JWT claim NAMES (bare, e.g. "scp" or "scope") whose
+	// value is exposed to Cedar in two normalized forms, regardless of whether the
+	// IdP emits the claim as a space-delimited string (Entra `scp`, Keycloak `scope`)
+	// or a JSON array (Okta `scp`):
+	//
+	//  1. "claim_<name>" (both principal attribute and context) is a space-delimited
+	//     string: an array is joined with single spaces; a string value is passed
+	//     through VERBATIM — its spacing and order are preserved, not
+	//     re-canonicalized. Use this with `like`/`==` string policies.
+	//  2. "claimset_<name>" (bare key, both principal attribute and context) is a Cedar
+	//     Set of the claim's elements. Use this with `.contains`/`.containsAll`/
+	//     `.containsAny` for exact-element matching that cannot be fooled by a
+	//     substring (e.g. "Mail.Read" will not match "Mail.ReadWrite"). The "claimset_"
+	//     prefix is reserved and never collides with a JWT claim, since all JWT
+	//     claims are surfaced under the "claim_" prefix.
+	//
+	// Only for claims whose ELEMENTS are space-free (OAuth scopes, per RFC 6749 §3.3).
+	// Do NOT list group/role claims or any claim whose elements can contain spaces
+	// (e.g. group display names) — element boundaries would become ambiguous.
+	//
+	// Backward compatibility: opt-in. When empty (default), "claim_<name>" is
+	// byte-identical to today and no "claimset_<name>" key is added. Listing a claim
+	// leaves OTHER claims untouched.
+	//
+	// Migration hazard: listing a claim that an IdP emits as an ARRAY changes its
+	// "claim_<name>" form from a Cedar Set to a String. A pre-existing policy that
+	// tested it with `like`/substring — which errored on the Set and so failed
+	// closed (deny) — will then match against the joined string and can
+	// substring-match (e.g. `context.claim_scp like "*Mail.Read*"` also matches
+	// "Mail.ReadWrite"), an unintended grant. Audit existing `like` policies on a
+	// claim before listing it, and prefer "claimset_<name>" with `.contains`/
+	// `.containsAll`/`.containsAny` for exact-element membership.
+	//
+	// Note: this unifies claim SHAPE, not NAME — `scp` and `scope` remain distinct
+	// claim names, so a policy still references one specific name.
+	MultiValuedClaims []string `json:"multi_valued_claims,omitempty" yaml:"multi_valued_claims,omitempty"`
+}
+
+// validateGroupEntityType validates a GroupEntityType value. Empty string is
+// valid — it means "use the default" and is resolved by NewEntityFactory.
+// Non-empty values must:
+//   - not contain Cedar's "::" namespace separator (out of scope per #5072), and
+//   - parse cleanly as a Cedar identifier when used as an entity type in a
+//     synthetic policy. We delegate the identifier-grammar check to cedar-go's
+//     policy parser so that future grammar refinements in upstream cedar-go are
+//     picked up automatically — this is the source of truth for Cedar identifier
+//     validity. Hand-rolling the grammar (reserved words, ANYIDENT regex,
+//     __cedar prefix) duplicates rules cedar-go already enforces.
+func validateGroupEntityType(s string) error {
+	if s == "" {
+		return nil
+	}
+
+	// Check for namespace separator first: namespaced types are out of scope.
+	// This must run before the cedar-go round-trip because the Cedar parser
+	// accepts "Foo::Bar" as a valid namespaced type, but we reject it for
+	// project-specific reasons.
+	if strings.Contains(s, "::") {
+		return fmt.Errorf("group_entity_type %q contains \"::\": namespaced entity types are not yet supported", s)
+	}
+
+	// Round-trip through cedar-go's policy parser. If the synthesized policy
+	// text fails to parse, the type name violates Cedar's identifier grammar
+	// (reserved word, invalid character, leading digit, etc.).
+	synth := fmt.Sprintf(`permit(principal in %s::"x", action, resource);`, s)
+	var p cedar.Policy
+	if err := p.UnmarshalCedar([]byte(synth)); err != nil {
+		return fmt.Errorf("group_entity_type %q is not a valid Cedar identifier: %w", s, err)
+	}
+	return nil
 }
 
 // NewCedarAuthorizer creates a new Cedar authorizer.
@@ -212,15 +308,20 @@ type ConfigOptions struct {
 // If a second runtime-injected value is needed, bundle both into a
 // RuntimeContext struct to keep the factory interface stable.
 func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.Authorizer, error) {
+	if err := validateGroupEntityType(options.GroupEntityType); err != nil {
+		return nil, err
+	}
+
 	authorizer := &Authorizer{
 		policySet:               cedar.NewPolicySet(),
 		entities:                cedar.EntityMap{},
-		entityFactory:           NewEntityFactory(),
+		entityFactory:           NewEntityFactory(cedar.EntityType(options.GroupEntityType)),
 		primaryUpstreamProvider: options.PrimaryUpstreamProvider,
 		groupClaimName:          options.GroupClaimName,
 		roleClaimName:           options.RoleClaimName,
 		serverName:              serverName,
 		claimKeyLog:             syncutil.NewAtMost(30 * time.Second),
+		multiValuedClaims:       options.MultiValuedClaims,
 	}
 
 	// Load policies
@@ -242,6 +343,23 @@ func NewCedarAuthorizer(options ConfigOptions, serverName string) (authorizers.A
 	if options.EntitiesJSON != "" {
 		if err := json.Unmarshal([]byte(options.EntitiesJSON), &authorizer.entities); err != nil {
 			return nil, fmt.Errorf("failed to parse entities JSON: %w", err)
+		}
+
+		// Warn once if entities_json contains stale THVGroup entities while
+		// GroupEntityType is configured to a different type. Cedar's `in` operator
+		// compares entity UIDs by type name, so the pre-loaded THVGroup entities will
+		// never match the synthesised parents and any policy referencing them will
+		// silently deny every request.
+		if options.GroupEntityType != "" && options.GroupEntityType != string(EntityTypeTHVGroup) {
+			for uid := range authorizer.entities {
+				if uid.Type == EntityTypeTHVGroup {
+					slog.Warn("Cedar entities_json contains THVGroup entities but GroupEntityType is set to a different value; "+
+						"synthesised group parents will not match these pre-loaded entities and policies that reference them will silently deny",
+						"configured_group_entity_type", options.GroupEntityType,
+						"stale_entity_uid", uid.String())
+					break
+				}
+			}
 		}
 	}
 
@@ -325,9 +443,10 @@ func (a *Authorizer) GetEntityFactory() *EntityFactory {
 // - resource: The object being accessed (e.g., "Tool::weather")
 // - context: Additional information about the request
 //
-// Note: group-based Cedar policies (e.g. "principal in THVGroup::\"eng\"") require
-// that THVGroup parent entities are included in the entity map. See #4768 for the
-// group parent wiring that will set these up via CreatePrincipalEntity.
+// Note: group-based Cedar policies (e.g. "principal in THVGroup::\"eng\"" with the
+// default group entity type — see ConfigOptions.GroupEntityType) require that
+// group parent entities are included in the entity map. See #4768 for the group
+// parent wiring that will set these up via CreatePrincipalEntity.
 // - entities: Optional Cedar entity map with attributes
 func (a *Authorizer) IsAuthorized(
 	principal, action, resource string,
@@ -429,6 +548,30 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 		}
 		parsedClaims, err := parseUpstreamJWTClaims(upstreamToken)
 		if err != nil {
+			// Distinguish "not JWT-shaped" (opaque OAuth 2.0 access token —
+			// Google's ya29.*, GitHub's gho_*, etc.) from "JWT-shaped but
+			// malformed/tampered" (a JWT with three segments that fails to
+			// parse). Only fall back for the former; preserve the deny for
+			// the latter so a tampered upstream JWT cannot bypass policy.
+			//
+			// The embedded auth server already mirrors the upstream OIDC
+			// sub/email/name claims into its issued AS token (see
+			// pkg/authserver/server/session/session.go). For opaque-token
+			// providers, falling back to identity.Claims preserves identity
+			// for policies referencing standard OIDC claims; policies that
+			// reference upstream-only claims (groups, hd, custom namespaced
+			// claims) will see those attributes as absent and must be
+			// authored defensively (`has(claim_groups) && ...`).
+			if !looksLikeJWT(upstreamToken) {
+				// The Warn shares claimKeyLog with logClaimKeys below so a busy
+				// Google/GitHub deployment does not emit one line per tool call.
+				a.claimKeyLog.Do(func() {
+					slog.Warn("upstream token is not a JWT; falling back to request-token claims for Cedar evaluation",
+						"provider", a.primaryUpstreamProvider)
+				})
+				a.logClaimKeys("token-fallback", jwt.MapClaims(identity.Claims))
+				return jwt.MapClaims(identity.Claims), nil
+			}
 			return nil, fmt.Errorf("failed to parse upstream token for provider %q: %w",
 				a.primaryUpstreamProvider, err)
 		}
@@ -439,6 +582,13 @@ func (a *Authorizer) resolveClaims(identity *auth.Identity) (jwt.MapClaims, erro
 	claims := jwt.MapClaims(identity.Claims)
 	a.logClaimKeys("token", claims)
 	return claims, nil
+}
+
+// looksLikeJWT returns true when the token has the three-segment shape of a
+// JOSE-compact-serialized JWT (`header.payload.signature`). It does not
+// validate the contents; the parser handles that.
+func looksLikeJWT(tokenStr string) bool {
+	return strings.Count(tokenStr, ".") == 2
 }
 
 // logClaimKeys emits a rate-limited DEBUG log listing the JWT claim keys
@@ -490,10 +640,132 @@ func extractClientIDFromClaims(claims jwt.MapClaims) (string, bool) {
 func preprocessClaims(claims jwt.MapClaims) map[string]interface{} {
 	preprocessed := make(map[string]interface{})
 	for k, v := range claims {
-		claimKey := fmt.Sprintf("claim_%s", k)
+		claimKey := claimPrefix + k
 		preprocessed[claimKey] = v
 	}
 	return preprocessed
+}
+
+// normalizeMultiValuedClaims returns claims with every claim named in names
+// and present in claims rewritten to a canonical unpadded space-delimited
+// string. This lets a single Cedar `like`/`==` policy match a claim regardless
+// of whether the IdP emitted it as a space-delimited string or a JSON array.
+// See ConfigOptions.MultiValuedClaims for the full rationale.
+//
+// When names is empty the input is returned directly (no copy); otherwise a
+// shallow copy is returned and the input is never mutated.
+//
+//   - array ([]interface{} or []string): elements joined with single spaces.
+//     Non-string elements are stringified with fmt.Sprint rather than
+//     dropped; nested array/object elements are skipped with a slog.Debug
+//     since they have no scalar string form.
+//   - string: passthrough, completely unchanged (not trimmed).
+//   - empty array, or an array with no usable elements: "" (empty string —
+//     present but empty).
+//   - claim absent from claims, or names empty: left untouched (no key
+//     fabricated).
+//
+// Only top-level claim keys are matched; there is no dot-notation support.
+// claims is not mutated.
+func normalizeMultiValuedClaims(claims jwt.MapClaims, names []string) jwt.MapClaims {
+	if len(names) == 0 {
+		// Nothing to normalize. Return the input directly — the sole caller
+		// (preprocessClaims) only reads it, so no defensive copy is needed and
+		// the opt-in-empty path pays no allocation.
+		return claims
+	}
+
+	out := make(jwt.MapClaims, len(claims))
+	for k, v := range claims {
+		out[k] = v
+	}
+
+	for _, name := range names {
+		v, ok := claims[name]
+		if !ok {
+			continue
+		}
+
+		switch val := v.(type) {
+		case string:
+			// Verbatim passthrough: out[name] already equals val (out is a copy
+			// of claims), so this is intentionally a no-op. The explicit branch
+			// documents the string contract and, importantly, keeps a string
+			// value out of the default "unrecognized type" log below. This is the
+			// one place the string handling diverges from addMultiValuedClaimSets,
+			// which collapses whitespace via strings.Fields for the Set form.
+			out[name] = val
+		case []interface{}:
+			out[name] = strings.Join(multiValuedTokens(name, val), " ")
+		case []string:
+			out[name] = strings.Join(val, " ")
+		default:
+			slog.Debug("multi-valued claim has unrecognized type, leaving unchanged",
+				"claim", name, "type", fmt.Sprintf("%T", v))
+		}
+	}
+
+	return out
+}
+
+// addMultiValuedClaimSets adds a bare "claimset_<name>" key to processed for every
+// claim named in names and present in raw, holding the claim's elements as a
+// []string (converted to a Cedar Set by convertToCedarValueAtDepth). This is
+// the companion to normalizeMultiValuedClaims's "claim_<name>" string form:
+// where "claim_<name>" supports substring-style `like` matching, "claimset_<name>"
+// supports exact-element `.contains`/`.containsAll`/`.containsAny` matching.
+// The "claimset_" prefix is reserved and cannot collide with a JWT claim, since all
+// JWT claims are "claim_"-prefixed by preprocessClaims.
+//
+// processed must already have the "claim_" prefix applied (i.e. this must run
+// after preprocessClaims) so the added key stays bare. raw is not mutated.
+func addMultiValuedClaimSets(processed map[string]interface{}, raw jwt.MapClaims, names []string) {
+	for _, name := range names {
+		v, ok := raw[name]
+		if !ok {
+			continue
+		}
+
+		// The array path shares multiValuedTokens with normalizeMultiValuedClaims
+		// (string-only elements) so the Set and the joined string stay in sync.
+		// The string path deliberately differs: normalize passes the string
+		// through verbatim, whereas here strings.Fields splits it into exact
+		// elements (collapsing irregular whitespace) — the two cannot share one
+		// coercion for that reason.
+		switch val := v.(type) {
+		case string:
+			processed[claimSetPrefix+name] = strings.Fields(val)
+		case []interface{}:
+			processed[claimSetPrefix+name] = multiValuedTokens(name, val)
+		case []string:
+			processed[claimSetPrefix+name] = slices.Clone(val)
+		default:
+			slog.Debug("multi-valued claim has unrecognized type, omitting claimset set",
+				"claim", name, "type", fmt.Sprintf("%T", v))
+		}
+	}
+}
+
+// multiValuedTokens extracts the string elements of a []interface{} claim value
+// for normalizeMultiValuedClaims and addMultiValuedClaimSets. Only string
+// elements are kept: OAuth scope tokens are strings (RFC 6749 §3.3), so a
+// non-string element (number, bool, null, or a nested array/object) is
+// malformed and is skipped with a slog.Debug rather than stringified. Skipping
+// (a) avoids spurious tokens like "<nil>" or "1e+06" polluting both claim
+// forms, and (b) keeps the array shape consistent with the string shape, whose
+// strings.Fields path likewise yields only real string tokens.
+func multiValuedTokens(claimName string, elems []interface{}) []string {
+	tokens := make([]string, 0, len(elems))
+	for _, elem := range elems {
+		s, ok := elem.(string)
+		if !ok {
+			slog.Debug("multi-valued claim element is not a string, skipping",
+				"claim", claimName, "type", fmt.Sprintf("%T", elem))
+			continue
+		}
+		tokens = append(tokens, s)
+	}
+	return tokens
 }
 
 // preprocessArguments adds an "arg_" prefix to all argument keys.
@@ -567,7 +839,9 @@ func (a *Authorizer) authorizeToolCall(
 	})
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -604,7 +878,9 @@ func (a *Authorizer) authorizePromptGet(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -644,7 +920,9 @@ func (a *Authorizer) authorizeResourceRead(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -682,7 +960,9 @@ func (a *Authorizer) authorizeFeatureList(
 	}, attrsMap)
 
 	// Create Cedar entities
-	entities, err := a.entityFactory.CreateEntitiesForRequest(principal, action, resource, claimsMap, attributes, groups)
+	entities, err := a.entityFactory.CreateEntitiesForRequest(
+		principal, action, resource, claimsMap, attributes, groups, a.serverName,
+	)
 	if err != nil {
 		return false, fmt.Errorf("failed to create Cedar entities: %w", err)
 	}
@@ -754,14 +1034,37 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 		return false, ErrMissingPrincipal
 	}
 
-	// Extract groups from the resolved claims and pass them into the entity
-	// factory to build THVGroup parent entities for Cedar evaluation.
+	// Extract groups from the group claim (or well-known defaults) and the
+	// role claim, merge, and dedup. Both claim sources map to the configured
+	// group entity type (default "THVGroup"). Extraction runs BEFORE
+	// preprocessClaims so the raw claim
+	// values are available.
 	// The identity pointer is not mutated here because Identity MUST NOT be
 	// modified after it is placed in the request context (concurrent reads).
-	groups := extractGroupsFromClaims(resolvedClaims, a.groupClaimName)
+	groupClaims := extractGroups(resolvedClaims, a.groupClaimName)
+	if groupClaims == nil {
+		// Fall back to well-known claim names. This covers two cases:
+		// 1. No GroupClaimName configured — backward compatible default.
+		// 2. GroupClaimName configured but absent from the token — the
+		//    documented contract says the custom name takes *priority*
+		//    over defaults, not that it replaces them.
+		for _, name := range defaultGroupClaimNames {
+			if groupClaims = extractGroups(resolvedClaims, name); groupClaims != nil {
+				break
+			}
+		}
+	}
+	groups := dedup(append(
+		groupClaims,
+		extractGroups(resolvedClaims, a.roleClaimName)...,
+	))
 
-	// Preprocess claims and arguments
-	processedClaims := preprocessClaims(resolvedClaims)
+	// Preprocess claims and arguments. Multi-valued claim normalization runs
+	// after group/role extraction (which needs the raw claim shapes) and
+	// before the "claim_" prefix is applied.
+	normalizedClaims := normalizeMultiValuedClaims(resolvedClaims, a.multiValuedClaims)
+	processedClaims := preprocessClaims(normalizedClaims)
+	addMultiValuedClaimSets(processedClaims, resolvedClaims, a.multiValuedClaims)
 	processedArgs := preprocessArguments(arguments)
 
 	// Authorize based on the feature and operation
@@ -787,51 +1090,109 @@ func (a *Authorizer) AuthorizeWithJWTClaims(
 // providers. They are checked in order; the first non-empty match is returned.
 //
 // Sources:
-//   - "groups"         — Microsoft Entra ID, Okta, Auth0, PingIdentity (the de-facto standard).
-//     https://learn.microsoft.com/en-us/security/zero-trust/develop/configure-tokens-group-claims-app-roles
-//     https://developer.okta.com/docs/guides/customize-tokens-groups-claim/main/
-//   - "roles"          — Keycloak (when a protocol mapper flattens realm_access.roles to a top-level claim).
-//     https://www.keycloak.org/docs/latest/authorization_services/index.html
-//   - "cognito:groups" — AWS Cognito user pools (included in both ID and access tokens).
-//     https://docs.aws.amazon.com/cognito/latest/developerguide/amazon-cognito-user-pools-using-the-access-token.html
+//   - "groups"         — Microsoft Entra ID, Okta, Auth0, PingIdentity.
+//   - "roles"          — Keycloak (realm_access.roles flattened to top-level).
+//   - "cognito:groups" — AWS Cognito user pools.
 var defaultGroupClaimNames = []string{"groups", "roles", "cognito:groups"}
 
-// extractGroupsFromClaims looks for group membership claims in the provided
-// claims map. It checks customClaimName first (if non-empty), then falls back to
-// the well-known names "groups", "roles", and "cognito:groups". Returns the
-// string-slice value of the first matching claim key (which may be empty), or nil
-// when no group claim key is found.
+// resolveNestedClaim resolves a claim value from JWT claims, supporting both
+// top-level keys and dot-separated nested paths.
 //
-// Passing a non-empty customClaimName allows callers to support IDPs that use
-// URI-style claim names (e.g. "https://example.com/groups" used by Auth0/Okta).
-func extractGroupsFromClaims(claims map[string]any, customClaimName string) []string {
-	names := defaultGroupClaimNames
-	if customClaimName != "" {
-		// Prepend the custom name so it takes priority over well-known names.
-		names = append([]string{customClaimName}, defaultGroupClaimNames...)
-	}
-
-	for _, name := range names {
-		val, ok := claims[name]
-		if !ok {
-			continue
-		}
-		switch v := val.(type) {
-		case []interface{}:
-			groups := make([]string, 0, len(v))
-			for _, g := range v {
-				if s, ok := g.(string); ok {
-					groups = append(groups, s)
-				}
-			}
-			return groups
-		case []string:
-			return v
-		}
-		// Claim key exists but has an unrecognized type; stop searching.
-		slog.Warn("group claim has unrecognized type, ignoring",
-			"claim", name, "type", fmt.Sprintf("%T", val))
+// Resolution order:
+//  1. Exact top-level match — handles Auth0 / Okta URL-style claim names
+//     (e.g. "https://myapp.example.com/roles") that contain dots but are
+//     top-level keys in the JWT.
+//  2. Dot-notation traversal — handles Keycloak-style nested claims
+//     (e.g. "realm_access.roles" → claims["realm_access"]["roles"]).
+//
+// Returns nil when the claim is absent or traversal hits a non-map value.
+func resolveNestedClaim(claims jwt.MapClaims, path string) interface{} {
+	if path == "" {
 		return nil
 	}
-	return nil
+
+	// 1. Exact top-level match (handles Auth0 URL claims with dots).
+	if val, ok := claims[path]; ok {
+		return val
+	}
+
+	// 2. Dot-notation traversal.
+	parts := strings.Split(path, ".")
+	if len(parts) < 2 {
+		return nil // single segment already tried above
+	}
+
+	var current interface{} = map[string]interface{}(claims)
+	for _, segment := range parts {
+		m, ok := current.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		current, ok = m[segment]
+		if !ok {
+			return nil
+		}
+	}
+	return current
+}
+
+// extractGroups extracts group/role names from a specific JWT claim.
+// It resolves the claim via resolveNestedClaim (supporting both flat and
+// dot-notation paths) and coerces the value to []string.
+//
+// Return value distinguishes "claim absent" from "claim present but empty"
+// so callers can decide whether to fall back to defaults:
+//   - nil: claimName is empty, the claim is absent, or the value has an
+//     unsupported scalar/object type (e.g. string, number).
+//   - non-nil, possibly empty: the claim is an array. Non-string elements
+//     are silently dropped, so an array of all non-strings yields an empty
+//     slice (not nil). A genuinely empty array (`[]`) also yields an empty
+//     slice. Both cases mean "the IdP said this claim exists with no usable
+//     group names" and suppress fallback.
+func extractGroups(claims jwt.MapClaims, claimName string) []string {
+	if claimName == "" {
+		return nil
+	}
+
+	val := resolveNestedClaim(claims, claimName)
+	if val == nil {
+		return nil
+	}
+
+	switch v := val.(type) {
+	case []interface{}:
+		groups := make([]string, 0, len(v))
+		for _, g := range v {
+			if s, ok := g.(string); ok {
+				groups = append(groups, s)
+			}
+		}
+		return groups
+	case []string:
+		return v
+	default:
+		slog.Warn("group/role claim has unrecognized type, ignoring",
+			"claim", claimName, "type", fmt.Sprintf("%T", val))
+		return nil
+	}
+}
+
+// dedup removes duplicate strings while preserving first-occurrence order.
+// Returns nil when the input is nil (not an empty slice) so callers can
+// distinguish "no groups" from "empty groups".
+func dedup(groups []string) []string {
+	if groups == nil {
+		return nil
+	}
+
+	seen := make(map[string]struct{}, len(groups))
+	result := make([]string, 0, len(groups))
+	for _, g := range groups {
+		if _, exists := seen[g]; exists {
+			continue
+		}
+		seen[g] = struct{}{}
+		result = append(result, g)
+	}
+	return result
 }

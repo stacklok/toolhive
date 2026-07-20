@@ -279,11 +279,12 @@ func TestCreateWorkload(t *testing.T) {
 				groupManager:     mockGroupManager,
 				debugMode:        false,
 				workloadService: &WorkloadService{
-					groupManager:    mockGroupManager,
-					workloadManager: mockWorkloadManager,
-					imageRetriever:  mockRetriever,
-					imagePuller:     func(_ context.Context, _ string) error { return nil },
-					configProvider:  config.NewDefaultProvider(),
+					groupManager:      mockGroupManager,
+					workloadManager:   mockWorkloadManager,
+					imageRetriever:    mockRetriever,
+					imagePuller:       func(_ context.Context, _ string) error { return nil },
+					configProvider:    config.NewDefaultProvider(),
+					imageVerification: retriever.VerifyImageWarn,
 				},
 			}
 
@@ -499,11 +500,12 @@ func TestUpdateWorkload(t *testing.T) {
 				groupManager:     mockGroupManager,
 				debugMode:        false,
 				workloadService: &WorkloadService{
-					groupManager:    mockGroupManager,
-					workloadManager: mockWorkloadManager,
-					imageRetriever:  mockRetriever,
-					imagePuller:     func(_ context.Context, _ string) error { return nil },
-					configProvider:  config.NewDefaultProvider(),
+					groupManager:      mockGroupManager,
+					workloadManager:   mockWorkloadManager,
+					imageRetriever:    mockRetriever,
+					imagePuller:       func(_ context.Context, _ string) error { return nil },
+					configProvider:    config.NewDefaultProvider(),
+					imageVerification: retriever.VerifyImageWarn,
 				},
 			}
 
@@ -622,12 +624,13 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 				groupManager:     mockGroupManager,
 				debugMode:        false,
 				workloadService: &WorkloadService{
-					groupManager:     mockGroupManager,
-					workloadManager:  mockWorkloadManager,
-					containerRuntime: mockRuntime,
-					imageRetriever:   mockRetriever,
-					imagePuller:      func(_ context.Context, _ string) error { return nil },
-					configProvider:   config.NewDefaultProvider(),
+					groupManager:      mockGroupManager,
+					workloadManager:   mockWorkloadManager,
+					containerRuntime:  mockRuntime,
+					imageRetriever:    mockRetriever,
+					imagePuller:       func(_ context.Context, _ string) error { return nil },
+					configProvider:    config.NewDefaultProvider(),
+					imageVerification: retriever.VerifyImageWarn,
 				},
 			}
 
@@ -688,12 +691,13 @@ func TestUpdateWorkload_PortReuse(t *testing.T) {
 			groupManager:     mockGroupManager,
 			debugMode:        false,
 			workloadService: &WorkloadService{
-				groupManager:     mockGroupManager,
-				workloadManager:  mockWorkloadManager,
-				containerRuntime: mockRuntime,
-				imageRetriever:   mockRetriever,
-				imagePuller:      func(_ context.Context, _ string) error { return nil },
-				configProvider:   config.NewDefaultProvider(),
+				groupManager:      mockGroupManager,
+				workloadManager:   mockWorkloadManager,
+				containerRuntime:  mockRuntime,
+				imageRetriever:    mockRetriever,
+				imagePuller:       func(_ context.Context, _ string) error { return nil },
+				configProvider:    config.NewDefaultProvider(),
+				imageVerification: retriever.VerifyImageWarn,
 			},
 		}
 

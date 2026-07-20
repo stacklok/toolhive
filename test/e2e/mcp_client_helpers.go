@@ -6,13 +6,17 @@ package e2e
 import (
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2" //nolint:staticcheck // Standard practice for Ginkgo
 	. "github.com/onsi/gomega"    //nolint:staticcheck // Standard practice for Gomega
+
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
 // MCPClientHelper provides high-level MCP client operations for e2e tests
@@ -44,6 +48,61 @@ func NewMCPClientForStreamableHTTP(config *TestConfig, serverURL string) (*MCPCl
 		client: mcpClient,
 		config: config,
 	}, nil
+}
+
+// NewMCPClientForStreamableHTTPWithToken creates a new MCP client for streamable HTTP
+// transport that sends an Authorization Bearer token on every request. Use this when
+// the vMCP server has OIDC incoming auth enabled.
+func NewMCPClientForStreamableHTTPWithToken(config *TestConfig, serverURL, token string) (*MCPClientHelper, error) {
+	mcpClient, err := client.NewStreamableHttpClient(serverURL,
+		transport.WithHTTPHeaders(map[string]string{
+			"Authorization": "Bearer " + token,
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create Streamable HTTP MCP client: %w", err)
+	}
+	return &MCPClientHelper{client: mcpClient, config: config}, nil
+}
+
+// WaitForVMCPHealthReady polls the vMCP /health endpoint until it returns 200 OK or
+// the timeout is reached. Use this instead of WaitForMCPServerReady when incoming auth
+// is configured (MCP Initialize would fail with 401 for unauthenticated probes).
+func WaitForVMCPHealthReady(healthURL string, timeout time.Duration) error {
+	httpClient := &http.Client{Timeout: 5 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	var lastErr error
+	var lastStatus int
+	var lastBody string
+	for {
+		select {
+		case <-ctx.Done():
+			if lastErr != nil {
+				return fmt.Errorf("timeout waiting for vMCP health endpoint at %s: last error: %w", healthURL, lastErr)
+			}
+			return fmt.Errorf("timeout waiting for vMCP health endpoint at %s: last status: %d, body: %s", healthURL, lastStatus, lastBody)
+		case <-ticker.C:
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, healthURL, nil) //nolint:gosec // URL is test-controlled
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			resp, err := httpClient.Do(req)
+			if resp != nil {
+				lastStatus = resp.StatusCode
+				bodyBytes, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
+				_ = resp.Body.Close()
+				lastBody = string(bodyBytes)
+			}
+			lastErr = err
+			if err == nil && resp.StatusCode == http.StatusOK {
+				return nil
+			}
+		}
+	}
 }
 
 // Initialize initializes the MCP connection
@@ -93,19 +152,6 @@ func (h *MCPClientHelper) CallTool(
 	return h.client.CallTool(ctx, request)
 }
 
-// ListResources lists all available resources from the MCP server
-func (h *MCPClientHelper) ListResources(ctx context.Context) (*mcp.ListResourcesResult, error) {
-	request := mcp.ListResourcesRequest{}
-	return h.client.ListResources(ctx, request)
-}
-
-// ReadResource reads a specific resource
-func (h *MCPClientHelper) ReadResource(ctx context.Context, uri string) (*mcp.ReadResourceResult, error) {
-	request := mcp.ReadResourceRequest{}
-	request.Params.URI = uri
-	return h.client.ReadResource(ctx, request)
-}
-
 // Ping sends a ping to test connectivity
 func (h *MCPClientHelper) Ping(ctx context.Context) error {
 	return h.client.Ping(ctx)
@@ -134,21 +180,6 @@ func (h *MCPClientHelper) ExpectToolCall(
 	ExpectWithOffset(1, err).ToNot(HaveOccurred(), fmt.Sprintf("Should be able to call tool '%s'", toolName))
 	ExpectWithOffset(1, result).ToNot(BeNil(), "Tool result should not be nil")
 	return result
-}
-
-// ExpectResourceExists verifies that a resource with the given URI exists
-func (h *MCPClientHelper) ExpectResourceExists(ctx context.Context, uri string) {
-	resources, err := h.ListResources(ctx)
-	ExpectWithOffset(1, err).ToNot(HaveOccurred(), "Should be able to list resources")
-
-	found := false
-	for _, resource := range resources.Resources {
-		if resource.URI == uri {
-			found = true
-			break
-		}
-	}
-	ExpectWithOffset(1, found).To(BeTrue(), fmt.Sprintf("Resource '%s' should exist", uri))
 }
 
 // WaitForMCPServerReady waits for an MCP server to be ready and responsive
@@ -211,48 +242,4 @@ func extractServerNameFromURL(serverURL string) string {
 		return serverURL[idx+1:]
 	}
 	return "unknown"
-}
-
-// TestMCPServerBasicFunctionality tests basic MCP server functionality
-func TestMCPServerBasicFunctionality(config *TestConfig, serverURL string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	// Create MCP client
-	mcpClient, err := NewMCPClientForSSE(config, serverURL)
-	if err != nil {
-		return fmt.Errorf("failed to create MCP client: %w", err)
-	}
-	defer func() {
-		// Error ignored in test cleanup - the test may have already closed the connection
-		_ = mcpClient.Close()
-	}()
-
-	// Initialize the connection
-	if err := mcpClient.Initialize(ctx); err != nil {
-		return fmt.Errorf("failed to initialize MCP connection: %w", err)
-	}
-
-	// Test ping
-	if err := mcpClient.Ping(ctx); err != nil {
-		return fmt.Errorf("ping failed: %w", err)
-	}
-
-	// List tools
-	tools, err := mcpClient.ListTools(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list tools: %w", err)
-	}
-
-	if len(tools.Tools) == 0 {
-		return fmt.Errorf("no tools available from MCP server")
-	}
-
-	// List resources (if supported)
-	// Note: Not all MCP servers support resources, so we don't fail on this
-	if _, err := mcpClient.ListResources(ctx); err != nil {
-		GinkgoWriter.Printf("Note: Server does not support resources: %v\n", err)
-	}
-
-	return nil
 }

@@ -9,16 +9,16 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	k8smeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestToolConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -26,22 +26,22 @@ func TestToolConfigReconciler_calculateConfigHash(t *testing.T) {
 
 	tests := []struct {
 		name string
-		spec mcpv1alpha1.MCPToolConfigSpec
+		spec mcpv1beta1.MCPToolConfigSpec
 	}{
 		{
 			name: "empty spec",
-			spec: mcpv1alpha1.MCPToolConfigSpec{},
+			spec: mcpv1beta1.MCPToolConfigSpec{},
 		},
 		{
 			name: "with tools filter",
-			spec: mcpv1alpha1.MCPToolConfigSpec{
+			spec: mcpv1beta1.MCPToolConfigSpec{
 				ToolsFilter: []string{"tool1", "tool2", "tool3"},
 			},
 		},
 		{
 			name: "with tools override",
-			spec: mcpv1alpha1.MCPToolConfigSpec{
-				ToolsOverride: map[string]mcpv1alpha1.ToolOverride{
+			spec: mcpv1beta1.MCPToolConfigSpec{
+				ToolsOverride: map[string]mcpv1beta1.ToolOverride{
 					"tool1": {
 						Name:        "renamed-tool1",
 						Description: "Custom description",
@@ -51,9 +51,9 @@ func TestToolConfigReconciler_calculateConfigHash(t *testing.T) {
 		},
 		{
 			name: "with both filter and override",
-			spec: mcpv1alpha1.MCPToolConfigSpec{
+			spec: mcpv1beta1.MCPToolConfigSpec{
 				ToolsFilter: []string{"tool1", "tool2"},
-				ToolsOverride: map[string]mcpv1alpha1.ToolOverride{
+				ToolsOverride: map[string]mcpv1beta1.ToolOverride{
 					"tool1": {
 						Name:        "renamed-tool1",
 						Description: "Custom description",
@@ -86,10 +86,10 @@ func TestToolConfigReconciler_calculateConfigHash(t *testing.T) {
 	t.Run("different specs produce different hashes", func(t *testing.T) {
 		t.Parallel()
 		r := &ToolConfigReconciler{}
-		spec1 := mcpv1alpha1.MCPToolConfigSpec{
+		spec1 := mcpv1beta1.MCPToolConfigSpec{
 			ToolsFilter: []string{"tool1"},
 		}
-		spec2 := mcpv1alpha1.MCPToolConfigSpec{
+		spec2 := mcpv1beta1.MCPToolConfigSpec{
 			ToolsFilter: []string{"tool2"},
 		}
 
@@ -105,19 +105,19 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 
 	tests := []struct {
 		name              string
-		toolConfig        *mcpv1alpha1.MCPToolConfig
-		existingMCPServer *mcpv1alpha1.MCPServer
+		toolConfig        *mcpv1beta1.MCPToolConfig
+		existingMCPServer *mcpv1beta1.MCPServer
 		expectFinalizer   bool
 		expectHash        bool
 	}{
 		{
 			name: "new toolconfig without references",
-			toolConfig: &mcpv1alpha1.MCPToolConfig{
+			toolConfig: &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPToolConfigSpec{
+				Spec: mcpv1beta1.MCPToolConfigSpec{
 					ToolsFilter: []string{"tool1", "tool2"},
 				},
 			},
@@ -126,14 +126,14 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 		},
 		{
 			name: "toolconfig with referencing mcpserver",
-			toolConfig: &mcpv1alpha1.MCPToolConfig{
+			toolConfig: &mcpv1beta1.MCPToolConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPToolConfigSpec{
+				Spec: mcpv1beta1.MCPToolConfigSpec{
 					ToolsFilter: []string{"tool1"},
-					ToolsOverride: map[string]mcpv1alpha1.ToolOverride{
+					ToolsOverride: map[string]mcpv1beta1.ToolOverride{
 						"tool1": {
 							Name:        "renamed-tool",
 							Description: "Custom description",
@@ -141,18 +141,10 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 					},
 				},
 			},
-			existingMCPServer: &mcpv1alpha1.MCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      "test-server",
-					Namespace: "default",
-				},
-				Spec: mcpv1alpha1.MCPServerSpec{
-					Image: "test-image",
-					ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-						Name: "test-config",
-					},
-				},
-			},
+			existingMCPServer: v1beta1test.NewMCPServer("test-server", "default",
+				v1beta1test.WithImage("test-image"),
+				v1beta1test.WithToolConfigRef("test-config"),
+			),
 			expectFinalizer: true,
 			expectHash:      true,
 		},
@@ -164,19 +156,16 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-			require.NoError(t, corev1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
 			// Create fake client with objects
 			objs := []client.Object{tt.toolConfig}
 			if tt.existingMCPServer != nil {
 				objs = append(objs, tt.existingMCPServer)
 			}
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
+			fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 				WithObjects(objs...).
-				WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+				WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 				Build()
 
 			r := &ToolConfigReconciler{
@@ -205,7 +194,7 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 			}
 
 			// Check the updated MCPToolConfig
-			var updatedConfig mcpv1alpha1.MCPToolConfig
+			var updatedConfig mcpv1beta1.MCPToolConfig
 			err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 			require.NoError(t, err)
 
@@ -224,15 +213,15 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 			// Check referencing workloads in status
 			if tt.existingMCPServer != nil {
 				assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-					mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: tt.existingMCPServer.Name},
+					mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: tt.existingMCPServer.Name},
 					"Status should contain referencing MCPServer as WorkloadReference")
 			}
 
 			// Check Valid condition is set after successful reconciliation
-			cond := k8smeta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1alpha1.ConditionToolConfigValid)
+			cond := k8smeta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1beta1.ConditionToolConfigValid)
 			require.NotNil(t, cond, "Valid condition must be set after successful reconciliation")
 			assert.Equal(t, metav1.ConditionTrue, cond.Status, "Valid condition should be True")
-			assert.Equal(t, mcpv1alpha1.ConditionReasonToolConfigValidationSucceeded, cond.Reason)
+			assert.Equal(t, mcpv1beta1.ConditionReasonToolConfigValidationSucceeded, cond.Reason)
 			assert.Equal(t, "Spec validation passed", cond.Message)
 		})
 	}
@@ -241,58 +230,34 @@ func TestToolConfigReconciler_Reconcile(t *testing.T) {
 func TestToolConfigReconciler_findReferencingWorkloads(t *testing.T) {
 	t.Parallel()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
-	toolConfig := &mcpv1alpha1.MCPToolConfig{
+	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPToolConfigSpec{
+		Spec: mcpv1beta1.MCPToolConfigSpec{
 			ToolsFilter: []string{"tool1"},
 		},
 	}
 
-	mcpServer1 := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server1",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image: "test-image",
-			ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-				Name: "test-config",
-			},
-		},
-	}
+	mcpServer1 := v1beta1test.NewMCPServer("server1", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithToolConfigRef("test-config"),
+	)
 
-	mcpServer2 := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server2",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image: "test-image",
-			ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-				Name: "test-config",
-			},
-		},
-	}
+	mcpServer2 := v1beta1test.NewMCPServer("server2", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithToolConfigRef("test-config"),
+	)
 
-	mcpServer3 := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server3",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image: "test-image",
-			// No ToolConfigRef
-		},
-	}
+	mcpServer3 := v1beta1test.NewMCPServer("server3", "default",
+		v1beta1test.WithImage("test-image"),
+		// No ToolConfigRef
+	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig, mcpServer1, mcpServer2, mcpServer3).
 		Build()
 
@@ -306,9 +271,9 @@ func TestToolConfigReconciler_findReferencingWorkloads(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Len(t, refs, 2, "Should find 2 referencing workloads")
-	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server1"})
-	assert.Contains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server2"})
-	assert.NotContains(t, refs, mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server3"})
+	assert.Contains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server1"})
+	assert.Contains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server2"})
+	assert.NotContains(t, refs, mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server3"})
 }
 
 func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *testing.T) {
@@ -316,24 +281,21 @@ func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *te
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
-	toolConfig := &mcpv1alpha1.MCPToolConfig{
+	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPToolConfigSpec{
+		Spec: mcpv1beta1.MCPToolConfigSpec{
 			ToolsFilter: []string{"tool1"},
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 		Build()
 
 	r := &ToolConfigReconciler{
@@ -357,30 +319,23 @@ func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *te
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var updatedConfig mcpv1alpha1.MCPToolConfig
+	var updatedConfig mcpv1beta1.MCPToolConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash)
 	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads, "No servers should be referencing yet")
+	assert.EqualValues(t, 0, updatedConfig.Status.ReferenceCount)
 
 	// Verify Valid condition is set after initial reconciliation
-	cond := k8smeta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1alpha1.ConditionToolConfigValid)
+	cond := k8smeta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1beta1.ConditionToolConfigValid)
 	require.NotNil(t, cond, "Valid condition must be set after reconciliation")
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 
 	// Add an MCPServer that references this config (without changing the config spec)
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "new-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image: "test-image",
-			ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-				Name: "test-config",
-			},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("new-server", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithToolConfigRef("test-config"),
+	)
 	require.NoError(t, fakeClient.Create(ctx, mcpServer))
 
 	// Reconcile again - hash hasn't changed, but referencing servers should be updated
@@ -390,8 +345,9 @@ func TestToolConfigReconciler_ReferencingWorkloadsUpdatedWithoutHashChange(t *te
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-		mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "new-server"},
+		mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "new-server"},
 		"ReferencingWorkloads should be updated even without hash change")
+	assert.EqualValues(t, 1, updatedConfig.Status.ReferenceCount)
 }
 
 func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *testing.T) {
@@ -399,37 +355,26 @@ func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *tes
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
-	toolConfig := &mcpv1alpha1.MCPToolConfig{
+	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "test-config",
 			Namespace: "default",
 		},
-		Spec: mcpv1alpha1.MCPToolConfigSpec{
+		Spec: mcpv1beta1.MCPToolConfigSpec{
 			ToolsFilter: []string{"tool1"},
 		},
 	}
 
-	mcpServer := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server-to-delete",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image: "test-image",
-			ToolConfigRef: &mcpv1alpha1.ToolConfigRef{
-				Name: "test-config",
-			},
-		},
-	}
+	mcpServer := v1beta1test.NewMCPServer("server-to-delete", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithToolConfigRef("test-config"),
+	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig, mcpServer).
-		WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 		Build()
 
 	r := &ToolConfigReconciler{
@@ -453,11 +398,12 @@ func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *tes
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var updatedConfig mcpv1alpha1.MCPToolConfig
+	var updatedConfig mcpv1beta1.MCPToolConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.Contains(t, updatedConfig.Status.ReferencingWorkloads,
-		mcpv1alpha1.WorkloadReference{Kind: "MCPServer", Name: "server-to-delete"})
+		mcpv1beta1.WorkloadReference{Kind: "MCPServer", Name: "server-to-delete"})
+	assert.EqualValues(t, 1, updatedConfig.Status.ReferenceCount)
 
 	// Delete the MCPServer
 	require.NoError(t, fakeClient.Delete(ctx, mcpServer))
@@ -470,6 +416,7 @@ func TestToolConfigReconciler_ReferencingWorkloadsRemovedOnServerDeletion(t *tes
 	require.NoError(t, err)
 	assert.Empty(t, updatedConfig.Status.ReferencingWorkloads,
 		"ReferencingWorkloads should be empty after server deletion")
+	assert.EqualValues(t, 0, updatedConfig.Status.ReferenceCount)
 }
 
 func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {
@@ -477,25 +424,22 @@ func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
-	toolConfig := &mcpv1alpha1.MCPToolConfig{
+	toolConfig := &mcpv1beta1.MCPToolConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
 			Generation: 1,
 		},
-		Spec: mcpv1alpha1.MCPToolConfigSpec{
+		Spec: mcpv1beta1.MCPToolConfigSpec{
 			ToolsFilter: []string{"tool1"},
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(toolConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPToolConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
 		Build()
 
 	r := &ToolConfigReconciler{
@@ -519,15 +463,15 @@ func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var updatedConfig mcpv1alpha1.MCPToolConfig
+	var updatedConfig mcpv1beta1.MCPToolConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 
 	// Verify Valid condition exists with correct fields
-	cond := k8smeta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1alpha1.ConditionToolConfigValid)
+	cond := k8smeta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1beta1.ConditionToolConfigValid)
 	require.NotNil(t, cond, "Valid condition must be set")
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
-	assert.Equal(t, mcpv1alpha1.ConditionReasonToolConfigValidationSucceeded, cond.Reason)
+	assert.Equal(t, mcpv1beta1.ConditionReasonToolConfigValidationSucceeded, cond.Reason)
 	assert.Equal(t, "Spec validation passed", cond.Message)
 	assert.Equal(t, updatedConfig.Generation, cond.ObservedGeneration,
 		"ObservedGeneration should match the object's Generation")
@@ -542,14 +486,68 @@ func TestToolConfigReconciler_ValidConditionObservedGeneration(t *testing.T) {
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var finalConfig mcpv1alpha1.MCPToolConfig
+	var finalConfig mcpv1beta1.MCPToolConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &finalConfig)
 	require.NoError(t, err)
 
 	// Verify ObservedGeneration tracks the updated generation
-	cond = k8smeta.FindStatusCondition(finalConfig.Status.Conditions, mcpv1alpha1.ConditionToolConfigValid)
+	cond = k8smeta.FindStatusCondition(finalConfig.Status.Conditions, mcpv1beta1.ConditionToolConfigValid)
 	require.NotNil(t, cond, "Valid condition must still be set after spec change")
 	assert.Equal(t, metav1.ConditionTrue, cond.Status)
 	assert.Equal(t, int64(2), cond.ObservedGeneration,
 		"ObservedGeneration should be updated to match new Generation")
+}
+
+// TestMCPToolConfigReconciler_watchHandlers verifies that the MCPServer watch map
+// function enqueues exactly the config the server currently references (or nothing
+// when the server has no ref). The previously-referenced config is enqueued by
+// EnqueueRequestsFromMapFunc, which runs the map function on both the old and new
+// object on update — no manual stale-reference scan in the handler.
+func TestMCPToolConfigReconciler_watchHandlers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		obj      client.Object
+		expected map[string]struct{}
+	}{
+		{
+			name: "MCPServer with ref enqueues the current config",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithToolConfigRef("current-config"),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "MCPServer without ref enqueues nothing",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+			),
+			expected: map[string]struct{}{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			scheme := testutil.NewScheme(t)
+			fakeClient := withToolConfigRefIndex(fake.NewClientBuilder().WithScheme(scheme)).
+				WithObjects(tt.obj).
+				WithStatusSubresource(&mcpv1beta1.MCPToolConfig{}).
+				Build()
+			r := &ToolConfigReconciler{Client: fakeClient, Scheme: scheme}
+
+			requests := r.mapMCPServerToToolConfig(ctx, tt.obj)
+
+			got := make(map[string]struct{}, len(requests))
+			for _, req := range requests {
+				assert.Equal(t, "default", req.Namespace)
+				got[req.Name] = struct{}{}
+			}
+			assert.Equal(t, tt.expected, got)
+		})
+	}
 }

@@ -17,15 +17,17 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
-	"github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.opentelemetry.io/otel/propagation"
@@ -33,6 +35,9 @@ import (
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/mock/gomock"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
 	pkgauth "github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -110,9 +115,9 @@ func TestQueryHelpers_PartialCapabilities(t *testing.T) {
 func TestNewBackendTransport_IsolatesFromDefault(t *testing.T) {
 	t.Parallel()
 
-	t1, err1 := newBackendTransport("", nil)
+	t1, err1 := newBackendTransport("", nil, nil)
 	require.NoError(t, err1)
-	t2, err2 := newBackendTransport("", nil)
+	t2, err2 := newBackendTransport("", nil, nil)
 	require.NoError(t, err2)
 
 	// Each call must return a distinct transport — not the shared DefaultTransport.
@@ -256,7 +261,7 @@ func TestNewBackendTransport_CustomCA(t *testing.T) {
 			t.Parallel()
 
 			caPath := tt.setupFile(t)
-			tr, err := newBackendTransport(caPath, tt.caBundleData)
+			tr, err := newBackendTransport(caPath, tt.caBundleData, nil)
 
 			if tt.expectError {
 				require.Error(t, err)
@@ -1001,6 +1006,54 @@ func TestWrapBackendError(t *testing.T) {
 			err:          context.DeadlineExceeded,
 			wantSentinel: vmcp.ErrTimeout,
 		},
+		{
+			// mcp-go v0.49.0 added ErrAuthorizationRequired for 401 responses
+			// with a WWW-Authenticate header. Issue #5223: probe of GitHub
+			// Copilot's MCP returns this; without recognizing the sentinel here
+			// the error falls through to ErrBackendUnavailable and the health
+			// monitor never engages the auth-aware branch (#4935).
+			name:         "ErrAuthorizationRequired maps to ErrAuthenticationFailed",
+			err:          transport.ErrAuthorizationRequired,
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+		{
+			// Production chain mcp-go produces: transport.Error wrapping
+			// *AuthorizationRequiredError. Error() formats as
+			// "transport error: authorization required" — byte-for-byte
+			// the string seen in North's WARN logs (issue #5223). Both
+			// layers Unwrap() to the sentinel so errors.Is must succeed.
+			name:         "wrapped AuthorizationRequiredError (production chain) maps to ErrAuthenticationFailed",
+			err:          transport.NewError(&transport.AuthorizationRequiredError{}),
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+		{
+			// Companion sentinel for the OAuth-handler path. Less hot in
+			// practice but belongs in the same matcher block; the existing
+			// transport.ErrUnauthorized check would not catch it.
+			name:         "ErrOAuthAuthorizationRequired maps to ErrAuthenticationFailed",
+			err:          transport.ErrOAuthAuthorizationRequired,
+			wantSentinel: vmcp.ErrAuthenticationFailed,
+		},
+		{
+			// ErrUpstreamTokenNotFound is returned by the outgoing auth strategies
+			// (upstream_inject, token_exchange, aws_sts) when the upstream provider
+			// token is absent from the identity. Must map to ErrAuthenticationFailed
+			// via an explicit errors.Is check rather than the fragile "authentication
+			// failed" substring match that also matches the authRoundTripper's wrapper.
+			name:            "ErrUpstreamTokenNotFound maps to ErrAuthenticationFailed",
+			err:             authtypes.ErrUpstreamTokenNotFound,
+			wantSentinel:    vmcp.ErrAuthenticationFailed,
+			wantMsgContains: "upstream token missing",
+		},
+		{
+			// The authRoundTripper wraps ErrUpstreamTokenNotFound with additional
+			// context; errors.Is must still find the sentinel through the chain.
+			name: "wrapped ErrUpstreamTokenNotFound maps to ErrAuthenticationFailed",
+			err: fmt.Errorf("authentication failed for backend foo: provider %q: %w",
+				"my-provider", authtypes.ErrUpstreamTokenNotFound),
+			wantSentinel:    vmcp.ErrAuthenticationFailed,
+			wantMsgContains: "upstream token missing",
+		},
 	}
 
 	for _, tt := range tests {
@@ -1026,13 +1079,98 @@ func TestWrapBackendError(t *testing.T) {
 // ---------------------------------------------------------------------------
 // identityPropagatingRoundTripper
 // ---------------------------------------------------------------------------
+//
+// See identityPropagatingRoundTripper in pkg/vmcp/client/client.go for the
+// canonical description of the #5323 fallback-only identity invariant.
+//
+// Tests below are grouped to reflect this hierarchy:
+//   1. Per-request identity (normal path)            — *_PerRequestIdentity_*
+//   2. Fallback identity (no-identity-on-context)    — *_FallbackIdentity_*
+//   3. Health-check marker propagation               — *_HealthCheck*
 
-func TestIdentityPropagatingRoundTripper_WithIdentity_PropagatesIdentityInContext(t *testing.T) {
+// --- Per-request identity (normal path) -----------------------------------
+
+// TestIdentityPropagatingRoundTripper_PerRequestIdentity_FlowsThroughUnchanged
+// verifies the normal per-request flow: identity is on req.Context() (placed by
+// TokenValidator.Middleware), no fallback is configured, and the transport leaves
+// the identity untouched so the freshly refreshed upstream tokens reach the
+// downstream auth strategies. This is the path taken on every authenticated
+// tool call.
+func TestIdentityPropagatingRoundTripper_PerRequestIdentity_FlowsThroughUnchanged(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	identity := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "user-1"}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: identity}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil}
+
+	fresh := &pkgauth.Identity{
+		PrincipalInfo:  pkgauth.PrincipalInfo{Subject: "fresh-user"},
+		UpstreamTokens: map[string]string{"provider": "fresh-token"},
+	}
+	ctx := pkgauth.WithIdentity(context.Background(), fresh)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	require.True(t, ok)
+	assert.Equal(t, "fresh-user", got.Subject)
+	assert.Equal(t, "fresh-token", got.UpstreamTokens["provider"])
+}
+
+// TestIdentityPropagatingRoundTripper_PerRequestIdentity_NotOverriddenByFallback
+// is the regression test for issue #5323: a fresh identity already on
+// req.Context() (placed there by TokenValidator.Middleware on every incoming
+// request) must survive the transport untouched, even when a stale fallback
+// identity is captured. Overriding it would silently re-inject stale upstream
+// tokens on every backend call and is exactly the bug this PR fixes.
+func TestIdentityPropagatingRoundTripper_PerRequestIdentity_NotOverriddenByFallback(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	stale := &pkgauth.Identity{
+		PrincipalInfo: pkgauth.PrincipalInfo{Subject: "stale-user"},
+		UpstreamTokens: map[string]string{
+			"provider": "stale-token",
+		},
+	}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: stale}
+
+	fresh := &pkgauth.Identity{
+		PrincipalInfo: pkgauth.PrincipalInfo{Subject: "fresh-user"},
+		UpstreamTokens: map[string]string{
+			"provider": "fresh-token",
+		},
+	}
+	ctx := pkgauth.WithIdentity(context.Background(), fresh)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://backend.example.com/mcp", nil)
+	require.NoError(t, err)
+
+	_, err = rt.RoundTrip(req)
+	require.NoError(t, err)
+
+	require.NotNil(t, base.capturedReq)
+	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
+	require.True(t, ok, "identity from req.Context() must be present downstream")
+	assert.Equal(t, "fresh-user", got.Subject,
+		"identity on req.Context() must not be overridden by the captured fallback (#5323)")
+	assert.Equal(t, "fresh-token", got.UpstreamTokens["provider"],
+		"fresh upstream tokens must reach auth strategies unchanged (#5323)")
+}
+
+// --- Fallback identity (teardown / no-identity-on-context path) ------------
+
+// TestIdentityPropagatingRoundTripper_FallbackIdentity_InjectedWhenContextLacksIdentity
+// verifies that the fallback identity is injected when req.Context() carries no
+// identity (e.g. mcp-go's Close() DELETE built from context.Background()).
+func TestIdentityPropagatingRoundTripper_FallbackIdentity_InjectedWhenContextLacksIdentity(t *testing.T) {
+	t.Parallel()
+
+	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
+	fallback := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "fallback-user"}}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: fallback}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1042,15 +1180,15 @@ func TestIdentityPropagatingRoundTripper_WithIdentity_PropagatesIdentityInContex
 
 	require.NotNil(t, base.capturedReq)
 	got, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
-	require.True(t, ok, "identity should be in downstream request context")
-	assert.Equal(t, "user-1", got.Subject)
+	require.True(t, ok, "fallback identity should be in downstream request context")
+	assert.Equal(t, "fallback-user", got.Subject)
 }
 
-func TestIdentityPropagatingRoundTripper_NilIdentity_NoIdentityInContext(t *testing.T) {
+func TestIdentityPropagatingRoundTripper_FallbackIdentity_NilFallback_NoIdentityInContext(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1060,14 +1198,16 @@ func TestIdentityPropagatingRoundTripper_NilIdentity_NoIdentityInContext(t *test
 
 	require.NotNil(t, base.capturedReq)
 	_, ok := pkgauth.IdentityFromContext(base.capturedReq.Context())
-	assert.False(t, ok, "no identity should be in downstream context when nil identity configured")
+	assert.False(t, ok, "no identity should be in downstream context when no fallback and no req-ctx identity")
 }
+
+// --- Health-check marker propagation ---------------------------------------
 
 func TestIdentityPropagatingRoundTripper_HealthCheck_PropagatesMarker(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: true}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil, isHealthCheck: true}
 
 	// Simulate mcp-go Close(): request created with context.Background(), no health check marker.
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodDelete, "http://backend.example.com/mcp", nil)
@@ -1085,7 +1225,7 @@ func TestIdentityPropagatingRoundTripper_NonHealthCheck_NoMarkerAdded(t *testing
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: false}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil, isHealthCheck: false}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1098,12 +1238,12 @@ func TestIdentityPropagatingRoundTripper_NonHealthCheck_NoMarkerAdded(t *testing
 		"health check marker should not be injected for non-health-check transports")
 }
 
-func TestIdentityPropagatingRoundTripper_HealthCheckWithIdentity_PropagatesBoth(t *testing.T) {
+func TestIdentityPropagatingRoundTripper_HealthCheckWithFallbackIdentity_PropagatesBoth(t *testing.T) {
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
 	identity := &pkgauth.Identity{PrincipalInfo: pkgauth.PrincipalInfo{Subject: "svc-account"}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: identity, isHealthCheck: true}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: identity, isHealthCheck: true}
 
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://backend.example.com/mcp", nil)
 	require.NoError(t, err)
@@ -1127,7 +1267,7 @@ func TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContext
 	t.Parallel()
 
 	base := &mockRoundTripper{response: &http.Response{StatusCode: http.StatusOK}}
-	rt := &identityPropagatingRoundTripper{base: base, identity: nil, isHealthCheck: true}
+	rt := &identityPropagatingRoundTripper{base: base, fallbackIdentity: nil, isHealthCheck: true}
 
 	originalCtx := context.Background() // no health check marker — simulates mcp-go Close()
 	req, err := http.NewRequestWithContext(originalCtx, http.MethodDelete, "http://backend.example.com/mcp", nil)
@@ -1143,4 +1283,201 @@ func TestIdentityPropagatingRoundTripper_HealthCheckClose_OriginalRequestContext
 	require.NotNil(t, base.capturedReq)
 	assert.True(t, healthcontext.IsHealthCheck(base.capturedReq.Context()),
 		"downstream request must carry health check marker")
+}
+
+// ---------------------------------------------------------------------------
+// WithDialControl / newBackendTransport — dial hook
+// ---------------------------------------------------------------------------
+
+// TestNewBackendTransport_WithDialControl verifies that a non-nil dialControl
+// causes newBackendTransport to wire a hook that fires on dial. The control
+// hook fires BEFORE the TCP handshake completes, so no accepting server is
+// needed — we open a listener for the address but don't accept, then assert
+// the hook fired regardless of the dial outcome.
+func TestNewBackendTransport_WithDialControl(t *testing.T) {
+	t.Parallel()
+
+	var hookFired atomic.Bool
+	control := func(_, _ string, _ syscall.RawConn) error {
+		hookFired.Store(true)
+		return nil
+	}
+
+	// Open a listener to obtain a valid address; we don't need to accept.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = ln.Close() })
+
+	tr, err := newBackendTransport("", nil, control)
+	require.NoError(t, err)
+
+	conn, dialErr := tr.DialContext(t.Context(), "tcp", ln.Addr().String())
+	if dialErr == nil && conn != nil {
+		_ = conn.Close()
+	}
+	assert.True(t, hookFired.Load(), "control hook must fire during DialContext")
+}
+
+// TestWithDialControl_EndToEnd verifies that a Control hook installed via
+// WithDialControl is invoked on every TCP dial made by the client constructed
+// with NewHTTPBackendClient.
+func TestWithDialControl_EndToEnd(t *testing.T) {
+	t.Parallel()
+
+	t.Run("control hook fires on successful dial", func(t *testing.T) {
+		t.Parallel()
+
+		var hookFired atomic.Bool
+		control := func(_, _ string, _ syscall.RawConn) error {
+			hookFired.Store(true)
+			return nil
+		}
+
+		mcpSrv := mcpserver.NewMCPServer("test", "1.0.0")
+		streamSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
+		ts := httptest.NewServer(streamSrv)
+		t.Cleanup(ts.Close)
+
+		registry := auth.NewDefaultOutgoingAuthRegistry()
+		err := registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{})
+		require.NoError(t, err)
+
+		backendClient, err := NewHTTPBackendClient(registry, WithDialControl(control))
+		require.NoError(t, err)
+
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "test-backend",
+			WorkloadName:  "Test Backend",
+			BaseURL:       ts.URL,
+			TransportType: "streamable-http",
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		_, err = backendClient.ListCapabilities(ctx, target)
+		require.NoError(t, err)
+		assert.True(t, hookFired.Load(), "dial control hook must fire on connection to backend")
+	})
+
+	t.Run("control hook returning error blocks the dial", func(t *testing.T) {
+		t.Parallel()
+
+		dialErr := errors.New("dial blocked by control hook")
+		control := func(_, _ string, _ syscall.RawConn) error {
+			return dialErr
+		}
+
+		mcpSrv := mcpserver.NewMCPServer("test", "1.0.0")
+		streamSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
+		ts := httptest.NewServer(streamSrv)
+		t.Cleanup(ts.Close)
+
+		registry := auth.NewDefaultOutgoingAuthRegistry()
+		err := registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{})
+		require.NoError(t, err)
+
+		backendClient, err := NewHTTPBackendClient(registry, WithDialControl(control))
+		require.NoError(t, err)
+
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "test-backend",
+			WorkloadName:  "Test Backend",
+			BaseURL:       ts.URL,
+			TransportType: "streamable-http",
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		_, err = backendClient.ListCapabilities(ctx, target)
+		require.Error(t, err, "ListCapabilities must fail when the dial control hook blocks the connection")
+		assert.Contains(t, err.Error(), dialErr.Error())
+	})
+
+	t.Run("control hook receives resolved IP not hostname", func(t *testing.T) {
+		t.Parallel()
+
+		var capturedAddr atomic.Value
+		control := func(_, address string, _ syscall.RawConn) error {
+			capturedAddr.Store(address)
+			return nil
+		}
+
+		mcpSrv := mcpserver.NewMCPServer("test", "1.0.0")
+		streamSrv := mcpserver.NewStreamableHTTPServer(mcpSrv)
+		ts := httptest.NewServer(streamSrv)
+		t.Cleanup(ts.Close)
+
+		registry := auth.NewDefaultOutgoingAuthRegistry()
+		err := registry.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{})
+		require.NoError(t, err)
+
+		backendClient, err := NewHTTPBackendClient(registry, WithDialControl(control))
+		require.NoError(t, err)
+
+		// Force DNS resolution by using "localhost" instead of the literal 127.0.0.1
+		// that httptest.NewServer embeds in ts.URL. Without this substitution the
+		// hook would receive 127.0.0.1 regardless, making the assertion tautological.
+		baseURL := strings.Replace(ts.URL, "127.0.0.1", "localhost", 1)
+		target := &vmcp.BackendTarget{
+			WorkloadID:    "test-backend",
+			WorkloadName:  "Test Backend",
+			BaseURL:       baseURL,
+			TransportType: "streamable-http",
+		}
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		defer cancel()
+
+		_, err = backendClient.ListCapabilities(ctx, target)
+		require.NoError(t, err)
+
+		addr, _ := capturedAddr.Load().(string)
+		require.NotEmpty(t, addr, "control hook must receive the address")
+		host, _, err := net.SplitHostPort(addr)
+		require.NoError(t, err)
+		// The hook must see the resolved IP, not the name "localhost".
+		// net.ParseIP returns non-nil only for valid IP literals.
+		assert.NotNil(t, net.ParseIP(host),
+			"control hook address %q must be an IP literal (resolved), not a hostname", host)
+		assert.NotEqual(t, "localhost", host,
+			"control hook must receive the resolved IP, not the original hostname (DNS-rebinding defense point)")
+	})
+}
+
+// ExampleWithDialControl shows how an embedder installs a dial-control hook
+// that rejects connections to non-public IP ranges — the building block of an
+// SSRF / DNS-rebinding defense. The hook receives the resolved peer IP, so it
+// classifies the address the kernel is about to connect to rather than the
+// (re-resolvable) hostname. A production check should additionally cover the
+// ranges listed in the WithDialControl doc comment (CGNAT, IPv6 ULA, etc.).
+func ExampleWithDialControl() {
+	denyNonPublic := func(_, address string, _ syscall.RawConn) error {
+		host, _, err := net.SplitHostPort(address)
+		if err != nil {
+			return err
+		}
+		ip := net.ParseIP(host)
+		if ip == nil {
+			return fmt.Errorf("unresolved dial address %q", address)
+		}
+		if ip.IsLoopback() || ip.IsPrivate() || ip.IsLinkLocalUnicast() {
+			return fmt.Errorf("blocked connection to non-public IP %s", ip)
+		}
+		return nil
+	}
+
+	registry := auth.NewDefaultOutgoingAuthRegistry()
+	if err := registry.RegisterStrategy(
+		authtypes.StrategyTypeUnauthenticated, &strategies.UnauthenticatedStrategy{},
+	); err != nil {
+		panic(err)
+	}
+
+	backendClient, err := NewHTTPBackendClient(registry, WithDialControl(denyNonPublic))
+	if err != nil {
+		panic(err)
+	}
+	_ = backendClient
 }

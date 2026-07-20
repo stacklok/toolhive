@@ -7,14 +7,14 @@
 package runconfig
 
 import (
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/runner"
 )
 
 // AddAuditConfigOptions adds audit configuration options to the builder options
 func AddAuditConfigOptions(
 	options *[]runner.RunConfigBuilderOption,
-	auditConfig *mcpv1alpha1.AuditConfig,
+	auditConfig *mcpv1beta1.AuditConfig,
 ) {
 	if auditConfig == nil {
 		return

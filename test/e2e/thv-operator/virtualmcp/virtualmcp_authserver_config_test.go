@@ -11,7 +11,8 @@ import (
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func() {
@@ -30,7 +31,7 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 
 	AfterAll(func() {
 		By("Cleaning up MCPGroup")
-		_ = k8sClient.Delete(ctx, &mcpv1alpha1.MCPGroup{
+		_ = k8sClient.Delete(ctx, &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{Name: mcpGroupName, Namespace: testNamespace},
 		})
 	})
@@ -40,11 +41,11 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 
 		BeforeAll(func() {
 			By("Creating MCPOIDCConfig for auth server test")
-			Expect(k8sClient.Create(ctx, &mcpv1alpha1.MCPOIDCConfig{
+			Expect(k8sClient.Create(ctx, &mcpv1beta1.MCPOIDCConfig{
 				ObjectMeta: metav1.ObjectMeta{Name: "authserver-oidc-config", Namespace: testNamespace},
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:            "http://localhost:9090",
 						InsecureAllowHTTP: true,
 					},
@@ -52,48 +53,40 @@ var _ = Describe("VirtualMCPServer AuthServerConfig Validation", Ordered, func()
 			})).To(Succeed())
 
 			By("Creating VirtualMCPServer with valid inline AuthServerConfig")
-			vmcp := &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{
-					Name:      vmcpName,
-					Namespace: testNamespace,
-				},
-				Spec: mcpv1alpha1.VirtualMCPServerSpec{
-					IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-						Type: "oidc",
-						OIDCConfigRef: &mcpv1alpha1.MCPOIDCConfigReference{
-							Name: "authserver-oidc-config",
-							// Audience must match the auth server's allowed audience (the vMCP service URL)
-							Audience: fmt.Sprintf("http://%s.%s.svc.cluster.local:4483", vmcpName, testNamespace),
-						},
+			vmcp := v1beta1test.NewVirtualMCPServer(vmcpName, testNamespace,
+				v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+					Type: "oidc",
+					OIDCConfigRef: &mcpv1beta1.MCPOIDCConfigReference{
+						Name: "authserver-oidc-config",
+						// Audience must match the auth server's allowed audience (the vMCP service URL)
+						Audience: fmt.Sprintf("http://%s.%s.svc.cluster.local:4483", vmcpName, testNamespace),
 					},
-					GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-					AuthServerConfig: &mcpv1alpha1.EmbeddedAuthServerConfig{
-						Issuer: "http://localhost:9090",
-						UpstreamProviders: []mcpv1alpha1.UpstreamProviderConfig{
-							{
-								Name: "test-provider",
-								Type: mcpv1alpha1.UpstreamProviderTypeOIDC,
-								OIDCConfig: &mcpv1alpha1.OIDCUpstreamConfig{
-									IssuerURL: "https://accounts.google.com",
-									ClientID:  "test-client-id",
-								},
+				}),
+				v1beta1test.WithVMCPGroupRef(mcpGroupName),
+				v1beta1test.WithVMCPAuthServerConfig(&mcpv1beta1.EmbeddedAuthServerConfig{
+					Issuer: "http://localhost:9090",
+					UpstreamProviders: []mcpv1beta1.UpstreamProviderConfig{
+						{
+							Name: "test-provider",
+							Type: mcpv1beta1.UpstreamProviderTypeOIDC,
+							OIDCConfig: &mcpv1beta1.OIDCUpstreamConfig{
+								IssuerURL: "https://accounts.google.com",
+								ClientID:  "test-client-id",
 							},
 						},
 					},
-				},
-			}
+				}),
+			)
 			Expect(k8sClient.Create(ctx, vmcp)).To(Succeed())
 		})
 
 		AfterAll(func() {
-			_ = k8sClient.Delete(ctx, &mcpv1alpha1.VirtualMCPServer{
-				ObjectMeta: metav1.ObjectMeta{Name: vmcpName, Namespace: testNamespace},
-			})
+			_ = k8sClient.Delete(ctx, v1beta1test.NewVirtualMCPServer(vmcpName, testNamespace))
 		})
 
 		It("should set AuthServerConfigValidated condition to True", func() {
 			WaitForCondition(ctx, k8sClient, vmcpName, testNamespace,
-				mcpv1alpha1.ConditionTypeAuthServerConfigValidated, "True", timeout, pollingInterval)
+				mcpv1beta1.ConditionTypeAuthServerConfigValidated, "True", timeout, pollingInterval)
 		})
 	})
 })

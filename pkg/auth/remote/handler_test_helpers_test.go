@@ -86,7 +86,12 @@ func setupResourceMetadataTest(t *testing.T, testType string) (*testServerSetup,
 // processTestServers handles the server setup for a test case
 func processTestServers(t *testing.T, tt *testCase) (*testServerSetup, *discovery.AuthInfo, string, string) {
 	t.Helper()
-	// Handle special dynamic test cases
+	// Handle special dynamic test cases.
+	// The metadata and auth servers created below are loopback (httptest) mocks,
+	// so use the metadata server as the remote target: the discovery SSRF guard
+	// blocks private-address fetches only when the configured target is public,
+	// and these cases model an operator who deliberately targeted an internal
+	// server (where internal metadata fetches are expected to work).
 	if tt.authInfo != nil && tt.authInfo.ResourceMetadata != "" {
 		switch tt.authInfo.ResourceMetadata {
 		case dynamicTestType:
@@ -94,21 +99,21 @@ func processTestServers(t *testing.T, tt *testCase) (*testServerSetup, *discover
 			if tt.expectedIssuer == dynamicTestType {
 				tt.expectedIssuer = expectedIssuer
 			}
-			return setup, authInfo, tt.remoteURL, tt.expectedIssuer
+			return setup, authInfo, setup.MetadataServer.URL, tt.expectedIssuer
 
 		case "dynamic-multi":
 			setup, authInfo, expectedIssuer := setupResourceMetadataTest(t, "multi-server")
 			if tt.expectedIssuer == dynamicTestType {
 				tt.expectedIssuer = expectedIssuer
 			}
-			return setup, authInfo, tt.remoteURL, tt.expectedIssuer
+			return setup, authInfo, setup.MetadataServer.URL, tt.expectedIssuer
 
 		case "dynamic-scopes":
 			setup, authInfo, expectedIssuer := setupResourceMetadataTest(t, "with-scopes")
 			if tt.expectedIssuer == dynamicTestType {
 				tt.expectedIssuer = expectedIssuer
 			}
-			return setup, authInfo, tt.remoteURL, tt.expectedIssuer
+			return setup, authInfo, setup.MetadataServer.URL, tt.expectedIssuer
 		}
 	}
 

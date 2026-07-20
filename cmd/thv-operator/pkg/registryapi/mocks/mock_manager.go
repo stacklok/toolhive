@@ -13,7 +13,7 @@ import (
 	context "context"
 	reflect "reflect"
 
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	registryapi "github.com/stacklok/toolhive/cmd/thv-operator/pkg/registryapi"
 	gomock "go.uber.org/mock/gomock"
 	v1 "k8s.io/api/apps/v1"
@@ -58,7 +58,7 @@ func (mr *MockManagerMockRecorder) CheckAPIReadiness(ctx, deployment any) *gomoc
 }
 
 // GetAPIStatus mocks base method.
-func (m *MockManager) GetAPIStatus(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry) (bool, int32) {
+func (m *MockManager) GetAPIStatus(ctx context.Context, mcpRegistry *v1beta1.MCPRegistry) (bool, int32) {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetAPIStatus", ctx, mcpRegistry)
 	ret0, _ := ret[0].(bool)
@@ -73,7 +73,7 @@ func (mr *MockManagerMockRecorder) GetAPIStatus(ctx, mcpRegistry any) *gomock.Ca
 }
 
 // GetReadyReplicas mocks base method.
-func (m *MockManager) GetReadyReplicas(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry) int32 {
+func (m *MockManager) GetReadyReplicas(ctx context.Context, mcpRegistry *v1beta1.MCPRegistry) int32 {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "GetReadyReplicas", ctx, mcpRegistry)
 	ret0, _ := ret[0].(int32)
@@ -87,7 +87,7 @@ func (mr *MockManagerMockRecorder) GetReadyReplicas(ctx, mcpRegistry any) *gomoc
 }
 
 // IsAPIReady mocks base method.
-func (m *MockManager) IsAPIReady(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry) bool {
+func (m *MockManager) IsAPIReady(ctx context.Context, mcpRegistry *v1beta1.MCPRegistry) bool {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "IsAPIReady", ctx, mcpRegistry)
 	ret0, _ := ret[0].(bool)
@@ -101,7 +101,7 @@ func (mr *MockManagerMockRecorder) IsAPIReady(ctx, mcpRegistry any) *gomock.Call
 }
 
 // ReconcileAPIService mocks base method.
-func (m *MockManager) ReconcileAPIService(ctx context.Context, mcpRegistry *v1alpha1.MCPRegistry) *registryapi.Error {
+func (m *MockManager) ReconcileAPIService(ctx context.Context, mcpRegistry *v1beta1.MCPRegistry) *registryapi.Error {
 	m.ctrl.T.Helper()
 	ret := m.ctrl.Call(m, "ReconcileAPIService", ctx, mcpRegistry)
 	ret0, _ := ret[0].(*registryapi.Error)

@@ -22,6 +22,10 @@ These tests validate ToolHive functionality by exercising the full application s
 - `oidc_mock.go` - Mock OIDC server for authentication tests
 - `run_tests.sh` - Test runner script
 
+Operator-specific end-to-end tests live in subdirectories, such as the
+[VirtualMCPServer E2E tests](thv-operator/virtualmcp/README.md) that run against
+a real Kubernetes cluster.
+
 ### Test Categories
 
 Tests are organized using Ginkgo labels for parallelization and filtering:

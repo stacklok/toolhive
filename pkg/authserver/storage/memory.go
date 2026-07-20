@@ -94,6 +94,20 @@ type MemoryStorage struct {
 	// This enables O(1) lookup during authentication callbacks.
 	providerIdentities map[string]*ProviderIdentity
 
+	// dcrCredentials maps DCRKey -> DCRCredentials for RFC 7591 Dynamic Client
+	// Registration credentials. Entries are intentionally excluded from the
+	// periodic cleanupExpired loop: DCR registrations are long-lived and the
+	// authoritative expiry signal is RFC 7591 client_secret_expires_at, which
+	// is honored at read time by callers (and by the future Redis backend's
+	// SetEX TTL). Growth is bounded by upstream count × distinct scope sets
+	// ever registered for each upstream during the process lifetime; for a
+	// stable configuration this collapses to the upstream count, but rotating
+	// scope sets (operator-driven scope changes, or upstream
+	// scopes_supported rotations re-derived by the resolver) accumulate
+	// stale entries that survive until process restart. The Redis backend's
+	// SetEX TTL mitigates this in production deployments.
+	dcrCredentials map[DCRKey]*DCRCredentials
+
 	// cleanupInterval is how often the background cleanup runs
 	cleanupInterval time.Duration
 
@@ -129,6 +143,7 @@ func NewMemoryStorage(opts ...MemoryStorageOption) *MemoryStorage {
 		clientAssertionJWTs:   make(map[string]time.Time),
 		users:                 make(map[string]*User),
 		providerIdentities:    make(map[string]*ProviderIdentity),
+		dcrCredentials:        make(map[DCRKey]*DCRCredentials),
 		cleanupInterval:       DefaultCleanupInterval,
 		stopCleanup:           make(chan struct{}),
 		cleanupDone:           make(chan struct{}),
@@ -222,7 +237,11 @@ func (s *MemoryStorage) cleanupExpired() {
 
 	var expiredUpstreamTokens []upstreamKey
 	for k, v := range s.upstreamTokens {
-		if now.After(v.expiresAt) {
+		// Zero expiresAt is the sentinel for "no TTL" (non-expiring token with no session
+		// bound). Other entry types never use zero expiresAt, so only upstream tokens need
+		// this guard — without it, time.Time{} would compare as before any real time and
+		// every non-expiring token would be swept on the next tick.
+		if !v.expiresAt.IsZero() && now.After(v.expiresAt) {
 			expiredUpstreamTokens = append(expiredUpstreamTokens, k)
 		}
 	}
@@ -324,6 +343,13 @@ func (s *MemoryStorage) RegisterClient(_ context.Context, client fosite.Client) 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.clients[client.GetID()] = client
+	return nil
+}
+
+// RenewClientTTL is a no-op for the in-memory backend: clients are held for the
+// process lifetime with no TTL, so there is nothing to renew. The behavior that
+// matters for distributed deployments lives in RedisStorage.RenewClientTTL.
+func (*MemoryStorage) RenewClientTTL(_ context.Context, _ fosite.Client) error {
 	return nil
 }
 
@@ -704,25 +730,33 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 	now := time.Now()
 	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
 	// survives in storage for transparent token refresh by the middleware.
-	var expiresAt time.Time
-	if tokens != nil && !tokens.ExpiresAt.IsZero() {
-		expiresAt = tokens.ExpiresAt.Add(DefaultRefreshTokenTTL)
-	} else {
-		expiresAt = now.Add(DefaultAccessTokenTTL + DefaultRefreshTokenTTL)
-	}
+	// Zero ExpiresAt means the token never expires; no TTL is applied.
+	expiresAt := func() time.Time {
+		if tokens == nil {
+			return now.Add(DefaultAccessTokenTTL + DefaultRefreshTokenTTL)
+		}
+		if !tokens.ExpiresAt.IsZero() {
+			return tokens.ExpiresAt.Add(DefaultRefreshTokenTTL)
+		}
+		if !tokens.SessionExpiresAt.IsZero() {
+			return tokens.SessionExpiresAt.Add(DefaultRefreshTokenTTL)
+		}
+		return time.Time{} // non-expiring token with no known session bound
+	}()
 
 	// Make a defensive copy to prevent aliasing issues
 	var tokensCopy *UpstreamTokens
 	if tokens != nil {
 		tokensCopy = &UpstreamTokens{
-			ProviderID:      tokens.ProviderID,
-			AccessToken:     tokens.AccessToken,
-			RefreshToken:    tokens.RefreshToken,
-			IDToken:         tokens.IDToken,
-			ExpiresAt:       tokens.ExpiresAt,
-			UserID:          tokens.UserID,
-			UpstreamSubject: tokens.UpstreamSubject,
-			ClientID:        tokens.ClientID,
+			ProviderID:       tokens.ProviderID,
+			AccessToken:      tokens.AccessToken,
+			RefreshToken:     tokens.RefreshToken,
+			IDToken:          tokens.IDToken,
+			ExpiresAt:        tokens.ExpiresAt,
+			SessionExpiresAt: tokens.SessionExpiresAt,
+			UserID:           tokens.UserID,
+			UpstreamSubject:  tokens.UpstreamSubject,
+			ClientID:         tokens.ClientID,
 		}
 	}
 
@@ -732,6 +766,24 @@ func (s *MemoryStorage) StoreUpstreamTokens(_ context.Context, sessionID, provid
 		expiresAt: expiresAt,
 	}
 	return nil
+}
+
+// cloneUpstreamTokens returns a field-by-field copy of t, or nil if t is nil.
+func cloneUpstreamTokens(t *UpstreamTokens) *UpstreamTokens {
+	if t == nil {
+		return nil
+	}
+	return &UpstreamTokens{
+		ProviderID:       t.ProviderID,
+		AccessToken:      t.AccessToken,
+		RefreshToken:     t.RefreshToken,
+		IDToken:          t.IDToken,
+		ExpiresAt:        t.ExpiresAt,
+		SessionExpiresAt: t.SessionExpiresAt,
+		UserID:           t.UserID,
+		UpstreamSubject:  t.UpstreamSubject,
+		ClientID:         t.ClientID,
+	}
 }
 
 // GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
@@ -754,19 +806,9 @@ func (s *MemoryStorage) GetUpstreamTokens(_ context.Context, sessionID, provider
 	}
 
 	// Return a defensive copy to prevent aliasing issues
-	tokens := entry.value
-	if tokens == nil {
+	result := cloneUpstreamTokens(entry.value)
+	if result == nil {
 		return nil, nil
-	}
-	result := &UpstreamTokens{
-		ProviderID:      tokens.ProviderID,
-		AccessToken:     tokens.AccessToken,
-		RefreshToken:    tokens.RefreshToken,
-		IDToken:         tokens.IDToken,
-		ExpiresAt:       tokens.ExpiresAt,
-		UserID:          tokens.UserID,
-		UpstreamSubject: tokens.UpstreamSubject,
-		ClientID:        tokens.ClientID,
 	}
 
 	// Check the token's own ExpiresAt (access token expiry), not the entry's expiresAt
@@ -793,22 +835,8 @@ func (s *MemoryStorage) GetAllUpstreamTokens(_ context.Context, sessionID string
 		if key.sessionID != sessionID {
 			continue
 		}
-		tokens := entry.value
-		if tokens == nil {
-			result[key.providerName] = nil
-			continue
-		}
-		// Defensive copy
-		result[key.providerName] = &UpstreamTokens{
-			ProviderID:      tokens.ProviderID,
-			AccessToken:     tokens.AccessToken,
-			RefreshToken:    tokens.RefreshToken,
-			IDToken:         tokens.IDToken,
-			ExpiresAt:       tokens.ExpiresAt,
-			UserID:          tokens.UserID,
-			UpstreamSubject: tokens.UpstreamSubject,
-			ClientID:        tokens.ClientID,
-		}
+		// Defensive copy (cloneUpstreamTokens handles nil)
+		result[key.providerName] = cloneUpstreamTokens(entry.value)
 	}
 
 	return result, nil
@@ -830,6 +858,73 @@ func (s *MemoryStorage) DeleteUpstreamTokens(_ context.Context, sessionID string
 		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
 	}
 	return nil
+}
+
+// DeleteUpstreamTokensForProvider removes tokens for a single (sessionID, providerName),
+// leaving sibling providers' rows intact. Absent row returns nil (not ErrNotFound).
+func (s *MemoryStorage) DeleteUpstreamTokensForProvider(_ context.Context, sessionID, providerName string) error {
+	if sessionID == "" {
+		return fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
+	}
+	if providerName == "" {
+		return fosite.ErrInvalidRequest.WithHint("provider name cannot be empty")
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	delete(s.upstreamTokens, upstreamKey{sessionID, providerName})
+	return nil
+}
+
+// compareExpiry orders ExpiresAt values for the GetLatestUpstreamTokensForUser
+// tie-breaker. Non-expiring rows (zero ExpiresAt — "alive forever") rank latest;
+// among finite expiries, later ranks latest. Mirrors time.Compare but with the
+// zero sentinel reinterpreted. Returns -1/0/+1.
+func compareExpiry(a, b time.Time) int {
+	aZero, bZero := a.IsZero(), b.IsZero()
+	switch {
+	case aZero && bZero:
+		return 0
+	case aZero:
+		return 1
+	case bZero:
+		return -1
+	}
+	return a.Compare(b)
+}
+
+// GetLatestUpstreamTokensForUser implements UpstreamTokenStorage.
+//
+// Expired tokens (past ExpiresAt) are returned so callers can use the refresh
+// token; filtering by access-token expiry is the caller's responsibility.
+// See the interface declaration in types.go for the full contract.
+func (s *MemoryStorage) GetLatestUpstreamTokensForUser(_ context.Context, userID, providerID string) (*UpstreamTokens, error) {
+	if userID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("user ID cannot be empty")
+	}
+	if providerID == "" {
+		return nil, fosite.ErrInvalidRequest.WithHint("provider ID cannot be empty")
+	}
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	var winner *UpstreamTokens
+	for _, entry := range s.upstreamTokens {
+		if entry.value == nil || entry.value.UserID != userID || entry.value.ProviderID != providerID {
+			continue
+		}
+		if winner == nil || compareExpiry(entry.value.ExpiresAt, winner.ExpiresAt) > 0 {
+			winner = entry.value
+		}
+	}
+
+	if winner == nil {
+		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
+	}
+
+	return cloneUpstreamTokens(winner), nil
 }
 
 // -----------------------
@@ -869,6 +964,8 @@ func (s *MemoryStorage) StorePendingAuthorization(_ context.Context, state strin
 		ResolvedUserID:       pending.ResolvedUserID,
 		ResolvedUserName:     pending.ResolvedUserName,
 		ResolvedUserEmail:    pending.ResolvedUserEmail,
+		SingleLeg:            pending.SingleLeg,
+		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
 		CreatedAt:            pending.CreatedAt,
 	}
 
@@ -918,6 +1015,8 @@ func (s *MemoryStorage) LoadPendingAuthorization(_ context.Context, state string
 		ResolvedUserID:       pending.ResolvedUserID,
 		ResolvedUserName:     pending.ResolvedUserName,
 		ResolvedUserEmail:    pending.ResolvedUserEmail,
+		SingleLeg:            pending.SingleLeg,
+		ChainUpstreams:       slices.Clone(pending.ChainUpstreams),
 		CreatedAt:            pending.CreatedAt,
 	}, nil
 }
@@ -1132,6 +1231,66 @@ func (s *MemoryStorage) GetUserProviderIdentities(_ context.Context, userID stri
 }
 
 // -----------------------
+// DCR Credentials Storage
+// -----------------------
+
+// cloneDCRCredentials returns a field-by-field copy of c, or nil if c is nil.
+// All fields are values (no slices, maps, or pointers), so a shallow copy is
+// sufficient — adding a new reference-typed field requires updating this
+// helper to deep-copy that field.
+func cloneDCRCredentials(c *DCRCredentials) *DCRCredentials {
+	if c == nil {
+		return nil
+	}
+	cp := *c
+	return &cp
+}
+
+// StoreDCRCredentials persists DCR credentials for the given key.
+// The credentials are stored under their own Key field; callers must populate
+// it before calling. A defensive copy is made so subsequent caller mutations
+// do not affect persisted state.
+//
+// Overwrites any existing entry for the same Key. The in-memory backend
+// applies no native TTL — DCR registrations are long-lived and bounded by
+// the operator-configured upstream count, and ClientSecretExpiresAt is
+// retained verbatim for callers to re-check on read (see the interface
+// docstring's "TTL handling" section).
+//
+// Validation is delegated to validateDCRCredentialsForStore so the rejection
+// set stays in sync with sibling backends.
+func (s *MemoryStorage) StoreDCRCredentials(_ context.Context, creds *DCRCredentials) error {
+	if err := validateDCRCredentialsForStore(creds); err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.dcrCredentials[creds.Key] = cloneDCRCredentials(creds)
+	return nil
+}
+
+// GetDCRCredentials retrieves DCR credentials by key.
+// Returns a defensive copy; returns ErrNotFound (wrapped) on miss.
+func (s *MemoryStorage) GetDCRCredentials(_ context.Context, key DCRKey) (*DCRCredentials, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	entry, ok := s.dcrCredentials[key]
+	if !ok {
+		slog.Debug("dcr credentials not found",
+			"issuer", key.Issuer,
+			"upstream_id", key.UpstreamID,
+			"redirect_uri", key.RedirectURI,
+		)
+		return nil, fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("DCR credentials not found"))
+	}
+
+	return cloneDCRCredentials(entry), nil
+}
+
+// -----------------------
 // Metrics/Stats (for testing and monitoring)
 // -----------------------
 
@@ -1148,6 +1307,7 @@ type Stats struct {
 	ClientAssertionJWTs   int
 	Users                 int
 	ProviderIdentities    int
+	DCRCredentials        int
 }
 
 // Stats returns current statistics about storage contents.
@@ -1168,6 +1328,7 @@ func (s *MemoryStorage) Stats() Stats {
 		ClientAssertionJWTs:   len(s.clientAssertionJWTs),
 		Users:                 len(s.users),
 		ProviderIdentities:    len(s.providerIdentities),
+		DCRCredentials:        len(s.dcrCredentials),
 	}
 }
 
@@ -1178,4 +1339,5 @@ var (
 	_ ClientRegistry              = (*MemoryStorage)(nil)
 	_ UpstreamTokenStorage        = (*MemoryStorage)(nil)
 	_ UserStorage                 = (*MemoryStorage)(nil)
+	_ DCRCredentialStore          = (*MemoryStorage)(nil)
 )

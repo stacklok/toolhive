@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestResolveFromConfigRef_NilInputs(t *testing.T) {
@@ -20,7 +20,7 @@ func TestResolveFromConfigRef_NilInputs(t *testing.T) {
 	t.Run("nil ref", func(t *testing.T) {
 		t.Parallel()
 		result, err := resolver.ResolveFromConfigRef(
-			t.Context(), nil, &mcpv1alpha1.MCPOIDCConfig{},
+			t.Context(), nil, &mcpv1beta1.MCPOIDCConfig{},
 			"s", "ns", 8080,
 		)
 		require.NoError(t, err)
@@ -31,7 +31,7 @@ func TestResolveFromConfigRef_NilInputs(t *testing.T) {
 		t.Parallel()
 		result, err := resolver.ResolveFromConfigRef(
 			t.Context(),
-			&mcpv1alpha1.MCPOIDCConfigReference{Name: "x", Audience: "a"},
+			&mcpv1beta1.MCPOIDCConfigReference{Name: "x", Audience: "a"},
 			nil, "s", "ns", 8080,
 		)
 		require.NoError(t, err)
@@ -44,19 +44,19 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		ref      *mcpv1alpha1.MCPOIDCConfigReference
-		oidcCfg  *mcpv1alpha1.MCPOIDCConfig
+		ref      *mcpv1beta1.MCPOIDCConfigReference
+		oidcCfg  *mcpv1beta1.MCPOIDCConfig
 		expected *OIDCConfig
 	}{
 		{
 			name: "audience and scopes from ref with explicit issuer",
-			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+			ref: &mcpv1beta1.MCPOIDCConfigReference{
 				Name: "k", Audience: "my-aud", Scopes: []string{"openid"},
 			},
-			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			oidcCfg: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 						Issuer: "https://kubernetes.default.svc",
 					},
 				},
@@ -72,14 +72,14 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 		},
 		{
 			name: "empty resourceUrl falls back to derived service URL",
-			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+			ref: &mcpv1beta1.MCPOIDCConfigReference{
 				Name: "k", Audience: "my-aud", Scopes: []string{"openid"},
 				ResourceURL: "",
 			},
-			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			oidcCfg: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 						Issuer: "https://kubernetes.default.svc",
 					},
 				},
@@ -95,12 +95,12 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 		},
 		{
 			name: "nil KSA config falls back to all defaults",
-			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+			ref: &mcpv1beta1.MCPOIDCConfigReference{
 				Name: "k", Audience: "aud",
 			},
-			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type:                     mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
+			oidcCfg: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type:                     mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
 					KubernetesServiceAccount: nil,
 				},
 			},
@@ -114,14 +114,14 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 		},
 		{
 			name: "explicit resourceUrl overrides derived service URL",
-			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+			ref: &mcpv1beta1.MCPOIDCConfigReference{
 				Name: "k", Audience: "my-aud", Scopes: []string{"openid"},
 				ResourceURL: "https://mcp-gateway.example.com/mcp",
 			},
-			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			oidcCfg: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 						Issuer: "https://kubernetes.default.svc",
 					},
 				},
@@ -137,13 +137,13 @@ func TestResolveFromConfigRef_KubernetesServiceAccountType(t *testing.T) {
 		},
 		{
 			name: "UseClusterAuth false omits CA and token paths",
-			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+			ref: &mcpv1beta1.MCPOIDCConfigReference{
 				Name: "k", Audience: "aud",
 			},
-			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeKubernetesServiceAccount,
-					KubernetesServiceAccount: &mcpv1alpha1.KubernetesServiceAccountOIDCConfig{
+			oidcCfg: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
 						Issuer:         "https://custom",
 						UseClusterAuth: boolPtr(false),
 					},
@@ -175,19 +175,19 @@ func TestResolveFromConfigRef_InlineType(t *testing.T) {
 
 	tests := []struct {
 		name     string
-		ref      *mcpv1alpha1.MCPOIDCConfigReference
-		oidcCfg  *mcpv1alpha1.MCPOIDCConfig
+		ref      *mcpv1beta1.MCPOIDCConfigReference
+		oidcCfg  *mcpv1beta1.MCPOIDCConfig
 		expected *OIDCConfig
 	}{
 		{
 			name: "audience and scopes from ref with shared inline config",
-			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+			ref: &mcpv1beta1.MCPOIDCConfigReference{
 				Name: "i", Audience: "inline-aud", Scopes: []string{"openid", "email"},
 			},
-			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+			oidcCfg: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://accounts.google.com",
 						ClientID: "gid",
 					},
@@ -202,13 +202,13 @@ func TestResolveFromConfigRef_InlineType(t *testing.T) {
 		},
 		{
 			name: "protectedResourceAllowPrivateIP propagated from shared inline config",
-			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+			ref: &mcpv1beta1.MCPOIDCConfigReference{
 				Name: "i", Audience: "inline-aud",
 			},
-			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+			oidcCfg: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:                          "https://accounts.google.com",
 						ClientID:                        "gid",
 						ProtectedResourceAllowPrivateIP: true,
@@ -227,14 +227,14 @@ func TestResolveFromConfigRef_InlineType(t *testing.T) {
 		},
 		{
 			name: "explicit resourceUrl overrides derived service URL for inline config",
-			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+			ref: &mcpv1beta1.MCPOIDCConfigReference{
 				Name: "i", Audience: "inline-aud", Scopes: []string{"openid"},
 				ResourceURL: "https://mcp.corp.internal/tools",
 			},
-			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline,
-					Inline: &mcpv1alpha1.InlineOIDCSharedConfig{
+			oidcCfg: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
 						Issuer:   "https://accounts.google.com",
 						ClientID: "gid",
 					},
@@ -249,12 +249,12 @@ func TestResolveFromConfigRef_InlineType(t *testing.T) {
 		},
 		{
 			name: "nil inline config returns nil",
-			ref: &mcpv1alpha1.MCPOIDCConfigReference{
+			ref: &mcpv1beta1.MCPOIDCConfigReference{
 				Name: "i", Audience: "aud",
 			},
-			oidcCfg: &mcpv1alpha1.MCPOIDCConfig{
-				Spec: mcpv1alpha1.MCPOIDCConfigSpec{
-					Type: mcpv1alpha1.MCPOIDCConfigTypeInline, Inline: nil,
+			oidcCfg: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline, Inline: nil,
 				},
 			},
 			expected: nil,
@@ -281,9 +281,9 @@ func TestResolveFromConfigRef_UnknownType(t *testing.T) {
 	resolver := NewResolver(nil)
 	result, err := resolver.ResolveFromConfigRef(
 		t.Context(),
-		&mcpv1alpha1.MCPOIDCConfigReference{Name: "x", Audience: "a"},
-		&mcpv1alpha1.MCPOIDCConfig{
-			Spec: mcpv1alpha1.MCPOIDCConfigSpec{Type: "bad"},
+		&mcpv1beta1.MCPOIDCConfigReference{Name: "x", Audience: "a"},
+		&mcpv1beta1.MCPOIDCConfig{
+			Spec: mcpv1beta1.MCPOIDCConfigSpec{Type: "bad"},
 		},
 		"srv", "default", 8080,
 	)

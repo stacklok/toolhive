@@ -51,6 +51,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "mcp-run", "streamable-http", "e2e
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "streamable-http",
+					"--isolate-network=false",
 					"--enable-audit",
 					"osv").ExpectSuccess()
 				By("Waiting for the server to be running")
@@ -69,6 +70,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "mcp-run", "streamable-http", "e2e
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "streamable-http",
+					"--isolate-network=false",
 					"--enable-audit",
 					"osv").ExpectSuccess()
 
@@ -120,6 +122,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "mcp-run", "streamable-http", "e2e
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "streamable-http",
+					"--isolate-network=false",
 					"osv").ExpectSuccess()
 
 				By("Waiting for the server to be running")
@@ -175,6 +178,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "mcp-run", "streamable-http", "e2e
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "streamable-http",
+					"--isolate-network=false",
 					"osv").ExpectSuccess()
 				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred())
@@ -321,6 +325,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "mcp-run", "streamable-http", "e2e
 				e2e.NewTHVCommand(config, "run",
 					"--name", serverName,
 					"--transport", "streamable-http",
+					"--isolate-network=false",
 					"osv").ExpectSuccess()
 				err := e2e.WaitForMCPServer(config, serverName, 5*time.Minute)
 				Expect(err).ToNot(HaveOccurred())
@@ -464,6 +469,7 @@ var _ = Describe("OsvMcpServer", Label("mcp", "mcp-run", "streamable-http", "e2e
 					config, "run",
 					"--name", serverName,
 					"--transport", "streamable-http",
+					"--isolate-network=false",
 					"--foreground",
 					"osv",
 				)

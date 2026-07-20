@@ -13,9 +13,9 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/authz/authorizers"
 	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
 	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
@@ -131,17 +131,21 @@ func (rfw *ResponseFilteringWriter) Flush() {
 
 func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) error {
 	message, err := jsonrpc2.DecodeMessage(rawResponse)
-	if err != nil {
-		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rawResponse)
-		return err
-	}
-
 	response, ok := message.(*jsonrpc2.Response)
-	if !ok {
+	if err != nil || !ok {
+		// Not a clean Response. The disguised-result bypass (#5257) is
+		// transport-independent, so apply the same check here as on the SSE
+		// path: if a non-Response, undecodable, or batch frame still carries a
+		// result, fail closed rather than passing the smuggled list through.
+		if carriesResult(rawResponse) {
+			slog.Warn("JSON response carried a result outside a clean Response frame; dropping as a protocol violation",
+				"method", rfw.method)
+			return rfw.writeErrorResponse(jsonrpc2.ID{},
+				fmt.Errorf("dropped a frame carrying a result outside a clean Response"))
+		}
 		rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-		_, err := rfw.ResponseWriter.Write(rawResponse)
-		return err
+		_, werr := rfw.ResponseWriter.Write(rawResponse)
+		return werr
 	}
 
 	filteredResponse, err := rfw.filterListResponse(response)
@@ -159,7 +163,6 @@ func (rfw *ResponseFilteringWriter) processJSONResponse(rawResponse []byte) erro
 	return err
 }
 
-//nolint:gocyclo
 func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error {
 	// Note: this routine is adapted from the one in pkg/mcp/tool_filter.go.
 	// I don't see an obvious way to factor out the commonalities, so I'm
@@ -186,36 +189,11 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 
 		var written bool
 		if data, ok := bytes.CutPrefix(line, []byte("data:")); ok {
-			message, err := jsonrpc2.DecodeMessage(data)
-			if err != nil {
-				rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-				_, err := rfw.ResponseWriter.Write(rawResponse)
+			w, stop, err := rfw.writeSSEDataLine(data)
+			if stop {
 				return err
 			}
-
-			response, ok := message.(*jsonrpc2.Response)
-			if !ok {
-				rfw.ResponseWriter.WriteHeader(rfw.statusCode)
-				_, err := rfw.ResponseWriter.Write(rawResponse)
-				return err
-			}
-
-			filteredResponse, err := rfw.filterListResponse(response)
-			if err != nil {
-				return rfw.writeErrorResponse(response.ID, err)
-			}
-
-			filteredData, err := jsonrpc2.EncodeMessage(filteredResponse)
-			if err != nil {
-				return rfw.writeErrorResponse(response.ID, err)
-			}
-
-			_, err = rfw.ResponseWriter.Write([]byte("data: " + string(filteredData) + "\n"))
-			if err != nil {
-				return fmt.Errorf("%w: %w", errBug, err)
-			}
-
-			written = true
+			written = w
 		}
 
 		if !written {
@@ -244,6 +222,56 @@ func (rfw *ResponseFilteringWriter) processSSEResponse(rawResponse []byte) error
 	return nil
 }
 
+// writeSSEDataLine classifies a single SSE `data:` payload and writes the
+// filtered response when it is a clean Response. written reports whether the
+// caller should skip the raw passthrough for this line. stop reports that
+// processSSEResponse should return err immediately (an error response has
+// already been written on the filter/encode error paths).
+func (rfw *ResponseFilteringWriter) writeSSEDataLine(data []byte) (written, stop bool, err error) {
+	message, decodeErr := jsonrpc2.DecodeMessage(data)
+	response, isResponse := message.(*jsonrpc2.Response)
+	switch {
+	case isResponse:
+		filteredResponse, ferr := rfw.filterListResponse(response)
+		if ferr != nil {
+			return false, true, rfw.writeErrorResponse(response.ID, ferr)
+		}
+		filteredData, ferr := jsonrpc2.EncodeMessage(filteredResponse)
+		if ferr != nil {
+			return false, true, rfw.writeErrorResponse(response.ID, ferr)
+		}
+		// The caller writes linesep after this line, so do not append a
+		// terminator here. A hardcoded "\n" desyncs \r\n streams.
+		if _, werr := rfw.ResponseWriter.Write([]byte("data: " + string(filteredData))); werr != nil {
+			return false, true, fmt.Errorf("%w: %w", errBug, werr)
+		}
+		return true, false, nil
+	case carriesResult(data):
+		// The frame is not a clean Response but still carries a result. This
+		// covers a non-Response type (a request/notification frame smuggling a
+		// result), a decode error (missing or invalid jsonrpc tag, a response
+		// frame with no or a non-scalar id), and a batch array. All are
+		// upstream-controlled shapes that would otherwise fall through and leak
+		// the very list this filter scrubs (#5257). Fail closed and drop the line.
+		slog.Warn("SSE data line carried a result outside a clean Response frame; dropping as a protocol violation",
+			"method", rfw.method)
+		return true, false, nil
+	case decodeErr != nil:
+		// Genuinely undecodable and no smuggled result. Pass this line through
+		// unfiltered (this line only).
+		slog.Warn("SSE data line could not be decoded as JSON-RPC; passing through unfiltered",
+			"method", rfw.method, "error", decodeErr)
+		return false, false, nil
+	default:
+		// Genuine non-Response frame (e.g. an interleaved notifications/* message)
+		// with no result payload. Routine SSE traffic, so log at Debug to keep the
+		// suspicious branches above from being buried. Pass through this line only.
+		slog.Debug("SSE data line was not a JSON-RPC Response; passing through unfiltered",
+			"method", rfw.method)
+		return false, false, nil
+	}
+}
+
 // requiresResponseFiltering reports whether the method needs response filtering.
 // This covers the three MCP list operations and the optimizer's find_tool call,
 // whose response embeds a filtered tool list inside a CallToolResult.
@@ -252,6 +280,39 @@ func requiresResponseFiltering(method string) bool {
 		method == string(mcp.MethodPromptsList) ||
 		method == string(mcp.MethodResourcesList) ||
 		method == optimizerdec.FindToolName
+}
+
+// carriesResult reports whether a data payload contains a JSON-RPC "result"
+// field, either directly on an object or in any element of a batch array. A
+// frame that is not a clean Response (a request/notification smuggling a
+// result, a shape DecodeMessage rejects, or a batch array) but still carries a
+// result must not pass through: it would leak the list the filter exists to
+// scrub. See issue #5257.
+func carriesResult(data []byte) bool {
+	trimmed := bytes.TrimSpace(data)
+	if len(trimmed) == 0 {
+		return false
+	}
+	switch trimmed[0] {
+	case '{':
+		var probe struct {
+			Result json.RawMessage `json:"result"`
+		}
+		return json.Unmarshal(trimmed, &probe) == nil && probe.Result != nil
+	case '[':
+		var batch []struct {
+			Result json.RawMessage `json:"result"`
+		}
+		if json.Unmarshal(trimmed, &batch) != nil {
+			return false
+		}
+		for i := range batch {
+			if batch[i].Result != nil {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // filterListResponse filters the list response based on authorization policies

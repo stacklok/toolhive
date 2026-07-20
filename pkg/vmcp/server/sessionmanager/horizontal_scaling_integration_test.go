@@ -12,11 +12,12 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
-	mcpmcp "github.com/mark3labs/mcp-go/mcp"
-	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	mcpmcp "github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpserver "github.com/stacklok/toolhive-core/mcpcompat/server"
+	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/auth"
 	transportsession "github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -26,9 +27,6 @@ import (
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	sessiontypes "github.com/stacklok/toolhive/pkg/vmcp/session/types"
 )
-
-// hmacSecret is a fixed 32-byte secret used across all integration tests.
-var hmacSecret = []byte("test-hmac-secret-32bytes-exactly")
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -50,10 +48,10 @@ func newSharedRedisStorage(t *testing.T, mr *miniredis.Miniredis) transportsessi
 	t.Helper()
 	storage, err := transportsession.NewRedisSessionDataStorage(
 		context.Background(),
-		transportsession.RedisConfig{
-			Addr:      mr.Addr(),
-			KeyPrefix: "test:vmcp:session:",
+		tcredis.Config{
+			Addr: mr.Addr(),
 		},
+		"test:vmcp:session:",
 		time.Hour,
 	)
 	require.NoError(t, err)
@@ -62,9 +60,8 @@ func newSharedRedisStorage(t *testing.T, mr *miniredis.Miniredis) transportsessi
 }
 
 // newTestManagerWithSharedStorage creates a Manager backed by the given
-// DataStorage, a real session factory with the package-level hmacSecret, and
-// an ImmutableRegistry containing backends. Cleanup is registered via
-// t.Cleanup.
+// DataStorage, a real session factory, and an ImmutableRegistry containing
+// backends. Cleanup is registered via t.Cleanup.
 func newTestManagerWithSharedStorage(t *testing.T, storage transportsession.DataStorage, backends []*vmcp.Backend) *Manager {
 	t.Helper()
 	backendList := make([]vmcp.Backend, len(backends))
@@ -74,7 +71,6 @@ func newTestManagerWithSharedStorage(t *testing.T, storage transportsession.Data
 	registry := vmcp.NewImmutableRegistry(backendList)
 	factory := vmcpsession.NewSessionFactory(
 		newUnauthenticatedAuthRegistry(t),
-		vmcpsession.WithHMACSecret(hmacSecret),
 	)
 	sm, cleanup, err := New(storage, &FactoryConfig{Base: factory}, registry)
 	require.NoError(t, err)
@@ -189,7 +185,7 @@ func TestHorizontalScaling_CrossPodReconstruction(t *testing.T) {
 	smB := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
 
 	// GetMultiSession triggers cache miss → loadSession → RestoreSession from Redis.
-	sess, ok := smB.GetMultiSession(sessionID)
+	sess, ok := smB.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok, "pod B must reconstruct the session from Redis on cache miss")
 	require.NotNil(t, sess)
 
@@ -214,13 +210,26 @@ func TestHorizontalScaling_CrossPodHijackPrevention(t *testing.T) {
 	storage := newSharedRedisStorage(t, mr)
 	backend := startMCPBackend(t, "backend-alpha", "echo")
 
+	// Both alice and eve need Claims with iss+sub so the identity-binding
+	// decorator can extract their (iss, sub) pairs (Token is not used for binding
+	// in the #5306 model; Claims are the canonical source).
 	identity := &auth.Identity{
-		PrincipalInfo: auth.PrincipalInfo{Subject: "alice"},
-		Token:         "alice-bearer-token",
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "alice",
+			Claims: map[string]any{
+				"iss": "https://idp.example",
+				"sub": "alice",
+			},
+		},
 	}
 	wrongCaller := &auth.Identity{
-		PrincipalInfo: auth.PrincipalInfo{Subject: "eve"},
-		Token:         "eve-bearer-token",
+		PrincipalInfo: auth.PrincipalInfo{
+			Subject: "eve",
+			Claims: map[string]any{
+				"iss": "https://idp.example",
+				"sub": "eve",
+			},
+		},
 	}
 
 	// Pod A: create session bound to alice.
@@ -229,7 +238,7 @@ func TestHorizontalScaling_CrossPodHijackPrevention(t *testing.T) {
 
 	// Pod B: restore from Redis.
 	smB := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
-	sess, ok := smB.GetMultiSession(sessionID)
+	sess, ok := smB.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok, "session must be restorable on pod B")
 	require.NotNil(t, sess)
 
@@ -280,7 +289,7 @@ func TestHorizontalScaling_AllBackendsFailOnRestore(t *testing.T) {
 	// Use a fresh manager: its cache is empty, so GetMultiSession takes the
 	// restore path without needing to explicitly evict the session.
 	smReader := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backend})
-	sess, ok := smReader.GetMultiSession(sessionID)
+	sess, ok := smReader.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok, "GetMultiSession must return ok=true even when backends are unreachable")
 	require.NotNil(t, sess)
 	assert.Empty(t, sess.Tools(), "routing table must be empty when no backend reconnected")
@@ -310,7 +319,7 @@ func TestHorizontalScaling_BackendExpiry_SkipsExpiredOnRestore(t *testing.T) {
 	sessionID := createSession(t, smA, nil)
 
 	// Verify session A has tools from both backends before expiry.
-	sessA, ok := smA.GetMultiSession(sessionID)
+	sessA, ok := smA.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok)
 	toolNames := make(map[string]bool)
 	for _, tool := range sessA.Tools() {
@@ -327,7 +336,7 @@ func TestHorizontalScaling_BackendExpiry_SkipsExpiredOnRestore(t *testing.T) {
 	// (backendB is still running — we're testing that RestoreSession filters
 	// it out based on the updated Redis metadata, not because it's unreachable.)
 	smC := newTestManagerWithSharedStorage(t, storage, []*vmcp.Backend{backendA, backendB})
-	sessC, ok := smC.GetMultiSession(sessionID)
+	sessC, ok := smC.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok, "session must be restorable after NotifyBackendExpired")
 	require.NotNil(t, sessC)
 
@@ -370,11 +379,11 @@ func TestHorizontalScaling_InMemoryOnlyMode(t *testing.T) {
 	sessionID := createSession(t, smA, nil)
 
 	// Pod B must not be able to see pod A's session.
-	_, ok := smB.GetMultiSession(sessionID)
+	_, ok := smB.GetMultiSession(t.Context(), sessionID)
 	assert.False(t, ok, "in-memory-only: pod B must not see pod A's session")
 
 	// Single-pod usage on pod A must still work.
-	sess, ok := smA.GetMultiSession(sessionID)
+	sess, ok := smA.GetMultiSession(t.Context(), sessionID)
 	require.True(t, ok, "pod A must still serve its own session")
 	require.NotNil(t, sess)
 	assert.NotEmpty(t, sess.Tools(), "session on pod A must have tools")

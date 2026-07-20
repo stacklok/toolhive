@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	groupval "github.com/stacklok/toolhive-core/validation/group"
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // crdManager implements the Manager interface using Kubernetes CRDs
@@ -52,12 +52,12 @@ func (m *crdManager) Create(ctx context.Context, name string) error {
 	}
 
 	// Create the MCPGroup CRD
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: m.namespace,
 		},
-		Spec: mcpv1alpha1.MCPGroupSpec{},
+		Spec: mcpv1beta1.MCPGroupSpec{},
 	}
 
 	if err := m.k8sClient.Create(ctx, mcpGroup); err != nil {
@@ -70,7 +70,7 @@ func (m *crdManager) Create(ctx context.Context, name string) error {
 
 // Get retrieves a group by name.
 func (m *crdManager) Get(ctx context.Context, name string) (*Group, error) {
-	mcpGroup := &mcpv1alpha1.MCPGroup{}
+	mcpGroup := &mcpv1beta1.MCPGroup{}
 	err := m.k8sClient.Get(ctx, types.NamespacedName{
 		Name:      name,
 		Namespace: m.namespace,
@@ -88,7 +88,7 @@ func (m *crdManager) Get(ctx context.Context, name string) (*Group, error) {
 
 // List returns all groups.
 func (m *crdManager) List(ctx context.Context) ([]*Group, error) {
-	mcpGroupList := &mcpv1alpha1.MCPGroupList{}
+	mcpGroupList := &mcpv1beta1.MCPGroupList{}
 	err := m.k8sClient.List(ctx, mcpGroupList, client.InNamespace(m.namespace))
 	if err != nil {
 		return nil, fmt.Errorf("failed to list MCPGroups: %w", err)
@@ -106,7 +106,7 @@ func (m *crdManager) List(ctx context.Context) ([]*Group, error) {
 
 // Delete removes a group by name.
 func (m *crdManager) Delete(ctx context.Context, name string) error {
-	mcpGroup := &mcpv1alpha1.MCPGroup{
+	mcpGroup := &mcpv1beta1.MCPGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      name,
 			Namespace: m.namespace,
@@ -127,7 +127,7 @@ func (m *crdManager) Delete(ctx context.Context, name string) error {
 
 // Exists checks if a group with the specified name exists.
 func (m *crdManager) Exists(ctx context.Context, name string) (bool, error) {
-	mcpGroup := &mcpv1alpha1.MCPGroup{}
+	mcpGroup := &mcpv1beta1.MCPGroup{}
 	err := m.k8sClient.Get(ctx, types.NamespacedName{
 		Name:      name,
 		Namespace: m.namespace,
@@ -159,7 +159,7 @@ func (*crdManager) Update(context.Context, *Group) error {
 }
 
 // mcpGroupListToGroups converts an MCPGroupList to a slice of Groups
-func mcpGroupListToGroups(mcpGroupList *mcpv1alpha1.MCPGroupList) []*Group {
+func mcpGroupListToGroups(mcpGroupList *mcpv1beta1.MCPGroupList) []*Group {
 	groups := make([]*Group, 0, len(mcpGroupList.Items))
 	for i := range mcpGroupList.Items {
 		groups = append(groups, mcpGroupToGroup(&mcpGroupList.Items[i]))
@@ -168,7 +168,7 @@ func mcpGroupListToGroups(mcpGroupList *mcpv1alpha1.MCPGroupList) []*Group {
 }
 
 // mcpGroupToGroup converts an MCPGroup CRD to a Group
-func mcpGroupToGroup(mcpGroup *mcpv1alpha1.MCPGroup) *Group {
+func mcpGroupToGroup(mcpGroup *mcpv1beta1.MCPGroup) *Group {
 	// In Kubernetes, RegisteredClients is not applicable - always return empty slice
 	return &Group{
 		Name:              mcpGroup.Name,

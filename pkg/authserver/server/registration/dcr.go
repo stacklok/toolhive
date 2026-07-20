@@ -18,11 +18,38 @@
 package registration
 
 import (
+	"fmt"
 	"slices"
-	"strings"
 
-	"github.com/stacklok/toolhive/pkg/oauth"
+	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
+
+// ValidateScopeSubset checks that every scope in subset is also present in
+// superset, returning an error that names fieldName and the offending scope.
+//
+// Shared across the layers that validate baseline-scope configuration so the
+// error message format is identical wherever the violation is caught (a
+// caller using YAML-loaded config and a caller constructing config
+// programmatically both see the same wording).
+//
+// fieldName should be the wire-format or display name of the field being
+// validated (e.g. "baseline_client_scopes"). It is embedded verbatim in the
+// returned error.
+func ValidateScopeSubset(subset, superset []string, fieldName string) error {
+	if len(subset) == 0 {
+		return nil
+	}
+	supported := make(map[string]bool, len(superset))
+	for _, s := range superset {
+		supported[s] = true
+	}
+	for _, s := range subset {
+		if !supported[s] {
+			return fmt.Errorf("%s contains %q which is not in scopes_supported", fieldName, s)
+		}
+	}
+	return nil
+}
 
 // DCR error codes per RFC 7591 Section 3.2.2
 const (
@@ -42,65 +69,13 @@ const (
 
 	// MaxClientNameLength is the maximum allowed length for a client name.
 	MaxClientNameLength = 256
+
+	// MaxSoftwareIDLength is the maximum allowed length for a software_id
+	// value. RFC 7591 does not mandate an upper bound, so we reuse the
+	// client_name cap for consistency — a software_id is a similar-purpose
+	// human-oriented identifier and the same ballpark DoS concerns apply.
+	MaxSoftwareIDLength = 256
 )
-
-// DCRRequest represents an OAuth 2.0 Dynamic Client Registration request
-// per RFC 7591 Section 2.
-type DCRRequest struct {
-	// RedirectURIs is an array of redirection URIs for the client.
-	// Required for public clients.
-	RedirectURIs []string `json:"redirect_uris"`
-
-	// ClientName is a human-readable name for the client.
-	ClientName string `json:"client_name,omitempty"`
-
-	// TokenEndpointAuthMethod is the requested authentication method for the token endpoint.
-	// For public clients, this must be "none".
-	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method,omitempty"`
-
-	// GrantTypes is an array of OAuth 2.0 grant types the client may use.
-	// Defaults to ["authorization_code"] if not specified.
-	GrantTypes []string `json:"grant_types,omitempty"`
-
-	// ResponseTypes is an array of OAuth 2.0 response types the client may use.
-	// Defaults to ["code"] if not specified.
-	ResponseTypes []string `json:"response_types,omitempty"`
-
-	// Scope is a space-separated list of OAuth 2.0 scope values the client may use.
-	// If not specified, defaults to the server's default scopes.
-	// All requested scopes must be supported by the server.
-	Scope string `json:"scope,omitempty"`
-}
-
-// DCRResponse represents a successful OAuth 2.0 Dynamic Client Registration
-// response per RFC 7591 Section 3.2.1.
-type DCRResponse struct {
-	// ClientID is the unique identifier for the client.
-	ClientID string `json:"client_id"`
-
-	// ClientIDIssuedAt is the time at which the client identifier was issued,
-	// as a Unix timestamp.
-	ClientIDIssuedAt int64 `json:"client_id_issued_at,omitempty"`
-
-	// RedirectURIs is an array of redirection URIs for the client.
-	RedirectURIs []string `json:"redirect_uris"`
-
-	// ClientName is a human-readable name for the client.
-	ClientName string `json:"client_name,omitempty"`
-
-	// TokenEndpointAuthMethod is the authentication method for the token endpoint.
-	TokenEndpointAuthMethod string `json:"token_endpoint_auth_method"`
-
-	// GrantTypes is an array of OAuth 2.0 grant types the client may use.
-	GrantTypes []string `json:"grant_types"`
-
-	// ResponseTypes is an array of OAuth 2.0 response types the client may use.
-	ResponseTypes []string `json:"response_types"`
-
-	// Scope is a space-separated list of OAuth 2.0 scope values the client may use.
-	// Per RFC 7591 Section 3.2, this tells the client what scopes it was granted.
-	Scope string `json:"scope,omitempty"`
-}
 
 // DCRError represents an OAuth 2.0 Dynamic Client Registration error
 // response per RFC 7591 Section 3.2.2.
@@ -132,7 +107,13 @@ var allowedResponseTypes = map[string]bool{
 // ValidateDCRRequest validates a DCR request according to RFC 7591
 // and the server's security policy (loopback-only public clients).
 // Returns the validated request with defaults applied, or an error.
-func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
+//
+// The validated request does NOT carry the requested scopes — scope
+// validation against the server's supported set is a separate step,
+// handled by ValidateScopes using the caller's policy inputs.
+func ValidateDCRRequest(
+	req *oauthproto.DynamicClientRegistrationRequest,
+) (*oauthproto.DynamicClientRegistrationRequest, *DCRError) {
 	// 1. Validate redirect_uris - required
 	if len(req.RedirectURIs) == 0 {
 		return nil, &DCRError{
@@ -164,6 +145,15 @@ func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
 		}
 	}
 
+	// 4a. Validate software_id: length cap + printable-ASCII charset.
+	// RFC 7591 does not mandate an upper bound or a character class for
+	// software_id, but since we capture the value in audit logs we want a
+	// predictable shape and a hard cap against DoS — a caller sending
+	// multi-MB strings would slip past only the 64 KiB body cap otherwise.
+	if dcrErr := validateSoftwareID(req.SoftwareID); dcrErr != nil {
+		return nil, dcrErr
+	}
+
 	// 5. Validate/default token_endpoint_auth_method
 	authMethod := req.TokenEndpointAuthMethod
 	if authMethod == "" {
@@ -189,13 +179,42 @@ func ValidateDCRRequest(req *DCRRequest) (*DCRRequest, *DCRError) {
 	}
 
 	// Return validated request with defaults applied
-	return &DCRRequest{
+	return &oauthproto.DynamicClientRegistrationRequest{
 		RedirectURIs:            req.RedirectURIs,
 		ClientName:              req.ClientName,
 		TokenEndpointAuthMethod: authMethod,
 		GrantTypes:              grantTypes,
 		ResponseTypes:           responseTypes,
+		SoftwareID:              req.SoftwareID,
 	}, nil
+}
+
+// validateSoftwareID enforces the length cap and printable-ASCII charset
+// for a DCR request's software_id. An empty value is accepted (the field
+// is optional per RFC 7591).
+func validateSoftwareID(softwareID string) *DCRError {
+	if softwareID == "" {
+		return nil
+	}
+	if len(softwareID) > MaxSoftwareIDLength {
+		return &DCRError{
+			Error:            DCRErrorInvalidClientMetadata,
+			ErrorDescription: "software_id too long (maximum 256 characters)",
+		}
+	}
+	// Allow printable ASCII (0x20..0x7E) only. Control characters and
+	// non-ASCII input are rejected: we log this value and want a
+	// predictable on-disk representation regardless of handler choice.
+	for i := 0; i < len(softwareID); i++ {
+		c := softwareID[i]
+		if c < 0x20 || c > 0x7E {
+			return &DCRError{
+				Error:            DCRErrorInvalidClientMetadata,
+				ErrorDescription: "software_id must contain only printable ASCII characters",
+			}
+		}
+	}
+	return nil
 }
 
 func validateGrantTypes(grantTypes []string) ([]string, *DCRError) {
@@ -249,7 +268,7 @@ func validateResponseTypes(responseTypes []string) ([]string, *DCRError) {
 // - HTTP is only allowed for loopback addresses (127.0.0.1, [::1], localhost)
 // - Private-use URI schemes (e.g., cursor://, vscode://) are allowed for native apps
 func ValidateRedirectURI(uri string) *DCRError {
-	if err := oauth.ValidateRedirectURI(uri, oauth.RedirectURIPolicyAllowPrivateSchemes); err != nil {
+	if err := oauthproto.ValidateRedirectURI(uri, oauthproto.RedirectURIPolicyAllowPrivateSchemes); err != nil {
 		return &DCRError{
 			Error:            DCRErrorInvalidRedirectURI,
 			ErrorDescription: err.Error(),
@@ -258,23 +277,28 @@ func ValidateRedirectURI(uri string) *DCRError {
 	return nil
 }
 
-// ValidateScopes validates that all requested scopes are in the allowed set.
-// Returns the validated scopes (or defaults if empty) and any error.
-// This enforces server-side scope restrictions per RFC 7591 Section 2.
-func ValidateScopes(requestedScope string, allowedScopes []string) ([]string, *DCRError) {
+// ValidateScopes validates a slice of already-parsed scope tokens against
+// the server's allowed set per RFC 7591 §2.
+//
+//   - Empty/nil input falls back to DefaultScopes (which must itself be a
+//     subset of allowedScopes; otherwise the call returns an error).
+//   - Each requested scope must appear in allowedScopes; otherwise returns
+//     invalid_client_metadata.
+//   - Duplicates in the input are tolerated and deduplicated per RFC 6749
+//     §3.3 (scope is a set of case-sensitive strings).
+func ValidateScopes(requestedScopes, allowedScopes []string) ([]string, *DCRError) {
 	// Build allowed scope set for O(1) lookup
 	allowed := make(map[string]bool, len(allowedScopes))
 	for _, s := range allowedScopes {
 		allowed[s] = true
 	}
 
-	// Parse space-separated scope string per RFC 6749 Section 3.3.
-	// Deduplicate to ensure each scope appears at most once (RFC 6749
-	// defines scope as a set of case-sensitive strings).
+	// Deduplicate while validating each requested scope against the
+	// allowed set.
 	var scopes []string
-	if requestedScope != "" {
+	if len(requestedScopes) > 0 {
 		seen := make(map[string]bool)
-		for _, s := range strings.Fields(requestedScope) {
+		for _, s := range requestedScopes {
 			if !allowed[s] {
 				return nil, &DCRError{
 					Error:            DCRErrorInvalidClientMetadata,
@@ -304,7 +328,46 @@ func ValidateScopes(requestedScope string, allowedScopes []string) ([]string, *D
 	return scopes, nil
 }
 
-// FormatScopes formats a scope slice as a space-separated string.
-func FormatScopes(scopes []string) string {
-	return strings.Join(scopes, " ")
+// UnionScopes returns the union of requested and baseline scopes, preserving
+// the order of requested first, then appending any baseline scopes not already
+// present. Duplicates are removed. Returns nil when the result is empty.
+//
+// Both inputs must already be validated by the caller. UnionScopes does not
+// filter empty strings or validate scope syntax — it only deduplicates and
+// merges in stable order.
+func UnionScopes(requested, baseline []string) []string {
+	seen := make(map[string]bool, len(requested)+len(baseline))
+	out := make([]string, 0, len(requested)+len(baseline))
+	for _, s := range requested {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	for _, s := range baseline {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// ValidatePublicGrantTypes validates the grant_types for a public OAuth client,
+// applying the same rules as DCR: authorization_code must be present, and all
+// declared values must be in the allowed set. Returns the validated slice (with
+// defaults applied when nil/empty) or a *DCRError on violation.
+func ValidatePublicGrantTypes(grantTypes []string) ([]string, *DCRError) {
+	return validateGrantTypes(grantTypes)
+}
+
+// ValidatePublicResponseTypes validates the response_types for a public OAuth
+// client, applying the same rules as DCR: code must be present and all declared
+// values must be in the allowed set. Returns the validated slice (with defaults
+// applied when nil/empty) or a *DCRError on violation.
+func ValidatePublicResponseTypes(responseTypes []string) ([]string, *DCRError) {
+	return validateResponseTypes(responseTypes)
 }

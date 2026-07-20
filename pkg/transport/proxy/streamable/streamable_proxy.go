@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"strings"
@@ -21,7 +22,10 @@ import (
 	"github.com/google/uuid"
 	"golang.org/x/exp/jsonrpc2"
 
+	"github.com/stacklok/toolhive/pkg/auth"
+	"github.com/stacklok/toolhive/pkg/bodylimit"
 	"github.com/stacklok/toolhive/pkg/healthcheck"
+	"github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/session"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -37,6 +41,12 @@ const (
 	// proxyRequestTimeoutEnv is the environment variable that overrides the
 	// default proxy request timeout.
 	proxyRequestTimeoutEnv = "TOOLHIVE_PROXY_REQUEST_TIMEOUT"
+
+	// defaultReadTimeout bounds reading the entire request (headers + body) on
+	// the proxy http.Server, mitigating slow-upload connection exhaustion. It
+	// does not affect responses, so SSE response streams are unaffected. Matches
+	// the vMCP server default.
+	defaultReadTimeout = 30 * time.Second
 )
 
 // HTTPProxy implements a proxy for streamable HTTP transport.
@@ -44,6 +54,7 @@ type HTTPProxy struct {
 	host              string
 	port              int
 	requestTimeout    time.Duration
+	readTimeout       time.Duration
 	shutdownCh        chan struct{}
 	prometheusHandler http.Handler
 	middlewares       []types.NamedMiddleware
@@ -56,9 +67,29 @@ type HTTPProxy struct {
 	// Session manager for streamable HTTP sessions
 	sessionManager *session.Manager
 
-	// Waiters keyed by JSON-encoded request ID -> one-shot channel for response delivery
+	// sessionTTL is the resolved inactivity timeout for the session manager.
+	// Defaults to session.DefaultSessionTTL; overridable via WithSessionTTL.
+	sessionTTL time.Duration
+
+	// sessionStorage is the optional custom storage backend for the session manager.
+	// When nil, in-memory LocalStorage is used. Set via WithSessionStorage.
+	sessionStorage session.Storage
+
+	// authInfoHandler is the optional RFC 9728 OAuth protected resource discovery handler.
+	// When nil, /.well-known/ returns a clean JSON 404. Set via WithAuthInfoHandler.
+	authInfoHandler http.Handler
+
+	// prefixHandlers contains additional HTTP handlers mounted outside the middleware chain.
+	// Keys are URL path prefixes. Set via WithPrefixHandlers.
+	prefixHandlers map[string]http.Handler
+
+	// Waiters keyed by compositeKey(sessID, idKey) -> one-shot channel for response delivery.
+	// The composite key MUST be unique per concurrent request; sharing it across requests
+	// (e.g. with sessID="" for sessionless requests) silently overwrites entries and crosses
+	// response payloads between unrelated clients. See resolveSessionForRequest.
 	waiters sync.Map // map[string]chan jsonrpc2.Message
-	// Map of compositeKey(sessID|idKey) -> original client JSON-RPC ID to restore before replying
+	// Keyed by the same compositeKey(sessID, idKey); stores the original client JSON-RPC ID
+	// to restore before replying. Same uniqueness requirement as `waiters`.
 	idRestore sync.Map // map[string]jsonrpc2.ID
 
 	// Health checker
@@ -78,11 +109,47 @@ func WithSessionStorage(storage session.Storage) Option {
 		if storage == nil {
 			return
 		}
-		if p.sessionManager != nil {
-			_ = p.sessionManager.Stop()
+		p.sessionStorage = storage
+	}
+}
+
+// WithSessionTTL overrides the session inactivity timeout used by this proxy.
+// Zero or negative values are ignored so the constructor's default is preserved.
+func WithSessionTTL(ttl time.Duration) Option {
+	return func(p *HTTPProxy) {
+		if ttl <= 0 {
+			return
 		}
-		sFactory := func(id string) session.Session { return session.NewStreamableSession(id) }
-		p.sessionManager = session.NewManagerWithStorage(session.DefaultSessionTTL, sFactory, storage)
+		p.sessionTTL = ttl
+	}
+}
+
+// WithReadTimeout overrides http.Server.ReadTimeout for this proxy, which bounds
+// reading the entire request (headers + body). Zero or negative values are
+// ignored so the constructor's default (defaultReadTimeout) is preserved.
+func WithReadTimeout(d time.Duration) Option {
+	return func(p *HTTPProxy) {
+		if d <= 0 {
+			return
+		}
+		p.readTimeout = d
+	}
+}
+
+// WithAuthInfoHandler sets the handler for RFC 9728 OAuth protected resource discovery.
+// When set, the handler is mounted at /.well-known/ outside the middleware chain.
+// When nil, /.well-known/ returns a clean JSON 404 so OAuth clients parse it cleanly.
+func WithAuthInfoHandler(h http.Handler) Option {
+	return func(p *HTTPProxy) {
+		p.authInfoHandler = h
+	}
+}
+
+// WithPrefixHandlers registers additional HTTP handlers mounted before the MCP endpoint.
+// These are mounted outside the middleware chain (RFC 9728, embedded auth server routes).
+func WithPrefixHandlers(handlers map[string]http.Handler) Option {
+	return func(p *HTTPProxy) {
+		p.prefixHandlers = maps.Clone(handlers)
 	}
 }
 
@@ -101,16 +168,24 @@ func NewHTTPProxy(
 		host:              host,
 		port:              port,
 		requestTimeout:    resolveRequestTimeout(),
+		readTimeout:       defaultReadTimeout,
 		shutdownCh:        make(chan struct{}),
 		prometheusHandler: prometheusHandler,
 		middlewares:       middlewares,
 		messageCh:         make(chan jsonrpc2.Message, 100),
 		responseCh:        make(chan jsonrpc2.Message, 100),
-		sessionManager:    session.NewManager(session.DefaultSessionTTL, sFactory),
+		sessionTTL:        session.DefaultSessionTTL,
 	}
 
 	for _, opt := range opts {
 		opt(proxy)
+	}
+
+	// Construct the session manager once, after options have resolved sessionTTL and sessionStorage.
+	if proxy.sessionStorage != nil {
+		proxy.sessionManager = session.NewManagerWithStorage(proxy.sessionTTL, sFactory, proxy.sessionStorage)
+	} else {
+		proxy.sessionManager = session.NewManager(proxy.sessionTTL, sFactory)
 	}
 
 	// Create health checker without MCP pinger
@@ -134,10 +209,26 @@ func (p *HTTPProxy) Start(_ context.Context) error {
 		mux.Handle("/metrics", p.prometheusHandler)
 	}
 
+	// Mount prefix handlers (e.g. embedded auth server routes) outside the middleware chain.
+	// RFC 9728 requires discovery endpoints to be reachable without authentication.
+	for prefix, h := range p.prefixHandlers {
+		mux.Handle(prefix, h)
+		slog.Debug("mounted prefix handler", "prefix", prefix)
+	}
+
+	// Mount RFC 9728 OAuth protected resource discovery endpoint (no middlewares).
+	// Always register so OAuth discovery gets a clean JSON 404 when auth is off.
+	wellKnownHandler := auth.NewWellKnownHandler(p.authInfoHandler)
+	mux.Handle("/.well-known/", wellKnownHandler)
+	if p.authInfoHandler != nil {
+		slog.Debug("rfc 9728 OAuth discovery endpoint enabled at /.well-known/oauth-protected-resource")
+	}
+
 	p.server = &http.Server{
 		Addr:              fmt.Sprintf("%s:%d", p.host, p.port),
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       p.readTimeout,
 	}
 
 	// Route container responses to matching waiter channels
@@ -276,6 +367,13 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 	// Read request body
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
+		// A body that exceeds the configured limit without a Content-Length
+		// (e.g. chunked) trips http.MaxBytesReader here rather than at the
+		// early Content-Length check. Surface it as 413, not 500.
+		if bodylimit.IsRequestTooLarge(err) {
+			writeHTTPError(w, http.StatusRequestEntityTooLarge, "Request Entity Too Large")
+			return
+		}
 		writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Error reading request body: %v", err))
 		return
 	}
@@ -296,7 +394,7 @@ func (p *HTTPProxy) handlePost(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Notifications or client responses are accepted and forwarded (202)
-	if p.handleNotificationOrClientResponse(w, msg) {
+	if p.handleNotificationOrClientResponse(w, r.Header.Get("Mcp-Session-Id"), msg) {
 		return
 	}
 
@@ -619,17 +717,30 @@ func (p *HTTPProxy) ensureSession(id string) error {
 	return p.sessionManager.AddWithID(id)
 }
 
-// resolveSessionForBatch resolves or creates an ephemeral session for batch POSTs.
+// resolveSessionForBatch resolves the session for batch POSTs.
 // Writes appropriate HTTP errors and returns an error when handling should stop.
+//
+// Batches don't exist under the Modern revision, so this path is Legacy-only
+// by construction; Modern message-shape enforcement (rejecting a batch outright)
+// is deferred.
+//
+// Sessionless POSTs receive a per-request UUID used solely as an in-process
+// routing token. Sessionless routing tokens MUST be unique per request:
+// sharing one (e.g. the empty string) across concurrent sessionless requests
+// causes waiters/idRestore overwrites in the in-process sync.Maps, which leaks
+// one client's response payload to another (with the JSON-RPC id rewritten to
+// the receiver's). This is a confidentiality bug, not a performance issue --
+// do not collapse the token. The UUID is not registered with sessionManager,
+// so no session object is created in any storage backend.
 func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Request) (string, error) {
 	sessID := r.Header.Get("Mcp-Session-Id")
 	if sessID == "" {
-		sessID = uuid.New().String()
-		if err := p.ensureSession(sessID); err != nil {
-			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create session: %v", err))
-			return "", err
+		token, err := uuid.NewRandom()
+		if err != nil {
+			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate routing token: %v", err))
+			return "", fmt.Errorf("generate routing token: %w", err)
 		}
-		return sessID, nil
+		return token.String(), nil
 	}
 	if _, ok := p.sessionManager.Get(sessID); !ok {
 		session.WriteNotFound(w, nil)
@@ -639,20 +750,68 @@ func (p *HTTPProxy) resolveSessionForBatch(w http.ResponseWriter, r *http.Reques
 }
 
 // resolveSessionForRequest resolves session rules for a single JSON-RPC request.
-// On initialize, assigns session if missing and returns setSessionHeader=true.
-// For other methods, allows optional session by creating ephemeral (no header set).
+//
+// It first classifies the request as Modern or Legacy MCP (mcp.ClassifyRevision).
+// A classification error is rejected outright with an HTTP 400 JSON-RPC error
+// response. A Modern request is always sessionless: it gets a fresh per-request
+// routing token and never touches sessionManager, regardless of any
+// Mcp-Session-Id header it carries (see the confidentiality note below). A
+// Legacy request falls through to the existing session rules: on initialize,
+// assigns a new session ID if none is provided and returns setSessionHeader=true;
+// a provided but unknown session ID returns 404.
+//
+// Sessionless requests (both the Modern branch and Legacy's sessionless
+// non-initialize branch) receive a per-request UUID used solely as an
+// in-process routing token (not registered with sessionManager). Sessionless
+// routing tokens MUST be unique per request: sharing one (e.g. the empty string,
+// or a stale/foreign Mcp-Session-Id) across concurrent sessionless requests with
+// the same JSON-RPC id collapses them onto the same compositeKey(sessID, idKey)
+// and overwrites entries in the waiters / idRestore sync.Maps, leaking one
+// client's response payload to another. This is a confidentiality bug, not a
+// performance issue -- do not collapse the token, and do not let a Modern
+// request fall through to the session-lookup path below.
+//
 // Writes HTTP errors on failure and returns error to stop handling.
 func (p *HTTPProxy) resolveSessionForRequest(
 	w http.ResponseWriter,
 	r *http.Request,
 	req *jsonrpc2.Request,
 ) (string, bool, error) {
+	// Classification/routing here applies only to the single id-bearing request
+	// path; the batch and notification/client-response paths are Legacy-only by
+	// construction, with Modern message-shape enforcement deferred.
+	meta := mcp.ExtractMeta(req.Params)
+	protoHeader := r.Header.Get("MCP-Protocol-Version")
+	rev, err := mcp.ClassifyRevision(req.Method, meta, protoHeader)
+	if err != nil {
+		writeClassificationError(w, req.ID.Raw(), err)
+		return "", false, err
+	}
+
+	if rev == mcp.RevisionModern {
+		// Modern is stateless: mint a fresh routing token unconditionally and
+		// ignore any client-supplied Mcp-Session-Id. Never fall through to the
+		// session-lookup path below with it -- see the confidentiality note
+		// in this function's doc comment.
+		token, err := uuid.NewRandom()
+		if err != nil {
+			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate routing token: %v", err))
+			return "", false, fmt.Errorf("generate routing token: %w", err)
+		}
+		return token.String(), false, nil
+	}
+
 	var setSessionHeader bool
 	sessID := r.Header.Get("Mcp-Session-Id")
 
 	if req.Method == "initialize" {
 		if sessID == "" {
-			sessID = uuid.New().String()
+			newID, err := uuid.NewRandom()
+			if err != nil {
+				writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate session ID: %v", err))
+				return "", false, fmt.Errorf("generate session ID: %w", err)
+			}
+			sessID = newID.String()
 			setSessionHeader = true
 		}
 		if err := p.ensureSession(sessID); err != nil {
@@ -662,22 +821,67 @@ func (p *HTTPProxy) resolveSessionForRequest(
 		return sessID, setSessionHeader, nil
 	}
 
-	// Non-initialize path: sessions are optional; create ephemeral if missing
+	// Sessionless non-initialize: generate a per-request routing token.
+	// setSessionHeader stays false so the client never sees this UUID and the
+	// next request remains sessionless.
 	if sessID == "" {
-		sessID = uuid.New().String()
-		if err := p.ensureSession(sessID); err != nil {
-			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to create session: %v", err))
-			return "", false, err
+		token, err := uuid.NewRandom()
+		if err != nil {
+			writeHTTPError(w, http.StatusInternalServerError, fmt.Sprintf("Failed to generate routing token: %v", err))
+			return "", false, fmt.Errorf("generate routing token: %w", err)
 		}
-		return sessID, false, nil
+		return token.String(), false, nil
 	}
 
-	// If session is provided, ensure it exists
+	// Session ID provided but not found: reject with 404.
 	if _, ok := p.sessionManager.Get(sessID); !ok {
 		session.WriteNotFound(w, req.ID.Raw())
 		return "", false, fmt.Errorf("session not found")
 	}
 	return sessID, false, nil
+}
+
+// writeClassificationError renders an mcp.ClassifyRevision error as an HTTP 400
+// JSON-RPC error response, modeled on session.NotFoundBody/WriteNotFound: the
+// body is marshaled first (with a hand-crafted fallback on marshal failure) so
+// headers and status are only written once a valid body is ready.
+// It uses the error's Code(), Error() message, and Data() (when non-empty) if
+// the error implements mcp.CodedError, falling back to the standard JSON-RPC
+// Invalid Params code otherwise -- a fallback that is currently unreachable,
+// since every error ClassifyRevision returns implements mcp.CodedError.
+func writeClassificationError(w http.ResponseWriter, requestID any, err error) {
+	code := mcp.CodeInvalidParams
+	var coded mcp.CodedError
+	var data map[string]any
+	if errors.As(err, &coded) {
+		code = coded.Code()
+		data = coded.Data()
+	}
+
+	errBody := map[string]any{
+		"code":    code,
+		"message": err.Error(),
+	}
+	if len(data) > 0 {
+		errBody["data"] = data
+	}
+	resp := map[string]any{
+		"jsonrpc": "2.0",
+		"error":   errBody,
+		"id":      requestID,
+	}
+
+	body, marshalErr := json.Marshal(resp)
+	if marshalErr != nil {
+		// This should never happen with simple map types, but return a
+		// hand-crafted fallback to guarantee a valid JSON-RPC error.
+		body = []byte(`{"jsonrpc":"2.0","error":{"code":-32602,"message":"Invalid params"},"id":null}`)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusBadRequest)
+	//nolint:gosec // G104: writing a JSON-RPC error response to an HTTP client
+	_, _ = w.Write(body)
 }
 
 func isBatch(body []byte) bool {
@@ -708,8 +912,14 @@ func decodeJSONRPCMessage(w http.ResponseWriter, body []byte) (jsonrpc2.Message,
 	return msg, true
 }
 
-func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, msg jsonrpc2.Message) bool {
+// handleNotificationOrClientResponse handles notifications and client responses
+// as Legacy today; Modern-aware handling of this path is deferred.
+func (p *HTTPProxy) handleNotificationOrClientResponse(w http.ResponseWriter, sessID string, msg jsonrpc2.Message) bool {
 	if isNotification(msg) || (func() bool { _, ok := msg.(*jsonrpc2.Response); return ok })() {
+		// Refresh TTL so a client sending only notifications doesn't get evicted.
+		if sessID != "" {
+			p.sessionManager.Get(sessID)
+		}
 		if err := p.SendMessageToDestination(msg); err != nil {
 			slog.Error("failed to send message to destination", "error", err)
 		}

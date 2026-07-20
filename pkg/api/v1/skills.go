@@ -85,8 +85,13 @@ func (s *SkillsRoutes) listSkills(w http.ResponseWriter, r *http.Request) error 
 //	@Success		201		{object}	installSkillResponse
 //	@Header			201		{string}	Location	"URI of the installed skill resource"
 //	@Failure		400		{string}	string		"Bad Request"
+//	@Failure		401		{string}	string		"Unauthorized (registry refused credentials)"
+//	@Failure		404		{string}	string		"Not Found (artifact not present in registry)"
 //	@Failure		409		{string}	string		"Conflict"
+//	@Failure		429		{string}	string		"Too Many Requests (registry rate limit)"
 //	@Failure		500		{string}	string		"Internal Server Error"
+//	@Failure		502		{string}	string		"Bad Gateway (upstream registry failure)"
+//	@Failure		504		{string}	string		"Gateway Timeout (upstream pull timed out)"
 //	@Router			/api/v1beta/skills [post]
 func (s *SkillsRoutes) installSkill(w http.ResponseWriter, r *http.Request) error {
 	var req installSkillRequest
@@ -334,8 +339,12 @@ func (s *SkillsRoutes) deleteBuild(w http.ResponseWriter, r *http.Request) error
 //	@Param			ref	query		string	true	"OCI reference or local build tag"
 //	@Success		200	{object}	skills.SkillContent
 //	@Failure		400	{string}	string	"Bad Request"
-//	@Failure		502	{string}	string	"Bad Gateway"
+//	@Failure		401	{string}	string	"Unauthorized (registry refused credentials)"
+//	@Failure		404	{string}	string	"Not Found (artifact not present in registry)"
+//	@Failure		429	{string}	string	"Too Many Requests (registry rate limit)"
 //	@Failure		500	{string}	string	"Internal Server Error"
+//	@Failure		502	{string}	string	"Bad Gateway (upstream registry or git resolver failure)"
+//	@Failure		504	{string}	string	"Gateway Timeout (upstream pull timed out)"
 //	@Router			/api/v1beta/skills/content [get]
 func (s *SkillsRoutes) getSkillContent(w http.ResponseWriter, r *http.Request) error {
 	ref := r.URL.Query().Get("ref")

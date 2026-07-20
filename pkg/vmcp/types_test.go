@@ -12,6 +12,7 @@ import (
 )
 
 const testStatusUnavailable = "unavailable"
+const testStatusUnauthenticated = "unauthenticated"
 
 func TestBackendHealthStatus_ToCRDStatus(t *testing.T) {
 	t.Parallel()
@@ -37,9 +38,9 @@ func TestBackendHealthStatus_ToCRDStatus(t *testing.T) {
 			expected: testStatusUnavailable,
 		},
 		{
-			name:     "unauthenticated maps to unavailable",
+			name:     "unauthenticated maps to unauthenticated",
 			status:   BackendUnauthenticated,
-			expected: testStatusUnavailable,
+			expected: testStatusUnauthenticated,
 		},
 		{
 			name:     "unknown maps to unknown",
@@ -83,10 +84,11 @@ func TestBackendHealthStatus_ToCRDStatus_AllHealthStatusesCovered(t *testing.T) 
 
 	// Verify each status maps to a valid CRD status
 	validCRDStatuses := map[string]bool{
-		"ready":               true,
-		"degraded":            true,
-		testStatusUnavailable: true,
-		"unknown":             true,
+		"ready":                   true,
+		"degraded":                true,
+		testStatusUnavailable:     true,
+		testStatusUnauthenticated: true,
+		"unknown":                 true,
 	}
 
 	for _, status := range allStatuses {

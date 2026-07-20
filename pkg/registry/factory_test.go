@@ -4,7 +4,6 @@
 package registry
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -26,35 +25,34 @@ func resetGlobalState(t *testing.T) {
 	})
 }
 
-// writeTempRegistryJSON writes a legacy-format registry JSON file to dir and
-// returns its path. serverName is used as the only server key.
+// writeTempRegistryJSON writes an upstream-format registry JSON file to dir and
+// returns its path. serverName is used as the upstream server name.
 func writeTempRegistryJSON(t *testing.T, dir, serverName string) string {
 	t.Helper()
 
-	type serverEntry struct {
-		Image       string `json:"image"`
-		Description string `json:"description"`
-	}
-	type registryFile struct {
-		Version     string                 `json:"version"`
-		LastUpdated string                 `json:"last_updated"`
-		Servers     map[string]serverEntry `json:"servers"`
-	}
-
-	data, err := json.Marshal(registryFile{
-		Version:     "1.0.0",
-		LastUpdated: "2025-01-01T00:00:00Z",
-		Servers: map[string]serverEntry{
-			serverName: {
-				Image:       "enterprise/server:latest",
-				Description: "Enterprise test server",
-			},
-		},
-	})
-	require.NoError(t, err)
+	body := `{
+		"$schema": "https://example.com/schema.json",
+		"version": "1.0.0",
+		"meta": {"last_updated": "2025-01-01T00:00:00Z"},
+		"data": {
+			"servers": [
+				{
+					"name": "` + serverName + `",
+					"description": "Enterprise test server",
+					"packages": [
+						{
+							"registryType": "oci",
+							"identifier": "enterprise/server:latest",
+							"transport": {"type": "stdio"}
+						}
+					]
+				}
+			]
+		}
+	}`
 
 	registryPath := filepath.Join(dir, "registry.json")
-	require.NoError(t, os.WriteFile(registryPath, data, 0600))
+	require.NoError(t, os.WriteFile(registryPath, []byte(body), 0600))
 	return registryPath
 }
 

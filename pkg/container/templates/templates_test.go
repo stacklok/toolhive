@@ -348,6 +348,81 @@ func TestGetDockerfileTemplate(t *testing.T) {
 			wantNotContains: nil,
 			wantErr:         false,
 		},
+		{
+			// Okta MCP server needs a non-default keyring backend at container
+			// startup, since the default backend requires a desktop session.
+			name:          "UVX transport with RuntimeEnv",
+			transportType: TransportTypeUVX,
+			data: TemplateData{
+				MCPPackage: "okta-mcp-server",
+				RuntimeConfig: &RuntimeConfig{
+					BuilderImage: "python:3.14-slim",
+					RuntimeEnv: map[string]string{
+						"PYTHON_KEYRING_BACKEND": "keyrings.alt.file.PlaintextKeyring",
+					},
+				},
+			},
+			wantContains: []string{
+				"FROM python:",
+				"# Custom runtime environment variables",
+				`ENV PYTHON_KEYRING_BACKEND="keyrings.alt.file.PlaintextKeyring"`,
+				"uv tool install",
+			},
+			wantMatches: []string{
+				`FROM python:\d+\.\d+-slim AS builder`,
+				`FROM python:\d+\.\d+-slim`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
+		{
+			name:          "NPX transport with RuntimeEnv",
+			transportType: TransportTypeNPX,
+			data: TemplateData{
+				MCPPackage: "example-package",
+				RuntimeConfig: &RuntimeConfig{
+					BuilderImage: "node:24-alpine",
+					RuntimeEnv: map[string]string{
+						"NODE_ENV": "production",
+					},
+				},
+			},
+			wantContains: []string{
+				"FROM node:",
+				"# Custom runtime environment variables",
+				`ENV NODE_ENV="production"`,
+				"npm install --save example-package",
+			},
+			wantMatches: []string{
+				`FROM node:\d+-alpine AS builder`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
+		{
+			name:          "GO transport with RuntimeEnv",
+			transportType: TransportTypeGO,
+			data: TemplateData{
+				MCPPackage: "example-package",
+				RuntimeConfig: &RuntimeConfig{
+					BuilderImage: "golang:1.26-alpine",
+					RuntimeEnv: map[string]string{
+						"LOG_LEVEL": "debug",
+					},
+				},
+			},
+			wantContains: []string{
+				"FROM golang:",
+				"# Custom runtime environment variables",
+				`ENV LOG_LEVEL="debug"`,
+				"go install",
+			},
+			wantMatches: []string{
+				`FROM golang:\d+\.\d+-alpine AS builder`,
+			},
+			wantNotContains: nil,
+			wantErr:         false,
+		},
 	}
 
 	for _, tt := range tests {
@@ -405,7 +480,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			name:          "NPX runtime stage installs extra packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:22-alpine",
+				BuilderImage:       "node:24-alpine",
 				AdditionalPackages: []string{"git", "ca-certificates", "curl"},
 			},
 			wantInRuntime: "curl",
@@ -414,7 +489,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			name:          "UVX runtime stage installs extra packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.13-slim",
+				BuilderImage:       "python:3.14-slim",
 				AdditionalPackages: []string{"ca-certificates", "git", "curl"},
 			},
 			wantInRuntime: "curl",
@@ -423,7 +498,7 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 			name:          "GO runtime stage installs extra packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.25-alpine",
+				BuilderImage:       "golang:1.26-alpine",
 				AdditionalPackages: []string{"ca-certificates", "git", "curl"},
 			},
 			wantInRuntime: "curl",
@@ -459,6 +534,83 @@ func TestRuntimeStageInstallsAdditionalPackages(t *testing.T) {
 	}
 }
 
+func TestRuntimeEnvOnlyAppearsInRuntimeStage(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		transportType TransportType
+		runtimeConfig *RuntimeConfig
+		wantEnvLine   string // ENV line that must appear AFTER the second FROM, and nowhere before it
+	}{
+		{
+			name:          "NPX runtime stage sets RuntimeEnv",
+			transportType: TransportTypeNPX,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage: "node:24-alpine",
+				RuntimeEnv: map[string]string{
+					"NPX_RUNTIME_FLAG": "enabled",
+				},
+			},
+			wantEnvLine: `ENV NPX_RUNTIME_FLAG="enabled"`,
+		},
+		{
+			name:          "UVX runtime stage sets RuntimeEnv",
+			transportType: TransportTypeUVX,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage: "python:3.14-slim",
+				RuntimeEnv: map[string]string{
+					"PYTHON_KEYRING_BACKEND": "keyrings.alt.file.PlaintextKeyring",
+				},
+			},
+			wantEnvLine: `ENV PYTHON_KEYRING_BACKEND="keyrings.alt.file.PlaintextKeyring"`,
+		},
+		{
+			name:          "GO runtime stage sets RuntimeEnv",
+			transportType: TransportTypeGO,
+			runtimeConfig: &RuntimeConfig{
+				BuilderImage: "golang:1.26-alpine",
+				RuntimeEnv: map[string]string{
+					"GO_RUNTIME_FLAG": "enabled",
+				},
+			},
+			wantEnvLine: `ENV GO_RUNTIME_FLAG="enabled"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := TemplateData{
+				MCPPackage:    "test-package",
+				RuntimeConfig: tt.runtimeConfig,
+			}
+
+			result, err := GetDockerfileTemplate(tt.transportType, data)
+			if err != nil {
+				t.Fatalf("GetDockerfileTemplate() error = %v", err)
+			}
+
+			// Find the runtime stage (second FROM) and check that RuntimeEnv
+			// appears there, and only there - not in the builder stage.
+			parts := strings.SplitN(result, "\nFROM ", 2)
+			if len(parts) < 2 {
+				t.Fatal("Dockerfile does not contain a second FROM (runtime stage)")
+			}
+			builderStage := parts[0]
+			runtimeStage := parts[1]
+
+			if !strings.Contains(runtimeStage, tt.wantEnvLine) {
+				t.Errorf("runtime stage does not contain %q.\nRuntime stage:\n%s", tt.wantEnvLine, runtimeStage)
+			}
+			if strings.Contains(builderStage, tt.wantEnvLine) {
+				t.Errorf("builder stage unexpectedly contains %q.\nBuilder stage:\n%s", tt.wantEnvLine, builderStage)
+			}
+		})
+	}
+}
+
 func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 	t.Parallel()
 
@@ -471,7 +623,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "NPX with empty packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:22-alpine",
+				BuilderImage:       "node:24-alpine",
 				AdditionalPackages: []string{},
 			},
 		},
@@ -479,7 +631,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "GO with empty packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.25-alpine",
+				BuilderImage:       "golang:1.26-alpine",
 				AdditionalPackages: []string{},
 			},
 		},
@@ -487,7 +639,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "UVX with empty packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.13-slim",
+				BuilderImage:       "python:3.14-slim",
 				AdditionalPackages: []string{},
 			},
 		},
@@ -495,7 +647,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "NPX with nil packages",
 			transportType: TransportTypeNPX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "node:22-alpine",
+				BuilderImage:       "node:24-alpine",
 				AdditionalPackages: nil,
 			},
 		},
@@ -503,7 +655,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "GO with nil packages",
 			transportType: TransportTypeGO,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "golang:1.25-alpine",
+				BuilderImage:       "golang:1.26-alpine",
 				AdditionalPackages: nil,
 			},
 		},
@@ -511,7 +663,7 @@ func TestEmptyAdditionalPackagesDoesNotBreakBuild(t *testing.T) {
 			name:          "UVX with nil packages",
 			transportType: TransportTypeUVX,
 			runtimeConfig: &RuntimeConfig{
-				BuilderImage:       "python:3.13-slim",
+				BuilderImage:       "python:3.14-slim",
 				AdditionalPackages: nil,
 			},
 		},

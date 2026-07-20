@@ -4,9 +4,7 @@
 package registry
 
 import (
-	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 	"sync"
@@ -43,37 +41,22 @@ func NewLocalRegistryProvider(filePath ...string) *LocalRegistryProvider {
 
 // GetRegistry returns the registry data from file path or embedded data
 func (p *LocalRegistryProvider) GetRegistry() (*types.Registry, error) {
-	var registry *types.Registry
-
+	var data []byte
 	if p.filePath != "" {
-		// Read from local file — auto-detect format
-		data, err := os.ReadFile(p.filePath)
+		fileData, err := os.ReadFile(p.filePath)
 		if err != nil {
 			return nil, fmt.Errorf("failed to read local registry file %s: %w", p.filePath, err)
 		}
-
-		var skills []types.Skill
-		var isLegacy bool
-		registry, skills, isLegacy, err = parseRegistryAutoDetect(data)
-		if err != nil {
-			return nil, err
-		}
-		p.setSkills(skills)
-		if isLegacy {
-			slog.Warn("Registry file uses legacy format; please migrate to the upstream MCP format. "+
-				"Legacy format support will be removed in a future release.",
-				"file", p.filePath)
-		}
+		data = fileData
 	} else {
-		// Embedded catalog — always upstream format
-		var err error
-		var skills []types.Skill
-		registry, skills, err = parseUpstreamRegistry(catalog.Upstream())
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse embedded upstream registry: %w", err)
-		}
-		p.setSkills(skills)
+		data = catalog.Upstream()
 	}
+
+	registry, skills, err := parseRegistryData(data)
+	if err != nil {
+		return nil, err
+	}
+	p.setSkills(skills)
 
 	// Set name field on each server based on map key
 	for name, server := range registry.Servers {
@@ -155,13 +138,4 @@ func (p *LocalRegistryProvider) SearchSkills(query string) ([]types.Skill, error
 		}
 	}
 	return results, nil
-}
-
-// parseRegistryData parses JSON data into a Registry struct
-func parseRegistryData(data []byte) (*types.Registry, error) {
-	registry := &types.Registry{}
-	if err := json.Unmarshal(data, registry); err != nil {
-		return nil, fmt.Errorf("failed to parse registry data: %w", err)
-	}
-	return registry, nil
 }

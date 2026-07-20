@@ -5,7 +5,7 @@
 # Each workload provides a unique audience to prevent token replay.
 #
 # This is the preferred pattern — the inline oidcConfig field is deprecated
-# and will be removed in v1beta1.
+# and will be removed in a future API version.
 
 ---
 # Kubernetes Secret for the OIDC client secret
@@ -20,7 +20,7 @@ stringData:
 
 ---
 # Shared MCPOIDCConfig — Kubernetes service account variant
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPOIDCConfig
 metadata:
   name: k8s-sa-idp
@@ -32,7 +32,7 @@ spec:
 
 ---
 # Shared MCPOIDCConfig — inline provider variant
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPOIDCConfig
 metadata:
   name: corporate-idp
@@ -51,7 +51,7 @@ spec:
 # MCPServer referencing the shared MCPOIDCConfig.
 # The oidcConfigRef replaces the deprecated inline spec.oidcConfig field.
 # audience must be unique per server to prevent token replay attacks.
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServer
 metadata:
   name: fetch-with-shared-oidc

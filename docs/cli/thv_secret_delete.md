@@ -30,7 +30,8 @@ thv secret delete <name> [flags]
 ### Options
 
 ```
-  -h, --help   help for delete
+  -h, --help     help for delete
+      --system   Allow deleting a system-managed secret (emergency use only)
 ```
 
 ### Options inherited from parent commands

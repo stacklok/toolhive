@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 func TestAddTelemetryCABundleVolumes(t *testing.T) {
@@ -18,7 +18,7 @@ func TestAddTelemetryCABundleVolumes(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		telemetryConfig *mcpv1alpha1.MCPTelemetryConfig
+		telemetryConfig *mcpv1beta1.MCPTelemetryConfig
 		wantVolumeName  string
 		wantConfigMap   string
 		wantKey         string
@@ -30,15 +30,15 @@ func TestAddTelemetryCABundleVolumes(t *testing.T) {
 		},
 		{
 			name: "nil OpenTelemetry returns nil",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{},
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{},
 			},
 		},
 		{
 			name: "nil CABundleRef returns nil",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
 						Endpoint: "https://collector.example.com:4317",
 					},
 				},
@@ -46,21 +46,21 @@ func TestAddTelemetryCABundleVolumes(t *testing.T) {
 		},
 		{
 			name: "nil ConfigMapRef returns nil",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
-						CABundleRef: &mcpv1alpha1.CABundleSource{},
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
+						CABundleRef: &mcpv1beta1.CABundleSource{},
 					},
 				},
 			},
 		},
 		{
 			name: "ConfigMapRef with default key",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
 						Endpoint: "https://collector.example.com:4317",
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "my-ca-bundle"},
 							},
@@ -75,10 +75,10 @@ func TestAddTelemetryCABundleVolumes(t *testing.T) {
 		},
 		{
 			name: "ConfigMapRef with custom key",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "internal-ca"},
 								Key:                  "tls-ca.pem",
@@ -130,7 +130,7 @@ func TestTelemetryCABundleFilePath(t *testing.T) {
 
 	tests := []struct {
 		name            string
-		telemetryConfig *mcpv1alpha1.MCPTelemetryConfig
+		telemetryConfig *mcpv1beta1.MCPTelemetryConfig
 		wantPath        string
 	}{
 		{
@@ -140,26 +140,26 @@ func TestTelemetryCABundleFilePath(t *testing.T) {
 		},
 		{
 			name: "nil OpenTelemetry returns empty",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{},
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{},
 			},
 			wantPath: "",
 		},
 		{
 			name: "nil CABundleRef returns empty",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{},
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{},
 				},
 			},
 			wantPath: "",
 		},
 		{
 			name: "nil ConfigMapRef returns empty",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
-						CABundleRef: &mcpv1alpha1.CABundleSource{},
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
+						CABundleRef: &mcpv1beta1.CABundleSource{},
 					},
 				},
 			},
@@ -167,10 +167,10 @@ func TestTelemetryCABundleFilePath(t *testing.T) {
 		},
 		{
 			name: "default key produces correct path",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "my-ca-bundle"},
 							},
@@ -182,10 +182,10 @@ func TestTelemetryCABundleFilePath(t *testing.T) {
 		},
 		{
 			name: "custom key produces correct path",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
-						CABundleRef: &mcpv1alpha1.CABundleSource{
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
+						CABundleRef: &mcpv1beta1.CABundleSource{
 							ConfigMapRef: &corev1.ConfigMapKeySelector{
 								LocalObjectReference: corev1.LocalObjectReference{Name: "internal-ca"},
 								Key:                  "tls-ca.pem",

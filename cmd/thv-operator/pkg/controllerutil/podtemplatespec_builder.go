@@ -11,7 +11,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 // PodTemplateSpecBuilder provides an interface for building PodTemplateSpec patches.
@@ -58,7 +58,7 @@ func (b *PodTemplateSpecBuilder) WithServiceAccount(serviceAccount *string) *Pod
 
 // WithSecrets adds secret environment variables to the target container.
 // The target container is specified by containerName in the constructor.
-func (b *PodTemplateSpecBuilder) WithSecrets(secrets []mcpv1alpha1.SecretRef) *PodTemplateSpecBuilder {
+func (b *PodTemplateSpecBuilder) WithSecrets(secrets []mcpv1beta1.SecretRef) *PodTemplateSpecBuilder {
 	if len(secrets) == 0 {
 		return b
 	}

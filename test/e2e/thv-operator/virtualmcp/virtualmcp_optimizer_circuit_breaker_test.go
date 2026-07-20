@@ -10,12 +10,13 @@ import (
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
 )
@@ -47,57 +48,45 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 			mcpGroupName, images.YardstickServerImage, timeout, pollingInterval)
 
 		By("Creating EmbeddingServer for optimizer")
-		embeddingServer := &mcpv1alpha1.EmbeddingServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      embeddingName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.EmbeddingServerSpec{
-				Model: "BAAI/bge-small-en-v1.5",
-				Image: images.TextEmbeddingsInferenceImage,
-			},
-		}
+		embeddingServer := v1beta1test.NewEmbeddingServer(embeddingName, testNamespace,
+			v1beta1test.WithEmbeddingModel("BAAI/bge-small-en-v1.5"),
+			v1beta1test.WithEmbeddingImage(images.TextEmbeddingsInferenceImage),
+		)
 		Expect(k8sClient.Create(ctx, embeddingServer)).To(Succeed())
 
 		By("Creating VirtualMCPServer with optimizer and circuit breaker enabled")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef:    &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				ServiceType: "NodePort",
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.WithVMCPOutgoingAuth(&mcpv1beta1.OutgoingAuthConfig{
+				Source: "discovered",
+			}),
+			v1beta1test.WithVMCPEmbeddingServerRef(embeddingName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group:     mcpGroupName,
+				Optimizer: &vmcpconfig.OptimizerConfig{},
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
 				},
-				OutgoingAuth: &mcpv1alpha1.OutgoingAuthConfig{
-					Source: "discovered",
-				},
-				EmbeddingServerRef: &mcpv1alpha1.EmbeddingServerRef{
-					Name: embeddingName,
-				},
-				Config: vmcpconfig.Config{
-					Group:     mcpGroupName,
-					Optimizer: &vmcpconfig.OptimizerConfig{},
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-					},
-					Operational: &vmcpconfig.OperationalConfig{
-						FailureHandling: &vmcpconfig.FailureHandlingConfig{
-							HealthCheckInterval: vmcpconfig.Duration(cbHealthCheckInterval),
-							HealthCheckTimeout:  vmcpconfig.Duration(cbHealthCheckTimeout),
-							UnhealthyThreshold:  cbUnhealthyThreshold,
-							CircuitBreaker: &vmcpconfig.CircuitBreakerConfig{
-								Enabled:          true,
-								FailureThreshold: cbFailureThreshold,
-								Timeout:          vmcpconfig.Duration(cbTimeout),
-							},
+				Operational: &vmcpconfig.OperationalConfig{
+					FailureHandling: &vmcpconfig.FailureHandlingConfig{
+						HealthCheckInterval: vmcpconfig.Duration(cbHealthCheckInterval),
+						HealthCheckTimeout:  vmcpconfig.Duration(cbHealthCheckTimeout),
+						UnhealthyThreshold:  cbUnhealthyThreshold,
+						CircuitBreaker: &vmcpconfig.CircuitBreakerConfig{
+							Enabled:          true,
+							FailureThreshold: cbFailureThreshold,
+							Timeout:          vmcpconfig.Duration(cbTimeout),
 						},
 					},
 				},
-			},
-		}
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -110,7 +99,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 
 	AfterAll(func() {
 		By("Cleaning up test resources")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      vmcpServerName,
 			Namespace: testNamespace,
@@ -118,7 +107,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 			_ = k8sClient.Delete(ctx, vmcpServer)
 		}
 
-		es := &mcpv1alpha1.EmbeddingServer{}
+		es := &mcpv1beta1.EmbeddingServer{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      embeddingName,
 			Namespace: testNamespace,
@@ -126,7 +115,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 			_ = k8sClient.Delete(ctx, es)
 		}
 
-		stableBackend := &mcpv1alpha1.MCPServer{}
+		stableBackend := &mcpv1beta1.MCPServer{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      stableName,
 			Namespace: testNamespace,
@@ -134,7 +123,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 			_ = k8sClient.Delete(ctx, stableBackend)
 		}
 
-		unstableBackend := &mcpv1alpha1.MCPServer{}
+		unstableBackend := &mcpv1beta1.MCPServer{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      unstableName,
 			Namespace: testNamespace,
@@ -142,7 +131,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 			_ = k8sClient.Delete(ctx, unstableBackend)
 		}
 
-		mcpGroup := &mcpv1alpha1.MCPGroup{}
+		mcpGroup := &mcpv1beta1.MCPGroup{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{
 			Name:      mcpGroupName,
 			Namespace: testNamespace,
@@ -202,7 +191,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 
 	It("should exclude unhealthy backend tools from optimizer after circuit breaker opens", func() {
 		By("Making unstable backend unavailable by changing to non-existent image")
-		backend := &mcpv1alpha1.MCPServer{}
+		backend := &mcpv1beta1.MCPServer{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name:      unstableName,
 			Namespace: testNamespace,
@@ -231,7 +220,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 
 		By("Waiting for circuit breaker to open for unstable backend")
 		Eventually(func() error {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -288,7 +277,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 
 	It("should restore backend tools in optimizer after circuit breaker recovers", func() {
 		By("Restoring unstable backend by fixing the image")
-		backend := &mcpv1alpha1.MCPServer{}
+		backend := &mcpv1beta1.MCPServer{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name:      unstableName,
 			Namespace: testNamespace,
@@ -296,6 +285,32 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 
 		backend.Spec.Image = images.YardstickServerImage
 		Expect(k8sClient.Update(ctx, backend)).To(Succeed())
+
+		By("Waiting for backend StatefulSet template to use the fixed image")
+		// Without this wait we can race the proxyrunner: deleting the
+		// Pending pod before the StatefulSet template has flipped to the
+		// good image just causes it to be recreated against the old (bad)
+		// template, and the StatefulSet controller may not re-roll an
+		// already-unhealthy pod afterwards. Mirrors the same guard in
+		// virtualmcp_circuit_breaker_test.go added in #5079.
+		Eventually(func() error {
+			sts := &appsv1.StatefulSet{}
+			if err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      unstableName,
+				Namespace: testNamespace,
+			}, sts); err != nil {
+				return err
+			}
+			for _, container := range sts.Spec.Template.Spec.Containers {
+				if container.Name == "mcp" {
+					if container.Image != images.YardstickServerImage {
+						return fmt.Errorf("statefulset still has image %q", container.Image)
+					}
+					return nil
+				}
+			}
+			return fmt.Errorf("mcp container not found in statefulset template")
+		}, timeout, pollingInterval).Should(Succeed())
 
 		By("Deleting stuck pods to force recreation with fixed image")
 		podList := &corev1.PodList{}
@@ -313,14 +328,14 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 
 		By("Waiting for backend to become running again")
 		Eventually(func() error {
-			server := &mcpv1alpha1.MCPServer{}
+			server := &mcpv1beta1.MCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      unstableName,
 				Namespace: testNamespace,
 			}, server); err != nil {
 				return err
 			}
-			if server.Status.Phase != mcpv1alpha1.MCPServerPhaseReady {
+			if server.Status.Phase != mcpv1beta1.MCPServerPhaseReady {
 				return fmt.Errorf("backend not running yet, phase: %s", server.Status.Phase)
 			}
 			return nil
@@ -328,7 +343,7 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 
 		By("Waiting for circuit breaker to close after recovery")
 		Eventually(func() error {
-			vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+			vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 			if err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,
@@ -340,8 +355,8 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 				if vmcpServer.Status.DiscoveredBackends[i].Name == unstableName {
 					backend := &vmcpServer.Status.DiscoveredBackends[i]
 					if backend.CircuitBreakerState == "closed" &&
-						(backend.Status == mcpv1alpha1.BackendStatusReady ||
-							backend.Status == mcpv1alpha1.BackendStatusDegraded) {
+						(backend.Status == mcpv1beta1.BackendStatusReady ||
+							backend.Status == mcpv1beta1.BackendStatusDegraded) {
 						GinkgoWriter.Printf("Backend recovered: status=%s, circuitState=%s\n",
 							backend.Status, backend.CircuitBreakerState)
 						return nil
@@ -392,13 +407,13 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 
 	It("should not affect stable backend throughout circuit breaker lifecycle", func() {
 		By("Verifying stable backend remained healthy throughout the test")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{}
+		vmcpServer := &mcpv1beta1.VirtualMCPServer{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name:      vmcpServerName,
 			Namespace: testNamespace,
 		}, vmcpServer)).To(Succeed())
 
-		var stableBackend *mcpv1alpha1.DiscoveredBackend
+		var stableBackend *mcpv1beta1.DiscoveredBackend
 		for i := range vmcpServer.Status.DiscoveredBackends {
 			if vmcpServer.Status.DiscoveredBackends[i].Name == stableName {
 				stableBackend = &vmcpServer.Status.DiscoveredBackends[i]
@@ -409,8 +424,8 @@ var _ = Describe("VirtualMCPServer Optimizer with Circuit Breaker", Ordered, fun
 		Expect(stableBackend).NotTo(BeNil(), "stable backend should be discovered")
 
 		Expect(stableBackend.Status).To(Or(
-			Equal(mcpv1alpha1.BackendStatusReady),
-			Equal(mcpv1alpha1.BackendStatusDegraded)),
+			Equal(mcpv1beta1.BackendStatusReady),
+			Equal(mcpv1beta1.BackendStatusDegraded)),
 			"stable backend should remain healthy, got status=%s message=%s",
 			stableBackend.Status, stableBackend.Message)
 

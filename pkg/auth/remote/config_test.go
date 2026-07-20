@@ -204,6 +204,37 @@ func TestConfig_HasCachedClientCredentials(t *testing.T) {
 	}
 }
 
+func TestConfig_HasCachedCIMDClientID(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		config   Config
+		expected bool
+	}{
+		{
+			name:     "no cached CIMD client_id",
+			config:   Config{},
+			expected: false,
+		},
+		{
+			name: "has cached CIMD client_id",
+			config: Config{
+				CachedCIMDClientID: "https://toolhive.dev/oauth/client-metadata.json",
+			},
+			expected: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := tt.config.HasCachedCIMDClientID()
+			assert.Equal(t, tt.expected, result)
+		})
+	}
+}
+
 func TestConfig_ClearCachedClientCredentials(t *testing.T) {
 	t.Parallel()
 
@@ -219,5 +250,78 @@ func TestConfig_ClearCachedClientCredentials(t *testing.T) {
 	}
 	if config.CachedClientSecretRef != "" {
 		t.Errorf("CachedClientSecretRef should be empty, got %s", config.CachedClientSecretRef)
+	}
+}
+
+func TestConfig_LogContext(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		cfg          *Config
+		wantUpstream string
+		wantClientID string
+	}{
+		{
+			name:         "nil config returns empty strings",
+			cfg:          nil,
+			wantUpstream: "",
+			wantClientID: "",
+		},
+		{
+			name: "static client_id when no cache",
+			cfg: &Config{
+				Issuer:   "https://idp.example.com",
+				ClientID: "static-client-id",
+			},
+			wantUpstream: "https://idp.example.com",
+			wantClientID: "static-client-id",
+		},
+		{
+			name: "cached DCR client_id wins over static",
+			cfg: &Config{
+				Issuer:         "https://idp.example.com",
+				ClientID:       "static-client-id",
+				CachedClientID: "dcr-client-id",
+			},
+			wantUpstream: "https://idp.example.com",
+			wantClientID: "dcr-client-id",
+		},
+		{
+			name: "cached CIMD client_id wins over DCR and static",
+			cfg: &Config{
+				Issuer:             "https://idp.example.com",
+				ClientID:           "static-client-id",
+				CachedClientID:     "dcr-client-id",
+				CachedCIMDClientID: "https://idp.example.com/cimd",
+			},
+			wantUpstream: "https://idp.example.com",
+			wantClientID: "https://idp.example.com/cimd",
+		},
+		{
+			name: "cached CIMD client_id used when no DCR or static",
+			cfg: &Config{
+				Issuer:             "https://idp.example.com",
+				CachedCIMDClientID: "https://idp.example.com/cimd",
+			},
+			wantUpstream: "https://idp.example.com",
+			wantClientID: "https://idp.example.com/cimd",
+		},
+		{
+			name:         "empty config returns empty fields",
+			cfg:          &Config{},
+			wantUpstream: "",
+			wantClientID: "",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			upstream, clientID := tc.cfg.LogContext()
+			assert.Equal(t, tc.wantUpstream, upstream)
+			assert.Equal(t, tc.wantClientID, clientID)
+		})
 	}
 }

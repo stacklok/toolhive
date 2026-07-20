@@ -6,6 +6,7 @@ package gitresolver
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"testing"
@@ -60,6 +61,45 @@ func createTestRepo(t *testing.T, skillPath string, skillMD string) string {
 	require.NoError(t, err)
 
 	_, err = wt.Commit("Add test skill", &gogit.CommitOptions{
+		Author: &object.Signature{
+			Name:  "Test Author",
+			Email: "test@example.com",
+		},
+	})
+	require.NoError(t, err)
+
+	return dir
+}
+
+// nestedFile describes a file to seed into a test repo at a relative path.
+type nestedFile struct {
+	path    string
+	content string
+}
+
+// createNestedTestRepo creates a local git repo containing the given files
+// (with arbitrary nested directory structure) and commits them in a single
+// commit. It returns the repo directory path.
+func createNestedTestRepo(t *testing.T, files []nestedFile) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	repo, err := gogit.PlainInit(dir, false)
+	require.NoError(t, err)
+
+	wt, err := repo.Worktree()
+	require.NoError(t, err)
+
+	for _, f := range files {
+		fullPath := filepath.Join(dir, filepath.FromSlash(f.path))
+		require.NoError(t, os.MkdirAll(filepath.Dir(fullPath), 0755))
+		require.NoError(t, os.WriteFile(fullPath, []byte(f.content), 0644))
+	}
+
+	_, err = wt.Add(".")
+	require.NoError(t, err)
+
+	_, err = wt.Commit("Add nested skill", &gogit.CommitOptions{
 		Author: &object.Signature{
 			Name:  "Test Author",
 			Email: "test@example.com",
@@ -171,6 +211,83 @@ description: bad name
 			assert.Len(t, result.CommitHash, 40)
 		})
 	}
+}
+
+func TestResolver_Resolve_NestedFiles(t *testing.T) {
+	t.Parallel()
+
+	t.Run("skill in subdirectory with nested files", func(t *testing.T) {
+		t.Parallel()
+
+		files := []nestedFile{
+			{path: "skills/sample/SKILL.md", content: validSkillMD},
+			{path: "skills/sample/README.md", content: "# Sample"},
+			{path: "skills/sample/references/foo.md", content: "ref-foo"},
+			{path: "skills/sample/scripts/run.sh", content: "#!/bin/sh\n"},
+			{path: "skills/sample/deep/nested/dir/note.txt", content: "deep"},
+			// File outside the skill subtree must NOT be picked up.
+			{path: "other/unrelated.md", content: "ignore me"},
+		}
+		repoDir := createNestedTestRepo(t, files)
+
+		resolver := NewResolver(WithGitClient(git.NewDefaultGitClient()))
+		ref := &GitReference{URL: repoDir, Path: "skills/sample"}
+
+		result, err := resolver.Resolve(t.Context(), ref)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+		assert.Equal(t, "my-skill", result.SkillConfig.Name)
+
+		got := map[string]string{}
+		for _, f := range result.Files {
+			got[f.Path] = string(f.Content)
+			assert.Equal(t, fs.FileMode(0644), f.Mode, "file %q has unexpected mode", f.Path)
+		}
+
+		// Forward-slash paths relative to the skill subtree.
+		assert.Equal(t, validSkillMD, got["SKILL.md"])
+		assert.Equal(t, "# Sample", got["README.md"])
+		assert.Equal(t, "ref-foo", got["references/foo.md"])
+		assert.Equal(t, "#!/bin/sh\n", got["scripts/run.sh"])
+		assert.Equal(t, "deep", got["deep/nested/dir/note.txt"])
+
+		// Files outside the skill subtree must not leak in.
+		_, hasUnrelated := got["unrelated.md"]
+		assert.False(t, hasUnrelated, "files outside the skill subtree must not be included")
+		_, hasFullOther := got["other/unrelated.md"]
+		assert.False(t, hasFullOther, "files outside the skill subtree must not be included")
+
+		assert.Len(t, result.Files, 5, "expected exactly the five files under skills/sample")
+	})
+
+	t.Run("skill at repo root with nested files", func(t *testing.T) {
+		t.Parallel()
+
+		files := []nestedFile{
+			{path: "SKILL.md", content: validSkillMD},
+			{path: "references/foo.md", content: "ref-foo"},
+			{path: "scripts/run.sh", content: "#!/bin/sh\n"},
+		}
+		repoDir := createNestedTestRepo(t, files)
+
+		resolver := NewResolver(WithGitClient(git.NewDefaultGitClient()))
+		ref := &GitReference{URL: repoDir, Path: ""}
+
+		result, err := resolver.Resolve(t.Context(), ref)
+		require.NoError(t, err)
+		require.NotNil(t, result)
+
+		got := map[string]string{}
+		for _, f := range result.Files {
+			got[f.Path] = string(f.Content)
+			assert.Equal(t, fs.FileMode(0644), f.Mode, "file %q has unexpected mode", f.Path)
+		}
+
+		assert.Equal(t, validSkillMD, got["SKILL.md"])
+		assert.Equal(t, "ref-foo", got["references/foo.md"])
+		assert.Equal(t, "#!/bin/sh\n", got["scripts/run.sh"])
+		assert.Len(t, result.Files, 3)
+	})
 }
 
 func TestResolver_Resolve_TagRef(t *testing.T) {

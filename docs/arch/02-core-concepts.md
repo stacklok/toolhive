@@ -38,6 +38,9 @@ A **workload** is the fundamental deployment unit in ToolHive. It represents eve
 - `error` - Workload encountered an error
 - `unhealthy` - Workload is running but unhealthy
 - `unauthenticated` - Remote workload cannot authenticate (expired tokens)
+- `auth_retrying` - Remote workload's token refresh is failing transiently; monitor is still retrying until success (-> `running`), a permanent error is observed (-> `unauthenticated`), or the configured ceiling is exceeded (-> `unauthenticated`)
+- `unknown` - Workload status cannot be determined
+- `policy_stopped` - Workload was stopped by policy enforcement
 
 **Implementation:**
 - Interface: `pkg/workloads/manager.go`
@@ -50,7 +53,7 @@ A **workload** is the fundamental deployment unit in ToolHive. It represents eve
 
 A **transport** defines how MCP clients communicate with MCP servers. It encapsulates the protocol and proxy implementation.
 
-**Three types:**
+**Transport types:**
 
 1. **stdio**: Standard input/output communication
    - Container speaks stdin/stdout
@@ -66,6 +69,10 @@ A **transport** defines how MCP clients communicate with MCP servers. It encapsu
    - Container speaks HTTP with `/mcp` endpoint
    - Transparent HTTP proxy (same as SSE)
    - Session management via headers
+
+4. **inspector**: Debug-only transport
+   - Special transport used for the MCP Inspector tooling
+   - Not intended for production workloads
 
 **Implementation:**
 - Interface: `pkg/transport/types/transport.go`
@@ -112,18 +119,24 @@ A **proxy** is the component that sits between MCP clients and MCP servers, forw
 
 - **Authentication** (`auth`) - JWT token validation
 - **Token Exchange** (`tokenexchange`) - OAuth token exchange
+- **Upstream Swap** (`upstreamswap`) - Swap ToolHive JWTs for upstream IdP tokens (embedded auth server)
+- **AWS STS** (`awssts`) - Exchange tokens for AWS STS credentials
+- **OBO** (`obo`) - On-Behalf-Of token flow
 - **MCP Parser** (`mcp-parser`) - JSON-RPC parsing
 - **Tool Filter** (`tool-filter`) - Filter and override tools in `tools/list` responses
 - **Tool Call Filter** (`tool-call-filter`) - Validate and map `tools/call` requests
+- **Rate Limit** (`ratelimit`) - Per-client request rate limiting
 - **Usage Metrics** (`usagemetrics`) - Anonymous usage metrics for ToolHive development (opt-out: `thv config usage-metrics disable`)
 - **Telemetry** (`telemetry`) - OpenTelemetry instrumentation
 - **Authorization** (`authorization`) - Cedar policy evaluation
 - **Audit** (`audit`) - Request logging
+- **Recovery** (`recovery`) - Panic recovery for the proxy chain
+- **Header Forward** (`header-forward`) - Forward selected request headers to upstream
+- **Validating Webhook** (`validating-webhook`) - Call external validating webhooks
+- **Mutating Webhook** (`mutating-webhook`) - Call external mutating webhooks
 
 **Execution order (request flow):**
-Middleware applied in reverse configuration order. Requests flow through: Audit* → Authorization* → Telemetry* → Usage Metrics* → Parser → Token Exchange* → Auth → Tool Call Filter* → Tool Filter* → MCP Server
-
-(*optional middleware, only present if configured)
+Middleware is applied in reverse configuration order, and the chain composed for a given workload depends on which features are enabled. See [`docs/middleware.md`](../middleware.md) for the complete chain, ordering rules, and per-middleware semantics.
 
 **Implementation:**
 - Interface: `pkg/transport/types/transport.go`
@@ -187,9 +200,7 @@ A **permission profile** defines security boundaries for MCP servers:
 - `network` - Full network access
 
 **Implementation:**
-- Definition: `pkg/permissions/profile.go`
-- Network: `pkg/permissions/profile.go`
-- Mount declarations: `pkg/permissions/profile.go`
+- Definition, network permissions, and mount declarations: `github.com/stacklok/toolhive-core/permissions` (imported as `permissions` in `pkg/runner/`)
 
 **Related concepts:** RunConfig, Workload, Security
 
@@ -264,7 +275,7 @@ A **Virtual MCP Server** aggregates multiple MCP servers from a group into a sin
 **Example use case:**
 ```yaml
 # Combine GitHub, Slack, and Jira into one "team-tools" virtual server
-apiVersion: mcp.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: team-tools
@@ -288,7 +299,7 @@ spec:
 - CLI: Standalone via the `vmcp` binary for development or non-Kubernetes environments
 
 **Implementation:**
-- CRD: `cmd/thv-operator/api/v1alpha1/virtualmcpserver_types.go`
+- CRD: `cmd/thv-operator/api/v1beta1/virtualmcpserver_types.go`
 - Controller: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
 - Binary: `cmd/vmcp/` (virtual MCP server runtime)
 
@@ -323,7 +334,7 @@ A **registry** is a catalog of MCP server definitions with metadata, configurati
 - `groups` - Predefined groups of servers
 
 **Implementation:**
-- Registry types: `pkg/registry/types.go`
+- Registry types: `github.com/stacklok/toolhive-core/registry/types`
 - Provider abstraction: `pkg/registry/provider.go`, `pkg/registry/factory.go`
 - Local provider: `pkg/registry/provider_local.go`
 - Remote provider: `pkg/registry/provider_remote.go`
@@ -389,11 +400,15 @@ A **runtime** is an abstraction over container orchestration systems. It provide
 - `IsWorkloadRunning` - Check if running
 
 **Runtime detection:**
-Order: Podman → Colima → Docker → Kubernetes (via env)
+Runtimes are registered with a numeric `Priority` (lower wins) in the runtime registry (`pkg/container/runtime/registry.go`). Today the registered runtimes are:
+
+- **Docker runtime** (`Priority: 100`, registered in `pkg/container/docker/register.go`) — covers Docker, Podman, Colima, Rancher Desktop, and OrbStack via per-runtime socket discovery (Podman → Docker → Colima).
+- **Kubernetes runtime** (`Priority: 200`, registered in `pkg/container/kubernetes/register.go`) — activated when running in-cluster (via `KUBERNETES_SERVICE_HOST`) or when `TOOLHIVE_RUNTIME=kubernetes` is set.
 
 **Implementation:**
 - Interface: `pkg/container/runtime/types.go`
-- Factory: `pkg/container/factory.go`
+- Registry: `pkg/container/runtime/registry.go`
+- Docker SDK factory and socket discovery: `pkg/container/docker/sdk/factory.go`, `pkg/container/docker/sdk/client_unix.go`
 - Detection: `pkg/container/runtime/types.go`
 
 **Related concepts:** Deployer, Workload, Container
@@ -449,7 +464,7 @@ A **skill** is an Agent Skill -- a markdown-based instruction set (SKILL.md) tha
 5. **Uninstall** - Remove files and metadata
 
 **Implementation:**
-- Service: `pkg/skills/skillsvc/skillsvc.go`
+- Service interface: `pkg/skills/service.go`; implementation in `pkg/skills/skillsvc/` (entry point `pkg/skills/skillsvc/service.go`)
 - Types: `pkg/skills/types.go`
 - Storage: `pkg/storage/sqlite/skill_store.go`
 - CLI: `cmd/thv/app/skill*.go`
@@ -480,7 +495,7 @@ A **skill** is an Agent Skill -- a markdown-based instruction set (SKILL.md) tha
 2. Start proxy
 3. Configure authentication (if needed)
 4. Apply middleware
-4. Update state
+5. Update state
 
 **Commands:**
 - `thv run <image|url>` - Deploy and start
@@ -717,7 +732,7 @@ See `pkg/audit/mcp_events.go` for complete list of event types.
 - Shutdown if unhealthy
 
 **Implementation:**
-- Monitor: `pkg/container/docker/monitor.go`
+- Monitor: `pkg/container/runtime/monitor.go`
 - Health checker: `pkg/healthcheck/healthcheck.go`
 
 **Related concepts:** Workload, Transport, Proxy
@@ -759,7 +774,7 @@ graph LR
     style Chain fill:#fff9c4
 ```
 
-Requests pass through up to 9 middleware components (Auth, Token Exchange, Tool Filter, Tool Call Filter, Parser, Usage Metrics, Telemetry, Authorization, Audit). See `docs/middleware.md` for complete middleware architecture and execution order.
+Requests pass through a configurable chain of middleware components. See [`docs/middleware.md`](../middleware.md) for the complete chain and execution order.
 
 ### Data Hierarchy
 

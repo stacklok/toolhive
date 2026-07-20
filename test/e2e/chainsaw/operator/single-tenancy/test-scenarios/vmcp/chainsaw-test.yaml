@@ -20,7 +20,7 @@ spec:
     try:
     - apply:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: VirtualMCPCompositeToolDefinition
           metadata:
             name: deploy-workflow
@@ -48,7 +48,7 @@ spec:
               timeout: 2m
     - assert:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: VirtualMCPCompositeToolDefinition
           metadata:
             name: deploy-workflow
@@ -79,7 +79,7 @@ spec:
     try:
     - apply:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: VirtualMCPCompositeToolDefinition
           metadata:
             name: duplicate-steps
@@ -118,7 +118,7 @@ spec:
     try:
     - apply:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: VirtualMCPCompositeToolDefinition
           metadata:
             name: bad-tool-ref
@@ -150,7 +150,7 @@ spec:
     try:
     - apply:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: VirtualMCPCompositeToolDefinition
           metadata:
             name: circular-deps
@@ -189,7 +189,7 @@ spec:
     try:
     - apply:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: VirtualMCPCompositeToolDefinition
           metadata:
             name: with-parameters
@@ -238,7 +238,7 @@ spec:
     try:
     - apply:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: VirtualMCPCompositeToolDefinition
           metadata:
             name: with-error-handling

@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/stacklok/toolhive/pkg/authserver/server"
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 )
 
@@ -164,6 +165,42 @@ func TestNewHandler_ErrorsOnEmptyUpstreams(t *testing.T) {
 
 	_, err = NewHandler(nil, nil, nil, []NamedUpstream{})
 	require.Error(t, err, "NewHandler should error when upstreams is empty slice")
+}
+
+// TestNewHandler_ErrorsOnNilConfig pins the constructor invariant that a
+// nil AuthorizationServerConfig (or one with a nil embedded *fosite.Config)
+// is rejected at construction time. Without this guard, issuer() (and any
+// other helper that reads config.Config.*) panics inside an HTTP handler
+// at request time — far harder to diagnose than a startup error.
+func TestNewHandler_ErrorsOnNilConfig(t *testing.T) {
+	t.Parallel()
+
+	upstreams := []NamedUpstream{{Name: "x", Provider: nil}}
+
+	_, err := NewHandler(nil, nil, nil, upstreams)
+	require.Error(t, err, "NewHandler should error when AuthorizationServerConfig is nil")
+
+	_, err = NewHandler(nil, &server.AuthorizationServerConfig{}, nil, upstreams)
+	require.Error(t, err,
+		"NewHandler should error when AuthorizationServerConfig.Config is nil")
+}
+
+// TestNewHandler_ErrorsOnDuplicateUpstreamNames pins that the constructor rejects
+// duplicate upstream names. Names must be unique: upstreamByName returns the first
+// match, tokens are keyed by name, and the authorization chain is keyed by name, so
+// a duplicate would silently shadow a provider.
+func TestNewHandler_ErrorsOnDuplicateUpstreamNames(t *testing.T) {
+	t.Parallel()
+
+	_, oauth2Config, stor, _ := baseTestSetup(t)
+	upstreams := []NamedUpstream{
+		{Name: "dup", Provider: &mockIDPProvider{}},
+		{Name: "dup", Provider: &mockIDPProvider{}},
+	}
+
+	_, err := NewHandler(nil, oauth2Config, stor, upstreams)
+	require.Error(t, err, "NewHandler should reject duplicate upstream names")
+	assert.ErrorContains(t, err, "duplicate upstream name")
 }
 
 func TestAuthorizeHandler_RedirectsToUpstream(t *testing.T) {

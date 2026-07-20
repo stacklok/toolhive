@@ -11,7 +11,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 )
 
 const (
@@ -23,24 +24,24 @@ const (
 
 var _ = Describe("MCPTelemetryConfig Controller", func() {
 	It("should set Valid condition and config hash on creation", func() {
-		telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-telemetry-creation",
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
 			Enabled:  true,
 			Endpoint: testEndpoint,
-			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
-			Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: true},
+			Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
+			Metrics:  &mcpv1beta1.OpenTelemetryMetricsConfig{Enabled: true},
 		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
 
 		// Verify config hash is set
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -53,7 +54,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 
 		// Verify Valid condition is set to True
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -71,16 +72,16 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 	})
 
 	It("should update config hash when spec changes", func() {
-		telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-telemetry-hash-change",
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
 			Enabled:  true,
 			Endpoint: testEndpoint,
-			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+			Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
 		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
@@ -88,7 +89,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		// Wait for initial hash
 		var firstHash string
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -101,7 +102,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		}, timeout, interval).Should(BeTrue())
 
 		// Update the spec
-		fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+		fetched := &mcpv1beta1.MCPTelemetryConfig{}
 		Expect(k8sClient.Get(ctx, types.NamespacedName{
 			Name:      telemetryConfig.Name,
 			Namespace: telemetryConfig.Namespace,
@@ -112,7 +113,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 
 		// Verify hash changed
 		Eventually(func() bool {
-			updated := &mcpv1alpha1.MCPTelemetryConfig{}
+			updated := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -125,23 +126,23 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 	})
 
 	It("should allow deletion by removing finalizer", func() {
-		telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-telemetry-deletion",
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
 			Enabled:  true,
 			Endpoint: testEndpoint,
-			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+			Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
 		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
 
 		// Wait for finalizer to be added
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -162,7 +163,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 
 		// Verify it's actually deleted (finalizer removed, object gone)
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -173,23 +174,23 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 
 	It("should track referencing MCPServers in status", func() {
 		// Create a telemetry config
-		telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-ref-tracking",
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
 			Enabled:  true,
 			Endpoint: testEndpoint,
-			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+			Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
 		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
 
 		// Wait for initial reconciliation (finalizer + hash)
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -198,14 +199,14 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		}, timeout, interval).Should(BeTrue())
 
 		// Create an MCPServer that references this config
-		server := &mcpv1alpha1.MCPServer{
+		server := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "server-ref-tracking",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
+			Spec: mcpv1beta1.MCPServerSpec{
 				Image: "example/mcp-server:latest",
-				TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+				TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
 					Name: "test-ref-tracking",
 				},
 			},
@@ -215,7 +216,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		// The MCPServer watch should trigger a reconciliation of the MCPTelemetryConfig.
 		// Verify ReferencingWorkloads is updated to include our server.
 		Eventually(func() []string {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -231,25 +232,106 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		}, timeout, interval).Should(ContainElement("server-ref-tracking"))
 	})
 
+	It("should prune referencing MCPServer from status after the MCPServer is deleted", func() {
+		// Create a telemetry config
+		telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "test-ref-prune",
+				Namespace: "default",
+			},
+		}
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
+			Enabled:  true,
+			Endpoint: testEndpoint,
+			Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
+		}
+
+		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
+
+		// Wait for initial reconciliation (finalizer + hash)
+		Eventually(func() bool {
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			return err == nil && fetched.Status.ConfigHash != ""
+		}, timeout, interval).Should(BeTrue())
+
+		// Create an MCPServer that references this config
+		server := &mcpv1beta1.MCPServer{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "server-ref-prune",
+				Namespace: "default",
+			},
+			Spec: mcpv1beta1.MCPServerSpec{
+				Image: "example/mcp-server:latest",
+				TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
+					Name: "test-ref-prune",
+				},
+			},
+		}
+		Expect(k8sClient.Create(ctx, server)).To(Succeed())
+
+		// Wait until the server is tracked in ReferencingWorkloads.
+		Eventually(func() []string {
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			if err != nil {
+				return nil
+			}
+			names := make([]string, 0, len(fetched.Status.ReferencingWorkloads))
+			for _, ref := range fetched.Status.ReferencingWorkloads {
+				names = append(names, ref.Name)
+			}
+			return names
+		}, timeout, interval).Should(ContainElement("server-ref-prune"))
+
+		// Delete the MCPServer. The controller-runtime watch enqueues the
+		// referenced MCPTelemetryConfig (via the old-object map function), and
+		// the level-triggered reconcile must prune the now-stale reference.
+		Expect(k8sClient.Delete(ctx, server)).To(Succeed())
+
+		// Eventually the reference is pruned from status.
+		Eventually(func() []string {
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
+			err := k8sClient.Get(ctx, types.NamespacedName{
+				Name:      telemetryConfig.Name,
+				Namespace: telemetryConfig.Namespace,
+			}, fetched)
+			if err != nil {
+				return nil
+			}
+			names := make([]string, 0, len(fetched.Status.ReferencingWorkloads))
+			for _, ref := range fetched.Status.ReferencingWorkloads {
+				names = append(names, ref.Name)
+			}
+			return names
+		}, timeout, interval).ShouldNot(ContainElement("server-ref-prune"))
+	})
+
 	It("should block deletion when MCPServers reference the config", func() {
 		// Create a telemetry config
-		telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-deletion-protection",
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
 			Enabled:  true,
 			Endpoint: testEndpoint,
-			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+			Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
 		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
 
 		// Wait for finalizer
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -266,14 +348,14 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		}, timeout, interval).Should(BeTrue())
 
 		// Create an MCPServer that references this config
-		server := &mcpv1alpha1.MCPServer{
+		server := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "server-deletion-blocker",
 				Namespace: "default",
 			},
-			Spec: mcpv1alpha1.MCPServerSpec{
+			Spec: mcpv1beta1.MCPServerSpec{
 				Image: "example/mcp-server:latest",
-				TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
+				TelemetryConfigRef: &mcpv1beta1.MCPTelemetryConfigReference{
 					Name: "test-deletion-protection",
 				},
 			},
@@ -282,7 +364,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 
 		// Wait for ReferencingWorkloads to be populated
 		Eventually(func() []string {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -303,7 +385,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 
 		// Verify the object still exists (finalizer prevents deletion)
 		Consistently(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -316,7 +398,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 
 		// The config should now be deleted (finalizer removed after reference is gone)
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -326,23 +408,23 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 	})
 
 	It("should track MCPRemoteProxy in ReferencingWorkloads", func() {
-		telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-proxy-ref-tracking",
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
 			Enabled:  true,
 			Endpoint: testEndpoint,
-			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+			Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
 		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
 
 		// Wait for config to be ready
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -351,24 +433,17 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		}, timeout, interval).Should(BeTrue())
 
 		// Create an MCPRemoteProxy that references this config
-		proxy := &mcpv1alpha1.MCPRemoteProxy{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "proxy-ref-tracking",
-				Namespace: "default",
-			},
-			Spec: mcpv1alpha1.MCPRemoteProxySpec{
-				RemoteURL: "https://example.com/mcp",
-				TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
-					Name: "test-proxy-ref-tracking",
-				},
-			},
-		}
+		proxy := v1beta1test.NewMCPRemoteProxy("proxy-ref-tracking", "default",
+			v1beta1test.WithRemoteProxyURL("https://example.com/mcp"),
+			v1beta1test.WithRemoteProxyPort(0),
+			v1beta1test.WithRemoteProxyTelemetryConfigRef("test-proxy-ref-tracking"),
+		)
 		Expect(k8sClient.Create(ctx, proxy)).To(Succeed())
 
 		// The MCPRemoteProxy watch should trigger reconciliation of MCPTelemetryConfig.
 		// Verify ReferencingWorkloads includes the proxy.
 		Eventually(func() []string {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -385,23 +460,23 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 	})
 
 	It("should block deletion when MCPRemoteProxy references the config", func() {
-		telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+		telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      "test-proxy-deletion-protection",
 				Namespace: "default",
 			},
 		}
-		telemetryConfig.Spec.OpenTelemetry = &mcpv1alpha1.MCPTelemetryOTelConfig{
+		telemetryConfig.Spec.OpenTelemetry = &mcpv1beta1.MCPTelemetryOTelConfig{
 			Enabled:  true,
 			Endpoint: testEndpoint,
-			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: true},
+			Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: true},
 		}
 
 		Expect(k8sClient.Create(ctx, telemetryConfig)).To(Succeed())
 
 		// Wait for finalizer
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -418,23 +493,16 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 		}, timeout, interval).Should(BeTrue())
 
 		// Create an MCPRemoteProxy that references this config
-		proxy := &mcpv1alpha1.MCPRemoteProxy{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      "proxy-deletion-blocker",
-				Namespace: "default",
-			},
-			Spec: mcpv1alpha1.MCPRemoteProxySpec{
-				RemoteURL: "https://example.com/mcp",
-				TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
-					Name: "test-proxy-deletion-protection",
-				},
-			},
-		}
+		proxy := v1beta1test.NewMCPRemoteProxy("proxy-deletion-blocker", "default",
+			v1beta1test.WithRemoteProxyURL("https://example.com/mcp"),
+			v1beta1test.WithRemoteProxyPort(0),
+			v1beta1test.WithRemoteProxyTelemetryConfigRef("test-proxy-deletion-protection"),
+		)
 		Expect(k8sClient.Create(ctx, proxy)).To(Succeed())
 
 		// Wait for ReferencingWorkloads to include the proxy
 		Eventually(func() []string {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -454,7 +522,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 
 		// Verify object still exists
 		Consistently(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,
@@ -467,7 +535,7 @@ var _ = Describe("MCPTelemetryConfig Controller", func() {
 
 		// Config should now be deleted
 		Eventually(func() bool {
-			fetched := &mcpv1alpha1.MCPTelemetryConfig{}
+			fetched := &mcpv1beta1.MCPTelemetryConfig{}
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      telemetryConfig.Name,
 				Namespace: telemetryConfig.Namespace,

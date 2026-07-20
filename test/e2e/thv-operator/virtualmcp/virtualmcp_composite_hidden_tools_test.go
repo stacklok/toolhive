@@ -8,13 +8,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	thvjson "github.com/stacklok/toolhive/pkg/json"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 	"github.com/stacklok/toolhive/test/e2e/images"
@@ -60,77 +61,73 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 			images.YardstickServerImage, timeout, pollingInterval)
 
 		By("Creating VirtualMCPServer with mixed ExcludeAll and Filter configuration")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-			Spec: mcpv1alpha1.VirtualMCPServerSpec{
-				GroupRef: &mcpv1alpha1.MCPGroupRef{Name: mcpGroupName},
-				Config: vmcpconfig.Config{
-					Group: mcpGroupName,
-					Aggregation: &vmcpconfig.AggregationConfig{
-						ConflictResolution: "prefix",
-						Tools: []*vmcpconfig.WorkloadToolConfig{
-							{
-								// Backend A: Hide ALL tools using ExcludeAll
-								Workload:   backendAName,
-								ExcludeAll: true,
-							},
-							{
-								// Backend B: Hide tools using Filter (only expose non-existent tool name)
-								// This effectively hides all backend tools while keeping them in routing table
-								Workload: backendBName,
-								Filter:   []string{"nonexistent_tool_for_filter_test"},
-							},
-						},
-					},
-					// Define a composite tool that uses tools from BOTH hidden backends
-					CompositeTools: []vmcpconfig.CompositeToolConfig{
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace,
+			v1beta1test.WithVMCPGroupRef(mcpGroupName),
+			v1beta1test.WithVMCPConfig(vmcpconfig.Config{
+				Group: mcpGroupName,
+				Aggregation: &vmcpconfig.AggregationConfig{
+					ConflictResolution: "prefix",
+					Tools: []*vmcpconfig.WorkloadToolConfig{
 						{
-							Name:        compositeToolName,
-							Description: "A composite tool that echoes via both hidden backends",
-							Parameters: thvjson.NewMap(map[string]any{
-								"type": "object",
-								"properties": map[string]any{
-									"message": map[string]any{
-										"type":        "string",
-										"description": "The message to echo through both backends",
-									},
+							// Backend A: Hide ALL tools using ExcludeAll
+							Workload:   backendAName,
+							ExcludeAll: true,
+						},
+						{
+							// Backend B: Hide tools using Filter (only expose non-existent tool name)
+							// This effectively hides all backend tools while keeping them in routing table
+							Workload: backendBName,
+							Filter:   []string{"nonexistent_tool_for_filter_test"},
+						},
+					},
+				},
+				// Define a composite tool that uses tools from BOTH hidden backends
+				CompositeTools: []vmcpconfig.CompositeToolConfig{
+					{
+						Name:        compositeToolName,
+						Description: "A composite tool that echoes via both hidden backends",
+						Parameters: thvjson.NewMap(map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"message": map[string]any{
+									"type":        "string",
+									"description": "The message to echo through both backends",
 								},
-								"required": []any{"message"},
-							}),
-							Timeout: vmcpconfig.Duration(30 * time.Second),
-							Steps: []vmcpconfig.WorkflowStepConfig{
-								{
-									// Step 1: Echo through Backend A (ExcludeAll)
-									ID:   "echo_backend_a",
-									Type: "tool",
-									Tool: fmt.Sprintf("%s_echo", backendAName),
-									Arguments: thvjson.NewMap(map[string]any{
-										"input": "{{ .params.message }}",
-									}),
-								},
-								{
-									// Step 2: Echo through Backend B (Filter)
-									ID:   "echo_backend_b",
-									Type: "tool",
-									Tool: fmt.Sprintf("%s_echo", backendBName),
-									Arguments: thvjson.NewMap(map[string]any{
-										"input": "{{ .params.message }}",
-									}),
-									DependsOn: []string{"echo_backend_a"},
-								},
+							},
+							"required": []any{"message"},
+						}),
+						Timeout: vmcpconfig.Duration(30 * time.Second),
+						Steps: []vmcpconfig.WorkflowStepConfig{
+							{
+								// Step 1: Echo through Backend A (ExcludeAll)
+								ID:   "echo_backend_a",
+								Type: "tool",
+								Tool: fmt.Sprintf("%s_echo", backendAName),
+								Arguments: thvjson.NewMap(map[string]any{
+									"input": "{{ .params.message }}",
+								}),
+							},
+							{
+								// Step 2: Echo through Backend B (Filter)
+								ID:   "echo_backend_b",
+								Type: "tool",
+								Tool: fmt.Sprintf("%s_echo", backendBName),
+								Arguments: thvjson.NewMap(map[string]any{
+									"input": "{{ .params.message }}",
+								}),
+								DependsOn: []string{"echo_backend_a"},
 							},
 						},
 					},
 				},
-				IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-					Type: "anonymous",
-				},
-				ServiceType: "NodePort",
-			},
-		}
+			}),
+			v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+				Type: "anonymous",
+			}),
+			v1beta1test.MutateVMCP(func(v *mcpv1beta1.VirtualMCPServer) {
+				v.Spec.ServiceType = "NodePort"
+			}),
+		)
 		Expect(k8sClient.Create(ctx, vmcpServer)).To(Succeed())
 
 		By("Waiting for VirtualMCPServer to be ready")
@@ -144,16 +141,11 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 
 	AfterAll(func() {
 		By("Cleaning up VirtualMCPServer")
-		vmcpServer := &mcpv1alpha1.VirtualMCPServer{
-			ObjectMeta: metav1.ObjectMeta{
-				Name:      vmcpServerName,
-				Namespace: testNamespace,
-			},
-		}
+		vmcpServer := v1beta1test.NewVirtualMCPServer(vmcpServerName, testNamespace)
 		_ = k8sClient.Delete(ctx, vmcpServer)
 
 		By("Cleaning up backend A MCPServer")
-		backendA := &mcpv1alpha1.MCPServer{
+		backendA := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backendAName,
 				Namespace: testNamespace,
@@ -162,7 +154,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 		_ = k8sClient.Delete(ctx, backendA)
 
 		By("Cleaning up backend B MCPServer")
-		backendB := &mcpv1alpha1.MCPServer{
+		backendB := &mcpv1beta1.MCPServer{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      backendBName,
 				Namespace: testNamespace,
@@ -171,7 +163,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 		_ = k8sClient.Delete(ctx, backendB)
 
 		By("Cleaning up MCPGroup")
-		mcpGroup := &mcpv1alpha1.MCPGroup{
+		mcpGroup := &mcpv1beta1.MCPGroup{
 			ObjectMeta: metav1.ObjectMeta{
 				Name:      mcpGroupName,
 				Namespace: testNamespace,
@@ -258,7 +250,7 @@ var _ = Describe("VirtualMCPServer Composite with Hidden Backend Tools", Ordered
 
 	Context("when verifying configuration", func() {
 		It("should have correct ExcludeAll and Filter configuration", func() {
-			var vmcpServer mcpv1alpha1.VirtualMCPServer
+			var vmcpServer mcpv1beta1.VirtualMCPServer
 			err := k8sClient.Get(ctx, types.NamespacedName{
 				Name:      vmcpServerName,
 				Namespace: testNamespace,

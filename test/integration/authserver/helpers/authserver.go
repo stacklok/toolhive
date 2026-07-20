@@ -21,34 +21,14 @@ type AuthServerOption func(*authServerConfig)
 
 // authServerConfig holds configuration for creating a test auth server.
 type authServerConfig struct {
-	issuer           string
-	upstreams        []authserver.UpstreamRunConfig
-	allowedAudiences []string
-	signingKeyConfig *authserver.SigningKeyRunConfig
-	hmacSecretFiles  []string
-	tokenLifespans   *authserver.TokenLifespanRunConfig
-	scopesSupported  []string
-}
-
-// WithIssuer sets the issuer URL.
-func WithIssuer(issuer string) AuthServerOption {
-	return func(c *authServerConfig) {
-		c.issuer = issuer
-	}
-}
-
-// WithUpstreams sets the upstream IDP configurations.
-func WithUpstreams(upstreams []authserver.UpstreamRunConfig) AuthServerOption {
-	return func(c *authServerConfig) {
-		c.upstreams = upstreams
-	}
-}
-
-// WithAllowedAudiences sets the allowed resource audiences.
-func WithAllowedAudiences(audiences []string) AuthServerOption {
-	return func(c *authServerConfig) {
-		c.allowedAudiences = audiences
-	}
+	issuer               string
+	upstreams            []authserver.UpstreamRunConfig
+	allowedAudiences     []string
+	signingKeyConfig     *authserver.SigningKeyRunConfig
+	hmacSecretFiles      []string
+	tokenLifespans       *authserver.TokenLifespanRunConfig
+	scopesSupported      []string
+	baselineClientScopes []string
 }
 
 // WithSigningKey sets the signing key configuration.
@@ -58,24 +38,43 @@ func WithSigningKey(cfg *authserver.SigningKeyRunConfig) AuthServerOption {
 	}
 }
 
-// WithHMACSecrets sets the HMAC secret file paths.
-func WithHMACSecrets(files []string) AuthServerOption {
-	return func(c *authServerConfig) {
-		c.hmacSecretFiles = files
-	}
-}
-
-// WithTokenLifespans sets the token lifespan configuration.
-func WithTokenLifespans(cfg *authserver.TokenLifespanRunConfig) AuthServerOption {
-	return func(c *authServerConfig) {
-		c.tokenLifespans = cfg
-	}
-}
-
 // WithScopesSupported sets the supported scopes.
 func WithScopesSupported(scopes []string) AuthServerOption {
 	return func(c *authServerConfig) {
 		c.scopesSupported = scopes
+	}
+}
+
+// WithBaselineClientScopes sets the baseline client scopes that are unioned
+// into every DCR registration response regardless of what the client requested.
+func WithBaselineClientScopes(scopes []string) AuthServerOption {
+	return func(c *authServerConfig) {
+		c.baselineClientScopes = scopes
+	}
+}
+
+// WithUpstreams overrides the default single test upstream with an explicit,
+// ordered list of upstream providers. Used to exercise multi-upstream
+// authorization chains.
+func WithUpstreams(upstreams []authserver.UpstreamRunConfig) AuthServerOption {
+	return func(c *authServerConfig) {
+		c.upstreams = upstreams
+	}
+}
+
+// NewOAuth2Upstream builds an OAuth2 upstream run config pointing at the given
+// mock upstream base URL. It has no userinfo endpoint, so the auth server resolves
+// a synthetic identity for it — sufficient for exercising chain traversal.
+func NewOAuth2Upstream(name, upstreamURL string) authserver.UpstreamRunConfig {
+	return authserver.UpstreamRunConfig{
+		Name: name,
+		Type: authserver.UpstreamProviderTypeOAuth2,
+		OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+			AuthorizationEndpoint: upstreamURL + "/authorize",
+			TokenEndpoint:         upstreamURL + "/token",
+			ClientID:              "test-client-id",
+			RedirectURI:           upstreamURL + "/callback",
+		},
 	}
 }
 
@@ -130,14 +129,15 @@ func NewTestAuthServerConfig(tb testing.TB, upstreamURL string, opts ...AuthServ
 	}
 
 	return &authserver.RunConfig{
-		SchemaVersion:    authserver.CurrentSchemaVersion,
-		Issuer:           cfg.issuer,
-		SigningKeyConfig: cfg.signingKeyConfig,
-		HMACSecretFiles:  cfg.hmacSecretFiles,
-		TokenLifespans:   cfg.tokenLifespans,
-		Upstreams:        cfg.upstreams,
-		ScopesSupported:  cfg.scopesSupported,
-		AllowedAudiences: cfg.allowedAudiences,
+		SchemaVersion:        authserver.CurrentSchemaVersion,
+		Issuer:               cfg.issuer,
+		SigningKeyConfig:     cfg.signingKeyConfig,
+		HMACSecretFiles:      cfg.hmacSecretFiles,
+		TokenLifespans:       cfg.tokenLifespans,
+		Upstreams:            cfg.upstreams,
+		ScopesSupported:      cfg.scopesSupported,
+		BaselineClientScopes: cfg.baselineClientScopes,
+		AllowedAudiences:     cfg.allowedAudiences,
 	}
 }
 

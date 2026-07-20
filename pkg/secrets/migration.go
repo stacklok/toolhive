@@ -87,7 +87,7 @@ func DiscoverMigrations(ctx context.Context, provider Provider) ([]KeyMigration,
 	for _, desc := range all {
 		key := desc.Key
 		// Skip already-migrated keys.
-		if isSystemKey(key) {
+		if IsSystemKey(key) {
 			continue
 		}
 		for _, mapping := range SystemKeyPrefixMappings {

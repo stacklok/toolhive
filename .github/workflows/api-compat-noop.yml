@@ -1,0 +1,37 @@
+name: API Compatibility
+
+# No-op companion to api-compat.yml. Its sole purpose is to satisfy the
+# required `CRD Schema Compatibility` status check on PRs that don't touch
+# any operator API surface. Without this companion, such PRs deadlock:
+# branch protection requires the check, the real workflow's path filter
+# prevents it from firing, and GitHub shows the required status as
+# "expected — waiting to be reported" forever.
+#
+# The workflow `name:` and job `name:` intentionally mirror api-compat.yml
+# so the check-run context string matches (`CRD Schema Compatibility`).
+# GitHub's branch protection treats a successful report from either
+# workflow as satisfying the requirement.
+#
+# The `paths-ignore` list is the exact inverse of api-compat.yml's
+# `paths:` include list. Keep them in sync: a path that moves from one
+# list needs to move from the other, or PRs touching that path will
+# either run both workflows (double-count) or neither (deadlock returns).
+
+on:
+  pull_request:
+    paths-ignore:
+      - 'cmd/thv-operator/api/**'
+      - 'deploy/charts/operator-crds/files/crds/**'
+      - '.github/workflows/api-compat*.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  crd-schema-check:
+    name: CRD Schema Compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: No API surface changes
+        run: echo "This PR does not touch operator API surface; no compatibility check needed."

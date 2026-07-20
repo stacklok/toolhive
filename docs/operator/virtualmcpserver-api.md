@@ -13,7 +13,7 @@ The `VirtualMCPServer` CRD enables aggregation of multiple backend MCPServers in
 ## API Group and Version
 
 - **Group**: `toolhive.stacklok.dev`
-- **Version**: `v1alpha1`
+- **Version**: \`v1beta1\`
 - **Kind**: `VirtualMCPServer`
 
 ## Resource Names
@@ -56,7 +56,7 @@ A `VirtualMCPServer` aggregates three types of backends from the referenced `MCP
 **Example: MCPServerEntry backend**
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServerEntry
 metadata:
   name: context7
@@ -83,6 +83,35 @@ Configures authentication for clients connecting to the Virtual MCP server. Reus
   - `audience` (string, required): Must be unique per server to prevent token replay
   - `scopes` ([]string, optional): Defaults to `["openid"]`
 - `authzConfig` (AuthzConfigRef, optional): Authorization policy configuration
+  - `type` (string, required): `inline` or `configMap`
+  - `inline` (InlineAuthzConfig, required when type=inline): Inline Cedar policies
+    - `policies` ([]string, required): Cedar policy strings
+    - `entitiesJson` (string, optional): Cedar entities (JSON). Required when
+      transitive policies (e.g. `ClaimGroup` → `PlatformRole`) need a static
+      entity store. Defaults to `"[]"`.
+    - `primaryUpstreamProvider` (string, optional): **Deprecated.** Use
+      `.spec.authServerConfig.primaryUpstreamProvider` instead. Setting this
+      field still resolves a primary upstream for backward compatibility and
+      emits a Warning event with reason
+      `AuthzPrimaryUpstreamProviderDeprecated`. Planned removal one release
+      after the deprecation cycle.
+  - `configMap` (ConfigMapAuthzRef, required when type=configMap): Reference to
+    a ConfigMap holding Cedar policies. The operator resolves the ConfigMap at
+    reconcile time and bakes the policies into the rendered vmcp `config.yaml`.
+    Failures surface as `AuthConfigured=False` with reason
+    `AuthzConfigMapNotFound` (missing reference) or `AuthzConfigMapInvalid`
+    (parse, validation, or non-Cedar payload).
+  - `groupClaimName` (string, optional): JWT claim key Cedar should treat as
+    the group list (overrides the well-known defaults `groups`, `roles`,
+    `cognito:groups`). When `type` is `configMap`, the spec value overrides
+    any `group_claim_name` set in the ConfigMap payload.
+  - `roleClaimName` (string, optional): JWT claim key Cedar should treat as
+    the role list. Same spec-over-ConfigMap precedence as `groupClaimName`.
+  - `groupEntityType` (string, optional): Cedar entity type used for principal
+    parent UIDs synthesised from JWT group/role claims. Defaults to
+    `THVGroup`. Must match the entity type used in the static entity store
+    for transitive `in` checks to resolve. Same spec-over-ConfigMap
+    precedence as `groupClaimName`.
 
 **Important**: The `type` field must always be explicitly specified. When no authentication is required, use `type: anonymous`.
 
@@ -163,6 +192,30 @@ spec:
   - `discovered`: Automatically discover from backend
   - `externalAuthConfigRef`: Reference an MCPExternalAuthConfig resource
 - `externalAuthConfigRef` (ExternalAuthConfigRef, optional): Auth config reference (when type=externalAuthConfigRef)
+
+### `.spec.passthroughHeaders` (optional)
+
+Allowlist of incoming client request headers forwarded verbatim to every
+backend. The value is captured at the auth boundary and injected into the
+session's outgoing backend requests. **Type**: `[]string`. Names are matched
+case-insensitively; restricted headers (`Host`, `Authorization`,
+`X-Forwarded-*`, hop-by-hop) are rejected at startup. Takes precedence over
+`spec.config.passthroughHeaders`.
+
+```yaml
+spec:
+  passthroughHeaders:
+    - x-litellm-api-key   # forwarded to all backends; absent on a request → not forwarded
+```
+
+> **Security:** forwarded headers are caller-controlled. Use only behind a
+> trusted upstream (gateway/mesh) that sets or strips them; pair with
+> `incomingAuth: anonymous` only in that case.
+>
+> **Horizontal scaling:** forwarded headers are not persisted across replicas
+> (only the `(issuer, subject)` identity tuple is). A session restored on
+> another replica re-captures them from the next request — keep clients pinned
+> with `sessionAffinity: ClientIP`.
 
 ### `.spec.config.aggregation` (optional)
 
@@ -448,7 +501,7 @@ The most recent generation observed for this VirtualMCPServer.
 ## Complete Example
 
 ```yaml
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: VirtualMCPServer
 metadata:
   name: engineering-vmcp
@@ -600,10 +653,10 @@ The VirtualMCPServer CRD includes comprehensive validation:
 
 ## Related Resources
 
-- [MCPGroup](./mcpgroup-api.md): Defines groups of MCPServers
-- [MCPServer](./mcpserver-api.md): Individual MCP server instances
+- [MCPGroup](./crd-api.md#apiv1beta1mcpgroup): Defines groups of MCPServers
+- [MCPServer](./crd-api.md#apiv1beta1mcpserver): Individual MCP server instances
 - [MCPOIDCConfig](../../examples/operator/mcp-servers/mcpserver_with_oidcconfig_ref.yaml): Shared OIDC provider configuration (referenced via `oidcConfigRef`)
-- [MCPExternalAuthConfig](./mcpexternalauthconfig-api.md): External authentication configuration
-- [MCPToolConfig](./toolconfig-api.md): Tool filtering and renaming configuration
+- [MCPExternalAuthConfig](./crd-api.md#apiv1beta1mcpexternalauthconfig): External authentication configuration
+- [MCPToolConfig](./crd-api.md#apiv1beta1mcptoolconfig): Tool filtering and renaming configuration
 - [Virtual MCP Server Observability](./virtualmcpserver-observability.md): Telemetry and metrics documentation
-- [Virtual MCP Proposal](../proposals/THV-2106-virtual-mcp-server.md): Complete design proposal
+- [Virtual MCP Proposal](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0008-virtual-mcp-server.md): Complete design proposal

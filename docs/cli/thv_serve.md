@@ -24,9 +24,6 @@ thv serve [flags]
 ### Options
 
 ```
-      --experimental-mcp                  EXPERIMENTAL: Enable embedded MCP server for controlling ToolHive
-      --experimental-mcp-host string      EXPERIMENTAL: Host for the embedded MCP server (default "localhost")
-      --experimental-mcp-port string      EXPERIMENTAL: Port for the embedded MCP server (default "4483")
   -h, --help                              help for serve
       --host string                       Host address to bind the server to (default "127.0.0.1")
       --oidc-audience string              Expected audience for the token
@@ -41,7 +38,7 @@ thv serve [flags]
       --sentry-dsn string                 Sentry DSN for error tracking and distributed tracing (falls back to SENTRY_DSN env var)
       --sentry-environment string         Sentry environment name, e.g. production or development (falls back to SENTRY_ENVIRONMENT env var)
       --sentry-traces-sample-rate float   Sentry traces sample rate (0.0-1.0) for performance monitoring (default 1)
-      --socket string                     UNIX socket path to bind the server to (overrides host and port if provided)
+      --socket string                     UNIX socket path or, on Windows, a named pipe (\\.\pipe\<name>) to bind the server to (overrides host and port if provided)
 ```
 
 ### Options inherited from parent commands

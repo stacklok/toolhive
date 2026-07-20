@@ -9,11 +9,12 @@ import (
 	"strings"
 	"time"
 
-	mcpclient "github.com/mark3labs/mcp-go/client"
-	"github.com/mark3labs/mcp-go/client/transport"
-	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+
+	mcpclient "github.com/stacklok/toolhive-core/mcpcompat/client"
+	"github.com/stacklok/toolhive-core/mcpcompat/client/transport"
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 )
 
 // WaitForExpectedTools creates MCP sessions with retry until the validateTools
@@ -134,29 +135,6 @@ func ToolsContainAll(tools []mcp.Tool, expectedNames ...string) error {
 	}
 	if len(missing) > 0 {
 		return fmt.Errorf("missing expected tools %v; got %v", missing, toolNames(tools))
-	}
-	return nil
-}
-
-// ToolsContainSubstring checks if the tool list contains at least one tool whose
-// name contains each of the given substrings. Returns an error if any substring
-// has no matching tool.
-func ToolsContainSubstring(tools []mcp.Tool, substrings ...string) error {
-	var missing []string
-	for _, sub := range substrings {
-		found := false
-		for _, t := range tools {
-			if strings.Contains(t.Name, sub) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			missing = append(missing, sub)
-		}
-	}
-	if len(missing) > 0 {
-		return fmt.Errorf("no tools matching substrings %v; got %v", missing, toolNames(tools))
 	}
 	return nil
 }

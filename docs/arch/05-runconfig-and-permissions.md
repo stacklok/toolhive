@@ -70,7 +70,7 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 }
 ```
 
-**Implementation**: `pkg/runner/config.go-49`
+**Implementation**: `pkg/runner/config.go`
 
 #### Runtime Configuration
 
@@ -90,9 +90,9 @@ The complete `RunConfig` struct is defined in `pkg/runner/config.go`.
 
 **Fields:**
 - `builder_image`: Override the default base image for the builder stage
-  - Go: Default `golang:1.25-alpine`
-  - Node: Default `node:22-alpine`
-  - Python: Default `python:3.13-slim`
+  - Go: Default `golang:1.26-alpine`
+  - Node: Default `node:24-alpine`
+  - Python: Default `python:3.14-slim`
 - `additional_packages`: Extra packages to install during the build and runtime stages (e.g., build tools, libraries)
 
 **CLI usage:**
@@ -109,12 +109,12 @@ thv run uvx://mcp-server \
 
 **Configuration priority** (highest to lowest):
 1. Per-workload override in `RunConfig.RuntimeConfig`
-2. User config file (`~/.toolhive/config.yaml` `runtimeConfigs` map)
+2. User config file (`$XDG_CONFIG_HOME/toolhive/config.yaml` `runtimeConfigs` map)
 3. Built-in defaults
 
-**Note**: For Go workloads, only the builder image is configurable. The runtime stage always uses `alpine:3.22` for simplicity and security.
+**Note**: For Go workloads, only the builder image is configurable. The runtime stage always uses `alpine:3.23` for simplicity and security.
 
-**Implementation**: `pkg/runner/config.go-198`, `pkg/container/templates/runtime_config.go`
+**Implementation**: `pkg/runner/config.go`, `pkg/container/templates/runtime_config.go`
 
 #### Transport Configuration
 
@@ -147,7 +147,7 @@ thv run uvx://mcp-server \
 - `target_host`: Container host (default: `127.0.0.1`)
 - `proxy_mode`: For stdio: `sse` or `streamable-http`
 
-**Implementation**: `pkg/runner/config.go-76`, `139`
+**Implementation**: `pkg/runner/config.go`
 
 #### Environment Variables
 
@@ -178,7 +178,7 @@ thv run uvx://mcp-server \
 }
 ```
 
-**Implementation**: `pkg/runner/config.go-88`, `290-303`
+**Implementation**: `pkg/runner/config.go`
 
 #### Volumes
 
@@ -196,7 +196,7 @@ thv run uvx://mcp-server \
 
 **Relative paths**: Resolved relative to current directory
 
-**Implementation**: `pkg/runner/config.go-95`
+**Implementation**: `pkg/runner/config.go`
 
 #### Secrets
 
@@ -216,11 +216,10 @@ thv run uvx://mcp-server \
 - `encrypted`: Encrypted local storage
 - `1password`: 1Password SDK integration
 - `environment`: Environment variable provider
-- `none`: No-op provider (for testing)
 
 **Note**: There is no automatic default provider. Users must run `thv secret setup` to configure a provider before using secrets functionality.
 
-**Implementation**: `pkg/runner/config.go`, `307-341`
+**Implementation**: `pkg/runner/config.go`
 
 ### Middleware Configuration
 
@@ -238,7 +237,7 @@ thv run uvx://mcp-server \
       }
     },
     {
-      "type": "authz",
+      "type": "authorization",
       "parameters": {
         "policies": "permit(...);"
       }
@@ -247,17 +246,26 @@ thv run uvx://mcp-server \
 }
 ```
 
-**Middleware types:**
+**Middleware types** (registered in `GetSupportedMiddlewareFactories` in `pkg/runner/middleware.go`):
 - `auth` - JWT authentication
-- `tokenexchange` - OAuth token exchange
+- `tokenexchange` - OAuth 2.0 token exchange (RFC 8693)
+- `upstreamswap` - Swap ToolHive JWTs for upstream IdP tokens (embedded auth server)
+- `awssts` - AWS STS credential exchange
+- `obo` - On-Behalf-Of token flow
+- `mcp-parser` - Parse JSON-RPC (always present)
 - `tool-filter` - Filter tool lists
 - `tool-call-filter` - Filter tool calls
-- `mcp-parser` - Parse JSON-RPC (always present)
+- `ratelimit` - Request rate limiting
+- `usagemetrics` - Usage telemetry
 - `telemetry` - OpenTelemetry
-- `authz` - Cedar authorization
+- `authorization` - Cedar authorization
 - `audit` - Request logging
+- `recovery` - Panic recovery
+- `header-forward` - Forward request headers to upstream (constant: `HeaderForwardMiddlewareName`)
+- `validating-webhook` - Validating admission webhook
+- `mutating-webhook` - Mutating admission webhook
 
-**Implementation**: `pkg/runner/config.go-161`, `pkg/transport/types/transport.go-39`
+**Implementation**: `pkg/runner/config.go`, `pkg/transport/types/transport.go`
 
 ### Tool Filtering
 
@@ -283,7 +291,7 @@ thv run uvx://mcp-server \
 }
 ```
 
-**Implementation**: `pkg/runner/config.go-154`, `464-472`
+**Implementation**: `pkg/runner/config.go`
 
 ## RunConfig Lifecycle
 
@@ -319,7 +327,7 @@ config, err := runner.ReadJSON(reader)
 - Unknown fields ignored (forward compatibility)
 - Required fields validated
 
-**Implementation**: `pkg/runner/config.go-206`
+**Implementation**: `pkg/runner/config.go`
 
 ### State Storage
 
@@ -364,7 +372,7 @@ Permission profiles define security boundaries for MCP servers using a defense-i
 2. **Network isolation** - Control inbound/outbound connections
 3. **Privilege isolation** - Avoid privileged mode
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 ### Profile Structure
 
@@ -377,6 +385,8 @@ type Profile struct {
     Privileged bool                `json:"privileged,omitempty"`
 }
 ```
+
+`NetworkPermissions` also carries a `Mode` field (`"host"`, `"bridge"`, `"none"`) that selects the container runtime network mode; when empty, the runtime default is used. Network isolation is only enforceable in bridge mode; see [Network isolation requires bridge networking](#network-isolation-requires-bridge-networking).
 
 ### Filesystem Permissions
 
@@ -408,7 +418,7 @@ Three formats supported:
 - Architectural reason: Containers run Linux internally, requiring Linux-style paths
 - Example: `C:\Users\name\data:/data` (Windows host → Linux container path)
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 #### Read vs Write
 
@@ -437,7 +447,7 @@ Three formats supported:
 - Command injection patterns rejected
 - Windows paths handled specially
 
-**Implementation**: `pkg/permissions/profile.go-182`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 ### Network Permissions
 
@@ -488,7 +498,7 @@ Three formats supported:
 }
 ```
 
-**Implementation**: `pkg/permissions/profile.go-66`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 #### Inbound Connections
 
@@ -505,7 +515,7 @@ Three formats supported:
 
 **Note**: Inbound restrictions currently have limited implementation.
 
-**Implementation**: `pkg/permissions/profile.go-72`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 #### Network Isolation
 
@@ -523,6 +533,30 @@ When `isolate_network: true` in RunConfig:
 - ACL-based filtering of hosts and ports
 
 **Implementation**: `pkg/container/docker/squid.go`, `pkg/networking/`
+
+##### Network isolation requires bridge networking
+
+Network isolation is a bridge-topology construct: it builds a per-workload
+`internal=true` network plus DNS (dnsmasq) and egress/ingress (Squid) sidecars,
+attaching the MCP container to the internal network only. This only works when
+the network mode is bridge (`""`, `bridge`, or `default`). For non-bridge modes
+the sidecars have no route out and the workload bypasses them entirely, so
+isolation is dropped:
+
+| Network mode | `--isolate-network` | Behavior |
+| --- | --- | --- |
+| bridge/`""`/`default` | any | Isolation enforced as designed |
+| `host` (or other non-bridge) | defaulted | Isolation dropped, `WARN` logged (dropping isolation reduces confinement) |
+| `host` (or other non-bridge) | explicitly `true` | Build fails with an error naming both ways out |
+| `none` | any | Isolation dropped silently (`DEBUG`), since `none` is already maximally confined |
+
+`host` and `none` are intentionally asymmetric: dropping isolation for a
+host-networked workload is a real reduction in confinement (warn, or fail fast
+when explicitly requested), whereas `none` already blocks all networking, so
+isolation is merely redundant. This is enforced at three layers: config build
+(`pkg/runner/config_builder.go`), config load (`pkg/runner/config.go` `ReadJSON`
+self-heals legacy on-disk configs), and deploy (`pkg/container/docker/client.go`
+as a safety net for restart paths). See issue #5775.
 
 ### Privileged Mode
 
@@ -547,7 +581,7 @@ When `isolate_network: true` in RunConfig:
 }
 ```
 
-**Implementation**: `pkg/permissions/profile.go-44`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 ### Built-in Profiles
 
@@ -573,7 +607,7 @@ When `isolate_network: true` in RunConfig:
 
 **Use for**: Maximum security, no external access needed
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 #### `network` Profile
 
@@ -595,7 +629,7 @@ When `isolate_network: true` in RunConfig:
 
 **Use for**: API calls, web scraping, external services
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 ### Custom Profiles
 
@@ -624,17 +658,17 @@ Custom permission profiles can be defined in JSON files for reusable security po
 
 **Profile resolution**: Profiles can be referenced by name (built-in), file path (custom), or from registry metadata (server-specific defaults).
 
-**Implementation**: `pkg/permissions/profile.go`
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`
 
 ### Profile Selection
 
 **Priority order:**
 1. Direct profile object: `WithPermissionProfile(profile)` (programmatic use)
-2. Command-line flag: `--permission-profile <name|path>` (supports "none", "network", "stdio", or file path)
+2. Command-line flag: `--permission-profile <name|path>` (supports "none", "network", or file path)
 3. Registry default: From server metadata
 4. Global default: `network`
 
-**Implementation**: `pkg/permissions/`, registry metadata
+**Implementation**: `github.com/stacklok/toolhive-core/permissions`, registry metadata
 
 ## Security Best Practices
 
@@ -683,7 +717,7 @@ Custom permission profiles can be defined in JSON files for reusable security po
 }
 ```
 
-**Implementation**: `pkg/networking/`, `pkg/permissions/profile.go`
+**Implementation**: `pkg/networking/`, `github.com/stacklok/toolhive-core/permissions`
 
 ### Secrets Management
 
@@ -699,7 +733,6 @@ Custom permission profiles can be defined in JSON files for reusable security po
 - **encrypted**: Password-protected local storage
 - **1password**: 1Password SDK integration for enterprise vaults
 - **environment**: CI/CD environment variables
-- **none**: Testing/development no-op provider
 
 **Implementation**: `pkg/secrets/`, `pkg/runner/config.go`
 
@@ -738,3 +771,4 @@ Custom permission profiles can be defined in JSON files for reusable security po
 - [Deployment Modes](01-deployment-modes.md) - RunConfig portability
 - [Transport Architecture](03-transport-architecture.md) - Transport configuration
 - [Operator Architecture](09-operator-architecture.md) - K8s-specific configuration
+- [Registry System](06-registry-system.md) - Registry metadata that seeds RunConfig for a server

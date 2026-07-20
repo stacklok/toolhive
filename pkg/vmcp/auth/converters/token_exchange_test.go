@@ -15,7 +15,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
 )
 
@@ -31,24 +31,24 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		externalAuth *mcpv1alpha1.MCPExternalAuthConfig
+		externalAuth *mcpv1beta1.MCPExternalAuthConfig
 		wantStrategy *authtypes.BackendAuthStrategy
 		wantErr      bool
 		errContains  string
 	}{
 		{
 			name: "full token exchange config",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://auth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "client-secret",
 							Key:  "secret",
 						},
@@ -74,14 +74,14 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "minimal token exchange config",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "minimal-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://auth.example.com/token",
 					},
 				},
@@ -96,14 +96,14 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "token exchange without client secret",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "no-secret-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://auth.example.com/token",
 						ClientID: "test-client",
 						Audience: "https://api.example.com",
@@ -122,14 +122,14 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "subject token type id_token short form",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "id-token-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL:         "https://auth.example.com/token",
 						SubjectTokenType: "id_token",
 					},
@@ -146,14 +146,14 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "subject token type jwt short form",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "jwt-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL:         "https://auth.example.com/token",
 						SubjectTokenType: "jwt",
 					},
@@ -170,14 +170,14 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "subject token type already full URN",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "urn-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL:         "https://auth.example.com/token",
 						SubjectTokenType: "urn:ietf:params:oauth:token-type:access_token",
 					},
@@ -194,14 +194,14 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "with scopes array",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "scopes-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://auth.example.com/token",
 						Scopes:   []string{"openid", "profile", "email"},
 					},
@@ -218,14 +218,14 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "with subject provider name",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "subject-provider-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL:            "https://auth.example.com/token",
 						Audience:            "https://api.example.com",
 						SubjectProviderName: "github",
@@ -244,14 +244,14 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "subject provider name absent defaults to empty",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "no-subject-provider-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://auth.example.com/token",
 						Audience: "https://api.example.com",
 					},
@@ -268,13 +268,13 @@ func TestTokenExchangeConverter_ConvertToStrategy(t *testing.T) {
 		},
 		{
 			name: "nil token exchange config",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "nil-config",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type:          mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type:          mcpv1beta1.ExternalAuthTypeTokenExchange,
 					TokenExchange: nil,
 				},
 			},
@@ -309,7 +309,7 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		externalAuth  *mcpv1alpha1.MCPExternalAuthConfig
+		externalAuth  *mcpv1beta1.MCPExternalAuthConfig
 		setupSecrets  func(client.Client) error
 		inputStrategy *authtypes.BackendAuthStrategy
 		wantStrategy  *authtypes.BackendAuthStrategy
@@ -318,17 +318,17 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 	}{
 		{
 			name: "successful secret resolution",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://auth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "client-secret",
 							Key:  "secret",
 						},
@@ -368,14 +368,14 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "no-op when client_secret_ref not present",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL:        "https://auth.example.com/token",
 						ClientID:        "test-client",
 						ClientSecretRef: nil, // No secret ref, so no-op
@@ -400,14 +400,14 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "minimal config no-op",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "minimal-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://auth.example.com/token",
 					},
 				},
@@ -428,13 +428,13 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "nil strategy",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type:          mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type:          mcpv1beta1.ExternalAuthTypeTokenExchange,
 					TokenExchange: nil,
 				},
 			},
@@ -444,13 +444,13 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "nil token exchange config in external auth",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type:          mcpv1alpha1.ExternalAuthTypeTokenExchange,
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type:          mcpv1beta1.ExternalAuthTypeTokenExchange,
 					TokenExchange: nil,
 				},
 			},
@@ -463,14 +463,14 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "nil clientSecretRef",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL:        "https://auth.example.com/token",
 						ClientID:        "test-client",
 						ClientSecretRef: nil,
@@ -493,17 +493,17 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "missing secret",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://auth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "nonexistent-secret",
 							Key:  "secret",
 						},
@@ -521,17 +521,17 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 		},
 		{
 			name: "missing key in secret",
-			externalAuth: &mcpv1alpha1.MCPExternalAuthConfig{
+			externalAuth: &mcpv1beta1.MCPExternalAuthConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "test-auth",
 					Namespace: "default",
 				},
-				Spec: mcpv1alpha1.MCPExternalAuthConfigSpec{
-					Type: mcpv1alpha1.ExternalAuthTypeTokenExchange,
-					TokenExchange: &mcpv1alpha1.TokenExchangeConfig{
+				Spec: mcpv1beta1.MCPExternalAuthConfigSpec{
+					Type: mcpv1beta1.ExternalAuthTypeTokenExchange,
+					TokenExchange: &mcpv1beta1.TokenExchangeConfig{
 						TokenURL: "https://auth.example.com/token",
 						ClientID: "test-client",
-						ClientSecretRef: &mcpv1alpha1.SecretKeyRef{
+						ClientSecretRef: &mcpv1beta1.SecretKeyRef{
 							Name: "client-secret",
 							Key:  "wrong-key",
 						},
@@ -567,7 +567,7 @@ func TestTokenExchangeConverter_ResolveSecrets(t *testing.T) {
 
 			// Create fake client with schemes
 			scheme := runtime.NewScheme()
-			_ = mcpv1alpha1.AddToScheme(scheme)
+			_ = mcpv1beta1.AddToScheme(scheme)
 			_ = corev1.AddToScheme(scheme)
 			fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
 

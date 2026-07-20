@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -104,6 +105,9 @@ type RunFlags struct {
 	// Endpoint prefix for SSE endpoint URLs
 	EndpointPrefix string
 
+	// SessionTTL is the session inactivity timeout. Zero uses the transport default.
+	SessionTTL time.Duration
+
 	// Network mode
 	Network string
 
@@ -137,6 +141,12 @@ type RunFlags struct {
 	RemoteForwardHeaders       []string
 	RemoteForwardHeadersSecret []string
 
+	// AllowedOrigins is the HTTP Origin-header allowlist for DNS-rebinding protection
+	// (MCP 2025-11-25 §"Security Warning"). Empty with a loopback host auto-derives
+	// loopback-only defaults; empty with a non-loopback host disables the check
+	// (operator must supply explicit origins for public bind).
+	AllowedOrigins []string
+
 	// Runtime configuration
 	RuntimeImage       string
 	RuntimeAddPackages []string
@@ -156,6 +166,10 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().StringVar(&config.Name, "name", "", "Name of the MCP server (default to auto-generated from image)")
 	cmd.Flags().StringVar(&config.Group, "group", "default", "Name of the group this workload should belong to")
 	cmd.Flags().StringVar(&config.Host, "host", transport.LocalhostIPv4, "Host for the HTTP proxy to listen on (IP or hostname)")
+	cmd.Flags().StringArrayVar(&config.AllowedOrigins, "allowed-origins", nil,
+		"Exact-match allowlist for the HTTP Origin header (repeatable). Recommended when binding publicly; "+
+			"loopback binds derive a default allowlist automatically, non-loopback binds log a warning when "+
+			"no value is supplied. Example: https://my-mcp.example.com")
 	cmd.Flags().IntVar(&config.ProxyPort, "proxy-port", 0, "Port for the HTTP proxy to listen on (host port)")
 	cmd.Flags().IntVar(&config.TargetPort, "target-port", 0,
 		"Port for the container to expose (only applicable to SSE or Streamable HTTP transport)")
@@ -253,21 +267,27 @@ func AddRunFlags(cmd *cobra.Command, config *RunFlags) {
 	cmd.Flags().BoolVar(&config.OtelUseLegacyAttributes, "otel-use-legacy-attributes", true,
 		"Emit legacy attribute names alongside new OTEL semantic convention names (default true)")
 
-	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", false,
-		"Isolate the container network from the host (default false)")
+	cmd.Flags().BoolVar(&config.IsolateNetwork, "isolate-network", true,
+		"Isolate the container network from the host. Use --isolate-network=false to opt out. "+
+			"Not enforced with --network host or --network none (isolation requires bridge networking).")
 	cmd.Flags().BoolVar(&config.AllowDockerGateway, "allow-docker-gateway", false,
 		"Allow outbound connections to Docker gateway addresses (host.docker.internal, gateway.docker.internal, 172.17.0.1). "+
-			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled.")
+			"Only applies when --isolate-network is set. These are blocked by default even when insecure_allow_all is enabled. "+
+			"Gateway access is port-independent: it ignores the permission profile's allowed ports, so once enabled the "+
+			"gateway is reachable on any port.")
 	cmd.Flags().BoolVar(&config.TrustProxyHeaders, "trust-proxy-headers", false,
 		"Trust X-Forwarded-* headers from reverse proxies (X-Forwarded-Proto, X-Forwarded-Host, X-Forwarded-Port, X-Forwarded-Prefix) "+
 			"(default false)")
 	cmd.Flags().BoolVar(&config.Stateless, "stateless", false,
 		"Declare the server as stateless (POST-only, no SSE). "+
 			"Use for MCP servers implementing streamable-HTTP stateless mode.")
+	cmd.Flags().DurationVar(&config.SessionTTL, "session-ttl", 0,
+		"Session inactivity timeout (e.g., 30m, 2h); zero uses the default (2h)")
 	cmd.Flags().StringVar(&config.EndpointPrefix, "endpoint-prefix", "",
 		"Path prefix to prepend to SSE endpoint URLs (e.g., /playwright)")
 	cmd.Flags().StringVar(&config.Network, "network", "",
-		"Connect the container to a network (e.g., 'host' for host networking)")
+		"Connect the container to a network (e.g., 'host' for host networking). "+
+			"Note: 'host' and 'none' cannot enforce network isolation, so isolation is dropped for those modes.")
 	cmd.Flags().StringArrayVarP(&config.Labels, "label", "l", []string{}, "Set labels on the container (format: key=value)")
 	cmd.Flags().BoolVarP(&config.Foreground, "foreground", "f", false, "Run in foreground mode (block until container exits) "+
 		"(default false)")
@@ -343,10 +363,15 @@ func BuildRunnerConfig(
 		return nil, err
 	}
 
+	// Whether --isolate-network was explicitly passed (vs. defaulted). This
+	// controls whether an incompatible network mode fails fast or degrades.
+	isolateExplicit := cmd.Flags().Changed("isolate-network")
+
 	if runFlags.RemoteURL != "" {
 		slog.Debug(fmt.Sprintf("Attempting to run remote MCP server: %s", runFlags.RemoteURL))
 		return buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, runFlags.RemoteURL, nil,
-			nil, envVarValidator, oidcConfig, telemetryConfig, appConfig)
+			nil, envVarValidator, oidcConfig, telemetryConfig, appConfig,
+			runner.WithNetworkIsolationExplicit(isolateExplicit))
 	}
 
 	// Resolve image from registry without pulling (fast registry lookup only).
@@ -374,7 +399,8 @@ func BuildRunnerConfig(
 	runConfig, err := buildRunnerConfig(ctx, runFlags, cmdArgs, debugMode, validatedHost, rt, imageURL, serverMetadata,
 		envVars, envVarValidator, oidcConfig, telemetryConfig, appConfig,
 		runner.WithRegistrySourceURLs(regAPIURL, regURL),
-		runner.WithRegistryServerName(regServerName))
+		runner.WithRegistryServerName(regServerName),
+		runner.WithNetworkIsolationExplicit(isolateExplicit))
 	if err != nil {
 		return nil, err
 	}
@@ -665,6 +691,7 @@ func buildRunnerConfig(
 		runner.WithAllowDockerGateway(runFlags.AllowDockerGateway),
 		runner.WithTrustProxyHeaders(runFlags.TrustProxyHeaders),
 		runner.WithStateless(runFlags.Stateless),
+		runner.WithSessionTTL(runFlags.SessionTTL),
 		runner.WithEndpointPrefix(runFlags.EndpointPrefix),
 		runner.WithNetworkMode(runFlags.Network),
 		runner.WithK8sPodPatch(runFlags.K8sPodPatch),
@@ -678,6 +705,7 @@ func buildRunnerConfig(
 			PrintOverlays: runFlags.PrintOverlays,
 		}),
 		runner.WithPublish(runFlags.Publish),
+		runner.WithAllowedOrigins(runFlags.AllowedOrigins),
 	}
 	opts = append(opts, extraOpts...)
 
@@ -948,12 +976,11 @@ func getRemoteAuthFromRemoteServerMetadata(
 	authCfg.AuthorizeURL = firstNonEmpty(f.RemoteAuthAuthorizeURL, oc.AuthorizeURL)
 	authCfg.TokenURL = firstNonEmpty(f.RemoteAuthTokenURL, oc.TokenURL)
 
-	resourceIndicator := firstNonEmpty(f.RemoteAuthResource, oc.Resource)
-	if resourceIndicator != "" {
-		authCfg.Resource = resourceIndicator
-	} else {
-		authCfg.Resource = remote.DefaultResourceIndicator(remoteServerMetadata.URL)
-	}
+	// Resource is only set from explicit user flag or registry metadata.
+	// Unlike the direct-URL path (getRemoteAuthFromRunFlags), --resource-url
+	// derivation is intentionally not applied here: registry metadata is the
+	// authoritative source for the resource indicator in this path.
+	authCfg.Resource = firstNonEmpty(f.RemoteAuthResource, oc.Resource)
 
 	// OAuthParams: REPLACE metadata when CLI provides any key/value.
 	if len(runFlags.OAuthParams) > 0 {
@@ -1147,65 +1174,30 @@ func createOIDCConfig(oidcIssuer, oidcAudience, oidcJwksURL, oidcIntrospectionUR
 	return nil
 }
 
-// createTelemetryConfig creates a telemetry configuration if any telemetry parameters are provided
+// createTelemetryConfig creates a telemetry configuration if any telemetry parameters are provided.
+//
+// The bool inputs have already been resolved by getTelemetryFromFlags
+// (which layers global config defaults under any flag the user did not set),
+// so we forward them as non-nil *bool to the shared builder. This keeps the
+// CLI and the API's POST /api/v1/workloads path on the same build path; see
+// issue #5253.
 func createTelemetryConfig(otelEndpoint string, otelEnablePrometheusMetricsPath bool,
 	otelServiceName string, otelTracingEnabled bool, otelMetricsEnabled bool, otelSamplingRate float64, otelHeaders []string,
 	otelInsecure bool, otelEnvironmentVariables []string, otelCustomAttributes string,
 	otelUseLegacyAttributes bool) *telemetry.Config {
-	if otelEndpoint == "" && !otelEnablePrometheusMetricsPath {
-		return nil
-	}
-
-	// If both tracing and metrics are disabled, skip telemetry entirely.
-	// This allows users to disable telemetry via global config while keeping
-	// the endpoint configured for later re-enablement.
-	if !otelTracingEnabled && !otelMetricsEnabled && !otelEnablePrometheusMetricsPath {
-		return nil
-	}
-
-	// Parse headers from key=value format
-	headers := make(map[string]string)
-	for _, header := range otelHeaders {
-		parts := strings.SplitN(header, "=", 2)
-		if len(parts) == 2 {
-			headers[parts[0]] = parts[1]
-		}
-	}
-
-	// Process environment variables - split comma-separated values
-	var processedEnvVars []string
-	for _, envVarEntry := range otelEnvironmentVariables {
-		// Split by comma and trim whitespace
-		envVars := strings.Split(envVarEntry, ",")
-		for _, envVar := range envVars {
-			trimmed := strings.TrimSpace(envVar)
-			if trimmed != "" {
-				processedEnvVars = append(processedEnvVars, trimmed)
-			}
-		}
-	}
-
-	// Parse custom attributes
-	customAttrs, err := telemetry.ParseCustomAttributes(otelCustomAttributes)
-	if err != nil {
-		// Log the error but don't fail - telemetry is optional
-		slog.Warn(fmt.Sprintf("Failed to parse custom attributes: %v", err))
-		customAttrs = nil
-	}
-
-	telemetryCfg := &telemetry.Config{
-		Endpoint:                    otelEndpoint,
-		ServiceName:                 otelServiceName,
-		ServiceVersion:              "", // resolved at runtime in NewProvider()
-		TracingEnabled:              otelTracingEnabled,
-		MetricsEnabled:              otelMetricsEnabled,
-		Headers:                     headers,
-		Insecure:                    otelInsecure,
-		EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
-		EnvironmentVariables:        processedEnvVars,
-		CustomAttributes:            customAttrs,
-		UseLegacyAttributes:         otelUseLegacyAttributes,
-	}
-	telemetryCfg.SetSamplingRateFromFloat(otelSamplingRate)
-	return telemetryCfg
+	return runner.BuildTelemetryConfigFromAppConfig(
+		cfg.OpenTelemetryConfig{
+			Endpoint:                    otelEndpoint,
+			SamplingRate:                otelSamplingRate,
+			EnvVars:                     otelEnvironmentVariables,
+			MetricsEnabled:              &otelMetricsEnabled,
+			TracingEnabled:              &otelTracingEnabled,
+			Insecure:                    otelInsecure,
+			EnablePrometheusMetricsPath: otelEnablePrometheusMetricsPath,
+			UseLegacyAttributes:         &otelUseLegacyAttributes,
+		},
+		otelServiceName,
+		otelHeaders,
+		otelCustomAttributes,
+	)
 }

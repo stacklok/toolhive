@@ -12,7 +12,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 )
 
@@ -22,7 +22,7 @@ func TestMCPServerPodTemplateSpec_AllCombinations(t *testing.T) {
 		name                   string
 		userTemplate           *runtime.RawExtension
 		serviceAccount         *string
-		secrets                []mcpv1alpha1.SecretRef
+		secrets                []mcpv1beta1.SecretRef
 		expectedServiceAccount string
 		expectedSecrets        int
 		expectedContainers     int
@@ -60,7 +60,7 @@ func TestMCPServerPodTemplateSpec_AllCombinations(t *testing.T) {
 		// Secrets only cases
 		{
 			name: "single_secret_only",
-			secrets: []mcpv1alpha1.SecretRef{
+			secrets: []mcpv1beta1.SecretRef{
 				{Name: "secret1", Key: "key1"},
 			},
 			expectedSecrets:    1,
@@ -69,7 +69,7 @@ func TestMCPServerPodTemplateSpec_AllCombinations(t *testing.T) {
 		},
 		{
 			name: "multiple_secrets_only",
-			secrets: []mcpv1alpha1.SecretRef{
+			secrets: []mcpv1beta1.SecretRef{
 				{Name: "secret1", Key: "key1"},
 				{Name: "secret2", Key: "key2", TargetEnvName: "CUSTOM_ENV"},
 			},
@@ -79,7 +79,7 @@ func TestMCPServerPodTemplateSpec_AllCombinations(t *testing.T) {
 		},
 		{
 			name:        "empty_secrets_only",
-			secrets:     []mcpv1alpha1.SecretRef{},
+			secrets:     []mcpv1beta1.SecretRef{},
 			expectNil:   true,
 			description: "Empty secrets slice should return nil",
 		},
@@ -88,7 +88,7 @@ func TestMCPServerPodTemplateSpec_AllCombinations(t *testing.T) {
 		{
 			name:           "service_account_and_single_secret",
 			serviceAccount: ptr.To("test-sa"),
-			secrets: []mcpv1alpha1.SecretRef{
+			secrets: []mcpv1beta1.SecretRef{
 				{Name: "secret1", Key: "key1"},
 			},
 			expectedServiceAccount: "test-sa",
@@ -99,7 +99,7 @@ func TestMCPServerPodTemplateSpec_AllCombinations(t *testing.T) {
 		{
 			name:           "service_account_and_multiple_secrets",
 			serviceAccount: ptr.To("test-sa"),
-			secrets: []mcpv1alpha1.SecretRef{
+			secrets: []mcpv1beta1.SecretRef{
 				{Name: "secret1", Key: "key1"},
 				{Name: "secret2", Key: "key2", TargetEnvName: "CUSTOM_ENV"},
 				{Name: "secret3", Key: "key3"},
@@ -129,7 +129,7 @@ func TestMCPServerPodTemplateSpec_AllCombinations(t *testing.T) {
 				},
 			}),
 			serviceAccount: ptr.To("override-sa"),
-			secrets: []mcpv1alpha1.SecretRef{
+			secrets: []mcpv1beta1.SecretRef{
 				{Name: "secret1", Key: "key1"},
 			},
 			expectedServiceAccount: "override-sa",
@@ -149,7 +149,7 @@ func TestMCPServerPodTemplateSpec_AllCombinations(t *testing.T) {
 					},
 				},
 			}),
-			secrets: []mcpv1alpha1.SecretRef{
+			secrets: []mcpv1beta1.SecretRef{
 				{Name: "secret1", Key: "key1"},
 			},
 			expectedSecrets:    1,
@@ -209,22 +209,22 @@ func TestMCPServerPodTemplateSpec_SecretEnvVarNaming(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name        string
-		secret      mcpv1alpha1.SecretRef
+		secret      mcpv1beta1.SecretRef
 		expectedEnv string
 	}{
 		{
 			name:        "use_key_as_env_name",
-			secret:      mcpv1alpha1.SecretRef{Name: "secret1", Key: "DATABASE_PASSWORD"},
+			secret:      mcpv1beta1.SecretRef{Name: "secret1", Key: "DATABASE_PASSWORD"},
 			expectedEnv: "DATABASE_PASSWORD",
 		},
 		{
 			name:        "use_custom_target_env_name",
-			secret:      mcpv1alpha1.SecretRef{Name: "secret1", Key: "key1", TargetEnvName: "DB_PASSWORD"},
+			secret:      mcpv1beta1.SecretRef{Name: "secret1", Key: "key1", TargetEnvName: "DB_PASSWORD"},
 			expectedEnv: "DB_PASSWORD",
 		},
 		{
 			name:        "empty_target_env_name_uses_key",
-			secret:      mcpv1alpha1.SecretRef{Name: "secret1", Key: "api-token", TargetEnvName: ""},
+			secret:      mcpv1beta1.SecretRef{Name: "secret1", Key: "api-token", TargetEnvName: ""},
 			expectedEnv: "api-token",
 		},
 	}
@@ -236,7 +236,7 @@ func TestMCPServerPodTemplateSpec_SecretEnvVarNaming(t *testing.T) {
 			require.NoError(t, err, "Failed to create builder")
 
 			result := builder.
-				WithSecrets([]mcpv1alpha1.SecretRef{tt.secret}).
+				WithSecrets([]mcpv1beta1.SecretRef{tt.secret}).
 				Build()
 
 			require.NotNil(t, result)
@@ -258,7 +258,7 @@ func TestMCPServerPodTemplateSpec_NilInputWithSecrets(t *testing.T) {
 	builder, err := ctrlutil.NewPodTemplateSpecBuilder(nil, mcpContainerName)
 	require.NoError(t, err)
 
-	secrets := []mcpv1alpha1.SecretRef{
+	secrets := []mcpv1beta1.SecretRef{
 		{Name: "secret1", Key: "key1"},
 		{Name: "secret2", Key: "key2", TargetEnvName: "CUSTOM_ENV"},
 	}

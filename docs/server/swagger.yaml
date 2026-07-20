@@ -31,31 +31,15 @@ components:
           description: Version is the schema version of the registry
           type: string
       type: object
-    github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket:
-      description: |-
-        PerUser token bucket configuration for this tool.
-        +optional
-      properties:
-        maxTokens:
-          description: |-
-            MaxTokens is the maximum number of tokens (bucket capacity).
-            This is also the burst size: the maximum number of requests that can be served
-            instantaneously before the bucket is depleted.
-            +kubebuilder:validation:Required
-            +kubebuilder:validation:Minimum=1
-          type: integer
-        refillPeriod:
-          $ref: '#/components/schemas/v1.Duration'
-      type: object
-    github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig:
+    github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig:
       description: |-
         RateLimitConfig contains the CRD rate limiting configuration.
         When set, rate limiting middleware is added to the proxy middleware chain.
       properties:
         perUser:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket'
         shared:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket'
         tools:
           description: |-
             Tools defines per-tool rate limit overrides.
@@ -65,22 +49,9 @@ components:
             +listMapKey=name
             +optional
           items:
-            $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig'
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.ToolRateLimitConfig'
           type: array
           uniqueItems: false
-      type: object
-    github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.ToolRateLimitConfig:
-      properties:
-        name:
-          description: |-
-            Name is the MCP tool name this limit applies to.
-            +kubebuilder:validation:Required
-            +kubebuilder:validation:MinLength=1
-          type: string
-        perUser:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
-        shared:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitBucket'
       type: object
     github_com_stacklok_toolhive_pkg_audit.Config:
       description: |-
@@ -235,6 +206,12 @@ components:
           description: 'SessionNameClaim is the JWT claim to use for role session
             name (default: "sub").'
           type: string
+        subject_provider_name:
+          description: |-
+            SubjectProviderName identifies which upstream provider's access token to use
+            for STS AssumeRoleWithWebIdentity. Used by vMCP only. When empty, the bearer
+            token from the incoming HTTP request is used.
+          type: string
       type: object
     github_com_stacklok_toolhive_pkg_auth_awssts.RoleMapping:
       properties:
@@ -274,6 +251,14 @@ components:
           type: string
         bearer_token_file:
           type: string
+        cached_cimd_client_id:
+          description: |-
+            CachedCIMDClientID stores the CIMD metadata URL used as client_id when CIMD
+            authentication was used. Kept separate from CachedClientID (which holds
+            DCR-issued IDs) so the two can have independent lifecycles — DCR credential
+            rotation clears CachedClientID without touching the stable CIMD URL.
+            Read by resolveClientCredentials to send the correct client_id on token refresh.
+          type: string
         cached_client_id:
           description: |-
             Cached DCR client credentials for persistence across restarts.
@@ -282,6 +267,12 @@ components:
           type: string
         cached_client_secret_ref:
           type: string
+        cached_dcr_callback_port:
+          description: |-
+            CachedDCRCallbackPort is the callback port that was actually registered
+            during DCR. It may differ from CallbackPort when the requested port was
+            unavailable and a fallback port was selected.
+          type: integer
         cached_refresh_token_ref:
           description: |-
             Cached OAuth token reference for persistence across restarts.
@@ -289,15 +280,27 @@ components:
             contains the reference to retrieve it (e.g., "OAUTH_REFRESH_TOKEN_workload").
             This enables session restoration without requiring a new browser-based login.
           type: string
+        cached_reg_client_uri:
+          description: |-
+            CachedRegClientURI is the registration_client_uri from the DCR response.
+            This is the endpoint used for RFC 7592 client read/update/delete operations.
+            Stored as plain text since it is not sensitive.
+          type: string
         cached_reg_token_ref:
           description: |-
-            RegistrationAccessToken is used to update/delete the client registration.
+            CachedRegTokenRef is a secret manager reference to the registration_access_token
+            returned in the DCR response. Used for RFC 7592 client update operations.
             Stored as a secret reference since it's sensitive.
           type: string
         cached_secret_expiry:
           description: |-
             ClientSecretExpiresAt indicates when the client secret expires (if provided by the DCR server).
             A zero value means the secret does not expire.
+          type: string
+        cached_token_auth_method:
+          description: |-
+            CachedTokenEndpointAuthMethod is the auth method used for the token endpoint
+            (e.g., "client_secret_basic", "none"). Persisted for RFC 7592 updates.
           type: string
         cached_token_expiry:
           type: string
@@ -341,44 +344,6 @@ components:
         use_pkce:
           type: boolean
       type: object
-    github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config:
-      description: TokenExchangeConfig contains token exchange configuration for external
-        authentication
-      properties:
-        audience:
-          description: Audience is the target audience for the exchanged token
-          type: string
-        client_id:
-          description: ClientID is the OAuth 2.0 client identifier
-          type: string
-        client_secret:
-          description: ClientSecret is the OAuth 2.0 client secret
-          type: string
-        external_token_header_name:
-          description: ExternalTokenHeaderName is the name of the custom header to
-            use when HeaderStrategy is "custom"
-          type: string
-        header_strategy:
-          description: |-
-            HeaderStrategy determines how to inject the token
-            Valid values: HeaderStrategyReplace (default), HeaderStrategyCustom
-          type: string
-        scopes:
-          description: Scopes is the list of scopes to request for the exchanged token
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        subject_token_type:
-          description: |-
-            SubjectTokenType specifies the type of the subject token being exchanged.
-            Common values: tokenTypeAccessToken (default), tokenTypeIDToken, tokenTypeJWT.
-            If empty, defaults to tokenTypeAccessToken.
-          type: string
-        token_url:
-          description: TokenURL is the OAuth 2.0 token endpoint URL
-          type: string
-      type: object
     github_com_stacklok_toolhive_pkg_auth_upstreamswap.Config:
       description: |-
         UpstreamSwapConfig contains configuration for upstream token swap middleware.
@@ -399,6 +364,113 @@ components:
             This is required and must match a configured upstream provider name.
           type: string
       type: object
+    github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig:
+      description: |-
+        CIMD controls client_id metadata document support. When enabled, the
+        embedded authorization server accepts HTTPS URLs as client_id values
+        and resolves them via the CIMD protocol instead of requiring DCR.
+      properties:
+        cache_fallback_ttl:
+          description: |-
+            CacheFallbackTTL is the fixed TTL applied to every cached CIMD document.
+            Cache-Control header parsing is not yet implemented; all entries use this value.
+            Format: Go duration string (e.g. "5m", "10m", "1h").
+            Defaults to 5 minutes when Enabled is true and this field is omitted.
+          example: 5m
+          type: string
+        cache_max_size:
+          description: |-
+            CacheMaxSize is the maximum number of CIMD documents held in the LRU cache.
+            Defaults to 256 when Enabled is true and this field is zero.
+          type: integer
+        enabled:
+          description: Enabled activates CIMD client lookup when true.
+          type: boolean
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig:
+      description: |-
+        DCRConfig enables RFC 7591 Dynamic Client Registration against the
+        upstream authorization server. When set, the client credentials are
+        obtained at runtime rather than being pre-provisioned via ClientID /
+        ClientSecretFile / ClientSecretEnvVar, and ClientID must be left empty.
+        Mutually exclusive with ClientID.
+      properties:
+        discovery_url:
+          description: |-
+            DiscoveryURL is the exact RFC 8414 / OIDC Discovery document URL to
+            fetch at runtime. The resolver issues a single GET against this URL
+            (no well-known-path fallback) and reads registration_endpoint,
+            authorization_endpoint, token_endpoint,
+            token_endpoint_auth_methods_supported, and scopes_supported from the
+            response. Per RFC 8414 §3.3, the document's "issuer" field must
+            exactly match the upstream issuer configured on the parent
+            run-config.
+
+            Use this field when the upstream publishes discovery metadata at a
+            path that differs from the issuer-derived well-known paths — for
+            example a multi-tenant IdP whose metadata lives at
+            https://idp.example.com/tenants/acme/.well-known/openid-configuration.
+
+            Mutually exclusive with RegistrationEndpoint.
+          type: string
+        initial_access_token_env_var:
+          description: |-
+            InitialAccessTokenEnvVar is the name of an environment variable
+            containing the RFC 7591 initial access token. Mutually exclusive with
+            InitialAccessTokenFile.
+          type: string
+        initial_access_token_file:
+          description: |-
+            InitialAccessTokenFile is the path to a file containing the RFC 7591
+            initial access token presented to the registration endpoint. Mutually
+            exclusive with InitialAccessTokenEnvVar. Both may be omitted for open
+            registration endpoints.
+          type: string
+        registration_endpoint:
+          description: |-
+            RegistrationEndpoint is the RFC 7591 registration endpoint URL used
+            directly, bypassing discovery. Because no discovery is performed,
+            server-capability fields (token_endpoint_auth_methods_supported,
+            scopes_supported) are unavailable on this code path; the caller is
+            expected to also supply AuthorizationEndpoint, TokenEndpoint, and an
+            explicit Scopes list on the parent OAuth2UpstreamRunConfig. Auth
+            method falls back to the resolver's default (client_secret_basic).
+
+            Mutually exclusive with DiscoveryURL.
+          type: string
+        software_id:
+          description: |-
+            SoftwareID is the RFC 7591 "software_id" registration metadata value,
+            identifying the client software independent of any particular
+            registration instance.
+          type: string
+        software_statement:
+          description: |-
+            SoftwareStatement is the RFC 7591 "software_statement" JWT asserting
+            metadata about the client software, signed by a party the authorization
+            server trusts.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig:
+      description: |-
+        IdentityFromToken extracts user identity (subject, name, email) directly from the
+        OAuth2 token-endpoint response body using gjson dot-notation paths. When set, the
+        embedded auth server skips the userinfo HTTP call entirely. Mirrors the CRD type
+        (cmd/thv-operator/api/v1beta1.IdentityFromTokenConfig) — the authoritative
+        trust-model and uniqueness documentation lives there.
+      properties:
+        email_path:
+          description: EmailPath is the dot-notation path to the email address field.
+          type: string
+        name_path:
+          description: NamePath is the dot-notation path to the display name field.
+          type: string
+        subject_path:
+          description: |-
+            SubjectPath is the dot-notation path to the subject (user ID) field.
+            Required when IdentityFromToken is set.
+          type: string
+      type: object
     github_com_stacklok_toolhive_pkg_authserver.OAuth2UpstreamRunConfig:
       description: |-
         OAuth2Config contains OAuth 2.0-specific configuration.
@@ -412,13 +484,27 @@ components:
             authorization requests. Useful for provider-specific parameters like
             Google's access_type=offline.
           type: object
+        allow_private_ips:
+          description: |-
+            AllowPrivateIPs permits the upstream provider's HTTP client to connect to
+            private IP ranges (RFC-1918, link-local). When DCRConfig is set, this
+            also gates the DCR discovery and registration calls made on this
+            upstream's behalf (see pkg/authserver/runner/dcr_adapter.go), so a
+            single flag covers the whole upstream rather than needing a separate
+            DCR-specific setting. Use only when the upstream is hosted inside the
+            same cluster and has no public endpoint. HTTP-scheme restrictions are
+            unchanged — HTTPS is still required for non-localhost hosts. Defaults
+            to false.
+          type: boolean
         authorization_endpoint:
           description: AuthorizationEndpoint is the URL for the OAuth authorization
             endpoint.
           type: string
         client_id:
-          description: ClientID is the OAuth 2.0 client identifier registered with
-            the upstream IDP.
+          description: |-
+            ClientID is the OAuth 2.0 client identifier registered with the upstream IDP.
+            Mutually exclusive with DCRConfig: when DCRConfig is set, ClientID is obtained
+            at runtime via RFC 7591 Dynamic Client Registration and must be left empty.
           type: string
         client_secret_env_var:
           description: |-
@@ -430,6 +516,17 @@ components:
             ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
             Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
           type: string
+        dcr_config:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.DCRUpstreamConfig'
+        identity_from_token:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.IdentityFromTokenRunConfig'
+        insecure_allow_http:
+          description: |-
+            InsecureAllowHTTP permits plain-HTTP authorization and token endpoint URLs
+            for this upstream. Only for in-cluster development environments (e.g. an
+            OAuth2 provider served over HTTP in a kind cluster) where TLS is not
+            available. Never set this in production.
+          type: boolean
         redirect_uri:
           description: |-
             RedirectURI is the callback URL where the upstream IDP will redirect after authentication.
@@ -462,6 +559,14 @@ components:
             authorization requests. Useful for provider-specific parameters like
             Google's access_type=offline.
           type: object
+        allow_private_ips:
+          description: |-
+            AllowPrivateIPs permits the OIDC discovery and token HTTP clients to
+            connect to private IP ranges (RFC-1918, link-local). Use only when the
+            upstream is hosted inside the same cluster and has no public endpoint.
+            HTTP-scheme restrictions are unchanged — HTTPS is still required for
+            non-localhost hosts. Defaults to false.
+          type: boolean
         client_id:
           description: ClientID is the OAuth 2.0 client identifier registered with
             the upstream IDP.
@@ -476,6 +581,13 @@ components:
             ClientSecretFile is the path to a file containing the OAuth 2.0 client secret.
             Mutually exclusive with ClientSecretEnvVar. Optional for public clients using PKCE.
           type: string
+        insecure_allow_http:
+          description: |-
+            InsecureAllowHTTP permits a plain-HTTP issuer URL and HTTP discovery
+            endpoints for this upstream. Only for in-cluster development environments
+            (e.g. Dex served over HTTP in a kind cluster) where TLS is not available.
+            Never set this in production.
+          type: boolean
         issuer_url:
           description: |-
             IssuerURL is the OIDC issuer URL for automatic endpoint discovery.
@@ -497,6 +609,12 @@ components:
             type: string
           type: array
           uniqueItems: false
+        subject_claim:
+          description: |-
+            SubjectClaim names the validated ID-token claim to use as the upstream
+            subject. Defaults to "sub" when empty. Set for IdPs where "sub" isn't
+            stable per user (e.g. Entra/Azure AD's "oid"). See upstream.OIDCConfig.
+          type: string
         userinfo_override:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig'
       type: object
@@ -522,6 +640,37 @@ components:
             `{authorization_endpoint_base_url}/oauth/authorize` instead of `{issuer}/oauth/authorize`.
             All other endpoints remain derived from the issuer.
           type: string
+        baseline_client_scopes:
+          description: |-
+            BaselineClientScopes is a baseline set of OAuth 2.0 scopes unioned into every
+            DCR registration. All values must appear in ScopesSupported; the auth server
+            rejects this RunConfig at startup otherwise. Empty means current behavior is
+            preserved (registered scope = client-requested, or DefaultScopes if empty).
+            When ScopesSupported is empty, the subset check uses registration.DefaultScopes
+            (the same set applyDefaults would substitute at startup) — so
+            BaselineClientScopes containing standard OIDC scopes works without enumerating
+            ScopesSupported explicitly.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        cimd:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver.CIMDRunConfig'
+        delegation_token_lifespan:
+          description: |-
+            DelegationTokenLifespan is the maximum lifetime for delegated tokens issued
+            via RFC 8693 token exchange. Specified as a Go duration string (e.g., "15m").
+            If empty, defaults to 15 minutes.
+          type: string
+        disable_upstream_token_injection:
+          description: |-
+            DisableUpstreamTokenInjection prevents the upstream swap middleware from being added.
+            When true, the embedded auth server handles OAuth flows for clients, but instead of
+            injecting upstream IdP tokens the proxy strips the client's credential headers
+            (Authorization, Cookie, Proxy-Authorization) after the JWT is validated — the
+            backend receives an unauthenticated request. Incompatible with token exchange
+            and AWS STS, which would re-add credentials after the strip.
+          type: boolean
         hmac_secret_files:
           description: |-
             HMACSecretFiles contains file paths to HMAC secrets for signing authorization codes
@@ -533,6 +682,12 @@ components:
             type: string
           type: array
           uniqueItems: false
+        insecure_allow_http:
+          description: |-
+            InsecureAllowHTTP permits an http:// issuer URL for non-localhost hosts.
+            Only set this for in-cluster Kubernetes deployments on a trusted network.
+            Production deployments reachable outside the cluster MUST use https://.
+          type: boolean
         issuer:
           description: |-
             Issuer is the issuer identifier for this authorization server.
@@ -694,8 +849,12 @@ components:
           uniqueItems: false
       type: object
     github_com_stacklok_toolhive_pkg_authserver.UserInfoRunConfig:
-      description: UserInfo contains configuration for fetching user information (required
-        for OAuth2).
+      description: |-
+        UserInfo contains configuration for fetching user information.
+        Optional: when nil, the upstream OAuth2 provider derives a deterministic
+        subject by SHA-256-hashing the access token (with a "tk-" prefix) instead
+        of calling a userinfo endpoint. OIDC providers always derive Subject from
+        the ID token and are unaffected.
       properties:
         additional_headers:
           additionalProperties:
@@ -732,10 +891,19 @@ components:
       properties:
         acl_user_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_authserver_storage.ACLUserRunConfig'
+        addr:
+          description: |-
+            Addr is the Redis server address (host:port). Required for standalone and cluster modes.
+            Mutually exclusive with SentinelConfig.
+          type: string
         auth_type:
           description: AuthType must be "aclUser" - only ACL user authentication is
             supported.
           type: string
+        cluster_mode:
+          description: ClusterMode enables the Redis Cluster protocol. Requires Addr
+            to be set.
+          type: boolean
         dial_timeout:
           description: DialTimeout is the timeout for establishing connections (e.g.,
             "5s").
@@ -757,9 +925,8 @@ components:
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_authserver_storage.RedisTLSRunConfig:
-      description: |-
-        SentinelTLS configures TLS for Sentinel connections.
-        Falls back to TLS config when nil.
+      description: SentinelTLS configures TLS for Sentinel connections. Only applies
+        when SentinelConfig is set.
       properties:
         ca_cert_file:
           description: CACertFile is the path to a PEM-encoded CA certificate file.
@@ -780,7 +947,9 @@ components:
           type: string
       type: object
     github_com_stacklok_toolhive_pkg_authserver_storage.SentinelRunConfig:
-      description: SentinelConfig contains Sentinel-specific configuration.
+      description: |-
+        SentinelConfig contains Sentinel-specific configuration.
+        Mutually exclusive with Addr.
       properties:
         db:
           description: 'DB is the Redis database number (default: 0).'
@@ -819,10 +988,6 @@ components:
       - windsurf
       - windsurf-jetbrains
       - amp-cli
-      - amp-vscode
-      - amp-cursor
-      - amp-vscode-insider
-      - amp-windsurf
       - lm-studio
       - goose
       - trae
@@ -837,6 +1002,7 @@ components:
       - codex
       - kimi-cli
       - factory
+      - copilot-cli
       type: string
       x-enum-varnames:
       - RooCode
@@ -848,10 +1014,6 @@ components:
       - Windsurf
       - WindsurfJetBrains
       - AmpCli
-      - AmpVSCode
-      - AmpCursor
-      - AmpVSCodeInsider
-      - AmpWindsurf
       - LMStudio
       - Goose
       - Trae
@@ -866,6 +1028,7 @@ components:
       - Codex
       - KimiCli
       - Factory
+      - CopilotCli
     github_com_stacklok_toolhive_pkg_client.ClientAppStatus:
       properties:
         client_type:
@@ -877,6 +1040,10 @@ components:
         registered:
           description: Registered indicates whether the client is registered in the
             ToolHive configuration
+          type: boolean
+        supports_plugins:
+          description: SupportsPlugins indicates whether ToolHive can install plugins
+            for this client
           type: boolean
         supports_skills:
           description: SupportsSkills indicates whether ToolHive can install skills
@@ -905,6 +1072,8 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - auth_retrying
+      - policy_stopped
       - running
       - stopped
       - error
@@ -914,6 +1083,8 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - auth_retrying
+      - policy_stopped
       - running
       - stopped
       - error
@@ -923,6 +1094,8 @@ components:
       - removing
       - unknown
       - unauthenticated
+      - auth_retrying
+      - policy_stopped
       type: string
       x-enum-varnames:
       - WorkloadStatusRunning
@@ -934,6 +1107,8 @@ components:
       - WorkloadStatusRemoving
       - WorkloadStatusUnknown
       - WorkloadStatusUnauthenticated
+      - WorkloadStatusAuthRetrying
+      - WorkloadStatusPolicyStopped
     github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig:
       description: |-
         RuntimeConfig allows overriding the default runtime configuration
@@ -953,8 +1128,21 @@ components:
           description: |-
             BuilderImage is the full image reference for the builder stage.
             An empty string signals "use the default for this transport type" during config merging.
-            Examples: "golang:1.25-alpine", "node:22-alpine", "python:3.13-slim"
+            Examples: "golang:1.26-alpine", "node:24-alpine", "python:3.14-slim"
           type: string
+        runtime_env:
+          additionalProperties:
+            type: string
+          description: |-
+            RuntimeEnv contains environment variables to inject into the Dockerfile's
+            final runtime stage. Unlike BuildEnv (pkg/container/templates.TemplateData.BuildEnv),
+            which only affects the builder stage, these variables are baked into the
+            shipped image and are present in the running container's process
+            environment at startup. Use this for values a packaged MCP server reads at
+            process start (e.g. feature flags, cache backend selection), not for
+            build-time package manager configuration.
+            Keys must be uppercase with underscores, values are validated for safety.
+          type: object
       type: object
     github_com_stacklok_toolhive_pkg_core.Workload:
       properties:
@@ -1022,6 +1210,11 @@ components:
       properties:
         name:
           type: string
+        plugins:
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         registered_clients:
           items:
             type: string
@@ -1042,6 +1235,73 @@ components:
         printOverlays:
           description: Whether to print resolved overlay paths for debugging
           type: boolean
+      type: object
+    github_com_stacklok_toolhive_pkg_oauthproto_tokenexchange.Config:
+      description: TokenExchangeConfig contains token exchange configuration for external
+        authentication
+      properties:
+        audience:
+          description: Audience is the target audience for the exchanged token
+          type: string
+        client_id:
+          description: ClientID is the OAuth 2.0 client identifier
+          type: string
+        client_secret:
+          description: ClientSecret is the OAuth 2.0 client secret
+          type: string
+        external_token_header_name:
+          description: ExternalTokenHeaderName is the name of the custom header to
+            use when HeaderStrategy is "custom"
+          type: string
+        header_strategy:
+          description: |-
+            HeaderStrategy determines how to inject the token
+            Valid values: HeaderStrategyReplace (default), HeaderStrategyCustom
+          type: string
+        scopes:
+          description: Scopes is the list of scopes to request for the exchanged token
+          items:
+            type: string
+          type: array
+          uniqueItems: false
+        subject_token_type:
+          description: |-
+            SubjectTokenType specifies the type of the subject token being exchanged.
+            Common values: oauthproto.TokenTypeAccessToken (default), oauthproto.TokenTypeIDToken, oauthproto.TokenTypeJWT.
+            If empty, defaults to oauthproto.TokenTypeAccessToken.
+          type: string
+        token_url:
+          description: TokenURL is the OAuth 2.0 token endpoint URL
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket:
+      description: |-
+        PerUser token bucket configuration for this tool.
+        +optional
+      properties:
+        maxTokens:
+          description: |-
+            MaxTokens is the maximum number of tokens (bucket capacity).
+            This is also the burst size: the maximum number of requests that can be served
+            instantaneously before the bucket is depleted.
+            +kubebuilder:validation:Required
+            +kubebuilder:validation:Minimum=1
+          type: integer
+        refillPeriod:
+          $ref: '#/components/schemas/v1.Duration'
+      type: object
+    github_com_stacklok_toolhive_pkg_ratelimit_types.ToolRateLimitConfig:
+      properties:
+        name:
+          description: |-
+            Name is the MCP tool name this limit applies to.
+            +kubebuilder:validation:Required
+            +kubebuilder:validation:MinLength=1
+          type: string
+        perUser:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket'
+        shared:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_ratelimit_types.RateLimitBucket'
       type: object
     github_com_stacklok_toolhive_pkg_registry.OAuthPublicConfig:
       description: |-
@@ -1084,13 +1344,47 @@ components:
       type: object
     github_com_stacklok_toolhive_pkg_runner.RunConfig:
       properties:
+        additional_middleware_configs:
+          description: |-
+            AdditionalMiddlewareConfigs carries pre-built middleware configs injected by
+            external-auth handlers (reached via *[]RunConfigBuilderOption) rather than
+            derived from typed RunConfig fields. PopulateMiddlewareConfigs splices these
+            into the chain in the backend-egress group — after auth and before recovery —
+            instead of discarding them. Upstream carries these configs verbatim and never
+            inspects their parameters; the middleware type identity (e.g. an enterprise
+            auth type) is supplied by the caller via types.MiddlewareConfig.Type.
+
+            Each entry's Type is expected to be a NEW egress middleware type (e.g. OBO),
+            not one already produced from a typed RunConfig field (auth, authz, audit,
+            tokenExchange, awssts, …). Dispatch in the proxyrunner is purely by Type
+            string, so an injected Type that shadows a typed-field type would add a
+            second instance of that middleware to the chain; the seam does not validate
+            against this.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_transport_types.MiddlewareConfig'
+          type: array
+          uniqueItems: false
         allow_docker_gateway:
           description: |-
             AllowDockerGateway permits outbound connections to Docker gateway addresses
             (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
             blocked by default in the egress proxy even when InsecureAllowAll is set.
             Only applicable to Docker deployments with network isolation enabled.
+            Gateway access is port-independent: it ignores the permission profile's
+            allowed ports, so once enabled the gateway is reachable on any port.
           type: boolean
+        allowed_origins:
+          description: |-
+            AllowedOrigins is the allowlist of values accepted on the HTTP Origin header,
+            used for DNS-rebinding protection per MCP 2025-11-25 §"Security Warning".
+            When empty and Host is loopback (127.0.0.1 / localhost / [::1]), a default
+            loopback-only allowlist is derived at middleware-wiring time.
+            When empty and Host is non-loopback, the middleware is disabled — operators
+            exposing the proxy publicly must configure an explicit allowlist.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         audit_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_audit.Config'
         audit_config_path:
@@ -1172,6 +1466,13 @@ components:
             K8sPodTemplatePatch is a JSON string to patch the Kubernetes pod template
             Only applicable when using Kubernetes runtime
           type: string
+        mcpserver_generation:
+          description: |-
+            MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered
+            this RunConfig. The Kubernetes runtime uses it as a monotonic version to prevent stale
+            rolling-update pods from overwriting a newer RunConfig's StatefulSet apply. Zero value
+            means unversioned (backward-compat with older operators, or non-operator callers).
+          type: integer
         middleware_configs:
           description: |-
             MiddlewareConfigs contains the list of middleware to apply to the transport
@@ -1209,7 +1510,7 @@ components:
           type: array
           uniqueItems: false
         rate_limit_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1alpha1.RateLimitConfig'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_cmd_thv-operator_api_v1beta1.RateLimitConfig'
         rate_limit_namespace:
           description: RateLimitNamespace is the Kubernetes namespace for Redis key
             derivation.
@@ -1249,6 +1550,16 @@ components:
             type: string
           type: array
           uniqueItems: false
+        session_ttl:
+          description: |-
+            SessionTTL is the inactivity timeout for proxy sessions, expressed as a Go
+            duration string (e.g. "30m", "2h", "168h"). Empty uses the transport
+            default (2h). Negative durations and values that fail time.ParseDuration
+            are rejected at runtime.
+            String (not time.Duration) keeps the wire format unit-explicit: a
+            time.Duration field serializes as nanoseconds in JSON.
+          example: 2h
+          type: string
         stateless:
           description: |-
             Stateless indicates the server only supports POST (no SSE/GET).
@@ -1272,7 +1583,7 @@ components:
             ThvCABundle is the path to the CA certificate bundle for ToolHive HTTP operations
           type: string
         token_exchange_config:
-          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_auth_tokenexchange.Config'
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_oauthproto_tokenexchange.Config'
         tools_filter:
           description: |-
             DEPRECATED: Middleware configuration.
@@ -1742,6 +2053,118 @@ components:
             WARNING: This should only be used for development/testing.
           type: boolean
       type: object
+    github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult:
+      description: |-
+        Result is the upgrade-check outcome for the workload. It carries only
+        metadata (status, image references, drift) and never secret values.
+      properties:
+        candidate_image:
+          description: CandidateImage is the image reference the registry currently
+            reports.
+          type: string
+        config_drift:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.ConfigDrift'
+        current_image:
+          description: CurrentImage is the image reference the workload is currently
+            running.
+          type: string
+        env_var_drift:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarDrift'
+        reason:
+          description: Reason provides additional context, primarily for StatusUnknown.
+          type: string
+        registry_server:
+          description: |-
+            RegistryServer is the registry entry name the workload was sourced from.
+            Empty when the workload is not registry-sourced.
+          type: string
+        status:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.UpgradeStatus'
+        workload_name:
+          description: WorkloadName is the name of the workload that was checked.
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_workloads_upgrade.ConfigDrift:
+      description: |-
+        ConfigDrift describes posture differences (transport, permission profile)
+        between the workload and the candidate registry entry.
+      properties:
+        permission_profile:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.StringChange'
+        transport:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.StringChange'
+      type: object
+    github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarDrift:
+      description: |-
+        EnvVarDrift describes environment variables the candidate registry entry
+        declares that differ from the workload's current configuration.
+      properties:
+        added:
+          description: |-
+            Added lists environment variables the candidate declares that the
+            workload does not currently supply (via plain env vars or secrets).
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarInfo'
+          type: array
+          uniqueItems: false
+        removed:
+          description: |-
+            Removed lists environment variables the workload supplies that the
+            candidate no longer declares. Populated on a best-effort basis; may be
+            empty even when removals exist (forward-compatible field).
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarInfo'
+          type: array
+          uniqueItems: false
+      type: object
+    github_com_stacklok_toolhive_pkg_workloads_upgrade.EnvVarInfo:
+      properties:
+        default:
+          description: |-
+            Default is the candidate's default value. It is cleared (left empty)
+            whenever Secret is true: a secret env var's default could carry sensitive
+            data, and surfacing it in a drift report (which may be logged or returned
+            over the API) would leak it. Non-secret defaults are safe to display.
+          type: string
+        description:
+          description: Description is the human-readable purpose of the variable.
+          type: string
+        name:
+          description: Name is the environment variable name.
+          type: string
+        required:
+          description: Required indicates whether the candidate marks the variable
+            as required.
+          type: boolean
+        secret:
+          description: Secret indicates whether the variable holds sensitive data.
+          type: boolean
+      type: object
+    github_com_stacklok_toolhive_pkg_workloads_upgrade.StringChange:
+      description: |-
+        PermissionProfile is set when the candidate's permission profile differs
+        from the workload's current profile.
+      properties:
+        from:
+          type: string
+        to:
+          type: string
+      type: object
+    github_com_stacklok_toolhive_pkg_workloads_upgrade.UpgradeStatus:
+      description: Status is the upgrade status for the workload.
+      enum:
+      - up-to-date
+      - upgrade-available
+      - not-registry-sourced
+      - server-not-found
+      - unknown
+      type: string
+      x-enum-varnames:
+      - StatusUpToDate
+      - StatusUpgradeAvailable
+      - StatusNotRegistrySourced
+      - StatusServerNotFound
+      - StatusUnknown
     model.Argument:
       properties:
         choices:
@@ -1899,13 +2322,13 @@ components:
           uniqueItems: false
         registryBaseUrl:
           description: RegistryBaseURL is the base URL of the package registry (used
-            by npm, pypi, nuget; not used by oci, mcpb)
+            by npm, pypi, nuget, cargo; not used by oci, mcpb)
           example: https://registry.npmjs.org
           format: uri
           type: string
         registryType:
           description: RegistryType indicates how to download packages (e.g., "npm",
-            "pypi", "oci", "nuget", "mcpb")
+            "pypi", "cargo", "oci", "nuget", "mcpb")
           example: npm
           minLength: 1
           type: string
@@ -1926,6 +2349,7 @@ components:
           description: Version is the package version (required for npm, pypi, nuget;
             optional for mcpb; not used by oci where version is in the identifier)
           example: 1.0.2
+          maxLength: 255
           minLength: 1
           type: string
       type: object
@@ -2189,6 +2613,13 @@ components:
     pkg_api_v1.createRequest:
       description: Request to create a new workload
       properties:
+        allow_docker_gateway:
+          description: |-
+            Whether to permit outbound connections to Docker gateway addresses
+            (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+            blocked by default in the egress proxy even when network isolation is on.
+            Only applicable to Docker deployments with network isolation enabled.
+          type: boolean
         authz_config:
           description: Authorization configuration
           type: string
@@ -2223,8 +2654,13 @@ components:
           description: Name of the workload
           type: string
         network_isolation:
-          description: Whether network isolation is turned on. This applies the rules
-            in the permission profile.
+          description: |-
+            Whether network isolation is turned on. This applies the rules in the permission profile.
+            Pointer so that omitting the field defaults to network isolation ENABLED (matching the
+            `thv run` CLI default); set it explicitly to false to disable network isolation.
+            This also applies on update: a request that omits this field enables isolation, so
+            clients that build update requests from scratch should send it explicitly to avoid
+            unintentionally turning isolation on for a workload that had it off.
           type: boolean
         oauth_config:
           $ref: '#/components/schemas/pkg_api_v1.remoteOAuthConfig'
@@ -2238,6 +2674,10 @@ components:
         proxy_port:
           description: Port for the HTTP proxy to listen on
           type: integer
+        registry:
+          description: Registry is the optional registry name to resolve the server
+            from (e.g. "default").
+          type: string
         runtime_config:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_container_templates.RuntimeConfig'
         secrets:
@@ -2246,6 +2686,13 @@ components:
             $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_secrets.SecretParameter'
           type: array
           uniqueItems: false
+        server:
+          description: |-
+            Server is the optional server name in the registry (e.g. "io.github.stacklok/fetch").
+            When both Registry and Server are set, thv resolves the server metadata
+            server-side, filling in image, transport, env vars, permissions, etc.
+            User-provided fields always override registry defaults.
+          type: string
         target_port:
           description: Port to expose from the container
           type: integer
@@ -2705,6 +3152,13 @@ components:
     pkg_api_v1.updateRequest:
       description: Request to update an existing workload (name cannot be changed)
       properties:
+        allow_docker_gateway:
+          description: |-
+            Whether to permit outbound connections to Docker gateway addresses
+            (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
+            blocked by default in the egress proxy even when network isolation is on.
+            Only applicable to Docker deployments with network isolation enabled.
+          type: boolean
         authz_config:
           description: Authorization configuration
           type: string
@@ -2736,8 +3190,13 @@ components:
           description: Docker image to use
           type: string
         network_isolation:
-          description: Whether network isolation is turned on. This applies the rules
-            in the permission profile.
+          description: |-
+            Whether network isolation is turned on. This applies the rules in the permission profile.
+            Pointer so that omitting the field defaults to network isolation ENABLED (matching the
+            `thv run` CLI default); set it explicitly to false to disable network isolation.
+            This also applies on update: a request that omits this field enables isolation, so
+            clients that build update requests from scratch should send it explicitly to avoid
+            unintentionally turning isolation on for a workload that had it off.
           type: boolean
         oauth_config:
           $ref: '#/components/schemas/pkg_api_v1.remoteOAuthConfig'
@@ -2805,6 +3264,47 @@ components:
         message:
           description: Success message
           type: string
+      type: object
+    pkg_api_v1.upgradeCheckBulkResponse:
+      description: Results of checking multiple workloads for available upgrades
+      properties:
+        results:
+          description: |-
+            Results holds one upgrade-check outcome per scoped workload, in the order
+            the workloads were enumerated. Each entry carries only metadata and never
+            secret values.
+          items:
+            $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult'
+          type: array
+          uniqueItems: false
+      type: object
+    pkg_api_v1.upgradeCheckResponse:
+      description: Result of checking a single workload for an available upgrade
+      properties:
+        result:
+          $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_workloads_upgrade.CheckResult'
+      type: object
+    pkg_api_v1.upgradeRequest:
+      description: Request to apply an available upgrade to a workload. All fields
+        are optional; an empty body applies the upgrade preserving the workload's
+        existing configuration.
+      properties:
+        env:
+          additionalProperties:
+            type: string
+          description: |-
+            Env holds additional or overriding environment variables to merge into the
+            upgraded workload's configuration.
+          type: object
+        secrets:
+          description: |-
+            Secrets holds additional secret parameters (`<name>,target=<env>`) to merge
+            into the upgraded workload's configuration. Only references are accepted;
+            no secret values are transmitted in the request.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
       type: object
     pkg_api_v1.validateSkillRequest:
       description: Request to validate a skill definition
@@ -2976,6 +3476,9 @@ components:
           description: RepositoryURL is the URL to the source code repository for
             the server
           type: string
+        stateless:
+          description: Stateless indicates the server only supports POST (no SSE/GET)
+          type: boolean
         status:
           description: Status indicates whether the server is currently active or
             deprecated
@@ -3180,6 +3683,9 @@ components:
           description: RepositoryURL is the URL to the source code repository for
             the server
           type: string
+        stateless:
+          description: Stateless indicates the server only supports POST (no SSE/GET)
+          type: boolean
         status:
           description: Status indicates whether the server is currently active or
             deprecated
@@ -3392,6 +3898,8 @@ components:
           type: string
         version:
           example: 1.0.2
+          maxLength: 255
+          minLength: 1
           type: string
         websiteUrl:
           example: https://modelcontextprotocol.io/examples
@@ -3882,6 +4390,47 @@ paths:
       summary: Update registry configuration
       tags:
       - registry
+  /api/v1beta/registry/{name}/refresh:
+    post:
+      description: Force a refresh of the server-side registry cache for the default
+        registry
+      parameters:
+      - description: Registry name (must be 'default')
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                additionalProperties:
+                  type: string
+                type: object
+          description: Registry refreshed
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+        "503":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/pkg_api_v1.registryErrorResponse'
+          description: Registry authentication required or upstream registry unavailable
+      summary: Refresh registry cache
+      tags:
+      - registry
   /api/v1beta/registry/{name}/servers:
     get:
       description: Get a list of servers in a specific registry
@@ -4309,18 +4858,48 @@ paths:
               schema:
                 type: string
           description: Bad Request
+        "401":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Unauthorized (registry refused credentials)
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found (artifact not present in registry)
         "409":
           content:
             application/json:
               schema:
                 type: string
           description: Conflict
+        "429":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Too Many Requests (registry rate limit)
         "500":
           content:
             application/json:
               schema:
                 type: string
           description: Internal Server Error
+        "502":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Gateway (upstream registry failure)
+        "504":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Gateway Timeout (upstream pull timed out)
       summary: Install a skill
       tags:
       - skills
@@ -4539,6 +5118,24 @@ paths:
               schema:
                 type: string
           description: Bad Request
+        "401":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Unauthorized (registry refused credentials)
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found (artifact not present in registry)
+        "429":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Too Many Requests (registry rate limit)
         "500":
           content:
             application/json:
@@ -4550,7 +5147,13 @@ paths:
             application/json:
               schema:
                 type: string
-          description: Bad Gateway
+          description: Bad Gateway (upstream registry or git resolver failure)
+        "504":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Gateway Timeout (upstream pull timed out)
       summary: Get skill content
       tags:
       - skills
@@ -4994,6 +5597,101 @@ paths:
       summary: Stop a workload
       tags:
       - workloads
+  /api/v1beta/workloads/{name}/upgrade:
+    post:
+      description: |-
+        Apply a registry-sourced upgrade to a single workload. This
+        re-resolves and verifies the candidate image, pulls it, and only
+        then recreates the workload with the new image, preserving the
+        existing configuration. If the workload is already up to date or
+        is not registry-sourced, the current check result is returned
+        unchanged (no-op). Secret values are never accepted or returned.
+      parameters:
+      - description: Workload name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              oneOf:
+              - type: object
+              - $ref: '#/components/schemas/pkg_api_v1.upgradeRequest'
+                description: Upgrade options
+                summary: request
+        description: Upgrade options
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/pkg_api_v1.upgradeCheckResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+        "422":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Unprocessable Entity
+        "500":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Internal Server Error
+      summary: Apply an available upgrade to a workload
+      tags:
+      - workloads
+  /api/v1beta/workloads/{name}/upgrade-check:
+    get:
+      description: |-
+        Check whether a single workload has a newer image available in
+        its source registry. This is an offline metadata comparison; it
+        does not pull images. Secret values are never returned.
+      parameters:
+      - description: Workload name
+        in: path
+        name: name
+        required: true
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/pkg_api_v1.upgradeCheckResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Not Found
+      summary: Check a workload for an available upgrade
+      tags:
+      - workloads
   /api/v1beta/workloads/delete:
     post:
       description: |-
@@ -5084,6 +5782,46 @@ paths:
                 type: string
           description: Bad Request
       summary: Stop workloads in bulk
+      tags:
+      - workloads
+  /api/v1beta/workloads/upgrade-check:
+    get:
+      description: |-
+        Check all workloads (optionally filtered by group) for newer
+        images available in their source registries. This is an offline
+        metadata comparison; it does not pull images. Secret values are
+        never returned.
+      parameters:
+      - description: Include stopped workloads
+        in: query
+        name: all
+        schema:
+          type: boolean
+      - description: Filter workloads by group name
+        in: query
+        name: group
+        schema:
+          type: string
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/pkg_api_v1.upgradeCheckBulkResponse'
+          description: OK
+        "400":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Bad Request
+        "404":
+          content:
+            application/json:
+              schema:
+                type: string
+          description: Group not found
+      summary: Check workloads for available upgrades
       tags:
       - workloads
   /health:

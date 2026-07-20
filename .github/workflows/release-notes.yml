@@ -1,0 +1,263 @@
+# Generate Release Notes workflow
+#
+# Runs after "Create Release Tag" completes (that workflow creates the git tag
+# and GitHub Release once a release PR merges). It then runs the `release-notes`
+# Claude skill to produce polished, copy-pasteable release notes:
+#   - analyzes every merged PR between the previous tag and this one
+#   - cross-references linked issues
+#   - dispatches expert subagents to assess breaking changes
+#
+# Why workflow_run and not the `release` event: anthropics/claude-code-action
+# only accepts a fixed set of event types (issues, pull_request*, comments,
+# workflow_dispatch, repository_dispatch, schedule, workflow_run). A `release`
+# trigger makes the action fail immediately with "Unsupported event type:
+# release". workflow_run is supported and is not subject to the GITHUB_TOKEN
+# downstream-trigger limitation, so it fires reliably after the tag workflow.
+#
+# Delivery is REVIEW-THEN-PUBLISH: the public release notes are NOT overwritten.
+# The generated markdown is uploaded as a build artifact, written to the job
+# summary, and posted as a comment on the release PR for a maintainer to review
+# and copy-paste (or apply via `gh release edit`).
+#
+# Can also be triggered manually against any existing tag for testing.
+
+name: Generate Release Notes
+
+on:
+  workflow_run:
+    workflows: ["Create Release Tag"]
+    types: [completed]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to generate notes for (e.g. v0.29.2)'
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: read
+
+jobs:
+  release-notes:
+    name: Generate Release Notes
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # On workflow_run, only proceed if the tag workflow actually succeeded.
+    # Manual dispatch always proceeds.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    env:
+      # Mapped to a job-level env var so the Slack step can gate on it: the
+      # `secrets` context is not available in step-level `if:` conditions.
+      SLACK_WEBHOOK: ${{ secrets.SLACK_TOOLHIVE_RELEASE_WEBHOOK_URL }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          # Always check out the default branch, never the workflow_run head ref.
+          # Checking out an event-supplied ref in a secrets-bearing workflow_run
+          # is the "untrusted checkout" anti-pattern (CodeQL actions/untrusted-
+          # checkout). It is safe here too: "Create Release Tag" only runs on a
+          # VERSION push to main, so main HEAD already is the release commit and
+          # its VERSION matches the tag being announced.
+          #
+          # Full history + tags are required: the skill lists/sorts tags and
+          # compares ranges between the current and previous release.
+          fetch-depth: 0
+
+      - name: Resolve release tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          # Manual runs pass the tag explicitly; workflow_run derives it from the
+          # VERSION file on the default branch (the release commit that triggered
+          # the tag workflow), prefixed with "v".
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            VERSION=$(tr -d '[:space:]' < VERSION)
+            TAG="v$VERSION"
+          fi
+          if [ -z "$TAG" ] || [ "$TAG" = "v" ]; then
+            echo "::error::No release tag resolved from input or VERSION file"
+            exit 1
+          fi
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Generating release notes for: $TAG"
+
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: 'stable'
+
+      - name: Setup helm-docs
+        run: go install github.com/norwoodj/helm-docs/cmd/helm-docs@latest
+
+      - name: Generate release notes with Claude
+        id: claude
+        uses: anthropics/claude-code-action@af0559ee4f514d1ef21826982bed13f7edc3c35e # v1
+        env:
+          # gh CLI used by the skill (read-only PR/issue lookups) authenticates
+          # via GH_TOKEN. Read access is sufficient — publishing happens in a
+          # later, deterministic step, not by the model.
+          GH_TOKEN: ${{ github.token }}
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # Hand the action a token explicitly so it does not try to mint one via
+          # OIDC (the Claude GitHub App flow), which would require `id-token: write`
+          # and the app installed. We only need the API key for Anthropic auth and
+          # GH_TOKEN for the skill's read-only gh calls.
+          github_token: ${{ github.token }}
+          prompt: |
+            You are generating GitHub release notes for the ToolHive release ${{ steps.tag.outputs.tag }}.
+
+            Follow the procedure in `.claude/skills/release-notes/SKILL.md` exactly,
+            using the template at `.claude/skills/release-notes/TEMPLATE.md`.
+
+            This runs UNATTENDED in CI. Apply these automation overrides:
+            - Complete Phases 1-4 in full: analyze every merged PR between the
+              previous tag and ${{ steps.tag.outputs.tag }}, cross-reference linked
+              issues, and dispatch the Phase 3 expert subagents for breaking-change
+              assessment.
+            - The GitHub auto-generated "What's Changed" block already exists on the
+              release; read it from `gh release view ${{ steps.tag.outputs.tag }}`
+              and preserve it verbatim as instructed by the skill.
+            - For Phase 5, do NOT wait for approval and do NOT publish or edit the
+              GitHub release. ONLY write the final notes to
+              `release-notes-${{ steps.tag.outputs.tag }}.md` in the repo root.
+            - Do not post comments or run `gh release edit`. Stop after writing the file.
+          # Tools: gh/git for read-only data gathering, Task for the expert
+          # subagents, and file tools for reading the skill and writing the output.
+          claude_args: |
+            --allowedTools "Bash(gh *),Bash(git *),Task,Read,Write,Edit,Glob,Grep,TodoWrite"
+            --max-turns 60
+
+      - name: Verify notes were generated
+        id: verify
+        run: |
+          FILE="release-notes-${{ steps.tag.outputs.tag }}.md"
+          if [ ! -s "$FILE" ]; then
+            echo "::error::Expected $FILE was not generated by the release-notes skill"
+            exit 1
+          fi
+          echo "file=$FILE" >> "$GITHUB_OUTPUT"
+          echo "Generated $(wc -l < "$FILE") lines into $FILE"
+
+      - name: Extract theme summary
+        id: summary
+        env:
+          FILE: ${{ steps.verify.outputs.file }}
+        run: |
+          # The skill's template opens with a one-to-two sentence theme summary
+          # as the first paragraph after the H1 title. Grab that single paragraph
+          # for the Slack announcement — it is plain prose (Slack mrkdwn renders
+          # its inline `code` spans fine), so it needs no conversion.
+          SUMMARY=$(awk '/^# /{f=1;next} f&&NF==0{next} f&&NF{print;exit}' "$FILE")
+          if [ -z "$SUMMARY" ]; then
+            echo "::warning::Could not extract a theme summary; falling back to a generic line"
+            SUMMARY="A new ToolHive release is available."
+          fi
+          echo "text=$SUMMARY" >> "$GITHUB_OUTPUT"
+
+      - name: Upload release notes artifact
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        with:
+          name: release-notes-${{ steps.tag.outputs.tag }}
+          path: ${{ steps.verify.outputs.file }}
+          if-no-files-found: error
+
+      - name: Write notes to job summary
+        run: |
+          {
+            echo "## 📝 Generated release notes for \`${{ steps.tag.outputs.tag }}\`"
+            echo ""
+            echo "Review below, then copy-paste into the release or run:"
+            echo ""
+            echo '```'
+            echo "gh release edit ${{ steps.tag.outputs.tag }} --notes-file ${{ steps.verify.outputs.file }}"
+            echo '```'
+            echo ""
+            echo "---"
+            echo ""
+            cat "${{ steps.verify.outputs.file }}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Post notes as a comment on the release PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          FILE: ${{ steps.verify.outputs.file }}
+        run: |
+          # The release PR is titled "Release <tag>". Best-effort: if found, post
+          # the generated notes as a comment so the maintainer who merged it gets
+          # notified. If not found, the artifact + job summary still carry the notes.
+          PR=$(gh pr list --search "Release ${TAG} in:title" --state merged \
+                 --json number --jq '.[0].number' 2>/dev/null || true)
+          if [ -z "$PR" ] || [ "$PR" = "null" ]; then
+            echo "No merged release PR found for ${TAG}; skipping comment."
+            echo "Notes are available in the job summary and as a build artifact."
+            exit 0
+          fi
+
+          {
+            echo "## 📝 Generated release notes for \`${TAG}\`"
+            echo ""
+            echo "Auto-generated by the \`release-notes\` skill. Review and, if good, apply with:"
+            echo ""
+            echo '```'
+            echo "gh release edit ${TAG} --notes-file <paste-below>.md"
+            echo '```'
+            echo ""
+            echo "<details><summary>Click to expand release notes</summary>"
+            echo ""
+            cat "$FILE"
+            echo ""
+            echo "</details>"
+          } > /tmp/comment.md
+
+          gh pr comment "$PR" --body-file /tmp/comment.md
+          echo "Posted release notes to PR #${PR}"
+
+      - name: Announce release in Slack
+        # Single channel message (no thread): header + the skill's theme summary +
+        # a link to the full GitHub release notes. Uses the same incoming-webhook
+        # pattern as the failure notification in releaser.yml.
+        #
+        # NOTE: SLACK_TOOLHIVE_RELEASE_WEBHOOK_URL currently backs the
+        # release-failure alert. If it does not target #toolhive, point this at a
+        # #toolhive-specific incoming webhook secret instead.
+        if: ${{ env.SLACK_WEBHOOK != '' }}
+        uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
+        with:
+          webhook: ${{ env.SLACK_WEBHOOK }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "🚀 ToolHive ${{ steps.tag.outputs.tag }} is live!",
+                    "emoji": true
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ${{ toJSON(steps.summary.outputs.text) }}
+                  }
+                },
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": ":memo: <https://github.com/${{ github.repository }}/releases/tag/${{ steps.tag.outputs.tag }}|Full release notes>"
+                  }
+                }
+              ]
+            }

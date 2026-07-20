@@ -15,7 +15,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mark3labs/mcp-go/mcp"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
@@ -23,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
 
+	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	mcpparser "github.com/stacklok/toolhive/pkg/mcp"
 	"github.com/stacklok/toolhive/pkg/transport/types"
 )
@@ -396,7 +396,16 @@ func (*HTTPMiddleware) addNetworkAttributes(span trace.Span, r *http.Request, ba
 }
 
 // addMethodSpecificAttributes adds attributes specific to certain MCP methods.
+// Despite the name, the mcp.client.name block below runs for every method: under
+// the Modern (stateless) MCP revision there is no initialize request, so per-request
+// _meta.clientInfo is the only source of client attribution. It is a no-op for
+// Legacy requests, which carry no _meta.clientInfo and still get mcp.client.name
+// from the "initialize" case below.
 func (m *HTTPMiddleware) addMethodSpecificAttributes(span trace.Span, parsedMCP *mcpparser.ParsedMCPRequest) {
+	if name, ok := parsedMCP.ClientInfo["name"].(string); ok && name != "" {
+		span.SetAttributes(attribute.String("mcp.client.name", name))
+	}
+
 	switch parsedMCP.Method {
 	case string(mcp.MethodToolsCall):
 		// New gen_ai namespace attributes (always emitted)
@@ -697,11 +706,13 @@ func (m *HTTPMiddleware) recordMetrics(ctx context.Context, r *http.Request, rw 
 	m.requestDuration.Record(ctx, duration.Seconds(), attrs)
 
 	// Record OTEL MCP spec mcp.server.operation.duration for actual MCP requests.
-	// mcpMethod should never be "unknown" for requests reaching the MCP middleware;
-	// if it is, the middleware chain is misconfigured (see #3687).
+	// Only POST requests carry a JSON-RPC body; GET (SSE stream open) and DELETE
+	// (session termination) are valid Streamable HTTP lifecycle requests with no
+	// MCP method to record. An unknown method on a POST indicates either a
+	// misconfigured middleware chain (see #3687) or a parse failure.
 	if mcpMethod != "unknown" {
 		m.recordOperationDuration(ctx, r, mcpMethod, mcpResourceID, rw.statusCode, duration)
-	} else {
+	} else if r.Method == http.MethodPost {
 		//nolint:gosec // G706: HTTP method and URL path from request
 		slog.Warn("mcp method could not be determined, middleware may be misconfigured",
 			"http_method", r.Method, "path", r.URL.Path)

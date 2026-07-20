@@ -43,12 +43,14 @@ import (
 // native apps that register redirect URIs like "http://localhost/callback" and then
 // request authorization with dynamic ports like "http://localhost:57403/callback".
 type LoopbackClient struct {
-	*fosite.DefaultClient
+	*fosite.DefaultOpenIDConnectClient
 }
 
-// NewLoopbackClient creates a new LoopbackClient wrapping the provided DefaultClient.
-func NewLoopbackClient(client *fosite.DefaultClient) *LoopbackClient {
-	return &LoopbackClient{DefaultClient: client}
+// NewLoopbackClient creates a new LoopbackClient wrapping the provided client.
+// The wrapper preserves all OIDC fields (including TokenEndpointAuthMethod)
+// while adding RFC 8252 §7.3 dynamic port matching for loopback redirect URIs.
+func NewLoopbackClient(client *fosite.DefaultOpenIDConnectClient) *LoopbackClient {
+	return &LoopbackClient{DefaultOpenIDConnectClient: client}
 }
 
 // MatchRedirectURI checks if the given redirect URI matches one of the client's
@@ -167,8 +169,14 @@ func New(cfg Config) (fosite.Client, error) {
 
 	// Wrap public clients in LoopbackClient for RFC 8252 Section 7.3
 	// dynamic port matching for native app loopback redirect URIs.
+	// Use DefaultOpenIDConnectClient so TokenEndpointAuthMethod ("none" for
+	// public clients) is preserved through the LoopbackClient wrapper.
 	if cfg.Public {
-		return NewLoopbackClient(defaultClient), nil
+		oidcClient := &fosite.DefaultOpenIDConnectClient{
+			DefaultClient:           defaultClient,
+			TokenEndpointAuthMethod: "none",
+		}
+		return NewLoopbackClient(oidcClient), nil
 	}
 
 	return defaultClient, nil

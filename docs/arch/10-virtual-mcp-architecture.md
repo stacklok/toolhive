@@ -237,12 +237,19 @@ Middleware is applied by wrapping handlers, so execution order is outer-to-inner
 | Order | Middleware | Required | Purpose |
 |-------|------------|----------|---------|
 | 1 | Recovery | Always | Catches panics, returns HTTP 500 |
-| 2 | Authentication | Optional | Validates incoming JWT tokens (OIDC/Anonymous) |
-| 3 | Authorization | Optional | Evaluates Cedar policies (composed with auth) |
-| 4 | Audit | Optional | Logs request events for compliance |
-| 5 | Discovery | Always | Aggregates backend capabilities per session |
-| 6 | Backend Enrichment | Optional | Adds backend name to audit context |
-| 7 | Telemetry | Optional | OpenTelemetry instrumentation |
+| 2 | WriteTimeout | Always | Clears the server `WriteTimeout` for qualifying SSE connections |
+| 3 | Header Validation | Always | Rejects GETs without `Accept: text/event-stream` before they reach the MCP handler |
+| 4 | Authentication (+ MCP parsing) | Optional | Validates incoming credentials (OIDC/local/anonymous); MCP parsing is composed inside so downstream layers see `ParsedMCPRequest` |
+| 5 | Audit | Optional | Logs request events for compliance |
+| 6 | Discovery | Always | Aggregates backend capabilities per session |
+| 7 | Annotation Enrichment | Optional | Injects tool annotations into context for annotation-aware authz (only when Authorization is configured) |
+| 8 | Authorization | Optional | Evaluates Cedar policies after discovery and annotation enrichment |
+| 9 | Backend Enrichment | Optional | Adds backend name to audit context (only when Audit is configured) |
+| 10 | MCP Parsing | Always | Second application is a no-op when auth already parsed; ensures telemetry can label metrics with `mcp_method` when auth is nil |
+| 11 | Telemetry | Optional | OpenTelemetry instrumentation |
+| 12 | Pre-dispatch authorization gate | Optional | Innermost: runs inside the Streamable HTTP transport before session validation and SDK dispatch. Rejects a Cedar-denied `tools/call` / `resources/read` / `prompts/get` with HTTP 403 + JSON-RPC code 403, reusing the core admission decision. Installed only when Authorization is configured. See "Authorization Enforcement" below. |
+
+> On the New/Serve path, authorization is enforced by the **core admission seam**, not by rows 6–8 as standalone HTTP middleware; row 12 is the transport-level projection of that decision. See [Authorization Enforcement](#authorization-enforcement-core-admission-seam--pre-dispatch-gate).
 
 ### Discovery Middleware
 
@@ -272,15 +279,72 @@ This enriches audit events with the backend name for better observability.
 
 ### Authentication Composition
 
-When Authorization is configured, Authentication middleware is composed with MCP Parsing and Authorization:
+`pkg/vmcp/auth/factory/incoming.NewIncomingAuthMiddleware()` returns two separate middlewares:
+
+- `authMw`: Authentication composed with MCP Parsing (parsing runs immediately after auth so downstream layers see `ParsedMCPRequest`).
+- `authzMw`: Authorization, returned independently so the server can place it after discovery and annotation enrichment in the chain.
+
+The server wires them around discovery/annotation-enrichment so the effective execution order is:
 
 ```
-Authentication → MCP Parsing → Authorization → Next Handler
+Authentication → MCP Parsing → Audit → Discovery → Annotation Enrichment → Authorization → Next Handler
 ```
-
-This composition is created by `pkg/vmcp/auth/factory/incoming.NewIncomingAuthMiddleware()`.
 
 **Implementation**: `pkg/vmcp/server/server.go`, `pkg/vmcp/discovery/middleware.go`, `pkg/vmcp/auth/factory/`
+
+### Authorization Enforcement (core admission seam + pre-dispatch gate)
+
+On the New/Serve path, authorization is enforced by the **core admission seam**
+(`pkg/vmcp/core`), not by HTTP middleware. The seam applies one Cedar decision to both
+the list side (`ListTools`/`ListResources`/`ListPrompts` filter the advertised set) and
+the call side (`CallTool`/`ReadResource`/`GetPrompt` deny before dispatch), closing the
+"list says yes / call says no" gap.
+
+Because the SDK maps a call-side deny to a tool result, a raw denied `tools/call` would
+otherwise return **HTTP 200** (either the SDK's `-32602 "not found"` for a list-filtered
+tool, or a `200 + IsError` tool result for an argument-gated deny). To make a denial a
+first-class wire rejection, Serve installs a **pre-dispatch authorization gate**
+(`pkg/vmcp/server/call_gate.go`) on the Streamable HTTP transport, but only when Cedar
+policies are configured:
+
+- The gate re-runs the core admission decision for `tools/call`, `resources/read`, and
+  `prompts/get` via `core.CheckToolCall` / `CheckResourceRead` / `CheckPromptGet` — the
+  same helpers the call path uses, so a pre-check and the call can never drift. Non-gated
+  methods (e.g. `initialize`, `tools/list`) are admitted untouched.
+- A denial is rejected as **HTTP 403 + JSON-RPC error code 403** (`pkg/mcp.JSONRPCCodeDenied`)
+  with a kind-only message (`"call denied by authorization policy"`,
+  `"read denied by authorization policy"`, `"prompt denied by authorization policy"`) —
+  identical to the single-server `thv run` authorization response. The message never
+  names the capability or reveals advertised-vs-nonexistent, so a denial is not an
+  **enumeration oracle**: a filtered tool, an argument-gated deny, and a nonexistent tool
+  under a default-deny policy all converge on the same 403.
+- The gate runs **before session validation** (403-before-404): a denial is determinable
+  from the caller's own identity without session state.
+- It sits **inside the audit middleware**, so a denied call is audited with outcome
+  `denied` (403 → `OutcomeDenied`) with no audit-layer changes.
+- An authorizer error fails **closed** (treated as a denial); a non-authorization
+  (infrastructure) error admits, so the call path surfaces it through existing mapping —
+  the gate never converts a plumbing fault into a 403.
+- **One decode per `tools/call`**: dispatch (`coreToolHandler`) prefers the transport
+  parse (`pkg/mcp`) the gate authorized on — via `gateParsedArgs`, keyed on matching
+  method + tool — so the gated decision, the enforced call-path decision, and the
+  forwarded backend arguments all derive from a single decoded map. Where no matching
+  parse exists (batch, embedders bypassing the transport, method/tool mismatch), dispatch
+  falls back to the SDK decode and makes a single decision on that single map, so no path
+  can produce an allow-then-deny split between gate and call.
+- **Code mode carve-out**: `execute_tool_script` is not in the admission seam (the feature
+  flag is the grant, and each inner tool call the script makes is re-authorized by its real
+  name), so the codemode decorator's `CheckToolCall` admits it while delegating every other
+  name to the inner core. A backend that advertised a tool named `execute_tool_script`
+  would be silently shadowed by the virtual tool and skip its own Cedar admission, so the
+  decorator fails **loud** (`ErrReservedToolName`) on that collision — `ListTools`,
+  `LookupTool`, and the `CallTool` script-binding path all refuse to serve rather than mask it.
+
+The `Call*` methods keep their internal admission checks as defense-in-depth for other
+embedders and misconfigured gates.
+
+**Implementation**: `pkg/vmcp/core/core_checks.go`, `pkg/vmcp/server/call_gate.go`,
+`pkg/vmcp/server/serve_handlers.go`, `pkg/vmcp/codemode/decorator.go`, `pkg/mcp/errors.go`
 
 ## Health Monitoring
 
@@ -290,14 +354,29 @@ vMCP monitors backend health with configurable intervals. Health status (healthy
 
 ## Deployment
 
-vMCP can be deployed two ways:
+vMCP can be deployed in three ways:
 
 - **Kubernetes** - Via the VirtualMCPServer CRD managed by the operator
-- **CLI** - Standalone via the `vmcp` binary for development or non-Kubernetes environments
+- **Local CLI (`thv vmcp`)** - Recommended path for local and non-Kubernetes use; built into the main `thv` binary
+- **Standalone `vmcp` binary** - Preserved for backwards compatibility and advanced CLI use
 
 **Implementation**:
 - Kubernetes: `cmd/thv-operator/controllers/virtualmcpserver_controller.go`
-- CLI: `cmd/vmcp/`
+- Local CLI: `cmd/thv/app/vmcp.go`, `pkg/vmcp/cli/`
+- Standalone binary: `cmd/vmcp/`
+
+## Local CLI Mode
+
+`thv vmcp` is the recommended way to run a vMCP server outside of Kubernetes. It provides the same aggregation, tool routing, and optimizer capabilities as the Kubernetes-managed VirtualMCPServer, but runs as a local foreground process driven by Cobra CLI flags.
+
+Key features:
+
+- **Zero-config quick mode**: `thv vmcp serve --group <name>` generates an in-memory config from a running ToolHive group — no YAML file required.
+- **Config-file workflow**: `thv vmcp init` → `thv vmcp validate` → `thv vmcp serve --config` for reproducible deployments.
+- **Optimizer tiers**: optional FTS5 keyword search (Tier 1) and managed TEI semantic search (Tier 2) reduce tool count for MCP clients.
+- **Loopback-only binding**: quick mode enforces a loopback-only host via `ServeConfig.validateQuickModeHost` — `localhost`, `127.0.0.1`, `::1`, or any other loopback IP is accepted; non-loopback addresses are rejected.
+
+See [Local vMCP CLI Mode](vmcp-local.md) for the full architecture, optimizer tier table, and TEI container lifecycle documentation.
 
 ## Status Reporting
 
@@ -311,12 +390,12 @@ Status reporting enables vMCP runtime to report operational status directly inst
 
 ### Key Concepts
 
-- `StatusReporter` interface (`pkg/vmcp/status/reporter.go`): `ReportStatus(ctx, *vmcp.Status)` and `Start(ctx)` returning shutdown func.
+- `Reporter` interface (`pkg/vmcp/status/reporter.go`); set via `Config.StatusReporter` field: `ReportStatus(ctx, *vmcp.Status)` and `Start(ctx)` returning shutdown func.
 - Status model (`pkg/vmcp/types.go`):
   - Phase: Pending, Ready, Degraded, Failed
   - Conditions: `metav1.Condition` (ready, backends discovered, auth configured) using shared constants
   - DiscoveredBackends: backend URL/auth type/health with timestamps
-- CLI reporter: Logging-only reporter (no persistence) always logs status updates.
+- CLI reporter: Logging-only reporter (no persistence) logs status updates at Debug level (visible when `--debug` is set).
 - Lifecycle hook: server starts the reporter, collects shutdown funcs, and stops them during graceful shutdown.
 
 ### Integration in vMCP Runtime
@@ -339,3 +418,7 @@ Status reporting enables vMCP runtime to report operational status directly inst
 - [Operator Architecture](09-operator-architecture.md) - CRD details
 - [Transport Architecture](03-transport-architecture.md) - Transport types used by backends
 - [Middleware Architecture](../middleware.md) - Shared middleware system (Authentication, Audit, Telemetry, etc.)
+- [Local vMCP CLI Mode](vmcp-local.md) - `thv vmcp` CLI surface, optimizer tiers, and TEI lifecycle
+- [vMCP Library Embedding](vmcp-library.md) - Embedding `pkg/vmcp/` in downstream Go projects
+- [vMCP Scalability Limits and Constraints](13-vmcp-scalability.md) - Per-pod session cap, TTL mechanics, Redis sizing, and pod restart behaviour
+- [Deployment Modes](01-deployment-modes.md) - Where vMCP fits among local and Kubernetes deployment patterns

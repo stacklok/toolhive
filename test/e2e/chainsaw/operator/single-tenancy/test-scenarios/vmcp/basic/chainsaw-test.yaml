@@ -9,7 +9,7 @@ spec:
     try:
     - apply:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: MCPGroup
           metadata:
             name: test-group
@@ -20,7 +20,7 @@ spec:
     try:
     - apply:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: MCPOIDCConfig
           metadata:
             name: test-vmcp-oidc
@@ -33,7 +33,7 @@ spec:
     try:
     - apply:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: VirtualMCPServer
           metadata:
             name: test-vmcp
@@ -52,7 +52,7 @@ spec:
               source: discovered
     - assert:
         resource:
-          apiVersion: toolhive.stacklok.dev/v1alpha1
+          apiVersion: toolhive.stacklok.dev/v1beta1
           kind: VirtualMCPServer
           metadata:
             name: test-vmcp

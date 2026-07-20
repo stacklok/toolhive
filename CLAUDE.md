@@ -6,6 +6,8 @@ This file provides guidance to Claude Code when working with this repository.
 
 ToolHive is a lightweight, secure manager for MCP (Model Context Protocol: https://modelcontextprotocol.io) servers written in Go. It provides a CLI (`thv`), a Kubernetes operator (`thv-operator`), and a proxy runner (`thv-proxyrunner`) for container-based MCP server isolation.
 
+**To understand the system, start with the [Architecture Documentation](docs/arch/README.md).** Begin at the [Architecture Overview](docs/arch/00-overview.md) and [Core Concepts](docs/arch/02-core-concepts.md), then read the component deep-dives relevant to your task — [Deployment Modes](docs/arch/01-deployment-modes.md), [Transport Architecture](docs/arch/03-transport-architecture.md), [Kubernetes Operator](docs/arch/09-operator-architecture.md), [Virtual MCP](docs/arch/10-virtual-mcp-architecture.md), and more. The [architecture index](docs/arch/README.md) has a full map and by-topic navigation.
+
 ## Build and Development Commands
 
 ```bash
@@ -84,7 +86,7 @@ Detailed rules are in `.claude/rules/` (loaded automatically when matching files
 
 ## Architecture Documentation
 
-When making changes that affect architecture, update relevant docs in `docs/arch/`. See `docs/arch/README.md` for structure.
+When making changes that affect architecture, update relevant docs in `docs/arch/`. See the [architecture documentation index](docs/arch/README.md) for structure and the per-component documents.
 
 ## Things That Will Bite You
 

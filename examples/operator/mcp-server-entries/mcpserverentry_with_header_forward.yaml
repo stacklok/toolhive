@@ -4,7 +4,7 @@
 # secret-backed headers (values stored in Kubernetes Secrets).
 
 ---
-apiVersion: toolhive.stacklok.dev/v1alpha1
+apiVersion: toolhive.stacklok.dev/v1beta1
 kind: MCPServerEntry
 metadata:
   name: internal-api

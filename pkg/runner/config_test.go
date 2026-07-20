@@ -174,6 +174,22 @@ func TestRunConfig_NormalizeProxyMode(t *testing.T) {
 // Note: This test uses actual port finding logic, so it may fail if ports are in use
 func TestRunConfig_WithPorts(t *testing.T) {
 	t.Parallel()
+	// Find available ports dynamically to avoid flaky failures
+	port1 := networking.FindAvailable()
+	require.NotZero(t, port1, "should find an available proxy port for SSE")
+	targetPort1 := networking.FindAvailable()
+	require.NotZero(t, targetPort1, "should find an available target port for SSE")
+
+	port2 := networking.FindAvailable()
+	require.NotZero(t, port2, "should find an available proxy port for HTTP")
+	targetPort2 := networking.FindAvailable()
+	require.NotZero(t, targetPort2, "should find an available target port for HTTP")
+
+	port3 := networking.FindAvailable()
+	require.NotZero(t, port3, "should find an available proxy port for Stdio")
+	targetPort3 := networking.FindAvailable()
+	require.NotZero(t, targetPort3, "should find an available target port for Stdio")
+
 	testCases := []struct {
 		name        string
 		config      *RunConfig
@@ -184,8 +200,8 @@ func TestRunConfig_WithPorts(t *testing.T) {
 		{
 			name:        "SSE transport with specific ports",
 			config:      &RunConfig{Transport: types.TransportTypeSSE},
-			port:        8001,
-			targetPort:  9001,
+			port:        port1,
+			targetPort:  targetPort1,
 			expectError: false,
 		},
 		{
@@ -198,15 +214,15 @@ func TestRunConfig_WithPorts(t *testing.T) {
 		{
 			name:        "Streamable HTTP transport with specific ports",
 			config:      &RunConfig{Transport: types.TransportTypeStreamableHTTP},
-			port:        8002,
-			targetPort:  9002,
+			port:        port2,
+			targetPort:  targetPort2,
 			expectError: false,
 		},
 		{
 			name:        "Stdio transport with specific port",
 			config:      &RunConfig{Transport: types.TransportTypeStdio},
-			port:        8003,
-			targetPort:  9003, // This should be ignored for stdio
+			port:        port3,
+			targetPort:  targetPort3, // This should be ignored for stdio
 			expectError: false,
 		},
 	}
@@ -240,6 +256,26 @@ func TestRunConfig_WithPorts(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRunConfig_WithPorts_TargetPortIgnoresHostAvailability ensures container target
+// ports are not validated against host availability.
+//
+//nolint:tparallel,paralleltest // Subtests share a listener occupying the target port on the host
+func TestRunConfig_WithPorts_TargetPortIgnoresHostAvailability(t *testing.T) {
+	t.Parallel()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err, "Should be able to occupy a port on host")
+	defer listener.Close()
+
+	targetPort := listener.Addr().(*net.TCPAddr).Port
+	config := &RunConfig{Transport: types.TransportTypeSSE}
+	result, err := config.WithPorts(0, targetPort)
+
+	require.NoError(t, err)
+	assert.Equal(t, config, result)
+	assert.Equal(t, targetPort, config.TargetPort, "TargetPort should remain the requested container port")
 }
 
 func TestRunConfig_WithEnvironmentVariables(t *testing.T) {
@@ -2531,4 +2567,103 @@ func TestRunConfig_SessionRedis(t *testing.T) {
 		require.NotNil(t, got.ScalingConfig.SessionRedis)
 		assert.Equal(t, "redis:6379", got.ScalingConfig.SessionRedis.Address)
 	})
+}
+
+func TestRunConfig_MCPServerGenerationJSONRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	t.Run("preserves non-zero value", func(t *testing.T) {
+		t.Parallel()
+		cfg := NewRunConfig()
+		cfg.Name = "generation-server"
+		cfg.MCPServerGeneration = 42
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		assert.Equal(t, int64(42), got.MCPServerGeneration,
+			"MCPServerGeneration not preserved: got %d, want 42", got.MCPServerGeneration)
+	})
+
+	t.Run("missing field decodes as zero", func(t *testing.T) {
+		t.Parallel()
+		minimalJSON := `{"schema_version":"v0.1.0","image":"img","name":"n","transport":"stdio","host":"127.0.0.1","port":8080,"permission_profile":null}` //nolint:lll
+
+		got, err := ReadJSON(strings.NewReader(minimalJSON))
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), got.MCPServerGeneration,
+			"MCPServerGeneration should be zero when missing, got %d", got.MCPServerGeneration)
+	})
+
+	t.Run("omitempty omits zero value", func(t *testing.T) {
+		t.Parallel()
+		// With the int64 type and `omitempty`, a zero MCPServerGeneration must not
+		// appear in the marshaled JSON. This is the key property that makes ConfigMap
+		// checksums deterministic across reconciles for unversioned (CLI) callers.
+		cfg := NewRunConfig()
+		cfg.Name = "zero-generation"
+
+		var buf bytes.Buffer
+		require.NoError(t, cfg.WriteJSON(&buf))
+		assert.False(t, bytes.Contains(buf.Bytes(), []byte("mcpserver_generation")),
+			"zero MCPServerGeneration should be omitted from JSON output; got:\n%s", buf.String())
+
+		// Round-trip: absent field decodes back to zero.
+		got, err := ReadJSON(&buf)
+		require.NoError(t, err)
+		assert.Equal(t, int64(0), got.MCPServerGeneration,
+			"decoded missing field should be zero, got %d", got.MCPServerGeneration)
+	})
+}
+
+// TestReadJSON_DegradesNetworkIsolation verifies that ReadJSON self-heals legacy
+// on-disk configs that persisted isolate_network=true with a non-bridge network
+// mode, so status/list reflect reality. See issue #5775.
+func TestReadJSON_DegradesNetworkIsolation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name            string
+		mode            string
+		omitProfile     bool // omit permission_profile entirely (nil-guard case)
+		expectIsolation bool
+	}{
+		{name: "host mode degrades", mode: "host", expectIsolation: false},
+		{name: "none mode degrades", mode: "none", expectIsolation: false},
+		{name: "bridge mode untouched", mode: "bridge", expectIsolation: true},
+		{name: "empty mode untouched", mode: "", expectIsolation: true},
+		{name: "no permission profile is nil-safe and untouched", omitProfile: true, expectIsolation: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			profileJSON := fmt.Sprintf(`,
+				"permission_profile": {
+					"network": {
+						"mode": "%s"
+					}
+				}`, tt.mode)
+			if tt.omitProfile {
+				profileJSON = ""
+			}
+
+			configJSON := fmt.Sprintf(`{
+				"schema_version": "v1",
+				"name": "degrade-test",
+				"image": "test:latest",
+				"transport": "stdio",
+				"isolate_network": true%s
+			}`, profileJSON)
+
+			config, err := ReadJSON(strings.NewReader(configJSON))
+			require.NoError(t, err)
+			require.NotNil(t, config)
+			assert.Equal(t, tt.expectIsolation, config.IsolateNetwork,
+				"IsolateNetwork should reflect reconciled value for mode %q", tt.mode)
+		})
+	}
 }

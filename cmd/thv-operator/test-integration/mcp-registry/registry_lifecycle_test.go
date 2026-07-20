@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 )
 
 const (
@@ -97,7 +97,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 
 			// Verify registry enters terminating phase
 			By("waiting for registry to enter terminating phase")
-			statusHelper.WaitForPhase(registry.Name, mcpv1alpha1.MCPRegistryPhaseTerminating, MediumTimeout)
+			statusHelper.WaitForPhase(registry.Name, mcpv1beta1.MCPRegistryPhaseTerminating, MediumTimeout)
 
 			By("waiting for finalizer to be removed")
 			timingHelper.WaitForControllerReconciliation(func() interface{} {
@@ -127,13 +127,13 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 				Create(registryHelper)
 
 			// Wait for registry to be ready
-			statusHelper.WaitForPhaseAny(registry.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry.Name, []mcpv1beta1.MCPRegistryPhase{mcpv1beta1.MCPRegistryPhaseReady, mcpv1beta1.MCPRegistryPhasePending}, MediumTimeout)
 
 			// Delete the registry
 			Expect(registryHelper.DeleteRegistry(registry.Name)).To(Succeed())
 
 			// Verify graceful deletion process
-			statusHelper.WaitForPhase(registry.Name, mcpv1alpha1.MCPRegistryPhaseTerminating, QuickTimeout)
+			statusHelper.WaitForPhase(registry.Name, mcpv1beta1.MCPRegistryPhaseTerminating, QuickTimeout)
 
 			// Verify complete deletion
 			timingHelper.WaitForControllerReconciliation(func() interface{} {
@@ -178,19 +178,16 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 
 			registry2 := registryHelper.NewRegistryBuilder("registry-2").
 				WithConfigMapSource(configMap2.Name, "registry.json").
-				// WithUpstreamFormat().
 				WithSyncPolicy("30m").
 				Create(registryHelper)
 
 			// Both should become ready independently
-			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
-			statusHelper.WaitForPhaseAny(registry2.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1beta1.MCPRegistryPhase{mcpv1beta1.MCPRegistryPhaseReady, mcpv1beta1.MCPRegistryPhasePending}, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry2.Name, []mcpv1beta1.MCPRegistryPhase{mcpv1beta1.MCPRegistryPhaseReady, mcpv1beta1.MCPRegistryPhasePending}, MediumTimeout)
 
 			// Verify they operate independently by checking their configYAML
 			Expect(registry1.Spec.ConfigYAML).To(ContainSubstring("interval: 1h"))
 			Expect(registry2.Spec.ConfigYAML).To(ContainSubstring("interval: 30m"))
-			Expect(registry1.Spec.ConfigYAML).To(ContainSubstring("format: toolhive"))
-			Expect(registry2.Spec.ConfigYAML).To(ContainSubstring("format: toolhive"))
 		})
 
 		It("should allow multiple registries with same ConfigMap source", func() {
@@ -209,7 +206,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 				Create(registryHelper)
 
 			// Both should become ready
-			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1beta1.MCPRegistryPhase{mcpv1beta1.MCPRegistryPhaseReady, mcpv1beta1.MCPRegistryPhasePending}, MediumTimeout)
 
 			By("verifying registry servers config ConfigMap is created")
 			serverConfigMap1 := testHelpers.waitForAndGetServerConfigMap(registry1.Name)
@@ -246,7 +243,7 @@ var _ = Describe("MCPRegistry Lifecycle Management", Label("k8s", "registry"), f
 			Expect(errors.IsAlreadyExists(err)).To(BeTrue())
 
 			// Original registry should still be functional
-			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1alpha1.MCPRegistryPhase{mcpv1alpha1.MCPRegistryPhaseReady, mcpv1alpha1.MCPRegistryPhasePending}, MediumTimeout)
+			statusHelper.WaitForPhaseAny(registry1.Name, []mcpv1beta1.MCPRegistryPhase{mcpv1beta1.MCPRegistryPhaseReady, mcpv1beta1.MCPRegistryPhasePending}, MediumTimeout)
 		})
 	})
 })

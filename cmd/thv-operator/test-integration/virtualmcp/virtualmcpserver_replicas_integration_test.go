@@ -15,7 +15,8 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
 	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
@@ -29,8 +30,8 @@ var _ = Describe("VirtualMCPServer Replicas Integration Tests",
 
 		Context("When spec.replicas is set", Ordered, func() {
 			var (
-				mcpGroup         *mcpv1alpha1.MCPGroup
-				virtualMCPServer *mcpv1alpha1.VirtualMCPServer
+				mcpGroup         *mcpv1beta1.MCPGroup
+				virtualMCPServer *mcpv1beta1.VirtualMCPServer
 			)
 
 			BeforeAll(func() {
@@ -42,32 +43,25 @@ var _ = Describe("VirtualMCPServer Replicas Integration Tests",
 					Expect(err).NotTo(HaveOccurred())
 				}
 
-				mcpGroup = &mcpv1alpha1.MCPGroup{
+				mcpGroup = &mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-group-replicas",
 						Namespace: namespace,
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
+					Spec: mcpv1beta1.MCPGroupSpec{
 						Description: "Test group for replicas integration test",
 					},
 				}
 				Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
-				replicas := int32(3)
-				virtualMCPServer = &mcpv1alpha1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "vmcp-replicas-test",
-						Namespace: namespace,
-					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-replicas"},
-						Config:   vmcpconfig.Config{Group: "test-group-replicas"},
-						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-							Type: "anonymous",
-						},
-						Replicas: &replicas,
-					},
-				}
+				virtualMCPServer = v1beta1test.NewVirtualMCPServer("vmcp-replicas-test", namespace,
+					v1beta1test.WithVMCPGroupRef("test-group-replicas"),
+					v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: "test-group-replicas"}),
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+						Type: "anonymous",
+					}),
+					v1beta1test.WithVMCPReplicas(3),
+				)
 				Expect(k8sClient.Create(ctx, virtualMCPServer)).Should(Succeed())
 			})
 
@@ -92,35 +86,29 @@ var _ = Describe("VirtualMCPServer Replicas Integration Tests",
 
 		Context("When spec.replicas is nil", Ordered, func() {
 			var (
-				mcpGroup         *mcpv1alpha1.MCPGroup
-				virtualMCPServer *mcpv1alpha1.VirtualMCPServer
+				mcpGroup         *mcpv1beta1.MCPGroup
+				virtualMCPServer *mcpv1beta1.VirtualMCPServer
 			)
 
 			BeforeAll(func() {
-				mcpGroup = &mcpv1alpha1.MCPGroup{
+				mcpGroup = &mcpv1beta1.MCPGroup{
 					ObjectMeta: metav1.ObjectMeta{
 						Name:      "test-group-nil-replicas",
 						Namespace: namespace,
 					},
-					Spec: mcpv1alpha1.MCPGroupSpec{
+					Spec: mcpv1beta1.MCPGroupSpec{
 						Description: "Test group for nil replicas integration test",
 					},
 				}
 				Expect(k8sClient.Create(ctx, mcpGroup)).Should(Succeed())
 
-				virtualMCPServer = &mcpv1alpha1.VirtualMCPServer{
-					ObjectMeta: metav1.ObjectMeta{
-						Name:      "vmcp-nil-replicas-test",
-						Namespace: namespace,
-					},
-					Spec: mcpv1alpha1.VirtualMCPServerSpec{
-						GroupRef: &mcpv1alpha1.MCPGroupRef{Name: "test-group-nil-replicas"},
-						Config:   vmcpconfig.Config{Group: "test-group-nil-replicas"},
-						IncomingAuth: &mcpv1alpha1.IncomingAuthConfig{
-							Type: "anonymous",
-						},
-					},
-				}
+				virtualMCPServer = v1beta1test.NewVirtualMCPServer("vmcp-nil-replicas-test", namespace,
+					v1beta1test.WithVMCPGroupRef("test-group-nil-replicas"),
+					v1beta1test.WithVMCPConfig(vmcpconfig.Config{Group: "test-group-nil-replicas"}),
+					v1beta1test.WithVMCPIncomingAuth(&mcpv1beta1.IncomingAuthConfig{
+						Type: "anonymous",
+					}),
+				)
 				Expect(k8sClient.Create(ctx, virtualMCPServer)).Should(Succeed())
 			})
 
@@ -162,7 +150,7 @@ var _ = Describe("VirtualMCPServer Replicas Integration Tests",
 				// confirm the reconcile completed after the external scale.
 				var triggerGeneration int64
 				Eventually(func() error {
-					vmcp := &mcpv1alpha1.VirtualMCPServer{}
+					vmcp := &mcpv1beta1.VirtualMCPServer{}
 					if err := k8sClient.Get(ctx, types.NamespacedName{
 						Name:      virtualMCPServer.Name,
 						Namespace: namespace,
@@ -182,7 +170,7 @@ var _ = Describe("VirtualMCPServer Replicas Integration Tests",
 				// Wait until the controller has processed at least triggerGeneration,
 				// confirming a reconciliation ran after the spec change.
 				Eventually(func() (int64, error) {
-					vmcp := &mcpv1alpha1.VirtualMCPServer{}
+					vmcp := &mcpv1beta1.VirtualMCPServer{}
 					if err := k8sClient.Get(ctx, types.NamespacedName{
 						Name:      virtualMCPServer.Name,
 						Namespace: namespace,

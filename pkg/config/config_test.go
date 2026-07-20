@@ -110,7 +110,7 @@ func TestSave(t *testing.T) {
 			},
 			Clients: Clients{
 				RegisteredClients: []string{
-					"vscode", "cursor", "roo-code", "cline", "claude-code", "amp-cli", "amp-vscode", "amp-cursor",
+					"vscode", "cursor", "roo-code", "cline", "claude-code", "amp-cli",
 				},
 			},
 		}
@@ -280,6 +280,46 @@ func TestUpdateConfigAtPath_CallbackError(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "https://original.example.com", config.RegistryUrl,
 		"config should not be written to disk when the callback returns an error")
+}
+
+// TestLoadFromPath_BackwardCompatMigrationStaysOnPath guards the test-isolation
+// regression from issue #894: a path-based load that triggers a backward-compat
+// migration must persist the migration back to the same path, never to the
+// default (real) config path. See applyBackwardCompatibility.
+//
+//nolint:paralleltest // swaps the package-level getConfigPath; must not run in parallel
+func TestLoadFromPath_BackwardCompatMigrationStaysOnPath(t *testing.T) {
+	// Not parallel: this test swaps the package-level getConfigPath sentinel.
+
+	// Point the default path generator at a sentinel that must never be written.
+	sentinelPath := filepath.Join(t.TempDir(), "should-never-exist", "config.yaml")
+	originalGetConfigPath := getConfigPath
+	getConfigPath = func() (string, error) { return sentinelPath, nil }
+	t.Cleanup(func() { getConfigPath = originalGetConfigPath })
+
+	// A config that triggers the "provider set but setup_completed false" migration.
+	_, configPath := SetupTestConfig(t, &Config{
+		Secrets: Secrets{
+			ProviderType:   string(secrets.EncryptedType),
+			SetupCompleted: false,
+		},
+	})
+
+	config, err := LoadOrCreateConfigWithPath(configPath)
+	require.NoError(t, err)
+	assert.True(t, config.Secrets.SetupCompleted,
+		"backward-compat migration should mark setup as completed")
+
+	// The migration must be persisted to the path we loaded from.
+	reloaded, err := LoadOrCreateConfigWithPath(configPath)
+	require.NoError(t, err)
+	assert.True(t, reloaded.Secrets.SetupCompleted,
+		"migration should be persisted back to the loaded path")
+
+	// The default/real config path must never have been touched.
+	_, statErr := os.Stat(sentinelPath)
+	assert.ErrorIs(t, statErr, os.ErrNotExist,
+		"backward-compat migration must not write to the default config path")
 }
 
 func TestSecrets_GetProviderType_EnvironmentVariable(t *testing.T) {

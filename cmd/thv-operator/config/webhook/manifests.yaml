@@ -10,14 +10,14 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-toolhive-stacklok-dev-v1alpha1-mcpexternalauthconfig
+      path: /validate-toolhive-stacklok-dev-v1beta1-mcpexternalauthconfig
   failurePolicy: Fail
   name: vmcpexternalauthconfig.kb.io
   rules:
   - apiGroups:
     - toolhive.stacklok.dev
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE
@@ -30,14 +30,14 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-toolhive-stacklok-dev-v1alpha1-virtualmcpcompositetooldefinition
+      path: /validate-toolhive-stacklok-dev-v1beta1-virtualmcpcompositetooldefinition
   failurePolicy: Fail
   name: vvirtualmcpcompositetooldefinition.kb.io
   rules:
   - apiGroups:
     - toolhive.stacklok.dev
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE
@@ -50,14 +50,14 @@ webhooks:
     service:
       name: webhook-service
       namespace: system
-      path: /validate-toolhive-stacklok-dev-v1alpha1-virtualmcpserver
+      path: /validate-toolhive-stacklok-dev-v1beta1-virtualmcpserver
   failurePolicy: Fail
   name: vvirtualmcpserver.kb.io
   rules:
   - apiGroups:
     - toolhive.stacklok.dev
     apiVersions:
-    - v1alpha1
+    - v1beta1
     operations:
     - CREATE
     - UPDATE

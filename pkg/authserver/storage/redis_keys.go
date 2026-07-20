@@ -58,6 +58,12 @@ const (
 
 	// KeyTypeUserProviders is the key type for user to provider identity reverse lookups.
 	KeyTypeUserProviders = "user:providers"
+
+	// KeyTypeDCR is the key type for RFC 7591 Dynamic Client Registration credentials
+	// persisted by an authserver upstream-DCR resolver. Distinct from KeyTypeClient,
+	// which holds the authserver's *own* OAuth clients — DCR entries are credentials
+	// that *this* authserver registered against an *upstream* authorization server.
+	KeyTypeDCR = "dcr"
 )
 
 // DeriveKeyPrefix creates the key prefix from the Kubernetes namespace and MCP server name.
@@ -86,6 +92,48 @@ func redisKey(prefix, keyType, id string) string {
 // Uses length-prefixed format to handle colons in provider IDs/subjects.
 func redisProviderKey(prefix, providerID, providerSubject string) string {
 	return fmt.Sprintf("%s%s:%d:%s:%s", prefix, KeyTypeProvider, len(providerID), providerID, providerSubject)
+}
+
+// redisDCRKey generates a Redis key for a DCR credential entry, identifying the
+// (Issuer, UpstreamID, RedirectURI, ScopesHash) tuple that DCRKey canonicalises.
+//
+// Format: "{prefix}dcr:<len(issuer)>:<issuer>:<len(upstream_id)>:<upstream_id>:<len(redirect_uri)>:<redirect_uri>:<scopes_hash>"
+//
+// The first three segments are length-prefixed to handle colons in UpstreamID
+// and RedirectURI (and, for symmetry, Issuer) without ambiguity, mirroring
+// redisProviderKey. ScopesHash is expected to be a SHA-256 hex digest produced
+// by storage.ScopesHash — only [0-9a-f] and never colon-bearing — so it is
+// appended without a length prefix. The format is robust for that domain;
+// validateDCRCredentialsForStore (called by every Store path) already
+// rejects an empty ScopesHash, and callers are required to compute the hash
+// via storage.ScopesHash. Length-prefix collision-safety is preserved on
+// the leading segments either way.
+//
+// The UpstreamID segment (issue #5823) means two upstreams that share the
+// consumer's Issuer and RedirectURI but differ only by their authorization
+// server no longer map to the same Redis key. Adding it changes the key
+// format, so entries written by an older binary (without the segment) will
+// miss on lookup and be harmlessly re-registered under the new key. Orphaned
+// old rows self-evict only when the upstream asserted an RFC 7591 §3.2.1
+// client_secret_expires_at (StoreDCRCredentials sets a matching Redis TTL for
+// those); entries for non-expiring secrets — the common §3.2.1 "never" case —
+// carry no TTL and persist indefinitely, so they require manual cleanup.
+// There is no automated one-shot migration for this key-format change today.
+//
+// The public-vs-confidential client distinction is intentionally NOT
+// encoded here — see DCRKey's doc for the rationale. Today's two consumers
+// register on disjoint RedirectURI address spaces (AS-origin vs RFC 8252
+// loopback) so the persisted key cannot collide across profiles. A future
+// consumer that defaults its RedirectURI into either space would need to
+// add the distinguishing component back to the key format alongside an
+// explicit migration story for existing Redis-cached entries.
+func redisDCRKey(prefix string, key DCRKey) string {
+	return fmt.Sprintf("%s%s:%d:%s:%d:%s:%d:%s:%s",
+		prefix, KeyTypeDCR,
+		len(key.Issuer), key.Issuer,
+		len(key.UpstreamID), key.UpstreamID,
+		len(key.RedirectURI), key.RedirectURI,
+		key.ScopesHash)
 }
 
 // redisUpstreamKey generates a Redis key for a per-provider upstream token entry.

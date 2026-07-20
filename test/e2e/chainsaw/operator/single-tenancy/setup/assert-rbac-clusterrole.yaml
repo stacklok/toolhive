@@ -23,13 +23,6 @@ rules:
 - apiGroups:
   - ""
   resources:
-  - events
-  verbs:
-  - create
-  - patch
-- apiGroups:
-  - ""
-  resources:
   - pods
   verbs:
   - get
@@ -48,6 +41,21 @@ rules:
   - pods/log
   verbs:
   - get
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions
+  verbs:
+  - get
+  - list
+  - watch
+- apiGroups:
+  - apiextensions.k8s.io
+  resources:
+  - customresourcedefinitions/status
+  verbs:
+  - patch
+  - update
 - apiGroups:
   - apps
   resources:
@@ -74,6 +82,13 @@ rules:
   - update
   - watch
 - apiGroups:
+  - events.k8s.io
+  resources:
+  - events
+  verbs:
+  - create
+  - patch
+- apiGroups:
   - gateway.networking.k8s.io
   resources:
   - gateways
@@ -98,7 +113,16 @@ rules:
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
+  - '*'
+  verbs:
+  - get
+  - list
+  - update
+- apiGroups:
+  - toolhive.stacklok.dev
+  resources:
   - embeddingservers
+  - mcpauthzconfigs
   - mcpexternalauthconfigs
   - mcpgroups
   - mcpoidcconfigs
@@ -106,6 +130,7 @@ rules:
   - mcpremoteproxies
   - mcpservers
   - mcptoolconfigs
+  - mcpwebhookconfigs
   - virtualmcpservers
   verbs:
   - create
@@ -119,6 +144,7 @@ rules:
   - toolhive.stacklok.dev
   resources:
   - embeddingservers/finalizers
+  - mcpauthzconfigs/finalizers
   - mcpexternalauthconfigs/finalizers
   - mcpgroups/finalizers
   - mcpoidcconfigs/finalizers
@@ -126,12 +152,14 @@ rules:
   - mcpservers/finalizers
   - mcptelemetryconfigs/finalizers
   - mcptoolconfigs/finalizers
+  - mcpwebhookconfigs/finalizers
   verbs:
   - update
 - apiGroups:
   - toolhive.stacklok.dev
   resources:
   - embeddingservers/status
+  - mcpauthzconfigs/status
   - mcpexternalauthconfigs/status
   - mcpgroups/status
   - mcpoidcconfigs/status
@@ -141,6 +169,7 @@ rules:
   - mcpservers/status
   - mcptelemetryconfigs/status
   - mcptoolconfigs/status
+  - mcpwebhookconfigs/status
   - virtualmcpservers/status
   verbs:
   - get

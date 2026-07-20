@@ -5,7 +5,6 @@ package v1
 
 import (
 	"encoding/json"
-	"errors"
 	"log/slog"
 	"math"
 	"net/http"
@@ -15,7 +14,6 @@ import (
 
 	"github.com/stacklok/toolhive/pkg/config"
 	regpkg "github.com/stacklok/toolhive/pkg/registry"
-	"github.com/stacklok/toolhive/pkg/registry/auth"
 )
 
 const (
@@ -48,14 +46,7 @@ func getRegistryProvider(w http.ResponseWriter) (regpkg.Provider, bool) {
 		regpkg.WithInteractive(false),
 	)
 	if err != nil {
-		if errors.Is(err, auth.ErrRegistryAuthRequired) {
-			writeRegistryAuthRequiredError(w)
-			return nil, false
-		}
-		var unavailableErr *regpkg.UnavailableError
-		if errors.As(err, &unavailableErr) {
-			slog.Error("upstream registry unavailable", "error", err)
-			writeRegistryUnavailableError(w, unavailableErr)
+		if writeProviderError(w, err) {
 			return nil, false
 		}
 		writeJSONError(w, http.StatusInternalServerError, "internal_error", "Failed to get registry provider")

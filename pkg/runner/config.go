@@ -12,13 +12,12 @@ import (
 	"log/slog"
 
 	"github.com/stacklok/toolhive-core/permissions"
-	v1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	v1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/awssts"
 	"github.com/stacklok/toolhive/pkg/auth/remote"
 	authsecrets "github.com/stacklok/toolhive/pkg/auth/secrets"
-	"github.com/stacklok/toolhive/pkg/auth/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamswap"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authz"
@@ -29,6 +28,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/ignore"
 	"github.com/stacklok/toolhive/pkg/labels"
 	"github.com/stacklok/toolhive/pkg/networking"
+	"github.com/stacklok/toolhive/pkg/oauthproto/tokenexchange"
 	"github.com/stacklok/toolhive/pkg/secrets"
 	"github.com/stacklok/toolhive/pkg/state"
 	"github.com/stacklok/toolhive/pkg/telemetry"
@@ -48,6 +48,12 @@ const CurrentSchemaVersion = "v0.1.0"
 type RunConfig struct {
 	// SchemaVersion is the version of the RunConfig schema
 	SchemaVersion string `json:"schema_version" yaml:"schema_version"`
+
+	// MCPServerGeneration is the K8s .metadata.generation of the MCPServer CR that rendered
+	// this RunConfig. The Kubernetes runtime uses it as a monotonic version to prevent stale
+	// rolling-update pods from overwriting a newer RunConfig's StatefulSet apply. Zero value
+	// means unversioned (backward-compat with older operators, or non-operator callers).
+	MCPServerGeneration int64 `json:"mcpserver_generation,omitempty" yaml:"mcpserver_generation,omitempty"`
 
 	// Image is the Docker image to run
 	Image string `json:"image" yaml:"image"`
@@ -96,6 +102,14 @@ type RunConfig struct {
 
 	// TargetHost is the host to forward traffic to (only applicable to SSE transport)
 	TargetHost string `json:"target_host,omitempty" yaml:"target_host,omitempty"`
+
+	// AllowedOrigins is the allowlist of values accepted on the HTTP Origin header,
+	// used for DNS-rebinding protection per MCP 2025-11-25 §"Security Warning".
+	// When empty and Host is loopback (127.0.0.1 / localhost / [::1]), a default
+	// loopback-only allowlist is derived at middleware-wiring time.
+	// When empty and Host is non-loopback, the middleware is disabled — operators
+	// exposing the proxy publicly must configure an explicit allowlist.
+	AllowedOrigins []string `json:"allowed_origins,omitempty" yaml:"allowed_origins,omitempty"`
 
 	// Publish lists ports to publish to the host in format "hostPort:containerPort"
 	Publish []string `json:"publish,omitempty" yaml:"publish,omitempty"`
@@ -160,7 +174,7 @@ type RunConfig struct {
 
 	// RateLimitConfig contains the CRD rate limiting configuration.
 	// When set, rate limiting middleware is added to the proxy middleware chain.
-	RateLimitConfig *v1alpha1.RateLimitConfig `json:"rate_limit_config,omitempty" yaml:"rate_limit_config,omitempty"`
+	RateLimitConfig *v1beta1.RateLimitConfig `json:"rate_limit_config,omitempty" yaml:"rate_limit_config,omitempty"`
 
 	// RateLimitNamespace is the Kubernetes namespace for Redis key derivation.
 	RateLimitNamespace string `json:"rate_limit_namespace,omitempty" yaml:"rate_limit_namespace,omitempty"`
@@ -186,6 +200,8 @@ type RunConfig struct {
 	// (host.docker.internal, gateway.docker.internal, 172.17.0.1). These are
 	// blocked by default in the egress proxy even when InsecureAllowAll is set.
 	// Only applicable to Docker deployments with network isolation enabled.
+	// Gateway access is port-independent: it ignores the permission profile's
+	// allowed ports, so once enabled the gateway is reachable on any port.
 	AllowDockerGateway bool `json:"allow_docker_gateway,omitempty" yaml:"allow_docker_gateway,omitempty"`
 
 	// TrustProxyHeaders indicates whether to trust X-Forwarded-* headers from reverse proxies
@@ -196,6 +212,14 @@ type RunConfig struct {
 	// POST-based health check instead of the default GET probe.
 	// Applies to both remote URLs and local container workloads.
 	Stateless bool `json:"stateless,omitempty" yaml:"stateless,omitempty"`
+
+	// SessionTTL is the inactivity timeout for proxy sessions, expressed as a Go
+	// duration string (e.g. "30m", "2h", "168h"). Empty uses the transport
+	// default (2h). Negative durations and values that fail time.ParseDuration
+	// are rejected at runtime.
+	// String (not time.Duration) keeps the wire format unit-explicit: a
+	// time.Duration field serializes as nanoseconds in JSON.
+	SessionTTL string `json:"session_ttl,omitempty" yaml:"session_ttl,omitempty" example:"2h"`
 
 	// ProxyMode is the effective HTTP protocol the proxy uses.
 	// For stdio transports, this is the configured mode (sse or streamable-http).
@@ -228,6 +252,22 @@ type RunConfig struct {
 	// MiddlewareConfigs contains the list of middleware to apply to the transport
 	// and the configuration for each middleware.
 	MiddlewareConfigs []types.MiddlewareConfig `json:"middleware_configs,omitempty" yaml:"middleware_configs,omitempty"`
+
+	// AdditionalMiddlewareConfigs carries pre-built middleware configs injected by
+	// external-auth handlers (reached via *[]RunConfigBuilderOption) rather than
+	// derived from typed RunConfig fields. PopulateMiddlewareConfigs splices these
+	// into the chain in the backend-egress group — after auth and before recovery —
+	// instead of discarding them. Upstream carries these configs verbatim and never
+	// inspects their parameters; the middleware type identity (e.g. an enterprise
+	// auth type) is supplied by the caller via types.MiddlewareConfig.Type.
+	//
+	// Each entry's Type is expected to be a NEW egress middleware type (e.g. OBO),
+	// not one already produced from a typed RunConfig field (auth, authz, audit,
+	// tokenExchange, awssts, …). Dispatch in the proxyrunner is purely by Type
+	// string, so an injected Type that shadows a typed-field type would add a
+	// second instance of that middleware to the chain; the seam does not validate
+	// against this.
+	AdditionalMiddlewareConfigs []types.MiddlewareConfig `json:"additional_middleware_configs,omitempty" yaml:"additional_middleware_configs,omitempty"` //nolint:lll
 
 	// ValidatingWebhooks contains the configuration for validating webhook middleware.
 	ValidatingWebhooks []webhook.Config `json:"validating_webhooks,omitempty" yaml:"validating_webhooks,omitempty"`
@@ -354,7 +394,41 @@ func ReadJSON(r io.Reader) (*RunConfig, error) {
 	// Normalize proxyMode so pre-existing configs always reflect the effective protocol
 	config.NormalizeProxyMode()
 
+	// Self-heal legacy on-disk configs that persisted isolate_network=true with a
+	// non-bridge network mode. Isolation is only enforceable in bridge mode, so
+	// reflect reality in memory for status/list. See issue #5775.
+	degradeNetworkIsolation(&config)
+
 	return &config, nil
+}
+
+// degradeNetworkIsolation drops network isolation from a loaded config when its
+// resolved network mode cannot enforce it, so status/list reflect reality.
+//
+// ReadJSON is reached from read-only paths (thv list, status, export, API GETs)
+// as well as deploy. The "none" case logs at DEBUG since it's merely redundant
+// (already maximally confined) and would otherwise fire on every read of a
+// static, already-known condition. The host/custom case stays at WARN even on
+// read paths: it means the user's --isolate-network request is being silently
+// ignored, which they should keep seeing until they either drop the flag or
+// switch network modes. See #5775.
+func degradeNetworkIsolation(config *RunConfig) {
+	if !config.IsolateNetwork {
+		return
+	}
+	mode := ""
+	if config.PermissionProfile != nil && config.PermissionProfile.Network != nil {
+		mode = config.PermissionProfile.Network.Mode
+	}
+	if networking.IsBridgeMode(mode) {
+		return
+	}
+	config.IsolateNetwork = false
+	if mode == "none" {
+		slog.Debug(networking.NetworkIsolationNoneRedundantMsg, "network_mode", mode)
+		return
+	}
+	slog.Warn(networking.NetworkIsolationHostDroppedMsg, "network_mode", mode)
 }
 
 // migrateOAuthClientSecret migrates plain text OAuth client secrets to CLI format
@@ -507,14 +581,20 @@ func (c *RunConfig) WithPorts(proxyPort, targetPort int) (*RunConfig, error) {
 	}
 	c.Port = selectedPort
 
-	// Select a target port for the container if using SSE or Streamable HTTP transport
+	// Select a target port for the container if using SSE or Streamable HTTP transport.
+	// Target ports are container-internal; do not validate them against host availability.
 	if c.Transport == types.TransportTypeSSE || c.Transport == types.TransportTypeStreamableHTTP {
-		selectedTargetPort, err := networking.FindOrUsePort(targetPort)
-		if err != nil {
-			return c, fmt.Errorf("target port error: %w", err)
+		if targetPort != 0 {
+			slog.Debug("using target port", "port", targetPort)
+			c.TargetPort = targetPort
+		} else {
+			selectedTargetPort, err := networking.FindOrUsePort(0)
+			if err != nil {
+				return c, fmt.Errorf("target port error: %w", err)
+			}
+			slog.Debug("using target port", "port", selectedTargetPort)
+			c.TargetPort = selectedTargetPort
 		}
-		slog.Debug("using target port", "port", selectedTargetPort)
-		c.TargetPort = selectedTargetPort
 	}
 
 	return c, nil

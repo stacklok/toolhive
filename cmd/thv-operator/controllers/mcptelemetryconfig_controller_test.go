@@ -9,14 +9,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
+	"github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1/v1beta1test"
+	"github.com/stacklok/toolhive/cmd/thv-operator/internal/testutil"
 )
 
 func TestMCPTelemetryConfigReconciler_calculateConfigHash(t *testing.T) {
@@ -24,7 +25,7 @@ func TestMCPTelemetryConfigReconciler_calculateConfigHash(t *testing.T) {
 
 	tests := []struct {
 		name string
-		spec mcpv1alpha1.MCPTelemetryConfigSpec
+		spec mcpv1beta1.MCPTelemetryConfigSpec
 	}{
 		{
 			name: "basic telemetry spec",
@@ -32,7 +33,7 @@ func TestMCPTelemetryConfigReconciler_calculateConfigHash(t *testing.T) {
 		},
 		{
 			name: "telemetry spec with headers",
-			spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+			spec: func() mcpv1beta1.MCPTelemetryConfigSpec {
 				s := newTelemetrySpec("https://otel-collector:4317", true, true)
 				s.OpenTelemetry.Headers = map[string]string{"X-Team": "platform"}
 				return s
@@ -72,8 +73,7 @@ func TestMCPTelemetryConfigReconciler_ReconcileNotFound(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Empty client — no objects exist
 	fakeClient := fake.NewClientBuilder().
@@ -102,11 +102,9 @@ func TestMCPTelemetryConfigReconciler_SteadyStateNoOp(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
@@ -115,10 +113,9 @@ func TestMCPTelemetryConfigReconciler_SteadyStateNoOp(t *testing.T) {
 		Spec: newTelemetrySpec("https://otel-collector:4317", true, true),
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
 
 	r := &MCPTelemetryConfigReconciler{
@@ -142,7 +139,7 @@ func TestMCPTelemetryConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var afterInitial mcpv1alpha1.MCPTelemetryConfig
+	var afterInitial mcpv1beta1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &afterInitial)
 	require.NoError(t, err)
 	initialHash := afterInitial.Status.ConfigHash
@@ -153,7 +150,7 @@ func TestMCPTelemetryConfigReconciler_SteadyStateNoOp(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
-	var afterSteady mcpv1alpha1.MCPTelemetryConfig
+	var afterSteady mcpv1beta1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &afterSteady)
 	require.NoError(t, err)
 	assert.Equal(t, initialHash, afterSteady.Status.ConfigHash, "Hash should not change")
@@ -165,32 +162,29 @@ func TestMCPTelemetryConfigReconciler_ValidationRecovery(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Start with invalid config: empty sensitive header name
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "recovery-config",
 			Namespace:  "default",
 			Finalizers: []string{TelemetryConfigFinalizerName},
 			Generation: 1,
 		},
-		Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+		Spec: func() mcpv1beta1.MCPTelemetryConfigSpec {
 			s := newTelemetrySpec("https://otel-collector:4317", true, false)
-			s.OpenTelemetry.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{{
+			s.OpenTelemetry.SensitiveHeaders = []mcpv1beta1.SensitiveHeader{{
 				Name:         "",
-				SecretKeyRef: mcpv1alpha1.SecretKeyRef{Name: "s", Key: "k"},
+				SecretKeyRef: mcpv1beta1.SecretKeyRef{Name: "s", Key: "k"},
 			}}
 			return s
 		}(),
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
 
 	r := &MCPTelemetryConfigReconciler{
@@ -209,7 +203,7 @@ func TestMCPTelemetryConfigReconciler_ValidationRecovery(t *testing.T) {
 	_, err := r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var invalidConfig mcpv1alpha1.MCPTelemetryConfig
+	var invalidConfig mcpv1beta1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &invalidConfig)
 	require.NoError(t, err)
 
@@ -233,7 +227,7 @@ func TestMCPTelemetryConfigReconciler_ValidationRecovery(t *testing.T) {
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var recoveredConfig mcpv1alpha1.MCPTelemetryConfig
+	var recoveredConfig mcpv1beta1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &recoveredConfig)
 	require.NoError(t, err)
 
@@ -254,12 +248,12 @@ func TestMCPTelemetryConfigReconciler_handleDeletion(t *testing.T) {
 
 	tests := []struct {
 		name                   string
-		telemetryConfig        *mcpv1alpha1.MCPTelemetryConfig
+		telemetryConfig        *mcpv1beta1.MCPTelemetryConfig
 		expectFinalizerRemoved bool
 	}{
 		{
 			name: "delete config removes finalizer",
-			telemetryConfig: &mcpv1alpha1.MCPTelemetryConfig{
+			telemetryConfig: &mcpv1beta1.MCPTelemetryConfig{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-config",
 					Namespace:  "default",
@@ -280,11 +274,9 @@ func TestMCPTelemetryConfigReconciler_handleDeletion(t *testing.T) {
 
 			ctx := t.Context()
 
-			scheme := runtime.NewScheme()
-			require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+			scheme := testutil.NewScheme(t)
 
-			fakeClient := fake.NewClientBuilder().
-				WithScheme(scheme).
+			fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 				WithObjects(tt.telemetryConfig).
 				Build()
 
@@ -311,11 +303,9 @@ func TestMCPTelemetryConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "test-config",
 			Namespace:  "default",
@@ -324,10 +314,9 @@ func TestMCPTelemetryConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.
 		Spec: newTelemetrySpec("https://otel-collector:4317", true, false),
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
 
 	r := &MCPTelemetryConfigReconciler{
@@ -353,7 +342,7 @@ func TestMCPTelemetryConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.
 	assert.Equal(t, time.Duration(0), result.RequeueAfter)
 
 	// Get updated config and check hash was set
-	var updatedConfig mcpv1alpha1.MCPTelemetryConfig
+	var updatedConfig mcpv1beta1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, updatedConfig.Status.ConfigHash, "Config hash should be set")
@@ -370,7 +359,7 @@ func TestMCPTelemetryConfigReconciler_ConfigChangeTriggersHashUpdate(t *testing.
 	require.NoError(t, err)
 
 	// Get final config and verify hash changed
-	var finalConfig mcpv1alpha1.MCPTelemetryConfig
+	var finalConfig mcpv1beta1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &finalConfig)
 	require.NoError(t, err)
 	assert.NotEmpty(t, finalConfig.Status.ConfigHash, "Config hash should still be set")
@@ -383,23 +372,21 @@ func TestMCPTelemetryConfigReconciler_ValidationFailureSetsCondition(t *testing.
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Invalid config: empty sensitive header name
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "invalid-config",
 			Namespace:  "default",
 			Finalizers: []string{TelemetryConfigFinalizerName},
 			Generation: 1,
 		},
-		Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+		Spec: func() mcpv1beta1.MCPTelemetryConfigSpec {
 			s := newTelemetrySpec("https://otel-collector:4317", true, false)
-			s.OpenTelemetry.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{{
+			s.OpenTelemetry.SensitiveHeaders = []mcpv1beta1.SensitiveHeader{{
 				Name:         "",
-				SecretKeyRef: mcpv1alpha1.SecretKeyRef{Name: "s", Key: "k"},
+				SecretKeyRef: mcpv1beta1.SecretKeyRef{Name: "s", Key: "k"},
 			}}
 			return s
 		}(),
@@ -408,7 +395,7 @@ func TestMCPTelemetryConfigReconciler_ValidationFailureSetsCondition(t *testing.
 	fakeClient := fake.NewClientBuilder().
 		WithScheme(scheme).
 		WithObjects(telemetryConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
 
 	r := &MCPTelemetryConfigReconciler{
@@ -428,7 +415,7 @@ func TestMCPTelemetryConfigReconciler_ValidationFailureSetsCondition(t *testing.
 	require.NoError(t, err)
 
 	// Check that the Valid condition is set to False
-	var updatedConfig mcpv1alpha1.MCPTelemetryConfig
+	var updatedConfig mcpv1beta1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
 	require.NoError(t, err)
 
@@ -449,25 +436,25 @@ func TestMCPTelemetryConfig_Validate(t *testing.T) {
 
 	tests := []struct {
 		name        string
-		config      *mcpv1alpha1.MCPTelemetryConfig
+		config      *mcpv1beta1.MCPTelemetryConfig
 		expectError bool
 	}{
 		{
 			name: "valid basic config",
-			config: &mcpv1alpha1.MCPTelemetryConfig{
+			config: &mcpv1beta1.MCPTelemetryConfig{
 				Spec: newTelemetrySpec("https://otel-collector:4317", false, true),
 			},
 			expectError: false,
 		},
 		{
 			name: "valid config with sensitive headers",
-			config: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+			config: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: func() mcpv1beta1.MCPTelemetryConfigSpec {
 					s := newTelemetrySpec("https://otel-collector:4317", true, false)
-					s.OpenTelemetry.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
+					s.OpenTelemetry.SensitiveHeaders = []mcpv1beta1.SensitiveHeader{
 						{
 							Name: "Authorization",
-							SecretKeyRef: mcpv1alpha1.SecretKeyRef{
+							SecretKeyRef: mcpv1beta1.SecretKeyRef{
 								Name: "otel-secret",
 								Key:  "auth-token",
 							},
@@ -480,14 +467,14 @@ func TestMCPTelemetryConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "invalid overlapping headers",
-			config: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+			config: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: func() mcpv1beta1.MCPTelemetryConfigSpec {
 					s := newTelemetrySpec("https://otel-collector:4317", true, false)
 					s.OpenTelemetry.Headers = map[string]string{"Authorization": "Bearer token"}
-					s.OpenTelemetry.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
+					s.OpenTelemetry.SensitiveHeaders = []mcpv1beta1.SensitiveHeader{
 						{
 							Name: "Authorization",
-							SecretKeyRef: mcpv1alpha1.SecretKeyRef{
+							SecretKeyRef: mcpv1beta1.SecretKeyRef{
 								Name: "otel-secret",
 								Key:  "auth-token",
 							},
@@ -500,9 +487,9 @@ func TestMCPTelemetryConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "invalid endpoint without tracing or metrics",
-			config: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: mcpv1alpha1.MCPTelemetryConfigSpec{
-					OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+			config: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: mcpv1beta1.MCPTelemetryConfigSpec{
+					OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
 						Enabled:  true,
 						Endpoint: "otel-collector:4317",
 						// No Tracing or Metrics configured
@@ -513,13 +500,13 @@ func TestMCPTelemetryConfig_Validate(t *testing.T) {
 		},
 		{
 			name: "invalid empty secret ref name",
-			config: &mcpv1alpha1.MCPTelemetryConfig{
-				Spec: func() mcpv1alpha1.MCPTelemetryConfigSpec {
+			config: &mcpv1beta1.MCPTelemetryConfig{
+				Spec: func() mcpv1beta1.MCPTelemetryConfigSpec {
 					s := newTelemetrySpec("https://otel-collector:4317", true, false)
-					s.OpenTelemetry.SensitiveHeaders = []mcpv1alpha1.SensitiveHeader{
+					s.OpenTelemetry.SensitiveHeaders = []mcpv1beta1.SensitiveHeader{
 						{
 							Name: "Authorization",
-							SecretKeyRef: mcpv1alpha1.SecretKeyRef{
+							SecretKeyRef: mcpv1beta1.SecretKeyRef{
 								Name: "",
 								Key:  "auth-token",
 							},
@@ -552,9 +539,7 @@ func TestMCPTelemetryConfigReconciler_ConditionOnlyUpdate(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	spec := newTelemetrySpec("https://otel-collector:4317", true, true)
 
@@ -563,7 +548,7 @@ func TestMCPTelemetryConfigReconciler_ConditionOnlyUpdate(t *testing.T) {
 	precomputedHash := r.calculateConfigHash(spec)
 
 	// Resource already has finalizer and correct hash, but no Valid condition
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "condition-only-config",
 			Namespace:  "default",
@@ -571,17 +556,16 @@ func TestMCPTelemetryConfigReconciler_ConditionOnlyUpdate(t *testing.T) {
 			Generation: 1,
 		},
 		Spec: spec,
-		Status: mcpv1alpha1.MCPTelemetryConfigStatus{
+		Status: mcpv1beta1.MCPTelemetryConfigStatus{
 			ConfigHash:         precomputedHash,
 			ObservedGeneration: 1,
 			// No conditions set — this is the key setup
 		},
 	}
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig).
-		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
 
 	r.Client = fakeClient
@@ -598,7 +582,7 @@ func TestMCPTelemetryConfigReconciler_ConditionOnlyUpdate(t *testing.T) {
 	_, err := r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var updated mcpv1alpha1.MCPTelemetryConfig
+	var updated mcpv1beta1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updated)
 	require.NoError(t, err)
 
@@ -622,11 +606,9 @@ func TestMCPTelemetryConfigReconciler_ReferenceTracking(t *testing.T) {
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:       "shared-config",
 			Namespace:  "default",
@@ -636,45 +618,22 @@ func TestMCPTelemetryConfigReconciler_ReferenceTracking(t *testing.T) {
 	}
 
 	// Two MCPServers reference this config, one does not
-	server1 := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server-a",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image: "test-image",
-			TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
-				Name: "shared-config",
-			},
-		},
-	}
-	server2 := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server-b",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image: "test-image",
-			TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
-				Name: "shared-config",
-			},
-		},
-	}
-	server3 := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "server-c",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image: "test-image",
-			// No TelemetryConfigRef
-		},
-	}
+	server1 := v1beta1test.NewMCPServer("server-a", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithTelemetryConfigRef("shared-config"),
+	)
+	server2 := v1beta1test.NewMCPServer("server-b", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithTelemetryConfigRef("shared-config"),
+	)
+	server3 := v1beta1test.NewMCPServer("server-c", "default",
+		v1beta1test.WithImage("test-image"),
+		// No TelemetryConfigRef
+	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig, server1, server2, server3).
-		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
 
 	r := &MCPTelemetryConfigReconciler{
@@ -698,12 +657,12 @@ func TestMCPTelemetryConfigReconciler_ReferenceTracking(t *testing.T) {
 	_, err = r.Reconcile(ctx, req)
 	require.NoError(t, err)
 
-	var updated mcpv1alpha1.MCPTelemetryConfig
+	var updated mcpv1beta1.MCPTelemetryConfig
 	err = fakeClient.Get(ctx, req.NamespacedName, &updated)
 	require.NoError(t, err)
 
 	// ReferencingWorkloads should list server-a and server-b (sorted), but not server-c
-	assert.Equal(t, []mcpv1alpha1.WorkloadReference{
+	assert.Equal(t, []mcpv1beta1.WorkloadReference{
 		{Kind: "MCPServer", Name: "server-a"},
 		{Kind: "MCPServer", Name: "server-b"},
 	}, updated.Status.ReferencingWorkloads)
@@ -714,12 +673,10 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_BlocksWhenReferenced(t *tes
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	now := metav1.Now()
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "referenced-config",
 			Namespace:         "default",
@@ -731,23 +688,14 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_BlocksWhenReferenced(t *tes
 	}
 
 	// MCPServer that references this config
-	server := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "referencing-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image: "test-image",
-			TelemetryConfigRef: &mcpv1alpha1.MCPTelemetryConfigReference{
-				Name: "referenced-config",
-			},
-		},
-	}
+	server := v1beta1test.NewMCPServer("referencing-server", "default",
+		v1beta1test.WithImage("test-image"),
+		v1beta1test.WithTelemetryConfigRef("referenced-config"),
+	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig, server).
-		WithStatusSubresource(&mcpv1alpha1.MCPTelemetryConfig{}).
+		WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
 		Build()
 
 	r := &MCPTelemetryConfigReconciler{
@@ -769,12 +717,10 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
-	require.NoError(t, corev1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	now := metav1.Now()
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "unreferenced-config",
 			Namespace:         "default",
@@ -786,19 +732,12 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_AllowsWhenNotReferenced(t *
 	}
 
 	// MCPServer exists but does NOT reference this config
-	server := &mcpv1alpha1.MCPServer{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "unrelated-server",
-			Namespace: "default",
-		},
-		Spec: mcpv1alpha1.MCPServerSpec{
-			Image: "test-image",
-			// No TelemetryConfigRef
-		},
-	}
+	server := v1beta1test.NewMCPServer("unrelated-server", "default",
+		v1beta1test.WithImage("test-image"),
+		// No TelemetryConfigRef
+	)
 
-	fakeClient := fake.NewClientBuilder().
-		WithScheme(scheme).
+	fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
 		WithObjects(telemetryConfig, server).
 		Build()
 
@@ -820,15 +759,14 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_NoFinalizerIsNoOp(t *testin
 
 	ctx := t.Context()
 
-	scheme := runtime.NewScheme()
-	require.NoError(t, mcpv1alpha1.AddToScheme(scheme))
+	scheme := testutil.NewScheme(t)
 
 	// Object with DeletionTimestamp but no finalizers.
 	// We don't add it to the fake client (which rejects such objects)
 	// because handleDeletion only reads from the object itself for the
 	// no-finalizer fast path.
 	now := metav1.Now()
-	telemetryConfig := &mcpv1alpha1.MCPTelemetryConfig{
+	telemetryConfig := &mcpv1beta1.MCPTelemetryConfig{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:              "no-finalizer-config",
 			Namespace:         "default",
@@ -853,13 +791,94 @@ func TestMCPTelemetryConfigReconciler_handleDeletion_NoFinalizerIsNoOp(t *testin
 }
 
 // newTelemetrySpec creates a basic MCPTelemetryConfigSpec for testing.
-func newTelemetrySpec(endpoint string, tracing, metrics bool) mcpv1alpha1.MCPTelemetryConfigSpec {
-	return mcpv1alpha1.MCPTelemetryConfigSpec{
-		OpenTelemetry: &mcpv1alpha1.MCPTelemetryOTelConfig{
+func newTelemetrySpec(endpoint string, tracing, metrics bool) mcpv1beta1.MCPTelemetryConfigSpec {
+	return mcpv1beta1.MCPTelemetryConfigSpec{
+		OpenTelemetry: &mcpv1beta1.MCPTelemetryOTelConfig{
 			Enabled:  true,
 			Endpoint: endpoint,
-			Tracing:  &mcpv1alpha1.OpenTelemetryTracingConfig{Enabled: tracing},
-			Metrics:  &mcpv1alpha1.OpenTelemetryMetricsConfig{Enabled: metrics},
+			Tracing:  &mcpv1beta1.OpenTelemetryTracingConfig{Enabled: tracing},
+			Metrics:  &mcpv1beta1.OpenTelemetryMetricsConfig{Enabled: metrics},
 		},
+	}
+}
+
+// TestMCPTelemetryConfigReconciler_watchHandlers verifies that the workload watch map
+// functions enqueue exactly the config the workload currently references (or nothing
+// when the workload has no ref). The previously-referenced config is enqueued by
+// EnqueueRequestsFromMapFunc, which runs the map function on both the old and new
+// object on update — no manual stale-reference scan in the handler.
+func TestMCPTelemetryConfigReconciler_watchHandlers(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		obj      client.Object
+		expected map[string]struct{}
+	}{
+		{
+			name: "MCPServer with ref enqueues the current config",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+				v1beta1test.WithTelemetryConfigRef("current-config"),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "MCPRemoteProxy with ref enqueues the current config",
+			obj: v1beta1test.NewMCPRemoteProxy("proxy", "default",
+				v1beta1test.WithRemoteProxyURL("https://example.com"),
+				v1beta1test.WithRemoteProxyTelemetryConfigRef("current-config"),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "VirtualMCPServer with ref enqueues the current config",
+			obj: v1beta1test.NewVirtualMCPServer("vmcp", "default",
+				v1beta1test.WithVMCPTelemetryConfigRef("current-config"),
+			),
+			expected: map[string]struct{}{"current-config": {}},
+		},
+		{
+			name: "MCPServer without ref enqueues nothing",
+			obj: v1beta1test.NewMCPServer("srv", "default",
+				v1beta1test.WithImage("example/mcp:latest"),
+			),
+			expected: map[string]struct{}{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := t.Context()
+			scheme := testutil.NewScheme(t)
+			fakeClient := withTelemetryConfigRefIndexes(fake.NewClientBuilder().WithScheme(scheme)).
+				WithObjects(tt.obj).
+				WithStatusSubresource(&mcpv1beta1.MCPTelemetryConfig{}).
+				Build()
+			r := &MCPTelemetryConfigReconciler{Client: fakeClient, Scheme: scheme}
+
+			requests := func() []reconcile.Request {
+				switch tt.obj.(type) {
+				case *mcpv1beta1.MCPServer:
+					return r.mapMCPServerToTelemetryConfig(ctx, tt.obj)
+				case *mcpv1beta1.MCPRemoteProxy:
+					return r.mapMCPRemoteProxyToTelemetryConfig(ctx, tt.obj)
+				case *mcpv1beta1.VirtualMCPServer:
+					return r.mapVirtualMCPServerToTelemetryConfig(ctx, tt.obj)
+				default:
+					t.Fatalf("unexpected object type %T", tt.obj)
+					return nil
+				}
+			}()
+
+			got := make(map[string]struct{}, len(requests))
+			for _, req := range requests {
+				assert.Equal(t, "default", req.Namespace)
+				got[req.Name] = struct{}{}
+			}
+			assert.Equal(t, tt.expected, got)
+		})
 	}
 }

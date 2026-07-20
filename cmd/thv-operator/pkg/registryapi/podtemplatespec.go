@@ -31,11 +31,6 @@ type PodTemplateSpecBuilder struct {
 	defaultSpec *corev1.PodTemplateSpec
 }
 
-// NewPodTemplateSpecBuilder creates a new PodTemplateSpecBuilder with an empty template.
-func NewPodTemplateSpecBuilder() *PodTemplateSpecBuilder {
-	return NewPodTemplateSpecBuilderFrom(nil)
-}
-
 // NewPodTemplateSpecBuilderFrom creates a new PodTemplateSpecBuilder with a user-provided template.
 // The user template is deep-copied to avoid mutating the original.
 // Options applied via Apply() act as defaults - Build() will merge them with user values,
@@ -103,6 +98,18 @@ func WithServiceAccountName(name string) PodTemplateSpecOption {
 func WithContainer(container corev1.Container) PodTemplateSpecOption {
 	return func(pts *corev1.PodTemplateSpec) {
 		pts.Spec.Containers = append(pts.Spec.Containers, container)
+	}
+}
+
+// WithImagePullSecrets sets the image pull secrets on the pod spec from
+// spec.imagePullSecrets. These are treated as defaults; a user-provided
+// PodTemplateSpec can override them via MergePodTemplateSpecs.
+func WithImagePullSecrets(secrets []corev1.LocalObjectReference) PodTemplateSpecOption {
+	return func(pts *corev1.PodTemplateSpec) {
+		if len(secrets) == 0 {
+			return
+		}
+		pts.Spec.ImagePullSecrets = secrets
 	}
 }
 
@@ -367,7 +374,7 @@ func BuildRegistryAPIContainer(image string) corev1.Container {
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: HealthCheckPath,
-					Port: intstr.FromInt32(RegistryAPIPort),
+					Port: intstr.FromInt32(RegistryAPIHealthPort),
 				},
 			},
 			InitialDelaySeconds: LivenessInitialDelay,
@@ -377,7 +384,7 @@ func BuildRegistryAPIContainer(image string) corev1.Container {
 			ProbeHandler: corev1.ProbeHandler{
 				HTTPGet: &corev1.HTTPGetAction{
 					Path: ReadinessCheckPath,
-					Port: intstr.FromInt32(RegistryAPIPort),
+					Port: intstr.FromInt32(RegistryAPIHealthPort),
 				},
 			},
 			InitialDelaySeconds: ReadinessInitialDelay,
@@ -400,6 +407,7 @@ func BuildRegistryAPIContainer(image string) corev1.Container {
 //   - ServiceAccountName: Default only if user hasn't specified
 //   - Containers: Merged by name - defaults fill in missing container fields
 //   - Volumes: Merged by name - defaults added only if not present
+//   - ImagePullSecrets: User list wins atomically if non-empty; otherwise inherits defaults
 //   - All other PodSpec fields: User values preserved as-is
 func MergePodTemplateSpecs(defaultPTS, userPTS *corev1.PodTemplateSpec) corev1.PodTemplateSpec {
 	if userPTS == nil {
@@ -435,6 +443,14 @@ func MergePodTemplateSpecs(defaultPTS, userPTS *corev1.PodTemplateSpec) corev1.P
 
 	// Merge volumes: add default volumes that user hasn't specified
 	result.Spec.Volumes = mergeVolumesUserFirst(defaultPTS.Spec.Volumes, result.Spec.Volumes)
+
+	// Merge image pull secrets: user values win on overlap; otherwise inherit defaults.
+	// The list is treated atomically — if the user specifies any imagePullSecrets in
+	// PodTemplateSpec, theirs replace the defaults entirely. This matches the +listType=atomic
+	// semantics on MCPRegistrySpec.ImagePullSecrets.
+	if len(result.Spec.ImagePullSecrets) == 0 {
+		result.Spec.ImagePullSecrets = defaultPTS.Spec.ImagePullSecrets
+	}
 
 	return *result
 }

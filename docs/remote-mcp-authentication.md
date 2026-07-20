@@ -48,20 +48,20 @@ ToolHive implements BOTH discovery mechanisms required by the MCP specification:
 - Accepts the authoritative issuer from well-known endpoints per RFC 8414
 
 #### 4. Dynamic Client Registration (RFC 7591)
-- **Location**: [`pkg/auth/oauth/dynamic_registration.go:82-200`](../pkg/auth/oauth/dynamic_registration.go#L82)
+- **Location**: [`pkg/oauthproto/dcr.go`](../pkg/oauthproto/dcr.go)
 - Automatically registers OAuth clients when no credentials provided
 - Uses PKCE flow with `token_endpoint_auth_method: "none"`
 - Supports both manual client configuration and automatic registration
 
 #### 5. PKCE Support
-- **Location**: [`pkg/auth/oauth/dynamic_registration.go:52`](../pkg/auth/oauth/dynamic_registration.go#L52)
+- **Location**: [`pkg/oauthproto/dcr.go`](../pkg/oauthproto/dcr.go)
 - Enabled by default for enhanced security
 - Required for public clients as per OAuth 2.1
 
 ## Authentication Flow
 
 ### Initial Detection
-When ToolHive connects to a remote MCP server ([`pkg/runner/remote_auth.go:27-87`](../pkg/runner/remote_auth.go#L27)):
+When ToolHive connects to a remote MCP server ([`pkg/auth/remote/handler.go`](../pkg/auth/remote/handler.go)):
 
 1. Makes test request to the remote server (GET, then optionally POST)
 2. Checks for 401 Unauthorized response with WWW-Authenticate header
@@ -71,7 +71,7 @@ When ToolHive connects to a remote MCP server ([`pkg/runner/remote_auth.go:27-87
    - Falls back to `{baseURL}/.well-known/oauth-protected-resource` (root-level)
 
 ### Discovery Priority Chain
-ToolHive follows this priority order for discovering the OAuth issuer ([`pkg/runner/remote_auth.go:95-145`](../pkg/runner/remote_auth.go#L95)):
+ToolHive follows this priority order for discovering the OAuth issuer ([`pkg/auth/remote/handler.go`](../pkg/auth/remote/handler.go)):
 
 **Phase 1: WWW-Authenticate Header Detection**
 1. **Configured Issuer**: Uses `--remote-auth-issuer` flag if provided (highest priority)
@@ -221,7 +221,7 @@ This approach handles cases where servers implement RFC 9728 well-known URI disc
 
 ## Dynamic Client Registration Flow
 
-When no client credentials are provided ([`pkg/auth/oauth/dynamic_registration.go`](../pkg/auth/oauth/dynamic_registration.go)):
+When no client credentials are provided ([`pkg/oauthproto/dcr.go`](../pkg/oauthproto/dcr.go)):
 
 1. **Discover Registration Endpoint**: Via OIDC discovery or resource metadata
 2. **Create Registration Request**:
@@ -388,7 +388,7 @@ The `oauth_config` section supports:
 
 ### Key Components
 
-1. **RemoteAuthHandler** ([`pkg/runner/remote_auth.go`](../pkg/runner/remote_auth.go))
+1. **RemoteAuthHandler** ([`pkg/auth/remote/handler.go`](../pkg/auth/remote/handler.go))
    - Main entry point for remote authentication
    - Coordinates discovery and OAuth flow
 

@@ -14,23 +14,33 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	mcpv1alpha1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1alpha1"
+	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
 	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/runconfig/configmap/checksum"
 	"github.com/stacklok/toolhive/pkg/container/kubernetes"
+	"github.com/stacklok/toolhive/pkg/transport/session"
+	"github.com/stacklok/toolhive/pkg/vmcp/headerforward/wirefmt"
 )
+
+const mcpRemoteProxyContainerName = "toolhive"
 
 // deploymentForMCPRemoteProxy returns a MCPRemoteProxy Deployment object
 func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
-	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy, runConfigChecksum string,
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy, runConfigChecksum string,
 ) *appsv1.Deployment {
 	ls := labelsForMCPRemoteProxy(proxy.Name)
-	replicas := int32(1)
 
 	// Build deployment components using helper functions
 	args := r.buildContainerArgs()
 	volumeMounts, volumes := r.buildVolumesForProxy(proxy)
 	r.addTelemetryCABundleVolumes(ctx, proxy, &volumes, &volumeMounts)
+	if err := r.addOIDCCABundleVolumes(ctx, proxy, &volumes, &volumeMounts); err != nil {
+		// Returning nil aborts the build so ensureDeployment requeues with backoff and
+		// leaves the existing Deployment untouched, rather than building a CA-less pod
+		// that would crash-loop and flip the RunConfig checksum (restart flap).
+		log.FromContext(ctx).Error(err, "Failed to add OIDC CA bundle volumes")
+		return nil
+	}
 	env := r.buildEnvVarsForProxy(ctx, proxy)
 
 	// Add embedded auth server volumes and env vars. AuthServerRef takes precedence;
@@ -61,7 +71,10 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 			Annotations: deploymentAnnotations,
 		},
 		Spec: appsv1.DeploymentSpec{
-			Replicas: &replicas,
+			// nil leaves the replica count to the apiserver default (1) on create
+			// and to an HPA or other external controller thereafter; non-nil is
+			// operator-owned and reconciled by deploymentNeedsUpdate.
+			Replicas: proxy.Spec.Replicas,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: ls,
 			},
@@ -72,14 +85,16 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 				},
 				Spec: corev1.PodSpec{
 					ServiceAccountName: serviceAccountNameForRemoteProxy(proxy),
+					ImagePullSecrets:   r.imagePullSecretsForRemoteProxy(proxy),
 					Containers: []corev1.Container{{
 						Image:           getToolhiveRunnerImage(),
-						Name:            "toolhive",
+						Name:            mcpRemoteProxyContainerName,
 						Args:            args,
 						Env:             env,
 						VolumeMounts:    volumeMounts,
 						Resources:       resources,
 						Ports:           r.buildContainerPorts(proxy),
+						StartupProbe:    ctrlutil.BuildHealthProbe("/health", "http", 0, 5, 3, 18),
 						LivenessProbe:   ctrlutil.BuildHealthProbe("/health", "http", 30, 10, 5, 3),
 						ReadinessProbe:  ctrlutil.BuildHealthProbe("/health", "http", 15, 5, 3, 3),
 						SecurityContext: containerSecurityContext,
@@ -89,6 +104,13 @@ func (r *MCPRemoteProxyReconciler) deploymentForMCPRemoteProxy(
 				},
 			},
 		},
+	}
+
+	if err := r.applyPodTemplateSpecToDeployment(ctx, proxy, dep); err != nil {
+		log.FromContext(ctx).Error(err, "Failed to apply PodTemplateSpec to Deployment",
+			"mcpremoteproxy", proxy.Name,
+			"namespace", proxy.Namespace)
+		return nil
 	}
 
 	if err := controllerutil.SetControllerReference(proxy, dep, r.Scheme); err != nil {
@@ -110,7 +132,7 @@ func (*MCPRemoteProxyReconciler) buildContainerArgs() []string {
 // Note: Embedded auth server volumes are added separately in deploymentForMCPRemoteProxy
 // to avoid duplicate API calls.
 func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 ) ([]corev1.VolumeMount, []corev1.Volume) {
 	volumeMounts := []corev1.VolumeMount{}
 	volumes := []corev1.Volume{}
@@ -134,7 +156,9 @@ func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
 		},
 	})
 
-	// Add authz config volume if needed
+	// Add authz config volume if needed (inline spec.authzConfig only).
+	// A referenced MCPAuthzConfig (spec.authzConfigRef) is not mounted: it is
+	// enforced via the authz config embedded in the RunConfig, not a file mount.
 	authzVolumeMount, authzVolume := ctrlutil.GenerateAuthzVolumeConfig(proxy.Spec.AuthzConfig, proxy.Name)
 	if authzVolumeMount != nil {
 		volumeMounts = append(volumeMounts, *authzVolumeMount)
@@ -148,7 +172,7 @@ func (*MCPRemoteProxyReconciler) buildVolumesForProxy(
 // Must be called from deploymentForMCPRemoteProxy where the client is available.
 func (r *MCPRemoteProxyReconciler) addTelemetryCABundleVolumes(
 	ctx context.Context,
-	proxy *mcpv1alpha1.MCPRemoteProxy,
+	proxy *mcpv1beta1.MCPRemoteProxy,
 	volumes *[]corev1.Volume,
 	volumeMounts *[]corev1.VolumeMount,
 ) {
@@ -167,9 +191,41 @@ func (r *MCPRemoteProxyReconciler) addTelemetryCABundleVolumes(
 	}
 }
 
+// addOIDCCABundleVolumes appends the CA bundle volume and mount for the referenced
+// MCPOIDCConfig's inline CA bundle, so the runner pod can read the CA file at the
+// path the RunConfig points it at (resolved.ThvCABundlePath). Mirrors MCPServer's
+// OIDC CA bundle mount.
+//
+// A fetch error is returned (not swallowed) so the caller can abort the build: a
+// transient failure must not produce a CA-less Deployment, which would flip the
+// RunConfig checksum and crash-loop the pod (restart flap). The CA bundle reference
+// content is validated separately in validateCABundleRef.
+//
+// Must be called from deploymentForMCPRemoteProxy where the client is available.
+func (r *MCPRemoteProxyReconciler) addOIDCCABundleVolumes(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	volumes *[]corev1.Volume,
+	volumeMounts *[]corev1.VolumeMount,
+) error {
+	if proxy.Spec.OIDCConfigRef == nil {
+		return nil
+	}
+	oidcCfg, err := ctrlutil.GetOIDCConfigForServer(ctx, r.Client, proxy.Namespace, proxy.Spec.OIDCConfigRef)
+	if err != nil {
+		return fmt.Errorf("failed to fetch MCPOIDCConfig for CA bundle volume: %w", err)
+	}
+	if oidcCfg != nil {
+		caVolumes, caMounts := ctrlutil.AddOIDCConfigRefCABundleVolumes(oidcCfg)
+		*volumes = append(*volumes, caVolumes...)
+		*volumeMounts = append(*volumeMounts, caMounts...)
+	}
+	return nil
+}
+
 // buildEnvVarsForProxy builds environment variables for the proxy container
 func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
-	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
 ) []corev1.EnvVar {
 	env := r.buildOIDCClientSecretEnvVars(ctx, proxy)
 
@@ -205,6 +261,22 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		} else {
 			env = append(env, bearerTokenEnvVars...)
 		}
+
+		// Add OBO secret environment variables. Dispatched through the
+		// registered OBO handler; inert (no env vars) in builds without one.
+		// This function feeds both the deployment builder and containerNeedsUpdate,
+		// so builder/drift symmetry is automatic.
+		oboEnvVars, err := ctrlutil.AddOBOSecretEnvVars(
+			ctx,
+			r.Client,
+			proxy.Namespace,
+			proxy.Spec.ExternalAuthConfigRef,
+		)
+		if err != nil {
+			logOBOSecretEnvVarError(ctx, err)
+		} else {
+			env = append(env, oboEnvVars...)
+		}
 	}
 
 	// Add header forward secret environment variables
@@ -231,13 +303,42 @@ func (r *MCPRemoteProxyReconciler) buildEnvVarsForProxy(
 		}
 	}
 
+	// Add THV_SESSION_REDIS_PASSWORD when sessionStorage uses a passwordRef.
+	// The non-sensitive parts (address/db/keyPrefix) are populated into the
+	// runconfig by populateScalingConfigForRemoteProxy; the password is
+	// injected separately so it never lands in the ConfigMap.
+	env = append(env, buildRedisPasswordEnvVarForRemoteProxy(proxy)...)
+
 	return ctrlutil.EnsureRequiredEnvVars(ctx, env)
+}
+
+// buildRedisPasswordEnvVarForRemoteProxy returns the THV_SESSION_REDIS_PASSWORD
+// env var sourced from spec.sessionStorage.passwordRef when sessionStorage uses
+// the redis provider; returns nil otherwise. Mirrors VirtualMCPServer's
+// buildRedisPasswordEnvVar in virtualmcpserver_deployment.go.
+func buildRedisPasswordEnvVarForRemoteProxy(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.EnvVar {
+	if proxy.Spec.SessionStorage == nil ||
+		proxy.Spec.SessionStorage.Provider != mcpv1beta1.SessionStorageProviderRedis ||
+		proxy.Spec.SessionStorage.PasswordRef == nil {
+		return nil
+	}
+	return []corev1.EnvVar{{
+		Name: session.RedisPasswordEnvVar,
+		ValueFrom: &corev1.EnvVarSource{
+			SecretKeyRef: &corev1.SecretKeySelector{
+				LocalObjectReference: corev1.LocalObjectReference{
+					Name: proxy.Spec.SessionStorage.PasswordRef.Name,
+				},
+				Key: proxy.Spec.SessionStorage.PasswordRef.Key,
+			},
+		},
+	}}
 }
 
 // buildOIDCClientSecretEnvVars returns OIDC client secret env vars when the proxy
 // references an MCPOIDCConfig with an inline client secret. Returns nil otherwise.
 func (r *MCPRemoteProxyReconciler) buildOIDCClientSecretEnvVars(
-	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
 ) []corev1.EnvVar {
 	if proxy.Spec.OIDCConfigRef == nil {
 		return nil
@@ -248,7 +349,7 @@ func (r *MCPRemoteProxyReconciler) buildOIDCClientSecretEnvVars(
 		return nil
 	}
 	if oidcCfg == nil ||
-		oidcCfg.Spec.Type != mcpv1alpha1.MCPOIDCConfigTypeInline ||
+		oidcCfg.Spec.Type != mcpv1beta1.MCPOIDCConfigTypeInline ||
 		oidcCfg.Spec.Inline == nil {
 		return nil
 	}
@@ -268,7 +369,7 @@ func (r *MCPRemoteProxyReconciler) buildOIDCClientSecretEnvVars(
 // buildHeaderForwardSecretEnvVars builds environment variables for header forward secrets.
 // Each secret is mounted as an env var using Kubernetes SecretKeyRef, with a name following
 // the TOOLHIVE_SECRET_<identifier> pattern expected by the secrets.EnvironmentProvider.
-func buildHeaderForwardSecretEnvVars(proxy *mcpv1alpha1.MCPRemoteProxy) []corev1.EnvVar {
+func buildHeaderForwardSecretEnvVars(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.EnvVar {
 	var envVars []corev1.EnvVar
 
 	for _, headerSecret := range proxy.Spec.HeaderForward.AddHeadersFromSecret {
@@ -277,7 +378,7 @@ func buildHeaderForwardSecretEnvVars(proxy *mcpv1alpha1.MCPRemoteProxy) []corev1
 		}
 
 		// Generate env var name following the TOOLHIVE_SECRET_ pattern
-		envVarName, _ := ctrlutil.GenerateHeaderForwardSecretEnvVarName(proxy.Name, headerSecret.HeaderName)
+		envVarName, _ := wirefmt.SecretEnvVarName(proxy.Name, headerSecret.HeaderName)
 
 		envVars = append(envVars, corev1.EnvVar{
 			Name: envVarName,
@@ -297,10 +398,17 @@ func buildHeaderForwardSecretEnvVars(proxy *mcpv1alpha1.MCPRemoteProxy) []corev1
 
 // buildDeploymentMetadata builds deployment-level labels and annotations
 func (*MCPRemoteProxyReconciler) buildDeploymentMetadata(
-	baseLabels map[string]string, proxy *mcpv1alpha1.MCPRemoteProxy,
+	baseLabels map[string]string, proxy *mcpv1beta1.MCPRemoteProxy,
 ) (map[string]string, map[string]string) {
 	deploymentLabels := baseLabels
 	deploymentAnnotations := make(map[string]string)
+
+	if proxy.Spec.PodTemplateSpec != nil && len(proxy.Spec.PodTemplateSpec.Raw) > 0 {
+		hash, err := checksum.HashRawJSON(proxy.Spec.PodTemplateSpec.Raw)
+		if err == nil {
+			deploymentAnnotations[podTemplateSpecHashAnnotation] = hash
+		}
+	}
 
 	if proxy.Spec.ResourceOverrides != nil && proxy.Spec.ResourceOverrides.ProxyDeployment != nil {
 		if proxy.Spec.ResourceOverrides.ProxyDeployment.Labels != nil {
@@ -316,6 +424,33 @@ func (*MCPRemoteProxyReconciler) buildDeploymentMetadata(
 	return deploymentLabels, deploymentAnnotations
 }
 
+// applyPodTemplateSpecToDeployment applies user-provided PodTemplateSpec customizations
+// to the generated MCPRemoteProxy Deployment using Kubernetes strategic merge semantics.
+func (*MCPRemoteProxyReconciler) applyPodTemplateSpecToDeployment(
+	ctx context.Context,
+	proxy *mcpv1beta1.MCPRemoteProxy,
+	deployment *appsv1.Deployment,
+) error {
+	if proxy.Spec.PodTemplateSpec == nil || len(proxy.Spec.PodTemplateSpec.Raw) == 0 {
+		return nil
+	}
+
+	if _, err := ctrlutil.NewPodTemplateSpecBuilder(proxy.Spec.PodTemplateSpec, mcpRemoteProxyContainerName); err != nil {
+		return fmt.Errorf("failed to build PodTemplateSpec: %w", err)
+	}
+
+	merged, err := ctrlutil.ApplyPodTemplateSpecPatch(deployment.Spec.Template, proxy.Spec.PodTemplateSpec.Raw)
+	if err != nil {
+		return err
+	}
+	deployment.Spec.Template = merged
+
+	log.FromContext(ctx).V(1).Info("Applied PodTemplateSpec customizations to deployment",
+		"mcpremoteproxy", proxy.Name,
+		"namespace", proxy.Namespace)
+	return nil
+}
+
 // buildPodTemplateMetadata builds pod template labels and annotations.
 //
 // The runConfigChecksum parameter must be a non-empty SHA256 hash of the RunConfig.
@@ -325,7 +460,7 @@ func (*MCPRemoteProxyReconciler) buildDeploymentMetadata(
 // User-specified overrides from ResourceOverrides.PodTemplateMetadataOverrides
 // are merged after the checksum annotation is set.
 func (*MCPRemoteProxyReconciler) buildPodTemplateMetadata(
-	baseLabels map[string]string, proxy *mcpv1alpha1.MCPRemoteProxy, runConfigChecksum string,
+	baseLabels map[string]string, proxy *mcpv1beta1.MCPRemoteProxy, runConfigChecksum string,
 ) (map[string]string, map[string]string) {
 	templateLabels := baseLabels
 	templateAnnotations := make(map[string]string)
@@ -352,7 +487,7 @@ func (*MCPRemoteProxyReconciler) buildPodTemplateMetadata(
 
 // buildSecurityContexts builds pod and container security contexts
 func (r *MCPRemoteProxyReconciler) buildSecurityContexts(
-	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
 ) (*corev1.PodSecurityContext, *corev1.SecurityContext) {
 	if r.PlatformDetector == nil {
 		r.PlatformDetector = ctrlutil.NewSharedPlatformDetector()
@@ -369,7 +504,7 @@ func (r *MCPRemoteProxyReconciler) buildSecurityContexts(
 }
 
 // buildContainerPorts builds container port configuration
-func (*MCPRemoteProxyReconciler) buildContainerPorts(proxy *mcpv1alpha1.MCPRemoteProxy) []corev1.ContainerPort {
+func (*MCPRemoteProxyReconciler) buildContainerPorts(proxy *mcpv1beta1.MCPRemoteProxy) []corev1.ContainerPort {
 	return []corev1.ContainerPort{{
 		ContainerPort: int32(proxy.GetProxyPort()),
 		Name:          "http",
@@ -379,7 +514,7 @@ func (*MCPRemoteProxyReconciler) buildContainerPorts(proxy *mcpv1alpha1.MCPRemot
 
 // serviceForMCPRemoteProxy returns a MCPRemoteProxy Service object
 func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
-	ctx context.Context, proxy *mcpv1alpha1.MCPRemoteProxy,
+	ctx context.Context, proxy *mcpv1beta1.MCPRemoteProxy,
 ) *corev1.Service {
 	ls := labelsForMCPRemoteProxy(proxy.Name)
 	svcName := createProxyServiceName(proxy.Name)
@@ -423,7 +558,7 @@ func (r *MCPRemoteProxyReconciler) serviceForMCPRemoteProxy(
 
 // buildServiceMetadata builds service labels and annotations
 func (*MCPRemoteProxyReconciler) buildServiceMetadata(
-	baseLabels map[string]string, proxy *mcpv1alpha1.MCPRemoteProxy,
+	baseLabels map[string]string, proxy *mcpv1beta1.MCPRemoteProxy,
 ) (map[string]string, map[string]string) {
 	serviceLabels := baseLabels
 	serviceAnnotations := make(map[string]string)

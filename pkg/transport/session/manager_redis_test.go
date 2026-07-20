@@ -11,6 +11,8 @@ import (
 	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	tcredis "github.com/stacklok/toolhive-core/redis"
 )
 
 func proxyFactory(id string) Session { return NewProxySession(id) }
@@ -23,10 +25,13 @@ func TestNewManagerWithRedis(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()
 
-		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
-			Addr:      mr.Addr(),
-			KeyPrefix: "test:mgr:",
-		})
+		m, err := NewManagerWithRedis(
+			context.Background(),
+			time.Hour,
+			proxyFactory,
+			tcredis.Config{Addr: mr.Addr()},
+			"test:mgr:",
+		)
 		require.NoError(t, err)
 		require.NotNil(t, m)
 		defer m.Stop()
@@ -35,23 +40,16 @@ func TestNewManagerWithRedis(t *testing.T) {
 		assert.True(t, isRedis, "storage should be *RedisStorage")
 	})
 
-	t.Run("invalid config returns error", func(t *testing.T) {
+	t.Run("missing key prefix returns error", func(t *testing.T) {
 		t.Parallel()
-		// Missing KeyPrefix → validateRedisConfig fails before Ping
-		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
-			Addr: "localhost:6379",
-		})
-		require.Error(t, err)
-		assert.Nil(t, m)
-	})
-
-	t.Run("invalid TLS CA cert returns error", func(t *testing.T) {
-		t.Parallel()
-		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
-			Addr:      "localhost:6379",
-			KeyPrefix: "test:mgr:",
-			TLS:       &RedisTLSConfig{CACert: []byte("not-valid-pem")},
-		})
+		// Empty keyPrefix fails session-invariant check before Ping.
+		m, err := NewManagerWithRedis(
+			context.Background(),
+			time.Hour,
+			proxyFactory,
+			tcredis.Config{Addr: "localhost:6379"},
+			"",
+		)
 		require.Error(t, err)
 		assert.Nil(t, m)
 	})
@@ -61,10 +59,13 @@ func TestNewManagerWithRedis(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()
 
-		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
-			Addr:      mr.Addr(),
-			KeyPrefix: "test:mgr:",
-		})
+		m, err := NewManagerWithRedis(
+			context.Background(),
+			time.Hour,
+			proxyFactory,
+			tcredis.Config{Addr: mr.Addr()},
+			"test:mgr:",
+		)
 		require.NoError(t, err)
 		defer m.Stop()
 
@@ -81,10 +82,13 @@ func TestNewManagerWithRedis(t *testing.T) {
 		mr := miniredis.RunT(t)
 		defer mr.Close()
 
-		m, err := NewManagerWithRedis(context.Background(), time.Hour, proxyFactory, RedisConfig{
-			Addr:      mr.Addr(),
-			KeyPrefix: "test:mgr:",
-		})
+		m, err := NewManagerWithRedis(
+			context.Background(),
+			time.Hour,
+			proxyFactory,
+			tcredis.Config{Addr: mr.Addr()},
+			"test:mgr:",
+		)
 		require.NoError(t, err)
 
 		require.NoError(t, m.AddWithID("bbbbbbbb-0002-0001-0001-000000000002"))

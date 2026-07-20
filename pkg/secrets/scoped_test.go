@@ -802,6 +802,7 @@ func TestSecretScopeInvariants(t *testing.T) {
 		secrets.ScopeRegistry,
 		secrets.ScopeWorkloads,
 		secrets.ScopeAuth,
+		secrets.ScopeLLM,
 	}
 
 	for _, scope := range scopes {

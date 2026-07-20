@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"testing"
@@ -381,6 +382,173 @@ func TestMiddlewareFunc_ProxyHeadersExcludedFromSignature(t *testing.T) {
 				"proxy header %q must not appear in SignedHeaders", h)
 		}
 	}
+}
+
+func TestMiddlewareFunc_HopByHopHeadersExcludedFromSignature(t *testing.T) {
+	t.Parallel()
+
+	expiration := time.Now().Add(time.Hour)
+	successResponse := &sts.AssumeRoleWithWebIdentityOutput{
+		Credentials: &ststypes.Credentials{
+			AccessKeyId: aws.String("AKIATEST"), SecretAccessKey: aws.String("secret"),
+			SessionToken: aws.String("session"), Expiration: &expiration,
+		},
+	}
+
+	targetURL, err := url.Parse("https://aws-mcp.us-east-1.api.aws")
+	require.NoError(t, err)
+
+	exchanger := &Exchanger{client: &mockSTSClient{response: successResponse}}
+	roleMapper, err := NewRoleMapper(&Config{
+		Region:          "us-east-1",
+		FallbackRoleArn: "arn:aws:iam::123456789012:role/TestRole",
+	})
+	require.NoError(t, err)
+	signer, err := newRequestSigner("us-east-1")
+	require.NoError(t, err)
+
+	middlewareFunc := createAWSStsMiddlewareFunc(exchanger, roleMapper, signer, "sub", 3600, targetURL)
+
+	tests := []struct {
+		name       string
+		setHeaders func(r *http.Request)
+		excluded   []string
+		extraCheck func(t *testing.T, r *http.Request, signedHeaders string)
+	}{
+		{
+			name: "standard hop-by-hop headers",
+			setHeaders: func(r *http.Request) {
+				r.Header.Set("Connection", "keep-alive")
+				r.Header.Set("Keep-Alive", "timeout=5, max=1000")
+				r.Header.Set("Proxy-Connection", "keep-alive")
+				r.Header.Set("Proxy-Authenticate", "Basic")
+				r.Header.Set("Proxy-Authorization", "Basic dGVzdDp0ZXN0")
+				r.Header.Set("Te", "trailers")
+				r.Header.Set("Trailer", "X-Custom")
+				r.Header.Set("Transfer-Encoding", "chunked")
+				r.Header.Set("Upgrade", "websocket")
+			},
+			excluded: []string{
+				"connection", "keep-alive", "proxy-connection",
+				"proxy-authenticate", "proxy-authorization",
+				"te", "trailer", "transfer-encoding", "upgrade",
+			},
+		},
+		{
+			name: "Connection names a custom header",
+			setHeaders: func(r *http.Request) {
+				r.Header.Set("Connection", "X-Test-Hop")
+				r.Header.Set("X-Test-Hop", "value")
+			},
+			excluded: []string{"connection", "x-test-hop"},
+		},
+		{
+			name: "Connection names X-Amz-Date",
+			setHeaders: func(r *http.Request) {
+				r.Header.Set("Connection", "X-Amz-Date")
+			},
+			excluded: []string{"connection"},
+			extraCheck: func(t *testing.T, r *http.Request, signedHeaders string) {
+				t.Helper()
+				require.Contains(t, signedHeaders, "x-amz-date",
+					"X-Amz-Date must be in SignedHeaders after ReverseProxy")
+				require.NotEmpty(t, r.Header.Get("X-Amz-Date"),
+					"X-Amz-Date must survive ReverseProxy")
+			},
+		},
+		{
+			name: "Connection names Authorization",
+			setHeaders: func(r *http.Request) {
+				r.Header.Set("Connection", "Authorization")
+			},
+			excluded: []string{"connection"},
+			extraCheck: func(t *testing.T, r *http.Request, _ string) {
+				t.Helper()
+				require.NotEmpty(t, r.Header.Get("Authorization"),
+					"Authorization must survive ReverseProxy")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var receivedReq *http.Request
+			backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				receivedReq = r
+				w.WriteHeader(http.StatusOK)
+			}))
+			defer backend.Close()
+			backendURL, err := url.Parse(backend.URL)
+			require.NoError(t, err)
+
+			proxy := &httputil.ReverseProxy{
+				Rewrite: func(pr *httputil.ProxyRequest) {
+					pr.SetURL(backendURL)
+					pr.SetXForwarded()
+				},
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "http://localhost:8080/mcp/v1", strings.NewReader(`{}`))
+			req.Header.Set("Authorization", "Bearer test-jwt-token")
+			tt.setHeaders(req)
+
+			identity := &auth.Identity{PrincipalInfo: auth.PrincipalInfo{
+				Subject: "user123",
+				Claims:  map[string]interface{}{"sub": "user123"},
+			}}
+			req = req.WithContext(auth.WithIdentity(req.Context(), identity))
+
+			rec := httptest.NewRecorder()
+			middlewareFunc(proxy).ServeHTTP(rec, req)
+
+			require.Equal(t, http.StatusOK, rec.Code, "middleware rejected request")
+			require.NotNil(t, receivedReq, "backend should have received the request")
+
+			authz := receivedReq.Header.Get("Authorization")
+			require.Contains(t, authz, "SignedHeaders=")
+
+			signedHeaders := extractSignedHeaders(authz)
+
+			for _, h := range tt.excluded {
+				for _, signed := range strings.Split(signedHeaders, ";") {
+					assert.NotEqual(t, h, signed,
+						"hop-by-hop header %q must not appear in SignedHeaders", h)
+				}
+			}
+
+			// Every signed header must still be present on the request
+			// received by the backend, except host and content-length which
+			// are carried by the transport layer.
+			for _, name := range strings.Split(signedHeaders, ";") {
+				switch name {
+				case "host", "content-length":
+					continue
+				default:
+					assert.NotEmpty(t, receivedReq.Header.Values(name),
+						"signed header %q missing after ReverseProxy", name)
+				}
+			}
+
+			if tt.extraCheck != nil {
+				tt.extraCheck(t, receivedReq, signedHeaders)
+			}
+		})
+	}
+}
+
+func extractSignedHeaders(authz string) string {
+	i := strings.Index(authz, "SignedHeaders=")
+	if i < 0 {
+		return ""
+	}
+	s := authz[i+len("SignedHeaders="):]
+	if j := strings.Index(s, ","); j >= 0 {
+		s = s[:j]
+	}
+	return s
 }
 
 // TestMiddlewareFunc_RoleMapperFailure tests that the middleware returns 403

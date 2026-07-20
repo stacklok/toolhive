@@ -30,6 +30,11 @@ export TOOLHIVE_SKIP_DESKTOP_CHECK=1
 
 CLONE_DIR=""
 cleanup() {
+  # Diagnostics: capture the ToolHive proxy logs before teardown so a CI failure
+  # (e.g. the sampling round-trip timing out) is debuggable from the uploaded
+  # results artifact, not just the client-side checks.json.
+  mkdir -p "${RESULTS_DIR}"
+  "${THV_BINARY}" logs --proxy "${SERVER_NAME}" > "${RESULTS_DIR}/proxy-logs.txt" 2>&1 || true
   "${THV_BINARY}" rm "${SERVER_NAME}" >/dev/null 2>&1 || true
   [ -n "${CLONE_DIR}" ] && rm -rf "${CLONE_DIR}" || true
 }
@@ -61,7 +66,7 @@ docker build -t "${IMAGE}" "${SERVER_DIR}"
 echo "==> Starting server through ToolHive"
 "${THV_BINARY}" rm -f "${SERVER_NAME}" >/dev/null 2>&1 || true
 "${THV_BINARY}" run "${IMAGE}" \
-  --transport streamable-http --target-port 3000 --name "${SERVER_NAME}"
+  --transport streamable-http --target-port 3000 --name "${SERVER_NAME}" --debug
 
 echo "==> Resolving proxy URL"
 URL=""
@@ -89,8 +94,9 @@ done
 
 echo "==> Running conformance suite (${CONFORMANCE_SUITE})"
 rm -rf "${RESULTS_DIR}"
+mkdir -p "${RESULTS_DIR}"
 npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
   --url "${URL}" \
   --suite "${CONFORMANCE_SUITE}" \
   --expected-failures "${EXPECTED_FAILURES}" \
-  -o "${RESULTS_DIR}"
+  -o "${RESULTS_DIR}" 2>&1 | tee "${RESULTS_DIR}/suite-output.log"

@@ -139,6 +139,17 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		return err
 	}
 
+	// The delegated token must not target a resource the subject token was not
+	// itself valid for. Every granted audience must be covered by the subject
+	// token's audience — delegation narrows, never broadens, the resource
+	// boundary. This mirrors grantScopes, which bounds scopes by the subject
+	// token; without it a client registered for audiences A and B could
+	// exchange a user token minted for A into a token for B, an escalation the
+	// user never consented to.
+	if err := ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience); err != nil {
+		return err
+	}
+
 	// Build the delegated session with the user's identity and the agent's act claim.
 	delegatedSession := session.New(
 		validatedClaims.Subject,
@@ -423,6 +434,25 @@ func (h *Handler) grantDefaultAudience(ctx context.Context, requester fosite.Acc
 		"audience", defaultAudience,
 	)
 	requester.GrantAudience(defaultAudience)
+	return nil
+}
+
+// ensureAudienceSubsetOfSubject verifies that every audience granted to the
+// delegated token is covered by the subject token's own audience. A subject
+// token always carries at least one audience (the validator rejects tokens
+// whose aud does not intersect the server's allowed audiences), so an empty
+// subject audience here can only reject.
+func ensureAudienceSubsetOfSubject(granted, subjectAud []string) error {
+	subj := make(map[string]bool, len(subjectAud))
+	for _, a := range subjectAud {
+		subj[a] = true
+	}
+	for _, a := range granted {
+		if !subj[a] {
+			return errorsx.WithStack(server.ErrInvalidTarget.WithHintf(
+				"The delegated token audience %q is not covered by the subject token's audience.", a))
+		}
+	}
 	return nil
 }
 

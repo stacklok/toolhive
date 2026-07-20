@@ -1756,9 +1756,11 @@ func TestRunConfigBuilder_NetworkIsolationReconciliation(t *testing.T) {
 
 			if tt.expectError {
 				require.Error(t, err, "expected build to fail fast")
-				// The error must name both ways out.
-				assert.Contains(t, err.Error(), "drop --network "+tt.networkMode,
-					"error should offer dropping the network mode")
+				// The error must name the resolved mode (not assume it came from
+				// --network, since it may have come from --permission-profile)
+				// and both ways out.
+				assert.Contains(t, err.Error(), `"`+tt.networkMode+`"`,
+					"error should name the resolved network mode")
 				assert.Contains(t, err.Error(), "pass --isolate-network=false",
 					"error should offer disabling isolation")
 				return

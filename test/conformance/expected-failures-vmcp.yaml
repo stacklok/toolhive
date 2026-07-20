@@ -1,37 +1,16 @@
 # Conformance baseline for the ToolHive vMCP aggregator (`thv vmcp serve`).
 #
-# Unlike the transparent CLI proxy, vMCP terminates the MCP protocol and re-serves
-# an aggregated view of its backends using the migrated mcpcompat/go-sdk serving
-# surface. It does not (yet) proxy every capability of an upstream server.
+# vMCP terminates the MCP protocol and re-serves an aggregated view of its
+# backends. This PR makes it conformant — completions, resource templates,
+# resource subscribe/unsubscribe (ack-level), and mid-call forwarding of
+# elicitation/sampling/progress/logging (and embedded-resource decode via
+# toolhive-core v0.0.32) — so the previously-failing scenarios are expected to
+# PASS now, and this list is empty.
 #
-# List scenario names that are KNOWN to fail and accepted. The suite fails CI only
-# on failures NOT listed here. An entry that starts passing again is reported as a
-# STALE entry and also fails CI, so keep this list accurate — when a fix lands,
-# remove its entry here.
-#
-# NOTE: `prompts-get-*` is deliberately ABSENT — it was a real bug (vMCP listed
-# prompts but never served prompts/get) fixed in #5857 (toolhive-core
-# SessionWithPrompts), so those scenarios now pass.
-#
-# The gaps below are triaged in #5859. Several ("worth a real fix") are likely
-# bugs to be fixed and removed from this list; the rest are aggregator limitations.
-server:
-  # Accepted aggregator limitations (no action expected).
-  - tools-call-sampling
-  - completion-complete
-  - resources-subscribe
-  - resources-unsubscribe
-  # Server-to-client forwarding not yet implemented in the vMCP serve path (#5859).
-  - tools-call-with-progress
-  - tools-call-with-logging
-  - tools-call-elicitation
-  - elicitation-sep1034-defaults
-  - elicitation-sep1330-enums
-  # Embedded-resource decode bug (toolhive-core EmbeddedResource.UnmarshalJSON),
-  # fixed in core PR #173 — drops once that release is bumped in. Affects both the
-  # tool-call and prompt embedded-resource paths.
-  - tools-call-mixed-content
-  - tools-call-embedded-resource
-  - prompts-get-embedded-resource
-  # Resource templates not aggregated/served yet (#5859).
-  - resources-templates-read
+# List a scenario name here only if it is KNOWN to fail and accepted. The suite
+# fails CI on any failure NOT listed here; an entry that starts passing again is
+# reported as STALE and also fails CI, so keep this accurate. If the CI vMCP leg
+# surfaces a genuinely-unfixed scenario (e.g. resource subscribe requiring an
+# actual notifications/resources/updated rather than just the ack), add it here
+# with a comment pointing to the follow-up.
+server: []

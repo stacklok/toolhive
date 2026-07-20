@@ -127,15 +127,7 @@ func (h *Handler) HandleTokenEndpointRequest(ctx context.Context, requester fosi
 		return err
 	}
 
-	if err := h.grantAudiences(ctx, requester, client); err != nil {
-		return err
-	}
-
-	if err := h.grantResourceAudience(ctx, requester, client); err != nil {
-		return err
-	}
-
-	if err := h.grantDefaultAudience(ctx, requester, client); err != nil {
+	if err := h.grantAndBoundAudiences(ctx, requester, client, validatedClaims); err != nil {
 		return err
 	}
 
@@ -347,6 +339,32 @@ func (h *Handler) grantScopes(
 	return nil
 }
 
+// grantAndBoundAudiences resolves the delegated token's audience from the
+// request (explicit "audience", RFC 8707 "resource", or the configured
+// default) and then bounds the result by the subject token.
+//
+// The delegated token must not target a resource the subject token was not
+// itself valid for: every granted audience must be covered by the subject
+// token's audience — delegation narrows, never broadens, the resource
+// boundary. This mirrors grantScopes, which bounds scopes by the subject
+// token; without it a client registered for audiences A and B could exchange a
+// user token minted for A into a token for B, an escalation the user never
+// consented to.
+func (h *Handler) grantAndBoundAudiences(
+	ctx context.Context, requester fosite.AccessRequester, client fosite.Client, validatedClaims *ValidatedClaims,
+) error {
+	if err := h.grantAudiences(ctx, requester, client); err != nil {
+		return err
+	}
+	if err := h.grantResourceAudience(ctx, requester, client); err != nil {
+		return err
+	}
+	if err := h.grantDefaultAudience(ctx, requester, client); err != nil {
+		return err
+	}
+	return ensureAudienceSubsetOfSubject(requester.GetGrantedAudience(), validatedClaims.Audience)
+}
+
 // grantAudiences validates that the requested audience is allowed for this
 // client and grants it.
 func (h *Handler) grantAudiences(ctx context.Context, requester fosite.AccessRequester, client fosite.Client) error {
@@ -423,6 +441,25 @@ func (h *Handler) grantDefaultAudience(ctx context.Context, requester fosite.Acc
 		"audience", defaultAudience,
 	)
 	requester.GrantAudience(defaultAudience)
+	return nil
+}
+
+// ensureAudienceSubsetOfSubject verifies that every audience granted to the
+// delegated token is covered by the subject token's own audience. A subject
+// token always carries at least one audience (the validator rejects tokens
+// whose aud does not intersect the server's allowed audiences), so an empty
+// subject audience here can only reject.
+func ensureAudienceSubsetOfSubject(granted, subjectAud []string) error {
+	subj := make(map[string]bool, len(subjectAud))
+	for _, a := range subjectAud {
+		subj[a] = true
+	}
+	for _, a := range granted {
+		if !subj[a] {
+			return errorsx.WithStack(server.ErrInvalidTarget.WithHintf(
+				"The delegated token audience %q is not covered by the subject token's audience.", a))
+		}
+	}
 	return nil
 }
 

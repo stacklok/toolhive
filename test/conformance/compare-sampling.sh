@@ -5,24 +5,30 @@
 # ToolHive stack it does. This tallies the sampling result across three tiers to
 # localize which stack element widens the race:
 #
-#   DIRECT : client -> container                              (no ToolHive)
-#   SQUID  : client -> Squid ingress -> container             (no Go proxy)
+#   DIRECT : client -> container                                  (no ToolHive)
+#   SQUID  : client -> Squid ingress -> container                 (no Go proxy)
 #   STACK  : client -> Go transparent proxy -> Squid -> container (full)
 #
-# DIRECT green + SQUID flaky            -> the Squid ingress is the trigger.
+# DIRECT green + SQUID flaky             -> the Squid ingress is the trigger.
 # DIRECT green + SQUID green + STACK bad -> the Go transparent proxy is the trigger.
-# all flaky                            -> the container/network setup itself.
+# all flaky                             -> the container/network setup itself.
+#
+# COLD-START is the crux: the flake only manifests on the FIRST suite run
+# against a freshly-created stack; reusing one warm stack across iterations
+# never reproduces it. So every iteration gets its OWN fresh stack/container,
+# and SQUID and STACK use SEPARATE fresh stacks (measuring both off one stack
+# would leave the second tier warm and hide the flake). This costs 2N `thv run`s.
 #
 # Reuses the mcp-conformance-server:ci image built by run-conformance.sh (run
 # this step after it).
 #
 # Env: CONFORMANCE_VERSION (default 0.1.16), THV_BINARY (default thv),
-#      SAMPLING_COMPARE_N (default 6).
+#      SAMPLING_COMPARE_N (default 4) = cold stacks per tier.
 set -uo pipefail
 
 CONFORMANCE_VERSION="${CONFORMANCE_VERSION:-0.1.16}"
 THV_BINARY="${THV_BINARY:-thv}"
-N="${SAMPLING_COMPARE_N:-4}"
+N="${SAMPLING_COMPARE_N:-3}"  # cold stacks per tier; 2N thv runs must fit the 30m job budget
 IMAGE="mcp-conformance-server:ci"
 DIRECT_NAME="conf-cmp-direct"
 PROXY_NAME="conf-cmp-proxy"
@@ -53,69 +59,82 @@ wait_ready() { # $1=url
   return 1
 }
 
-# Runs the sampling scenario $N times against $2, tallies failures into the
-# variable named by $1. Echoes per-iteration results.
-tally() { # $1=label $2=url -> echoes "<label>: <fail> / <N> failed"; sets _fail
-  local label="$1" url="$2" fail=0 r
-  for i in $(seq 1 "$N"); do
-    # Run the FULL active suite, not --scenario: the sampling flake only
-    # reproduces in the full-suite context (isolated --scenario completes in
-    # ~1s and never hits the 60s hang). Grep the suite summary line.
-    out="$(npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
-      --url "${url}" --suite active -o /tmp/cmp-results 2>&1 || true)"
-    if echo "$out" | grep -qE "✓ tools-call-sampling"; then r=PASS
-    elif echo "$out" | grep -qE "✗ tools-call-sampling"; then r=FAIL; fail=$((fail+1))
-    else r=UNKNOWN; fi
-    echo "  ${label} ${i}: ${r}"
-  done
-  _fail="${fail}"
+# One FULL active-suite run against $1; echoes PASS/FAIL/UNKNOWN for the sampling
+# scenario. --scenario in isolation never reproduces the hang; the full suite does.
+run_suite_once() { # $1=url
+  local out
+  out="$(npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
+    --url "$1" --suite active -o /tmp/cmp-results 2>&1 || true)"
+  if echo "$out" | grep -qE "✓ tools-call-sampling"; then echo PASS
+  elif echo "$out" | grep -qE "✗ tools-call-sampling"; then echo FAIL
+  else echo UNKNOWN; fi
 }
 
-# --- DIRECT: plain container, no ToolHive ------------------------------------
-echo "==> DIRECT: client -> container (no ToolHive)"
-docker rm -f "${DIRECT_NAME}" >/dev/null 2>&1 || true
-docker run -d --rm -p "${DIRECT_PORT}:3000" --name "${DIRECT_NAME}" "${IMAGE}" >/dev/null
-wait_ready "http://127.0.0.1:${DIRECT_PORT}/mcp" || echo "  (direct server not ready)"
-tally direct "http://127.0.0.1:${DIRECT_PORT}/mcp"; dfail="${_fail}"
-docker rm -f "${DIRECT_NAME}" >/dev/null 2>&1 || true
+# Start a fresh (cold) ToolHive stack; sets STACK_URL and SQUID_URL (SQUID_URL
+# empty if the ingress host port can't be resolved).
+start_stack() {
+  "${THV_BINARY}" rm -f "${PROXY_NAME}" >/dev/null 2>&1 || true
+  "${THV_BINARY}" run "${IMAGE}" --transport streamable-http --target-port 3000 --name "${PROXY_NAME}"
+  STACK_URL=""
+  for _ in $(seq 1 30); do
+    STACK_URL="$("${THV_BINARY}" list --format json 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((w['url'] for w in d if w.get('name')=='${PROXY_NAME}' and w.get('status')=='running' and w.get('url')),''))" 2>/dev/null || true)"
+    [ -n "${STACK_URL}" ] && break
+    sleep 2
+  done
+  local hp; hp="$(docker port "${PROXY_NAME}-ingress" 2>/dev/null | awk -F: 'NR==1{print $NF}')"
+  SQUID_URL=""; [ -n "${hp}" ] && SQUID_URL="http://127.0.0.1:${hp}/mcp"
+}
+stop_stack() { "${THV_BINARY}" rm -f "${PROXY_NAME}" >/dev/null 2>&1 || true; }
 
-# --- Bring up ONE ToolHive stack; it gives both the SQUID and STACK tiers -----
-echo "==> Starting ToolHive stack (${PROXY_NAME})"
-"${THV_BINARY}" rm -f "${PROXY_NAME}" >/dev/null 2>&1 || true
-"${THV_BINARY}" run "${IMAGE}" --transport streamable-http --target-port 3000 --name "${PROXY_NAME}"
-URL=""
-for _ in $(seq 1 30); do
-  URL="$("${THV_BINARY}" list --format json 2>/dev/null | python3 -c "import sys,json;d=json.load(sys.stdin);print(next((w['url'] for w in d if w.get('name')=='${PROXY_NAME}' and w.get('status')=='running' and w.get('url')),''))" 2>/dev/null || true)"
-  [ -n "${URL}" ] && break
-  sleep 2
+# --- DIRECT: fresh plain container per iteration (cold control, no ToolHive) --
+echo "==> DIRECT: client -> container (no ToolHive), cold per iteration"
+dfail=0
+for i in $(seq 1 "$N"); do
+  docker rm -f "${DIRECT_NAME}" >/dev/null 2>&1 || true
+  docker run -d --rm -p "${DIRECT_PORT}:3000" --name "${DIRECT_NAME}" "${IMAGE}" >/dev/null
+  wait_ready "http://127.0.0.1:${DIRECT_PORT}/mcp" || echo "  (direct ${i} not ready)"
+  r="$(run_suite_once "http://127.0.0.1:${DIRECT_PORT}/mcp")"; echo "  direct ${i}: ${r}"
+  [ "${r}" = FAIL ] && dfail=$((dfail+1))
+  docker rm -f "${DIRECT_NAME}" >/dev/null 2>&1 || true
 done
-[ -z "${URL}" ] && { echo "ERROR: could not resolve ${PROXY_NAME} URL" >&2; exit 1; }
 
-# --- SQUID: hit the ingress Squid directly, bypassing the Go transparent proxy.
-# thv publishes the ingress squid (container "<name>-ingress") to a host port;
-# the Go proxy forwards to it. Reach it directly to drop the Go proxy from the path.
-squid_hp="$(docker port "${PROXY_NAME}-ingress" 2>/dev/null | awk -F: 'NR==1{print $NF}')"
-sfail="n/a"
-if [ -n "${squid_hp}" ]; then
-  SQUID_URL="http://127.0.0.1:${squid_hp}/mcp"
-  echo "==> SQUID: client -> Squid ingress (${SQUID_URL}) -> container (no Go proxy)"
-  if wait_ready "${SQUID_URL}"; then
-    tally squid "${SQUID_URL}"; sfail="${_fail}"
+# --- SQUID: fresh stack per iteration, hit the ingress Squid directly ---------
+echo "==> SQUID: client -> Squid ingress -> container (no Go proxy), cold per iteration"
+sfail=0; sruns=0
+for i in $(seq 1 "$N"); do
+  start_stack
+  if [ -n "${SQUID_URL}" ] && wait_ready "${SQUID_URL}"; then
+    r="$(run_suite_once "${SQUID_URL}")"; echo "  squid ${i}: ${r} (${SQUID_URL})"
+    sruns=$((sruns+1)); [ "${r}" = FAIL ] && sfail=$((sfail+1))
   else
-    echo "  (squid ingress not reachable at ${SQUID_URL}; skipping tier)"
+    echo "  squid ${i}: SKIP (ingress host port unresolved/unreachable)"
   fi
-else
-  echo "==> SQUID: could not resolve ${PROXY_NAME}-ingress host port; skipping tier"
-fi
+  stop_stack
+done
 
-# --- STACK: full path through the Go transparent proxy ------------------------
-echo "==> STACK: client -> thv (Go proxy -> Squid ingress) -> container"
-wait_ready "${URL}" || echo "  (stack server not ready)"
-tally stack "${URL}"; pfail="${_fail}"
-"${THV_BINARY}" rm -f "${PROXY_NAME}" >/dev/null 2>&1 || true
+# --- STACK: fresh stack per iteration, full path via the Go transparent proxy -
+echo "==> STACK: client -> thv (Go proxy -> Squid ingress) -> container, cold per iteration"
+pfail=0
+for i in $(seq 1 "$N"); do
+  start_stack
+  if wait_ready "${STACK_URL}"; then
+    r="$(run_suite_once "${STACK_URL}")"; echo "  stack ${i}: ${r}"
+    [ "${r}" = FAIL ] && pfail=$((pfail+1))
+  else
+    echo "  stack ${i}: not ready"
+  fi
+  stop_stack
+done
 
 echo ""
-echo "===== tools-call-sampling failure rate (n=${N} per tier) ====="
-echo "DIRECT (container only):        ${dfail} / ${N} failed"
-echo "SQUID  (Squid ingress only):    ${sfail} / ${N} failed"
-echo "STACK  (Go proxy + Squid):      ${pfail} / ${N} failed"
+echo "===== tools-call-sampling failure rate (cold, n=${N} per tier) ====="
+echo "DIRECT (container only):     ${dfail} / ${N} failed"
+if [ "${sruns:-0}" -gt 0 ]; then
+  echo "SQUID  (Squid ingress only): ${sfail} / ${sruns} failed"
+else
+  echo "SQUID  (Squid ingress only): n/a (tier unreachable)"
+fi
+echo "STACK  (Go proxy + Squid):   ${pfail} / ${N} failed"
+echo ""
+echo "Read: DIRECT+SQUID green & STACK bad => Go transparent proxy is the trigger."
+echo "      DIRECT green & SQUID bad       => Squid ingress is the trigger."

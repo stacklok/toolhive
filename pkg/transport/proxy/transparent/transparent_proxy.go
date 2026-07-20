@@ -587,12 +587,25 @@ func (t *tracingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	isMCP := strings.HasPrefix(path, "/mcp")
 	isJSON := strings.Contains(req.Header.Get("Content-Type"), "application/json")
 	sawInitialize := false
+	revision := mcp.RevisionLegacy
 
 	if len(reqBody) > 0 &&
 		((isMCP && isJSON) ||
 			t.p.transportType == types.TransportTypeStreamableHTTP.String()) {
-		sawInitialize = t.detectInitialize(reqBody)
+		method, params, id, singleRequest, isInit := t.parseRPCRequest(reqBody)
+		sawInitialize = isInit
+		if singleRequest {
+			meta := mcp.ExtractMeta(params)
+			rev, cerr := mcp.ClassifyRevision(method, meta, req.Header.Get("MCP-Protocol-Version"))
+			if cerr != nil {
+				// Malformed Modern request: reject before the backend is ever contacted.
+				return mcp.ClassificationErrorResponse(req, id, cerr), nil
+			}
+			revision = rev
+		}
 	}
+	//nolint:gosec // G706: logging target URI from config
+	slog.Debug("classified request revision", "modern", revision == mcp.RevisionModern, "target", t.p.targetURI)
 
 	// Guard: reject non-initialize requests with unknown session IDs.
 	// When multiple proxyrunner replicas share a Redis session store,
@@ -780,36 +793,56 @@ func readRequestBody(req *http.Request) ([]byte, error) {
 	return reqBody, nil
 }
 
-func (t *tracingTransport) detectInitialize(body []byte) bool {
+// parseRPCRequest parses a POST body as a JSON-RPC request in a single pass.
+//
+// If the body is a single JSON-RPC object, method/params/id are populated
+// from it and singleRequest reports whether it is a real request (has both a
+// method and a valid, non-null id) as opposed to a notification (no id) or a
+// response-shaped body (no method) — either of which is not eligible for
+// mcp.ClassifyRevision. sawInitialize reports whether method == "initialize".
+//
+// If the body is not a single JSON object (e.g. a JSON-RPC batch), method,
+// params and id are zero and singleRequest is false: batches are never
+// classified. sawInitialize is still computed by scanning the batch for any
+// member whose method is "initialize", preserving prior behavior.
+func (t *tracingTransport) parseRPCRequest(
+	body []byte,
+) (method string, params, id json.RawMessage, singleRequest, sawInitialize bool) {
+	type rpcRequest struct {
+		Method string          `json:"method"`
+		Params json.RawMessage `json:"params"`
+		ID     json.RawMessage `json:"id"`
+	}
+
+	var single rpcRequest
+	if err := json.Unmarshal(body, &single); err == nil {
+		sawInitialize = single.Method == "initialize"
+		if sawInitialize {
+			//nolint:gosec // G706: logging target URI from config
+			slog.Debug("detected initialize method call", "target", t.p.targetURI)
+		}
+		singleRequest = single.Method != "" && len(single.ID) > 0 && string(single.ID) != "null"
+		return single.Method, single.Params, single.ID, singleRequest, sawInitialize
+	}
+
+	// JSON-RPC batch: array of objects. Only sawInitialize is computed; a
+	// batch is never eligible for revision classification.
 	type rpcMethod struct {
 		Method string `json:"method"`
 	}
-
-	// Single JSON-RPC object.
-	var single rpcMethod
-	if err := json.Unmarshal(body, &single); err == nil {
-		if single.Method == "initialize" {
-			//nolint:gosec // G706: logging target URI from config
-			slog.Debug("detected initialize method call", "target", t.p.targetURI)
-			return true
-		}
-		return false
-	}
-
-	// JSON-RPC batch: array of objects. Return true if any member is initialize.
 	var batch []rpcMethod
 	if err := json.Unmarshal(body, &batch); err != nil {
 		slog.Debug("failed to parse JSON-RPC body", "error", err)
-		return false
+		return "", nil, nil, false, false
 	}
 	for _, rpc := range batch {
 		if rpc.Method == "initialize" {
 			//nolint:gosec // G706: logging target URI from config
 			slog.Debug("detected initialize method call in batch", "target", t.p.targetURI)
-			return true
+			return "", nil, nil, false, true
 		}
 	}
-	return false
+	return "", nil, nil, false, false
 }
 
 // podBackendURL constructs a backend URL that targets the specific pod IP captured

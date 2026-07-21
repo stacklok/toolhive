@@ -446,7 +446,7 @@ func New(
 	// cannot exist before core.New. Give the core a late-bound requester now and bind the
 	// real adapter to Serve's server before serving begins (RequestElicitation is only
 	// invoked at request time, after bind).
-	elicitation := newLateBoundElicitationRequester()
+	elicitation := NewLateBoundElicitationRequester()
 
 	// Wrap the aggregator in a per-identity caching decorator: the core re-derives the
 	// advertised view on every call, so without this the Serve path re-sweeps every backend's
@@ -512,7 +512,7 @@ func New(
 
 	// Bind the elicitation adapter to the SDK server Serve built so composite-workflow
 	// elicitation reaches the same mcp-go server that serves client traffic.
-	elicitation.bind(NewSDKElicitationAdapter(srv.MCPServer()))
+	elicitation.Bind(NewSDKElicitationAdapter(srv.MCPServer()))
 
 	closeCoreOnErr = false // Serve succeeded; srv.Stop now owns the core's lifecycle.
 	return srv, nil

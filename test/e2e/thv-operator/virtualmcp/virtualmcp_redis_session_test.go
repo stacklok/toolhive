@@ -307,12 +307,24 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			defer startCancel()
 			gomega.Expect(clientB.Start(startCtx)).To(gomega.Succeed())
 
+			// Cross-pod reconstruction is eventually consistent (see the lazy-eviction
+			// test): retry until pod B serves the reconstructed session rather than
+			// asserting on a single immediate ListTools, which flakes under parallel CI load.
 			ginkgo.By("Listing tools on pod B using the session from pod A")
-			listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer listCancel()
-			toolsB, err := clientB.ListTools(listCtx, mcp.ListToolsRequest{})
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(toolsB.Tools).NotTo(gomega.BeEmpty(), "pod B must return tools via Redis-reconstructed session")
+			var toolsB *mcp.ListToolsResult
+			gomega.Eventually(func() error {
+				listCtx, listCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer listCancel()
+				result, listErr := clientB.ListTools(listCtx, mcp.ListToolsRequest{})
+				if listErr != nil {
+					return listErr
+				}
+				if len(result.Tools) == 0 {
+					return fmt.Errorf("pod B returned no tools via Redis-reconstructed session yet")
+				}
+				toolsB = result
+				return nil
+			}, timeout, pollInterval).Should(gomega.Succeed(), "pod B must return tools via Redis-reconstructed session")
 
 			ginkgo.By("Verifying backend session IDs in Redis are the same hints pod B received")
 			backendIDsAfterRestore, err := readRedisSessionBackendIDs(redisName, "thv:vmcp:e2e:", sessionID)
@@ -674,11 +686,24 @@ var _ = ginkgo.Describe("VirtualMCPServer Redis-Backed Session Sharing", func() 
 			defer startCancel()
 			gomega.Expect(clientB.Start(startCtx)).To(gomega.Succeed())
 
-			listCtxB, listCancelB := context.WithTimeout(context.Background(), 30*time.Second)
-			toolsB, err := clientB.ListTools(listCtxB, mcp.ListToolsRequest{})
-			listCancelB()
-			gomega.Expect(err).NotTo(gomega.HaveOccurred())
-			gomega.Expect(toolsB.Tools).NotTo(gomega.BeEmpty(),
+			// Cross-pod reconstruction is eventually consistent: pod B must reconstruct
+			// the session from Redis and warm its per-identity capability view, so retry
+			// rather than asserting on a single immediate ListTools (which flakes under
+			// parallel CI load). A genuine inability to serve still fails when the poll
+			// times out.
+			ginkgo.By("Verifying pod B can serve the reconstructed session")
+			gomega.Eventually(func() error {
+				listCtxB, listCancelB := context.WithTimeout(context.Background(), 30*time.Second)
+				defer listCancelB()
+				toolsB, listErr := clientB.ListTools(listCtxB, mcp.ListToolsRequest{})
+				if listErr != nil {
+					return listErr
+				}
+				if len(toolsB.Tools) == 0 {
+					return fmt.Errorf("pod B returned no tools for the reconstructed session yet")
+				}
+				return nil
+			}, timeout, pollInterval).Should(gomega.Succeed(),
 				"pod B should serve the session before termination")
 
 			// Terminate the session on pod A by sending DELETE /mcp directly.

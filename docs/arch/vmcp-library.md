@@ -10,29 +10,49 @@ Downstream consumers like `brood-box` need predictability across ToolHive releas
 
 ## Library Embedding Pattern
 
-### Importing `pkg/vmcp/`
+### Recommended: assemble via `app.Builder`
+
+The `pkg/vmcp/app` package is the recommended embedding surface: hand over a
+`vmcpconfig.Config`, optionally decorate the core, and receive a ready-to-serve
+`*server.Server`. The builder owns "construct once / wire once" — it builds the shared
+collaborators (telemetry, the backend registry, elicitation) a single time and collapses
+cleanup — so embedders no longer replicate the wiring that `pkg/vmcp/cli/serve.go` uses.
 
 ```go
 import (
+    "github.com/stacklok/toolhive/pkg/vmcp/app"
     vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
-    "github.com/stacklok/toolhive/pkg/vmcp/server"
-    "github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-    "github.com/stacklok/toolhive/pkg/vmcp/router"
+    "github.com/stacklok/toolhive/pkg/vmcp/core"
 )
+
+srv, _, cleanup, err := app.NewBuilder(ctx, cfg,
+    app.WithVersion(version),
+    app.WithHost(host, port),
+    // Override any collaborator via interface-typed options, e.g. a custom registry:
+    // app.WithBackendRegistry(myRegistry, myWatcher)
+).
+    Decorate(func(inner core.VMCP) core.VMCP { return myDecorator(inner) }). // optional (RFC THV-0076 seam)
+    Finish()
+if err != nil { /* handle */ }
+defer cleanup()
+if err := srv.Start(ctx); err != nil { /* handle */ }
 ```
 
-The `pkg/vmcp/` root package (`github.com/stacklok/toolhive/pkg/vmcp`) contains only shared domain types (`types.go`, `errors.go`) and is always safe to import.
+`app.BuildCore` and `app.BuildServerConfig` are the lower-level primitives the builder is
+built on; use them directly only for advanced composition (e.g. inspecting the derived
+`*server.ServerConfig` before serving, or reusing the assembled `core.VMCP` elsewhere).
 
-### Reference Implementation: brood-box
+The `pkg/vmcp/` root package (`github.com/stacklok/toolhive/pkg/vmcp`) contains only shared
+domain types (`types.go`, `errors.go`) and is always safe to import.
 
-[`github.com/stacklok/brood-box`](https://github.com/stacklok/brood-box) embeds `pkg/vmcp/` under `internal/infra/mcp/`. It demonstrates the recommended pattern:
+### Low-level: `server.New` (legacy composition root)
 
-1. Load a `vmcpconfig.Config` from YAML or programmatically.
-2. Instantiate a `discovery.Manager`, `vmcp.BackendRegistry`, router, and backend client.
-3. Build a `server.Server` via `server.New(ctx, cfg, router, backendClient, discoveryMgr, backendRegistry, workflowDefs)`.
-4. Call `server.Start(ctx)` and `server.Stop(ctx)` for lifecycle management.
-
-This is the same path used by `pkg/vmcp/cli/serve.go` in the `thv vmcp serve` command; the library has no CLI-specific coupling.
+`server.New(ctx, cfg, router, backendClient, backendRegistry, workflowDefs)` is the
+dependency-injection composition root that predates `app.Builder`. It requires the caller
+to construct the router, backend client, and registry themselves. The reference embedder
+[`github.com/stacklok/brood-box`](https://github.com/stacklok/brood-box) currently uses
+this path (under `internal/infra/mcp/`); new embedders should prefer `app.Builder`, which
+encapsulates exactly this wiring. Both remain supported.
 
 ## `pkg/vmcp/` Stability Table
 
@@ -44,7 +64,8 @@ The table below maps every sub-package to its stability level per RFC THV-0059. 
 | `pkg/vmcp/config` | Stable | Config structs and YAML loader; `Config`, `BackendConfig`, `OptimizerConfig` |
 | `pkg/vmcp/aggregator` | Stable | Backend discovery and capability merge; `Aggregator` interface |
 | `pkg/vmcp/router` | Stable | Request routing and tool name translation; `Router` interface |
-| `pkg/vmcp/server` | Stable | Server constructor and lifecycle; `New`, `Start`, `Stop` |
+| `pkg/vmcp/app` | Experimental | Config-driven assembly API for embedders. `Builder` (`NewBuilder`/`Decorate`/`Finish`) is the primary, supported entry point. `BuildCore`/`BuildServerConfig`/`Option` are **speculative** lower-level primitives kept public for advanced composition; they may be reshaped or unexported once the `Builder` covers the observed embedder needs. Prefer the `Builder` unless you specifically need to compose the primitives directly |
+| `pkg/vmcp/server` | Stable | Server constructor and lifecycle; `New`, `Start`, `Stop`. The newly exported `LateBoundElicitationRequester` (and its `Bind`) is Experimental — see its doc comment |
 | `pkg/vmcp/session` | Stable | Session factory and per-session routing table |
 | `pkg/vmcp/auth` | Stable | Incoming/outgoing auth interfaces; `IncomingAuthenticator`, `OutgoingAuthRegistry` |
 | `pkg/vmcp/client` | Stable | Backend HTTP client; used for all backend MCP calls |

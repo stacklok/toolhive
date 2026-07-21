@@ -21,6 +21,7 @@ import (
 	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
@@ -266,6 +267,79 @@ func (w *BackendWatcher) WaitForCacheSync(ctx context.Context) bool {
 
 	slog.Info("kubernetes cache synced successfully")
 	return true
+}
+
+// SyncRegistry performs a one-time synchronous discovery of the backends currently in
+// the watched group and upserts them into the registry, returning the number seeded.
+//
+// It uses a direct (uncached) Kubernetes client, so it does NOT depend on the informer
+// cache having synced and is safe to call immediately after NewBackendWatcher, before
+// Start. This seeds the registry so the vMCP server has an accurate backend view the
+// moment it begins serving — rather than waiting for the watcher's asynchronous initial
+// reconcile to populate it (which lags cache sync and leaves a window where the server
+// reports zero backends). After seeding, the running watcher keeps the registry current.
+//
+// It reuses the same conversion path as the reconciler (workloads.Discoverer.
+// GetWorkloadAsVMCPBackend), so seeded backends are identical to what the watcher would
+// produce. A per-workload conversion error or a workload that is not yet accessible is
+// logged and skipped (not fatal): the watcher will upsert it once it becomes available.
+func (w *BackendWatcher) SyncRegistry(ctx context.Context) (int, error) {
+	directClient, err := client.New(w.ctrlManager.GetConfig(), client.Options{Scheme: w.ctrlManager.GetScheme()})
+	if err != nil {
+		return 0, fmt.Errorf("failed to create direct client for initial backend sync: %w", err)
+	}
+
+	discoverer := workloads.NewK8SDiscovererWithClient(directClient, w.namespace)
+
+	seeded, err := seedRegistryFromDiscoverer(ctx, discoverer, w.groupRef, w.registry)
+	if err != nil {
+		return 0, err
+	}
+
+	slog.Info("seeded backend registry with initial discovery",
+		"namespace", w.namespace, "group", w.groupRef, "count", seeded)
+	return seeded, nil
+}
+
+// seedRegistryFromDiscoverer lists the workloads in groupRef via discoverer, converts
+// each to a vmcp.Backend, and upserts it into registry, returning the count seeded. It
+// is the testable core of SyncRegistry (which supplies a direct-client discoverer):
+//   - A ListWorkloadsInGroup failure is fatal (returns the error, nothing seeded).
+//   - A per-workload conversion error is logged and skipped — the watcher retries it.
+//   - A nil backend (workload not accessible yet: no URL / auth failure) is skipped.
+//   - An Upsert error is logged and skipped.
+//
+// This mirrors the reconciler's per-resource conversion (GetWorkloadAsVMCPBackend),
+// so seeded backends are identical to what the watcher would produce.
+func seedRegistryFromDiscoverer(
+	ctx context.Context, discoverer workloads.Discoverer, groupRef string, registry vmcp.DynamicRegistry,
+) (int, error) {
+	wls, err := discoverer.ListWorkloadsInGroup(ctx, groupRef)
+	if err != nil {
+		return 0, fmt.Errorf("failed to list workloads in group %q: %w", groupRef, err)
+	}
+
+	seeded := 0
+	for _, wl := range wls {
+		backend, convErr := discoverer.GetWorkloadAsVMCPBackend(ctx, wl)
+		if convErr != nil {
+			slog.Warn("failed to convert workload during initial backend sync; watcher will retry",
+				"workload", wl.Name, "error", convErr)
+			continue
+		}
+		// A nil backend means the workload is not accessible yet (no URL / auth failure);
+		// leave it to the watcher to upsert once it becomes available.
+		if backend == nil {
+			continue
+		}
+		if upsertErr := registry.Upsert(*backend); upsertErr != nil {
+			slog.Warn("failed to upsert backend during initial sync", "backend", backend.ID, "error", upsertErr)
+			continue
+		}
+		seeded++
+	}
+
+	return seeded, nil
 }
 
 // addBackendWatchController registers the BackendReconciler with the controller manager.

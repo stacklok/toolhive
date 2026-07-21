@@ -1501,3 +1501,58 @@ func TestValidator_ValidateStaticBackends(t *testing.T) {
 		})
 	}
 }
+
+// TestValidator_RejectsBackendsWithDiscoveredSource covers the cross-field rule that a
+// non-empty Backends list is mutually exclusive with outgoingAuth.source: discovered.
+// The combination is contradictory (discovered auto-discovers backends at runtime) and
+// previously produced divergent behavior across the assembly primitives.
+func TestValidator_RejectsBackendsWithDiscoveredSource(t *testing.T) {
+	t.Parallel()
+	v := NewValidator()
+
+	baseConfig := func(source string, backends []StaticBackendConfig) *Config {
+		return &Config{
+			Name:  "test-vmcp",
+			Group: "test-group",
+			IncomingAuth: &IncomingAuthConfig{
+				Type: "anonymous",
+			},
+			OutgoingAuth: &OutgoingAuthConfig{
+				Source: source,
+			},
+			Aggregation: &AggregationConfig{
+				ConflictResolution: vmcp.ConflictStrategyPrefix,
+				ConflictResolutionConfig: &ConflictResolutionConfig{
+					PrefixFormat: "{workload}_",
+				},
+			},
+			Backends: backends,
+		}
+	}
+	staticBackends := []StaticBackendConfig{{Name: "b1", URL: "http://127.0.0.1:9001/mcp", Transport: TransportStreamableHTTP}}
+
+	tests := []struct {
+		name     string
+		source   string
+		backends []StaticBackendConfig
+		wantErr  bool
+	}{
+		{name: "discovered with backends is rejected", source: OutgoingAuthSourceDiscovered, backends: staticBackends, wantErr: true},
+		{name: "discovered without backends is valid", source: OutgoingAuthSourceDiscovered, backends: nil, wantErr: false},
+		{name: "inline with backends is valid", source: OutgoingAuthSourceInline, backends: staticBackends, wantErr: false},
+		{name: "inline without backends is valid", source: OutgoingAuthSourceInline, backends: nil, wantErr: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			err := v.Validate(baseConfig(tt.source, tt.backends))
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), "backends must be empty when outgoingAuth.source is")
+			} else {
+				require.NoError(t, err)
+			}
+		})
+	}
+}

@@ -17,38 +17,16 @@ import (
 	"path/filepath"
 	"time"
 
-	"go.opentelemetry.io/otel/trace"
 	"gopkg.in/yaml.v3"
-	"k8s.io/client-go/rest"
 
 	"github.com/stacklok/toolhive-core/env"
 	"github.com/stacklok/toolhive/pkg/audit"
-	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	authserverconfig "github.com/stacklok/toolhive/pkg/authserver"
-	authserverrunner "github.com/stacklok/toolhive/pkg/authserver/runner"
-	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/container"
-	"github.com/stacklok/toolhive/pkg/container/runtime"
-	"github.com/stacklok/toolhive/pkg/groups"
-	"github.com/stacklok/toolhive/pkg/migration"
-	"github.com/stacklok/toolhive/pkg/telemetry"
 	"github.com/stacklok/toolhive/pkg/versions"
 	"github.com/stacklok/toolhive/pkg/vmcp"
-	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
-	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
-	authfactory "github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
-	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
-	"github.com/stacklok/toolhive/pkg/vmcp/codemode"
-	"github.com/stacklok/toolhive/pkg/vmcp/config"
-	"github.com/stacklok/toolhive/pkg/vmcp/health"
-	"github.com/stacklok/toolhive/pkg/vmcp/k8s"
-	"github.com/stacklok/toolhive/pkg/vmcp/optimizer"
-	ratelimitfactory "github.com/stacklok/toolhive/pkg/vmcp/ratelimit/factory"
-	vmcprouter "github.com/stacklok/toolhive/pkg/vmcp/router"
-	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
-	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
-	"github.com/stacklok/toolhive/pkg/vmcp/session/optimizerdec"
-	vmcpstatus "github.com/stacklok/toolhive/pkg/vmcp/status"
+	"github.com/stacklok/toolhive/pkg/vmcp/app"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
 )
 
 // ServeConfig holds all parameters needed to start the vMCP server.
@@ -110,10 +88,14 @@ func (c ServeConfig) validateQuickModeHost() error {
 	return nil
 }
 
-// Serve loads configuration, initializes all subsystems, and starts the vMCP
-// server. It blocks until the context is cancelled or the server stops.
+// Serve loads configuration, assembles the vMCP server via the app package,
+// and starts it. It blocks until the context is cancelled or the server stops.
 //
-//nolint:gocyclo // Complexity from server initialization sequence is acceptable here.
+// CLI-specific concerns (loading YAML, injecting CLI flags, managing the TEI
+// container) are handled here; domain assembly is delegated to app.BuildCore
+// and app.BuildServerConfig.
+//
+//nolint:gocyclo // Complexity from CLI flag handling and server initialization is acceptable here.
 func Serve(ctx context.Context, cfg ServeConfig) error {
 	if err := cfg.validateQuickModeHost(); err != nil {
 		return err
@@ -123,7 +105,7 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 	}
 
 	// Load and validate configuration — file path takes precedence over group quick mode.
-	vmcpCfg, err := func() (*config.Config, error) {
+	vmcpCfg, err := func() (*vmcpconfig.Config, error) {
 		switch {
 		case cfg.ConfigPath != "":
 			return loadAndValidateConfig(cfg.ConfigPath)
@@ -154,163 +136,9 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		}
 	}
 
-	// Auto-populate SubjectProviderName on backend auth strategies that
-	// omitted it when an embedded auth server is active.
-	if err := config.InjectSubjectProviderNames(vmcpCfg, authServerRC); err != nil {
-		return fmt.Errorf("failed to default outgoing auth subject provider names: %w", err)
-	}
-
-	// Construct embedded authorization server if configured.
-	var embeddedAuthServer *authserverrunner.EmbeddedAuthServer
-	if authServerRC != nil {
-		embeddedAuthServer, err = authserverrunner.NewEmbeddedAuthServer(ctx, authServerRC)
-		if err != nil {
-			return fmt.Errorf("failed to create embedded auth server: %w", err)
-		}
-		defer func() {
-			if closeErr := embeddedAuthServer.Close(); closeErr != nil {
-				slog.Error(fmt.Sprintf("failed to close embedded auth server: %v", closeErr))
-			}
-		}()
-		slog.Info("embedded authorization server initialized")
-	}
-
-	// Discover backends and create client.
-	backends, backendClient, outgoingRegistry, err := discoverBackends(ctx, vmcpCfg)
-	if err != nil {
-		return err
-	}
-
-	// Create conflict resolver based on configuration.
-	conflictResolver, err := aggregator.NewConflictResolver(vmcpCfg.Aggregation)
-	if err != nil {
-		return fmt.Errorf("failed to create conflict resolver: %w", err)
-	}
-
-	// If telemetry is configured, create the provider early so aggregator can use it.
-	var telemetryProvider *telemetry.Provider
-	if vmcpCfg.Telemetry != nil {
-		telemetryProvider, err = telemetry.NewProvider(ctx, *vmcpCfg.Telemetry)
-		if err != nil {
-			return fmt.Errorf("failed to create telemetry provider: %w", err)
-		}
-		defer func() {
-			if shutdownErr := telemetryProvider.Shutdown(ctx); shutdownErr != nil {
-				slog.Error(fmt.Sprintf("failed to shutdown telemetry provider: %v", shutdownErr))
-			}
-		}()
-	}
-
-	// Create aggregator with tracer provider (nil if telemetry not configured).
-	var tracerProvider trace.TracerProvider
-	if telemetryProvider != nil {
-		tracerProvider = telemetryProvider.TracerProvider()
-	}
-	agg := aggregator.NewDefaultAggregator(backendClient, conflictResolver, vmcpCfg.Aggregation, tracerProvider)
-
-	// DynamicRegistry tracks backends for dynamic discovery in Kubernetes mode.
-	dynamicRegistry := vmcp.NewDynamicRegistry(backends)
-	backendRegistry := vmcp.BackendRegistry(dynamicRegistry)
-	slog.Info("dynamic backend registry enabled for Kubernetes environment")
-
-	// Backend watcher for dynamic backend discovery.
-	var backendWatcher *k8s.BackendWatcher
-
-	// If outgoingAuth.source is "discovered", start K8s backend watcher.
-	if vmcpCfg.OutgoingAuth != nil && vmcpCfg.OutgoingAuth.Source == "discovered" {
-		slog.Info("detected dynamic backend discovery mode (outgoingAuth.source: discovered)")
-
-		restConfig, err := rest.InClusterConfig()
-		if err != nil {
-			return fmt.Errorf("failed to get in-cluster config: %w", err)
-		}
-
-		namespace := os.Getenv("VMCP_NAMESPACE")
-		if namespace == "" {
-			return fmt.Errorf("VMCP_NAMESPACE environment variable not set")
-		}
-
-		backendWatcher, err = k8s.NewBackendWatcher(restConfig, namespace, vmcpCfg.Group, dynamicRegistry)
-		if err != nil {
-			return fmt.Errorf("failed to create backend watcher: %w", err)
-		}
-
-		go func() {
-			slog.Info("starting Kubernetes backend watcher in background")
-			if err := backendWatcher.Start(ctx); err != nil {
-				slog.Error(fmt.Sprintf("Backend watcher stopped with error: %v", err))
-			}
-		}()
-
-		slog.Info("kubernetes backend watcher started for dynamic backend discovery")
-	}
-
-	// Workflow validation in core.New needs a non-nil Router, but the core routes per-call
-	// via NewSessionRouter and validation does not route — so an empty session router suffices.
-	rtr := vmcprouter.NewSessionRouter(&vmcp.RoutingTable{})
-
-	slog.Info(fmt.Sprintf("Setting up incoming authentication (type: %s)", vmcpCfg.IncomingAuth.Type))
-
-	if vmcpCfg.IncomingAuth.Type == config.IncomingAuthTypeAnonymous {
-		slog.Warn(
-			"vMCP is configured with anonymous incoming auth; all anonymous sessions share a single sentinel binding, "+
-				"so possession of a session ID is sufficient to act as that session from any source. "+
-				"Anonymous mode is intended for development only.",
-			"incoming_auth_type", config.IncomingAuthTypeAnonymous,
-		)
-	}
-
-	// Configure health monitoring if enabled.
-	var healthMonitorConfig *health.MonitorConfig
-	if vmcpCfg.Operational != nil &&
-		vmcpCfg.Operational.FailureHandling != nil &&
-		vmcpCfg.Operational.FailureHandling.HealthCheckInterval > 0 {
-
-		checkInterval := time.Duration(vmcpCfg.Operational.FailureHandling.HealthCheckInterval)
-		if vmcpCfg.Operational.FailureHandling.UnhealthyThreshold < 1 {
-			return fmt.Errorf("invalid health check configuration: unhealthy threshold must be >= 1, got %d",
-				vmcpCfg.Operational.FailureHandling.UnhealthyThreshold)
-		}
-
-		defaults := health.DefaultConfig()
-
-		healthCheckTimeout := defaults.Timeout
-		if vmcpCfg.Operational.FailureHandling.HealthCheckTimeout > 0 {
-			healthCheckTimeout = time.Duration(vmcpCfg.Operational.FailureHandling.HealthCheckTimeout)
-		}
-
-		healthMonitorConfig = &health.MonitorConfig{
-			CheckInterval:      checkInterval,
-			UnhealthyThreshold: vmcpCfg.Operational.FailureHandling.UnhealthyThreshold,
-			Timeout:            healthCheckTimeout,
-			DegradedThreshold:  defaults.DegradedThreshold,
-		}
-
-		if vmcpCfg.Operational.FailureHandling.CircuitBreaker != nil {
-			cbConfig := vmcpCfg.Operational.FailureHandling.CircuitBreaker
-			healthMonitorConfig.CircuitBreaker = &health.CircuitBreakerConfig{
-				Enabled:          cbConfig.Enabled,
-				FailureThreshold: cbConfig.FailureThreshold,
-				Timeout:          time.Duration(cbConfig.Timeout),
-			}
-			if cbConfig.Enabled {
-				slog.Info(fmt.Sprintf("Circuit breaker enabled (threshold: %d failures, timeout: %v)",
-					cbConfig.FailureThreshold, time.Duration(cbConfig.Timeout)))
-			}
-		}
-
-		slog.Info("health monitoring configured from operational settings")
-	}
-
-	// Create status reporter.
-	statusReporter, err := vmcpstatus.NewReporter()
-	if err != nil {
-		return fmt.Errorf("failed to create status reporter: %w", err)
-	}
-
-	// Optimizer wiring — Phase 4: flag-driven Tier 1 (FTS5) and Tier 2 (TEI).
-	// Build the embedding manager only when Tier 2 is requested, to avoid
-	// unnecessary Docker / Kubernetes API calls for Tier 0 and Tier 1.
+	// Inject optimizer config from CLI flags (flag-driven Tier 1 / Tier 2).
+	// injectOptimizerConfig modifies vmcpCfg.Optimizer in place and starts the
+	// TEI container when embedding is enabled.
 	var embMgr embeddingManager
 	if cfg.EnableEmbedding {
 		model := cfg.EmbeddingModel
@@ -338,132 +166,22 @@ func Serve(ctx context.Context, cfg ServeConfig) error {
 		defer teiCleanup()
 	}
 
-	optCfg, err := optimizer.GetAndValidateConfig(vmcpCfg.Optimizer)
+	// Assemble the server via the app.Builder — the single assembly entry point. It
+	// builds the shared collaborators once (telemetry from vmcpCfg.Telemetry; the
+	// Kubernetes backend registry + watcher for the discovered source), wires
+	// composite-tool elicitation internally, and returns one cleanup func. The
+	// embedded auth server run config is threaded through so the builder can inject
+	// subject-provider names before assembly.
+	srv, _, cleanup, err := app.NewBuilder(ctx, vmcpCfg,
+		app.WithVersion(versions.Version),
+		app.WithHost(cfg.Host, cfg.Port),
+		app.WithSessionTTL(cfg.SessionTTL),
+		app.WithAuthServerRunConfig(authServerRC),
+	).Finish()
 	if err != nil {
-		return fmt.Errorf("failed to validate optimizer config: %w", err)
+		return fmt.Errorf("failed to assemble Virtual MCP Server: %w", err)
 	}
-
-	envReader := &env.OSReader{}
-	if hmacSecret := envReader.Getenv("VMCP_SESSION_HMAC_SECRET"); hmacSecret != "" {
-		slog.Debug("VMCP_SESSION_HMAC_SECRET is set but no longer used after #5306; ignoring",
-			"env_var", "VMCP_SESSION_HMAC_SECRET")
-	}
-	// The factory never aggregates — the core is the single source of capability
-	// aggregation (agg feeds it via Config.Aggregator below).
-	sessionFactory := vmcpsession.NewSessionFactory(outgoingRegistry)
-
-	// When the optimizer is enabled, its meta-tools are pass-through tools.
-	// Authz uses this for optimizer-aware authorization/filtering.
-	var passThroughTools map[string]struct{}
-	if optCfg != nil {
-		passThroughTools = map[string]struct{}{
-			optimizerdec.FindToolName: {},
-			optimizerdec.CallToolName: {},
-		}
-	}
-
-	// Extract dependencies from the embedded auth server.
-	var upstreamReader upstreamtoken.TokenReader
-	var keyProvider keys.PublicKeyProvider
-	if embeddedAuthServer != nil {
-		stor := embeddedAuthServer.IDPTokenStorage()
-		refresher := embeddedAuthServer.UpstreamTokenRefresher()
-		upstreamReader = upstreamtoken.NewInProcessService(stor, refresher)
-		keyProvider = embeddedAuthServer.KeyProvider()
-	}
-
-	authMiddleware, authzMiddleware, authInfoHandler, err :=
-		authfactory.NewIncomingAuthMiddleware(ctx, vmcpCfg.IncomingAuth, vmcpCfg.Name, passThroughTools, upstreamReader, keyProvider)
-	if err != nil {
-		return fmt.Errorf("failed to create authentication middleware: %w", err)
-	}
-
-	// Build the authorizer-agnostic authz config the core admission seam consumes. It is
-	// the same config the HTTP authz middleware above is built from; server.New routes
-	// through Serve, which ignores the (vestigial) AuthzMiddleware and enforces authz in
-	// the core from this config instead. Nil when no Cedar policies are configured
-	// (allow-all parity).
-	authzConfig, err := authfactory.BuildAuthzConfig(vmcpCfg.IncomingAuth.Authz)
-	if err != nil {
-		return fmt.Errorf("failed to build authorization config: %w", err)
-	}
-
-	slog.Info(fmt.Sprintf("Incoming authentication configured: %s", vmcpCfg.IncomingAuth.Type))
-
-	namespace := vmcpNamespace()
-	rateLimiter, rateLimitCleanup, err := ratelimitfactory.NewLimiter(ctx, ratelimitfactory.Config{
-		Namespace:      namespace,
-		ServerName:     vmcpCfg.Name,
-		RateLimiting:   vmcpCfg.RateLimiting,
-		SessionStorage: vmcpCfg.SessionStorage,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to create rate limiter: %w", err)
-	}
-	if rateLimitCleanup != nil {
-		defer func() {
-			if closeErr := rateLimitCleanup(context.Background()); closeErr != nil {
-				slog.Error(fmt.Sprintf("failed to close rate limiter: %v", closeErr))
-			}
-		}()
-	}
-
-	// Resolve transport defaults once here at the composition root: the
-	// vMCP config edge is the single place flags/CRD/YAML become a fully-resolved
-	// Config, so server.New, Serve, and the derive* helpers downstream are pure
-	// pass-through. WithDefaults fills any unset Host/EndpointPath/SessionTTL/Name/
-	// Version (EndpointPath in particular is never set by the CLI).
-	serverCfg := vmcpserver.WithDefaults(&vmcpserver.Config{
-		Name:                    vmcpCfg.Name,
-		Version:                 versions.Version,
-		GroupRef:                vmcpCfg.Group,
-		Host:                    cfg.Host,
-		Port:                    cfg.Port,
-		SessionTTL:              cfg.SessionTTL,
-		AuthMiddleware:          authMiddleware,
-		AuthzMiddleware:         authzMiddleware,
-		AuthInfoHandler:         authInfoHandler,
-		PassthroughHeaders:      vmcpCfg.PassthroughHeaders,
-		RateLimiter:             rateLimiter,
-		AuthServer:              embeddedAuthServer,
-		TelemetryProvider:       telemetryProvider,
-		AuditConfig:             vmcpCfg.Audit,
-		HealthMonitorConfig:     healthMonitorConfig,
-		StatusReportingInterval: getStatusReportingInterval(vmcpCfg),
-		Watcher:                 nil, // set below if backendWatcher is non-nil
-		StatusReporter:          statusReporter,
-		OptimizerConfig:         optCfg,
-		CodeModeConfig:          codemode.FromConfig(vmcpCfg.CodeMode),
-		SessionFactory:          sessionFactory,
-		SessionStorage:          vmcpCfg.SessionStorage,
-		// Core collaborators: server.New routes through core.New + Serve, so the core
-		// is the single aggregator and authorizer. The aggregator is the same instance
-		// that backs discovery; Authz feeds the core admission seam (nil = allow-all).
-		Aggregator: agg,
-		Authz:      authzConfig,
-	})
-
-	// Assign Watcher only when backendWatcher is non-nil. A typed nil
-	// *k8s.BackendWatcher assigned to the Watcher interface produces a
-	// non-nil interface value, which panics on the first /readyz probe.
-	if backendWatcher != nil {
-		serverCfg.Watcher = backendWatcher
-	}
-
-	// Convert composite tool configurations to workflow definitions.
-	workflowDefs, err := vmcpserver.ConvertConfigToWorkflowDefinitions(vmcpCfg.CompositeTools)
-	if err != nil {
-		return fmt.Errorf("failed to convert composite tool definitions: %w", err)
-	}
-	if len(workflowDefs) > 0 {
-		slog.Info(fmt.Sprintf("Loaded %d composite tool workflow definitions", len(workflowDefs)))
-	}
-
-	// Create server with the backend registry and workflow definitions.
-	srv, err := vmcpserver.New(ctx, serverCfg, rtr, backendClient, backendRegistry, workflowDefs)
-	if err != nil {
-		return fmt.Errorf("failed to create Virtual MCP Server: %w", err)
-	}
+	defer cleanup()
 
 	slog.Info(fmt.Sprintf("Starting Virtual MCP Server at %s", srv.Address()))
 	return srv.Start(ctx)
@@ -481,12 +199,14 @@ type embeddingManager interface {
 // optimizer tiers are active, and starts the TEI container when EnableEmbedding
 // is true. Returns a non-nil cleanup func only when a TEI container was started;
 // the caller must defer it. mgr must be non-nil when cfg.EnableEmbedding is true.
-func injectOptimizerConfig(ctx context.Context, cfg ServeConfig, vmcpCfg *config.Config, mgr embeddingManager) (func(), error) {
+func injectOptimizerConfig(
+	ctx context.Context, cfg ServeConfig, vmcpCfg *vmcpconfig.Config, mgr embeddingManager,
+) (func(), error) {
 	if !cfg.EnableOptimizer && !cfg.EnableEmbedding {
 		return nil, nil
 	}
 	if vmcpCfg.Optimizer == nil {
-		vmcpCfg.Optimizer = &config.OptimizerConfig{}
+		vmcpCfg.Optimizer = &vmcpconfig.OptimizerConfig{}
 	}
 	if !cfg.EnableEmbedding {
 		return nil, nil
@@ -505,30 +225,18 @@ func injectOptimizerConfig(ctx context.Context, cfg ServeConfig, vmcpCfg *config
 	return func() { _ = mgr.Stop(context.Background()) }, nil
 }
 
-// getStatusReportingInterval extracts the status reporting interval from config.
-// Returns 0 if not configured, which uses the default interval.
-func getStatusReportingInterval(cfg *config.Config) time.Duration {
-	if cfg.Operational != nil &&
-		cfg.Operational.FailureHandling != nil &&
-		cfg.Operational.FailureHandling.StatusReportingInterval > 0 {
-		return time.Duration(cfg.Operational.FailureHandling.StatusReportingInterval)
-	}
-	return 0
-}
-
 // loadAndValidateConfig loads and validates the vMCP configuration file.
-func loadAndValidateConfig(configPath string) (*config.Config, error) {
+func loadAndValidateConfig(configPath string) (*vmcpconfig.Config, error) {
 	slog.Info(fmt.Sprintf("Loading configuration from: %s", configPath))
 
-	envReader := &env.OSReader{}
-	loader := config.NewYAMLLoader(configPath, envReader)
+	loader := vmcpconfig.NewYAMLLoader(configPath, &env.OSReader{})
 	cfg, err := loader.Load()
 	if err != nil {
 		slog.Error(fmt.Sprintf("Failed to load configuration: %v", err))
 		return nil, fmt.Errorf("configuration loading failed: %w", err)
 	}
 
-	validator := config.NewValidator()
+	validator := vmcpconfig.NewValidator()
 	if err := validator.Validate(cfg); err != nil {
 		slog.Error(fmt.Sprintf("Configuration validation failed: %v", err))
 		return nil, fmt.Errorf("validation failed: %w", err)
@@ -550,38 +258,30 @@ func loadAndValidateConfig(configPath string) (*config.Config, error) {
 // incomingAuth to anonymous, and outgoingAuth.source to "inline" so no
 // Kubernetes API access is required. The generated config is validated before
 // being returned; returns an error if groupRef is empty or validation fails.
-func generateQuickModeConfig(groupRef string) (*config.Config, error) {
+func generateQuickModeConfig(groupRef string) (*vmcpconfig.Config, error) {
 	if groupRef == "" {
 		return nil, fmt.Errorf("--group must not be empty")
 	}
-	cfg := &config.Config{
+	cfg := &vmcpconfig.Config{
 		Name:  groupRef,
 		Group: groupRef,
-		IncomingAuth: &config.IncomingAuthConfig{
-			Type: config.IncomingAuthTypeAnonymous,
+		IncomingAuth: &vmcpconfig.IncomingAuthConfig{
+			Type: vmcpconfig.IncomingAuthTypeAnonymous,
 		},
-		OutgoingAuth: &config.OutgoingAuthConfig{
+		OutgoingAuth: &vmcpconfig.OutgoingAuthConfig{
 			Source: "inline",
 		},
-		Aggregation: &config.AggregationConfig{
+		Aggregation: &vmcpconfig.AggregationConfig{
 			ConflictResolution: vmcp.ConflictStrategyPrefix,
-			ConflictResolutionConfig: &config.ConflictResolutionConfig{
+			ConflictResolutionConfig: &vmcpconfig.ConflictResolutionConfig{
 				PrefixFormat: "{workload}_",
 			},
 		},
 	}
-	if err := config.NewValidator().Validate(cfg); err != nil {
+	if err := vmcpconfig.NewValidator().Validate(cfg); err != nil {
 		return nil, fmt.Errorf("quick-mode config validation failed: %w", err)
 	}
 	return cfg, nil
-}
-
-func vmcpNamespace() string {
-	namespace := os.Getenv("VMCP_NAMESPACE")
-	if namespace == "" {
-		return "local"
-	}
-	return namespace
 }
 
 // loadAuthServerConfig loads the auth server RunConfig from a sibling file
@@ -604,98 +304,4 @@ func loadAuthServerConfig(configPath string) (*authserverconfig.RunConfig, error
 	}
 	slog.Info("auth server configuration loaded", "path", authServerPath)
 	return &rc, nil
-}
-
-// discoverBackends initializes managers, discovers backends, and creates the
-// backend client. Returns an empty backends list (with no error) when
-// discovery succeeds but finds no backends (static or dynamic mode).
-func discoverBackends(
-	ctx context.Context,
-	cfg *config.Config,
-) ([]vmcp.Backend, vmcp.BackendClient, vmcpauth.OutgoingAuthRegistry, error) {
-	slog.Info("initializing outgoing authentication")
-	envReader := &env.OSReader{}
-	outgoingRegistry, err := authfactory.NewOutgoingAuthRegistry(ctx, envReader)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to create outgoing authentication registry: %w", err)
-	}
-
-	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoingRegistry)
-	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to create backend client: %w", err)
-	}
-
-	var discoverer aggregator.BackendDiscoverer
-	if len(cfg.Backends) > 0 {
-		// Static mode: use pre-configured backends from config.
-		slog.Info(fmt.Sprintf("Static mode: using %d pre-configured backends", len(cfg.Backends)))
-
-		// Reconstruct per-backend HeaderForwardConfig from env vars the
-		// operator emitted on this pod. Plaintext header values are inline
-		// in the JSON manifest; secret-backed headers carry only identifiers
-		// here and resolve later via secrets.EnvironmentProvider at request
-		// time. Map keys are the normalized entry segment from the env-var
-		// suffix; the discoverer normalizes Backend.Name through
-		// ctrlutil.NormalizeHeaderForEnvVar to look up the matching entry.
-		// Returns an empty map when no entry in the group declared
-		// headerForward — the common case.
-		discoverer = aggregator.NewUnifiedBackendDiscovererWithStaticBackends(
-			cfg.Backends,
-			cfg.OutgoingAuth,
-			cfg.Group,
-			readHeaderForwardFromEnv(os.Environ()),
-		)
-	} else {
-		// Dynamic mode: discover backends at runtime from the active workload manager (K8s or local).
-		slog.Info("dynamic mode: initializing group manager for backend discovery")
-		// EnsureDefaultGroupExists is a no-op in Kubernetes (service account has no
-		// create permission on MCPGroup CRDs). If the group does not exist,
-		// Discover returns ErrGroupNotFound which is handled below.
-		if err := migration.EnsureDefaultGroupExists(); err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to ensure default group exists: %w", err)
-		}
-		groupsManager, err := groups.NewManager()
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to create groups manager: %w", err)
-		}
-
-		discoverer, err = aggregator.NewBackendDiscoverer(ctx, groupsManager, cfg.OutgoingAuth)
-		if err != nil {
-			return nil, nil, nil, fmt.Errorf("failed to create backend discoverer: %w", err)
-		}
-	}
-
-	return runDiscovery(ctx, cfg.Group, discoverer, backendClient, outgoingRegistry)
-}
-
-// runDiscovery calls Discover on the provided discoverer and handles the zero-backends
-// case. Extracted so tests can inject a stub discoverer without needing a real
-// Kubernetes cluster or Docker daemon.
-func runDiscovery(
-	ctx context.Context,
-	groupRef string,
-	discoverer aggregator.BackendDiscoverer,
-	backendClient vmcp.BackendClient,
-	outgoingRegistry vmcpauth.OutgoingAuthRegistry,
-) ([]vmcp.Backend, vmcp.BackendClient, vmcpauth.OutgoingAuthRegistry, error) {
-	slog.Info(fmt.Sprintf("Discovering backends in group: %s", groupRef))
-	backends, err := discoverer.Discover(ctx, groupRef)
-	if err != nil {
-		// In Kubernetes mode the MCPGroup CRD is operator/user-managed and may
-		// not exist yet. Treat a missing group as zero backends so vMCP can
-		// start and serve once backends are registered later.
-		if runtime.IsKubernetesRuntime() && errors.Is(err, groups.ErrGroupNotFound) {
-			slog.Warn(fmt.Sprintf("Group %s not found - vmcp will start but have no backends to proxy", groupRef))
-			return []vmcp.Backend{}, backendClient, outgoingRegistry, nil
-		}
-		return nil, nil, nil, fmt.Errorf("failed to discover backends: %w", err)
-	}
-
-	if len(backends) == 0 {
-		slog.Warn(fmt.Sprintf("No backends discovered in group %s - vmcp will start but have no backends to proxy", groupRef))
-		return []vmcp.Backend{}, backendClient, outgoingRegistry, nil
-	}
-
-	slog.Info(fmt.Sprintf("Discovered %d backends", len(backends)))
-	return backends, backendClient, outgoingRegistry, nil
 }

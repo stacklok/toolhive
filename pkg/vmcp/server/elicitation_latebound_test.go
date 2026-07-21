@@ -51,7 +51,7 @@ func (nopElicitationRequester) RequestElicitation(
 func TestLateBoundElicitationRequester_RequestBeforeBind(t *testing.T) {
 	t.Parallel()
 
-	l := newLateBoundElicitationRequester()
+	l := NewLateBoundElicitationRequester()
 	res, err := l.RequestElicitation(context.Background(), vmcp.ElicitationRequest{Message: "hi"})
 	require.Error(t, err)
 	assert.Nil(t, res)
@@ -81,8 +81,8 @@ func TestLateBoundElicitationRequester_DelegatesAfterBind(t *testing.T) {
 			t.Parallel()
 
 			target := &fakeVMCPElicitationRequester{result: tc.result, err: tc.err}
-			l := newLateBoundElicitationRequester()
-			l.bind(target)
+			l := NewLateBoundElicitationRequester()
+			l.Bind(target)
 
 			req := vmcp.ElicitationRequest{Message: "approve?", RequestedSchema: map[string]any{"type": "object"}}
 			res, err := l.RequestElicitation(context.Background(), req)
@@ -107,7 +107,7 @@ func TestLateBoundElicitationRequester_DelegatesAfterBind(t *testing.T) {
 func TestLateBoundElicitationRequester_ConcurrentBindAndRequest(t *testing.T) {
 	t.Parallel()
 
-	l := newLateBoundElicitationRequester()
+	l := NewLateBoundElicitationRequester()
 
 	const readers = 16
 	var wg sync.WaitGroup
@@ -118,7 +118,7 @@ func TestLateBoundElicitationRequester_ConcurrentBindAndRequest(t *testing.T) {
 			_, _ = l.RequestElicitation(context.Background(), vmcp.ElicitationRequest{Message: "x"})
 		}()
 	}
-	l.bind(nopElicitationRequester{}) // the one-time write, concurrent with the readers above
+	l.Bind(nopElicitationRequester{}) // the one-time write, concurrent with the readers above
 
 	done := make(chan struct{})
 	go func() { wg.Wait(); close(done) }()

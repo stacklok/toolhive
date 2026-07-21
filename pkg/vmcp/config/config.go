@@ -36,6 +36,17 @@ const (
 	TransportStreamableHTTP = "streamable-http"
 )
 
+// OutgoingAuth source constants. These define how backend auth is discovered
+// (see OutgoingAuthConfig.Source). They must be kept in sync with the validator's
+// allowed sources and the CRD enum.
+const (
+	// OutgoingAuthSourceInline means backend auth is fully specified inline in the config.
+	OutgoingAuthSourceInline = "inline"
+	// OutgoingAuthSourceDiscovered means backend auth is auto-discovered from the
+	// backend MCPServer resources at runtime (Kubernetes only).
+	OutgoingAuthSourceDiscovered = "discovered"
+)
+
 // StaticModeAllowedTransports lists all transport types allowed for static backend configuration.
 // This must be kept in sync with the CRD enum validation in StaticBackendConfig.Transport.
 var StaticModeAllowedTransports = []string{TransportSSE, TransportStreamableHTTP}

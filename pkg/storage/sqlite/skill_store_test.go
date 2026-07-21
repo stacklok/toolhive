@@ -80,6 +80,8 @@ func TestSkillStore_ManagedFlagRoundTrip(t *testing.T) {
 	store := newTestStore(t)
 
 	sk := testSkill("managed-test")
+	sk.Scope = skills.ScopeProject
+	sk.ProjectRoot = "/tmp/project"
 	sk.Managed = true
 	require.NoError(t, store.Create(t.Context(), sk))
 
@@ -95,6 +97,27 @@ func TestSkillStore_ManagedFlagRoundTrip(t *testing.T) {
 	got, err = store.Get(t.Context(), sk.Metadata.Name, sk.Scope, sk.ProjectRoot)
 	require.NoError(t, err)
 	assert.False(t, got.Managed)
+}
+
+// TestSkillStore_ManagedRequiresProjectScope guards the invariant that
+// Managed only ever applies to project-scoped installs (it pins a skill in
+// a project's lock file, which doesn't exist for user-scoped installs).
+func TestSkillStore_ManagedRequiresProjectScope(t *testing.T) {
+	t.Parallel()
+	store := newTestStore(t)
+
+	sk := testSkill("managed-user-scope")
+	sk.Managed = true // sk.Scope is ScopeUser from testSkill
+	err := store.Create(t.Context(), sk)
+	require.ErrorIs(t, err, errManagedRequiresProjectScope)
+
+	// Also rejected on Update: create a valid user-scoped record, then try
+	// to flip Managed on it.
+	sk.Managed = false
+	require.NoError(t, store.Create(t.Context(), sk))
+	sk.Managed = true
+	err = store.Update(t.Context(), sk)
+	require.ErrorIs(t, err, errManagedRequiresProjectScope)
 }
 
 func TestSkillStore_CreateDuplicate(t *testing.T) {

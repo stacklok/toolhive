@@ -41,8 +41,17 @@ const skillColumns = `is_.id, e.name, is_.scope, is_.project_root, is_.reference
 			is_.digest, is_.version, is_.description, is_.author, json(is_.tags),
 			json(is_.client_apps), is_.status, is_.installed_at, is_.managed`
 
+// errManagedRequiresProjectScope is returned by Create/Update when a
+// user-scoped skill has Managed set. Managed pins a skill in a project's
+// lock file, which only exists for project-scoped installs.
+var errManagedRequiresProjectScope = errors.New("managed skill must be project-scoped")
+
 // Create stores a new installed skill.
 func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) error {
+	if skill.Managed && skill.Scope != skills.ScopeProject {
+		return errManagedRequiresProjectScope
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)
@@ -222,6 +231,10 @@ func (s *SkillStore) List(ctx context.Context, filter storage.ListFilter) ([]ski
 
 // Update modifies an existing installed skill.
 func (s *SkillStore) Update(ctx context.Context, skill skills.InstalledSkill) error {
+	if skill.Managed && skill.Scope != skills.ScopeProject {
+		return errManagedRequiresProjectScope
+	}
+
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("beginning transaction: %w", err)

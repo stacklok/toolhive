@@ -22,6 +22,13 @@ import (
 // to disk and a full installation record is created. Without LayerData, a
 // pending record is created.
 func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*skills.InstallResult, error) {
+	// Captured before any internal resolution (version splicing, registry
+	// lookup, git/OCI dispatch) mutates a *local* copy of opts.Name in the
+	// functions below. This is the RFC THV-0080 lock entry "source": exactly
+	// what the caller asked for, preserved verbatim so upgrade can re-resolve
+	// the same input later.
+	originalName := opts.Name
+
 	scope, projectRoot, err := normalizeProjectRoot(opts.Scope, opts.ProjectRoot)
 	if err != nil {
 		return nil, err
@@ -38,7 +45,7 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		if err != nil {
 			return nil, err
 		}
-		return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
+		return s.installAndRegister(ctx, opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope)
 	}
 
 	// When the caller supplies `version` separately and the name is a tag-less
@@ -62,7 +69,7 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 	if isOCI {
 		result, ociErr := s.installFromOCI(ctx, opts, scope, ref)
 		if ociErr == nil {
-			return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
+			return s.installAndRegister(ctx, opts, originalName, result, opts.Group, opts.Name, scope)
 		}
 		// OCI pull failed — fall back to registry lookup for names that look
 		// like a qualified "namespace/name". Names that are unambiguously OCI
@@ -77,7 +84,7 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 			return nil, regErr
 		}
 		if resolved != nil {
-			return s.installFromResolvedRegistry(ctx, opts, scope, resolved)
+			return s.installFromResolvedRegistry(ctx, opts, originalName, scope, resolved)
 		}
 		return nil, ociErr
 	}
@@ -87,7 +94,7 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 		return nil, httperr.WithCode(err, http.StatusBadRequest)
 	}
 
-	return s.installByName(ctx, opts, scope)
+	return s.installByName(ctx, opts, originalName, scope)
 }
 
 // installByName handles installation for a validated plain skill name. It
@@ -95,6 +102,7 @@ func (s *service) Install(ctx context.Context, opts skills.InstallOptions) (*ski
 func (s *service) installByName(
 	ctx context.Context,
 	opts skills.InstallOptions,
+	originalName string,
 	scope skills.Scope,
 ) (*skills.InstallResult, error) {
 	unlock := s.locks.lock(opts.Name, scope, opts.ProjectRoot)
@@ -125,7 +133,7 @@ func (s *service) installByName(
 			unlock()
 			locked = false
 
-			return s.installFromRegistryLookup(ctx, opts, scope)
+			return s.installFromRegistryLookup(ctx, opts, originalName, scope)
 		}
 		// resolved: opts hydrated, fall through to installWithExtraction
 	}
@@ -134,7 +142,7 @@ func (s *service) installByName(
 	if err != nil {
 		return nil, err
 	}
-	return s.installAndRegister(ctx, result, opts.Group, opts.Name, scope, opts.ProjectRoot)
+	return s.installAndRegister(ctx, opts, originalName, result, opts.Group, opts.Name, scope)
 }
 
 // installFromRegistryLookup resolves a plain skill name via the registry and
@@ -142,6 +150,7 @@ func (s *service) installByName(
 func (s *service) installFromRegistryLookup(
 	ctx context.Context,
 	opts skills.InstallOptions,
+	originalName string,
 	scope skills.Scope,
 ) (*skills.InstallResult, error) {
 	resolved, regErr := s.resolveFromRegistry(opts.Name)
@@ -149,7 +158,7 @@ func (s *service) installFromRegistryLookup(
 		return nil, regErr
 	}
 	if resolved != nil {
-		return s.installFromResolvedRegistry(ctx, opts, scope, resolved)
+		return s.installFromResolvedRegistry(ctx, opts, originalName, scope, resolved)
 	}
 
 	return nil, httperr.WithCode(
@@ -165,6 +174,7 @@ func (s *service) installFromRegistryLookup(
 func (s *service) installFromResolvedRegistry(
 	ctx context.Context,
 	opts skills.InstallOptions,
+	originalName string,
 	scope skills.Scope,
 	resolved *registryResolveResult,
 ) (*skills.InstallResult, error) {
@@ -179,7 +189,7 @@ func (s *service) installFromResolvedRegistry(
 		// Use the skill name extracted from the artifact, not opts.Name which
 		// holds the OCI ref string. installFromOCI mutates its own copy of opts
 		// (Go pass-by-value), so the caller never sees the updated name.
-		return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
+		return s.installAndRegister(ctx, opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope)
 	case resolved.GitURL != "":
 		slog.Info("resolved skill from registry (git)", "name", opts.Name, "git_url", resolved.GitURL)
 		opts.Name = resolved.GitURL
@@ -187,7 +197,7 @@ func (s *service) installFromResolvedRegistry(
 		if gitErr != nil {
 			return nil, gitErr
 		}
-		return s.installAndRegister(ctx, result, opts.Group, result.Skill.Metadata.Name, scope, opts.ProjectRoot)
+		return s.installAndRegister(ctx, opts, originalName, result, opts.Group, result.Skill.Metadata.Name, scope)
 	}
 	return nil, httperr.WithCode(
 		fmt.Errorf("skill %q resolved from registry but has no installable package", opts.Name),
@@ -208,24 +218,43 @@ func (s *service) registerSkillInGroup(ctx context.Context, groupName string, sk
 	return groups.AddSkillToGroup(ctx, s.groupManager, groupName, skillName)
 }
 
-// installAndRegister registers the just-installed skill in the target group.
-// If group registration fails, the DB record is rolled back so that a retry
+// installAndRegister registers the just-installed skill in the target group
+// and, for project-scope installs with the lock file feature enabled (see
+// skills.LockFileFeatureEnabled), records it — and any toolhive.requires
+// dependencies — in the project's toolhive.lock.yaml. If group registration
+// or the lock write fails, the DB record is rolled back so that a retry
 // starts fresh rather than leaving the system in an inconsistent state (skill
-// installed but not in the expected group).
+// installed but not in the expected group, or installed without a pin).
 func (s *service) installAndRegister(
 	ctx context.Context,
+	opts skills.InstallOptions,
+	originalName string,
 	result *skills.InstallResult,
 	groupName string,
 	skillName string,
 	scope skills.Scope,
-	projectRoot string,
 ) (*skills.InstallResult, error) {
+	rollback := func() { _ = s.store.Delete(ctx, skillName, scope, opts.ProjectRoot) }
+
 	if err := s.registerSkillInGroup(ctx, groupName, skillName); err != nil {
 		// Best-effort rollback: remove the DB record so retries start fresh.
 		// Files on disk are left in place; a fresh install will detect them
 		// and either overwrite (force) or return a conflict.
-		_ = s.store.Delete(ctx, skillName, scope, projectRoot)
+		rollback()
 		return nil, fmt.Errorf("registering skill in group: %w", err)
 	}
+
+	if scope == skills.ScopeProject && skills.LockFileFeatureEnabled() {
+		updated, err := s.recordLockState(ctx, opts, originalName, result.Skill)
+		if err != nil {
+			rollback()
+			return nil, httperr.WithCode(
+				fmt.Errorf("recording skill in project lock file: %w", err),
+				http.StatusInternalServerError,
+			)
+		}
+		result.Skill = updated
+	}
+
 	return result, nil
 }

@@ -59,7 +59,7 @@ func TestRegression_401_MapsToErrAuthenticationFailed(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	h := &httpBackendClient{
-		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
+		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			c, err := client.NewStreamableHttpClient(
 				target.BaseURL,
 				mcptransport.WithHTTPTimeout(30*time.Second),
@@ -110,7 +110,7 @@ func TestRegression_403OnInitialize_LegacySSEFallback(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	h := &httpBackendClient{
-		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
+		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			c, err := client.NewStreamableHttpClient(
 				target.BaseURL,
 				mcptransport.WithHTTPTimeout(30*time.Second),
@@ -161,7 +161,7 @@ func TestRegression_403OnInitialize_MatchesSentinel(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	h := &httpBackendClient{
-		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
+		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			c, err := client.NewStreamableHttpClient(
 				target.BaseURL,
 				mcptransport.WithHTTPTimeout(30*time.Second),
@@ -262,7 +262,7 @@ func TestRegression_BackendToolErrorWith401_NotClassifiedAsAuthFailure(t *testin
 	t.Cleanup(srv.Close)
 
 	h := &httpBackendClient{
-		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget) (*client.Client, error) {
+		clientFactory: func(ctx context.Context, target *vmcp.BackendTarget, _ bool) (*client.Client, error) {
 			c, err := client.NewStreamableHttpClient(
 				target.BaseURL,
 				mcptransport.WithHTTPTimeout(30*time.Second),

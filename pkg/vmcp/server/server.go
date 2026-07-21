@@ -512,7 +512,22 @@ func New(
 
 	// Bind the elicitation adapter to the SDK server Serve built so composite-workflow
 	// elicitation reaches the same mcp-go server that serves client traffic.
-	elicitation.bind(NewSDKElicitationAdapter(srv.MCPServer()))
+	elicitAdapter := NewSDKElicitationAdapter(srv.MCPServer())
+	elicitation.bind(elicitAdapter)
+
+	// Bind the server->client forwarders onto the concrete backend client so a
+	// backend's mid-call elicitation, sampling, and progress/logging traffic is
+	// relayed to the downstream client on the same session. This mirrors the
+	// elicitation late-binding above (the SDK adapters wrap the mcp-go server Serve
+	// just built, so they cannot exist before this point); a backend client that
+	// does not implement the binder simply does not forward server->client traffic.
+	if binder, ok := backendClient.(vmcp.ClientForwarderBinder); ok {
+		binder.BindForwarders(
+			elicitAdapter,
+			NewSDKSamplingAdapter(srv.MCPServer()),
+			NewSDKNotifierAdapter(srv.MCPServer()),
+		)
+	}
 
 	closeCoreOnErr = false // Serve succeeded; srv.Stop now owns the core's lifecycle.
 	return srv, nil
@@ -1014,6 +1029,27 @@ func setSessionResourcesDirect(session server.ClientSession, resources []server.
 		resourceMap[res.Resource.URI] = res
 	}
 	sessionWithResources.SetSessionResources(resourceMap)
+	return nil
+}
+
+// setSessionResourceTemplatesDirect sets resource templates directly on the session via
+// the SessionWithResourceTemplates interface, analogous to setSessionResourcesDirect for
+// resource templates. Keyed by URI template string.
+func setSessionResourceTemplatesDirect(session server.ClientSession, templates []server.ServerResourceTemplate) error {
+	sessionWithTemplates, ok := session.(server.SessionWithResourceTemplates)
+	if !ok {
+		return fmt.Errorf("session does not support per-session resource templates")
+	}
+
+	existing := sessionWithTemplates.GetSessionResourceTemplates()
+	templateMap := make(map[string]server.ServerResourceTemplate, len(existing)+len(templates))
+	for k, v := range existing {
+		templateMap[k] = v
+	}
+	for _, tmpl := range templates {
+		templateMap[tmpl.Template.URITemplate] = tmpl
+	}
+	sessionWithTemplates.SetSessionResourceTemplates(templateMap)
 	return nil
 }
 

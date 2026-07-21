@@ -251,7 +251,7 @@ func TestMaterializeDependencies_RejectsTreeExceedingMaxDependencies(t *testing.
 		visited[fmt.Sprintf("seen-%d", i)] = struct{}{}
 	}
 
-	err := svcImpl.materializeDependencies(t.Context(), skills.InstallOptions{Visited: visited}, sk)
+	err := svcImpl.materializeDependencies(t.Context(), skills.InstallOptions{Visited: visited}, "root-skill", sk)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "exceeds maximum")
 }
@@ -283,6 +283,12 @@ func TestInstallProjectScope_DependencyCycleTerminates(t *testing.T) {
 	a, ok := lf.Get("skill-a")
 	require.True(t, ok)
 	assert.True(t, a.Explicit)
+	// The cycle check must trip on skill-b's requires entry for refA — the
+	// same git:// reference skill-a was installed with, not skill-a's
+	// resolved bare name — so skill-a is never re-materialized as its own
+	// dependency. Without that, skill-a would gain itself a spurious
+	// RequiredBy via skill-b.
+	assert.Empty(t, a.RequiredBy, "skill-a must not become required-by skill-b through the a<->b cycle")
 	b, ok := lf.Get("skill-b")
 	require.True(t, ok)
 	assert.Equal(t, []string{"skill-a"}, b.RequiredBy)
@@ -305,4 +311,42 @@ func TestInstallProjectScope_LockWriteFailureRollsBackInstall(t *testing.T) {
 
 	_, err = svc.Info(t.Context(), skills.InfoOptions{Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
 	require.Error(t, err, "the DB record must be rolled back so a retry starts fresh")
+}
+
+// TestInstallProjectScope_DependencyFailureRollsBackParentLockEntry covers a
+// failure that happens after the parent's own lock entry was already
+// written: recordLockEntry succeeds for the parent, then
+// materializeDependencies fails on an unresolvable toolhive.requires
+// dependency. The parent's lock entry (and DB record) must be rolled back
+// too, not just the DB record — otherwise toolhive.lock.yaml claims the
+// parent is pinned while Info() reports it doesn't exist.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestInstallProjectScope_DependencyFailureRollsBackParentLockEntry(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	missingDepRef, _ := gitRef("missing-dep") // never registered — Resolve fails for it
+	fx.register("parent-skill", gitSkill("parent-skill", missingDepRef))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("parent-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.Error(t, err, "install must fail when a declared dependency cannot be resolved")
+
+	lf := readLockfile(t, projectRoot)
+	_, ok := lf.Get("parent-skill")
+	assert.False(t, ok, "parent's lock entry must be rolled back when a dependency fails to materialize")
+
+	_, err = svc.Info(t.Context(), skills.InfoOptions{Name: "parent-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
+	require.Error(t, err, "the DB record must be rolled back so a retry starts fresh")
+
+	// Retrying (with Force, since the first attempt's extracted files are
+	// left on disk per this rollback's documented contract) must succeed
+	// once the dependency is fixed, not hit a stale, permanently-broken state.
+	fx.register("missing-dep", gitSkill("missing-dep"))
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"}, Force: true,
+	})
+	require.NoError(t, err, "retry after fixing the dependency must succeed")
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/groups"
 	"github.com/stacklok/toolhive/pkg/skills"
 	"github.com/stacklok/toolhive/pkg/skills/gitresolver"
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 )
 
 // Install installs a skill. When the Name field contains an OCI reference
@@ -222,9 +223,13 @@ func (s *service) registerSkillInGroup(ctx context.Context, groupName string, sk
 // and, for project-scope installs with the lock file feature enabled (see
 // skills.LockFileFeatureEnabled), records it — and any toolhive.requires
 // dependencies — in the project's toolhive.lock.yaml. If group registration
-// or the lock write fails, the DB record is rolled back so that a retry
-// starts fresh rather than leaving the system in an inconsistent state (skill
-// installed but not in the expected group, or installed without a pin).
+// or the lock write fails, the DB record and any lock entry already written
+// for this skill are rolled back so that a retry starts fresh rather than
+// leaving the system in an inconsistent state (skill installed but not in
+// the expected group, or the lock file claiming a pin that Info() can't
+// find). Dependency materialization can write the top-level skill's lock
+// entry and then fail on a later dependency, which is why the lock entry is
+// always removed here rather than only when the write itself failed.
 func (s *service) installAndRegister(
 	ctx context.Context,
 	opts skills.InstallOptions,
@@ -234,7 +239,14 @@ func (s *service) installAndRegister(
 	skillName string,
 	scope skills.Scope,
 ) (*skills.InstallResult, error) {
-	rollback := func() { _ = s.store.Delete(ctx, skillName, scope, opts.ProjectRoot) }
+	rollback := func() {
+		_ = s.store.Delete(ctx, skillName, scope, opts.ProjectRoot)
+		if scope == skills.ScopeProject && skills.LockFileFeatureEnabled() {
+			if root, err := lockfile.OpenRoot(opts.ProjectRoot); err == nil {
+				_ = lockfile.RemoveEntry(root, skillName)
+			}
+		}
+	}
 
 	if err := s.registerSkillInGroup(ctx, groupName, skillName); err != nil {
 		// Best-effort rollback: remove the DB record so retries start fresh.

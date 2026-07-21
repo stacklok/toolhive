@@ -53,7 +53,7 @@ func (s *service) recordLockState(
 		}
 	}
 
-	if err := s.materializeDependencies(ctx, opts, sk); err != nil {
+	if err := s.materializeDependencies(ctx, opts, source, sk); err != nil {
 		return sk, fmt.Errorf("materializing dependencies: %w", err)
 	}
 	return sk, nil
@@ -65,9 +65,18 @@ func (s *service) recordLockState(
 // infinite recursion on a requires cycle; skills.MaxDependencies bounds the
 // total number of skills materialized across the whole tree, not just the
 // direct dependency list of a single skill.
+//
+// source is the reference sk was installed from (recordLockState's Source,
+// after any LockSource override) — the same kind of string a dependency
+// edge names in another skill's toolhive.requires. Visited must be keyed
+// consistently by that reference form, not by sk's resolved Metadata.Name:
+// a requires edge naming sk by a reference string other than its resolved
+// name would otherwise bypass the cycle check and re-materialize sk as its
+// own dependency, corrupting its RequiredBy list.
 func (s *service) materializeDependencies(
 	ctx context.Context,
 	opts skills.InstallOptions,
+	source string,
 	sk skills.InstalledSkill,
 ) error {
 	parsed, err := readSkillMD(s.pathResolver, sk)
@@ -82,7 +91,7 @@ func (s *service) materializeDependencies(
 	if visited == nil {
 		visited = make(map[string]struct{})
 	}
-	visited[sk.Metadata.Name] = struct{}{}
+	visited[source] = struct{}{}
 
 	for _, dep := range parsed.Requires {
 		if _, seen := visited[dep.Reference]; seen {

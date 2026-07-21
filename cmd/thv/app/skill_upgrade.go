@@ -104,14 +104,17 @@ func skillUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 	if err := printUpgradeResult(result, skillUpgradeFormat); err != nil {
 		return err
 	}
-	return upgradeExitError(result)
+	return upgradeExitError(result, skillUpgradePreview)
 }
 
 // upgradeExitError maps an UpgradeResult to RFC THV-0080's exit-code
 // contract. A failed outcome takes precedence over a ref-change block:
 // something actually going wrong is a stronger signal than a guard doing
-// its job.
-func upgradeExitError(result *skills.UpgradeResult) error {
+// its job. preview gates the ref-change-blocked exit code the same way
+// syncExitError gates Drifted behind --check: during --preview nothing was
+// actually blocked, only reported, so a block must not exit as a policy
+// rejection.
+func upgradeExitError(result *skills.UpgradeResult, preview bool) error {
 	var failed, refBlocked int
 	for _, o := range result.Outcomes {
 		switch o.Status {
@@ -126,7 +129,7 @@ func upgradeExitError(result *skills.UpgradeResult) error {
 	if failed > 0 {
 		return withExitCode(fmt.Errorf("upgrade failed for %d skill(s)", failed), ExitCodePartialFailure)
 	}
-	if refBlocked > 0 {
+	if !preview && refBlocked > 0 {
 		return withExitCode(
 			fmt.Errorf("%d skill(s) blocked by a reference change; use --allow-ref-change", refBlocked),
 			ExitCodePolicyRejection,

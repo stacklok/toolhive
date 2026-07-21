@@ -14,6 +14,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
+	"github.com/stacklok/toolhive/pkg/skills/lockfile"
 	"github.com/stacklok/toolhive/test/e2e"
 )
 
@@ -107,6 +108,51 @@ var _ = Describe("Skills CLI lock file exit codes (RFC THV-0080)", Label("api", 
 
 			stdout, _ := thvSkillCmd("sync", "--yes", "--project-root", projectRoot).ExpectSuccess()
 			Expect(stdout).To(ContainSubstring("Nothing to sync"))
+		})
+	})
+
+	Describe("thv skill upgrade --fail-on-changes", func() {
+		It("exits 2 when a skill would change, without installing it", func() {
+			projectRoot := makeE2EProjectRoot()
+			skillName := "cli-lock-upgrade-fail-on-changes-skill"
+
+			ociRegistry := httptest.NewServer(registry.New())
+			DeferCleanup(ociRegistry.Close)
+			ociRef := buildAndPushSkill(apiServer, ociRegistry, skillName, "The original description")
+
+			installResp := installSkill(apiServer, installSkillRequest{
+				Name: ociRef, Scope: "project", ProjectRoot: projectRoot,
+			})
+			defer installResp.Body.Close()
+			Expect(installResp.StatusCode).To(Equal(201))
+
+			By("Republishing newer content at the same OCI reference")
+			newSkillDir := createTestSkillDir(skillName, "The updated description")
+			rebuildResp := buildSkill(apiServer, newSkillDir, ociRef)
+			defer rebuildResp.Body.Close()
+			Expect(rebuildResp.StatusCode).To(Equal(200))
+			repushResp := pushSkill(apiServer, ociRef)
+			defer repushResp.Body.Close()
+			Expect(repushResp.StatusCode).To(Equal(204))
+
+			root, err := lockfile.OpenRoot(projectRoot)
+			Expect(err).ToNot(HaveOccurred())
+			before, err := lockfile.Load(root)
+			Expect(err).ToNot(HaveOccurred())
+			beforeEntry, ok := before.Get(skillName)
+			Expect(ok).To(BeTrue())
+
+			_, _, err = thvSkillCmd("upgrade", "--yes", "--fail-on-changes", "--project-root", projectRoot).Run()
+			Expect(err).To(HaveOccurred())
+			Expect(exitCodeOf(err)).To(Equal(2))
+
+			By("Verifying nothing was actually installed before the conflict was reported")
+			after, err := lockfile.Load(root)
+			Expect(err).ToNot(HaveOccurred())
+			afterEntry, ok := after.Get(skillName)
+			Expect(ok).To(BeTrue())
+			Expect(afterEntry.Digest).To(Equal(beforeEntry.Digest),
+				"--fail-on-changes must not install a changed skill before reporting the conflict")
 		})
 	})
 })

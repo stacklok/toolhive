@@ -18,6 +18,7 @@ func TestUpgradeExitError(t *testing.T) {
 	tests := []struct {
 		name     string
 		outcomes []skills.UpgradeOutcome
+		preview  bool
 		wantCode int
 	}{
 		{
@@ -41,6 +42,12 @@ func TestUpgradeExitError(t *testing.T) {
 			wantCode: ExitCodePolicyRejection,
 		},
 		{
+			name:     "ref change blocked during preview is not a policy rejection",
+			outcomes: []skills.UpgradeOutcome{{Name: "a", Status: skills.UpgradeStatusRefChangeBlocked}},
+			preview:  true,
+			wantCode: 0,
+		},
+		{
 			name:     "failed outcome is a partial failure",
 			outcomes: []skills.UpgradeOutcome{{Name: "a", Status: skills.UpgradeStatusFailed}},
 			wantCode: ExitCodePartialFailure,
@@ -53,12 +60,20 @@ func TestUpgradeExitError(t *testing.T) {
 			},
 			wantCode: ExitCodePartialFailure,
 		},
+		{
+			name: "failure still fails even during preview",
+			outcomes: []skills.UpgradeOutcome{
+				{Name: "a", Status: skills.UpgradeStatusFailed},
+			},
+			preview:  true,
+			wantCode: ExitCodePartialFailure,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			err := upgradeExitError(&skills.UpgradeResult{Outcomes: tt.outcomes})
+			err := upgradeExitError(&skills.UpgradeResult{Outcomes: tt.outcomes}, tt.preview)
 			assert.Equal(t, tt.wantCode, ExitCodeFromError(err))
 		})
 	}

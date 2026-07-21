@@ -390,7 +390,7 @@ Reinstalling *at the pinned reference* (never re-resolving `source`) uses `build
 
 ### CLI Confirmation and Exit Codes
 
-Because skill content is a set of AI-followed instructions, `sync` and `upgrade` gate real installs behind a confirmation prompt (skipped by `--check`/`--preview`, which never install anything). On a non-interactive terminal without `--yes`, the command refuses outright rather than silently proceeding.
+Because skill content is a set of AI-followed instructions, `sync` and `upgrade` gate real installs behind a confirmation prompt (skipped by `--check`/`--preview`, which never write to the lock file or extracted skill directories — an OCI `--preview` still pulls the artifact to compare digests, but persists nothing). On a non-interactive terminal without `--yes`, the command refuses outright rather than silently proceeding.
 
 Exit codes follow a CI-oriented contract distinct from the generic `1` used elsewhere in the CLI:
 

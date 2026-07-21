@@ -19,8 +19,9 @@ const (
 	ExitCodePartialFailure = 3
 	// ExitCodePolicyRejection means the operation was refused by policy
 	// rather than attempted and failed: a non-interactive sync/upgrade
-	// declined the pre-install confirmation gate without --yes, or a
-	// ref/signer-change guard blocked without its override flag.
+	// declined the pre-install confirmation gate without --yes, or the
+	// ref-change guard blocked without --allow-ref-change. More policy
+	// gates (e.g. a signer-change guard) may map here in a future stack.
 	ExitCodePolicyRejection = 4
 )
 

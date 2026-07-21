@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/stacklok/toolhive/pkg/authserver/tokenenc"
 )
 
 // MigrationResult holds counts of items migrated during bulk migration.
@@ -133,6 +135,8 @@ func (s *RedisStorage) migrateUpstreamTokenKeys(ctx context.Context, providerNam
 }
 
 // migrateSingleUpstreamToken migrates one legacy upstream token key to the new format.
+//
+//nolint:gocyclo // sequential guard clauses over one row; splitting hurts readability
 func (s *RedisStorage) migrateSingleUpstreamToken(
 	ctx context.Context,
 	legacyKey, sessionID, providerName string,
@@ -167,6 +171,16 @@ func (s *RedisStorage) migrateSingleUpstreamToken(
 		return nil
 	}
 
+	// Legacy keys predate the per-provider key format and therefore predate
+	// envelope encryption; their values are always plaintext JSON. If an
+	// envelope ever shows up here (e.g. an operator manually renamed a sealed
+	// row to a legacy key name), decryption would fail on the AAD mismatch —
+	// surface that as a migration failure for the row rather than migrating
+	// garbage.
+	if !tokenenc.IsLegacyValue(data) {
+		return fmt.Errorf("unexpected encrypted value at legacy key %s", legacyKey)
+	}
+
 	// Deserialize to check ProviderID
 	var stored storedUpstreamTokens
 	if err := json.Unmarshal(data, &stored); err != nil {
@@ -186,6 +200,15 @@ func (s *RedisStorage) migrateSingleUpstreamToken(
 	newData, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization
 	if err != nil {
 		return fmt.Errorf("marshal failed: %w", err)
+	}
+
+	// Seal the rewritten row: migration doubles as a free encryption pass for
+	// pre-existing plaintext rows. The AAD is the NEW key the value lands under.
+	if s.tokenEnc != nil {
+		newData, err = tokenenc.Seal(s.tokenEnc, newKey, newData)
+		if err != nil {
+			return fmt.Errorf("failed to encrypt migrated upstream token: %w", err)
+		}
 	}
 
 	// Preserve TTL from the legacy key
@@ -227,6 +250,118 @@ func (s *RedisStorage) migrateSingleUpstreamToken(
 		"session_id", sessionID, "provider_name", providerName)
 	result.TokensMigrated++
 	return nil
+}
+
+// MigrateUpstreamTokenEncryption performs a one-shot sweep that converges
+// upstream token rows onto the current encryption posture: plaintext rows are
+// sealed, and envelopes sealed under a retired key ID are re-sealed with the
+// active key. It is optional — reads already lazy-re-encrypt stale envelopes
+// and writes always seal — and intended for operators who want immediate
+// convergence after enabling encryption or rotating keys.
+//
+// It is a no-op when encryption is not configured (keyring nil): plaintext
+// rows are the desired end state in that posture. Tombstones and rows that
+// fail to decrypt (unknown key ID, corruption) are skipped with a WARN and do
+// not fail the sweep. The sweep is idempotent and safe to re-run; it mirrors
+// the SCAN pattern of MigrateLegacyUpstreamData.
+func (s *RedisStorage) MigrateUpstreamTokenEncryption(ctx context.Context) error {
+	if s.tokenEnc == nil {
+		return nil
+	}
+
+	pattern := s.keyPrefix + KeyTypeUpstream + ":*"
+	upstreamPrefixLen := len(s.keyPrefix) + len(KeyTypeUpstream) + 1
+
+	var cursor uint64
+	var resealed, skipped, failed int
+	for {
+		keys, nextCursor, err := s.client.Scan(ctx, cursor, pattern, 100).Result()
+		if err != nil {
+			return fmt.Errorf("token encryption sweep: SCAN failed: %w", err)
+		}
+
+		for _, key := range keys {
+			if len(key) <= upstreamPrefixLen {
+				continue
+			}
+			// Skip index sets (upstream:idx:...) — only token rows hold values.
+			if strings.HasPrefix(key[upstreamPrefixLen:], "idx:") {
+				continue
+			}
+
+			done, err := s.resealUpstreamRow(ctx, key)
+			switch {
+			case err != nil:
+				slog.Warn("token encryption sweep: failed to re-seal row", "key", key, "error", err)
+				failed++
+			case done:
+				resealed++
+			default:
+				skipped++
+			}
+		}
+
+		cursor = nextCursor
+		if cursor == 0 {
+			break
+		}
+	}
+
+	if failed > 0 {
+		return fmt.Errorf("token encryption sweep: %d row(s) failed to re-seal", failed)
+	}
+	if resealed > 0 {
+		slog.Info("token encryption sweep complete", "resealed", resealed, "skipped", skipped)
+	}
+	return nil
+}
+
+// resealUpstreamRow re-seals one upstream token row when it is plaintext or
+// sealed under a retired key ID. It reports whether the row was rewritten.
+// Tombstones, missing keys, and already-current envelopes are no-ops.
+func (s *RedisStorage) resealUpstreamRow(ctx context.Context, key string) (bool, error) {
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return false, nil
+		}
+		return false, fmt.Errorf("GET failed for %s: %w", key, err)
+	}
+	if string(data) == nullMarker {
+		return false, nil
+	}
+	if !tokenenc.IsLegacyValue(data) && !tokenenc.NeedsRotation(s.tokenEnc, data) {
+		return false, nil // already sealed under the active key
+	}
+
+	plaintext, _, err := tokenenc.Open(s.tokenEnc, key, data)
+	if err != nil {
+		return false, fmt.Errorf("decrypt failed for %s: %w", key, err)
+	}
+
+	sealed, err := tokenenc.Seal(s.tokenEnc, key, plaintext)
+	if err != nil {
+		return false, fmt.Errorf("seal failed for %s: %w", key, err)
+	}
+
+	// Preserve the row's TTL. PTTL returns -1ns (no expiry) or -2ns (vanished)
+	// — go-redis passes the sentinel integers through as durations.
+	pttl, err := s.client.PTTL(ctx, key).Result()
+	if err != nil {
+		return false, fmt.Errorf("PTTL failed for %s: %w", key, err)
+	}
+	switch {
+	case pttl > 0:
+		err = s.client.Set(ctx, key, sealed, pttl).Err()
+	case pttl == -1:
+		err = s.client.Set(ctx, key, sealed, 0).Err()
+	default:
+		return false, nil // vanished between GET and re-seal
+	}
+	if err != nil {
+		return false, fmt.Errorf("SET failed for %s: %w", key, err)
+	}
+	return true, nil
 }
 
 // migrateProviderIdentityKeys scans for provider identity keys stored under the

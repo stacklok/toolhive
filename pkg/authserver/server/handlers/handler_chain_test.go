@@ -430,7 +430,7 @@ func TestNextMissingUpstream_StorageError(t *testing.T) {
 	stor := mocks.NewMockStorage(ctrl)
 
 	storageErr := errors.New("connection refused")
-	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any()).Return(nil, storageErr).Times(1)
+	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil, storageErr).Times(1)
 
 	jwtStrategy := compose.NewOAuth2JWTStrategy(
 		func(_ context.Context) (any, error) {

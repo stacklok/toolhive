@@ -627,7 +627,7 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 			}
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-up-1", "provider-a", tokens))
 
-			retrieved, err := s.GetUpstreamTokens(ctx, "sess-up-1", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "sess-up-1", "provider-a", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "upstream-access", retrieved.AccessToken)
 			assert.Equal(t, "user-up-1", retrieved.UserID)
@@ -638,7 +638,7 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 	t.Run("nil tokens stored and retrieved", func(t *testing.T) {
 		withIntegrationStorage(t, func(ctx context.Context, s *RedisStorage) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-nil", "provider-a", nil))
-			retrieved, err := s.GetUpstreamTokens(ctx, "sess-nil", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "sess-nil", "provider-a", nil)
 			require.NoError(t, err)
 			assert.Nil(t, retrieved)
 		})
@@ -652,7 +652,7 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 			require.NoError(t, s.StoreUpstreamTokens(ctx, "sess-ow", "provider-a", &UpstreamTokens{
 				AccessToken: "new", UserID: "user2", ExpiresAt: time.Now().Add(time.Hour),
 			}))
-			retrieved, err := s.GetUpstreamTokens(ctx, "sess-ow", "provider-a")
+			retrieved, err := s.GetUpstreamTokens(ctx, "sess-ow", "provider-a", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "new", retrieved.AccessToken)
 			assert.Equal(t, "user2", retrieved.UserID)
@@ -666,7 +666,7 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 				RefreshToken: "expired-refresh",
 				ExpiresAt:    time.Now().Add(-time.Hour),
 			}))
-			tokens, err := s.GetUpstreamTokens(ctx, "sess-exp", "provider-a")
+			tokens, err := s.GetUpstreamTokens(ctx, "sess-exp", "provider-a", nil)
 			assert.ErrorIs(t, err, ErrExpired)
 			// Expired tokens should still return the data (needed for refresh)
 			require.NotNil(t, tokens, "expired tokens should return data for refresh")
@@ -681,7 +681,7 @@ func TestIntegration_UpstreamTokens(t *testing.T) {
 				AccessToken: "del-me", ExpiresAt: time.Now().Add(time.Hour),
 			}))
 			require.NoError(t, s.DeleteUpstreamTokens(ctx, "sess-del"))
-			_, err := s.GetUpstreamTokens(ctx, "sess-del", "provider-a")
+			_, err := s.GetUpstreamTokens(ctx, "sess-del", "provider-a", nil)
 			requireRedisNotFoundError(t, err)
 		})
 	})
@@ -834,7 +834,7 @@ func TestIntegration_ProviderIdentity(t *testing.T) {
 			assert.ErrorIs(t, err, ErrNotFound)
 			_, err = s.GetProviderIdentity(ctx, "google", "cascade-sub")
 			assert.ErrorIs(t, err, ErrNotFound)
-			_, err = s.GetUpstreamTokens(ctx, "cascade-sess", "provider-a")
+			_, err = s.GetUpstreamTokens(ctx, "cascade-sess", "provider-a", nil)
 			assert.ErrorIs(t, err, ErrNotFound)
 		})
 	})
@@ -1269,7 +1269,7 @@ func TestIntegration_MigrateLegacyUpstreamData(t *testing.T) {
 			assert.Equal(t, int64(0), exists, "legacy token key should be deleted after migration")
 
 			// Token should be readable under the new key format.
-			tokens, err := s.GetUpstreamTokens(ctx, sessionID, "default")
+			tokens, err := s.GetUpstreamTokens(ctx, sessionID, "default", nil)
 			require.NoError(t, err)
 			require.NotNil(t, tokens)
 			assert.Equal(t, "legacy-at", tokens.AccessToken)
@@ -1308,7 +1308,7 @@ func TestIntegration_MigrateLegacyUpstreamData(t *testing.T) {
 			// --- Verify DeleteUser cascade includes migrated token ---
 			require.NoError(t, s.DeleteUser(ctx, userID))
 
-			_, err = s.GetUpstreamTokens(ctx, sessionID, "default")
+			_, err = s.GetUpstreamTokens(ctx, sessionID, "default", nil)
 			assert.ErrorIs(t, err, ErrNotFound, "migrated token should be removed by DeleteUser cascade")
 
 			_, err = s.GetUser(ctx, userID)
@@ -1326,7 +1326,7 @@ func TestIntegration_MigrateLegacyUpstreamData(t *testing.T) {
 			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
 
 			// Verify migrated.
-			tokens, err := s.GetUpstreamTokens(ctx, "idem-sess", "default")
+			tokens, err := s.GetUpstreamTokens(ctx, "idem-sess", "default", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "idem-at", tokens.AccessToken)
 
@@ -1334,7 +1334,7 @@ func TestIntegration_MigrateLegacyUpstreamData(t *testing.T) {
 			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
 
 			// Token should still be there, unchanged.
-			tokens, err = s.GetUpstreamTokens(ctx, "idem-sess", "default")
+			tokens, err = s.GetUpstreamTokens(ctx, "idem-sess", "default", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "idem-at", tokens.AccessToken)
 		})
@@ -1379,7 +1379,7 @@ func TestIntegration_MigrateLegacyUpstreamData(t *testing.T) {
 
 			// Every legacy key should have been migrated.
 			for i := 0; i < keyCount; i++ {
-				tokens, err := s.GetUpstreamTokens(ctx, fmt.Sprintf("page-sess-%d", i), "default")
+				tokens, err := s.GetUpstreamTokens(ctx, fmt.Sprintf("page-sess-%d", i), "default", nil)
 				require.NoError(t, err, "key %d should be migrated", i)
 				assert.Equal(t, fmt.Sprintf("at-%d", i), tokens.AccessToken)
 				assert.Equal(t, "default", tokens.ProviderID)
@@ -1406,7 +1406,7 @@ func TestIntegration_MigrateLegacyUpstreamData(t *testing.T) {
 			require.NoError(t, s.MigrateLegacyUpstreamData(ctx, "default", "oidc"))
 
 			// The new-format token should be unchanged.
-			tokens, err := s.GetUpstreamTokens(ctx, "new-sess", "github")
+			tokens, err := s.GetUpstreamTokens(ctx, "new-sess", "github", nil)
 			require.NoError(t, err)
 			assert.Equal(t, "new-at", tokens.AccessToken)
 			assert.Equal(t, "github", tokens.ProviderID, "new-format token ProviderID should be untouched")

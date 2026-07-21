@@ -7,6 +7,7 @@ package runner
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/authserver/server/handlers"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/tokenenc"
 	"github.com/stacklok/toolhive/pkg/authserver/upstream"
 	"github.com/stacklok/toolhive/pkg/bodylimit"
 )
@@ -711,9 +713,51 @@ func createStorage(ctx context.Context, cfg *storage.RunConfig) (storage.Storage
 		if err != nil {
 			return nil, fmt.Errorf("invalid Redis config: %w", err)
 		}
-		return storage.NewRedisStorage(ctx, redisCfg, cfg.RedisConfig.KeyPrefix)
+		kr, err := resolveTokenEncryptionKeyring(cfg.RedisConfig.TokenEncryption)
+		if err != nil {
+			return nil, fmt.Errorf("invalid Redis token encryption config: %w", err)
+		}
+		var opts []storage.RedisStorageOption
+		if kr != nil {
+			opts = append(opts, storage.WithTokenEncryption(kr))
+		}
+		return storage.NewRedisStorage(ctx, redisCfg, cfg.RedisConfig.KeyPrefix, opts...)
 	}
 	return nil, fmt.Errorf("unsupported storage type: %s", cfg.Type)
+}
+
+// resolveTokenEncryptionKeyring builds the upstream-token encryption keyring
+// from the serializable config. A nil config returns a nil keyring (encryption
+// disabled). Otherwise every referenced env var is resolved and decoded, and
+// the keyring is validated — any failure is fatal to startup so a
+// misconfigured deployment can never silently degrade to plaintext.
+// Key material is never logged.
+func resolveTokenEncryptionKeyring(rc *storage.TokenEncryptionRunConfig) (tokenenc.Keyring, error) {
+	if rc == nil {
+		return nil, nil
+	}
+
+	kekByID := make(map[string][]byte, len(rc.Keys))
+	for id, envVar := range rc.Keys {
+		if envVar == "" {
+			return nil, fmt.Errorf("token encryption: key %q has no environment variable name", id)
+		}
+		value := os.Getenv(envVar)
+		if value == "" {
+			return nil, fmt.Errorf("token encryption: environment variable %q for key %q is not set", envVar, id)
+		}
+		key, err := base64.StdEncoding.DecodeString(value)
+		if err != nil {
+			return nil, fmt.Errorf("token encryption: key %q is not valid base64: %w", id, err)
+		}
+		kekByID[id] = key
+	}
+
+	kr, err := tokenenc.NewStaticKeyring(rc.ActiveKeyID, kekByID)
+	if err != nil {
+		return nil, err
+	}
+	return kr, nil
 }
 
 // convertRedisRunConfig converts a serializable RedisRunConfig to a runtime

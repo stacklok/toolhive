@@ -10,6 +10,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -30,6 +32,7 @@ import (
 	servercrypto "github.com/stacklok/toolhive/pkg/authserver/server/crypto"
 	"github.com/stacklok/toolhive/pkg/authserver/server/keys"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/authserver/tokenenc"
 	"github.com/stacklok/toolhive/pkg/oauthproto"
 )
 
@@ -1227,6 +1230,225 @@ func TestCreateStorage(t *testing.T) {
 		assert.Contains(t, err.Error(), "redis config is required")
 	})
 
+}
+
+// encTestKeyB64 returns a base64-encoded deterministic 32-byte KEK for tests.
+func encTestKeyB64(seed byte) string {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = seed + byte(i)
+	}
+	return base64.StdEncoding.EncodeToString(key)
+}
+
+// TestResolveTokenEncryptionKeyring covers matrix items 19 and 20: keyring
+// construction from RunConfig via env-var indirection, and startup-fatal
+// validation — misconfigured encryption must never silently degrade to
+// plaintext. These subtests use t.Setenv which is incompatible with
+// t.Parallel.
+//
+//nolint:paralleltest // t.Setenv requires sequential execution
+func TestResolveTokenEncryptionKeyring(t *testing.T) {
+	// Matrix item 19: valid config + env vars set → keyring constructed.
+	t.Run("valid config resolves keyring", func(t *testing.T) {
+		t.Setenv("TEST_TE_KEY_K1", encTestKeyB64(1))
+		t.Setenv("TEST_TE_KEY_K2", encTestKeyB64(2))
+
+		kr, err := resolveTokenEncryptionKeyring(&storage.TokenEncryptionRunConfig{
+			ActiveKeyID: "k2",
+			Keys: map[string]string{
+				"k1": "TEST_TE_KEY_K1",
+				"k2": "TEST_TE_KEY_K2",
+			},
+		})
+		require.NoError(t, err)
+		require.NotNil(t, kr)
+
+		// Round-trip through the keyring proves the keys resolved correctly:
+		// new writes seal under the active ID k2.
+		sealed, err := tokenenc.Seal(kr, "probe-key", []byte("probe"))
+		require.NoError(t, err)
+		assert.Contains(t, string(sealed), `"kid":"k2"`)
+		opened, legacy, err := tokenenc.Open(kr, "probe-key", sealed)
+		require.NoError(t, err)
+		assert.False(t, legacy)
+		assert.Equal(t, []byte("probe"), opened)
+	})
+
+	t.Run("nil config disables encryption", func(t *testing.T) {
+		kr, err := resolveTokenEncryptionKeyring(nil)
+		require.NoError(t, err)
+		assert.Nil(t, kr)
+	})
+
+	// Matrix item 20: every misconfiguration is a startup error.
+	tests := []struct {
+		name    string
+		cfg     *storage.TokenEncryptionRunConfig
+		setup   func(t *testing.T)
+		wantErr string
+	}{
+		{
+			name: "env var missing",
+			cfg: &storage.TokenEncryptionRunConfig{
+				ActiveKeyID: "k1",
+				Keys:        map[string]string{"k1": "TEST_TE_MISSING_VAR_12345"},
+			},
+			wantErr: `environment variable "TEST_TE_MISSING_VAR_12345" for key "k1" is not set`,
+		},
+		{
+			name: "bad base64",
+			cfg: &storage.TokenEncryptionRunConfig{
+				ActiveKeyID: "k1",
+				Keys:        map[string]string{"k1": "TEST_TE_BAD_B64"},
+			},
+			setup: func(t *testing.T) {
+				t.Helper()
+				t.Setenv("TEST_TE_BAD_B64", "not!base64!")
+			},
+			wantErr: `key "k1" is not valid base64`,
+		},
+		{
+			name: "wrong key length",
+			cfg: &storage.TokenEncryptionRunConfig{
+				ActiveKeyID: "k1",
+				Keys:        map[string]string{"k1": "TEST_TE_SHORT_KEY"},
+			},
+			setup: func(t *testing.T) {
+				t.Helper()
+				t.Setenv("TEST_TE_SHORT_KEY", base64.StdEncoding.EncodeToString(make([]byte, 16)))
+			},
+			wantErr: `key "k1" must be 32 bytes, got 16`,
+		},
+		{
+			name: "active key ID absent from map",
+			cfg: &storage.TokenEncryptionRunConfig{
+				ActiveKeyID: "k2",
+				Keys:        map[string]string{"k1": "TEST_TE_ONLY_K1"},
+			},
+			setup: func(t *testing.T) {
+				t.Helper()
+				t.Setenv("TEST_TE_ONLY_K1", encTestKeyB64(1))
+			},
+			wantErr: `active key ID "k2" not present`,
+		},
+		{
+			name: "empty keys map",
+			cfg: &storage.TokenEncryptionRunConfig{
+				ActiveKeyID: "k1",
+				Keys:        map[string]string{},
+			},
+			wantErr: "at least one key is required",
+		},
+		{
+			name: "empty env var name",
+			cfg: &storage.TokenEncryptionRunConfig{
+				ActiveKeyID: "k1",
+				Keys:        map[string]string{"k1": ""},
+			},
+			wantErr: `key "k1" has no environment variable name`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup(t)
+			}
+			kr, err := resolveTokenEncryptionKeyring(tt.cfg)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.wantErr)
+			assert.Nil(t, kr, "no keyring on validation failure — never silent plaintext")
+		})
+	}
+}
+
+// TestCreateStorage_TokenEncryptionValidation covers the createStorage wiring:
+// token-encryption config errors surface before any Redis connection attempt
+// (fail fast at startup).
+func TestCreateStorage_TokenEncryptionValidation(t *testing.T) {
+	t.Setenv("TEST_TE_CS_USER", "user")
+	t.Setenv("TEST_TE_CS_PASS", "pass")
+
+	_, err := createStorage(context.Background(), &storage.RunConfig{
+		Type: string(storage.TypeRedis),
+		RedisConfig: &storage.RedisRunConfig{
+			KeyPrefix: "test:",
+			Addr:      "localhost:6399", // unreachable; validation must fire first
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "TEST_TE_CS_USER",
+				PasswordEnvVar: "TEST_TE_CS_PASS",
+			},
+			TokenEncryption: &storage.TokenEncryptionRunConfig{
+				ActiveKeyID: "k1",
+				Keys:        map[string]string{"k1": "TEST_TE_CS_MISSING_VAR_12345"},
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid Redis token encryption config")
+	assert.Contains(t, err.Error(), "not set")
+}
+
+// TestCreateStorage_TokenEncryptionEndToEnd closes the option hand-off gap:
+// unit tests of resolveTokenEncryptionKeyring and of WithTokenEncryption leave
+// room for createStorage to silently drop the keyring while every test stays
+// green. This drives the full createStorage path — valid TokenEncryption
+// RunConfig + env vars → miniredis-backed storage — and asserts the produced
+// backend actually seals upstream-token rows (envelope on the wire, no token
+// plaintext) and reads them back.
+//
+//nolint:paralleltest // t.Setenv requires sequential execution
+func TestCreateStorage_TokenEncryptionEndToEnd(t *testing.T) {
+	t.Setenv("TEST_TE_E2E_KEK", encTestKeyB64(1))
+	t.Setenv("TEST_TE_E2E_REDIS_USER", "testuser")
+	t.Setenv("TEST_TE_E2E_REDIS_PASS", "testpass")
+
+	mr := miniredis.RunT(t)
+	// convertRedisRunConfig requires ACL credentials via env indirection.
+	mr.RequireUserAuth("testuser", "testpass")
+
+	stor, err := createStorage(context.Background(), &storage.RunConfig{
+		Type: string(storage.TypeRedis),
+		RedisConfig: &storage.RedisRunConfig{
+			Addr:      mr.Addr(),
+			KeyPrefix: "test:auth:",
+			ACLUserConfig: &storage.ACLUserRunConfig{
+				UsernameEnvVar: "TEST_TE_E2E_REDIS_USER",
+				PasswordEnvVar: "TEST_TE_E2E_REDIS_PASS",
+			},
+			TokenEncryption: &storage.TokenEncryptionRunConfig{
+				ActiveKeyID: "k1",
+				Keys:        map[string]string{"k1": "TEST_TE_E2E_KEK"},
+			},
+		},
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = stor.Close() })
+
+	ctx := context.Background()
+	tokens := &storage.UpstreamTokens{
+		ProviderID:   "github",
+		AccessToken:  "e2e-access-token-SECRET",
+		RefreshToken: "e2e-refresh-token-SECRET",
+		ExpiresAt:    time.Now().Add(time.Hour),
+		UserID:       "user-e2e",
+	}
+	require.NoError(t, stor.StoreUpstreamTokens(ctx, "e2e-session", "github", tokens))
+
+	// The raw Redis value must be an envelope: no token substring anywhere.
+	raw, err := mr.Get("test:auth:upstream:e2e-session:github")
+	require.NoError(t, err)
+	assert.Contains(t, raw, `"kid":"k1"`, "createStorage must hand the keyring to the storage backend")
+	assert.Contains(t, raw, `"edek"`)
+	assert.NotContains(t, raw, tokens.AccessToken)
+	assert.NotContains(t, raw, tokens.RefreshToken)
+
+	// And the round-trip through the produced storage decrypts correctly.
+	got, err := stor.GetUpstreamTokens(ctx, "e2e-session", "github", nil)
+	require.NoError(t, err)
+	assert.Equal(t, tokens.AccessToken, got.AccessToken)
+	assert.Equal(t, tokens.RefreshToken, got.RefreshToken)
 }
 
 // TestConvertRedisRunConfig covers the runner-owned conversion steps: nil

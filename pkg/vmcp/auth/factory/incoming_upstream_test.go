@@ -111,7 +111,7 @@ func TestNewOIDCAuthMiddleware_UpstreamTokenReaderWiring(t *testing.T) {
 		ctrl := gomock.NewController(t)
 		reader := upstreamtokenmocks.NewMockTokenReader(ctrl)
 		reader.EXPECT().
-			GetAllUpstreamCredentials(gomock.Any(), "session-abc").
+			GetAllUpstreamCredentials(gomock.Any(), "session-abc", gomock.Any()).
 			Return(map[string]upstreamtoken.UpstreamCredential{
 				"google": {AccessToken: "gcp-access-token", IDToken: "gcp-id-token"},
 			}, []string(nil), nil)

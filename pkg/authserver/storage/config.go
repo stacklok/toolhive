@@ -104,6 +104,29 @@ type RedisRunConfig struct {
 
 	// SentinelTLS configures TLS for Sentinel connections. Only applies when SentinelConfig is set.
 	SentinelTLS *RedisTLSRunConfig `json:"sentinel_tls,omitempty" yaml:"sentinel_tls,omitempty"`
+
+	// TokenEncryption configures envelope encryption for upstream OAuth tokens
+	// at rest. Presence enables encryption; absence preserves the current
+	// plaintext behavior.
+	TokenEncryption *TokenEncryptionRunConfig `json:"token_encryption,omitempty" yaml:"token_encryption,omitempty"`
+}
+
+// TokenEncryptionRunConfig configures AES-256-GCM envelope encryption of
+// upstream OAuth token values stored in Redis. Key material is referenced by
+// environment variable name — never inline — following the established
+// credential indirection convention (see ACLUserRunConfig). Key resolution,
+// validation, and keyring construction happen in the runner when the storage
+// backend is created; misconfiguration is startup-fatal (never silently
+// degrades to plaintext).
+type TokenEncryptionRunConfig struct {
+	// ActiveKeyID identifies the KEK used to encrypt new writes. Other IDs in
+	// Keys remain decrypt-only (retired), supporting lazy read-old/write-new
+	// rotation.
+	ActiveKeyID string `json:"active_key_id" yaml:"active_key_id"`
+
+	// Keys maps key ID → name of the environment variable holding the
+	// base64-encoded 32-byte key-encryption key.
+	Keys map[string]string `json:"keys" yaml:"keys"`
 }
 
 // SentinelRunConfig contains Redis Sentinel configuration.

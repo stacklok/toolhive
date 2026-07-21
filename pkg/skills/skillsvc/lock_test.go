@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -67,10 +68,16 @@ func gitSkill(name string, requires ...string) []byte {
 
 // gitRef builds the git:// reference and matching *gitresolver.GitReference
 // for a fake repo named after the skill it resolves to. ParseGitReference
-// normalizes to an "http://" clone URL (a pre-existing quirk unrelated to
-// this package — see TestParseGitReference_RefAndSubdir in pkg/plugins).
+// picks "http://" instead of "https://" only when TOOLHIVE_DEV=true (see
+// gitresolver.isDevMode); this mirrors that so the fixture URL matches
+// whatever ParseGitReference actually produces in the environment the test
+// runs in, rather than hardcoding one scheme.
 func gitRef(name string) (string, string) {
-	return "git://github.com/test/" + name, "http://github.com/test/" + name
+	scheme := "https"
+	if strings.EqualFold(os.Getenv("TOOLHIVE_DEV"), "true") {
+		scheme = "http"
+	}
+	return "git://github.com/test/" + name, scheme + "://github.com/test/" + name
 }
 
 // gitFixture is a single registered skill: its SKILL.md content and the

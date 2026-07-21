@@ -39,7 +39,7 @@ var _ storage.SkillStore = (*SkillStore)(nil)
 // skillColumns is the SELECT column list shared by Get and List queries.
 const skillColumns = `is_.id, e.name, is_.scope, is_.project_root, is_.reference, is_.tag,
 			is_.digest, is_.version, is_.description, is_.author, json(is_.tags),
-			json(is_.client_apps), is_.status, is_.installed_at`
+			json(is_.client_apps), is_.status, is_.installed_at, is_.managed`
 
 // Create stores a new installed skill.
 func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) error {
@@ -85,8 +85,8 @@ func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) er
 	res, err := tx.ExecContext(ctx, `
 		INSERT INTO installed_skills (
 			entry_id, scope, project_root, reference, tag, digest,
-			version, description, author, tags, client_apps, status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?)`,
+			version, description, author, tags, client_apps, status, managed
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, jsonb(?), jsonb(?), ?, ?)`,
 		entryID,
 		string(skill.Scope),
 		skill.ProjectRoot,
@@ -99,6 +99,7 @@ func (s *SkillStore) Create(ctx context.Context, skill skills.InstalledSkill) er
 		tagsJSON,
 		clientsJSON,
 		string(skill.Status),
+		boolToInt(skill.Managed),
 	)
 	if err != nil {
 		if isUniqueViolation(err) {
@@ -266,7 +267,7 @@ func (s *SkillStore) Update(ctx context.Context, skill skills.InstalledSkill) er
 	if _, err := tx.ExecContext(ctx, `
 		UPDATE installed_skills SET
 			reference = ?, tag = ?, digest = ?, version = ?, description = ?,
-			author = ?, tags = jsonb(?), client_apps = jsonb(?), status = ?
+			author = ?, tags = jsonb(?), client_apps = jsonb(?), status = ?, managed = ?
 		WHERE id = ?`,
 		skill.Reference,
 		skill.Tag,
@@ -277,6 +278,7 @@ func (s *SkillStore) Update(ctx context.Context, skill skills.InstalledSkill) er
 		tagsJSON,
 		clientsJSON,
 		string(skill.Status),
+		boolToInt(skill.Managed),
 		installedSkillID,
 	); err != nil {
 		return fmt.Errorf("updating installed skill: %w", err)
@@ -370,12 +372,13 @@ func scanSkillFields(sc scanner) (skills.InstalledSkill, int64, error) {
 		clientsBlob      []byte
 		status           string
 		installedAtStr   string
+		managed          int
 	)
 
 	err := sc.Scan(
 		&installedSkillID, &name, &scope, &projectRoot, &reference, &tag,
 		&digest, &version, &description, &author, &tagsBlob,
-		&clientsBlob, &status, &installedAtStr,
+		&clientsBlob, &status, &installedAtStr, &managed,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -412,6 +415,7 @@ func scanSkillFields(sc scanner) (skills.InstalledSkill, int64, error) {
 		Status:      skills.InstallStatus(status),
 		InstalledAt: installedAt,
 		Clients:     clients,
+		Managed:     managed != 0,
 	}
 
 	return sk, installedSkillID, nil
@@ -495,3 +499,11 @@ func isUniqueViolation(err error) bool {
 
 // rollback rolls back tx, ignoring errors (tx may already be committed).
 func rollback(tx *sql.Tx) { _ = tx.Rollback() }
+
+// boolToInt converts a bool to SQLite's 0/1 INTEGER representation.
+func boolToInt(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}

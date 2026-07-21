@@ -1732,6 +1732,11 @@ components:
         installed_at:
           description: InstalledAt is the timestamp when the skill was installed.
           type: string
+        managed:
+          description: |-
+            Managed indicates this install is tracked in the project's
+            toolhive.lock.yaml. Only ever true for project-scoped installs.
+          type: boolean
         metadata:
           $ref: '#/components/schemas/github_com_stacklok_toolhive_pkg_skills.SkillMetadata'
         project_root:

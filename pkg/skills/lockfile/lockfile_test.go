@@ -118,6 +118,38 @@ func TestSaveAndLoadRoundTrip(t *testing.T) {
 	assert.Equal(t, entry, loaded.Skills[0])
 }
 
+func TestSaveRejectsInvalidLockfile(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+
+	lf := &Lockfile{Version: CurrentVersion}
+	lf.Upsert(Entry{Name: "code-review", Source: "code-review"}) // missing required Digest
+
+	err := lf.Save(root)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "invalid lock file")
+
+	_, statErr := os.Stat(filepath.Join(root.Dir(), FileName))
+	require.True(t, os.IsNotExist(statErr), "Save must not write an invalid lock file to disk")
+}
+
+func TestUpdateRejectsInvalidLockfile(t *testing.T) {
+	t.Parallel()
+	root := testRoot(t)
+
+	err := Update(root, func(lf *Lockfile) error {
+		lf.Upsert(Entry{Name: "code-review", Source: "code-review"}) // missing required Digest
+		return nil
+	})
+	require.Error(t, err)
+
+	// A caller bug that upserts an invalid entry must not leave every
+	// subsequent Load/Update permanently broken.
+	loaded, loadErr := Load(root)
+	require.NoError(t, loadErr)
+	assert.Empty(t, loaded.Skills)
+}
+
 func TestLockfileGetUpsertRemove(t *testing.T) {
 	t.Parallel()
 

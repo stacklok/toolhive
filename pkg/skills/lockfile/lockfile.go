@@ -215,7 +215,10 @@ func (l *Lockfile) RemoveParentFromRequiredBy(parent string) []string {
 // containment check on osRoot trivial.
 const tmpFileName = ".toolhive.lock.tmp"
 
-// Save writes the lock file into root atomically (temp file + rename).
+// Save writes the lock file into root atomically (temp file + rename), after
+// validating it with the same rules [Load] enforces on read. This prevents a
+// caller bug from writing a lock file that every subsequent Load/Update call
+// would then hard-fail on, with no recovery path through this package.
 // Callers that need read-modify-write atomicity across processes must use
 // [UpsertEntry], [RemoveEntry], or [Update] instead of Load+Save.
 func (l *Lockfile) Save(root Root) error {
@@ -229,6 +232,10 @@ func (l *Lockfile) Save(root Root) error {
 		l.Version = CurrentVersion
 	}
 	sortEntries(l.Skills)
+
+	if err := validateLockfile(l); err != nil {
+		return fmt.Errorf("refusing to save invalid lock file: %w", err)
+	}
 
 	data, err := yaml.Marshal(l)
 	if err != nil {

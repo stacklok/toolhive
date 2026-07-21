@@ -42,9 +42,12 @@ func ContentDigest(files []ContentFile) (string, error) {
 
 	normalized := make([]ContentFile, 0, len(files))
 	for _, f := range files {
-		path := strings.TrimPrefix(filepath.ToSlash(f.Path), "./")
+		path := filepath.ToSlash(f.Path)
+		for strings.HasPrefix(path, "./") {
+			path = strings.TrimPrefix(path, "./")
+		}
 		if path == "" || path == ".." || strings.HasPrefix(path, "../") || strings.Contains(path, "/../") ||
-			strings.HasSuffix(path, "/..") || strings.HasPrefix(path, "/") {
+			strings.HasSuffix(path, "/..") || strings.HasPrefix(path, "/") || hasControlChar(path) {
 			return "", fmt.Errorf("invalid content file path %q", f.Path)
 		}
 		normalized = append(normalized, ContentFile{Path: path, Content: f.Content})
@@ -61,6 +64,20 @@ func ContentDigest(files []ContentFile) (string, error) {
 		_, _ = h.Write([]byte{'\n'})
 	}
 	return ContentDigestPrefix + hex.EncodeToString(h.Sum(nil)), nil
+}
+
+// hasControlChar reports whether s contains a NUL, newline, or other C0/DEL
+// control byte. The serialization format used by [ContentDigest] delimits
+// fields with NUL and newline bytes; without this check, a Path containing
+// those bytes could reproduce the exact byte stream of a different,
+// unrelated multi-file tree and collide with its digest.
+func hasControlChar(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < 0x20 || s[i] == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 // ContentDigestFromDir walks skillDir and computes the content digest from

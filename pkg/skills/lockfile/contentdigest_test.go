@@ -4,6 +4,7 @@
 package lockfile
 
 import (
+	"crypto/sha256"
 	"os"
 	"path/filepath"
 	"testing"
@@ -108,6 +109,57 @@ func TestContentDigestNormalizesDotSlashPrefix(t *testing.T) {
 	withoutPrefix, err := ContentDigest([]ContentFile{{Path: "a.txt", Content: []byte("hello")}})
 	require.NoError(t, err)
 	assert.Equal(t, withoutPrefix, withPrefix)
+}
+
+func TestContentDigestRejectsControlCharsInPath(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		path string
+	}{
+		{"embedded NUL", "a\x00b.txt"},
+		{"embedded newline", "a\nb.txt"},
+		{"embedded DEL", "a\x7fb.txt"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			_, err := ContentDigest([]ContentFile{{Path: tt.path, Content: []byte("x")}})
+			require.Error(t, err)
+		})
+	}
+}
+
+// TestContentDigestRejectsForgedPathCollision demonstrates the attack the
+// control-char rejection closes: the serialization format delimits fields
+// with NUL and newline bytes, so without rejecting those bytes in Path, a
+// single crafted entry could reproduce the exact byte stream of two
+// legitimate, unrelated entries and collide with their digest.
+func TestContentDigestRejectsForgedPathCollision(t *testing.T) {
+	t.Parallel()
+
+	legit := []ContentFile{
+		{Path: "x", Content: []byte("hello world")},
+		{Path: "y", Content: []byte("second file content")},
+	}
+	_, err := ContentDigest(legit)
+	require.NoError(t, err)
+
+	xHash := sha256.Sum256([]byte("hello world"))
+	forgedPath := "x\x00" + string(xHash[:]) + "\ny"
+	_, err = ContentDigest([]ContentFile{{Path: forgedPath, Content: []byte("second file content")}})
+	require.Error(t, err, "a path forging another entry's serialized bytes must be rejected, not hashed to a collision")
+}
+
+func TestContentDigestNormalizesRepeatedDotSlashPrefix(t *testing.T) {
+	t.Parallel()
+
+	repeated, err := ContentDigest([]ContentFile{{Path: "././a.txt", Content: []byte("hello")}})
+	require.NoError(t, err)
+	single, err := ContentDigest([]ContentFile{{Path: "a.txt", Content: []byte("hello")}})
+	require.NoError(t, err)
+	assert.Equal(t, single, repeated)
 }
 
 func TestContentDigestFromDir(t *testing.T) {

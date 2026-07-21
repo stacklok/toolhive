@@ -26,6 +26,7 @@ import (
 
 	mcpv1beta1 "github.com/stacklok/toolhive/cmd/thv-operator/api/v1beta1"
 	ctrlutil "github.com/stacklok/toolhive/cmd/thv-operator/pkg/controllerutil"
+	"github.com/stacklok/toolhive/cmd/thv-operator/pkg/validation"
 )
 
 const (
@@ -91,7 +92,7 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 	}
 
 	// Validate spec configuration early
-	if err := oidcConfig.Validate(); err != nil {
+	if err := validateOIDCConfigSpec(oidcConfig); err != nil {
 		logger.Error(err, "MCPOIDCConfig spec validation failed")
 		return r.handleValidationFailure(ctx, oidcConfig, err)
 	}
@@ -152,6 +153,26 @@ func (r *MCPOIDCConfigReconciler) Reconcile(ctx context.Context, req ctrl.Reques
 
 	emitConfigRecoveryEvent(r.Recorder, oidcConfig, wasInvalid)
 	return ctrl.Result{}, nil
+}
+
+// validateOIDCConfigSpec validates the MCPOIDCConfig spec: type/config
+// consistency via Validate(), then issuer and JWKS URL checks for inline
+// configs. The URL checks run here rather than inside Validate() because the
+// validation package imports the v1beta1 API package (for example
+// validation.ValidateCABundleSource), so calling it from the types package
+// would create an import cycle. This mirrors the MCPRemoteProxy controller,
+// which applies validation.ValidateRemoteURL in its validateSpec step.
+func validateOIDCConfigSpec(oidcConfig *mcpv1beta1.MCPOIDCConfig) error {
+	if err := oidcConfig.Validate(); err != nil {
+		return err
+	}
+	if oidcConfig.Spec.Type != mcpv1beta1.MCPOIDCConfigTypeInline || oidcConfig.Spec.Inline == nil {
+		return nil
+	}
+	if err := validation.ValidateOIDCIssuerURL(oidcConfig.Spec.Inline.Issuer, oidcConfig.Spec.Inline.InsecureAllowHTTP); err != nil {
+		return err
+	}
+	return validation.ValidateJWKSURL(oidcConfig.Spec.Inline.JWKSURL)
 }
 
 // handleValidationFailure records the Valid=False condition for a spec that

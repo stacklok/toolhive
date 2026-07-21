@@ -517,6 +517,195 @@ func TestMCPOIDCConfig_Validate(t *testing.T) {
 	}
 }
 
+func TestValidateOIDCConfigSpec(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		config      *mcpv1beta1.MCPOIDCConfig
+		expectError bool
+	}{
+		{
+			name: "valid inline config with HTTPS issuer and JWKS URL",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "https://accounts.google.com",
+						JWKSURL:  "https://www.googleapis.com/oauth2/v3/certs",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid inline config with empty JWKS URL (auto-discovery)",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "https://accounts.google.com",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "valid inline config with HTTP issuer when insecureAllowHTTP is set",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:            "http://issuer.dev.local",
+						ClientID:          "test-client",
+						InsecureAllowHTTP: true,
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "invalid inline config with HTTP issuer without insecureAllowHTTP",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "http://issuer.example.com",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid inline config with malformed issuer",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "not-a-url",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid inline config with issuer using unsupported scheme",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "ftp://issuer.example.com",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "invalid inline config with non-HTTPS JWKS URL",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+						Issuer:   "https://accounts.google.com",
+						JWKSURL:  "http://www.googleapis.com/oauth2/v3/certs",
+						ClientID: "test-client",
+					},
+				},
+			},
+			expectError: true,
+		},
+		{
+			name: "kubernetesServiceAccount config skips URL validation",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeKubernetesServiceAccount,
+					KubernetesServiceAccount: &mcpv1beta1.KubernetesServiceAccountOIDCConfig{
+						ServiceAccount: "test-sa",
+						// Would fail the URL checks if they applied to this type
+						Issuer: "not-a-url",
+					},
+				},
+			},
+			expectError: false,
+		},
+		{
+			name: "type consistency failure is still reported",
+			config: &mcpv1beta1.MCPOIDCConfig{
+				Spec: mcpv1beta1.MCPOIDCConfigSpec{
+					Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+					// Missing Inline config
+				},
+			},
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateOIDCConfigSpec(tt.config)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+		})
+	}
+}
+
+func TestMCPOIDCConfigReconciler_URLValidationFailureSetsCondition(t *testing.T) {
+	t.Parallel()
+
+	ctx := t.Context()
+
+	// Invalid config: HTTP issuer without insecureAllowHTTP
+	oidcConfig := &mcpv1beta1.MCPOIDCConfig{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "insecure-issuer-config",
+			Namespace:  "default",
+			Finalizers: []string{OIDCConfigFinalizerName},
+			Generation: 1,
+		},
+		Spec: mcpv1beta1.MCPOIDCConfigSpec{
+			Type: mcpv1beta1.MCPOIDCConfigTypeInline,
+			Inline: &mcpv1beta1.InlineOIDCSharedConfig{
+				Issuer:   "http://issuer.example.com",
+				ClientID: "test-client",
+			},
+		},
+	}
+
+	r, fakeClient := newTestMCPOIDCConfigReconciler(t, oidcConfig)
+
+	req := reconcile.Request{
+		NamespacedName: types.NamespacedName{
+			Name:      oidcConfig.Name,
+			Namespace: oidcConfig.Namespace,
+		},
+	}
+
+	// Reconcile should not return error (validation failures are not requeued)
+	_, err := r.Reconcile(ctx, req)
+	require.NoError(t, err)
+
+	var updatedConfig mcpv1beta1.MCPOIDCConfig
+	err = fakeClient.Get(ctx, req.NamespacedName, &updatedConfig)
+	require.NoError(t, err)
+
+	cond := meta.FindStatusCondition(updatedConfig.Status.Conditions, mcpv1beta1.ConditionTypeOIDCConfigValid)
+	require.NotNil(t, cond, "Should have a Valid condition")
+	assert.Equal(t, metav1.ConditionFalse, cond.Status, "Valid condition should be False")
+	assert.Equal(t, mcpv1beta1.ConditionReasonOIDCConfigInvalid, cond.Reason)
+	assert.Contains(t, cond.Message, "HTTP scheme", "Message should surface the URL validation error")
+}
+
 func TestMCPOIDCConfigReconciler_ReferenceCountUpdatedWithWorkloads(t *testing.T) {
 	t.Parallel()
 

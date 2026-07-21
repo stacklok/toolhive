@@ -30,11 +30,24 @@ export TOOLHIVE_SKIP_DESKTOP_CHECK=1
 
 CLONE_DIR=""
 cleanup() {
+  # Stop the packet capture first so tcpdump flushes the pcap to disk before
+  # the container/proxy are torn down. Matches on the output file so we don't
+  # kill unrelated tcpdumps. No-op when no capture was started.
+  sudo pkill -TERM -f 'tcpdump.*cf\.pcap' 2>/dev/null || true
+  sleep 1
   # Diagnostics: capture the ToolHive proxy logs before teardown so a CI failure
   # (e.g. the sampling round-trip timing out) is debuggable from the uploaded
   # results artifact, not just the client-side checks.json.
   mkdir -p "${RESULTS_DIR}"
   "${THV_BINARY}" logs --proxy "${SERVER_NAME}" > "${RESULTS_DIR}/proxy-logs.txt" 2>&1 || true
+  # Backend (Node everything-server) logs: the proxy log cannot show whether the
+  # backend emitted the server->client sampling/createMessage request (SSE bodies
+  # are not logged), so capture the container's own stdout/stderr. This is the
+  # missing leg for diagnosing the tools-call-sampling round-trip flake. Must run
+  # before `thv rm`, which destroys the container.
+  "${THV_BINARY}" logs "${SERVER_NAME}" > "${RESULTS_DIR}/backend-logs.txt" 2>&1 || true
+  backend_ctr="$(docker ps -a --filter "ancestor=${IMAGE}" --format '{{.Names}}' 2>/dev/null | head -1)"
+  [ -n "${backend_ctr}" ] && docker logs "${backend_ctr}" > "${RESULTS_DIR}/backend-docker-logs.txt" 2>&1 || true
   "${THV_BINARY}" rm "${SERVER_NAME}" >/dev/null 2>&1 || true
   [ -n "${CLONE_DIR}" ] && rm -rf "${CLONE_DIR}" || true
 }
@@ -95,6 +108,23 @@ done
 echo "==> Running conformance suite (${CONFORMANCE_SUITE})"
 rm -rf "${RESULTS_DIR}"
 mkdir -p "${RESULTS_DIR}"
+
+# Packet capture (best-effort; CI/Linux only). Captures client<->proxy and
+# proxy<->backend TCP so a sampling-flake failure can be localized to the
+# server->client SSE delivery leg: does `sampling/createMessage` reach the proxy
+# from the backend, and does the proxy relay it to the client? `-i any` covers
+# both the loopback and docker-bridge legs; full snaplen (-s 0) is required to
+# see SSE payloads; -U flushes per packet so the pcap survives an abrupt stop.
+# Non-fatal when tcpdump or passwordless sudo are unavailable (e.g. local macOS).
+# Stopped in cleanup().
+if command -v tcpdump >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
+  sudo tcpdump -i any -U -s 0 -w "${RESULTS_DIR}/cf.pcap" tcp >/dev/null 2>&1 &
+  sleep 1
+  echo "==> packet capture started -> ${RESULTS_DIR}/cf.pcap"
+else
+  echo "==> tcpdump/passwordless sudo unavailable; skipping packet capture"
+fi
+
 npx -y "@modelcontextprotocol/conformance@${CONFORMANCE_VERSION}" server \
   --url "${URL}" \
   --suite "${CONFORMANCE_SUITE}" \

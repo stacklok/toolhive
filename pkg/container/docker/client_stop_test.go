@@ -138,3 +138,69 @@ func TestStopWorkload_NotFound_ReturnsNil(t *testing.T) {
 	// StopWorkload should treat a not-found workload as success
 	require.NoError(t, err)
 }
+
+// TestStopProxyContainer_HandlesEnvoyAndSquidTopologies guards the cleanup path
+// shared by both proxy backends. StopWorkload iterates the fixed proxy suffixes
+// (-egress, -ingress, -dns) and calls stopProxyContainer for each. A legacy Squid
+// workload has all three; an Envoy workload consolidates egress+ingress into one
+// container and therefore has NO -ingress container. stopProxyContainer must stop
+// a container that exists and silently tolerate one that does not, so the same
+// teardown works for both the 2-container (Envoy) and 3-container (Squid)
+// topologies without backend-specific logic. See #5902.
+func TestStopProxyContainer_HandlesEnvoyAndSquidTopologies(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		containerName string
+		present       bool // whether the named proxy container exists
+		wantStopped   bool
+	}{
+		{
+			name:          "present container is stopped (Squid egress/ingress/dns, Envoy egress/dns)",
+			containerName: "app-egress",
+			present:       true,
+			wantStopped:   true,
+		},
+		{
+			name:          "absent ingress is tolerated (Envoy has no -ingress container)",
+			containerName: "app-ingress",
+			present:       false,
+			wantStopped:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var stoppedID string
+			api := &fakeDockerAPI{
+				listFunc: func(_ context.Context, _ mobyclient.ContainerListOptions) ([]container.Summary, error) {
+					if !tt.present {
+						return []container.Summary{}, nil
+					}
+					return []container.Summary{
+						{ID: "cid-" + tt.containerName, Names: []string{"/" + tt.containerName}},
+					}, nil
+				},
+				stopFunc: func(_ context.Context, id string, _ mobyclient.ContainerStopOptions) error {
+					stoppedID = id
+					return nil
+				},
+			}
+			c := &Client{api: api}
+
+			// Must not panic or error regardless of whether the container exists.
+			c.stopProxyContainer(t.Context(), tt.containerName, 30)
+
+			if tt.wantStopped {
+				assert.Equal(t, "cid-"+tt.containerName, stoppedID,
+					"expected the existing proxy container to be stopped")
+			} else {
+				assert.Empty(t, stoppedID,
+					"expected no ContainerStop call for an absent proxy container")
+			}
+		})
+	}
+}

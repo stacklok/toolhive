@@ -6,9 +6,11 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"net/http"
 
 	"github.com/spf13/cobra"
 
+	"github.com/stacklok/toolhive-core/httperr"
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
@@ -18,6 +20,7 @@ var (
 	skillUpgradePreview        bool
 	skillUpgradeFailOnChanges  bool
 	skillUpgradeAllowRefChange bool
+	skillUpgradeYes            bool
 	skillUpgradeFormat         string
 )
 
@@ -33,7 +36,11 @@ sources are still fetched into the local artifact store to compare digests),
 and --allow-ref-change to permit the resolved reference itself changing
 (e.g. a registry entry repointed at a different repository).
 --fail-on-changes evaluates the same plan and never installs: it is a CI
-freshness gate.`,
+freshness gate.
+
+Unless --preview is set, upgrade prompts for confirmation before installing —
+skill content is a set of AI-followed instructions. Pass --yes to skip the
+prompt (required in non-interactive contexts such as CI).`,
 	PreRunE: chainPreRunE(
 		ValidateFormat(&skillUpgradeFormat),
 	),
@@ -53,6 +60,8 @@ func init() {
 		"Report what would change without installing anything; a CI freshness gate")
 	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeAllowRefChange, "allow-ref-change", false,
 		"Permit the resolved reference itself to change during upgrade")
+	skillUpgradeCmd.Flags().BoolVar(&skillUpgradeYes, "yes", false,
+		"Skip the confirmation prompt (required when not running interactively)")
 	AddFormatFlag(skillUpgradeCmd, &skillUpgradeFormat)
 }
 
@@ -60,6 +69,17 @@ func skillUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 	projectRoot, err := resolveProjectRoot(skillUpgradeProjectRoot)
 	if err != nil {
 		return err
+	}
+
+	if !skillUpgradePreview {
+		confirmed, confirmErr := requireConfirmation("Upgrade skills for "+projectRoot, skillUpgradeYes)
+		if confirmErr != nil {
+			return confirmErr
+		}
+		if !confirmed {
+			fmt.Println("Upgrade cancelled.")
+			return nil
+		}
 	}
 
 	c := newSkillClient(cmd.Context())
@@ -72,10 +92,47 @@ func skillUpgradeCmdFunc(cmd *cobra.Command, args []string) error {
 		AllowRefChange: skillUpgradeAllowRefChange,
 	})
 	if err != nil {
-		return formatSkillError("upgrade skills", err)
+		wrapped := formatSkillError("upgrade skills", err)
+		if httperr.Code(err) == http.StatusConflict {
+			// --fail-on-changes tripped: a CI freshness gate, not an
+			// operational failure.
+			return withExitCode(wrapped, ExitCodeCheckFailure)
+		}
+		return wrapped
 	}
 
-	return printUpgradeResult(result, skillUpgradeFormat)
+	if err := printUpgradeResult(result, skillUpgradeFormat); err != nil {
+		return err
+	}
+	return upgradeExitError(result)
+}
+
+// upgradeExitError maps an UpgradeResult to RFC THV-0080's exit-code
+// contract. A failed outcome takes precedence over a ref-change block:
+// something actually going wrong is a stronger signal than a guard doing
+// its job.
+func upgradeExitError(result *skills.UpgradeResult) error {
+	var failed, refBlocked int
+	for _, o := range result.Outcomes {
+		switch o.Status {
+		case skills.UpgradeStatusFailed:
+			failed++
+		case skills.UpgradeStatusRefChangeBlocked:
+			refBlocked++
+		case skills.UpgradeStatusUpgraded, skills.UpgradeStatusUpToDate, skills.UpgradeStatusNotUpgradable:
+			// No exit-code impact.
+		}
+	}
+	if failed > 0 {
+		return withExitCode(fmt.Errorf("upgrade failed for %d skill(s)", failed), ExitCodePartialFailure)
+	}
+	if refBlocked > 0 {
+		return withExitCode(
+			fmt.Errorf("%d skill(s) blocked by a reference change; use --allow-ref-change", refBlocked),
+			ExitCodePolicyRejection,
+		)
+	}
+	return nil
 }
 
 func printUpgradeResult(result *skills.UpgradeResult, format string) error {

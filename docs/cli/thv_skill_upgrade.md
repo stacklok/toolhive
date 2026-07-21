@@ -26,6 +26,10 @@ and --allow-ref-change to permit the resolved reference itself changing
 --fail-on-changes evaluates the same plan and never installs: it is a CI
 freshness gate.
 
+Unless --preview is set, upgrade prompts for confirmation before installing —
+skill content is a set of AI-followed instructions. Pass --yes to skip the
+prompt (required in non-interactive contexts such as CI).
+
 ```
 thv skill upgrade [skill-name...] [flags]
 ```
@@ -40,6 +44,7 @@ thv skill upgrade [skill-name...] [flags]
   -h, --help                  help for upgrade
       --preview               Report what would change without persisting anything (OCI sources are still fetched to compare digests)
       --project-root string   Project root path (default: auto-detected from the current directory)
+      --yes                   Skip the confirmation prompt (required when not running interactively)
 ```
 
 ### Options inherited from parent commands

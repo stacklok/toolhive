@@ -308,6 +308,7 @@ installed_skills table
 ├── client_apps    (BLOB, JSONB-encoded []string)
 ├── status         (installed | pending | failed)
 ├── installed_at   (TEXT, ISO 8601)
+├── managed        (INTEGER, 0/1 — tracked in the project's toolhive.lock.yaml; see below)
 └── UNIQUE(entry_id, scope, project_root)
 
 skill_dependencies table
@@ -322,7 +323,86 @@ oci_tags table (reserved; not currently populated)
 └── digest     (TEXT NOT NULL — content digest)
 ```
 
-**Implementation:** `pkg/storage/sqlite/skill_store.go`, `pkg/storage/interfaces.go` (SkillStore), `pkg/storage/sqlite/migrations/001_create_entries_and_skills.sql`
+**Implementation:** `pkg/storage/sqlite/skill_store.go`, `pkg/storage/interfaces.go` (SkillStore), `pkg/storage/sqlite/migrations/001_create_entries_and_skills.sql`, `003_add_managed_flag.sql`
+
+## Project Lock File
+
+RFC [THV-0080](https://github.com/stacklok/toolhive-rfcs/blob/main/rfcs/THV-0080-skills-lock-file.md) adds a project-level `toolhive.lock.yaml`, committed at the project root, that pins the exact content of every project-scoped skill install — the same guarantee `package-lock.json`, `Cargo.lock`, and `go.sum` provide elsewhere. Two teammates (or a CI runner) cloning the same repo restore identical skill content via `thv skill sync`, rather than whatever the source currently resolves to.
+
+### Rollout
+
+The feature is gated behind the `TOOLHIVE_SKILLS_LOCK_ENABLED` environment variable (`skills.LockFileFeatureEnabled()`) while it lands across a stack of PRs, following the existing `TOOLHIVE_DEV` precedent for staged rollouts (`pkg/skills/gitresolver/reference.go`). With the flag unset, project-scope installs behave exactly as they did before this RFC — no lock file is written, no `toolhive.requires` materialization happens, `sync`/`upgrade` refuse with a clear "experimental" error.
+
+### Schema
+
+```yaml
+version: 1
+skills:
+  - name: code-review
+    version: "1.0.0"
+    source: code-review                          # exactly what the user/registry resolver requested; never rewritten
+    resolvedReference: ghcr.io/org/code-review:1.0.0
+    digest: sha256:9f2b1e...                      # the pin: OCI manifest digest or git commit hash
+    contentDigest: sha256:a1b2c3d4...              # deterministic dirhash of the materialized files, for on-disk integrity
+    requiredBy: [parent-skill]                    # present only for transitively materialized toolhive.requires deps
+    explicit: true                                 # false for a dependency that was never directly installed by name
+```
+
+Entries are sorted by name for stable diffs. `source` is never rewritten by `sync` or `upgrade` — only `upgrade` re-resolves it, and only to decide whether newer content exists.
+
+**Implementation:** `pkg/skills/lockfile/` (schema, load/save, atomic writes via `os.Root`, `contentDigest` dirhash algorithm)
+
+### Install and Uninstall Hooks
+
+For project-scope installs (with the feature enabled), `skillsvc.Install`'s single existing choke point (`installAndRegister` — every dispatch path, OCI or git, direct or registry-resolved, converges there) additionally:
+
+1. Computes `contentDigest` from the extracted files.
+2. Materializes `toolhive.requires` dependencies recursively — reading `SKILL.md` back from disk (not from the resolver's own parse, so this works uniformly across OCI and git sources), with a `Visited` set guarding cycles and `skills.MaxDependencies` bounding the whole tree.
+3. Upserts the lock entry, merging `requiredBy` when a dependency is shared by multiple parents.
+
+**A lock-write failure fails the entire install** (rolling back the DB record, matching the existing group-registration failure/rollback pattern) — RFC THV-0080 treats "installed but unpinned" as worse than "not installed."
+
+`Uninstall` mirrors this: for a lock-managed skill, it removes the skill's own lock entry and cascades to any dependency that consequently loses its last requiring parent (and is not itself `explicit`), via `Lockfile.RemoveParentFromRequiredBy` — itself cycle-safe.
+
+**Implementation:** `pkg/skills/skillsvc/lock.go`, `pkg/skills/skillsvc/install.go`, `pkg/skills/skillsvc/uninstall.go`
+
+### Sync
+
+`thv skill sync` reconciles installed skills against the lock file:
+
+| Lock file vs. installed state | Outcome |
+|---|---|
+| Digest and contentDigest both match | Reported as up to date |
+| DB record exists but digest or contentDigest differs | Drifted — reinstalled at the pinned reference (`--check`: reported only, nothing written) |
+| No DB record for a locked entry | Missing — installed fresh at the pinned reference |
+| Installed, `managed`, but no lock entry | Removed from lock — reported (`--prune`: uninstalled) |
+| Installed, not `managed`, no lock entry | Never managed — reported (`--adopt`: lock entry written from current state) |
+
+Reinstalling *at the pinned reference* (never re-resolving `source`) uses `buildPinnedReference` (`pkg/skills/skillsvc/pin.go`) to rewrite the entry's `resolvedReference` with its pinned digest substituted in (an OCI digest reference, or a git reference with the commit hash spliced in as the ref). A subtlety this surfaced: reinstalling at an *unchanged* digest — the normal case when repairing on-disk drift — would otherwise hit the install path's "same digest means content is already correct" fast path and silently skip re-extraction. An internal `InstallOptions.SyncRestore` flag bypasses that fast path specifically for this case.
+
+**Implementation:** `pkg/skills/skillsvc/sync.go`, `pkg/skills/skillsvc/pin.go`
+
+### Upgrade
+
+`thv skill upgrade [name...]` re-resolves each targeted entry's `source` (via the same git/OCI/registry dispatch order `Install` uses, stopping short of extraction — `resolveLatestState`) and installs newer content when the resolved digest changed. Entries pinned to an immutable reference (an OCI digest, or a git reference already pinned to a full commit hash — `isImmutableSource`) are reported not-upgradable. `--preview` reports what would change without persisting it (an OCI preview still pulls the artifact into the local store — there's no lighter "digest only" primitive — so it is not fully side-effect-free, matching the RFC's own caveat). `--allow-ref-change` permits the resolved reference itself changing; `--fail-on-changes` gives CI a freshness gate.
+
+**Implementation:** `pkg/skills/skillsvc/upgrade.go`
+
+### CLI Confirmation and Exit Codes
+
+Because skill content is a set of AI-followed instructions, `sync` and `upgrade` gate real installs behind a confirmation prompt (skipped by `--check`/`--preview`, which never install anything). On a non-interactive terminal without `--yes`, the command refuses outright rather than silently proceeding.
+
+Exit codes follow a CI-oriented contract distinct from the generic `1` used elsewhere in the CLI:
+
+| Code | Meaning |
+|---|---|
+| `0` | Success |
+| `1` | Generic/unclassified error (cobra's default) |
+| `2` | Check/freshness failure — `sync --check` found drift, or `upgrade --fail-on-changes` found available changes |
+| `3` | Partial failure — some, but not all, targeted skills failed |
+| `4` | Policy rejection — the confirmation gate declined a non-interactive run, or `--allow-ref-change` blocked a reference change |
+
+**Implementation:** `cmd/thv/app/exitcode.go`, `cmd/thv/app/skill_confirm.go`, `cmd/thv/app/skill_sync.go`, `cmd/thv/app/skill_upgrade.go`
 
 ## API
 
@@ -342,6 +422,10 @@ oci_tags table (reserved; not currently populated)
 | `GET` | `/builds` | List local builds |
 | `DELETE` | `/builds/{tag}` | Delete a local build |
 | `GET` | `/content` | Get a skill's SKILL.md body and file listing for a reference |
+| `POST` | `/sync` | Restore project skills to match the lock file ([Project Lock File](#project-lock-file), RFC THV-0080) |
+| `POST` | `/upgrade` | Re-resolve project skills and install newer pinned content ([Project Lock File](#project-lock-file), RFC THV-0080) |
+
+`/sync` and `/upgrade` are served only when the configured `SkillService` also implements `skills.SkillLockService` (as `skillsvc.New`'s does) — otherwise they return `501 Not Implemented`.
 
 **Implementation:** `pkg/api/v1/skills.go`
 
@@ -366,7 +450,9 @@ thv skill
 ├── build [path]         Build skill to OCI artifact
 ├── push [reference]     Push built skill to registry
 ├── builds               List locally-built OCI artifacts
-└── builds remove [tag]  Delete a locally-built artifact
+├── builds remove [tag]  Delete a locally-built artifact
+├── sync                 Restore project skills to match the lock file
+└── upgrade [name...]    Re-resolve project skills and install newer pinned content
 ```
 
 **Implementation:** `cmd/thv/app/skill*.go`
@@ -455,6 +541,12 @@ ToolHive owns the installation lifecycle, scoping model, CLI/API interfaces, and
 | HTTP client | `pkg/skills/client/` |
 | CLI commands | `cmd/thv/app/skill*.go` |
 | Group integration | `pkg/groups/skills.go` |
+| Lock file schema | `pkg/skills/lockfile/` |
+| Lock file rollout gate | `pkg/skills/feature_gate.go` |
+| Install/uninstall lock hooks | `pkg/skills/skillsvc/lock.go` |
+| Sync | `pkg/skills/skillsvc/sync.go`, `pkg/skills/skillsvc/pin.go` |
+| Upgrade | `pkg/skills/skillsvc/upgrade.go` |
+| CLI exit codes / confirmation | `cmd/thv/app/exitcode.go`, `cmd/thv/app/skill_confirm.go` |
 
 ## Related Documentation
 

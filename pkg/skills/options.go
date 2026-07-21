@@ -54,6 +54,13 @@ type InstallOptions struct {
 	// through recursive dependency installs. Internal use only — NOT exposed
 	// via HTTP API.
 	Visited map[string]struct{} `json:"-"`
+	// SyncRestore forces re-extraction to every existing client even when
+	// Digest matches the currently-installed digest. Set by Sync when
+	// reinstalling at a pinned reference: the whole point is repairing
+	// on-disk drift that happened without the pinned digest changing, so the
+	// normal "same digest means content is already correct" fast path must
+	// not apply. Internal use only — NOT exposed via HTTP API.
+	SyncRestore bool `json:"-"`
 }
 
 // InstallResult contains the outcome of an Install operation.

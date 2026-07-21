@@ -49,6 +49,11 @@ func newLockTestService(t *testing.T, gr *gitmocks.MockResolver) (skills.SkillSe
 		DoAndReturn(func(_, skillName string, _ skills.Scope, _ string) (string, error) {
 			return filepath.Join(installBase, skillName), nil
 		})
+	// Only reached when a caller omits --clients with no prior DB record to
+	// fall back on (e.g. sync restoring an entry missing from a fresh
+	// clone) — the RFC's client-agnostic design expands that to every
+	// skill-supporting client detected on the host.
+	pr.EXPECT().ListSkillSupportingClients().AnyTimes().Return([]string{"claude-code"})
 
 	svc := New(store, WithPathResolver(pr), WithGitResolver(gr))
 	return svc, projectRoot
@@ -121,11 +126,16 @@ func (f *fakeGitFixtures) register(name string, content []byte) {
 	f.skills[url] = gitFixture{name: name, content: content}
 }
 
-func readLockfile(t *testing.T, projectRoot string) *lockfile.Lockfile {
+func mustOpenRoot(t *testing.T, projectRoot string) lockfile.Root {
 	t.Helper()
 	root, err := lockfile.OpenRoot(projectRoot)
 	require.NoError(t, err)
-	lf, err := lockfile.Load(root)
+	return root
+}
+
+func readLockfile(t *testing.T, projectRoot string) *lockfile.Lockfile {
+	t.Helper()
+	lf, err := lockfile.Load(mustOpenRoot(t, projectRoot))
 	require.NoError(t, err)
 	return lf
 }

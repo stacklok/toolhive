@@ -41,3 +41,11 @@ type installResponse struct {
 type listBuildsResponse struct {
 	Builds []skills.LocalBuild `json:"builds"`
 }
+
+type syncRequest struct {
+	ProjectRoot string   `json:"project_root"`
+	Clients     []string `json:"clients,omitempty"`
+	Prune       bool     `json:"prune,omitempty"`
+	Check       bool     `json:"check,omitempty"`
+	Adopt       bool     `json:"adopt,omitempty"`
+}

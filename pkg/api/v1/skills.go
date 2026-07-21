@@ -4,7 +4,9 @@
 package v1
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -15,15 +17,29 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
+// skillSyncer is the narrow slice of skills.SkillLockService the sync
+// endpoint needs. Kept separate from the full interface so this PR does not
+// need to ship an Upgrade stub; SkillsRouter widens to skills.SkillLockService
+// once Upgrade lands alongside its own endpoint.
+type skillSyncer interface {
+	Sync(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error)
+}
+
 // SkillsRoutes defines the routes for skill management.
 type SkillsRoutes struct {
 	skillService skills.SkillService
+	lockService  skillSyncer
 }
 
-// SkillsRouter creates a new router for skill management endpoints.
+// SkillsRouter creates a new router for skill management endpoints. If
+// skillService's concrete implementation also satisfies skillSyncer (as
+// skillsvc.New's does), /sync is served; otherwise it returns 501.
 func SkillsRouter(skillService skills.SkillService) http.Handler {
 	routes := SkillsRoutes{
 		skillService: skillService,
+	}
+	if syncer, ok := skillService.(skillSyncer); ok {
+		routes.lockService = syncer
 	}
 
 	r := chi.NewRouter()
@@ -37,6 +53,7 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 	r.Get("/builds", apierrors.ErrorHandler(routes.listBuilds))
 	r.Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
 	r.Get("/content", apierrors.ErrorHandler(routes.getSkillContent))
+	r.Post("/sync", apierrors.ErrorHandler(routes.syncSkills))
 
 	return r
 }
@@ -364,4 +381,46 @@ func (s *SkillsRoutes) getSkillContent(w http.ResponseWriter, r *http.Request) e
 
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(content)
+}
+
+// syncSkills restores a project's installed skills to match its lock file.
+//
+//	@Summary		Sync project skills from the lock file
+//	@Description	Restore a project's installed skills to match toolhive.lock.yaml
+//	@Tags			skills
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		syncSkillsRequest	true	"Sync request"
+//	@Success		200		{object}	skills.SyncResult
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		403		{string}	string	"Forbidden (feature not enabled)"
+//	@Failure		500		{string}	string	"Internal Server Error"
+//	@Failure		501		{string}	string	"Not Implemented"
+//	@Router			/api/v1beta/skills/sync [post]
+func (s *SkillsRoutes) syncSkills(w http.ResponseWriter, r *http.Request) error {
+	if s.lockService == nil {
+		return httperr.WithCode(errors.New("skill sync is not supported by this server"), http.StatusNotImplemented)
+	}
+
+	var req syncSkillsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	result, err := s.lockService.Sync(r.Context(), skills.SyncOptions{
+		ProjectRoot: req.ProjectRoot,
+		Clients:     req.Clients,
+		Prune:       req.Prune,
+		Check:       req.Check,
+		Adopt:       req.Adopt,
+	})
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(result)
 }

@@ -398,11 +398,16 @@ func writeIngressProxyConfig(
 ) {
 	portNum := strconv.Itoa(upstreamPort)
 	squidPortNum := strconv.Itoa(squidPort)
+	// standby=2 keeps warm idle connections open to the upstream so the first
+	// request after a cold start (notably a long-lived GET SSE stream that a
+	// server-initiated request rides on) is forwarded without paying inline DNS
+	// + TCP connect latency. Without it, the cold first GET races behind a
+	// later POST that reuses a warmed path, reordering server->client streams.
 	sb.WriteString(
 		"\n# Reverse proxy setup for port " + portNum + "\n" +
 			"http_port 0.0.0.0:" + squidPortNum + " accel defaultsite=" + serverHostname + "\n" +
 			"cache_peer " + serverHostname + " parent " + portNum + " 0 no-query originserver name=origin_" +
-			portNum + " connect-timeout=5 connect-fail-limit=5\n")
+			portNum + " connect-timeout=5 connect-fail-limit=5 standby=2\n")
 
 	// Check if inbound network permissions are configured
 	if networkPermissions != nil && networkPermissions.Inbound != nil && len(networkPermissions.Inbound.AllowHost) > 0 {

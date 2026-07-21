@@ -51,16 +51,32 @@ func (s *service) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*ski
 		return nil, err
 	}
 
-	result := &skills.UpgradeResult{}
-	for _, entry := range targets {
-		outcome := s.upgradeEntry(ctx, opts, entry)
-		result.Outcomes = append(result.Outcomes, outcome)
-		if opts.FailOnChanges && outcome.Status != skills.UpgradeStatusUpToDate && outcome.Status != skills.UpgradeStatusNotUpgradable {
-			return result, httperr.WithCode(
-				fmt.Errorf("skill %q would change (%s); failing due to --fail-on-changes", outcome.Name, outcome.Status),
-				http.StatusConflict,
-			)
+	// Resolve every target's latest state first, without installing
+	// anything. This lets --fail-on-changes be checked against the whole
+	// batch before any of it is applied — a mutating call must not upgrade
+	// some skills for real and then report a conflict, leaving a partially
+	// upgraded project with no clear signal of what happened.
+	plans := make([]upgradePlan, len(targets))
+	for i, entry := range targets {
+		plans[i] = s.planUpgrade(ctx, opts, entry)
+	}
+
+	if opts.FailOnChanges {
+		result := &skills.UpgradeResult{}
+		for _, p := range plans {
+			result.Outcomes = append(result.Outcomes, p.outcome)
+			if p.outcome.Status != skills.UpgradeStatusUpToDate && p.outcome.Status != skills.UpgradeStatusNotUpgradable {
+				return result, httperr.WithCode(
+					fmt.Errorf("skill %q would change (%s); failing due to --fail-on-changes", p.outcome.Name, p.outcome.Status),
+					http.StatusConflict,
+				)
+			}
 		}
+	}
+
+	result := &skills.UpgradeResult{}
+	for _, p := range plans {
+		result.Outcomes = append(result.Outcomes, s.applyUpgrade(ctx, opts, p))
 	}
 	return result, nil
 }
@@ -88,16 +104,30 @@ func selectUpgradeTargets(lf *lockfile.Lockfile, names []string) ([]lockfile.Ent
 	return targets, nil
 }
 
-// upgradeEntry resolves entry's current state and, if warranted, applies the
-// upgrade. It never returns an error: every outcome (including a resolution
-// or install failure) is reported as an UpgradeOutcome so a multi-skill
-// upgrade can report partial results instead of aborting on the first error.
-func (s *service) upgradeEntry(ctx context.Context, opts skills.UpgradeOptions, entry lockfile.Entry) skills.UpgradeOutcome {
+// upgradePlan is entry's resolved outcome before any install happens: either
+// a terminal status (not-upgradable, up-to-date, ref-change-blocked, or a
+// resolution failure) that needs no further action, or the pinned reference
+// to install when the upgrade is applied.
+type upgradePlan struct {
+	entry       lockfile.Entry
+	outcome     skills.UpgradeOutcome
+	pinnedRef   string // set only when the upgrade needs installing
+	resolvedRef string // the resolved reference to record as ResolvedReference; set alongside pinnedRef
+}
+
+// planUpgrade resolves entry's current state and determines its outcome,
+// without installing anything — this lets Upgrade check --fail-on-changes
+// against every target before any of them are applied. When an upgrade is
+// warranted, the outcome's digest is pinned into pinnedRef so applyUpgrade
+// installs exactly what was resolved here, rather than re-resolving
+// entry.Source from scratch (which could pick up a different digest if a
+// mutable ref moved between planning and applying).
+func (s *service) planUpgrade(ctx context.Context, opts skills.UpgradeOptions, entry lockfile.Entry) upgradePlan {
 	outcome := skills.UpgradeOutcome{Name: entry.Name, OldDigest: entry.Digest}
 
 	if isImmutableSource(entry) {
 		outcome.Status = skills.UpgradeStatusNotUpgradable
-		return outcome
+		return upgradePlan{entry: entry, outcome: outcome}
 	}
 
 	newRef, newDigest, err := s.resolveLatestState(ctx, entry.Source)
@@ -105,44 +135,66 @@ func (s *service) upgradeEntry(ctx context.Context, opts skills.UpgradeOptions, 
 		outcome.Status = skills.UpgradeStatusFailed
 		outcome.Reason = classifySyncFailure(err)
 		outcome.Error = err.Error()
-		return outcome
+		return upgradePlan{entry: entry, outcome: outcome}
 	}
 	outcome.NewDigest = newDigest
 
 	if newDigest == entry.Digest {
 		outcome.Status = skills.UpgradeStatusUpToDate
-		return outcome
+		return upgradePlan{entry: entry, outcome: outcome}
 	}
 
 	if newRef != entry.ResolvedReference && !opts.AllowRefChange {
 		outcome.Status = skills.UpgradeStatusRefChangeBlocked
 		outcome.NewResolvedReference = newRef
-		return outcome
+		return upgradePlan{entry: entry, outcome: outcome}
 	}
 	if newRef != entry.ResolvedReference {
 		outcome.NewResolvedReference = newRef
 	}
 
-	if opts.Preview {
-		outcome.Status = skills.UpgradeStatusUpgraded
-		return outcome
+	pinnedRef, err := buildPinnedReference(lockfile.Entry{ResolvedReference: newRef, Digest: newDigest})
+	if err != nil {
+		outcome.Status = skills.UpgradeStatusFailed
+		outcome.Reason = skills.FailureReasonUnknown
+		outcome.Error = fmt.Errorf("pinning resolved reference: %w", err).Error()
+		return upgradePlan{entry: entry, outcome: outcome}
+	}
+
+	outcome.Status = skills.UpgradeStatusUpgraded
+	return upgradePlan{entry: entry, outcome: outcome, pinnedRef: pinnedRef, resolvedRef: newRef}
+}
+
+// applyUpgrade installs plan's pinned content when the plan calls for it.
+// Preview mode reports the plan's outcome without installing anything.
+func (s *service) applyUpgrade(ctx context.Context, opts skills.UpgradeOptions, plan upgradePlan) skills.UpgradeOutcome {
+	if plan.pinnedRef == "" || opts.Preview {
+		return plan.outcome
+	}
+
+	clients := opts.Clients
+	if len(clients) == 0 {
+		if existing, err := s.store.Get(ctx, plan.entry.Name, skills.ScopeProject, opts.ProjectRoot); err == nil {
+			clients = existing.Clients
+		}
 	}
 
 	if _, err := s.Install(ctx, skills.InstallOptions{
-		Name:        entry.Source,
-		Scope:       skills.ScopeProject,
-		ProjectRoot: opts.ProjectRoot,
-		Clients:     opts.Clients,
-		LockSource:  entry.Source,
+		Name:                  plan.pinnedRef,
+		Scope:                 skills.ScopeProject,
+		ProjectRoot:           opts.ProjectRoot,
+		Clients:               clients,
+		LockSource:            plan.entry.Source,
+		LockResolvedReference: plan.resolvedRef,
 	}); err != nil {
+		outcome := plan.outcome
 		outcome.Status = skills.UpgradeStatusFailed
 		outcome.Reason = classifySyncFailure(err)
 		outcome.Error = err.Error()
 		return outcome
 	}
 
-	outcome.Status = skills.UpgradeStatusUpgraded
-	return outcome
+	return plan.outcome
 }
 
 // resolveLatestState re-resolves source (a lock entry's original Source

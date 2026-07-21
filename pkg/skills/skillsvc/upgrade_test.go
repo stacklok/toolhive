@@ -59,7 +59,7 @@ func TestUpgrade_InstallsNewerContent(t *testing.T) {
 	beforeEntry, _ := before.Get("my-skill")
 
 	// Republish newer content at the same fixture URL — same source, new commit.
-	fx.register("my-skill", gitSkillVersion("my-skill", "2.0.0"))
+	fx.register("my-skill", gitSkillVersion("my-skill"))
 
 	result, err := svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
 	require.NoError(t, err)
@@ -91,7 +91,7 @@ func TestUpgrade_PreviewDoesNotInstall(t *testing.T) {
 	before := readLockfile(t, projectRoot)
 	beforeEntry, _ := before.Get("my-skill")
 
-	fx.register("my-skill", gitSkillVersion("my-skill", "2.0.0"))
+	fx.register("my-skill", gitSkillVersion("my-skill"))
 
 	result, err := svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ //nolint:forcetypeassert
 		ProjectRoot: projectRoot, Preview: true,
@@ -104,6 +104,39 @@ func TestUpgrade_PreviewDoesNotInstall(t *testing.T) {
 	afterEntry, ok := after.Get("my-skill")
 	require.True(t, ok)
 	assert.Equal(t, beforeEntry.Digest, afterEntry.Digest, "preview must not rewrite the lock file")
+}
+
+// TestUpgrade_PreservesExistingClients guards against Upgrade silently
+// expanding a skill to every detected client. Install without an explicit
+// InstallOptions.Clients falls back to whatever the caller passed (here,
+// a single client); Upgrade must default to that skill's already-installed
+// Clients when opts.Clients is empty, matching Sync's reinstallPinned — not
+// fall through to Install's own "no clients means every detected client"
+// default.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestUpgrade_PreservesExistingClients(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	fx.register("my-skill", gitSkillVersion("my-skill"))
+
+	result, err := svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ProjectRoot: projectRoot}) //nolint:forcetypeassert
+	require.NoError(t, err)
+	require.Len(t, result.Outcomes, 1)
+	assert.Equal(t, skills.UpgradeStatusUpgraded, result.Outcomes[0].Status)
+
+	info, err := svc.Info(t.Context(), skills.InfoOptions{Name: "my-skill", Scope: skills.ScopeProject, ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	assert.Equal(t, []string{"claude-code"}, info.InstalledSkill.Clients,
+		"upgrade must preserve the skill's existing clients, not expand to every detected client")
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
@@ -146,7 +179,7 @@ func TestUpgrade_UnknownNameReturnsNotFound(t *testing.T) {
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
-func TestUpgrade_FailOnChangesStopsAtFirstChange(t *testing.T) {
+func TestUpgrade_FailOnChangesWithPreviewReportsConflictWithoutWriting(t *testing.T) {
 	gr, fx := newGitResolverMock(t)
 	fx.register("my-skill", gitSkill("my-skill"))
 	svc, projectRoot := newLockTestService(t, gr)
@@ -157,11 +190,60 @@ func TestUpgrade_FailOnChangesStopsAtFirstChange(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	fx.register("my-skill", gitSkillVersion("my-skill", "2.0.0"))
+	fx.register("my-skill", gitSkillVersion("my-skill"))
 
 	_, err = svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ //nolint:forcetypeassert
 		ProjectRoot: projectRoot, Preview: true, FailOnChanges: true,
 	})
 	require.Error(t, err)
 	assert.Equal(t, http.StatusConflict, httperr.Code(err))
+}
+
+// TestUpgrade_FailOnChangesWithoutPreviewDoesNotMutateAnyEntry covers the
+// core fix: --fail-on-changes must behave as a read-only CI gate even
+// without --preview. Before the fix, Upgrade installed each target in
+// sequence and only checked FailOnChanges after each one, so a multi-entry
+// lock file with one changed skill would install that skill for real before
+// reporting the conflict — a partial mutation the gate is supposed to
+// prevent entirely.
+//
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestUpgrade_FailOnChangesWithoutPreviewDoesNotMutateAnyEntry(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("changed-skill", gitSkill("changed-skill"))
+	fx.register("stable-skill", gitSkill("stable-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	changedRef, _ := gitRef("changed-skill")
+	stableRef, _ := gitRef("stable-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: changedRef, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+	_, err = svc.Install(t.Context(), skills.InstallOptions{
+		Name: stableRef, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	before := readLockfile(t, projectRoot)
+	changedBefore, _ := before.Get("changed-skill")
+	stableBefore, _ := before.Get("stable-skill")
+
+	// Republish newer content for only one of the two skills.
+	fx.register("changed-skill", gitSkillVersion("changed-skill"))
+
+	_, err = svc.(*service).Upgrade(t.Context(), skills.UpgradeOptions{ //nolint:forcetypeassert
+		ProjectRoot: projectRoot, FailOnChanges: true,
+	})
+	require.Error(t, err)
+	assert.Equal(t, http.StatusConflict, httperr.Code(err))
+
+	after := readLockfile(t, projectRoot)
+	changedAfter, ok := after.Get("changed-skill")
+	require.True(t, ok)
+	assert.Equal(t, changedBefore.Digest, changedAfter.Digest,
+		"the changed skill must not be installed for real before --fail-on-changes reports the conflict")
+	stableAfter, ok := after.Get("stable-skill")
+	require.True(t, ok)
+	assert.Equal(t, stableBefore.Digest, stableAfter.Digest)
 }

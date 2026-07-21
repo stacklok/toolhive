@@ -598,9 +598,9 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 	}
 
 	// MCP endpoint - apply middleware chain (wrapping order, execution happens in reverse):
-	// Code wraps: auth → rate-limit → audit → MCP-parsing → telemetry
+	// Code wraps: auth → rate-limit → audit → MCP-parsing → classification → telemetry
 	// Execution order: recovery → body-limit → header-val → auth →
-	//   rate-limit → audit → MCP-parsing → telemetry → handler
+	//   rate-limit → audit → MCP-parsing → classification → telemetry → handler
 	//
 	// Upstream token refresh failures are detected inside AuthMiddleware itself:
 	// GetAllUpstreamCredentials returns a non-empty failed-provider slice when
@@ -625,6 +625,12 @@ func (s *Server) Handler(_ context.Context) (http.Handler, error) {
 		mcpHandler = s.config.TelemetryProvider.Middleware(s.config.Name, "streamable-http")(mcpHandler)
 		slog.Info("telemetry middleware enabled for MCP endpoints")
 	}
+
+	// Classify Modern (2026-07-28) vs Legacy at the decode seam and reject
+	// malformed Modern requests before dispatch. No routing change: Legacy
+	// and well-formed Modern requests both fall through to the same handler
+	// (Modern dispatch lands in Phase 2, #5756).
+	mcpHandler = classificationMiddleware(mcpHandler)
 
 	// Apply MCP parsing middleware to extract JSON-RPC method from request body.
 	// This runs before telemetry so that recordMetrics can label metrics with the

@@ -10,6 +10,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yosida95/uritemplate/v3"
+
 	"github.com/stacklok/toolhive/pkg/audit"
 	"github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/vmcp"
@@ -368,6 +370,13 @@ func (c *coreVMCP) LookupTool(ctx context.Context, identity *auth.Identity, name
 // LookupResource resolves an advertised resource URI to its capability without
 // reading it. Delegates to ListResources, so a URI that is unknown, unadvertised,
 // or denied to identity returns vmcp.ErrNotFound.
+//
+// A URI backed by a resource TEMPLATE resolves too: after the concrete-resource
+// miss, the URI is checked against the admission-filtered resource templates
+// (the same view ListResourceTemplates advertises) — an exact template-string
+// match (the form a resources/subscribe or completion ref/resource carries) or
+// a template-expansion match. This keeps subscribe's admission aligned with
+// read: any URI ReadResource would serve is a valid subscription target.
 func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, uri string) (*vmcp.Resource, error) {
 	resources, err := c.ListResources(ctx, identity)
 	if err != nil {
@@ -379,7 +388,37 @@ func (c *coreVMCP) LookupResource(ctx context.Context, identity *auth.Identity, 
 			return &resource, nil
 		}
 	}
+
+	templates, err := c.ListResourceTemplates(ctx, identity)
+	if err != nil {
+		return nil, err
+	}
+	for i := range templates {
+		if templates[i].URITemplate == uri || templateMatches(templates[i].URITemplate, uri) {
+			// Project the template onto a resource (the same projection
+			// filterResourceTemplates uses) so lookup and list agree on the shape.
+			return &vmcp.Resource{
+				URI:         templates[i].URITemplate,
+				Name:        templates[i].Name,
+				Description: templates[i].Description,
+				MimeType:    templates[i].MimeType,
+				BackendID:   templates[i].BackendID,
+			}, nil
+		}
+	}
+
 	return nil, fmt.Errorf("%w: resource %q", vmcp.ErrNotFound, uri)
+}
+
+// templateMatches reports whether the RFC 6570 URI template matches uri. An
+// invalid template string reports no match (it was already logged and skipped
+// at routing-table construction).
+func templateMatches(tmplStr, uri string) bool {
+	tmpl, err := uritemplate.New(tmplStr)
+	if err != nil {
+		return false
+	}
+	return tmpl.Match(uri) != nil
 }
 
 // LookupPrompt resolves an advertised prompt name to its capability without

@@ -179,9 +179,9 @@ Beyond tools, vMCP aggregates and serves the full complement of MCP capabilities
 |------------|---------|-------|
 | Tools (`tools/list`, `tools/call`) | Yes | Aggregated, conflict-resolved, admission-filtered |
 | Resources (`resources/list`, `resources/read`) | Yes | Admission-filtered per identity |
-| Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; the router matches an expanded URI against the aggregated templates |
+| Resource templates (`resources/templates/list`) | Yes | Templated reads route through the same `ReadResource` path; the router matches an expanded URI against the aggregated templates, and an exact template-string key routes to its backend |
 | Prompts (`prompts/list`, `prompts/get`) | Yes | Served per-session |
-| Completions (`completion/complete`) | Yes | A `ref/prompt` routes via the prompts table; a `ref/resource` routes via the resource-templates table (with an exact-resource fallback). Unroutable refs return an empty result (lenient completion); admission denial returns an error |
+| Completions (`completion/complete`) | Yes | A `ref/prompt` routes via the prompts table; a `ref/resource` carries the URI-template string per the spec and routes via the resource-templates table (exact template-string key, with exact-resource and template-expansion fallbacks). Unroutable refs return an empty result (lenient completion); admission denial returns an error |
 | Resource subscriptions (`resources/subscribe`, `resources/unsubscribe`) | Ack-level only | vMCP accepts and records the subscription (after session-binding and resource-admission checks) but does **not** yet forward backend `notifications/resources/updated` — see the limitation below |
 
 The completion handler is a single global handler installed via `WithCompletionHandler`, so it recovers the session from the SDK request context rather than a per-session closure. Setting it makes the shim auto-advertise the `completions` capability at initialize.

@@ -338,32 +338,55 @@ func TestComplete_RoutesPromptRef(t *testing.T) {
 }
 
 // TestComplete_RoutesResourceTemplateRef verifies a ref/resource completion resolves
-// the backend through the resource-templates routing table (the requested URI is
-// matched against the aggregated templates) and forwards to the backend client.
+// the backend through the resource-templates routing table and forwards to the
+// backend client. Per the MCP spec a ref/resource carries the URI TEMPLATE STRING
+// itself (ResourceTemplateReference's uri is "@format uri-template"), which a
+// template does not match by expansion — the router must route the exact template
+// string to its backend. An expanded URI still routes via template matching.
 func TestComplete_RoutesResourceTemplateRef(t *testing.T) {
 	t.Parallel()
-	cfg, m := baseConfig(t)
 
-	target := backendTarget()
-	expectAggregation(m, &aggregator.AggregatedCapabilities{
-		RoutingTable: &vmcp.RoutingTable{
-			ResourceTemplates: map[string]*vmcp.BackendTarget{"file:///logs/{date}.txt": target},
+	tests := []struct {
+		name string
+		uri  string
+	}{
+		{
+			name: "template string (spec form)",
+			uri:  "file:///logs/{date}.txt",
 		},
-	})
+		{
+			name: "expanded URI (template expansion match)",
+			uri:  "file:///logs/2025-01-01.txt",
+		},
+	}
 
-	want := &vmcp.CompletionResult{Values: []string{"2025-01-01.txt"}}
-	ref := vmcp.CompletionRef{Type: vmcp.CompletionRefTypeResource, URI: "file:///logs/2025-01-01.txt"}
-	m.client.EXPECT().
-		Complete(gomock.Any(), target, ref, "date", "2025", gomock.Any()).
-		Return(want, nil)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			cfg, m := baseConfig(t)
 
-	c, err := New(cfg)
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = c.Close() })
+			target := backendTarget()
+			expectAggregation(m, &aggregator.AggregatedCapabilities{
+				RoutingTable: &vmcp.RoutingTable{
+					ResourceTemplates: map[string]*vmcp.BackendTarget{"file:///logs/{date}.txt": target},
+				},
+			})
 
-	got, err := c.Complete(t.Context(), nil, ref, "date", "2025", nil)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
+			want := &vmcp.CompletionResult{Values: []string{"2025-01-01.txt"}}
+			ref := vmcp.CompletionRef{Type: vmcp.CompletionRefTypeResource, URI: tc.uri}
+			m.client.EXPECT().
+				Complete(gomock.Any(), target, ref, "date", "2025", gomock.Any()).
+				Return(want, nil)
+
+			c, err := New(cfg)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = c.Close() })
+
+			got, err := c.Complete(t.Context(), nil, ref, "date", "2025", nil)
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+		})
+	}
 }
 
 // TestComplete_UnroutableRefReturnsEmpty covers the lenient-completion contract:

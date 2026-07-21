@@ -293,6 +293,20 @@ func TestSessionRouter_RouteResource_TemplateFallback(t *testing.T) {
 			expectedID: "logs-backend",
 		},
 		{
+			// Per the MCP spec, a completion/complete with a ref/resource carries
+			// the URI TEMPLATE string itself, and a template does not match its
+			// own template string. The exact template-string key must route.
+			name: "exact template string routes to its backend",
+			routingTable: &vmcp.RoutingTable{
+				Resources: map[string]*vmcp.BackendTarget{},
+				ResourceTemplates: map[string]*vmcp.BackendTarget{
+					"file:///logs/{date}.txt": {WorkloadID: "logs-backend"},
+				},
+			},
+			uri:        "file:///logs/{date}.txt",
+			expectedID: "logs-backend",
+		},
+		{
 			name: "exact resource wins over a matching template",
 			routingTable: &vmcp.RoutingTable{
 				Resources: map[string]*vmcp.BackendTarget{

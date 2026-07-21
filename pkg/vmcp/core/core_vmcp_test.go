@@ -465,12 +465,15 @@ func TestLookup(t *testing.T) {
 	t.Parallel()
 	cfg, m := baseConfig(t)
 
-	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(6)
+	// Seven aggregations: each Lookup aggregates once, except the failing
+	// LookupResource, which also consults the resource-template view on the
+	// concrete-resource miss.
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(7)
 	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
 		Tools:     []vmcp.Tool{backendTool("tool_a")},
 		Resources: []vmcp.Resource{{URI: "file://a", BackendID: "be1"}},
 		Prompts:   []vmcp.Prompt{{Name: "p1", BackendID: "be1"}},
-	}, nil).Times(6)
+	}, nil).Times(7)
 
 	c, err := New(cfg)
 	require.NoError(t, err)
@@ -493,6 +496,50 @@ func TestLookup(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, "be1", prompt.BackendID)
 	_, err = c.LookupPrompt(ctx, nil, "missing")
+	assert.ErrorIs(t, err, vmcp.ErrNotFound)
+}
+
+// TestLookupResource_TemplateBackedURI verifies LookupResource accepts the URIs a
+// templated read serves — both the template string itself (the form a
+// resources/subscribe or completion ref/resource carries) and an expanded URI
+// matching an advertised template — while an unmatched URI still misses. This
+// keeps the subscribe admission (coreSubscribeHandler) aligned with read.
+func TestLookupResource_TemplateBackedURI(t *testing.T) {
+	t.Parallel()
+	cfg, m := baseConfig(t)
+
+	m.reg.EXPECT().List(gomock.Any()).Return(nil).Times(6)
+	m.agg.EXPECT().AggregateCapabilities(gomock.Any(), gomock.Any()).Return(&aggregator.AggregatedCapabilities{
+		Resources: []vmcp.Resource{{URI: "file://a", BackendID: "be1"}},
+		ResourceTemplates: []vmcp.ResourceTemplate{
+			{
+				URITemplate: "file:///logs/{date}.txt",
+				Name:        "Daily log",
+				Description: "A day's log file",
+				MimeType:    "text/plain",
+				BackendID:   "be1",
+			},
+		},
+	}, nil).Times(6)
+
+	c, err := New(cfg)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := context.Background()
+
+	// The exact template string resolves to the template's capability.
+	res, err := c.LookupResource(ctx, nil, "file:///logs/{date}.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "file:///logs/{date}.txt", res.URI)
+	assert.Equal(t, "be1", res.BackendID)
+
+	// An expanded URI matching the template resolves to the same capability.
+	res, err = c.LookupResource(ctx, nil, "file:///logs/2025-01-01.txt")
+	require.NoError(t, err)
+	assert.Equal(t, "be1", res.BackendID)
+
+	// A URI matching no concrete resource or template still misses.
+	_, err = c.LookupResource(ctx, nil, "db:///users/42")
 	assert.ErrorIs(t, err, vmcp.ErrNotFound)
 }
 

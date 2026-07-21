@@ -21,6 +21,19 @@ import (
 // on the discovery middleware injecting DiscoveredCapabilities into the context.
 type sessionRouter struct {
 	routingTable *vmcp.RoutingTable
+
+	// resourceTemplates is the aggregated resource-template table pre-sorted by
+	// template string with each template pre-parsed. These are invariant for a
+	// given routing table, so they are computed once at construction rather than
+	// re-sorted and re-parsed on every RouteResource miss.
+	resourceTemplates []compiledResourceTemplate
+}
+
+// compiledResourceTemplate pairs an aggregated resource-template entry with its
+// pre-parsed RFC 6570 template for matchResourceTemplate.
+type compiledResourceTemplate struct {
+	tmpl   *uritemplate.Template
+	target *vmcp.BackendTarget
 }
 
 // NewSessionRouter creates a Router that routes from the provided RoutingTable
@@ -28,7 +41,39 @@ type sessionRouter struct {
 // composite tool workflow engines because it couples routing to the session
 // rather than to middleware-managed context values.
 func NewSessionRouter(rt *vmcp.RoutingTable) Router {
-	return &sessionRouter{routingTable: rt}
+	return &sessionRouter{routingTable: rt, resourceTemplates: compileResourceTemplates(rt)}
+}
+
+// compileResourceTemplates builds the sorted, pre-parsed resource-template list
+// for a routing table. Template keys are sorted so that when overlapping
+// templates match the same URI (e.g. a greedy "{+path}" template alongside a
+// more specific one) the first-match winner is deterministic and stable across
+// runs. A template string that fails to parse is dropped here (logged once)
+// rather than on every routing miss.
+func compileResourceTemplates(rt *vmcp.RoutingTable) []compiledResourceTemplate {
+	if rt == nil || len(rt.ResourceTemplates) == 0 {
+		return nil
+	}
+	tmplStrs := make([]string, 0, len(rt.ResourceTemplates))
+	for tmplStr := range rt.ResourceTemplates {
+		tmplStrs = append(tmplStrs, tmplStr)
+	}
+	sort.Strings(tmplStrs)
+
+	compiled := make([]compiledResourceTemplate, 0, len(tmplStrs))
+	for _, tmplStr := range tmplStrs {
+		tmpl, err := uritemplate.New(tmplStr)
+		if err != nil {
+			slog.Warn("skipping invalid resource URI template during routing",
+				"template", tmplStr, "error", err)
+			continue
+		}
+		compiled = append(compiled, compiledResourceTemplate{
+			tmpl:   tmpl,
+			target: rt.ResourceTemplates[tmplStr],
+		})
+	}
+	return compiled
 }
 
 // RouteTool resolves a tool name to its backend target using the session's
@@ -127,6 +172,14 @@ func (r *sessionRouter) RouteResource(_ context.Context, uri string) (*vmcp.Back
 	if target, exists := r.routingTable.Resources[uri]; exists {
 		return target, nil
 	}
+	// Exact template-string match: per the MCP spec a completion/complete with a
+	// ref/resource (and resources/subscribe on a templated resource) carries the
+	// URI TEMPLATE string itself (e.g. "file:///logs/{date}.txt"), not an
+	// expanded URI. A template does not match its own template string, so look
+	// the string up directly before falling back to template expansion.
+	if target, exists := r.routingTable.ResourceTemplates[uri]; exists {
+		return target, nil
+	}
 	// Fallback: match the URI against the aggregated resource templates.
 	if target := r.matchResourceTemplate(uri); target != nil {
 		return target, nil
@@ -134,30 +187,15 @@ func (r *sessionRouter) RouteResource(_ context.Context, uri string) (*vmcp.Back
 	return nil, fmt.Errorf("%w: %s", ErrResourceNotFound, uri)
 }
 
-// matchResourceTemplate returns the backend target for the first resource
-// template whose RFC 6570 expansion matches uri, or nil when none match. A
-// template string that fails to parse is skipped (logged) rather than aborting
-// the whole match. First-match wins. Template keys are iterated in sorted order
-// so that when overlapping templates match the same URI (e.g. a greedy
-// "{+path}" template alongside a more specific one) the winner is deterministic
-// and stable across runs, resolved by sorted-key order.
+// matchResourceTemplate returns the backend target for the first precompiled
+// resource template whose RFC 6570 expansion matches uri, or nil when none
+// match. First-match wins over the sorted template keys (see
+// compileResourceTemplates).
 func (r *sessionRouter) matchResourceTemplate(uri string) *vmcp.BackendTarget {
-	tmplStrs := make([]string, 0, len(r.routingTable.ResourceTemplates))
-	for tmplStr := range r.routingTable.ResourceTemplates {
-		tmplStrs = append(tmplStrs, tmplStr)
-	}
-	sort.Strings(tmplStrs)
-
-	for _, tmplStr := range tmplStrs {
-		tmpl, err := uritemplate.New(tmplStr)
-		if err != nil {
-			slog.Warn("skipping invalid resource URI template during routing",
-				"template", tmplStr, "error", err)
-			continue
-		}
+	for i := range r.resourceTemplates {
 		// Match returns non-nil Values on a match, nil otherwise.
-		if tmpl.Match(uri) != nil {
-			return r.routingTable.ResourceTemplates[tmplStr]
+		if r.resourceTemplates[i].tmpl.Match(uri) != nil {
+			return r.resourceTemplates[i].target
 		}
 	}
 	return nil

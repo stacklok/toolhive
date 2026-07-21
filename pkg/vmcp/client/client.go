@@ -464,6 +464,38 @@ func (*httpBackendClient) newStreamableHTTPClient(
 	return client.NewStreamableHttpClient(target.BaseURL, transportOpts...)
 }
 
+// newSSEClient builds an SSE backend client. For SSE the entire session is one
+// long-lived HTTP response body, so — unlike the streamable-HTTP client — no
+// response-body size limit and no http.Client.Timeout apply: the former would
+// silently terminate the stream after maxResponseSize CUMULATIVE bytes, the
+// latter would kill the stream. When forwarding is requested (the tools/call
+// path) and forwarders are bound, the elicitation/sampling handlers are
+// installed so a backend's mid-call server->client traffic reaches the
+// downstream client; SSE carries those requests on the already-open event
+// stream, so no continuous-listening option is needed. Non-forwarding calls get
+// the plain client, byte-for-byte the pre-forwarding construction.
+func (*httpBackendClient) newSSEClient(
+	ctx context.Context, target *vmcp.BackendTarget,
+	baseTransport http.RoundTripper, forwarding bool, fwd *boundForwarders,
+) (*client.Client, error) {
+	c, err := client.NewSSEMCPClient(
+		target.BaseURL,
+		transport.WithHTTPClient(&http.Client{Transport: baseTransport}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create SSE client: %w", err)
+	}
+	if fwd != nil && forwarding {
+		// NewSSEMCPClient accepts only transport options, so the client options
+		// are applied post-construction; both run before the caller's Initialize,
+		// which is what the handlers' capability declaration requires.
+		for _, opt := range forwardingClientOptions(ctx, fwd) {
+			opt(c)
+		}
+	}
+	return c, nil
+}
+
 func (h *httpBackendClient) defaultClientFactory(
 	ctx context.Context, target *vmcp.BackendTarget, forwarding bool,
 ) (*client.Client, error) {
@@ -580,17 +612,9 @@ func (h *httpBackendClient) defaultClientFactory(
 		}
 
 	case "sse":
-		// For SSE the entire session is one long-lived HTTP response body.
-		// Applying io.LimitReader would silently terminate the stream after
-		// maxResponseSize cumulative bytes — not per-event — which is wrong.
-		// http.Client.Timeout is also omitted: it would kill the stream.
-		httpClient := &http.Client{Transport: baseTransport}
-		c, err = client.NewSSEMCPClient(
-			target.BaseURL,
-			transport.WithHTTPClient(httpClient),
-		)
+		c, err = h.newSSEClient(ctx, target, baseTransport, forwarding, fwd)
 		if err != nil {
-			return nil, fmt.Errorf("failed to create SSE client: %w", err)
+			return nil, err
 		}
 
 	default:
@@ -818,6 +842,15 @@ func queryResourceTemplates(
 				}
 				return result.ResourceTemplates, result.NextCursor, nil
 			})
+		// A backend that advertises the resources capability but does not
+		// implement resources/templates/list (JSON-RPC -32601) degrades to an
+		// empty template list — its other capabilities still aggregate. Other
+		// errors still propagate and drop the backend's capability set.
+		if errors.Is(err, mcp.ErrMethodNotFound) {
+			slog.Debug("backend does not implement resources/templates/list, treating templates as empty",
+				"backend", backendID)
+			return &mcp.ListResourceTemplatesResult{ResourceTemplates: []mcp.ResourceTemplate{}}, nil
+		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to list resource templates from backend %s: %w", backendID, err)
 		}

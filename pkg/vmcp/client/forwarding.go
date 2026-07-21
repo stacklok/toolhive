@@ -10,6 +10,7 @@ import (
 	"github.com/stacklok/toolhive-core/mcpcompat/client"
 	"github.com/stacklok/toolhive-core/mcpcompat/mcp"
 	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/conversion"
 )
 
 // boundForwarders holds the server->client forwarding requesters bound onto the
@@ -113,7 +114,7 @@ func newElicitationForwarder(callCtx context.Context, req vmcp.ElicitationReques
 		res, err := req.RequestElicitation(ctx, vmcp.ElicitationRequest{
 			Message:         r.Params.Message,
 			RequestedSchema: r.Params.RequestedSchema,
-			Meta:            metaToMap(r.Params.Meta),
+			Meta:            conversion.FromMCPMeta(r.Params.Meta),
 		})
 		if err != nil {
 			return nil, err
@@ -195,25 +196,6 @@ func newNotificationForwarder(callCtx context.Context, notifier vmcp.ClientNotif
 			// mid-call server->client traffic this forwarder relays.
 		}
 	}
-}
-
-// metaToMap converts an SDK *mcp.Meta to the domain map form, returning nil when
-// there is nothing to carry.
-func metaToMap(meta *mcp.Meta) map[string]any {
-	if meta == nil {
-		return nil
-	}
-	out := make(map[string]any, len(meta.AdditionalFields)+1)
-	for k, v := range meta.AdditionalFields {
-		out[k] = v
-	}
-	if meta.ProgressToken != nil {
-		out["progressToken"] = meta.ProgressToken
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
 }
 
 // fromMCPSamplingMessages maps SDK sampling messages to the domain type.

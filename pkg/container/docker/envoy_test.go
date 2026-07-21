@@ -6,6 +6,7 @@ package docker
 import (
 	"encoding/json"
 	"os"
+	"regexp"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -223,6 +224,57 @@ func TestBuildEgressListener_AllowlistAndDefaultDeny(t *testing.T) {
 					"expected L7 authority deny for host.docker.internal")
 				assert.Contains(t, string(raw), dockerAltGatewayHostname,
 					"expected L7 authority deny for gateway.docker.internal")
+			}
+		})
+	}
+}
+
+// TestHostMatchRegex verifies that AllowHost entries translate to :authority
+// patterns matching Squid's dstdomain semantics: a leading dot (or "*.") matches
+// the apex and all subdomains, a bare host matches exactly, and every form
+// tolerates an optional ":port" (HTTPS CONNECT authorities carry the port).
+// Crucially, no form may match a lookalike parent domain like
+// "example.com.attacker.com".
+func TestHostMatchRegex(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		host      string
+		matches   []string
+		noMatches []string
+	}{
+		{
+			name:      "exact host, no subdomains",
+			host:      "example.com",
+			matches:   []string{"example.com", "example.com:443", "EXAMPLE.COM"},
+			noMatches: []string{"www.example.com", "notexample.com", "example.com.attacker.com"},
+		},
+		{
+			name:      "leading dot matches apex and subdomains",
+			host:      ".example.com",
+			matches:   []string{"example.com", "www.example.com", "a.b.example.com", "www.example.com:8080"},
+			noMatches: []string{"notexample.com", "example.com.attacker.com", "evil.com"},
+		},
+		{
+			name:      "asterisk-dot is an alias for leading dot",
+			host:      "*.example.com",
+			matches:   []string{"example.com", "api.example.com", "api.example.com:443"},
+			noMatches: []string{"attacker-example.com", "example.com.attacker.com"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			// Envoy anchors safe_regex fully; replicate that with ^...$ here.
+			re := regexp.MustCompile("^(?:" + hostMatchRegex(tt.host) + ")$")
+			for _, m := range tt.matches {
+				assert.True(t, re.MatchString(m), "expected %q to match AllowHost %q", m, tt.host)
+			}
+			for _, nm := range tt.noMatches {
+				assert.False(t, re.MatchString(nm), "expected %q NOT to match AllowHost %q", nm, tt.host)
 			}
 		})
 	}

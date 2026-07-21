@@ -122,9 +122,16 @@ unless `--allow-docker-gateway` is set; it blocks:
 
 The ALLOW filter implements the permission profile's `Outbound` rules:
 - `InsecureAllowAll: true` → single wildcard policy (`any: true`)
-- `AllowHost: [...]` → per-host `:authority` exact match (or suffix match for
-  `*.`-prefixed wildcards)
+- `AllowHost: [...]` → per-host `:authority` regex match that mirrors Squid's
+  `dstdomain` semantics: `example.com` matches that host exactly, while
+  `.example.com` (leading dot, also accepted as `*.example.com`) matches the apex
+  **and** all subdomains. The generated pattern is anchored, case-insensitive,
+  and tolerates an optional `:port` so HTTPS CONNECT authorities
+  (`example.com:443`) match too.
 - No outbound permissions configured → empty policy map → Envoy deny-all
+
+This preserves parity with the existing Squid backend so that permission
+profiles written for Squid's `dstdomain` syntax behave identically under Envoy.
 
 ### Ingress listener (`0.0.0.0:<port>` — reverse proxy)
 
@@ -182,7 +189,7 @@ backend is stable.
 | TLS inspection | ✗ | ✗ |
 | L7 hostname deny | ✓ (`dstdomain`) | ✓ (`:authority` header match) |
 | L3 IP CIDR deny | Partial (`dst` ACL — DNS-resolved) | ✓ (direct packet match) |
-| Wildcard host allowlist | ✓ (dot-prefix) | ✓ (suffix match) |
+| Wildcard host allowlist | ✓ (`.example.com` dot-prefix) | ✓ (same syntax, regex match incl. apex + port) |
 | Per-request DNS resolution | Via Squid resolver | Via DFP cluster |
 | Access logs | Per-container, text format | Unified stdout, structured |
 | Config format | Text template | Typed Go structs → protobuf-JSON |

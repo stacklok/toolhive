@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"regexp"
 	"strings"
 
 	"github.com/moby/moby/api/types/container"
@@ -202,11 +203,18 @@ type envoyHeaderMatcher struct {
 	StringMatch *envoyStringMatch `json:"string_match,omitempty"`
 }
 
-// envoyStringMatch matches a string by exact value, prefix, or suffix.
+// envoyStringMatch matches a string by exact value, prefix, suffix, or regex.
 type envoyStringMatch struct {
-	Exact  string `json:"exact,omitempty"`
-	Prefix string `json:"prefix,omitempty"`
-	Suffix string `json:"suffix,omitempty"`
+	Exact     string          `json:"exact,omitempty"`
+	Prefix    string          `json:"prefix,omitempty"`
+	Suffix    string          `json:"suffix,omitempty"`
+	SafeRegex *envoySafeRegex `json:"safe_regex,omitempty"`
+}
+
+// envoySafeRegex is an RE2 regex matcher. Envoy anchors the pattern fully
+// (implicit ^ and $), so the pattern must match the entire input.
+type envoySafeRegex struct {
+	Regex string `json:"regex"`
 }
 
 // envoyPrincipal matches a downstream principal. Any:true is a wildcard.
@@ -499,8 +507,9 @@ func buildAllowlistRBAC(spec proxySpec) *envoyHTTPRBAC {
 //   - spec.Permissions is nil
 //   - spec.Permissions.Outbound is nil
 //
-// InsecureAllowAll produces a single wildcard policy. AllowHost entries become
-// :authority header matchers (exact for plain hostnames, suffix for *.prefix).
+// InsecureAllowAll produces a single wildcard policy. Each AllowHost entry
+// becomes a policy matching the :authority header via hostMatchRegex, which
+// mirrors Squid's dstdomain semantics (see hostMatchRegex for the syntax).
 func buildAllowlistPolicies(spec proxySpec) map[string]envoyRBACPolicy {
 	if spec.Permissions == nil || spec.Permissions.Outbound == nil {
 		return make(map[string]envoyRBACPolicy)
@@ -516,18 +525,14 @@ func buildAllowlistPolicies(spec proxySpec) map[string]envoyRBACPolicy {
 	}
 	policies := make(map[string]envoyRBACPolicy)
 	for _, host := range out.AllowHost {
-		var match envoyStringMatch
-		if strings.HasPrefix(host, "*.") {
-			match.Suffix = host[1:] // "*.example.com" → ".example.com"
-		} else {
-			match.Exact = host
-		}
 		policies[host] = envoyRBACPolicy{
 			Permissions: []envoyPermission{
 				{
 					Header: &envoyHeaderMatcher{
-						Name:        ":authority",
-						StringMatch: &match,
+						Name: ":authority",
+						StringMatch: &envoyStringMatch{
+							SafeRegex: &envoySafeRegex{Regex: hostMatchRegex(host)},
+						},
 					},
 				},
 			},
@@ -535,6 +540,36 @@ func buildAllowlistPolicies(spec proxySpec) map[string]envoyRBACPolicy {
 		}
 	}
 	return policies
+}
+
+// hostMatchRegex builds an anchored, case-insensitive RE2 pattern that matches
+// an AllowHost entry against the HTTP :authority header. It tolerates an
+// optional ":port" suffix because HTTPS CONNECT authorities include the port
+// (e.g. "example.com:443"), and it mirrors Squid's dstdomain semantics:
+//
+//   - ".example.com" or "*.example.com" — matches the apex "example.com" AND
+//     any subdomain ("www.example.com", "a.b.example.com").
+//   - "example.com" — matches that host exactly (no subdomains).
+//
+// The domain is regex-escaped so dots are literal, and the pattern is anchored
+// by Envoy so it cannot match "example.com.attacker.com".
+func hostMatchRegex(host string) string {
+	subdomains := false
+	switch {
+	case strings.HasPrefix(host, "*."):
+		host = host[2:]
+		subdomains = true
+	case strings.HasPrefix(host, "."):
+		host = host[1:]
+		subdomains = true
+	}
+	pattern := regexp.QuoteMeta(host)
+	if subdomains {
+		// Optional "sub." prefix at any depth, plus the apex itself.
+		pattern = `(.*\.)?` + pattern
+	}
+	// (?i) case-insensitive (hostnames are); (:[0-9]+)? optional port.
+	return `(?i)` + pattern + `(:[0-9]+)?`
 }
 
 // buildEgressCluster returns the dynamic_forward_proxy cluster required by the

@@ -362,8 +362,8 @@ func baseTestSetup(t *testing.T, opts ...baseTestSetupOption) (fosite.OAuth2Prov
 			return nil
 		}).AnyTimes()
 
-	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any()).DoAndReturn(
-		func(ctx context.Context, sessionID string) (map[string]*storage.UpstreamTokens, error) {
+	stor.EXPECT().GetAllUpstreamTokens(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
+		func(ctx context.Context, sessionID string, _ *storage.ExpectedBinding) (map[string]*storage.UpstreamTokens, error) {
 			// GetAllUpstreamTokens takes only (ctx, sessionID) — no tokens argument to
 			// carry the user — so a user-keyed storage decorator can resolve the user
 			// only from ctx. Capture the ctx here so a test can assert the callback

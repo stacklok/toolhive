@@ -48,6 +48,13 @@ const (
 	ConditionReasonPodTemplateInvalid = "InvalidPodTemplateSpec"
 )
 
+const (
+	// ConditionReasonSecretEnvRejected indicates an untrusted-flagged workload
+	// attempted to source backend (mcp) container env from a Secret or ConfigMap,
+	// or mount a Secret volume — rejected by the untrusted env gate.
+	ConditionReasonSecretEnvRejected = "SecretEnvRejected"
+)
+
 // Condition type for CA bundle validation
 const (
 	// ConditionCABundleRefValidated indicates whether the CABundleRef is valid

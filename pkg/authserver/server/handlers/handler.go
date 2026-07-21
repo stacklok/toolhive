@@ -223,7 +223,23 @@ func (h *Handler) WellKnownRoutes(r chi.Router) {
 // the user is re-prompted up front, rather than the stale token surfacing as a
 // runtime auth error later at MCP-request token-swap time.
 func (h *Handler) nextMissingUpstream(ctx context.Context, sessionID string, chain []string) (string, error) {
-	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
+	// Assert the resolved canonical user against every stored row: a row written
+	// for a different user is excluded by storage and therefore appears missing,
+	// prompting re-consent instead of treating a cross-user row as satisfied.
+	//
+	// UserID is the only dimension independently known here. UpstreamSubject is
+	// NOT assertable: for chain[0] the row IS the source of the upstream subject
+	// (self-referential — comparing it to itself proves nothing), and later legs
+	// are connect-this-backend flows whose upstream identity legitimately
+	// differs from the first leg's. ClientID is not asserted here either: this
+	// read runs mid-flow under the consenting client itself, so a client check
+	// could only pass; the client binding has teeth on the request-serving path
+	// (pkg/auth/token.go loadUpstreamTokens), not here.
+	expected := &storage.ExpectedBinding{}
+	if userID, ok := auth.CanonicalUserFromContext(ctx); ok {
+		expected.UserID = userID
+	}
+	stored, err := h.storage.GetAllUpstreamTokens(ctx, sessionID, expected)
 	if err != nil {
 		return "", fmt.Errorf("failed to check upstream token state: %w", err)
 	}

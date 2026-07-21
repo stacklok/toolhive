@@ -44,8 +44,10 @@ func NewInProcessService(
 
 // GetValidTokens returns a valid upstream credential for a session and provider.
 // It transparently refreshes expired access tokens using the refresh token.
-func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, providerName string) (*UpstreamCredential, error) {
-	tokens, err := s.storage.GetUpstreamTokens(ctx, sessionID, providerName)
+func (s *InProcessService) GetValidTokens(
+	ctx context.Context, sessionID, providerName string, expected *storage.ExpectedBinding,
+) (*UpstreamCredential, error) {
+	tokens, err := s.storage.GetUpstreamTokens(ctx, sessionID, providerName, expected)
 	if err != nil {
 		// ErrExpired returns tokens (including refresh token) alongside the error.
 		// Attempt a refresh before giving up.
@@ -86,9 +88,9 @@ func (s *InProcessService) GetValidTokens(ctx context.Context, sessionID, provid
 //
 // Returns an empty map and nil failed slice (not error) for unknown sessions.
 func (s *InProcessService) GetAllUpstreamCredentials(
-	ctx context.Context, sessionID string,
+	ctx context.Context, sessionID string, expected *storage.ExpectedBinding,
 ) (map[string]UpstreamCredential, []string, error) {
-	allTokens, err := s.storage.GetAllUpstreamTokens(ctx, sessionID)
+	allTokens, err := s.storage.GetAllUpstreamTokens(ctx, sessionID, expected)
 	if err != nil {
 		return nil, nil, fmt.Errorf("bulk read upstream tokens: %w", err)
 	}

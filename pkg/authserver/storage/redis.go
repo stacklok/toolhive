@@ -19,6 +19,7 @@ import (
 
 	tcredis "github.com/stacklok/toolhive-core/redis"
 	"github.com/stacklok/toolhive/pkg/authserver/server/session"
+	"github.com/stacklok/toolhive/pkg/authserver/tokenenc"
 )
 
 // nullMarker is used to store nil upstream tokens in Redis.
@@ -89,6 +90,24 @@ func warnDroppedIndexMembers(operation, indexKey, expectedPrefix string, dropped
 type RedisStorage struct {
 	client    redis.UniversalClient
 	keyPrefix string
+	// tokenEnc, when non-nil, enables AES-256-GCM envelope encryption for
+	// upstream OAuth token values at rest. When nil, writes are plaintext
+	// (current behavior), reads of plaintext pass through, and reads of
+	// envelope values fail loudly rather than returning corrupt tokens.
+	tokenEnc tokenenc.Keyring
+}
+
+// RedisStorageOption configures optional RedisStorage behavior at construction.
+type RedisStorageOption func(*RedisStorage)
+
+// WithTokenEncryption enables envelope encryption of upstream OAuth token
+// values at rest using kr as the key-encryption-key source. The keyring is
+// validated by tokenenc.NewStaticKeyring before it reaches this option; a nil
+// keyring leaves encryption disabled.
+func WithTokenEncryption(kr tokenenc.Keyring) RedisStorageOption {
+	return func(s *RedisStorage) {
+		s.tokenEnc = kr
+	}
 }
 
 // storedSession is a serializable wrapper for fosite.Requester.
@@ -114,7 +133,9 @@ type storedSession struct {
 // delegated to the shared toolhive-core redis package. cfg.Password may be
 // empty when the Redis server does not require authentication (the auth server
 // does not mandate ACL auth); the keyPrefix is storage-specific and required.
-func NewRedisStorage(ctx context.Context, cfg tcredis.Config, keyPrefix string) (*RedisStorage, error) {
+func NewRedisStorage(
+	ctx context.Context, cfg tcredis.Config, keyPrefix string, opts ...RedisStorageOption,
+) (*RedisStorage, error) {
 	if keyPrefix == "" {
 		return nil, errors.New("invalid redis configuration: key prefix is required")
 	}
@@ -124,19 +145,29 @@ func NewRedisStorage(ctx context.Context, cfg tcredis.Config, keyPrefix string) 
 		return nil, err
 	}
 
-	return &RedisStorage{
+	s := &RedisStorage{
 		client:    client,
 		keyPrefix: keyPrefix,
-	}, nil
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s, nil
 }
 
 // NewRedisStorageWithClient creates a RedisStorage with a pre-configured client.
 // This is useful for testing with miniredis.
-func NewRedisStorageWithClient(client redis.UniversalClient, keyPrefix string) *RedisStorage {
-	return &RedisStorage{
+func NewRedisStorageWithClient(
+	client redis.UniversalClient, keyPrefix string, opts ...RedisStorageOption,
+) *RedisStorage {
+	s := &RedisStorage{
 		client:    client,
 		keyPrefix: keyPrefix,
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // defaultSessionFactory creates session prototypes for deserialization.
@@ -709,38 +740,40 @@ func (s *storedUpstreamTokens) toUpstreamTokens() *UpstreamTokens {
 	}
 }
 
-// storeUpstreamTokensScript atomically reads the existing UserID, writes new token
-// data, updates the session index set, and updates user reverse-index sets.
-// This prevents a race condition where concurrent writes for the same session
-// could leave orphaned entries in user sets.
+// storeUpstreamTokensScript atomically writes new token data, updates the
+// session index set, and updates user reverse-index sets, preventing a race
+// condition where concurrent writes for the same session could leave orphaned
+// entries in user sets.
+//
+// UserID bookkeeping is Go-side: the Go write path issues one best-effort GET
+// immediately before this script and passes the previous row's UserID as
+// ARGV[3]. This indirection exists because token values may be encrypted
+// envelopes (see WithTokenEncryption), which cjson cannot decode; the GO side
+// holds the keyring and extracts the UserID in the clear. The extra read is
+// non-atomic with the script, so a concurrent writer changing a row's UserID
+// between the GET and the script can leave a stale member in the old user's
+// reverse-index set. That staleness is bounded by the member key's TTL and
+// tolerated by readers (they skip missing rows); it matches the best-effort
+// reverse-index cleanup posture used throughout this file.
 //
 // KEYS[1] = per-provider token key (e.g. "thv:auth:{ns:name}:upstream:{sessionID}:{providerName}")
 // KEYS[2] = session index set key (e.g. "thv:auth:{ns:name}:upstream:idx:{sessionID}")
-// ARGV[1] = new token data (JSON or "null" marker)
+// ARGV[1] = new token data (JSON or "null" marker; an encrypted envelope when encryption is enabled)
 // ARGV[2] = TTL in milliseconds
-// ARGV[3] = new UserID ("" if no user)
-// ARGV[4] = user upstream set key prefix (e.g. "thv:auth:{ns:name}:user:upstream:")
+// ARGV[3] = previous row's UserID, from the Go-side GET ("" if none/unknown)
+// ARGV[4] = new UserID ("" if no user)
+// ARGV[5] = user upstream set key prefix (e.g. "thv:auth:{ns:name}:user:upstream:")
 //
-// Cluster slot invariant: this script reads oldUserID from KEYS[1] inside the
-// script body (atomic with the rest of the work), so the user-set keys are
-// constructed dynamically as `ARGV[4] .. userID` rather than being passed as
-// declared KEYS. Every dynamically-built key MUST therefore inherit the
-// `{ns:name}` hash tag that is baked into ARGV[4] (s.keyPrefix). All callers
-// derive ARGV[4] from s.keyPrefix, which DeriveKeyPrefix builds with the
-// `{ns:name}` hash tag, so user-set keys land on the same Redis Cluster slot
-// as KEYS[1] and KEYS[2]. A future refactor that strips the hash tag — or
-// rebuilds setPrefix from raw inputs without the tag — will silently pass on
-// standalone Redis and fail with CROSSSLOT under Cluster.
+// Cluster slot invariant: all set keys are constructed inside the script as
+// `ARGV[5] .. userID` rather than passed as declared KEYS. Every
+// dynamically-built key MUST therefore inherit the `{ns:name}` hash tag that
+// is baked into ARGV[5] (s.keyPrefix). All callers derive ARGV[5] from
+// s.keyPrefix, which DeriveKeyPrefix builds with the `{ns:name}` hash tag, so
+// user-set keys land on the same Redis Cluster slot as KEYS[1] and KEYS[2]. A
+// future refactor that strips the hash tag — or rebuilds setPrefix from raw
+// inputs without the tag — will silently pass on standalone Redis and fail
+// with CROSSSLOT under Cluster.
 var storeUpstreamTokensScript = redis.NewScript(`
-local oldUserID = ""
-local existing = redis.call('GET', KEYS[1])
-if existing and existing ~= "null" then
-    local ok, decoded = pcall(cjson.decode, existing)
-    if ok and type(decoded) == "table" and decoded.user_id and decoded.user_id ~= "" then
-        oldUserID = decoded.user_id
-    end
-end
-
 local ttlMs = tonumber(ARGV[2])
 if ttlMs > 0 then
     redis.call('SET', KEYS[1], ARGV[1], 'PX', ttlMs)
@@ -796,8 +829,9 @@ else
     -- else: idxTTL >= ttlMs, index already outlives this member.
 end
 
-local newUserID = ARGV[3]
-local setPrefix = ARGV[4]
+local oldUserID = ARGV[3]
+local newUserID = ARGV[4]
+local setPrefix = ARGV[5]
 
 if oldUserID ~= "" and oldUserID ~= newUserID then
     redis.call('SREM', setPrefix .. oldUserID, KEYS[1])
@@ -810,8 +844,13 @@ end
 return 1
 `)
 
-// marshalUpstreamTokensWithTTL marshals tokens and calculates TTL.
-func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration, error) {
+// marshalUpstreamTokensWithTTL marshals tokens and calculates TTL. When
+// envelope encryption is enabled (WithTokenEncryption), the marshaled JSON is
+// sealed with redisKey as AAD; the nil-token tombstone is never sealed (it
+// carries no secret).
+func (s *RedisStorage) marshalUpstreamTokensWithTTL(
+	tokens *UpstreamTokens, redisKey string,
+) ([]byte, time.Duration, error) {
 	if tokens == nil {
 		return []byte(nullMarker), DefaultAccessTokenTTL, nil
 	}
@@ -843,6 +882,13 @@ func marshalUpstreamTokensWithTTL(tokens *UpstreamTokens) ([]byte, time.Duration
 	data, err := json.Marshal(stored) //nolint:gosec // G117 - internal Redis storage serialization, not exposed to users
 	if err != nil {
 		return nil, 0, fmt.Errorf("failed to marshal upstream tokens: %w", err)
+	}
+
+	if s.tokenEnc != nil {
+		data, err = tokenenc.Seal(s.tokenEnc, redisKey, data)
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to encrypt upstream tokens: %w", err)
+		}
 	}
 
 	// Add DefaultRefreshTokenTTL beyond access token expiry so the refresh token
@@ -881,10 +927,16 @@ func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID, provi
 	key := redisUpstreamKey(s.keyPrefix, sessionID, providerName)
 	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
 
-	data, ttl, err := marshalUpstreamTokensWithTTL(tokens)
+	data, ttl, err := s.marshalUpstreamTokensWithTTL(tokens, key)
 	if err != nil {
 		return err
 	}
+
+	// Read the previous row's UserID for reverse-index maintenance. The Lua
+	// script cannot do this itself because the stored value may be an
+	// encrypted envelope. Best-effort: on any failure pass "" — the stale
+	// reverse-index member is TTL-bounded and tolerated by readers.
+	oldUserID := s.readUserIDForCleanup(ctx, key)
 
 	newUserID := ""
 	if tokens != nil {
@@ -897,6 +949,7 @@ func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID, provi
 		[]string{key, idxKey},
 		string(data),
 		ttl.Milliseconds(),
+		oldUserID,
 		newUserID,
 		userSetKeyPrefix,
 	).Result()
@@ -910,7 +963,11 @@ func (s *RedisStorage) StoreUpstreamTokens(ctx context.Context, sessionID, provi
 // GetUpstreamTokens retrieves the upstream IDP tokens for a session and provider.
 // Returns a new UpstreamTokens struct deserialized from Redis, which acts as
 // a defensive copy - callers cannot modify the stored data by mutating the return value.
-func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID, providerName string) (*UpstreamTokens, error) {
+// Binding validation (see ExpectedBinding) runs after deserialization and before
+// expiry is surfaced: a mismatched row returns (nil, ErrInvalidBinding).
+func (s *RedisStorage) GetUpstreamTokens(
+	ctx context.Context, sessionID, providerName string, expected *ExpectedBinding,
+) (*UpstreamTokens, error) {
 	if sessionID == "" {
 		return nil, fosite.ErrInvalidRequest.WithHint("session ID cannot be empty")
 	}
@@ -919,13 +976,27 @@ func (s *RedisStorage) GetUpstreamTokens(ctx context.Context, sessionID, provide
 	}
 
 	key := redisUpstreamKey(s.keyPrefix, sessionID, providerName)
-	return s.getUpstreamTokensFromKey(ctx, key)
+	tokens, err := s.getUpstreamTokensFromKey(ctx, key)
+	if err != nil && !errors.Is(err, ErrExpired) {
+		return nil, err
+	}
+
+	// Binding is checked before the ErrExpired carried by the unmarshal is
+	// surfaced: a mismatched row must never release refresh material.
+	if bindErr := checkUpstreamBinding(ctx, tokens, expected); bindErr != nil {
+		return nil, bindErr
+	}
+	warnIfAssertedUserOnLegacyRow(tokens, expected, sessionID, providerName)
+
+	return tokens, err
 }
 
 // GetAllUpstreamTokens retrieves all upstream IDP tokens for a session across all providers.
 // Uses SMEMBERS on the session index set to find all provider keys, then MGET to fetch them.
 // Returns a map of providerName -> tokens. Returns an empty map for unknown sessions.
-func (s *RedisStorage) GetAllUpstreamTokens(ctx context.Context, sessionID string) (map[string]*UpstreamTokens, error) {
+func (s *RedisStorage) GetAllUpstreamTokens(
+	ctx context.Context, sessionID string, expected *ExpectedBinding,
+) (map[string]*UpstreamTokens, error) {
 	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
 	result := make(map[string]*UpstreamTokens)
 
@@ -956,37 +1027,68 @@ func (s *RedisStorage) GetAllUpstreamTokens(ctx context.Context, sessionID strin
 	keyPrefix := fmt.Sprintf("%s%s:%s:", s.keyPrefix, KeyTypeUpstream, sessionID)
 
 	for i, val := range values {
-		if val == nil {
-			continue
-		}
-
-		data, ok := val.(string)
-		if !ok {
-			slog.Warn("skipping upstream token entry: unexpected type", "key", providerKeys[i])
-			continue
-		}
-
-		tokens, parseErr := unmarshalUpstreamTokens([]byte(data))
-		if parseErr != nil && !errors.Is(parseErr, ErrExpired) {
-			slog.Warn("skipping corrupt upstream token entry", "key", providerKeys[i], "error", parseErr)
-			continue
-		}
-
-		// Extract provider name from the key
-		providerName := ""
-		if len(providerKeys[i]) > len(keyPrefix) {
-			providerName = providerKeys[i][len(keyPrefix):]
-		}
-		if providerName == "" && tokens != nil {
-			providerName = tokens.ProviderID
-		}
-
+		providerName, tokens := s.parseBulkUpstreamRow(ctx, providerKeys[i], keyPrefix, val, sessionID, expected)
 		if providerName != "" {
 			result[providerName] = tokens
 		}
 	}
 
 	return result, nil
+}
+
+// parseBulkUpstreamRow decrypts and decodes one MGET value of a
+// GetAllUpstreamTokens bulk read into its provider name and tokens. Rows that
+// are missing, corrupt, undecryptable, or fail per-row binding validation are
+// skipped (empty provider name returned); exclusions are logged at WARN with
+// metadata only.
+func (s *RedisStorage) parseBulkUpstreamRow(
+	ctx context.Context,
+	key, keyPrefix string,
+	val any,
+	sessionID string,
+	expected *ExpectedBinding,
+) (string, *UpstreamTokens) {
+	if val == nil {
+		return "", nil
+	}
+
+	data, ok := val.(string)
+	if !ok {
+		slog.Warn("skipping upstream token entry: unexpected type", "key", key)
+		return "", nil
+	}
+
+	tokens, parseErr := s.decodeUpstreamTokens(ctx, key, []byte(data))
+	if parseErr != nil && !errors.Is(parseErr, ErrExpired) {
+		slog.Warn("skipping corrupt upstream token entry", "key", key, "error", parseErr)
+		return "", nil
+	}
+
+	// Extract provider name from the key
+	providerName := ""
+	if len(key) > len(keyPrefix) {
+		providerName = key[len(keyPrefix):]
+	}
+	if providerName == "" && tokens != nil {
+		providerName = tokens.ProviderID
+	}
+	if providerName == "" {
+		return "", nil
+	}
+
+	// Binding validation applies per row: a mismatched row is excluded
+	// rather than failing the whole read.
+	if bindErr := checkUpstreamBinding(ctx, tokens, expected); bindErr != nil {
+		slog.Warn("excluding upstream token row: binding validation failed",
+			"session_id", sessionID,
+			"provider", providerName,
+			"dimension", bindingMismatchDimension(bindErr),
+		)
+		return "", nil
+	}
+	warnIfAssertedUserOnLegacyRow(tokens, expected, sessionID, providerName)
+
+	return providerName, tokens
 }
 
 // DeleteUpstreamTokens removes all upstream IDP tokens for a session (all providers).
@@ -1010,18 +1112,12 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 		return fmt.Errorf("%w: %w", ErrNotFound, fosite.ErrNotFound.WithHint("Upstream tokens not found"))
 	}
 
-	// Collect UserIDs for reverse-index cleanup before deleting
+	// Collect UserIDs for reverse-index cleanup before deleting. Decryption
+	// failures skip that row's cleanup (best-effort) without failing the delete.
 	var userIDs []string
 	for _, providerKey := range providerKeys {
-		data, getErr := s.client.Get(ctx, providerKey).Bytes()
-		if getErr != nil {
-			continue
-		}
-		if string(data) != nullMarker {
-			var stored storedUpstreamTokens
-			if unmarshalErr := json.Unmarshal(data, &stored); unmarshalErr == nil && stored.UserID != "" {
-				userIDs = append(userIDs, stored.UserID)
-			}
+		if userID := s.readUserIDForCleanup(ctx, providerKey); userID != "" {
+			userIDs = append(userIDs, userID)
 		}
 	}
 
@@ -1031,12 +1127,15 @@ func (s *RedisStorage) DeleteUpstreamTokens(ctx context.Context, sessionID strin
 		return fmt.Errorf("failed to delete upstream tokens: %w", err)
 	}
 
-	// Best-effort secondary index cleanup for user:upstream sets
+	// Best-effort secondary index cleanup for user:upstream sets — one variadic
+	// SRem per user instead of a round-trip per provider.
 	for _, userID := range userIDs {
 		userUpstreamSetKey := redisSetKey(s.keyPrefix, KeyTypeUserUpstream, userID)
-		for _, providerKey := range providerKeys {
-			warnOnCleanupErr(s.client.SRem(ctx, userUpstreamSetKey, providerKey).Err(), "SRem", userUpstreamSetKey)
+		members := make([]any, len(providerKeys))
+		for i, providerKey := range providerKeys {
+			members[i] = providerKey
 		}
+		warnOnCleanupErr(s.client.SRem(ctx, userUpstreamSetKey, members...).Err(), "SRem", userUpstreamSetKey)
 	}
 
 	return nil
@@ -1056,15 +1155,9 @@ func (s *RedisStorage) DeleteUpstreamTokensForProvider(ctx context.Context, sess
 	idxKey := redisSetKey(s.keyPrefix, KeyTypeUpstreamIdx, sessionID)
 
 	// Best-effort: read UserID for reverse-index cleanup before deleting.
-	var userID string
-	data, err := s.client.Get(ctx, key).Bytes()
-	if err == nil && string(data) != nullMarker {
-		var stored storedUpstreamTokens
-		if unmarshalErr := json.Unmarshal(data, &stored); unmarshalErr == nil {
-			userID = stored.UserID
-		}
-	}
-	// redis.Nil (key absent) or any error on GET: skip user-index cleanup gracefully.
+	// Absent rows, tombstones, and decrypt/unmarshal failures all yield ""
+	// and skip user-index cleanup gracefully.
+	userID := s.readUserIDForCleanup(ctx, key)
 
 	// Del returns count 0 on absent key — treat as nil (not ErrNotFound).
 	if delErr := s.client.Del(ctx, key).Err(); delErr != nil {
@@ -1119,7 +1212,7 @@ func (s *RedisStorage) GetLatestUpstreamTokensForUser(ctx context.Context, userI
 
 	var winner *storedUpstreamTokens
 	for i, val := range values {
-		stored, ok := parseUserUpstreamEntry(val, providerID, members[i])
+		stored, ok := s.parseUserUpstreamEntry(ctx, val, providerID, members[i])
 		if !ok {
 			continue
 		}
@@ -1162,9 +1255,12 @@ func compareExpiryInt64(a, b int64) int {
 // parseUserUpstreamEntry parses one raw Redis value from the user-upstream index
 // and returns the decoded storedUpstreamTokens together with a match flag.
 // It returns (nil, false) for nil values, type mismatches, deletion tombstones,
-// JSON decode errors, and rows whose ProviderID does not match providerID.
-// keyName is used only for warning log messages.
-func parseUserUpstreamEntry(val any, providerID, keyName string) (*storedUpstreamTokens, bool) {
+// decryption or JSON decode errors, and rows whose ProviderID does not match
+// providerID. keyName is the member key the value was fetched under — it is
+// both the envelope AAD and the identifier used in warning log messages.
+func (s *RedisStorage) parseUserUpstreamEntry(
+	ctx context.Context, val any, providerID, keyName string,
+) (*storedUpstreamTokens, bool) {
 	if val == nil {
 		// Dangling set member: the per-provider key has been TTL-evicted.
 		// Skip it; the next write will clean up the index entry (best-effort).
@@ -1182,8 +1278,17 @@ func parseUserUpstreamEntry(val any, providerID, keyName string) (*storedUpstrea
 		return nil, false
 	}
 
+	plaintext, legacy, err := tokenenc.Open(s.tokenEnc, keyName, []byte(data))
+	if err != nil {
+		slog.Warn("skipping upstream token entry: decryption failed", "key", keyName, "error", err)
+		return nil, false
+	}
+	if !legacy && tokenenc.NeedsRotation(s.tokenEnc, []byte(data)) {
+		s.lazyReseal(ctx, keyName, plaintext)
+	}
+
 	var stored storedUpstreamTokens
-	if unmarshalErr := json.Unmarshal([]byte(data), &stored); unmarshalErr != nil {
+	if unmarshalErr := json.Unmarshal(plaintext, &stored); unmarshalErr != nil {
 		slog.Warn("skipping corrupt upstream token entry", "key", keyName, "error", unmarshalErr)
 		return nil, false
 	}
@@ -1205,7 +1310,90 @@ func (s *RedisStorage) getUpstreamTokensFromKey(ctx context.Context, key string)
 		return nil, fmt.Errorf("failed to get upstream tokens: %w", err)
 	}
 
-	return unmarshalUpstreamTokens(data)
+	return s.decodeUpstreamTokens(ctx, key, data)
+}
+
+// decodeUpstreamTokens decrypts (when the value is an envelope) and
+// deserializes one upstream-token value stored under redisKey. The redisKey
+// is the AAD the envelope was sealed against. The nullMarker tombstone check
+// happens inside unmarshalUpstreamTokens, before decryption would matter
+// (tombstones are never sealed).
+func (s *RedisStorage) decodeUpstreamTokens(ctx context.Context, redisKey string, data []byte) (*UpstreamTokens, error) {
+	if string(data) == nullMarker {
+		return unmarshalUpstreamTokens(data)
+	}
+
+	plaintext, legacy, err := tokenenc.Open(s.tokenEnc, redisKey, data)
+	if err != nil {
+		return nil, fmt.Errorf("failed to decrypt upstream tokens: %w", err)
+	}
+	if legacy && s.tokenEnc != nil {
+		slog.Debug("read legacy plaintext upstream token row with encryption enabled",
+			"key", redisKey)
+	}
+
+	// Lazy re-encryption: a readable envelope sealed under a retired key is
+	// re-sealed with the active key so rotation converges without a sweep.
+	if !legacy && tokenenc.NeedsRotation(s.tokenEnc, data) {
+		s.lazyReseal(ctx, redisKey, plaintext)
+	}
+
+	return unmarshalUpstreamTokens(plaintext)
+}
+
+// readUserIDForCleanup best-effort extracts the UserID from the row stored
+// under key, decrypting envelope values first. It returns "" on any failure:
+// callers treat UserID extraction for reverse-index cleanup as optional and
+// never fail their primary operation over it.
+func (s *RedisStorage) readUserIDForCleanup(ctx context.Context, key string) string {
+	data, err := s.client.Get(ctx, key).Bytes()
+	if err != nil || string(data) == nullMarker {
+		return ""
+	}
+	plaintext, _, err := tokenenc.Open(s.tokenEnc, key, data)
+	if err != nil {
+		slog.Warn("skipping user-index cleanup: failed to decrypt upstream token row",
+			"key", key, "error", err)
+		return ""
+	}
+	var stored storedUpstreamTokens
+	if err := json.Unmarshal(plaintext, &stored); err != nil {
+		return ""
+	}
+	return stored.UserID
+}
+
+// lazyReseal re-seals plaintext with the active key, overwriting the row at
+// redisKey while preserving its remaining TTL. Best-effort: failures are
+// logged and the read that triggered this still succeeds. The re-seal is a
+// plain SET, so a concurrent StoreUpstreamTokens can be clobbered back to a
+// retired-kid envelope — harmless, since the next read re-seals again.
+func (s *RedisStorage) lazyReseal(ctx context.Context, redisKey string, plaintext []byte) {
+	sealed, err := tokenenc.Seal(s.tokenEnc, redisKey, plaintext)
+	if err != nil {
+		slog.Warn("lazy token re-encryption failed", "key", redisKey, "error", err)
+		return
+	}
+	pttl, err := s.client.PTTL(ctx, redisKey).Result()
+	if err != nil {
+		slog.Warn("lazy token re-encryption failed", "key", redisKey, "error", err)
+		return
+	}
+	// PTTL returns -1ns for "no expiry" and -2ns for "key missing" (go-redis
+	// passes the sentinel integers through as durations).
+	switch {
+	case pttl > 0:
+		err = s.client.Set(ctx, redisKey, sealed, pttl).Err()
+	case pttl == -1:
+		// Key exists with no expiry; preserve that.
+		err = s.client.Set(ctx, redisKey, sealed, 0).Err()
+	default:
+		// Key vanished between read and re-seal; nothing to do.
+		return
+	}
+	if err != nil {
+		slog.Warn("lazy token re-encryption failed", "key", redisKey, "error", err)
+	}
 }
 
 // unmarshalUpstreamTokens deserializes upstream tokens from JSON bytes.

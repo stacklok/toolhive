@@ -148,6 +148,10 @@ func (h *Handler) CallbackHandler(w http.ResponseWriter, req *http.Request) {
 	// only the canonical user for storage keying. (StoreUpstreamTokens does not need
 	// this; it keys off tokens.UserID below.)
 	ctx = auth.WithPlatformUser(ctx, subject)
+	// Also carry the user in the storage binding key so read-side binding
+	// validation (checkUpstreamBinding) enforces it on nil-expected reads
+	// without the storage package importing pkg/auth.
+	ctx = storage.ContextWithBindingUser(ctx, subject)
 
 	// Convert IDP tokens to storage tokens with binding fields.
 	// SessionExpiresAt is set unconditionally as the Fosite session bound. Storage
@@ -577,7 +581,19 @@ func (h *Handler) verifyChainIdentity(ctx context.Context, sessionID string, cha
 	if len(chain) <= 1 {
 		return nil
 	}
-	allTokens, err := h.storage.GetAllUpstreamTokens(ctx, sessionID)
+	// Storage enforces the user binding per row: a first-leg row owned by a
+	// different user is excluded here, which the check below surfaces as the
+	// same identity-mismatch failure (absent row on a chain that reached this
+	// point means the row failed binding or was never stored).
+	//
+	// UserID is the only asserted dimension: the first leg's UpstreamSubject
+	// cannot be asserted here because the stored row IS where the upstream
+	// subject was learned (self-referential), and per the doc comment above
+	// later legs legitimately carry different upstream identities. The consenting
+	// client is the one driving this flow, so a ClientID assertion would be
+	// tautological; client binding is enforced on the request-serving path
+	// (pkg/auth/token.go loadUpstreamTokens).
+	allTokens, err := h.storage.GetAllUpstreamTokens(ctx, sessionID, &storage.ExpectedBinding{UserID: subject})
 	if err != nil {
 		slog.Error("failed to load upstream tokens for chain identity check", "error", err)
 		return fmt.Errorf("failed to load upstream tokens for identity check: %w", err)

@@ -1884,11 +1884,17 @@ components:
       type: object
     github_com_stacklok_toolhive_pkg_skills.SyncResult:
       properties:
+        already_current:
+          description: AlreadyCurrent lists skills that already matched the lock file.
+          items:
+            type: string
+          type: array
+          uniqueItems: false
         drifted:
           description: |-
             Drifted lists skills whose on-disk contentDigest differed from the lock
-            file and were reinstalled to match it (reinstalled also when Check is set,
-            in which case nothing is written and this reports the drift only).
+            file. Normally these are reinstalled to match it; when Check is set,
+            nothing is written and this field reports the drift only.
           items:
             type: string
           type: array
@@ -1925,12 +1931,6 @@ components:
         removed_from_lock:
           description: RemovedFromLock lists previously managed skills absent from
             the lock file.
-          items:
-            type: string
-          type: array
-          uniqueItems: false
-        up_to_date:
-          description: AlreadyCurrent lists skills that already matched the lock file.
           items:
             type: string
           type: array

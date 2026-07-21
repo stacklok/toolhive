@@ -1880,8 +1880,16 @@
             },
             "github_com_stacklok_toolhive_pkg_skills.SyncResult": {
                 "properties": {
+                    "already_current": {
+                        "description": "AlreadyCurrent lists skills that already matched the lock file.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
                     "drifted": {
-                        "description": "Drifted lists skills whose on-disk contentDigest differed from the lock\nfile and were reinstalled to match it (reinstalled also when Check is set,\nin which case nothing is written and this reports the drift only).",
+                        "description": "Drifted lists skills whose on-disk contentDigest differed from the lock\nfile. Normally these are reinstalled to match it; when Check is set,\nnothing is written and this field reports the drift only.",
                         "items": {
                             "type": "string"
                         },
@@ -1922,14 +1930,6 @@
                     },
                     "removed_from_lock": {
                         "description": "RemovedFromLock lists previously managed skills absent from the lock file.",
-                        "items": {
-                            "type": "string"
-                        },
-                        "type": "array",
-                        "uniqueItems": false
-                    },
-                    "up_to_date": {
-                        "description": "AlreadyCurrent lists skills that already matched the lock file.",
                         "items": {
                             "type": "string"
                         },

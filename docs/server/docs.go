@@ -1651,7 +1651,7 @@ const docTemplate = `{
                 "type": "object"
             },
             "github_com_stacklok_toolhive_pkg_skills.FailureReason": {
-                "description": "Reason is a typed failure reason for CI and automation.",
+                "description": "Reason is a typed failure reason when Status is UpgradeStatusFailed.",
                 "enum": [
                     "registry-unreachable",
                     "digest-missing",
@@ -1945,6 +1945,68 @@ const docTemplate = `{
                     }
                 },
                 "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.UpgradeOutcome": {
+                "properties": {
+                    "error": {
+                        "description": "Error is a human-readable description of the failure, set only when Status is UpgradeStatusFailed.",
+                        "type": "string"
+                    },
+                    "name": {
+                        "description": "Name is the skill name.",
+                        "type": "string"
+                    },
+                    "new_digest": {
+                        "description": "NewDigest is the digest the source currently resolves to. Equal to\nOldDigest when Status is UpgradeStatusUpToDate.",
+                        "type": "string"
+                    },
+                    "new_resolved_reference": {
+                        "description": "NewResolvedReference is the new resolvedReference when it changed.",
+                        "type": "string"
+                    },
+                    "old_digest": {
+                        "description": "OldDigest is the digest pinned in the lock file before this operation.",
+                        "type": "string"
+                    },
+                    "reason": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.FailureReason"
+                    },
+                    "status": {
+                        "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeStatus"
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.UpgradeResult": {
+                "properties": {
+                    "outcomes": {
+                        "description": "Outcomes contains one entry per skill considered for upgrade.",
+                        "items": {
+                            "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeOutcome"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "github_com_stacklok_toolhive_pkg_skills.UpgradeStatus": {
+                "description": "Status is the outcome of the upgrade attempt.",
+                "enum": [
+                    "upgraded",
+                    "up-to-date",
+                    "not-upgradable",
+                    "ref-change-blocked",
+                    "failed"
+                ],
+                "type": "string",
+                "x-enum-varnames": [
+                    "UpgradeStatusUpgraded",
+                    "UpgradeStatusUpToDate",
+                    "UpgradeStatusNotUpgradable",
+                    "UpgradeStatusRefChangeBlocked",
+                    "UpgradeStatusFailed"
+                ]
             },
             "github_com_stacklok_toolhive_pkg_skills.ValidationResult": {
                 "properties": {
@@ -3773,6 +3835,44 @@ const docTemplate = `{
                         },
                         "type": "array",
                         "uniqueItems": false
+                    }
+                },
+                "type": "object"
+            },
+            "pkg_api_v1.upgradeSkillsRequest": {
+                "description": "Request to re-resolve a project's lock entries and install newer content",
+                "properties": {
+                    "allow_ref_change": {
+                        "description": "AllowRefChange permits resolvedReference changes during upgrade",
+                        "type": "boolean"
+                    },
+                    "clients": {
+                        "description": "Clients lists target client identifiers. Empty means every\nskill-supporting client detected on this host.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "fail_on_changes": {
+                        "description": "FailOnChanges exits with an error when any mutable source would upgrade",
+                        "type": "boolean"
+                    },
+                    "names": {
+                        "description": "Names restricts the upgrade to specific skill names. Empty means every entry.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array",
+                        "uniqueItems": false
+                    },
+                    "preview": {
+                        "description": "Preview reports what would change without installing (still fetches to compare digests)",
+                        "type": "boolean"
+                    },
+                    "project_root": {
+                        "description": "ProjectRoot is the project root path whose lock file should be upgraded",
+                        "type": "string"
                     }
                 },
                 "type": "object"
@@ -6457,6 +6557,107 @@ const docTemplate = `{
                     }
                 },
                 "summary": "Sync project skills from the lock file",
+                "tags": [
+                    "skills"
+                ]
+            }
+        },
+        "/api/v1beta/skills/upgrade": {
+            "post": {
+                "description": "Re-resolve a project's lock entries and install newer content where available",
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "oneOf": [
+                                    {
+                                        "type": "object"
+                                    },
+                                    {
+                                        "$ref": "#/components/schemas/pkg_api_v1.upgradeSkillsRequest",
+                                        "summary": "request",
+                                        "description": "Upgrade request"
+                                    }
+                                ]
+                            }
+                        }
+                    },
+                    "description": "Upgrade request",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/github_com_stacklok_toolhive_pkg_skills.UpgradeResult"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Bad Request"
+                    },
+                    "403": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Forbidden (feature not enabled)"
+                    },
+                    "404": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Found (a requested name is not in the lock file)"
+                    },
+                    "409": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Conflict (--fail-on-changes tripped)"
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Internal Server Error"
+                    },
+                    "501": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "string"
+                                }
+                            }
+                        },
+                        "description": "Not Implemented"
+                    }
+                },
+                "summary": "Upgrade project skills",
                 "tags": [
                     "skills"
                 ]

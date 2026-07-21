@@ -4,7 +4,6 @@
 package v1
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,29 +16,22 @@ import (
 	"github.com/stacklok/toolhive/pkg/skills"
 )
 
-// skillSyncer is the narrow slice of skills.SkillLockService the sync
-// endpoint needs. Kept separate from the full interface so this PR does not
-// need to ship an Upgrade stub; SkillsRouter widens to skills.SkillLockService
-// once Upgrade lands alongside its own endpoint.
-type skillSyncer interface {
-	Sync(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error)
-}
-
 // SkillsRoutes defines the routes for skill management.
 type SkillsRoutes struct {
 	skillService skills.SkillService
-	lockService  skillSyncer
+	lockService  skills.SkillLockService
 }
 
 // SkillsRouter creates a new router for skill management endpoints. If
-// skillService's concrete implementation also satisfies skillSyncer (as
-// skillsvc.New's does), /sync is served; otherwise it returns 501.
+// skillService's concrete implementation also satisfies skills.SkillLockService
+// (as skillsvc.New's does), /sync and /upgrade are served; otherwise both
+// return 501.
 func SkillsRouter(skillService skills.SkillService) http.Handler {
 	routes := SkillsRoutes{
 		skillService: skillService,
 	}
-	if syncer, ok := skillService.(skillSyncer); ok {
-		routes.lockService = syncer
+	if lockSvc, ok := skillService.(skills.SkillLockService); ok {
+		routes.lockService = lockSvc
 	}
 
 	r := chi.NewRouter()
@@ -54,6 +46,7 @@ func SkillsRouter(skillService skills.SkillService) http.Handler {
 	r.Delete("/builds/{tag}", apierrors.ErrorHandler(routes.deleteBuild))
 	r.Get("/content", apierrors.ErrorHandler(routes.getSkillContent))
 	r.Post("/sync", apierrors.ErrorHandler(routes.syncSkills))
+	r.Post("/upgrade", apierrors.ErrorHandler(routes.upgradeSkills))
 
 	return r
 }
@@ -416,6 +409,52 @@ func (s *SkillsRoutes) syncSkills(w http.ResponseWriter, r *http.Request) error 
 		Prune:       req.Prune,
 		Check:       req.Check,
 		Adopt:       req.Adopt,
+	})
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(result)
+}
+
+// upgradeSkills re-resolves a project's lock entries and installs newer
+// content where available.
+//
+//	@Summary		Upgrade project skills
+//	@Description	Re-resolve a project's lock entries and install newer content where available
+//	@Tags			skills
+//	@Accept			json
+//	@Produce		json
+//	@Param			request	body		upgradeSkillsRequest	true	"Upgrade request"
+//	@Success		200		{object}	skills.UpgradeResult
+//	@Failure		400		{string}	string	"Bad Request"
+//	@Failure		403		{string}	string	"Forbidden (feature not enabled)"
+//	@Failure		404		{string}	string	"Not Found (a requested name is not in the lock file)"
+//	@Failure		409		{string}	string	"Conflict (--fail-on-changes tripped)"
+//	@Failure		500		{string}	string	"Internal Server Error"
+//	@Failure		501		{string}	string	"Not Implemented"
+//	@Router			/api/v1beta/skills/upgrade [post]
+func (s *SkillsRoutes) upgradeSkills(w http.ResponseWriter, r *http.Request) error {
+	if s.lockService == nil {
+		return httperr.WithCode(errors.New("skill upgrade is not supported by this server"), http.StatusNotImplemented)
+	}
+
+	var req upgradeSkillsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		return httperr.WithCode(
+			fmt.Errorf("invalid request body: %w", err),
+			http.StatusBadRequest,
+		)
+	}
+
+	result, err := s.lockService.Upgrade(r.Context(), skills.UpgradeOptions{
+		ProjectRoot:    req.ProjectRoot,
+		Names:          req.Names,
+		Preview:        req.Preview,
+		FailOnChanges:  req.FailOnChanges,
+		AllowRefChange: req.AllowRefChange,
+		Clients:        req.Clients,
 	})
 	if err != nil {
 		return err

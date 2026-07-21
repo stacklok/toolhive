@@ -86,6 +86,25 @@ type syncSkillsRequest struct {
 	Adopt bool `json:"adopt,omitempty"`
 }
 
+// upgradeSkillsRequest represents the request to upgrade a project's skills.
+//
+//	@Description	Request to re-resolve a project's lock entries and install newer content
+type upgradeSkillsRequest struct {
+	// ProjectRoot is the project root path whose lock file should be upgraded
+	ProjectRoot string `json:"project_root"`
+	// Names restricts the upgrade to specific skill names. Empty means every entry.
+	Names []string `json:"names,omitempty"`
+	// Preview reports what would change without installing (still fetches to compare digests)
+	Preview bool `json:"preview,omitempty"`
+	// FailOnChanges exits with an error when any mutable source would upgrade
+	FailOnChanges bool `json:"fail_on_changes,omitempty"`
+	// AllowRefChange permits resolvedReference changes during upgrade
+	AllowRefChange bool `json:"allow_ref_change,omitempty"`
+	// Clients lists target client identifiers. Empty means every
+	// skill-supporting client detected on this host.
+	Clients []string `json:"clients,omitempty"`
+}
+
 // buildListResponse represents the response for listing locally-built OCI skill artifacts.
 //
 //	@Description	Response containing a list of locally-built OCI skill artifacts

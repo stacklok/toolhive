@@ -20,16 +20,24 @@ import (
 	skillsmocks "github.com/stacklok/toolhive/pkg/skills/mocks"
 )
 
-// skillServiceWithSync wraps a mocked SkillService and adds a Sync method, so
-// SkillsRouter's opportunistic skillSyncer type assertion succeeds — the same
-// shape skillsvc.New's concrete service has once it implements both.
+// skillServiceWithSync wraps a mocked SkillService and adds Sync and Upgrade
+// methods, so SkillsRouter's opportunistic skills.SkillLockService type
+// assertion succeeds — the same shape skillsvc.New's concrete service has.
 type skillServiceWithSync struct {
 	skills.SkillService
-	syncFn func(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error)
+	syncFn    func(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error)
+	upgradeFn func(ctx context.Context, opts skills.UpgradeOptions) (*skills.UpgradeResult, error)
 }
 
 func (s *skillServiceWithSync) Sync(ctx context.Context, opts skills.SyncOptions) (*skills.SyncResult, error) {
 	return s.syncFn(ctx, opts)
+}
+
+func (s *skillServiceWithSync) Upgrade(ctx context.Context, opts skills.UpgradeOptions) (*skills.UpgradeResult, error) {
+	if s.upgradeFn == nil {
+		return &skills.UpgradeResult{}, nil
+	}
+	return s.upgradeFn(ctx, opts)
 }
 
 func TestSyncSkillsEndpoint(t *testing.T) {

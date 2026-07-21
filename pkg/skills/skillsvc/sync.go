@@ -128,13 +128,14 @@ func (s *service) reinstallPinned(
 		clients = existing.Clients
 	}
 	_, err = s.Install(ctx, skills.InstallOptions{
-		Name:        pinnedRef,
-		Scope:       skills.ScopeProject,
-		ProjectRoot: opts.ProjectRoot,
-		Clients:     clients,
-		Force:       true, // sync restores exactly the pinned content over any drifted files
-		LockSource:  entry.Source,
-		SyncRestore: true, // reinstall even though Digest is unchanged — drift happened on disk, not to the pin
+		Name:                  pinnedRef,
+		Scope:                 skills.ScopeProject,
+		ProjectRoot:           opts.ProjectRoot,
+		Clients:               clients,
+		Force:                 true, // sync restores exactly the pinned content over any drifted files
+		LockSource:            entry.Source,
+		LockResolvedReference: entry.ResolvedReference, // preserve — pinnedRef is a restore form
+		SyncRestore:           true,                    // reinstall despite unchanged Digest — drift is on disk, not the pin
 	})
 	return err
 }

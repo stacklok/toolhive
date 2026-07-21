@@ -43,6 +43,15 @@ type InstallOptions struct {
 	// Name that must not overwrite the entry's original Source. Internal use
 	// only — NOT exposed via HTTP API.
 	LockSource string `json:"-"`
+	// LockResolvedReference overrides the value recorded as the lock entry's
+	// ResolvedReference. When empty, the entry's ResolvedReference is
+	// whatever this install actually resolved to. Set by Sync when
+	// reinstalling at a pinned reference: without this override, a drift
+	// repair would overwrite ResolvedReference with the internal pinned
+	// form (e.g. a digest or commit hash spliced into the reference)
+	// instead of preserving what Source originally resolved to. Internal
+	// use only — NOT exposed via HTTP API.
+	LockResolvedReference string `json:"-"`
 	// RequiredByParent is set when this install is a transitively materialized
 	// dependency (toolhive.requires) of another skill, naming that parent.
 	// Empty means the user explicitly requested this install. Internal use

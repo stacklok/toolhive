@@ -77,6 +77,39 @@ func TestSync_ReinstallsDriftedContent(t *testing.T) {
 }
 
 //nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
+func TestSync_ReinstallPreservesResolvedReference(t *testing.T) {
+	gr, fx := newGitResolverMock(t)
+	fx.register("my-skill", gitSkill("my-skill"))
+	svc, projectRoot := newLockTestService(t, gr)
+
+	ref, _ := gitRef("my-skill")
+	_, err := svc.Install(t.Context(), skills.InstallOptions{
+		Name: ref, Scope: skills.ScopeProject, ProjectRoot: projectRoot, Clients: []string{"claude-code"},
+	})
+	require.NoError(t, err)
+
+	before, ok := readLockfile(t, projectRoot).Get("my-skill")
+	require.True(t, ok)
+	require.Equal(t, ref, before.ResolvedReference)
+
+	// Tamper with the installed file so sync has to reinstall at the pinned
+	// reference — the drift-repair path that must not overwrite
+	// ResolvedReference with that internal pinned form.
+	skillMD := filepath.Join(projectRoot, ".claude", "skills", "my-skill", "SKILL.md")
+	require.NoError(t, os.WriteFile(skillMD, []byte("tampered content"), 0o644))
+
+	syncer := svc.(*service) //nolint:forcetypeassert
+	result, err := syncer.Sync(t.Context(), skills.SyncOptions{ProjectRoot: projectRoot})
+	require.NoError(t, err)
+	require.Equal(t, []string{"my-skill"}, result.Installed)
+
+	after, ok := readLockfile(t, projectRoot).Get("my-skill")
+	require.True(t, ok)
+	assert.Equal(t, before.ResolvedReference, after.ResolvedReference,
+		"a drift-repair reinstall must preserve ResolvedReference, not overwrite it with the pinned restore form")
+}
+
+//nolint:paralleltest // uses t.Setenv via newLockTestService, incompatible with t.Parallel
 func TestSync_CheckReportsDriftWithoutWriting(t *testing.T) {
 	gr, fx := newGitResolverMock(t)
 	fx.register("my-skill", gitSkill("my-skill"))

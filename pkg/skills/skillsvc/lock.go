@@ -34,11 +34,15 @@ func (s *service) recordLockState(
 	if source == "" {
 		source = originalName
 	}
+	resolvedReference := opts.LockResolvedReference
+	if resolvedReference == "" {
+		resolvedReference = sk.Reference
+	}
 	if err := recordLockEntry(sk.ProjectRoot, lockEntryInput{
 		Name:              sk.Metadata.Name,
 		Version:           sk.Metadata.Version,
 		Source:            source,
-		ResolvedReference: sk.Reference,
+		ResolvedReference: resolvedReference,
 		Digest:            sk.Digest,
 		ContentDigest:     contentDigest,
 		RequiredByParent:  opts.RequiredByParent,
